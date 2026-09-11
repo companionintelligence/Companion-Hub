@@ -1,8 +1,7 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
-import { mcpCallerOwnerAppUrn } from '../mcp-tool-call';
+import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -204,17 +203,14 @@ export class AppLifecycleTools implements OnModuleInit {
     });
   }
 
-  /**
-   * The actor every lifecycle call from this surface speaks as: an MCP key, with
-   * the app it belongs to if it is a managed one. The SERVICE decides what that
-   * admits (CI-Hub#1397) — this layer no longer has to be the only gate.
+  /*
+   * Each lifecycle call below names its actor through `mcpCallerLifecycleActor` — the calling key, or
+   * the signed-in person behind an admin-runner call — and the SERVICE decides what that admits
+   * (CI-Hub#1397).
    */
-  private actor(): LifecycleActor {
-    return { kind: 'mcp', ownerAppUrn: mcpCallerOwnerAppUrn() };
-  }
-
   async installApp(params: { appUrn: string; form?: Record<string, unknown> }) {
     const appUrn = castAppUrn(params.appUrn);
+    const actor = mcpCallerLifecycleActor('install');
     const form = params.form ?? {};
     const validation = await this.appLifecycleService.validateAppConfig(appUrn, form);
     if (!validation.valid) {
@@ -224,7 +220,7 @@ export class AppLifecycleTools implements OnModuleInit {
         errors: validation.errors,
       };
     }
-    return this.appLifecycleService.installApp({ appUrn, form, actor: this.actor() });
+    return this.appLifecycleService.installApp({ appUrn, form, actor });
   }
   async startApp(params: { appUrn: string }) {
     return this.appLifecycleService.startApp({ appUrn: castAppUrn(params.appUrn) });
@@ -249,18 +245,22 @@ export class AppLifecycleTools implements OnModuleInit {
     return this.appLifecycleService.updateApp({ appUrn: castAppUrn(params.appUrn), performBackup: params.performBackup ?? true });
   }
   async updateAppConfig(params: { appUrn: string; form: Record<string, unknown> }) {
-    return this.appLifecycleService.updateAppConfig({ appUrn: castAppUrn(params.appUrn), form: params.form, actor: this.actor() });
+    return this.appLifecycleService.updateAppConfig({
+      appUrn: castAppUrn(params.appUrn),
+      form: params.form,
+      actor: mcpCallerLifecycleActor('configure'),
+    });
   }
   async updateAllApps() {
-    return this.appLifecycleService.updateAllApps(this.actor());
+    return this.appLifecycleService.updateAllApps(mcpCallerLifecycleActor('update'));
   }
   async startAllApps() {
-    return this.appLifecycleService.startAllApps(this.actor());
+    return this.appLifecycleService.startAllApps(mcpCallerLifecycleActor('start'));
   }
   async stopAllApps() {
-    return this.appLifecycleService.stopAllApps(this.actor());
+    return this.appLifecycleService.stopAllApps(mcpCallerLifecycleActor('stop'));
   }
   async restartAllApps() {
-    return this.appLifecycleService.restartAllApps(this.actor());
+    return this.appLifecycleService.restartAllApps(mcpCallerLifecycleActor('restart'));
   }
 }

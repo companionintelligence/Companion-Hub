@@ -48,6 +48,7 @@ import { McpProbeService } from './mcp-probe.service';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { InferenceModule } from '@/modules/inference/inference.module';
 import { InferenceTools } from './tools/inference.tools';
+import { PortalModule } from '@/core/portal/portal.module';
 
 // ISSUE-MCP-2: rate-limit the MCP endpoint so a runaway or hostile client can't flood the Hub with
 // tool calls. Applied via ThrottlerGuard on the controller. Tunable via env; defaults suit a chatty
@@ -76,6 +77,8 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
     LinksModule,
     InferenceModule,
     ApiKeyModule,
+    // MarketplaceWhoIsService: the admin tool runner names the signed-in person to the lifecycle tools.
+    PortalModule,
   ],
   controllers: [McpController, McpAdminController, McpAppsController],
   providers: [

@@ -1,3 +1,5 @@
+import type { HubAction } from './hub-actions';
+
 /**
  * Who is asking the app lifecycle to act — named, never inferred.
  *
@@ -27,3 +29,9 @@ export type LifecycleActor =
   | { kind: 'mcp'; ownerAppUrn: string | null }
   /** The Hub acting on its own behalf, for a reason named here. */
   | { kind: 'system'; reason: 'update-reapply' | 'debug-seed' };
+
+/**
+ * The actor for one action, for a caller that can only name itself once the verb is known: an
+ * unrecognised principal is refused for the verb it asked for (`MarketplaceWhoIsService.lifecycleActor`).
+ */
+export type LifecycleActorFor = (action: HubAction) => LifecycleActor;

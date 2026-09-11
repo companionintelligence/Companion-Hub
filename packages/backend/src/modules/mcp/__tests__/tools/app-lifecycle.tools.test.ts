@@ -1,10 +1,16 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { mcpCallContext } from '../../mcp-call-context';
+import type { LifecycleActor, LifecycleActorFor } from '@/core/portal/lifecycle-actor';
+import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
+import { mcpAdminCallContext, mcpCallContext } from '../../mcp-call-context';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+
+/** An operator-created key: the lifecycle tools act only for a named caller, and this is the plainest one. */
+const OPERATOR_KEY: ApiKeyContext = { id: 1, name: 'Laptop CLI', capability: 'write', ownerAppUrn: null };
+const asKey = <T>(fn: () => Promise<T>, key: ApiKeyContext = OPERATOR_KEY) => mcpCallContext.run(key, fn);
 
 describe('AppLifecycleTools', () => {
   let tools: AppLifecycleTools;
@@ -30,14 +36,14 @@ describe('AppLifecycleTools', () => {
     it('should enqueue an install command and return a requestId', async () => {
       lifecycleService.validateAppConfig.mockResolvedValue({ valid: true, errors: [] });
       lifecycleService.installApp.mockResolvedValue({ requestId: 'uuid-1' });
-      const result = await tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } });
+      const result = await asKey(() => tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } }));
       expect(lifecycleService.installApp).toHaveBeenCalled();
       expect(result).toEqual({ requestId: 'uuid-1' });
     });
     it('should return error when app is already installed', async () => {
       lifecycleService.validateAppConfig.mockResolvedValue({ valid: true, errors: [] });
       lifecycleService.installApp.mockRejectedValue(new Error('Already installed'));
-      await expect(tools.installApp({ appUrn: 'ci-store:nextcloud' })).rejects.toThrow();
+      await expect(asKey(() => tools.installApp({ appUrn: 'ci-store:nextcloud' }))).rejects.toThrow('Already installed');
     });
   });
 
@@ -129,12 +135,12 @@ describe('AppLifecycleTools', () => {
   describe('hub_update_app_config', () => {
     it('should enqueue config update and return requestId', async () => {
       lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
-      const result = await tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } });
+      const result = await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }));
       expect(result).toEqual({ requestId: 'uuid-8' });
     });
     it('should pass form values to the lifecycle service', async () => {
       lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
-      await tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090, exposed: true } });
+      await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090, exposed: true } }));
       expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(expect.objectContaining({ form: { port: 9090, exposed: true } }));
     });
   });
@@ -142,7 +148,7 @@ describe('AppLifecycleTools', () => {
   describe('hub_update_all_apps', () => {
     it('should invoke bulk update', async () => {
       lifecycleService.updateAllApps.mockResolvedValue(undefined);
-      await tools.updateAllApps();
+      await asKey(() => tools.updateAllApps());
       expect(lifecycleService.updateAllApps).toHaveBeenCalled();
     });
   });
@@ -150,7 +156,7 @@ describe('AppLifecycleTools', () => {
   describe('hub_start_all_apps', () => {
     it('should invoke bulk start', async () => {
       lifecycleService.startAllApps.mockResolvedValue(undefined);
-      await tools.startAllApps();
+      await asKey(() => tools.startAllApps());
       expect(lifecycleService.startAllApps).toHaveBeenCalled();
     });
   });
@@ -158,7 +164,7 @@ describe('AppLifecycleTools', () => {
   describe('hub_stop_all_apps', () => {
     it('should invoke bulk stop', async () => {
       lifecycleService.stopAllApps.mockResolvedValue(undefined);
-      await tools.stopAllApps();
+      await asKey(() => tools.stopAllApps());
       expect(lifecycleService.stopAllApps).toHaveBeenCalled();
     });
   });
@@ -166,7 +172,7 @@ describe('AppLifecycleTools', () => {
   describe('hub_restart_all_apps', () => {
     it('should invoke bulk restart', async () => {
       lifecycleService.restartAllApps.mockResolvedValue(undefined);
-      await tools.restartAllApps();
+      await asKey(() => tools.restartAllApps());
       expect(lifecycleService.restartAllApps).toHaveBeenCalled();
     });
   });
@@ -176,7 +182,7 @@ describe('AppLifecycleTools', () => {
       lifecycleService.validateAppConfig.mockResolvedValue({ valid: true, errors: [] });
       lifecycleService.installApp.mockResolvedValue({ requestId: 'uuid-1' });
 
-      await tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } });
+      await asKey(() => tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } }));
 
       expect(lifecycleService.installApp).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null } }));
     });
@@ -185,7 +191,7 @@ describe('AppLifecycleTools', () => {
       lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
       const managedKey = { id: 3, name: 'importer', capability: 'write', ownerAppUrn: 'importer:ci-store' } as const;
 
-      await mcpCallContext.run(managedKey, () => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }));
+      await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }), managedKey);
 
       expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(
         expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store' } }),
@@ -195,9 +201,38 @@ describe('AppLifecycleTools', () => {
     it.each(['updateAllApps', 'startAllApps', 'stopAllApps', 'restartAllApps'] as const)('hands %s the MCP actor', async (sweep) => {
       lifecycleService[sweep].mockResolvedValue(undefined);
 
-      await tools[sweep]();
+      await asKey(() => tools[sweep]());
 
       expect(lifecycleService[sweep]).toHaveBeenCalledWith({ kind: 'mcp', ownerAppUrn: null });
+    });
+
+    it('acts as the person an admin-runner call names, for the verb it runs', async () => {
+      const operator: LifecycleActor = { kind: 'operator', userId: 7 };
+      const actorFor = vi.fn<LifecycleActorFor>(() => operator);
+      lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
+      lifecycleService.stopAllApps.mockResolvedValue(undefined);
+
+      await mcpAdminCallContext.run(actorFor, async () => {
+        await tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } });
+        await tools.stopAllApps();
+      });
+
+      expect(actorFor).toHaveBeenNthCalledWith(1, 'configure');
+      expect(actorFor).toHaveBeenNthCalledWith(2, 'stop');
+      expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(expect.objectContaining({ actor: operator }));
+      expect(lifecycleService.stopAllApps).toHaveBeenCalledWith(operator);
+    });
+
+    it('refuses a call that names no caller, rather than taking it for an unmanaged key', async () => {
+      // The admin runner sets no key context, and "no key" used to read as an unconfined one.
+      await expect(tools.installApp({ appUrn: 'ci-store:nextcloud', form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+      await expect(tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+      await expect(tools.restartAllApps()).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+      expect(lifecycleService.validateAppConfig).not.toHaveBeenCalled();
+      expect(lifecycleService.installApp).not.toHaveBeenCalled();
+      expect(lifecycleService.updateAppConfig).not.toHaveBeenCalled();
+      expect(lifecycleService.restartAllApps).not.toHaveBeenCalled();
     });
   });
 });
