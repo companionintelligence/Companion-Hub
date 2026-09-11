@@ -935,7 +935,8 @@ each `*.conf` that set `OLLAMA_HOST` and nothing else to `<name>.disabled-by-cih
 never deleted, and no longer read because it no longer ends in `.conf`. A file that also sets
 something else (an `OLLAMA_MODELS` repoint, say) is left exactly where it is and outranked. After the
 restart the step re-reads `systemctl show ollama -p Environment` and **fails if the merged value is
-not the one requested**; the dry run lists every file it would move, by name.
+not the one requested**; the dry run lists every file it would move, by name, and names the guard it
+would install (`all`) or remove (`tailnet`, `local`) before the restart.
 
 Two refusals, both facts about the machine rather than failures: a node whose `:11434` belongs to a
 **user-scope** unit (beta-1 runs `ollama-local.service` under the `ci` user's `systemd --user`, with
@@ -946,7 +947,8 @@ address fails rather than silently binding somewhere else.
 
 An Ollama that is already answering is **adopted**, and the same bind policy is applied to it — the
 nodes that already run one are exactly where the arrangements diverge. A node that already reads back
-as `zzzzz-cihub-bind.conf` with the requested bind is not touched. `fleet status` shows every node's
+as `zzzzz-cihub-bind.conf` with the requested bind — and, for `all`, with `ollama-tailnet-guard.service`
+active — is not touched; a `0.0.0.0` whose guard is down is work, not a no-op. `fleet status` shows every node's
 effective bind and the file that set it, and flags a conflict (several setters, none of them the
 canonical file) without changing anything.
 
