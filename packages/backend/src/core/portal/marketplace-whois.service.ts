@@ -11,7 +11,8 @@ import { and, eq } from 'drizzle-orm';
 import type { Request } from 'express';
 
 import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
-import { hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
+import { type HubPrincipalFields, hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
+import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 
 export type GrantSurface = 'hub' | 'store';
@@ -155,7 +156,7 @@ export class MarketplaceWhoIsService {
    * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
    * principal as "no person to check, allow" all over again.
    */
-  sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
+  sweepOperatorUserId(req: HubPrincipalFields, action: HubAction): number | undefined {
     const userId = hubSessionOperatorUserId(req);
 
     if (userId == null && !isGrantExemptPrincipal(req)) {
@@ -167,10 +168,38 @@ export class MarketplaceWhoIsService {
   }
 
   /**
+   * The lifecycle actor a request speaks for, or a 403 when it names none.
+   *
+   * Built on {@link sweepOperatorUserId}, which already refuses an unrecognised
+   * principal: a session person becomes an `operator`, a grant-exempt principal
+   * an `exempt`. The service then gates on the actor, so HTTP is no longer the
+   * only transport that is checked.
+   */
+  lifecycleActor(req: HubPrincipalFields, action: HubAction): LifecycleActor {
+    const userId = this.sweepOperatorUserId(req, action);
+
+    if (userId != null) {
+      return { kind: 'operator', userId };
+    }
+
+    // Only a grant-exempt principal is left, and each is named: one added to
+    // `isGrantExemptPrincipal` later is refused here until it is named too,
+    // rather than passing as another.
+    switch (req.hubPrincipal) {
+      case 'portal-device':
+      case 'cli':
+        return { kind: 'exempt', principal: req.hubPrincipal };
+      default:
+        this.logUnrecognisedPrincipal(req, action);
+        throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
    * A gated route reached with no recognised principal is a middleware bug, not a
    * grant verdict. The caller only ever sees a 403, so say which it was in the log.
    */
-  private logUnrecognisedPrincipal(req: Request, action: HubAction): void {
+  private logUnrecognisedPrincipal(req: HubPrincipalFields, action: HubAction): void {
     this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=${action}`);
   }
 

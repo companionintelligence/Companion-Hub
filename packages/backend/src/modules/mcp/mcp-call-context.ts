@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 
 /**
@@ -19,3 +20,15 @@ import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
  * Absence is not treated as full authority anywhere — the registry fails closed to 'read'.
  */
 export const mcpCallContext = new AsyncLocalStorage<ApiKeyContext>();
+
+/**
+ * Who a tool run from the operator's MCP screen (`/api/mcp-admin`) acts for.
+ *
+ * That route is session-authed, not a key, so it has no {@link mcpCallContext}. The lifecycle tools
+ * used to read that absence as an unmanaged key, which the lifecycle service admits with no grant
+ * check — so a member the install route refuses could install or reconfigure any app from the tool
+ * runner (CI-Hub#1397). The route names the signed-in person here instead, and their grants decide.
+ *
+ * Set by `McpAdminService.callTool`, read by `mcpCallerLifecycleActor`.
+ */
+export const mcpAdminCallContext = new AsyncLocalStorage<LifecycleActorFor>();

@@ -1,3 +1,4 @@
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import fs from 'node:fs';
 import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -84,6 +85,9 @@ function cleanTree(tree: Record<string, string | null>) {
   }
   return newTree;
 }
+
+/** Install mechanics, not authorization, are under test here — the actor gate is unit-tested in app-lifecycle.service.test.ts. */
+const TEST_ACTOR: LifecycleActor = { kind: 'exempt', principal: 'cli' };
 
 describe('App lifecycle', () => {
   let appLifecycleService: AppLifecycleService;
@@ -377,7 +381,7 @@ describe('App lifecycle', () => {
       const appInfo = await createAppInStore('test', { id: 'test' });
 
       // act
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
 
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
@@ -395,7 +399,7 @@ describe('App lifecycle', () => {
       await fs.promises.mkdir(`${APP_DATA_DIR}/test/test2/data`, { recursive: true });
       await fs.promises.writeFile(`${APP_DATA_DIR}/test/test2/data/test.txt`, 'test');
 
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
 
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
@@ -412,7 +416,7 @@ describe('App lifecycle', () => {
       // arrange
       const appInfo = await createAppInStore('test', { cihub_app_version: 1 });
 
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
 
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
@@ -449,9 +453,9 @@ describe('App lifecycle', () => {
       const app2Info = await createAppInStore('test', { id: 'app2', cihub_app_version: 2 });
       const app3Info = await createAppInStore('test', { id: 'app3', cihub_app_version: 3 });
 
-      await appLifecycleService.installApp({ appUrn: app1Info.urn, form: {} });
-      await appLifecycleService.installApp({ appUrn: app2Info.urn, form: {} });
-      await appLifecycleService.installApp({ appUrn: app3Info.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: app1Info.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: app2Info.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: app3Info.urn, form: {} });
 
       await waitFor(async () => {
         const app1 = await appsRepository.getAppByUrn(app1Info.urn);
@@ -466,7 +470,7 @@ describe('App lifecycle', () => {
       await createAppInStore('test', { id: 'app3', cihub_app_version: 4 });
 
       // act
-      await appLifecycleService.updateAllApps();
+      await appLifecycleService.updateAllApps(TEST_ACTOR);
 
       await waitFor(async () => {
         const app1 = await appsRepository.getAppByUrn(app1Info.urn);
@@ -502,7 +506,7 @@ describe('App lifecycle', () => {
       const appInfo = await createAppInStore('test', { id: 'preserve-data' });
       const { appStoreId, appName } = extractAppUrn(appInfo.urn);
 
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
         expect(app?.status).toBe('running');
@@ -532,7 +536,7 @@ describe('App lifecycle', () => {
       const appInfo = await createAppInStore('test', { id: 'delete-data' });
       const { appStoreId, appName } = extractAppUrn(appInfo.urn);
 
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
         expect(app?.status).toBe('running');
@@ -563,7 +567,7 @@ describe('App lifecycle', () => {
       // arrange
       const appInfo = await createAppInStore('test', { id: 'subnet-test' });
 
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
 
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
@@ -623,7 +627,7 @@ describe('App lifecycle', () => {
       await fs.promises.writeFile(`${DATA_DIR}/repos/test/apps/arch-test/docker-compose.json`, JSON.stringify(composeJson));
 
       // act
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: {} });
 
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
@@ -660,7 +664,7 @@ describe('App lifecycle', () => {
     const installExposed = async (id: string) => {
       const appInfo = await createAppInStore('test', { id });
 
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: exposedForm });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: exposedForm });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
       });
@@ -748,7 +752,7 @@ describe('App lifecycle', () => {
 
       const appInfo = await createAppInStore('test', { id: 'cdomain-intent' });
 
-      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: { ...exposedForm, customDomain: 'comfy.acme.com' } });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: { ...exposedForm, customDomain: 'comfy.acme.com' } });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
       });
@@ -825,7 +829,7 @@ describe('App lifecycle', () => {
       const first = await createAppInStore('test', { id: 'cdomain-first' });
       const second = await createAppInStore('test', { id: 'cdomain-second' });
 
-      await appLifecycleService.installApp({ appUrn: first.urn, form: { ...exposedForm, customDomain: 'shared.acme.com' } });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: first.urn, form: { ...exposedForm, customDomain: 'shared.acme.com' } });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(first.urn))?.status).toBe('running');
       });
@@ -834,7 +838,7 @@ describe('App lifecycle', () => {
 
       // Mixed case on the way in: DNS is case-insensitive, so the rule cannot be
       // escaped by spelling the same name differently.
-      await appLifecycleService.installApp({ appUrn: second.urn, form: { ...exposedForm, customDomain: 'Shared.Acme.Com' } });
+      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: second.urn, form: { ...exposedForm, customDomain: 'Shared.Acme.Com' } });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(second.urn))?.status).toBe('running');
       });

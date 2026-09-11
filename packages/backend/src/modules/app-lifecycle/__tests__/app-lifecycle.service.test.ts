@@ -1,3 +1,5 @@
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
 import { AppLifecycleService } from '../app-lifecycle.service';
@@ -50,6 +52,9 @@ vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
 vi.mock('../commands/host-device-preflight', () => ({
   assertHostDevicesAvailable: vi.fn().mockResolvedValue(undefined),
 }));
+
+/** Install mechanics, not authorization, are under test here — the gate itself is covered in its own block. */
+const TEST_ACTOR: LifecycleActor = { kind: 'exempt', principal: 'cli' };
 
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
@@ -763,6 +768,134 @@ describe('AppLifecycleService', () => {
       imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
     });
 
+    /*
+     * The service is the gate now, not the HTTP controller (CI-Hub#1397): MCP and
+     * rehydrate reached `installApp` / `updateAppConfig` with no check at all, and
+     * the sweeps read "no operator id" and "WhoIs unavailable" as "allowed".
+     */
+    describe('the actor gate', () => {
+      const whois = { has: vi.fn() };
+      const OPERATOR: LifecycleActor = { kind: 'operator', userId: 7 };
+      const whoisWired = (token: unknown) => (token === MarketplaceWhoIsService ? whois : undefined);
+
+      beforeEach(() => {
+        whois.has.mockReset();
+        vi.mocked((service as any).moduleRef.get).mockImplementation(whoisWired);
+      });
+
+      it('refuses an operator without the install grant, before anything is written or queued', async () => {
+        whois.has.mockResolvedValue(false);
+
+        await expect(service.installApp({ actor: OPERATOR, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'install');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('installs for an operator holding the install grant', async () => {
+        whois.has.mockResolvedValue(true);
+
+        await service.installApp({ actor: OPERATOR, appUrn, form: {} });
+
+        expect(appsRepository.createApp).toHaveBeenCalled();
+      });
+
+      it.each([
+        ['cannot be resolved', () => undefined],
+        [
+          'throws on lookup',
+          () => {
+            throw new Error('no provider');
+          },
+        ],
+      ])('refuses an operator when WhoIs %s — "could not tell" is not "allowed"', async (_label, get) => {
+        vi.mocked((service as any).moduleRef.get).mockImplementation(get);
+
+        await expect(service.installApp({ actor: OPERATOR, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+      });
+
+      it('refuses an operator without the configure grant, before the app is even read', async () => {
+        whois.has.mockResolvedValue(false);
+
+        // Past the gate this app would be "not found"; the refusal comes first.
+        await expect(service.updateAppConfig({ actor: OPERATOR, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'configure');
+      });
+
+      it('lets an operator holding the configure grant through to the update', async () => {
+        whois.has.mockResolvedValue(true);
+
+        await expect(service.updateAppConfig({ actor: OPERATOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+      });
+
+      it("confines a managed app's MCP key to its own app", async () => {
+        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace' };
+
+        await expect(service.installApp({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        await expect(service.updateAppConfig({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn }],
+        ['an unmanaged MCP key', { kind: 'mcp', ownerAppUrn: null }],
+        ['a grant-exempt principal', { kind: 'exempt', principal: 'portal-device' }],
+        ['the Hub itself', { kind: 'system', reason: 'debug-seed' }],
+      ] as Array<[string, LifecycleActor]>)('installs for %s without consulting WhoIs', async (_label, actor) => {
+        await service.installApp({ actor, appUrn, form: {} });
+
+        expect(appsRepository.createApp).toHaveBeenCalled();
+        expect(whois.has).not.toHaveBeenCalled();
+      });
+
+      describe('the sweeps', () => {
+        const IMPORTER = 'importer:ci-marketplace';
+        const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER };
+        const row = (appName: string) => ({
+          id: appName.length,
+          appName,
+          appStoreSlug: 'ci-marketplace',
+          status: 'running',
+          version: 1,
+          ignoredVersion: null,
+        });
+
+        it("updates only a managed key's own app — the old gate swept every app for an MCP caller", async () => {
+          appsService.getInstalledApps.mockResolvedValue(
+            ['neighbour', 'importer'].map((name) => ({ app: row(name), metadata: { latestVersion: 2 } })) as any,
+          );
+          const update = vi.spyOn(service, 'updateApp').mockResolvedValue({ requestId: 'u' } as any);
+
+          await service.updateAllApps(importerKey);
+
+          expect(update).toHaveBeenCalledTimes(1);
+          expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
+        });
+
+        it('updates nothing for an operator when WhoIs cannot be resolved', async () => {
+          vi.mocked((service as any).moduleRef.get).mockReturnValue(undefined);
+          appsService.getInstalledApps.mockResolvedValue([{ app: row('importer'), metadata: { latestVersion: 2 } }] as any);
+          const update = vi.spyOn(service, 'updateApp').mockResolvedValue({ requestId: 'u' } as any);
+
+          await service.updateAllApps(OPERATOR);
+
+          expect(update).not.toHaveBeenCalled();
+        });
+
+        it("stops only a managed key's own app", async () => {
+          // The refused app comes first, so by the time the allowed stop is seen it was already weighed.
+          appsRepository.getApps.mockResolvedValue([row('neighbour'), row('importer')] as any);
+          const stop = vi.spyOn(service, 'stopApp').mockResolvedValue({ requestId: 's' } as any);
+
+          await service.stopAllApps(importerKey);
+
+          await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER })));
+          expect(stop).toHaveBeenCalledTimes(1);
+        });
+      });
+    });
+
     it('releases the domain when a reinstall clears the picker', async () => {
       /*
        * The settings dialog released; this path only cleared the intent. So a
@@ -780,6 +913,7 @@ describe('AppLifecycleService', () => {
       const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
 
       await service.installApp({
+        actor: TEST_ACTOR,
         appUrn,
         // The picker was shown this domain, and says so: the release is a
         // compare-and-swap (R2-HUBDOMAINS-3), not an order.
@@ -820,6 +954,7 @@ describe('AppLifecycleService', () => {
 
       await expect(
         service.installApp({
+          actor: TEST_ACTOR,
           appUrn,
           form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'comfy', customDomain: '' },
         } as any),
@@ -832,6 +967,7 @@ describe('AppLifecycleService', () => {
       const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain');
 
       await service.installApp({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: '' },
       } as any);
@@ -850,6 +986,7 @@ describe('AppLifecycleService', () => {
 
       await expect(
         service.installApp({
+          actor: TEST_ACTOR,
           appUrn,
           form: {
             port: 8080,
@@ -884,6 +1021,7 @@ describe('AppLifecycleService', () => {
 
       await expect(
         service.installApp({
+          actor: TEST_ACTOR,
           appUrn,
           form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: '', customDomainExpected: '' },
         } as any),
@@ -912,6 +1050,7 @@ describe('AppLifecycleService', () => {
 
       await expect(
         service.installApp({
+          actor: TEST_ACTOR,
           appUrn,
           form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: '' },
         } as any),
@@ -928,6 +1067,7 @@ describe('AppLifecycleService', () => {
        * a second app off that hostname — which is how two apps came to share one.
        */
       await service.installApp({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'My--App' },
       } as any);
@@ -941,6 +1081,7 @@ describe('AppLifecycleService', () => {
 
       await expect(
         service.installApp({
+          actor: TEST_ACTOR,
           appUrn,
           form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'My-App' },
         } as any),
@@ -959,6 +1100,7 @@ describe('AppLifecycleService', () => {
        * just agreed to was cleared on the next sync.
        */
       await service.installApp({
+        actor: TEST_ACTOR,
         appUrn,
         form: {
           port: 8080,
@@ -992,7 +1134,7 @@ describe('AppLifecycleService', () => {
         available: ['amd64'],
       });
 
-      await expect(service.installApp({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
+      await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_ARCHITECTURE_NOT_SUPPORTED');
 
       expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'arm64');
       expect(appsRepository.createApp).not.toHaveBeenCalled();
@@ -1015,7 +1157,7 @@ describe('AppLifecycleService', () => {
         available: ['amd64'],
       });
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
 
       expect(appsRepository.createApp).toHaveBeenCalled();
     });
@@ -1023,7 +1165,7 @@ describe('AppLifecycleService', () => {
     it('does not block install when manifest architecture inspection is unavailable', async () => {
       imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
 
       expect(imageSizeService.verifyAppArchitecture).toHaveBeenCalledWith(appUrn, 'amd64');
       expect(appsRepository.createApp).toHaveBeenCalled();
@@ -1045,13 +1187,17 @@ describe('AppLifecycleService', () => {
       });
 
       it('falls back to the manifest port instead of rejecting the install (the onboarding wizard sends no port)', async () => {
-        await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } });
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } });
 
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ port: 8080 }));
       });
 
       it('keeps an explicit form port over the manifest port', async () => {
-        await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp', port: 9090 } });
+        await service.installApp({
+          actor: TEST_ACTOR,
+          appUrn,
+          form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp', port: 9090 },
+        });
 
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ port: 9090 }));
       });
@@ -1060,7 +1206,7 @@ describe('AppLifecycleService', () => {
         marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...baseAppInfo, port: undefined } as any);
 
         await expect(
-          service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } }),
+          service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } }),
         ).rejects.toThrow('APP_INSTALL_FORM_ERROR_INVALID');
 
         expect(appsRepository.createApp).not.toHaveBeenCalled();
@@ -1073,7 +1219,7 @@ describe('AppLifecycleService', () => {
       });
 
       it('does not leak the fallback into the queued form, so port allocation is unchanged', async () => {
-        await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } });
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'testapp' } });
 
         // The fallback lands on validateAppConfig's own parse of the form, never on the object handed to
         // the worker. install-app-command still resolves `preferredHostPort: form.port ?? appInfo.port`,
@@ -1092,35 +1238,32 @@ describe('AppLifecycleService', () => {
     });
 
     it('MUST persist exposureMode=cloudflare when provided in form', async () => {
-      await service.installApp({ appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true } });
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
     });
 
     it('MUST persist exposureMode=tailscale when provided in form', async () => {
-      await service.installApp({ appUrn, form: { exposureMode: 'tailscale', exposedLocal: true } });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'tailscale', exposedLocal: true } });
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'tailscale' }));
     });
 
     it('does not treat localSubdomain as a tailscale conflict key', async () => {
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([{ appName: 'taken' }] as any);
-      await service.installApp({
-        appUrn,
-        form: { exposureMode: 'tailscale', exposedLocal: false, localSubdomain: 'mysvc' },
-      });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'tailscale', exposedLocal: false, localSubdomain: 'mysvc' } });
 
       expect(appsRepository.getAppsByLocalSubdomain).not.toHaveBeenCalled();
     });
 
     it('MUST default exposureMode to local when not provided', async () => {
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
     });
 
     it('MUST persist exposureMode=local explicitly when provided', async () => {
-      await service.installApp({ appUrn, form: { exposureMode: 'local' } });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local' } });
 
       expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'local' }));
     });
@@ -1131,24 +1274,24 @@ describe('AppLifecycleService', () => {
 
       it('defaults enableAuth ON for an undecided install when the manifest asks (the onboarding path sends no enableAuth)', async () => {
         marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
-        await service.installApp({ appUrn, form: {} });
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: true }));
       });
 
       it('an explicit operator false always wins over the manifest default', async () => {
         marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(edgeAuthApp as any);
-        await service.installApp({ appUrn, form: { enableAuth: false } });
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: { enableAuth: false } });
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
       });
 
       it('a non-exposable app never gets auth defaulted on (the reset also strips the manifest ask)', async () => {
         marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ ...edgeAuthApp, exposable: false } as any);
-        await service.installApp({ appUrn, form: {} });
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
       });
 
       it('without the manifest field an undecided install stays auth-OFF (existing behavior)', async () => {
-        await service.installApp({ appUrn, form: {} });
+        await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
         expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ enableAuth: false }));
       });
     });
@@ -1156,32 +1299,23 @@ describe('AppLifecycleService', () => {
     it('MUST normalize local exposure to openPort=true before duplicate-port checks', async () => {
       appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
 
-      await expect(
-        service.installApp({
-          appUrn,
-          form: { exposureMode: 'local', openPort: false, port: 8080 },
-        }),
-      ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
+      await expect(service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local', openPort: false, port: 8080 } })).rejects.toThrow(
+        'APP_ERROR_PORT_ALREADY_IN_USE',
+      );
     });
 
     it('MUST reject duplicate port for cloudflare exposedLocal when openPort is false', async () => {
       appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
 
       await expect(
-        service.installApp({
-          appUrn,
-          form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 },
-        }),
+        service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 } }),
       ).rejects.toThrow('APP_ERROR_PORT_ALREADY_IN_USE');
     });
 
     it('MUST skip duplicate-port checks when cloudflare apps do not publish a host port', async () => {
       appsRepository.getAppsByPort.mockResolvedValue([{ appName: 'taken-port' }] as any);
 
-      await service.installApp({
-        appUrn,
-        form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 8080 },
-      });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'cloudflare', exposedLocal: false, openPort: false, port: 8080 } });
 
       expect(appsRepository.getAppsByPort).not.toHaveBeenCalled();
     });
@@ -2487,6 +2621,7 @@ describe('AppLifecycleService', () => {
       // a domain is delivered by cloning this app's tunnel ingress rule, so an app
       // that publishes none has nothing for one to alias.
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
       });
@@ -2516,6 +2651,7 @@ describe('AppLifecycleService', () => {
       } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { ...config, customDomain: 'comfy.acme.com', customDomainTakeover: true },
       } as any);
@@ -2536,6 +2672,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomainTakeover: true },
       });
@@ -2551,6 +2688,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: {
           port: 8080,
@@ -2586,6 +2724,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: {
           port: 8080,
@@ -2617,6 +2756,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'local', exposedLocal: false, openPort: true, customDomain: 'comfy.acme.com' },
       });
@@ -2639,7 +2779,7 @@ describe('AppLifecycleService', () => {
 
       // The platform address is honourable for ANY app, so this one needs no
       // public route to ask for it — unlike naming a domain.
-      await service.updateAppConfig({ appUrn, form: { port: 8080, customDomain: '' } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, customDomain: '' } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: null }));
       expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
@@ -2657,6 +2797,7 @@ describe('AppLifecycleService', () => {
       const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: {
           port: 8080,
@@ -2692,6 +2833,7 @@ describe('AppLifecycleService', () => {
 
       await expect(
         service.updateAppConfig({
+          actor: TEST_ACTOR,
           appUrn,
           form: {
             port: 8080,
@@ -2724,6 +2866,7 @@ describe('AppLifecycleService', () => {
 
       await expect(
         service.updateAppConfig({
+          actor: TEST_ACTOR,
           appUrn,
           form: {
             port: 8080,
@@ -2753,6 +2896,7 @@ describe('AppLifecycleService', () => {
       } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'My-App' },
       } as any);
@@ -2778,6 +2922,7 @@ describe('AppLifecycleService', () => {
       } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
       });
@@ -2795,6 +2940,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
       });
@@ -2816,7 +2962,7 @@ describe('AppLifecycleService', () => {
        */
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
 
       const patch = appsRepository.updateAppById.mock.calls.at(-1)?.[1] ?? {};
 
@@ -2830,7 +2976,7 @@ describe('AppLifecycleService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: true }));
     });
@@ -2840,7 +2986,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: false } } as any);
 
       // Another field changes so the update proceeds; the explicit false must survive it.
-      await service.updateAppConfig({ appUrn, form: { port: 9090, enableAuth: false } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090, enableAuth: false } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
@@ -2852,7 +2998,7 @@ describe('AppLifecycleService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: false } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no enableAuth in the form
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } }); // no enableAuth in the form
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
     });
@@ -2865,7 +3011,7 @@ describe('AppLifecycleService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 9090 } }); // no exposed/exposedLocal/enableAuth
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } }); // no exposed/exposedLocal/enableAuth
 
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ enableAuth: false }));
@@ -2878,7 +3024,7 @@ describe('AppLifecycleService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 8080, exposed: true, domain: 'app.example.com' } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, exposed: true, domain: 'app.example.com' } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ exposed: false, domain: null }));
     });
@@ -2887,7 +3033,7 @@ describe('AppLifecycleService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, exposable: false } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 9090 } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
 
       expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('not exposable, resetting proxy settings'));
     });
@@ -2896,7 +3042,7 @@ describe('AppLifecycleService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...baseAppInfo, hub_integration: { edge_auth: { default: true } } } as any);
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080, enableAuth: true } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 8080, enableAuth: true } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080, enableAuth: true } });
 
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
@@ -2905,7 +3051,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: { port: 8080 } } as any);
       const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      await service.updateAppConfig({ appUrn, form: { port: 9090 } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
 
       expect(restartSpy).toHaveBeenCalledWith({ appUrn, skipPull: true });
     });
@@ -2918,7 +3064,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: { port: 8080 } } as any);
       const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 8080 } });
 
       expect(restartSpy).not.toHaveBeenCalled();
       expect(appEventsQueue.publish).not.toHaveBeenCalled();
@@ -2936,7 +3082,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status, config: {} } as any);
       const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      await service.updateAppConfig({ appUrn, form: {} });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: {} });
 
       expect(restartSpy).not.toHaveBeenCalled();
     });
@@ -2945,7 +3091,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'running', config: { port: 8080 } } as any);
       vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      const result = await service.updateAppConfig({ appUrn, form: { port: 9090 } });
+      const result = await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
 
       expect(result).toHaveProperty('requestId');
       expect(typeof result.requestId).toBe('string');
@@ -2955,7 +3101,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       const restartSpy = vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
 
-      await expect(service.updateAppConfig({ appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+      await expect(service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
       expect(restartSpy).not.toHaveBeenCalled();
     });
 
@@ -2968,10 +3114,7 @@ describe('AppLifecycleService', () => {
         appStoreSlug: 'ci-marketplace',
       } as any);
 
-      await service.updateAppConfig({
-        appUrn,
-        form: { exposureMode: 'local', openPort: false, port: 8080 },
-      });
+      await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { exposureMode: 'local', openPort: false, port: 8080 } });
 
       expect(appEventsQueue.publish).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -3027,6 +3170,7 @@ describe('AppLifecycleService', () => {
       const syncSpy = vi.spyOn(exposureSyncService, 'triggerCloudflareSync').mockResolvedValue(undefined);
 
       await service.updateAppConfig({
+        actor: TEST_ACTOR,
         appUrn,
         form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'new-sub', port: 8080 },
       });
@@ -3617,7 +3761,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByPort.mockResolvedValue([]);
       appsRepository.getApps.mockResolvedValue([]);
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
 
       const createIdx = callOrder.indexOf('db_create');
@@ -3641,7 +3785,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByPort.mockResolvedValue([]);
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
 
       expect(callOrder).not.toContain('db_delete');
@@ -3669,7 +3813,7 @@ describe('AppLifecycleService', () => {
         return fakeApp as any;
       });
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
 
       expect(callOrder).toContain('sse:install_error');
@@ -3689,7 +3833,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByPort.mockResolvedValue([]);
       appsRepository.getApps.mockResolvedValue([{ ...fakeApp, status: 'install_failed' }] as any);
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
 
       expect(appsRepository.createApp).not.toHaveBeenCalled();
@@ -3711,7 +3855,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([]);
       const syncSpy = vi.spyOn(exposureSyncService, 'syncExposurePublic').mockResolvedValue(undefined);
 
-      await service.installApp({ appUrn, form: { exposedLocal: true } });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposedLocal: true } });
       await flushMicrotasks();
 
       expect(syncSpy).toHaveBeenCalled();
@@ -3727,7 +3871,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByPort.mockResolvedValue([]);
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'RPC response timed out' } as any);
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
       await flushMicrotasks();
 
       expect(callOrder).not.toContain('db_delete');
@@ -3743,7 +3887,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppsByLocalSubdomain.mockResolvedValue([]);
       appsRepository.getAppsByPort.mockResolvedValue([]);
 
-      await service.installApp({ appUrn, form: {} });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: {} });
 
       const createIdx = callOrder.indexOf('db_create');
       const sseIdx = callOrder.indexOf('sse:status_change');
@@ -3828,7 +3972,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([]);
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
 
-      await service.installApp({ appUrn, form: { exposedLocal: true } });
+      await service.installApp({ actor: TEST_ACTOR, appUrn, form: { exposedLocal: true } });
       await flushMicrotasks();
 
       // syncExposure was called (via getApps inside triggerCloudflareSync)

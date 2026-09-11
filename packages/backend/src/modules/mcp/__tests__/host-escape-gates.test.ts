@@ -3,7 +3,8 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
-import { DEFAULT_API_KEY_CAPABILITY } from '@/modules/api-keys/api-key.capabilities';
+import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY } from '@/modules/api-keys/api-key.capabilities';
+import { mcpCallContext } from '../mcp-call-context';
 import { DestructiveToolDisabledError, McpToolRegistry } from '../mcp-tool-registry.service';
 import { AppLifecycleTools } from '../tools/app-lifecycle.tools';
 import { MarketplaceTools } from '../tools/marketplace.tools';
@@ -29,6 +30,14 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
   /** A well-formed exposure form, so a refusal can only be the gate and never a validation error. */
   const exposureForm = { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'shop' };
 
+  /**
+   * A tools/call from an operator-created key holding `capability`, run the way `McpController` runs
+   * it: inside the key's context. The lifecycle tools act only for a named caller (CI-Hub#1397), so a
+   * call with no key behind it is not one this surface can receive.
+   */
+  const callAs = (capability: ApiKeyCapability, name: string, params: Record<string, unknown>) =>
+    mcpCallContext.run({ id: 1, name: 'agent', capability, ownerAppUrn: null }, () => registry.callTool(name, params, { capability }));
+
   beforeEach(() => {
     registry = new McpToolRegistry();
     appStores = mock<AppStoreService>();
@@ -50,26 +59,22 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
 
   describe('R2-HUBHOSTESCAPE-5 — adding an install source', () => {
     it('refuses hub_add_app_store to a default-capability key, and never reaches the store service', async () => {
-      await expect(
-        registry.callTool('hub_add_app_store', { name: 'tools', url: 'https://github.com/attacker/store' }, { capability: LEAKED }),
-      ).rejects.toThrow(DestructiveToolDisabledError);
+      await expect(callAs(LEAKED, 'hub_add_app_store', { name: 'tools', url: 'https://github.com/attacker/store' })).rejects.toThrow(
+        DestructiveToolDisabledError,
+      );
       expect(appStores.createAppStore).not.toHaveBeenCalled();
     });
 
     it('refuses hub_update_app_store to a default-capability key — re-enabling a store re-arms it', async () => {
-      await expect(
-        registry.callTool('hub_update_app_store', { storeId: 'tools', name: 'tools', enabled: true }, { capability: LEAKED }),
-      ).rejects.toThrow(DestructiveToolDisabledError);
+      await expect(callAs(LEAKED, 'hub_update_app_store', { storeId: 'tools', name: 'tools', enabled: true })).rejects.toThrow(
+        DestructiveToolDisabledError,
+      );
       expect(appStores.updateAppStore).not.toHaveBeenCalled();
     });
 
     it('still lets a full-capability key add and update a store', async () => {
-      await expect(
-        registry.callTool('hub_add_app_store', { name: 'tools', url: 'https://github.com/acme/store' }, { capability: 'full' }),
-      ).resolves.toEqual({ slug: 'tools' });
-      await expect(
-        registry.callTool('hub_update_app_store', { storeId: 'tools', name: 'tools', enabled: true }, { capability: 'full' }),
-      ).resolves.toEqual({ success: true });
+      await expect(callAs('full', 'hub_add_app_store', { name: 'tools', url: 'https://github.com/acme/store' })).resolves.toEqual({ slug: 'tools' });
+      await expect(callAs('full', 'hub_update_app_store', { storeId: 'tools', name: 'tools', enabled: true })).resolves.toEqual({ success: true });
     });
 
     it('does not offer either tool to a default-capability key in tools/list', async () => {
@@ -86,56 +91,46 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
   describe('R2-HUBHOSTESCAPE-6 — taking a custom domain', () => {
     it('refuses hub_update_app_config carrying a customDomain, and never reaches the lifecycle service', async () => {
       await expect(
-        registry.callTool(
-          'hub_update_app_config',
-          { appUrn: 'evil-app:third-party', form: { ...exposureForm, customDomain: 'shop.acme.com', customDomainTakeover: true } },
-          { capability: LEAKED },
-        ),
+        callAs(LEAKED, 'hub_update_app_config', {
+          appUrn: 'evil-app:third-party',
+          form: { ...exposureForm, customDomain: 'shop.acme.com', customDomainTakeover: true },
+        }),
       ).rejects.toThrow(DestructiveToolDisabledError);
       expect(lifecycle.updateAppConfig).not.toHaveBeenCalled();
     });
 
     it("refuses an empty customDomain — parking a sibling app's live domain is the same authority", async () => {
       await expect(
-        registry.callTool(
-          'hub_update_app_config',
-          { appUrn: 'victim-app:ci-store', form: { ...exposureForm, customDomain: '' } },
-          { capability: LEAKED },
-        ),
+        callAs(LEAKED, 'hub_update_app_config', { appUrn: 'victim-app:ci-store', form: { ...exposureForm, customDomain: '' } }),
       ).rejects.toThrow(DestructiveToolDisabledError);
       expect(lifecycle.updateAppConfig).not.toHaveBeenCalled();
     });
 
     it('refuses a bare customDomainTakeover, which asks for the authority without naming the target', async () => {
       await expect(
-        registry.callTool(
-          'hub_update_app_config',
-          { appUrn: 'evil-app:third-party', form: { ...exposureForm, customDomainTakeover: true } },
-          { capability: LEAKED },
-        ),
+        callAs(LEAKED, 'hub_update_app_config', { appUrn: 'evil-app:third-party', form: { ...exposureForm, customDomainTakeover: true } }),
       ).rejects.toThrow(DestructiveToolDisabledError);
       expect(lifecycle.updateAppConfig).not.toHaveBeenCalled();
     });
 
     it('refuses hub_install_app carrying a customDomain, so the install path is not the way around it', async () => {
       await expect(
-        registry.callTool(
-          'hub_install_app',
-          { appUrn: 'evil-app:third-party', form: { ...exposureForm, customDomain: 'shop.acme.com', customDomainTakeover: true } },
-          { capability: LEAKED },
-        ),
+        callAs(LEAKED, 'hub_install_app', {
+          appUrn: 'evil-app:third-party',
+          form: { ...exposureForm, customDomain: 'shop.acme.com', customDomainTakeover: true },
+        }),
       ).rejects.toThrow(DestructiveToolDisabledError);
       expect(lifecycle.installApp).not.toHaveBeenCalled();
     });
 
     it('leaves ordinary installs and config edits to a default-capability key', async () => {
       // The gate has to be a gate, not a ban: 'write' still means "install, start, stop, reconfigure".
-      await expect(
-        registry.callTool('hub_install_app', { appUrn: 'nextcloud:ci-store', form: exposureForm }, { capability: LEAKED }),
-      ).resolves.toEqual({ requestId: 'install-1' });
-      await expect(
-        registry.callTool('hub_update_app_config', { appUrn: 'nextcloud:ci-store', form: { port: 9090 } }, { capability: LEAKED }),
-      ).resolves.toEqual({ requestId: 'config-1' });
+      await expect(callAs(LEAKED, 'hub_install_app', { appUrn: 'nextcloud:ci-store', form: exposureForm })).resolves.toEqual({
+        requestId: 'install-1',
+      });
+      await expect(callAs(LEAKED, 'hub_update_app_config', { appUrn: 'nextcloud:ci-store', form: { port: 9090 } })).resolves.toEqual({
+        requestId: 'config-1',
+      });
       expect(registry.listToolsForCapability(LEAKED).map((tool) => tool.name)).toEqual(
         expect.arrayContaining(['hub_install_app', 'hub_update_app_config']),
       );
@@ -143,7 +138,7 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
 
     it('still lets a full-capability key set a custom domain, and passes the form through unchanged', async () => {
       const form = { ...exposureForm, customDomain: 'shop.acme.com', customDomainTakeover: true };
-      await expect(registry.callTool('hub_update_app_config', { appUrn: 'nextcloud:ci-store', form }, { capability: 'full' })).resolves.toEqual({
+      await expect(callAs('full', 'hub_update_app_config', { appUrn: 'nextcloud:ci-store', form })).resolves.toEqual({
         requestId: 'config-1',
       });
       expect(lifecycle.updateAppConfig).toHaveBeenCalledWith(expect.objectContaining({ form }));
