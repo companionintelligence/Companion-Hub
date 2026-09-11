@@ -723,7 +723,7 @@ read-only subcommands are the default and the rest need `--execute`.
 cihub fleet scan [--lan] [--write-roster] [--json]     # find machines, and what each one will allow
 cihub fleet list [--json]                              # the saved roster, and what a run would skip
 cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered node
-cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
+cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
@@ -802,6 +802,7 @@ while believing it was twenty is the worse failure.
 | `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000) |
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
 | `--backends a,b` | `backends` only: from `ollama`, `vllm`, `lucebox`, `dspark`, `mtplx`, `lemonade`. Omit for all six |
+| `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `tailnet`, the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
 | `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
@@ -825,7 +826,10 @@ enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
 ### `cihub fleet list` and `cihub fleet status`
 
 `list` prints the roster as saved, plus the nodes a run would skip and why. `status` re-probes them:
-administrable, running a Hub, serving engines. Neither touches a node beyond the probe.
+administrable, running a Hub, serving engines, and — for every node it can SSH to — where Ollama
+binds and **which drop-in decided it** (`100.64.0.9:11434 ← zzzzz-cihub-bind.conf`), with a
+`CONFLICT` flag when more than one file sets `OLLAMA_HOST` and the winner is not the canonical one.
+Neither touches a node beyond the probe.
 
 ### `cihub fleet backends`
 
@@ -836,6 +840,40 @@ that cannot run it, with the reason. The dry run is most of the value even when 
 Serialised across nodes on purpose: a backend install pulls gigabytes of CUDA wheels and GPU images,
 and running several at once saturates the link they share and blocks the nodes' own HTTP listeners
 long enough to look absent to everything else.
+
+#### Ollama's bind: one file, read back
+
+Where Ollama listens was, measured across this fleet, three different things — the Tailscale
+address, `0.0.0.0`, loopback — decided by whichever drop-in under
+`/etc/systemd/system/ollama.service.d/` happened to sort last. systemd applies drop-ins in **byte
+order of filename** and the last `Environment=` assignment wins, so `zzzz-bind-all.conf` outranks
+`zzz-tailnet-bind.conf` by one letter, and `override.conf` outranks `10-tailnet-bind.conf` because
+`o` sorts after `1`. `backends` therefore writes exactly one file for the bind,
+**`zzzzz-cihub-bind.conf`**, whose name sorts after every legacy name seen on the fleet, and it moves
+each `*.conf` that set `OLLAMA_HOST` and nothing else to `<name>.disabled-by-cihub-<date>` — renamed,
+never deleted, and no longer read because it no longer ends in `.conf`. A file that also sets
+something else (an `OLLAMA_MODELS` repoint, say) is left exactly where it is and outranked. After the
+restart the step re-reads `systemctl show ollama -p Environment` and **fails if the merged value is
+not the one requested**; the dry run lists every file it would move, by name.
+
+Two refusals, both facts about the machine rather than failures: a node whose `:11434` belongs to a
+**user-scope** unit (beta-1 runs `ollama-local.service` under the `ci` user's `systemd --user`, with
+the system unit disabled) is skipped with the reason, because `systemctl enable --now ollama` there
+starts a second daemon that collides on the port — and ollama.com's own installer runs that command,
+so the check happens *before* anything is downloaded. And `--bind tailnet` on a node with no tailnet
+address fails rather than silently binding somewhere else.
+
+An Ollama that is already answering is **adopted**, and the same bind policy is applied to it — the
+nodes that already run one are exactly where the arrangements diverge. A node that already reads back
+as `zzzzz-cihub-bind.conf` with the requested bind is not touched. `fleet status` shows every node's
+effective bind and the file that set it, and flags a conflict (several setters, none of them the
+canonical file) without changing anything.
+
+> A Hub container on the same node reaches its host Ollama at `host.docker.internal:11434`, which is
+> the Docker bridge gateway — an address a tailnet-only bind does **not** listen on. On a node that
+> runs both, either pass `--bind all`, or point the Hub at the tailnet address (`OLLAMA_URL` in the
+> compose environment, or Docker's `host-gateway-ip`). This is a known seam, not yet closed by the
+> installer.
 
 ### `cihub fleet install`
 
