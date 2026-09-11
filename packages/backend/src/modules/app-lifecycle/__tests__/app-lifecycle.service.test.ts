@@ -1283,6 +1283,28 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('customDomainState', () => {
+    it('reports the intent, the binding and any takeover on record — what a save is compared against', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        customDomainIntent: 'shop.acme.com',
+        customDomain: 'old.acme.com',
+        customDomainTakeover: true,
+      } as any);
+
+      await expect(service.customDomainState('comfyui:ci-marketplace' as never)).resolves.toEqual({
+        intent: 'shop.acme.com',
+        bound: 'old.acme.com',
+        takeover: true,
+      });
+    });
+
+    it('is null for an app that is not installed', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+
+      await expect(service.customDomainState('comfyui:ci-marketplace' as never)).resolves.toBeNull();
+    });
+  });
+
   describe('custom domain reconciliation', () => {
     const REGISTRATION = {
       id: 'org-1',
@@ -1319,6 +1341,16 @@ describe('AppLifecycleService', () => {
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(REGISTRATION as any);
       configService.getConfig.mockReturnValue(CONFIG as any);
     });
+
+    /*
+     * An empty answer while apps hold domains is believed only once it has held
+     * for a minute across a second sync (R2-PORTALMISC-5). The tests that call
+     * this are about what happens once it IS believed, so they start a minute
+     * into that run; the confirmation itself has its own block below.
+     */
+    const emptyAnswerAlreadyConfirmed = () => {
+      (exposureSyncService as any).emptyCustomDomainsSince = Date.now() - 61_000;
+    };
 
     it('binds a delivered custom domain to the app it aliases and asks for a restart', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
@@ -1382,6 +1414,71 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
+    it('names both hostnames and the CI-Cloud record in an audit line when it binds', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'custom_domain_audit app=comfyui:ci-marketplace previous=none next=comfy.acme.com previousPortalRowId=none nextPortalRowId=cd_1',
+      );
+    });
+
+    describe('an empty answer while apps still hold domains (R2-PORTALMISC-5)', () => {
+      const emptyAnswer = { ok: true, failed: [], failures: [], synced: 1, customDomains: [] } as any;
+      let now: number;
+
+      beforeEach(() => {
+        now = 1_700_000_000_000;
+        vi.spyOn(Date, 'now').mockImplementation(() => now);
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+        cloudflareClientService.syncState.mockResolvedValue(emptyAnswer);
+      });
+
+      it('changes nothing on the first one', async () => {
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+
+      it('still changes nothing when a second one follows within the minute', async () => {
+        await service.triggerCloudflareSync();
+        now += 30_000;
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+
+      it('unbinds once a sync at least a minute later says the same', async () => {
+        await service.triggerCloudflareSync();
+        now += 61_000;
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      });
+
+      it('starts counting again after an answer that delivers the domain', async () => {
+        await service.triggerCloudflareSync();
+        now += 30_000;
+        cloudflareClientService.syncState.mockResolvedValueOnce({
+          ...emptyAnswer,
+          customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+        });
+        await service.triggerCloudflareSync();
+        now += 31_000;
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+    });
+
     it('is idempotent once the binding is already stored', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({
@@ -1402,6 +1499,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
@@ -1426,6 +1524,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
@@ -1459,6 +1558,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
       await service.triggerCloudflareSync();
 
@@ -1544,6 +1644,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
@@ -1560,6 +1661,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
       expect(restartApp).toHaveBeenCalledTimes(1);
 
@@ -1587,6 +1689,7 @@ describe('AppLifecycleService', () => {
       ] as any);
       cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true } as any);
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
@@ -1622,6 +1725,7 @@ describe('AppLifecycleService', () => {
         },
       ] as any);
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
@@ -1659,6 +1763,7 @@ describe('AppLifecycleService', () => {
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([] as any);
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       // The confirmation goes with the choice: an answer about a domain the
@@ -1699,7 +1804,7 @@ describe('AppLifecycleService', () => {
 
     it('restarts every app when several domains are genuinely disconnected at once', async () => {
       // An empty payload is CI-Cloud saying "this device has none" — the unbind
-      // instruction. Disconnecting two domains inside one five-minute poll is
+      // instruction, once confirmed. Disconnecting two domains inside one five-minute poll is
       // ordinary, so a count threshold would be the wrong shape of guard here.
       const restartApp = stubLifecycleForRevert();
       appsRepository.getApps.mockResolvedValue([
@@ -1708,6 +1813,7 @@ describe('AppLifecycleService', () => {
       ] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });

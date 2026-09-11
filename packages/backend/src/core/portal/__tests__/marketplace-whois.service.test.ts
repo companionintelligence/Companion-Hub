@@ -363,4 +363,75 @@ describe('MarketplaceWhoIsService', () => {
     });
     await expect(service.assertSessionAction(sessionReq(), APP_URN, 'install')).rejects.toBeInstanceOf(TranslatableError);
   });
+
+  describe('assertCustomDomainAuthority (R2-HUBDOMAINS-1)', () => {
+    const answer = (organizations: unknown[], status = 200) => ({ status, body: { organizations } }) as never;
+
+    it.each(['owner', 'admin'])('admits an organization %s', async (role) => {
+      portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role }, apps: [] }]));
+
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).resolves.toBeUndefined();
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: ['immich'], surface: 'hub' });
+    });
+
+    it('refuses a member, whatever their per-app grants', async () => {
+      portal.whoisApps.mockResolvedValue(
+        answer([{ organizationId: 'org-hub', user: { role: 'member' }, apps: [{ appId: 'immich', can: ['configure', 'install'] }] }]),
+      );
+
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toMatchObject({
+        message: 'CUSTOM_DOMAIN_ROLE_REQUIRED',
+        status: HttpStatus.FORBIDDEN,
+      });
+    });
+
+    it("reads the role from this device's organization, not the first one listed", async () => {
+      portal.whoisApps.mockResolvedValue(
+        answer([
+          { organizationId: 'org-other', user: { role: 'owner' }, apps: [] },
+          { organizationId: 'org-hub', user: { role: 'member' }, apps: [] },
+        ]),
+      );
+
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+    });
+
+    it.each([
+      ['an organization that names no role', () => portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', apps: [] }]))],
+      ['WhoIs answering non-2xx', () => portal.whoisApps.mockResolvedValue(answer([], 503))],
+      ['no Portal configured', () => portal.whoisApps.mockResolvedValue(null)],
+      ['WhoIs throwing', () => portal.whoisApps.mockRejectedValue(new Error('ECONNRESET'))],
+      [
+        'the device registration unreadable',
+        () => {
+          portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role: 'owner' }, apps: [] }]));
+          registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('disk'));
+        },
+      ],
+    ])('refuses on %s — not knowing is not permission', async (_label, arrange) => {
+      arrange();
+
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+    });
+
+    it('refuses an operator with no linked Portal subject without asking the Portal', async () => {
+      federatedIdentities.findByUserId.mockResolvedValue([] as never);
+
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['the Portal-device principal', portalPushReq],
+      ['the CLI principal', cliReq],
+    ])('admits %s by name', async (_label, buildReq) => {
+      await expect(service.assertCustomDomainAuthority(buildReq(), APP_URN)).resolves.toBeUndefined();
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it('refuses a caller with no recognised principal', async () => {
+      await expect(service.assertCustomDomainAuthority(unknownPrincipalReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+  });
 });
