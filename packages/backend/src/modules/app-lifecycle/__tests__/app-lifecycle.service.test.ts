@@ -1283,25 +1283,111 @@ describe('AppLifecycleService', () => {
     });
   });
 
-  describe('customDomainState', () => {
-    it('reports the intent, the binding and any takeover on record — what a save is compared against', async () => {
-      appsRepository.getAppByUrn.mockResolvedValue({
-        customDomainIntent: 'shop.acme.com',
-        customDomain: 'old.acme.com',
-        customDomainTakeover: true,
-      } as any);
+  describe('authorizeCustomDomainChange (R2-HUBDOMAINS-1)', () => {
+    const APP_URN = 'comfyui:ci-marketplace' as AppUrn;
+    const row = (overrides: Record<string, unknown> = {}) =>
+      ({ id: 7, customDomainIntent: 'shop.acme.com', customDomain: 'shop.acme.com', customDomainTakeover: false, ...overrides }) as any;
 
-      await expect(service.customDomainState('comfyui:ci-marketplace' as never)).resolves.toEqual({
-        intent: 'shop.acme.com',
-        bound: 'old.acme.com',
-        takeover: true,
-      });
+    it('asks when a save moves the app to another domain', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'other.acme.com' }, authorize);
+
+      expect(authorize).toHaveBeenCalledOnce();
     });
 
-    it('is null for an app that is not installed', async () => {
+    it('does not ask when the dialog re-submits what the row holds, takeover included', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row({ customDomain: 'old.acme.com', customDomainTakeover: true }));
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com', customDomainTakeover: true }, authorize);
+
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('reads nothing for a form that says nothing about custom domains', async () => {
+      const authorize = vi.fn(async () => {});
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomainTakeover: true }, authorize);
+
+      expect(appsRepository.getAppByUrn).not.toHaveBeenCalled();
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('asks when re-recording a binding would cancel a move another app is waiting on', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row({ customDomainIntent: null }));
+      appsRepository.hasCustomDomainIntentElsewhere.mockResolvedValue(true);
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+
+      expect(appsRepository.hasCustomDomainIntentElsewhere).toHaveBeenCalledWith(7, 'shop.acme.com');
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('does not ask for that re-submission when no other app is waiting', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row({ customDomainIntent: null }));
+      appsRepository.hasCustomDomainIntentElsewhere.mockResolvedValue(false);
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('looks for another app waiting only when the app is bound with no choice of its own', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      await service.authorizeCustomDomainChange(
+        APP_URN,
+        { customDomain: 'shop.acme.com' },
+        vi.fn(async () => {}),
+      );
+
+      expect(appsRepository.hasCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    });
+
+    it('refuses a release of a binding the dialog never showed before asking for any role', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      await expect(service.authorizeCustomDomainChange(APP_URN, { customDomain: '', customDomainExpected: '' }, authorize)).rejects.toMatchObject({
+        message: 'APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE',
+        status: 409,
+      });
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('asks for a release of the binding the dialog showed', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: '', customDomainExpected: 'shop.acme.com' }, authorize);
+
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('takes an app not installed yet to change something only by asking for a domain', async () => {
+      const authorize = vi.fn(async () => {});
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
 
-      await expect(service.customDomainState('comfyui:ci-marketplace' as never)).resolves.toBeNull();
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: '' }, authorize);
+      expect(authorize).not.toHaveBeenCalled();
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('lets a refusal through to the caller', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+      const authorize = vi.fn(async () => {
+        throw new Error('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      });
+
+      await expect(service.authorizeCustomDomainChange(APP_URN, { customDomain: 'other.acme.com' }, authorize)).rejects.toThrow(
+        'CUSTOM_DOMAIN_ROLE_REQUIRED',
+      );
     });
   });
 

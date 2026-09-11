@@ -855,6 +855,29 @@ describe('App lifecycle', () => {
       expect((await appsRepository.getAppByUrn(first.urn))?.customDomainIntent).toBeNull();
     });
 
+    it('counts re-recording a binding another app is waiting for as a custom-domain change', async () => {
+      /*
+       * Against the real database for the reason the case above gives: whether
+       * another app is waiting for a domain is the same raw `lower(...)`
+       * comparison, read instead of written (R2-HUBDOMAINS-1).
+       */
+      const holder = await installExposed('cdomain-holder');
+      await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'cdomain-holder-test-core2-acme.ci.test' }]);
+      expect((await appsRepository.getAppByUrn(holder.urn))?.customDomain).toBe('comfy.acme.com');
+
+      // The settings dialog re-submitting what CI-Cloud bound, with nobody else asking for it: no change.
+      const authorize = vi.fn(async () => {});
+      await appLifecycleService.authorizeCustomDomainChange(holder.urn, { customDomain: 'comfy.acme.com' }, authorize);
+      expect(authorize).not.toHaveBeenCalled();
+
+      // Another app now waits for it, spelled differently: the same save would cancel that move.
+      await installExposed('cdomain-waiting');
+      await db.update(appTable).set({ customDomainIntent: 'Comfy.Acme.com' }).where(eq(appTable.appName, 'cdomain-waiting'));
+
+      await appLifecycleService.authorizeCustomDomainChange(holder.urn, { customDomain: 'comfy.acme.com' }, authorize);
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
     it('leaves a bound app untouched when CI-Cloud predates custom domains', async () => {
       const appInfo = await installExposed('cdomain-old');
       const platformHostname = 'cdomain-old-test-core2-acme.ci.test';

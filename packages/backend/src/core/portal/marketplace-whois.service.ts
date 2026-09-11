@@ -147,15 +147,6 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * The person whose grants filter a sweep over apps the caller did not name, or
-   * `undefined` for an exempt principal, which sweeps everything.
-   *
-   * The `*-all` lifecycle routes cannot use `filterSessionByAction` — they choose
-   * their own set from the app table — so they resolve the operator here instead of
-   * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
-   * principal as "no person to check, allow" all over again.
-   */
-  /**
    * Refuse a custom-domain change from anyone but an organization owner or admin.
    *
    * ⚠ A CUSTOM DOMAIN IS THE ORGANIZATION'S, NOT THE APP'S (R2-HUBDOMAINS-1).
@@ -172,9 +163,10 @@ export class MarketplaceWhoIsService {
    * say. A custom domain cannot be bound without the Portal anyway.
    *
    * A grant-exempt principal (the Portal's own device push, the local CLI) is
-   * admitted by name, exactly as for every other gate.
+   * admitted by name, exactly as for every other gate. `action` is the verb of
+   * the call asking, named in the log when it arrives with no principal.
    */
-  async assertCustomDomainAuthority(req: Request, appUrn: AppUrn): Promise<void> {
+  async assertCustomDomainAuthority(req: Request, appUrn: AppUrn, action: HubAction): Promise<void> {
     if (isGrantExemptPrincipal(req)) {
       return;
     }
@@ -182,7 +174,7 @@ export class MarketplaceWhoIsService {
     const userId = hubSessionOperatorUserId(req);
 
     if (userId == null) {
-      this.logUnrecognisedPrincipal(req, 'configure');
+      this.logUnrecognisedPrincipal(req, action);
       throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
     }
 
@@ -215,6 +207,15 @@ export class MarketplaceWhoIsService {
     }
   }
 
+  /**
+   * The person whose grants filter a sweep over apps the caller did not name, or
+   * `undefined` for an exempt principal, which sweeps everything.
+   *
+   * The `*-all` lifecycle routes cannot use `filterSessionByAction` — they choose
+   * their own set from the app table — so they resolve the operator here instead of
+   * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
+   * principal as "no person to check, allow" all over again.
+   */
   sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
     const userId = hubSessionOperatorUserId(req);
 
