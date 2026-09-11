@@ -15,6 +15,7 @@ buys you, and where the seams are.
 | 4. Inference backends and models | [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md), [`inference-supervision.md`](inference-supervision.md) |
 | 5. Pool the nodes | [`hub-pool.md`](hub-pool.md), [`CLI.md` → Hub Pool](CLI.md#hub-pool) |
 | 6. Validate | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) |
+| Optional: remote desktop | [Remote desktop (tailnet-only)](#remote-desktop-tailnet-only) below, [`CLI.md` → `cihub fleet rdp`](CLI.md#cihub-fleet-rdp) |
 
 Every step works headlessly. A Hub reached only over SSH has no dashboard, so the `cihub` commands
 below are the whole surface — see [`CLI.md` → Headless](CLI.md#headless--no-graphical-session-required).
@@ -128,6 +129,52 @@ stored and dialed by its MagicDNS name.
 
 A Hub that has not joined a tailnet cannot pool, whatever else is configured.
 
+## Remote desktop (tailnet-only)
+
+Optional, Linux nodes only, and it comes after the tailnet step because it binds to the tailnet
+address — a node that has not joined one has nothing to bind to.
+
+```bash
+cihub fleet rdp                     # per node: who owns tcp/3389, what it is bound to, and the plan
+cihub fleet rdp --execute           # apply, then re-read ss and fail any node still reachable off the tailnet
+cihub fleet rdp --nodes fzzy,beta-1 # a subset
+```
+
+**Tailnet-only is mandatory, not a default.** Access to these machines is a tailnet ACL decision —
+that is the whole basis of `cihub fleet` (see [`CLI.md` → Fleet](CLI.md#fleet)). An RDP listener on
+the LAN is a second front door the ACL does not cover, answered by a password prompt on a service
+with a long CVE history. On 2026-09-10 the fleet was found with RDP on three nodes, every one on
+`*:3389`. There is no flag to widen the bind; the run fails if the re-read shows one.
+
+**What gets installed** depends on what already owns the port:
+
+| Owner of 3389 | Plan |
+|---|---|
+| nothing, or `xrdp` bound wider than the tailnet | `apt-get install xrdp xfce4 xfce4-terminal dbus-x11`; `startxfce4` into the SSH account's `~/.xsession`; `port=tcp://<tailnet-ip>:3389` in `/etc/xrdp/xrdp.ini`; `adduser xrdp ssl-cert`; enable and **restart** `xrdp`. Proven on eleven Ubuntu nodes |
+| `gnome-remote-desktop` (`--system` mode; `fzzy` and `beta-1`) | `rdp-tailnet-guard.service`: an iptables chain on tcp/3389 that accepts from `tailscale0` and `lo` and **rejects with `tcp-reset`** — a LAN client sees "refused", not a hang. Idempotent oneshot; `ExecStop` removes the chain |
+| anything else | refused, by name. This tool manages the two servers it knows and does not evict a third |
+
+**The `address=` trap.** xrdp 0.10 accepts the legacy `address=` key and **silently ignores it**.
+Set `address=100.x.y.z` with `port=3389` and the daemon still listens on `*:3389`, while the config
+reads as if it should not. The bind lives in the `port` directive as a URL — `port=tcp://<ip>:3389`
+— and nowhere else. The rewrite `cihub fleet rdp` performs therefore sets that URL **and removes any
+`address=` line**, so nobody reads the file later and trusts it. Verify by hand with `ss -ltn`: the
+only address on `3389` should be the node's `100.x` address.
+
+**Why gnome-remote-desktop gets a firewall rather than a bind.** Its `--system` daemon has no
+listen-address option at all, so the socket is `*:3389` for as long as the service runs. The guard is
+judged on its **rules**, not on the unit being active: `ufw enable` and firewall reloads flush user
+chains and leave the unit reporting `active` over nothing, which is why `--execute` reads
+`iptables -S RDP_TAILNET_GUARD` back and why the unit rebuilds the chain from scratch on every start.
+The rule that rejects must say `-p tcp` **before** `--reject-with tcp-reset`; the first hand attempt
+did not and iptables refused it. The tailnet is 100.64.0.0/10 (and `fd7a:115c:a1e0::/48` for v6),
+but the guard keys on the interface rather than the range, so v6 arrives through the same accept.
+
+**What the command will not do.** It does not create an RDP user (the session belongs to the SSH
+account); it does not install a desktop on macOS or Windows nodes (refused as Linux-only — those have
+Screen Sharing and their own RDP); and it does not run while a node is under load, for the same
+reason `fleet backends` does not — an apt transaction on a saturated box has needed hands-on recovery
+here before.
 ### The TLS certificate
 
 Every peer is dialled at `https://<fqdn>` — pairing callbacks, health polls, every proxied request —
@@ -441,3 +488,6 @@ digest in its env file; `pool update` honours it in either place.
 | Peer flips to `unreachable` | Three failed health polls. It rejoins on the first successful one; no action needed |
 | Pooling shows `disabled_by_env` | `HUB_POOL_USER_DISABLED=true` in the env file wins over the in-product switch, and needs a restart |
 | A pin appears to do nothing | Pins reorder, they never force. `cihub pool status` marks a pin whose target cannot serve right now |
+| `xrdp` still on `*:3389` after editing `xrdp.ini` | You set `address=`; xrdp 0.10 ignores it silently. Put the address in `port=tcp://<tailnet-ip>:3389`, or run `cihub fleet rdp --execute`, which does exactly that and removes the misleading key |
+| `cihub fleet rdp` says `owner unknown` | The probe could not run as root, so `ss -p` could not attribute the socket. Pass `--user` with an account that has passwordless sudo |
+| RDP from the LAN hangs instead of refusing | The guard is missing or was flushed. `cihub fleet rdp --execute` rebuilds `RDP_TAILNET_GUARD`; a proper reject answers with a TCP reset |

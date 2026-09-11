@@ -90,7 +90,21 @@ import {
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps', 'boot-params', 'preflight', 'cert'] as const;
+export const FLEET_SUBCOMMANDS = [
+  'scan',
+  'list',
+  'status',
+  'backends',
+  'install',
+  'update',
+  'apps',
+  'boot-params',
+  'preflight',
+  'cert',
+  'rdp',
+] as const;
+
+import { describeBind as describeRdpBind, runRdpOnNode, type RdpNodeReport } from './fleet-rdp.js';
 
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
@@ -1724,6 +1738,74 @@ function printModelPlan(plan: NodeModelPlan, execute: boolean): void {
   if (estimate !== undefined) console.log(colorize(`  ≈ ${formatMb(estimate)} to download (catalog estimate)`, 'dim'));
 }
 
+/**
+ * `cihub fleet rdp` — remote desktop on each Linux node, reachable from the tailnet only.
+ *
+ * Dry run prints, per node, who owns tcp/3389, what it is bound to, and the plan; `--execute`
+ * applies it and then re-reads `ss` — the node fails if anything off the tailnet can still reach
+ * 3389. There is deliberately no flag to bind `*:3389`. Logic lives in `fleet-rdp.ts`; this is
+ * roster, loop and print.
+ */
+async function runRdp(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
+  if (roster.nodes.length === 0) {
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
+    return;
+  }
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.execute) {
+    console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
+    console.log(colorize('RDP is bound to the tailnet address only; there is no option to expose it on the LAN.', 'dim'));
+    console.log('');
+  }
+
+  const reports: RdpNodeReport[] = [];
+  // Serialised: the xrdp plan pulls xfce4 over apt, and parallel package pulls have blocked this
+  // fleet's own listeners long enough to look like outages.
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    const report = await runRdpOnNode(node, target, { execute: args.execute });
+    reports.push(report);
+    const before = report.before;
+    const owner = before ? before.owner : 'unprobed';
+    const bind = before ? describeRdpBind(before) : '—';
+    const tone = report.ok ? (report.decision?.kind === 'refuse' ? 'yellow' : 'green') : 'red';
+    console.log(`${node.name}  ${colorize(`owner ${owner} · bind ${bind}`, 'dim')}`);
+    if (report.decision) {
+      const label = args.execute
+        ? report.decision.kind
+        : report.decision.kind === 'refuse'
+          ? 'would refuse'
+          : report.decision.kind === 'ok'
+            ? 'nothing to do'
+            : `would ${report.decision.kind === 'xrdp' ? 'install/bind xrdp' : 'install guard'}`;
+      console.log(`  ${colorize(label, tone)} — ${report.decision.why}`);
+      if (report.decision.kind === 'refuse' && report.decision.fix) console.log(colorize(`    ${report.decision.fix}`, 'dim'));
+    }
+    for (const st of report.steps) {
+      const took = st.ms ? colorize(` (${Math.round(st.ms / 1000)}s)`, 'dim') : '';
+      console.log(`  ${st.ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${st.name}${took} — ${st.detail}`);
+    }
+    // The summary line carries what the lines above did not: a probe that never answered, or a plan
+    // that was gated before its first step (the load gate). A refusal already printed itself.
+    if (!report.decision || (args.execute && report.steps.length === 0 && report.decision.kind !== 'refuse'))
+      console.log(`  ${colorize(report.ok ? '·' : '✗', report.ok ? 'dim' : 'red')} ${report.summary}`);
+    console.log('');
+  }
+
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  if (args.json) console.log(JSON.stringify(reports, null, 2));
+  // A dry run reports a plan and exits 0, like every other fleet dry run; a probe failure is still a failure.
+  recordFleetFailures(reports.filter((r) => !r.ok).length);
+}
+
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
   let args: FleetArgs;
   try {
@@ -1766,6 +1848,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'cert':
       await runCert(args);
+      return;
+    case 'rdp':
+      await runRdp(args);
       return;
   }
 }

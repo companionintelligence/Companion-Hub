@@ -134,6 +134,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Can each node serve an agent app its inference credentials? A check; it installs nothing',
       },
       {
+        command: `${BASE_COMMAND} fleet rdp [--nodes a,b] [--execute]`,
+        description: 'Remote desktop on each Linux node, bound to its tailnet address only; prints owner, bind and plan unless --execute',
+      },
+      {
         command: `${BASE_COMMAND} fleet cert [--nodes a,b] [--execute]`,
         description: 'The tailscale TLS cert each node needs to pool: present, absent, or unreadable without sudo; issues it with --execute',
       },
