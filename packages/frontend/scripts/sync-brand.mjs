@@ -7,7 +7,7 @@
 //   node scripts/sync-brand.mjs            # rewrite public/* from the installed package
 //   node scripts/sync-brand.mjs --check    # exit 1 if any copy differs from the origin
 //   node scripts/sync-brand.mjs --from ../CI-Common/assets   # use a checkout instead of node_modules
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -43,7 +43,7 @@ for (const [dest, src] of Object.entries(MAP)) {
   const same = existsSync(to) && sha(readFileSync(to)) === sha(bytes);
   if (same) { n++; continue; }
   if (CHECK) drift.push(`${dest} differs from ${src}`);
-  else { writeFileSync(to, bytes); console.log(`  wrote ${dest} ← ${src}`); n++; }
+  else { mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, bytes); console.log(`  wrote ${dest} ← ${src}`); n++; }
 }
 if (drift.length) { console.error(`✖ brand assets:\n  ${drift.join('\n  ')}\n  run \`node scripts/sync-brand.mjs\``); process.exit(1); }
 console.log(`✔ ${n} brand file(s) under public/ match @companionintelligence/assets (${ORIGIN.includes('node_modules') ? 'installed' : ORIGIN})`);
