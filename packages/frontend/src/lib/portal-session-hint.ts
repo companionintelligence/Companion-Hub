@@ -10,6 +10,7 @@ export interface PortalSessionHint {
   email: string | null;
   portalBaseUrl: string | null;
   source: PortalSessionHintSource;
+  portalReachable: boolean;
 }
 
 export function rememberPortalAccountEmail(email: string) {
@@ -48,9 +49,10 @@ async function fetchPortalSessionHintFromHub(): Promise<PortalSessionHint> {
       email?: string | null;
       portalBaseUrl?: string | null;
       source?: 'hub_operator' | 'hub_user' | 'portal_session' | null;
+      portalReachable?: boolean;
     } | null;
     if (!data) {
-      return { email: null, portalBaseUrl: null, source: null };
+      return { email: null, portalBaseUrl: null, source: null, portalReachable: false };
     }
 
     const email = data.email?.trim() || null;
@@ -60,9 +62,10 @@ async function fetchPortalSessionHintFromHub(): Promise<PortalSessionHint> {
       email,
       portalBaseUrl,
       source: email ? (data.source ?? null) : null,
+      portalReachable: data.portalReachable !== false,
     };
   } catch {
-    return { email: null, portalBaseUrl: null, source: null };
+    return { email: null, portalBaseUrl: null, source: null, portalReachable: false };
   }
 }
 
@@ -117,6 +120,7 @@ export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
       email: remembered,
       portalBaseUrl: hubHint.portalBaseUrl,
       source: 'remembered',
+      portalReachable: hubHint.portalReachable,
     };
   }
 
@@ -133,6 +137,7 @@ export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
         email: directEmail,
         portalBaseUrl: hubHint.portalBaseUrl,
         source: 'portal_session',
+        portalReachable: true,
       };
     }
   }
@@ -146,6 +151,7 @@ export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
       email: remembered,
       portalBaseUrl: hubHint.portalBaseUrl,
       source: 'remembered',
+      portalReachable: hubHint.portalReachable,
     };
   }
 
@@ -158,5 +164,6 @@ export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
     email: null,
     portalBaseUrl: hubHint.portalBaseUrl,
     source: null,
+    portalReachable: hubHint.portalReachable,
   };
 }

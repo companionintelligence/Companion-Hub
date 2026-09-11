@@ -121,7 +121,7 @@ beforeEach(() => {
   dl.persistDesktopPortalToken.mockReset();
   dl.takePersistedDesktopPortalToken.mockReset().mockReturnValue(null);
   dl.clearPersistedDesktopPortalToken.mockReset();
-  hint.resolvePortalSessionHint.mockReset().mockResolvedValue({ email: null, portalBaseUrl: null, source: null });
+  hint.resolvePortalSessionHint.mockReset().mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
 });
 
 afterEach(() => {
