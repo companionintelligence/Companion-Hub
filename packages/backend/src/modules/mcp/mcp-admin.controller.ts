@@ -3,6 +3,7 @@ import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/comm
 import type { Request } from 'express';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import type { HubAction } from '@/core/portal/hub-actions';
+import type { HubPrincipalFields } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import type { CustomDomainForm } from '@/modules/app-lifecycle/custom-domain-authority';
@@ -43,7 +44,12 @@ export class McpAdminController {
     return { tools: this.adminService.listTools() };
   }
 
-  /** Run a tool server-side (the in-UI "try it" runner). Destructive tools require confirmDestructive. */
+  /**
+   * Run a tool server-side (the in-UI "try it" runner). Destructive tools require confirmDestructive.
+   *
+   * The lifecycle tools act as the signed-in person: `lifecycleActor` names them for each verb, or
+   * refuses a request that names no principal, so the grants the app routes check apply here too.
+   */
   @Post('tools/:name/call')
   async callTool(@Param('name') name: string, @Body() body: McpToolCallBody, @Req() req: Request) {
     try {
@@ -53,7 +59,13 @@ export class McpAdminController {
       return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
     }
 
-    return this.adminService.callTool(name, body.arguments, body.confirmDestructive ?? false);
+    // Only the principal, not the request: the tool's async context can outlive the reply (a sweep
+    // keeps running after it), and a closure over `req` would hold the whole request until it ends.
+    const principal: HubPrincipalFields = { hubPrincipal: req.hubPrincipal, user: req.user };
+
+    return this.adminService.callTool(name, body.arguments, body.confirmDestructive ?? false, (action) =>
+      this.whois.lifecycleActor(principal, action),
+    );
   }
 
   /**

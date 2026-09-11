@@ -53,6 +53,7 @@ export class AppLifecycleController {
       force: body.force,
       source: body.source,
       operatorUserId: req.user?.id,
+      actor: this.whois.lifecycleActor(req, 'install'),
     });
   }
 
@@ -85,7 +86,7 @@ export class AppLifecycleController {
     await this.whois.assertSessionAction(req, appUrn, 'install');
     // The verb says who may change this app; which custom domain it serves is the organization's (R2-HUBDOMAINS-1).
     await this.appLifecycleService.authorizeCustomDomainChange(appUrn, body, () => this.whois.assertCustomDomainAuthority(req, appUrn, 'install'));
-    const res = await this.appLifecycleService.installApp({ appUrn, form: body });
+    const res = await this.appLifecycleService.installApp({ appUrn, form: body, actor: this.whois.lifecycleActor(req, 'install') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -180,7 +181,7 @@ export class AppLifecycleController {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'configure');
     await this.appLifecycleService.authorizeCustomDomainChange(appUrn, body, () => this.whois.assertCustomDomainAuthority(req, appUrn, 'configure'));
-    const res = await this.appLifecycleService.updateAppConfig({ appUrn, form: body });
+    const res = await this.appLifecycleService.updateAppConfig({ appUrn, form: body, actor: this.whois.lifecycleActor(req, 'configure') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -202,29 +203,27 @@ export class AppLifecycleController {
   }
 
   /*
-   * The sweeps resolve the operator through `sweepOperatorUserId`, not through
-   * `hubSessionOperatorUserId`: `operatorMay` treats an omitted id as "not a
-   * Hub-session person, allow", so reading the id directly would let an
-   * unrecognised principal act on every installed app — the exemption-by-absence
-   * the named routes above no longer have.
+   * Every lifecycle call names its actor through `lifecycleActor`, which refuses
+   * an unrecognised principal, and the SERVICE decides from it (CI-Hub#1397).
+   * The session assertions above stay — they are no longer the only check.
    */
   @Patch('update-all')
   async updateAllApps(@Req() req: Request) {
-    return this.appLifecycleService.updateAllApps(this.whois.sweepOperatorUserId(req, 'update'));
+    return this.appLifecycleService.updateAllApps(this.whois.lifecycleActor(req, 'update'));
   }
 
   @Post('start-all')
   async startAllApps(@Req() req: Request) {
-    return this.appLifecycleService.startAllApps(this.whois.sweepOperatorUserId(req, 'start'));
+    return this.appLifecycleService.startAllApps(this.whois.lifecycleActor(req, 'start'));
   }
 
   @Post('stop-all')
   async stopAllApps(@Req() req: Request) {
-    return this.appLifecycleService.stopAllApps(this.whois.sweepOperatorUserId(req, 'stop'));
+    return this.appLifecycleService.stopAllApps(this.whois.lifecycleActor(req, 'stop'));
   }
 
   @Post('restart-all')
   async restartAllApps(@Req() req: Request) {
-    return this.appLifecycleService.restartAllApps(this.whois.sweepOperatorUserId(req, 'restart'));
+    return this.appLifecycleService.restartAllApps(this.whois.lifecycleActor(req, 'restart'));
   }
 }

@@ -77,7 +77,7 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
     LinksModule,
     InferenceModule,
     ApiKeyModule,
-    // MarketplaceWhoIsService: the admin tool runner asks for the role a custom-domain change takes.
+    // MarketplaceWhoIsService: the admin tool runner names the signed-in person to the lifecycle tools.
     PortalModule,
   ],
   controllers: [McpController, McpAdminController, McpAppsController],

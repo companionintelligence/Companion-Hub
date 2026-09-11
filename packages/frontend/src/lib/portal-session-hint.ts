@@ -66,7 +66,28 @@ async function fetchPortalSessionHintFromHub(): Promise<PortalSessionHint> {
   }
 }
 
+/**
+ * Portal's API answers CORS with its own origin only (`REACT_APP_BASE_URL`,
+ * credentials on), so a credentialed `get-session` from a Hub origin — public
+ * tunnel hostname, tailnet, localhost — is refused by the browser before it
+ * is sent, and logged as a CORS error on every login-page load. Only probe
+ * when the page is served from Portal's origin.
+ */
+export function canProbePortalSessionDirect(portalBaseUrl: string): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  try {
+    return new URL(portalBaseUrl).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchPortalSessionEmailDirect(portalBaseUrl: string): Promise<string | null> {
+  if (!canProbePortalSessionDirect(portalBaseUrl)) {
+    return null;
+  }
   try {
     const res = await fetch(`${portalBaseUrl.replace(/\/$/, '')}/api/auth/get-session`, {
       credentials: 'include',

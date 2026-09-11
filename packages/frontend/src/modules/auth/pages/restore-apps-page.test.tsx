@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@/tests/test-utils';
+import { act, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RestoreAppsPage from './restore-apps-page';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
@@ -104,6 +104,58 @@ describe('RestoreAppsPage', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('navigate-/home')).toBeInTheDocument();
+    });
+  });
+
+  /*
+   * Rehydrate installs as the person who asked (CI-Hub#1397). With nothing queued, the page used to
+   * move straight on — so a refused install was never shown, and the restore looked finished.
+   */
+  describe('when an install is refused for this account', () => {
+    beforeEach(() => {
+      getRehydrateStatus.mockResolvedValue(sdkOk({ completed: false, restoreIntent: true }));
+      executeRehydrate.mockResolvedValue(
+        sdkOk({
+          success: true,
+          message: 'Queued 0 install(s) and 0 start(s) from Portal; 1 install(s) were refused for this account',
+          incomplete: true,
+          plan: { portalAppCount: 1, items: [{ portalApp: { name: 'Immich', slug: 'immich' }, action: 'install', hasExistingData: false }] },
+          queued: [],
+          started: [],
+          skipped: [{ name: 'Immich', reason: 'APP_ACTION_GRANT_DENIED' }],
+        }),
+      );
+    });
+
+    it('stays on the page and says which apps were not restored, and why', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      expect(await screen.findByText('Some apps were not restored')).toBeInTheDocument();
+      expect(screen.getByText('Immich: You are not allowed to install this app.')).toBeInTheDocument();
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('retries on request', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+
+      await waitFor(() => expect(executeRehydrate).toHaveBeenCalledTimes(2));
+    });
+
+    it('continues to the dashboard without the restore choice, so it is not sent straight back here', async () => {
+      await act(async () => {
+        render(<RestoreAppsPage />);
+      });
+
+      await userEvent.click(await screen.findByRole('button', { name: 'Continue to dashboard' }));
+
+      await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
+      expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBeNull();
     });
   });
 });

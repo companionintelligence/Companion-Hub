@@ -104,8 +104,10 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Redirect to onboarding if not completed
-  if (!user.hasCompletedOnboarding) {
+  // Redirect to onboarding if not completed. A failed load is not an answer:
+  // keep the requested page (its own queries surface the outage) rather than
+  // walking an onboarded operator into the wizard.
+  if (!loadFailed && !user.hasCompletedOnboarding) {
     return <Navigate to="/onboarding" replace />;
   }
 
