@@ -269,9 +269,29 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           ['$APP_DATA_DIR_HOME/var/run/docker.sock', 'names a different unbraced variable that merely starts the same'],
           ['/var/run', 'is the directory the denied docker socket sits in'],
           ['/var', 'contains the directory the denied docker socket sits in'],
+          // `/var/run` is a symlink to `/run` on every systemd distro: the same socket, by its real name.
+          ['/run/docker.sock', 'is the docker socket under its real name'],
+          ['/run', 'is the directory that real name sits in'],
+          ['/run/containerd/containerd.sock', "is containerd's socket, which runs every container"],
+          // ...and the rest of that directory by its symlinked name, which denying `/run` alone left open.
+          ['/var/run/containerd/containerd.sock', "is containerd's socket under the symlinked name"],
+          ['/var/run/dbus/system_bus_socket', "is dbus's system socket under the symlinked name"],
+          ['/var/run/user/1000/docker.sock', 'is a rootless docker socket under the symlinked name'],
+          ['/var/lib/docker', "is docker's data-root, holding every container's volumes"],
+          ['/var/lib', "contains docker's data-root"],
+          ['/var/lib/containerd', "is where docker's containerd image store keeps every container's filesystem"],
+          // Compose expands a leading `~` to the `$HOME` of whatever runs it, so the path mounted is not the path checked.
+          ['~/.ssh', 'is .ssh in the home directory of whatever runs compose, which can be root'],
+          ['~', 'is that home directory itself'],
         ])('should reject %j because it %s', (hostPath) => {
           const result = safeParse(serviceSchema, withVolume({ hostPath, containerPath: '/mnt' }));
           expect(result.success).toBe(false);
+        });
+
+        it('should accept a ~ anywhere but the start, where compose leaves it a literal character', () => {
+          for (const hostPath of ['${APP_DATA_DIR}/~cache', '/srv/media~old']) {
+            expect(safeParse(serviceSchema, withVolume({ hostPath, containerPath: '/data' })).success).toBe(true);
+          }
         });
 
         it('should accept the benign timezone binds, as the install sink does', () => {
@@ -1273,14 +1293,46 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
   });
 
   it('flags the directory a denied path sits in, not only the denied path itself', () => {
-    // `/var/run/docker.sock` is on the reject-list, so binding `/var/run` or `/var` hands over the
-    // same socket under a spelling the equality and prefix tests never see.
-    for (const hostPath of ['/var/run', '/var']) {
+    // `/var/lib/docker` is on the reject-list, so binding `/var/lib` or `/var` hands over the same
+    // data under a spelling the equality and prefix tests never see.
+    for (const hostPath of ['/var/lib', '/var']) {
       expect(collectServiceSecurityViolations({ volumes: [{ hostPath }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
     }
 
     // A sibling that contains nothing denied stays allowed: this is an ancestor rule, not a new root.
     expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/var/lib/myapp' }] })).toHaveLength(0);
+  });
+
+  it('denies /run under both of its names, and a grant for one name does not cover the other', () => {
+    // `/var/run` is a symlink to `/run`. The kernel follows it at mount time and the reject-list
+    // compares strings, so denying one spelling left every socket in the directory open under the other.
+    for (const hostPath of [
+      '/run/docker.sock',
+      '/run/containerd/containerd.sock',
+      '/var/run/containerd/containerd.sock',
+      '/var/run/dbus/system_bus_socket',
+    ]) {
+      expect(collectServiceSecurityViolations({ volumes: [{ hostPath }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
+    }
+
+    // Grants match the spelling they name. The docker-socket apps are granted `/var/run/docker.sock`,
+    // and that must not stretch to the same socket asked for by its other name.
+    const grants = { hostPaths: ['/var/run/docker.sock'] };
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/var/run/docker.sock' }] }, grants)).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/run/docker.sock' }] }, grants)).toHaveLength(1);
+
+    // A root matches whole path segments, so a sibling that merely starts with the same letters stays allowed.
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/runner' }, { hostPath: '/var/lib/docker-backup' }] })).toHaveLength(0);
+  });
+
+  it('refuses a leading ~, which compose expands to the home directory of whatever runs it', () => {
+    // `~/.ssh` is `/root/.ssh` under a root `HOME`: a denied root, under a spelling no denied root begins with.
+    for (const hostPath of ['~/.ssh', '~']) {
+      expect(collectServiceSecurityViolations({ volumes: [{ hostPath }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
+    }
+
+    // Compose expands `~` only at the start of a path; one anywhere else is a literal character.
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/srv/media~old' }] })).toHaveLength(0);
   });
 
   it('never flags the benign /etc/localtime and /etc/timezone binds', () => {
