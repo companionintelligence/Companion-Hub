@@ -1,4 +1,6 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
+import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
 import { CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
@@ -20,10 +22,16 @@ export class ApiKeyAdminController {
     return { keys: await this.adminService.listKeys() };
   }
 
-  /** Create an operator API key. Returns the raw key ONCE so it can be copied; only the hash is stored. */
+  /**
+   * Create an operator API key. Returns the raw key ONCE so it can be copied; only the hash is stored.
+   *
+   * The key is recorded as the signed-in person's, and acts with their grants and role from then on
+   * (`LifecycleActor`). A principal with no person behind it — the CLI — records nobody, which is
+   * where every key minted before creators were recorded stands too.
+   */
   @Post()
-  createKey(@Body() body: CreateApiKeyBody) {
-    return this.adminService.createKey(body.name, body.capability);
+  createKey(@Body() body: CreateApiKeyBody, @Req() req: Request) {
+    return this.adminService.createKey(body.name, body.capability, hubSessionOperatorUserId(req) ?? null);
   }
 
   /**

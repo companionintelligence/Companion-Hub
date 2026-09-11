@@ -22,11 +22,16 @@ export type LifecycleActor =
   /** A grant-exempt named principal; see `isGrantExemptPrincipal`. */
   | { kind: 'exempt'; principal: 'portal-device' | 'cli' }
   /**
-   * An MCP key. Its capability is already enforced by the tool registry;
-   * `ownerAppUrn` is set for a MANAGED app key, which may act on its own app
-   * and nothing else.
+   * An MCP key. Its capability is already enforced by the tool registry.
+   *
+   * `ownerAppUrn` is set for a MANAGED app key, which may act on its own app and
+   * nothing else. `createdByUserId` names the Hub person who created an unmanaged
+   * key: it acts with that person's grants and role, never more. `null` there is
+   * a key nobody is recorded as creating — minted by the CLI, or before creators
+   * were recorded — which keeps the per-app reach keys had before, and gets
+   * nothing that takes a role.
    */
-  | { kind: 'mcp'; ownerAppUrn: string | null }
+  | { kind: 'mcp'; ownerAppUrn: string | null; createdByUserId: number | null }
   /** The Hub acting on its own behalf, for a reason named here. */
   | { kind: 'system'; reason: 'update-reapply' | 'debug-seed' | 'debug-start-all' };
 

@@ -17,6 +17,8 @@ function keyInfo(overrides: Partial<ApiKeyInfo> & { id: number }): ApiKeyInfo {
     expiresAt: null,
     lastUsedAt: null,
     createdAt: '2026-01-01T00:00:00Z',
+    createdByUserId: null,
+    createdByUsername: null,
     ...overrides,
   };
 }
@@ -34,14 +36,20 @@ describe('ApiKeyAdminService', () => {
     const res = await service.createKey('CLI');
     // Operator keys never carry 'app': that scope requires an owning app URN to pass the
     // callback guard, so an operator-created 'app' key would be a dead credential.
-    expect(apiKeys.create).toHaveBeenCalledWith('CLI', { scopes: ['mcp'], capability: 'write' });
+    expect(apiKeys.create).toHaveBeenCalledWith('CLI', { scopes: ['mcp'], capability: 'write', createdByUserId: null });
     expect(res.key).toBe('abcd1234RAW');
   });
 
   it('createKey mints at the requested capability, so a read-only key is never wide open in between', async () => {
     apiKeys.create.mockResolvedValue({ ...keyInfo({ id: 6, name: 'recall', capability: 'read' }), key: 'raw' });
     await service.createKey('recall', 'read');
-    expect(apiKeys.create).toHaveBeenCalledWith('recall', { scopes: ['mcp'], capability: 'read' });
+    expect(apiKeys.create).toHaveBeenCalledWith('recall', { scopes: ['mcp'], capability: 'read', createdByUserId: null });
+  });
+
+  it('createKey records the person creating the key, so it acts with their grants and role', async () => {
+    apiKeys.create.mockResolvedValue({ ...keyInfo({ id: 7, name: 'n8n', createdByUserId: 4 }), key: 'raw' });
+    await service.createKey('n8n', 'write', 4);
+    expect(apiKeys.create).toHaveBeenCalledWith('n8n', { scopes: ['mcp'], capability: 'write', createdByUserId: 4 });
   });
 
   describe('setKeyCapability', () => {
