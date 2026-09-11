@@ -4,6 +4,18 @@ import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 const DENIED_CUSTOM_APP_HOST_PATHS = [
   '/',
   '/var/run/docker.sock',
+  // On every systemd distro `/var/run` is a symlink to `/run`. The kernel follows the link at mount
+  // time and this list is compared as strings, so the directory is denied under BOTH names: `/run`
+  // alone left `/var/run/containerd/containerd.sock` open under the other one. It holds the Docker,
+  // containerd and dbus sockets, each of them a host escape by itself.
+  '/run',
+  '/var/run',
+  // Docker's data-root: every container's volumes, and with the classic storage drivers its
+  // filesystem and image layers as well.
+  '/var/lib/docker',
+  // containerd's root, where Docker 29's default image store keeps image layers and every
+  // container's filesystem instead.
+  '/var/lib/containerd',
   '/proc',
   '/sys',
   '/dev',
@@ -58,17 +70,20 @@ const APP_DATA_DIR_PLACEHOLDER = '/app-data/__app__';
 /**
  * Whether a host path cannot be canonicalized, and so cannot be cleared by the reject-list below.
  *
- * The reject-list is a string comparison, so a dot segment (`/etc/../etc`, `/./etc`) or an unknown
- * `${...}` expansion mounts a denied directory under a spelling the comparison never sees. Both are
- * rejected rather than resolved: a manifest has no legitimate need for either, and resolving them
- * would mean guessing at intent on the one input where guessing wrong is a host escape.
+ * The reject-list is a string comparison, so a dot segment (`/etc/../etc`, `/./etc`), an unknown
+ * `${...}` expansion or a leading `~` mounts a denied directory under a spelling the comparison never
+ * sees. Compose expands that `~` to the `$HOME` of whatever runs `docker compose`: `~/.ssh` is the
+ * host's `/root/.ssh` under a root `HOME`, and the operator's own `~/.ssh` on a Hub run from source.
+ * All three are rejected rather than resolved: a manifest has no legitimate need for any of them, and
+ * resolving them would mean guessing at intent on the one input where guessing wrong is a host escape.
  */
 function hasUnresolvableHostPathSyntax(hostPath: string): boolean {
   const substituted = hostPath.replace(APP_DATA_DIR_EXPANSION, APP_DATA_DIR_PLACEHOLDER);
 
-  // Any OTHER expansion: the string checked here is not the string
-  // docker-compose eventually resolves, so there is nothing to check.
-  if (substituted.includes('$')) {
+  // Any OTHER expansion, the `~` compose expands at the start of a path included: the string
+  // checked here is not the string docker-compose eventually resolves, so there is nothing to check.
+  // A `~` anywhere else is a literal character and is left to the checks below.
+  if (substituted.includes('$') || substituted.startsWith('~')) {
     return true;
   }
 
@@ -105,9 +120,9 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
     return false;
   }
 
-  // A denied path is denied by its ANCESTORS too. `/var/run/docker.sock` is on the list, so
-  // binding `/var/run` — or `/var` — hands over the same socket under a path the equality and
-  // prefix tests never see. The third clause denies any directory that contains a denied path.
+  // A denied path is denied by its ANCESTORS too. `/var/lib/docker` is on the list, so binding
+  // `/var/lib` — or `/var` — hands over the same data under a path the equality and prefix tests
+  // never see. The third clause denies any directory that contains a denied path.
   return DENIED_CUSTOM_APP_HOST_PATHS.some(
     (denied) => normalized === denied || normalized.startsWith(`${denied}/`) || denied.startsWith(`${normalized}/`),
   );
