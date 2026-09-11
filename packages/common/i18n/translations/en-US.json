@@ -1736,6 +1736,8 @@
   "RESTORE_APPS_PLAN_SUMMARY": "Found {{count}} app(s) in your CI Account; {{actionable}} need action on this Hub.",
   "RESTORE_APPS_REUSING_DATA": "Existing app data on disk will be reused.",
   "RESTORE_APPS_PARTIAL_SKIP_TITLE": "Some apps could not be restored automatically:",
+  "RESTORE_APPS_INCOMPLETE_TITLE": "Some apps were not restored",
+  "RESTORE_APPS_INCOMPLETE_DESCRIPTION": "Your account is not allowed to install them, or your permissions could not be checked with your CI Account. Ask an organization owner or admin to install them, or retry.",
   "RESTORE_APPS_CONTINUE_IN_BACKGROUND": "Continue to dashboard",
   "RESTORE_APPS_ACTION_INSTALL": "Queue install",
   "RESTORE_APPS_ACTION_START": "Start existing install",
