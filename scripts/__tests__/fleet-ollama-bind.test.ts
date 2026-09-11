@@ -38,6 +38,7 @@ import {
   systemdNameCompare,
   verifyEffectiveBind,
 } from '../lib/fleet-ollama-bind.js';
+import { OLLAMA_PORT_GUARD } from '../lib/fleet-port-guard.js';
 
 const file = (name: string, ...envLines: string[]): DropinFile => ({
   name,
@@ -298,6 +299,53 @@ describe('planBindConsolidation', () => {
     const plan = planBindConsolidation([existing], target, opts);
     expect(plan.canonical.action).toBe('write');
     expect(plan.noop).toBe(false);
+  });
+
+  // The dry run on beta-max and core-1 (2026-09-11) listed the file moves and the write, and said
+  // nothing about the guard the execute path then installed and reported. The plan is the
+  // operator's preview of the shell, so it names the guard the way the shell handles it.
+  it('names the guard: installed before the restart for `all`, removed for tailnet and local', () => {
+    const files = [file('override.conf', host('0.0.0.0'))];
+    const all = planBindConsolidation(files, normalizeOllamaHost('0.0.0.0'), opts);
+    expect(all.guard).toEqual({ unit: OLLAMA_PORT_GUARD.unitName, action: 'install', active: undefined });
+    const guardLine = `install ${OLLAMA_PORT_GUARD.unitName} (accept lo,tailscale0,docker0,br-+; reset elsewhere) before restarting`;
+    expect(all.summary).toContain(guardLine);
+    // In shell order: after the canonical write, since the guard must be up before the restart.
+    expect(all.summary.indexOf(guardLine)).toBe(all.summary.findIndex((l) => l.startsWith(`write ${CANONICAL_BIND_DROPIN}`)) + 1);
+
+    // The tailnet address and loopback: the two binds that do not want a guard.
+    for (const narrower of [target, normalizeOllamaHost('127.0.0.1')]) {
+      const plan = planBindConsolidation(files, narrower, opts);
+      expect(plan.guard.action).toBe('remove');
+      expect(plan.summary).toContain(`remove ${OLLAMA_PORT_GUARD.unitName} if present`);
+      expect(plan.summary.join('\n')).not.toContain('install ollama-tailnet-guard');
+    }
+  });
+
+  it('a managed 0.0.0.0 whose guard is down is not a no-op — the guard is the work', () => {
+    const all = normalizeOllamaHost('0.0.0.0');
+    const managed = [{ name: CANONICAL_BIND_DROPIN, content: canonicalBindDropinContent(all) }];
+    // The files alone say nothing to do; the probe's guard reading says otherwise.
+    expect(planBindConsolidation(managed, all, opts).noop).toBe(true);
+    expect(planBindConsolidation(managed, all, { ...opts, guardUnit: 'unknown' }).noop).toBe(true);
+    for (const down of ['inactive', 'failed']) {
+      const plan = planBindConsolidation(managed, all, { ...opts, guardUnit: down });
+      expect(plan.noop).toBe(false);
+      expect(plan.canonical.action).toBe('unchanged');
+      expect(plan.guard.active).toBe(false);
+      expect(plan.summary).toContain(`${CANONICAL_BIND_DROPIN} already sets OLLAMA_HOST=0.0.0.0:11434`);
+      expect(plan.summary.some((l) => l.startsWith(`install ${OLLAMA_PORT_GUARD.unitName}`) && !l.includes('already active'))).toBe(true);
+    }
+    const up = planBindConsolidation(managed, all, { ...opts, guardUnit: 'active' });
+    expect(up.noop).toBe(true);
+    expect(up.summary.some((l) => l.startsWith(`install ${OLLAMA_PORT_GUARD.unitName}`) && l.endsWith('— already active'))).toBe(true);
+
+    // And the mirror image: a tailnet bind that is already right still has a guard to take down.
+    const tailnetManaged = [{ name: CANONICAL_BIND_DROPIN, content: canonicalBindDropinContent(target) }];
+    expect(planBindConsolidation(tailnetManaged, target, { ...opts, guardUnit: 'inactive' }).noop).toBe(true);
+    const leftover = planBindConsolidation(tailnetManaged, target, { ...opts, guardUnit: 'active' });
+    expect(leftover.noop).toBe(false);
+    expect(leftover.summary).toContain(`remove ${OLLAMA_PORT_GUARD.unitName} (active now; this bind does not need it)`);
   });
 });
 

@@ -420,6 +420,12 @@ export interface ConsolidationPlan {
   noop: boolean;
   /** What the bind will be once applied (or is already). */
   target: OllamaAddress;
+  /**
+   * What the bind step does to the port guard, and whether that is work. `all` installs
+   * `ollama-tailnet-guard.service` before the daemon restarts onto 0.0.0.0; the other two modes
+   * remove one an earlier `all` left behind. `active` is the probe's reading, when it had one.
+   */
+  guard: { unit: string; action: 'install' | 'remove'; active?: boolean };
   /** One line per action, in the order they would happen. */
   summary: string[];
 }
@@ -429,13 +435,20 @@ export interface ConsolidationOptions {
   date: string;
   extraEnv?: readonly string[];
   dropinDir?: string;
+  /**
+   * `systemctl is-active` of the port guard as the probe read it (`active`, `inactive`, `failed`,
+   * `unknown`). With it, a node whose canonical file is already right but whose guard is down is
+   * not a no-op: the guard is the work. Without it the plan judges the files alone.
+   */
+  guardUnit?: string;
 }
 
 /**
  * Plan the move from N files setting OLLAMA_HOST to one.
  *
- * Idempotent: a node already carrying the canonical file with the intended content and no other
- * setter yields `noop: true` and an empty action list. Re-running a fleet command must be cheap.
+ * Idempotent: a node already carrying the canonical file with the intended content, no other
+ * setter, and its guard in the state this bind wants yields `noop: true`. Re-running a fleet
+ * command must be cheap.
  *
  * Moving aside is decided per file on one question: would anything be lost? A file whose every
  * `Environment=` key is also written by the canonical file (`override.conf` setting only
@@ -511,7 +524,17 @@ export function planBindConsolidation(files: readonly DropinFile[], target: Olla
 
   // Trailing-newline-insensitive: the probe's `cat` + `echo` framing drops the file's final newline.
   const unchanged = existing !== undefined && existing.content.trimEnd() === content.trimEnd();
-  const noop = unchanged && disable.length === 0;
+
+  // The guard is part of the bind, not a footnote to it: a 0.0.0.0 whose guard is down is the
+  // exposure `all` exists to avoid, and the files alone cannot see that. Mirrors the apply shell,
+  // which installs for `all` and removes for the rest — so switching modes stays coherent.
+  const guardAction = classifyBindAddress(target.host) === 'all' ? 'install' : 'remove';
+  const guardKnown = opts.guardUnit !== undefined && opts.guardUnit !== 'unknown';
+  const guardActive = guardKnown ? opts.guardUnit === 'active' : undefined;
+  const guardWork = guardActive !== undefined && (guardAction === 'install' ? !guardActive : guardActive);
+  const guard: ConsolidationPlan['guard'] = { unit: OLLAMA_PORT_GUARD.unitName, action: guardAction, active: guardActive };
+
+  const noop = unchanged && disable.length === 0 && !guardWork;
   const summary: string[] = [];
   for (const d of disable) summary.push(`move ${d.name} → ${d.to}`);
   for (const s of shadowed) summary.push(`leave ${s.name} (${s.why})`);
@@ -520,6 +543,12 @@ export function planBindConsolidation(files: readonly DropinFile[], target: Olla
     unchanged
       ? `${CANONICAL_BIND_DROPIN} already sets OLLAMA_HOST=${target.address}`
       : `write ${CANONICAL_BIND_DROPIN} with OLLAMA_HOST=${target.address}`,
+  );
+  // In shell order: the guard goes up (or comes down) after the file is written and before the restart.
+  summary.push(
+    guardAction === 'install'
+      ? `install ${guard.unit} (accept ${OLLAMA_PORT_GUARD.acceptInterfaces.join(',')}; reset elsewhere) before restarting${guardActive ? ' — already active' : ''}`
+      : `remove ${guard.unit} ${guardActive ? '(active now; this bind does not need it)' : 'if present'}`,
   );
   for (const i of ignored) summary.push(`ignored by systemd (not *.conf): ${i}`);
 
@@ -531,6 +560,7 @@ export function planBindConsolidation(files: readonly DropinFile[], target: Olla
     ignored,
     noop,
     target,
+    guard,
     summary,
   };
 }
