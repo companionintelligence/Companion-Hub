@@ -66,7 +66,7 @@ export interface BackendPlanOptions {
   ollamaVersion?: string;
 }
 
-export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'tailnet';
+export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'all';
 
 /**
  * Backends whose default port identifies them unambiguously.
@@ -368,7 +368,7 @@ export function describeBind(bind: OllamaBindMode): string {
     case 'tailnet':
       return 'the tailnet address (tailscale ip -4)';
     case 'all':
-      return 'all interfaces (0.0.0.0)';
+      return 'all interfaces (0.0.0.0), guarded to tailnet, loopback and Docker bridges';
     case 'local':
       return 'loopback only (127.0.0.1)';
   }
