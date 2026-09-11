@@ -97,7 +97,11 @@ const PROBE_SCRIPT = [
   'for d in /sys/class/drm/card*/device; do [ -f "$d/mem_info_gtt_total" ] && echo "amd_gtt_mib=$(( $(cat $d/mem_info_gtt_total) / 1048576 ))" && break; done',
   "echo \"reboot_required=$([ -f /var/run/reboot-required ] && cat /var/run/reboot-required.pkgs 2>/dev/null | tr '\\n' ',' || echo no)\"",
   // Which engines already answer. Adoption beats installation, so an install must know what is here.
-  'for p in 11434 13305 8080 8000 8216 8020; do (echo > /dev/tcp/127.0.0.1/$p) >/dev/null 2>&1 && echo "listening=$p"; done',
+  // Loopback AND the tailnet address: a node whose Ollama binds its Tailscale IP (the installer's
+  // default) answers nothing on 127.0.0.1, and a loopback-only probe would have the planner
+  // re-install a healthy engine on every such node.
+  'ts_ip="$(tailscale ip -4 2>/dev/null | head -1)"',
+  'for p in 11434 13305 8080 8000 8216 8020; do for a in 127.0.0.1 $ts_ip; do (echo > /dev/tcp/$a/$p) >/dev/null 2>&1 && { echo "listening=$p"; break; }; done; done',
   // The probe's exit status is meaningless — it is a sequence of independent best-effort reads, and
   // the last one is a port test that fails whenever that port is idle. Without this the whole script
   // exits non-zero on a perfectly healthy machine and its output gets thrown away as a failure.
