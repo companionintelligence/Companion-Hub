@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   readHostFacts: vi.fn(),
   executeBackendPlan: vi.fn(),
   checkAppOnNode: vi.fn(),
+  preflightNode: vi.fn(),
 }));
 
 vi.mock('../lib/fleet-roster.js', async (importOriginal) => ({
@@ -57,6 +58,12 @@ vi.mock('../lib/fleet-apps.js', async (importOriginal) => ({
   checkAppOnNode: mocks.checkAppOnNode,
 }));
 
+// The probe is an SSH call of its own; the gate that reads it is real.
+vi.mock('../lib/fleet-preflight.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/fleet-preflight.js')>()),
+  preflightNode: mocks.preflightNode,
+}));
+
 import { runFleetCommand } from '../lib/cli-fleet.js';
 
 const facts = {
@@ -83,6 +90,9 @@ beforeEach(() => {
   mocks.readHostFacts.mockReset().mockResolvedValue({ facts });
   mocks.executeBackendPlan.mockReset();
   mocks.checkAppOnNode.mockReset();
+  mocks.preflightNode
+    .mockReset()
+    .mockImplementation(async (_target: unknown, node: { name: string }) => ({ node: node.name, findings: [], verdict: 'ok', ms: 1 }));
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -120,6 +130,14 @@ describe('fleet install', () => {
     expect(mocks.installNode).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
   });
+
+  it('hands --force and --touches-boot to the per-node installer, where the preflight gate lives', async () => {
+    mocks.installNode.mockImplementation(async (node: { name: string }) => ({ node: node.name, ok: true, steps: [] }));
+    await runFleetCommand(['install', '--execute', '--force', '--touches-boot']);
+    expect(mocks.installNode).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ force: true, touchesBoot: true }), undefined);
+    await runFleetCommand(['install', '--execute']);
+    expect(mocks.installNode).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ force: false, touchesBoot: false }), undefined);
+  });
 });
 
 describe('fleet update', () => {
@@ -140,6 +158,142 @@ describe('fleet update', () => {
     await runFleetCommand(['update', '--execute', '--hub']);
     expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
     expect(process.exitCode).toBeUndefined();
+  });
+
+  /**
+   * The preflight runs before the first thing that changes a node. A `block` — a wedged dpkg, a
+   * held lock, no sudo — ends that node's update without touching it, and counts as a failure.
+   */
+  describe('preflight gate', () => {
+    const blocked = (name: string) => ({
+      node: name,
+      findings: [{ check: 'dpkg', ok: false, severity: 'block', value: '3 package(s) half-configured', via: 'dpkg --audit' }],
+      verdict: 'block',
+      ms: 1,
+    });
+
+    it('refuses a blocked node before running anything on it, and fails the run', async () => {
+      mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) =>
+        node.name === 'core-1' ? blocked(node.name) : { node: node.name, findings: [], verdict: 'ok', ms: 1 },
+      );
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub']);
+      // Only core-2's update ran.
+      expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+      expect(mocks.sshCapture.mock.calls[0]?.[0]).toMatchObject({ host: '10.0.0.2' });
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('goes ahead under --force and exits 0 when the work itself succeeded', async () => {
+      mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => blocked(node.name));
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub', '--force']);
+      expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('continues past a warn', async () => {
+      mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+        node: node.name,
+        findings: [{ check: 'boot-recovery', ok: false, severity: 'warn', value: 'no boot window', via: '/etc/default/grub' }],
+        verdict: 'warn',
+        ms: 1,
+      }));
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub']);
+      expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('passes --touches-boot through to the probe', async () => {
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub', '--touches-boot']);
+      expect(mocks.preflightNode).toHaveBeenCalledWith(expect.anything(), expect.anything(), { touchesBoot: true });
+    });
+
+    it('does not probe on a dry run', async () => {
+      await runFleetCommand(['update', '--hub']);
+      expect(mocks.preflightNode).not.toHaveBeenCalled();
+      expect(process.exitCode).toBeUndefined();
+    });
+  });
+});
+
+describe('fleet preflight', () => {
+  it('exits 0 when every node is clear, and dials nothing but the probe', async () => {
+    await runFleetCommand(['preflight']);
+    expect(mocks.preflightNode).toHaveBeenCalledTimes(2);
+    expect(mocks.sshCapture).not.toHaveBeenCalled();
+    expect(mocks.installNode).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits 1 when a node would be refused, so it can gate a script', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [{ check: 'sudo', ok: false, severity: 'block', value: 'sudo wants a password', via: 'sudo -n true' }],
+      verdict: 'block',
+      ms: 1,
+    }));
+    await runFleetCommand(['preflight']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 1 when a probe could not run — unmeasured is not clear', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [],
+      verdict: 'block',
+      error: 'Timed out after 60000ms',
+      ms: 60000,
+    }));
+    await runFleetCommand(['preflight']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 0 on info and warn findings', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [
+        { check: 'sudo', ok: false, severity: 'info', value: 'CI OS: unprivileged by design', via: 'sudo -n true' },
+        { check: 'boot-recovery', ok: false, severity: 'warn', value: 'no boot window', via: '/etc/default/grub' },
+      ],
+      verdict: 'warn',
+      ms: 1,
+    }));
+    await runFleetCommand(['preflight']);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('prints a row per node and a detail line per finding', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [{ check: 'apt-lock', ok: false, severity: 'block', value: 'dpkg lock held by PID 40210', via: 'lslocks', fix: 'wait for it' }],
+      verdict: 'block',
+      ms: 1,
+    }));
+    await runFleetCommand(['preflight', '--nodes=core-1']);
+    const out = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(out).toContain('APT-LOCK');
+    expect(out).toContain('dpkg lock held by PID 40210');
+    expect(out).toContain('via: lslocks');
+    expect(out).toContain('fix: wait for it');
+    expect(out).toContain('--force');
+  });
+
+  it('emits JSON with the findings when asked', async () => {
+    await runFleetCommand(['preflight', '--json']);
+    const out = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .find((line) => line.trim().startsWith('{'));
+    expect(out).toBeDefined();
+    const parsed = JSON.parse(out as string) as { nodes: { node: string; verdict: string }[]; touchesBoot: boolean };
+    expect(parsed.nodes.map((n) => n.node)).toEqual(['core-1', 'core-2']);
+    expect(parsed.touchesBoot).toBe(false);
   });
 });
 

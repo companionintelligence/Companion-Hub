@@ -21,12 +21,13 @@ import { describeSshFailure } from './fleet-ssh.js';
 import { readHostFacts, isTooBusyForMaintenance } from './fleet-hardware.js';
 import { executeBackendPlan, planAllBackends, INSTALLABLE_BACKENDS, type InstallableBackend } from './fleet-backends.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { gatePreflight, PREFLIGHT_CHECKS, type PreflightFinding, type PreflightNodeReport, preflightNode } from './fleet-preflight.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
 import { sshCapture } from './fleet-ssh.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps'] as const;
+export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'preflight', 'backends', 'install', 'update', 'apps'] as const;
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
 export interface FleetArgs {
@@ -67,6 +68,16 @@ export interface FleetArgs {
   apps: AppSlug[];
   /** Where an app should send inference. */
   endpoint: AppEndpointMode;
+  /**
+   * `install`/`update`: proceed on a node whose preflight said `block`. The finding is still
+   * printed, marked as overridden, so the log shows a choice rather than a gap.
+   */
+  force: boolean;
+  /**
+   * `preflight`: rate the boot-recovery and grub-customizer findings as they would be rated before
+   * an operation that touches the kernel, initramfs or GRUB — `block` rather than `warn`.
+   */
+  touchesBoot: boolean;
 }
 
 export class FleetArgError extends Error {}
@@ -103,6 +114,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
     // the cluster rather than one box.
     endpoint: 'pool',
+    force: false,
+    touchesBoot: false,
   };
 
   const rest = [...argv];
@@ -146,6 +159,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
+    else if (arg === '--force') args.force = true;
+    else if (arg === '--touches-boot') args.touchesBoot = true;
     else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
@@ -410,6 +425,120 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
 }
 
+/** One cell of the preflight table: what the column is about, at a glance; the detail lines carry the rest. */
+function preflightCell(finding: PreflightFinding | undefined): string {
+  if (!finding) return '—';
+  if (finding.ok) return 'ok';
+  switch (finding.severity) {
+    case 'block':
+      return colorize('BLOCK', 'red');
+    case 'warn':
+      return colorize('warn', 'yellow');
+    case 'info':
+      return colorize('info', 'dim');
+  }
+}
+
+/** The per-node lines under the table: every finding that is not a plain pass, with its evidence and fix. */
+function printPreflightDetails(reports: readonly PreflightNodeReport[]): void {
+  for (const report of reports) {
+    const lines = report.error
+      ? [`  ${colorize('✗', 'red')} preflight could not run — ${report.error.slice(0, 200)}`]
+      : report.findings
+          .filter((f) => !f.ok)
+          .map((f) => {
+            const tone = f.severity === 'block' ? 'red' : f.severity === 'warn' ? 'yellow' : 'dim';
+            const fix = f.fix ? `\n      fix: ${f.fix}` : '';
+            return `  ${colorize(f.severity.toUpperCase().padEnd(5), tone)} ${f.check} — ${f.value}\n      via: ${f.via}${fix}`;
+          });
+    if (lines.length === 0) continue;
+    console.log(`\n${report.node}`);
+    for (const line of lines) console.log(line);
+  }
+}
+
+/**
+ * `cihub fleet preflight` — is each node safe to hand a package transaction?
+ *
+ * Read-only, no `--execute`: it runs `sudo -n true`, `dpkg --audit`, `apt-get check` and a handful
+ * of `ls`/`cat` on each node and changes nothing. `install` and `update` run the same checks per
+ * node before touching it; this is the standalone view, for looking before a pass rather than being
+ * refused mid-way through one. Exits 1 if any node would be blocked, so it can gate a script.
+ */
+async function runPreflight(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
+  if (roster.nodes.length === 0) {
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
+    return;
+  }
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.json) {
+    console.log(
+      colorize(
+        `Preflight on ${run.length} node(s)${args.touchesBoot ? ', rated for an operation that touches boot' : ''}. Reads only; changes nothing.`,
+        'dim',
+      ),
+    );
+  }
+
+  // Probes in parallel: each is a few short reads, not a transfer, so the fan-out that is wrong for
+  // installs is right here.
+  const reports: PreflightNodeReport[] = [];
+  const queue = [...run];
+  const worker = async () => {
+    for (;;) {
+      const node = queue.shift();
+      if (!node) return;
+      reports.push(await preflightNode({ host: node.ip, user: node.user ?? args.user }, node, { touchesBoot: args.touchesBoot }));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(args.concurrency, run.length) }, worker));
+  reports.sort((a, b) => a.node.localeCompare(b.node));
+
+  if (args.json) {
+    console.log(
+      JSON.stringify({ touchesBoot: args.touchesBoot, nodes: reports, skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })) }, null, 2),
+    );
+  } else {
+    console.log('');
+    console.log(
+      renderTable(
+        reports.map((r) => [
+          r.node,
+          ...PREFLIGHT_CHECKS.map((check) => (r.error ? colorize('?', 'red') : preflightCell(r.findings.find((f) => f.check === check)))),
+          r.error
+            ? colorize('unreachable', 'red')
+            : r.verdict === 'block'
+              ? colorize('BLOCK', 'red')
+              : r.verdict === 'warn'
+                ? colorize('warn', 'yellow')
+                : r.verdict,
+        ]),
+        ['NODE', ...PREFLIGHT_CHECKS.map((c) => c.toUpperCase()), 'VERDICT'],
+      ),
+    );
+    printPreflightDetails(reports);
+    if (skipped.length) {
+      console.log('');
+      for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    }
+  }
+
+  const blocked = reports.filter((r) => r.error || r.verdict === 'block').length;
+  if (blocked && !args.json) {
+    console.log('');
+    console.log(colorize(`${blocked} node(s) would be refused by install/update. Fix the finding, or pass --force to those commands.`, 'yellow'));
+  }
+  recordFleetFailures(blocked);
+}
+
 /**
  * `cihub fleet backends` — install or adopt inference backends across the fleet.
  *
@@ -564,6 +693,12 @@ async function runInstall(args: FleetArgs): Promise<void> {
       console.log(colorize(`  needs 'cihub login --scope ${DEVICE_PAIR_SCOPE}', or --code for one node`, 'dim'));
     }
     console.log(colorize('  requires a Postgres password', 'dim'));
+    console.log(
+      colorize(
+        `  each node is preflighted first (sudo, dpkg, grub, boot recovery, apt lock) — '${BASE_COMMAND} fleet preflight' shows it now`,
+        'dim',
+      ),
+    );
     return;
   }
 
@@ -611,6 +746,8 @@ async function runInstall(args: FleetArgs): Promise<void> {
         claimEmail: args.claimEmail,
         joinPool: args.joinPool,
         poolPin: args.poolPin,
+        force: args.force,
+        touchesBoot: args.touchesBoot,
       },
       args.user,
     );
@@ -659,6 +796,13 @@ async function runUpdate(args: FleetArgs): Promise<void> {
   for (const node of run) {
     const target = { host: node.ip, user: node.user ?? args.user };
     console.log(`\n${node.name}`);
+    // Same gate as install, same place: before the first thing that changes the node.
+    const gate = gatePreflight(await preflightNode(target, node, { touchesBoot: args.touchesBoot }), { force: args.force });
+    console.log(`  ${gate.proceed ? colorize('✓', 'green') : colorize('·', 'dim')} preflight — ${gate.detail}`);
+    if (!gate.proceed) {
+      failed += 1;
+      continue;
+    }
     if (args.hub) {
       const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript()}\nEOF`, 20 * 60_000);
       const ok = res.ok && res.out.includes('hub-update-complete');
@@ -745,6 +889,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'status':
       await runStatus(args);
+      return;
+    case 'preflight':
+      await runPreflight(args);
       return;
     case 'backends':
       await runBackends(args);
