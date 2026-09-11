@@ -46,6 +46,12 @@ export interface FleetNode {
   skip?: FleetNodeSkip;
   /** Free text an operator wrote. Shown in listings; never parsed. */
   note?: string;
+  /**
+   * Out-of-band console for this machine — a NanoKVM/PiKVM address, an IPMI host, `physical` — when
+   * one exists. Never dialled by anything here; its PRESENCE is what `fleet boot-params` reads before
+   * staging a change a node can only pick up on a reboot nobody may be able to watch.
+   */
+  console?: string;
 }
 
 export interface FleetRoster {
@@ -116,6 +122,7 @@ export function parseFleetRoster(raw: unknown): { nodes: FleetNode[]; dropped: s
       local: r.local === true ? true : undefined,
       skip: isFleetNodeSkip(r.skip) ? r.skip : undefined,
       note: typeof r.note === 'string' ? r.note : undefined,
+      console: typeof r.console === 'string' && r.console.trim() ? r.console.trim() : undefined,
     });
   }
   return { nodes, dropped };

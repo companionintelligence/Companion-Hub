@@ -196,6 +196,33 @@ Two settings need coordinating across the fleet rather than set independently:
   Linux AMD with `/sys` bind-mounted. A node that cannot measure reports nothing and ranks mid-band —
   deliberately not idle. On a fleet where most nodes cannot measure, leave the weight at `0`.
 
+## Strix Halo nodes: GTT boot parameters
+
+AMD Strix Halo (gfx1151) boxes expose only the firmware VRAM carve-out to the GPU unless the kernel
+is booted with `iommu=pt amdgpu.gttsize=<N> ttm.pages_limit=<M>`. CI-OS sets those **at first boot
+only**, so a node provisioned before that shipped — ten of this fleet's twelve, as measured
+2026-09-10 — has them absent or partial and loads nothing above its 2 GB carve-out. `cihub fleet
+boot-params` is the catch-up path:
+
+```bash
+cihub fleet boot-params                      # per gfx1151 node: live vs staged state, target, planned diff
+cihub fleet boot-params --execute            # write /etc/default/grub (backup beside it) + update-grub
+cihub fleet boot-params --nodes core-10 --i-have-console --execute
+```
+
+Three things to know before running it. **It never reboots** — the new parameters take effect on the
+next boot, and the run ends with the list of nodes that need one; do them one at a time, when idle,
+watching each come back. **Live and staged are reported separately** because they disagree in both
+directions: staged-but-not-live is a pending reboot, live-but-not-staged will silently lose the
+parameters on the next one. **Two nodes are refused by default.** A hidden zero-timeout GRUB menu
+(`GRUB_TIMEOUT=0`, `GRUB_TIMEOUT_STYLE=hidden`) with no out-of-band console means a boot that fails on
+the new parameters is recovered at the machine and nowhere else; core-10 and razer are in that state.
+Record the console on the node's `fleet.json` entry (`"console": "nanokvm 192.168.0.115"`) or pass
+`--i-have-console` for a node you are physically at. The sizing formula and the refusal on any
+`GRUB_CMDLINE_LINUX_DEFAULT` line that is not plainly double-quoted are CI-OS's own, so a node it
+provisions and a node this catches up end on a byte-identical line. Full detail in
+[`CLI.md` → `cihub fleet boot-params`](CLI.md#cihub-fleet-boot-params).
+
 ## Growing and shrinking
 
 - **Adding a node** repeats the whole one-node path: register, **claim** (`cihub claim --email <addr>`,
