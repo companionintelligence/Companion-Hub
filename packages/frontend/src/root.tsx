@@ -1,7 +1,7 @@
 import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
 import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
@@ -70,14 +70,19 @@ export function DesktopStartupFallback() {
  */
 function ConnectingToLocalApi() {
   const [showRetry, setShowRetry] = useState(false);
+  const gateRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
+    // Mark the gate React owns. Set in an effect, not in the markup, so the
+    // prerendered document still matches; see removeOrphanedStartupGates.
+    gateRef.current?.setAttribute(HYDRATED_GATE_ATTR, '');
     const id = globalThis.setTimeout(() => setShowRetry(true), 4_000);
     return () => globalThis.clearTimeout(id);
   }, []);
 
   return (
     <main
+      ref={gateRef}
       data-testid="connecting-to-local-api"
       className="safe-area-inset fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-background px-6"
       role="status"
@@ -91,6 +96,26 @@ function ConnectingToLocalApi() {
       )}
     </main>
   );
+}
+
+const HYDRATED_GATE_ATTR = 'data-hydrated';
+
+/**
+ * Drop a prerendered startup gate that hydration left behind.
+ *
+ * When the first client render disagrees with the prerendered document React
+ * throws #418 and regenerates the tree on the client. On a plain origin that
+ * recovery also clears the server markup, but with a third-party `<script>`
+ * injected into `<body>` — Cloudflare's challenge platform does this on every
+ * tunnel hostname — the prerendered gate survives as a dead `fixed z-[100]`
+ * overlay with the fully working app painted underneath it. The gate React
+ * owns marks itself in its own mount effect, which runs before this parent
+ * effect; anything still unmarked at body level is that leftover.
+ */
+export function removeOrphanedStartupGates(root: Document = document) {
+  for (const el of root.querySelectorAll(`body > [data-testid="connecting-to-local-api"]:not([${HYDRATED_GATE_ATTR}])`)) {
+    el.remove();
+  }
 }
 
 /** Serialize a non-Error thrown value for a readable Sentry message (avoids "[object Object]"). */
@@ -200,6 +225,14 @@ type RegistrationLookup = { kind: 'ok'; status: RegistrationStatus } | { kind: '
 
 /** Set after a successful warm bootstrap so shouldRevalidate can skip redundant work. */
 let rootBootstrapWarm = false;
+
+/**
+ * The stale-cookie logout is one round trip per document, not one per loader
+ * pass: a cold load of a protected route runs this loader for the route and
+ * again for `/login`, which posted `/api/auth/logout` twice before the login
+ * page had painted. Cleared again the moment a live session is observed.
+ */
+let staleServerSessionCleared = false;
 
 async function loadRegistrationLookup(): Promise<RegistrationLookup> {
   const status = await firstOf(resolveRegistrationStatus(), null, HUB_BOOTSTRAP_FETCH_MS);
@@ -382,10 +415,14 @@ async function runClientLoader(request: Request) {
       throw new Error('hub-bootstrap-timeout');
     }
     if (userResult.data?.isLoggedIn) {
+      staleServerSessionCleared = false;
       setServerSessionRefreshRecommendedAt(userResult.data.sessionRefreshRecommendedAt ?? null);
       await refreshHubSessionIfDue();
     } else {
-      await clearStaleServerSession();
+      if (!staleServerSessionCleared) {
+        staleServerSessionCleared = true;
+        await clearStaleServerSession();
+      }
       rootBootstrapWarm = false;
     }
   } catch {
@@ -440,10 +477,13 @@ export function HydrateFallback() {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
-  const [apiReady, setApiReady] = useState(() => {
-    if (typeof document === 'undefined') return false;
-    return isMobileClient() || !waitForMobileOrCrossOrigin;
-  });
+  // The document is PRERENDERED with this false, so the emitted <body> holds a
+  // bare startup gate. Initialising it from `typeof document` made the first
+  // client render disagree with that HTML (#418) on every browser load; React
+  // recovers by regenerating the tree, but behind the Cloudflare tunnel that
+  // recovery strands the prerendered gate as a dead full-screen overlay. Stay
+  // identical to the prerender for the first render, then flip in an effect.
+  const [apiReady, setApiReady] = useState(false);
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
   // The document is PRERENDERED in Node, where isMobileClient() is false, so the
@@ -461,10 +501,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
     installMobileLoadWatchdog();
     document.getElementById('ci-hub-boot')?.remove();
     document.getElementById('ci-hub-mobile-hud')?.remove();
+    removeOrphanedStartupGates();
   }, []);
 
   useEffect(() => {
-    if (!waitForMobileOrCrossOrigin) return;
+    // Browser and release desktop talk to a same-origin API that is already up;
+    // a phone owns its own connect screen. Only the cross-origin desktop shell
+    // has to wait for the port probe.
+    if (isMobileClient() || !waitForMobileOrCrossOrigin) {
+      setApiReady(true);
+      return;
+    }
 
     let cancelled = false;
     void tauriBaseUrlReady.then(() => {
