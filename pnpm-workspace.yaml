@@ -58,3 +58,6 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - '@companionintelligence/tokens'
+  - '@companionintelligence/assets@1.0.0'
+  - '@companionintelligence/config@1.0.0'
+  - '@companionintelligence/content@1.0.0'
