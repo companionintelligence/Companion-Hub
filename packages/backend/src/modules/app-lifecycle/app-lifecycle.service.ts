@@ -10,6 +10,8 @@ import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChange } from './custom-domain-authority';
+import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -200,8 +202,19 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
    * has to be as well, and less obviously: its form field happens to share a name
    * with its column, so the bare spread wrote it straight through and bypassed
    * the rule that an answer is only valid alongside a choice.
+   *
+   * `customDomainIntent` too, though no client sends it: the form is
+   * `.passthrough()`, so one that did would write the intent column directly,
+   * past `customDomainColumns` and past the owner/admin gate, which reads only
+   * `customDomain` (R2-HUBDOMAINS-1). The bind pass would then wire any parked
+   * organization domain to this app with nobody having been asked.
    */
-  const { customDomain: _customDomain, customDomainTakeover: _customDomainTakeover, ...rowFields } = parsedForm;
+  const {
+    customDomain: _customDomain,
+    customDomainTakeover: _customDomainTakeover,
+    customDomainIntent: _customDomainIntent,
+    ...rowFields
+  } = parsedForm;
 
   return {
     config: toStoredConfig(parsedForm),
@@ -1025,11 +1038,97 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     };
   }
 
+  /**
+   * Run `authorize` when an install / update-config form would change which
+   * custom domain the app serves (R2-HUBDOMAINS-1); see
+   * {@link requestsCustomDomainChange} for what counts. `installApp` and
+   * `updateAppConfig` hand it the actor's check, so every transport — the app
+   * routes, the MCP tool runner, agent keys, rehydrate — answers to the same one.
+   *
+   * A release of a binding the client never saw is refused first, with the
+   * answer the save itself would give (R2-HUBDOMAINS-3): whoever holds a stale
+   * dialog needs to reload, and a role refusal would send them the wrong way.
+   * Nothing has been written when either refusal is thrown.
+   */
+  async authorizeCustomDomainChange(appUrn: AppUrn, form: unknown, authorize: () => Promise<void>): Promise<void> {
+    const fields = (typeof form === 'object' && form !== null ? form : {}) as CustomDomainForm;
+
+    // A form that says nothing about custom domains changes none, so it costs no read.
+    if (typeof fields.customDomain !== 'string') {
+      return;
+    }
+
+    const state = await this.customDomainState(appUrn, normalizeStoredHostname(fields.customDomain));
+
+    if (state) {
+      this.refuseUnseenRelease(appUrn, fields, state.bound);
+    }
+
+    if (requestsCustomDomainChange(fields, state)) {
+      await authorize();
+    }
+  }
+
+  /**
+   * The gate `installApp` and `updateAppConfig` open with: the actor may act on
+   * this app at all (`assertActorMay`), and — when the form changes which custom
+   * domain the app serves — may make that change too.
+   */
+  private async assertActorMayApplyForm(actor: LifecycleActor, appUrn: AppUrn, form: unknown, action: HubAction): Promise<void> {
+    await this.assertActorMay(actor, appUrn, action);
+    await this.authorizeCustomDomainChange(appUrn, form, () => this.assertActorMayChangeCustomDomain(actor, appUrn));
+  }
+
+  /**
+   * Who may change which custom domain an app serves (R2-HUBDOMAINS-1): an
+   * organization owner or admin, asked of WhoIs fresh, and refused when WhoIs
+   * cannot be reached. A named exempt principal and the Hub itself are admitted,
+   * as by every gate. An MCP key has no person behind it whose role could be
+   * asked, so it is refused — whatever its capability, managed or not — until
+   * keys record who minted them.
+   */
+  private async assertActorMayChangeCustomDomain(actor: LifecycleActor, appUrn: AppUrn): Promise<void> {
+    if (actor.kind === 'exempt' || actor.kind === 'system') {
+      return;
+    }
+
+    if (actor.kind === 'operator' && (await this.resolveWhois()?.hasManagingRole(actor.userId, appUrn))) {
+      return;
+    }
+
+    throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+  }
+
+  /** What {@link requestsCustomDomainChange} compares a save against; `null` for an app not installed. */
+  private async customDomainState(appUrn: AppUrn, wanted: string | null): Promise<CustomDomainState | null> {
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      return null;
+    }
+
+    const intent = normalizeStoredHostname(app.customDomainIntent);
+    const bound = normalizeStoredHostname(app.customDomain);
+
+    return {
+      intent,
+      bound,
+      takeover: app.customDomainTakeover === true,
+      /*
+       * Only a save that would otherwise change nothing needs the answer — one
+       * re-submitting its own choice or its binding — so only that save pays for
+       * the query.
+       */
+      wantedElsewhere:
+        wanted !== null && (wanted === intent || wanted === bound) ? await this.appRepository.hasCustomDomainIntentElsewhere(app.id, wanted) : false,
+    };
+  }
+
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
     const { appUrn, form, skipRun } = params;
 
     // Before anything is fetched, written or queued — see `assertActorMay`.
-    await this.assertActorMay(params.actor, appUrn, 'install');
+    await this.assertActorMayApplyForm(params.actor, appUrn, form, 'install');
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
@@ -2030,7 +2129,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   public async updateAppConfig(params: { appUrn: AppUrn; form: unknown; actor: LifecycleActor }) {
     const { appUrn, form } = params;
 
-    await this.assertActorMay(params.actor, appUrn, 'configure');
+    await this.assertActorMayApplyForm(params.actor, appUrn, form, 'configure');
 
     const parsedFormResult = appFormSchema.safeParse(form);
 
@@ -2722,10 +2821,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * which hostname it means. Accepting the assertionless ones would leave the
      * defect standing for exactly the client that has it.
      */
-    const expected = normalizeStoredHostname(parsedForm.customDomainExpected);
-    if (expected !== bound) {
-      throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE', { id: appUrn, current: bound }, HttpStatus.CONFLICT);
-    }
+    this.refuseUnseenRelease(appUrn, parsedForm, bound);
 
     const released = await this.exposureSyncService.releaseCustomDomain(app);
 
@@ -2741,6 +2837,28 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     await this.appRepository.updateAppById(app.id, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+
+    // The one binding change a person on this Hub makes, so the one the audit line matters most for.
+    this.logger.info(customDomainAuditLine({ appUrn, previous: bound, next: null, previousPortalRowId: released.portalRowId, cause: 'release' }));
+  }
+
+  /**
+   * R2-HUBDOMAINS-3: `''` gives up the binding the client says it was shown,
+   * or it gives up nothing. See {@link releaseClearedCustomDomain} for why a
+   * request that cannot say what it saw is refused too.
+   */
+  private refuseUnseenRelease(appUrn: AppUrn, form: CustomDomainForm, boundColumn: string | null): void {
+    const bound = normalizeStoredHostname(boundColumn);
+
+    if (form.customDomain !== '' || bound === null) {
+      return;
+    }
+
+    const expected = typeof form.customDomainExpected === 'string' ? normalizeStoredHostname(form.customDomainExpected) : null;
+
+    if (expected !== bound) {
+      throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE', { id: appUrn, current: bound }, HttpStatus.CONFLICT);
+    }
   }
 
   private async claimCustomDomainIntent(appId: number, customDomain: string | undefined): Promise<void> {

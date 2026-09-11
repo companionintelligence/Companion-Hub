@@ -148,6 +148,52 @@ export class MarketplaceWhoIsService {
   }
 
   /**
+   * Whether this operator is an owner or admin of this device's organization —
+   * what changing which custom domain an app serves takes (R2-HUBDOMAINS-1).
+   *
+   * ⚠ A CUSTOM DOMAIN IS THE ORGANIZATION'S, NOT THE APP'S. In the portal,
+   * connecting or retargeting one takes `MANAGING_ROLES`. Through the Hub it
+   * took `configure` on any one app — which `DEFAULT_GRANTS` hands every member
+   * — and the takeover "confirmation" was a form field ticked by the person
+   * asking. So any member could move the org's production hostname onto an app
+   * of their choosing.
+   *
+   * The role comes from the same WhoIs answer the grants do, for this device's
+   * own organization (`pickOrg`), fresh — never from the grant cache — and every
+   * way of not knowing it is a `false`: no linked Portal subject, no Portal
+   * configured, WhoIs down or answering non-2xx, or an org that did not say. A
+   * custom domain cannot be bound without the Portal anyway. Who the operator is,
+   * and that a named exempt principal needs no role, is the lifecycle actor's to
+   * say (`lifecycleActor`); the service decides from that.
+   */
+  async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
+    // The identity read inside the `try` too: a database error is another way of not knowing, not a 500.
+    try {
+      const subject = await this.portalSubject(userId);
+
+      if (!subject) {
+        this.logUnlinked(userId);
+        return false;
+      }
+
+      const response = await this.portal.whoisApps({ subject, appIds: [extractAppUrn(appUrn).appName], surface: 'hub' });
+
+      if (!response?.body || response.status < 200 || response.status >= 300) {
+        // Refused all the same, but an owner turned away by an outage reads "owner or admin only", so the log says why.
+        this.logger.warn(`custom_domain_role_unverified userId=${userId} status=${response ? response.status : 'no-portal'}`);
+        return false;
+      }
+
+      const role = (await this.pickOrg(response.body))?.user?.role;
+
+      return role === 'owner' || role === 'admin';
+    } catch (error) {
+      this.logger.warn(`Could not read the organization role for a custom-domain change: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /**
    * The person whose grants filter a sweep over apps the caller did not name, or
    * `undefined` for an exempt principal, which sweeps everything.
    *
