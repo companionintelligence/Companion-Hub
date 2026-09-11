@@ -42,6 +42,14 @@ describe('parseFleetArgs', () => {
     expect(parseFleetArgs(['status', '--nodes=a,b']).nodes).toEqual(['a', 'b']);
   });
 
+  it('defaults the Ollama bind to the tailnet address and accepts the two alternatives', () => {
+    expect(parseFleetArgs(['backends']).bind).toBe('tailnet');
+    expect(parseFleetArgs(['backends', '--bind', 'all']).bind).toBe('all');
+    expect(parseFleetArgs(['backends', '--bind=local']).bind).toBe('local');
+    // Anything else is a typo, not a fourth policy.
+    expect(() => parseFleetArgs(['backends', '--bind', 'everywhere'])).toThrow(/--bind must be one of tailnet, all, local/);
+  });
+
   it('refuses a flag that swallows the next flag as its value', () => {
     // `--user --json` must not silently set user to "--json" and drop the json flag.
     expect(() => parseFleetArgs(['scan', '--user', '--json'])).toThrow(/--user needs a value/);

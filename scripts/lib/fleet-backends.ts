@@ -22,6 +22,14 @@
  */
 
 import type { HostFacts } from './fleet-hardware.js';
+import {
+  BIND_MARKERS,
+  classifyBindApplyOutput,
+  type OllamaBindMode,
+  ollamaBindApplyShell,
+  ollamaBindPreflightShell,
+  ollamaOwnershipGuardShell,
+} from './fleet-ollama-bind.js';
 
 export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade'] as const;
 export type InstallableBackend = (typeof INSTALLABLE_BACKENDS)[number];
@@ -39,6 +47,17 @@ export interface BackendPlan {
   /** True when the script needs root. Surfaced so a dry run can say so before anything is attempted. */
   needsSudo?: boolean;
 }
+
+export interface BackendPlanOptions {
+  /**
+   * Where the Ollama daemon should listen. `tailnet` (the default) binds the node's Tailscale IPv4;
+   * `all` is 0.0.0.0; `local` is loopback. One policy, chosen here, written to one file, and read
+   * back after the restart — see `fleet-ollama-bind.ts` for why each of those three words matters.
+   */
+  ollamaBind?: OllamaBindMode;
+}
+
+export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'tailnet';
 
 /**
  * Backends whose default port identifies them unambiguously.
@@ -61,26 +80,48 @@ const PORTS: Record<InstallableBackend, number> = {
 };
 
 /**
+ * The environment the installer manages for Ollama besides the bind.
+ *
+ * `OLLAMA_LLM_LIBRARY=vulkan` on gfx1151. ROCm there runs NO_VMM and cannot back a large contiguous
+ * allocation with GTT: the driver advertises the whole ~60 GB pool as free and then fails to allocate
+ * 21 GB, so every model above the ~2 GB VRAM carve-out fails to load with an allocation error. Six
+ * nodes on this fleet returned HTTP 500 on every real model until this was forced. Measured after:
+ * 0 → 53.4 tok/s on the exact model that had been failing.
+ *
+ * Exported because the adopt path writes the same canonical file as the install path, and the two
+ * must agree on its contents or a re-run would strip a setting the previous run added.
+ */
+export function ollamaManagedEnvironment(facts: HostFacts): string[] {
+  const gfx = facts.gpus.find((g) => g.vendor === 'amd')?.gfx;
+  const env: string[] = [];
+  if (gfx === 'gfx1151') {
+    // Load-bearing, and the reason is not obvious from the symptom: see the doc comment above.
+    env.push('OLLAMA_LLM_LIBRARY=vulkan');
+  }
+  return env;
+}
+
+/**
  * Ollama on Linux.
  *
- * Transposed from `ollama_linux_install_script()`, minus the polkit wrapper. Two additions the
- * desktop path does not make, both measured on this fleet:
+ * Transposed from `ollama_linux_install_script()`, minus the polkit wrapper, plus the bind policy.
  *
- * · `OLLAMA_HOST=0.0.0.0` — the desktop sets this too, and it is what makes the engine reachable
- *   from the Hub container and from a pool peer rather than loopback-only.
- * · `OLLAMA_LLM_LIBRARY=vulkan` on gfx1151. ROCm there runs NO_VMM and cannot back a large
- *   contiguous allocation with GTT: the driver advertises the whole ~60 GB pool as free and then
- *   fails to allocate 21 GB, so every model above the ~2 GB VRAM carve-out fails to load with an
- *   allocation error. Six nodes on this fleet returned HTTP 500 on every real model until this was
- *   forced. Measured after: 0 → 53.4 tok/s on the exact model that had been failing.
+ * Order matters and was measured: the ownership guard runs BEFORE ollama.com's installer, because
+ * that installer itself runs `systemctl enable ollama && systemctl restart ollama` on a systemd box —
+ * on beta-1, where a user-scope `ollama-local.service` owns :11434 and the system unit is disabled,
+ * that alone starts the colliding second daemon. After the install, one drop-in is written (the
+ * canonical bind file, carrying the managed environment too), every legacy file that set
+ * `OLLAMA_HOST` and nothing else is moved aside by name, and `systemctl show ollama -p Environment`
+ * is re-read to prove the merged value is the requested one. A mismatch fails the step.
  */
-function ollamaLinuxScript(facts: HostFacts): string {
-  const gfx = facts.gpus.find((g) => g.vendor === 'amd')?.gfx;
-  const forceVulkan = gfx === 'gfx1151';
-
+function ollamaLinuxScript(facts: HostFacts, bind: OllamaBindMode): string {
   const lines = [
     'set -e',
     'export DEBIAN_FRONTEND=noninteractive',
+    // Before anything is downloaded: is the system unit even the right thing to touch here, and
+    // can the requested bind be satisfied at all?
+    ollamaOwnershipGuardShell(),
+    ollamaBindPreflightShell(bind),
     // The desktop script installs curl/zstd across six package managers. Keep that breadth: a node
     // that lacks curl is exactly the fresh machine this command exists for.
     'need=""',
@@ -102,28 +143,13 @@ function ollamaLinuxScript(facts: HostFacts): string {
     'curl -fsSL --connect-timeout 30 --max-time 300 https://ollama.com/install.sh -o "$installer"',
     'sh "$installer"',
     'if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then',
-    '  install -d -m 0755 /etc/systemd/system/ollama.service.d',
-    '  cat >/etc/systemd/system/ollama.service.d/companionhub.conf <<EOF',
-    '[Service]',
-    'Environment="OLLAMA_HOST=0.0.0.0:11434"',
-  ];
-
-  if (forceVulkan) {
-    lines.push(
-      // Load-bearing, and the reason is not obvious from the symptom: see the doc comment above.
-      'Environment="OLLAMA_LLM_LIBRARY=vulkan"',
-    );
-  }
-
-  lines.push(
-    'EOF',
-    '  systemctl daemon-reload',
-    '  systemctl enable --now ollama || systemctl restart ollama',
+    // One file, a name that outranks every legacy one, and a read-back. Fails on mismatch.
+    ollamaBindApplyShell(bind, { extraEnv: ollamaManagedEnvironment(facts) }),
     'fi',
     // biome-ignore lint/suspicious/noTemplateCurlyInString: bash parameter expansion for the generated script, not a forgotten template literal — JS must NOT interpolate it.
     'if getent group ollama >/dev/null 2>&1; then usermod -aG ollama "${SUDO_USER:-$(id -un)}" || true; fi',
     'echo "ollama-install-complete"',
-  );
+  ];
   return lines.join('\n');
 }
 
@@ -194,8 +220,9 @@ function luceboxScript(facts: HostFacts, dataDir: string, port: number): string 
  * Pure: takes facts, returns a plan. Every gate is a claim quoted from the Rust original, so the
  * headless path and the desktop path agree about what a machine can run.
  */
-export function planBackend(backend: InstallableBackend, facts: HostFacts, dataDir: string): BackendPlan {
+export function planBackend(backend: InstallableBackend, facts: HostFacts, dataDir: string, opts: BackendPlanOptions = {}): BackendPlan {
   const port = PORTS[backend];
+  const bind = opts.ollamaBind ?? DEFAULT_OLLAMA_BIND;
 
   // Adoption first, where the evidence actually supports it. Cheap, and makes re-running safe.
   if (facts.enginesListening.includes(port)) {
@@ -223,8 +250,8 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
       return {
         backend,
         action: 'install',
-        why: 'not listening — installing from ollama.com/install.sh',
-        script: ollamaLinuxScript(facts),
+        why: `not listening — installing from ollama.com/install.sh, binding ${describeBind(bind)}`,
+        script: ollamaLinuxScript(facts, bind),
         port,
         needsSudo: true,
       };
@@ -301,9 +328,26 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
 }
 
 /** Plan every backend for one machine, in a stable order. */
-export function planAllBackends(facts: HostFacts, dataDir: string, only?: readonly InstallableBackend[]): BackendPlan[] {
+export function planAllBackends(
+  facts: HostFacts,
+  dataDir: string,
+  only?: readonly InstallableBackend[],
+  opts: BackendPlanOptions = {},
+): BackendPlan[] {
   const wanted = only?.length ? only : INSTALLABLE_BACKENDS;
-  return wanted.map((backend) => planBackend(backend, facts, dataDir));
+  return wanted.map((backend) => planBackend(backend, facts, dataDir, opts));
+}
+
+/** The bind mode in the words a plan line uses. */
+export function describeBind(bind: OllamaBindMode): string {
+  switch (bind) {
+    case 'tailnet':
+      return 'the tailnet address (tailscale ip -4)';
+    case 'all':
+      return 'all interfaces (0.0.0.0)';
+    case 'local':
+      return 'loopback only (127.0.0.1)';
+  }
 }
 
 // ─── Execution ───────────────────────────────────────────────────────────────
@@ -350,6 +394,32 @@ export async function executeBackendPlan(target: SshTarget, plan: BackendPlan, t
   const ms = Date.now() - started;
   const tail = (text: string) => text.split('\n').filter(Boolean).slice(-4).join(' | ').slice(0, 400);
 
+  if (plan.backend === 'ollama') {
+    // The bind step decides its own outcome by marker, and two of its outcomes are not failures of
+    // the install: a refusal is a fact about the machine (something else owns the port), reported as
+    // skipped so a fleet run continues; a mismatch is the one thing this step exists to catch, and
+    // its sentence is the whole diagnosis.
+    const bind = classifyBindApplyOutput(result.out, result.err);
+    if (bind.outcome === 'refused') return { backend: plan.backend, outcome: 'skipped', why: bind.why, detail: tail(result.out), ms };
+    if (bind.outcome === 'mismatch' || bind.outcome === 'failed') {
+      return {
+        backend: plan.backend,
+        outcome: 'failed',
+        why: bind.why,
+        detail: bind.detail.join(' | ').slice(0, 400) || tail(result.err || result.out),
+        ms,
+      };
+    }
+    if (result.ok && result.out.includes(`${plan.backend}-install-complete`)) {
+      return {
+        backend: plan.backend,
+        outcome: 'installed',
+        why: `${plan.why}; ${bind.why}`,
+        detail: bind.detail.join(' | ').slice(0, 400) || tail(result.out),
+        ms,
+      };
+    }
+  }
   if (result.ok && result.out.includes(`${plan.backend}-install-complete`)) {
     return { backend: plan.backend, outcome: 'installed', why: plan.why, detail: tail(result.out), ms };
   }
@@ -371,4 +441,64 @@ export async function executeBackendPlan(target: SshTarget, plan: BackendPlan, t
     detail: tail(result.err || result.out),
     ms,
   };
+}
+
+// ─── Bind policy on an adopted Ollama ────────────────────────────────────────
+
+/**
+ * Apply the bind policy to an Ollama that is already running as the system unit.
+ *
+ * The install path writes the canonical file as part of installing; a node that already serves
+ * Ollama is adopted and never runs that script, so without this the fourteen nodes that already have
+ * Ollama would keep their fourteen bind arrangements forever. Same shell, same guard, same read-back,
+ * minus the installer and minus `systemctl enable` (whoever set the unit up decided that).
+ *
+ * `sudo -n` as everywhere in this file. The caller decides whether to run it at all — on a node whose
+ * assessment is already `managed` for the requested bind, there is nothing to do and nothing is run.
+ */
+export async function applyOllamaBindPolicy(
+  target: SshTarget,
+  bind: OllamaBindMode,
+  facts: HostFacts,
+  timeoutMs = 3 * 60_000,
+): Promise<BackendInstallResult> {
+  const script = [
+    'set -e',
+    ollamaOwnershipGuardShell(),
+    ollamaBindApplyShell(bind, { extraEnv: ollamaManagedEnvironment(facts), enable: false }),
+  ].join('\n');
+  const command = `sudo -n bash <<'CIHUB_OLLAMA_BIND_EOF'\n${script}\nCIHUB_OLLAMA_BIND_EOF`;
+  const started = Date.now();
+  const result = await sshCapture(target, command, timeoutMs);
+  const ms = Date.now() - started;
+  const outcome = classifyBindApplyOutput(result.out, result.err);
+  const detail = outcome.detail.join(' | ').slice(0, 400) || undefined;
+  if (/sudo:.*password is required|a terminal is required/i.test(`${result.err}${result.out}`)) {
+    return {
+      backend: 'ollama',
+      outcome: 'failed',
+      why: 'passwordless sudo is not available for this account, so the bind cannot be applied unattended',
+      ms,
+    };
+  }
+  switch (outcome.outcome) {
+    case 'applied':
+      return { backend: 'ollama', outcome: 'installed', why: `bind applied — ${outcome.why}`, detail, ms };
+    case 'refused':
+      return { backend: 'ollama', outcome: 'skipped', why: outcome.why, detail, ms };
+    case 'mismatch':
+    case 'failed':
+      return { backend: 'ollama', outcome: 'failed', why: outcome.why, detail, ms };
+    case 'incomplete':
+      return {
+        backend: 'ollama',
+        outcome: 'failed',
+        why:
+          result.code === null
+            ? `no completion marker within ${Math.round(timeoutMs / 60_000)} minutes`
+            : `bind step exited ${result.code} without a ${BIND_MARKERS.complete} marker`,
+        detail: detail ?? (result.err || result.out).split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400),
+        ms,
+      };
+  }
 }

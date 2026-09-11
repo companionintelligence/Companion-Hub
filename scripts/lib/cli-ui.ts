@@ -110,7 +110,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Re-probe every rostered node: administrable, running a Hub, serving engines',
       },
       {
-        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--execute]`,
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]`,
         description: 'What inference backends a node can run, from its hardware; prints the plan unless --execute',
       },
       {
