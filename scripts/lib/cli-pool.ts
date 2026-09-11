@@ -276,6 +276,21 @@ function poolErrorExit(error: unknown, envFileName: string): never {
     );
     process.exit(1);
   }
+  /*
+   * Checked by translation key, not by status code, and BEFORE the generic 401/403 branch below.
+   * A build with the `cihub claim` fix answers this 409 CONFLICT (see auth.guard.ts); a build that
+   * predates it still answers a plain 401 — the same misdiagnosis the 409 change exists to end,
+   * reachable again through the one error path that never learned about `claim`. The device key is
+   * fine either way: this Hub is registered but has no operator, and re-pairing does not fix that.
+   */
+  if (message.includes('AUTH_ERROR_HUB_NOT_CLAIMED')) {
+    printMessageBox(
+      'Hub not claimed',
+      ['This Hub is registered and its device key is valid, but has no operator yet.', `Create one: ${BASE_COMMAND} claim --email <addr>`],
+      'red',
+    );
+    process.exit(1);
+  }
   if (message.includes('failed (401)') || message.includes('failed (403)')) {
     printMessageBox('Not authorized', ['The Hub rejected this device key.', 'Re-pair this Hub with Companion Portal: cihub register'], 'red');
     process.exit(1);
