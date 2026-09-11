@@ -849,6 +849,78 @@ describe('AppLifecycleService', () => {
         expect(whois.has).not.toHaveBeenCalled();
       });
 
+      /*
+       * R2-HUBDOMAINS-1 at the one gate every transport reaches: which custom
+       * domain an app serves is the organization's, so a form that changes it
+       * also takes an owner or admin — on top of the per-app grant above.
+       */
+      describe('custom-domain changes', () => {
+        const roles = { has: vi.fn(), hasManagingRole: vi.fn() };
+        const serving = { id: 1, status: 'stopped', config: {}, customDomain: 'shop.acme.com', customDomainIntent: 'shop.acme.com' };
+        /** What an update settles to once past both gates — anything but the role refusal. */
+        const outcomeOf = (run: Promise<unknown>) =>
+          run.then(
+            () => 'done',
+            (error: Error) => error.message,
+          );
+
+        beforeEach(() => {
+          roles.has.mockReset().mockResolvedValue(true);
+          roles.hasManagingRole.mockReset();
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? roles : undefined));
+        });
+
+        it('refuses a member moving the domain, before anything is written or queued', async () => {
+          appsRepository.getAppByUrn.mockResolvedValue(serving as any);
+          roles.hasManagingRole.mockResolvedValue(false);
+
+          await expect(service.updateAppConfig({ actor: OPERATOR, appUrn, form: { customDomain: 'other.acme.com' } })).rejects.toThrow(
+            'CUSTOM_DOMAIN_ROLE_REQUIRED',
+          );
+          expect(roles.hasManagingRole).toHaveBeenCalledWith(7, appUrn);
+          expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+          expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        });
+
+        it('lets an owner or admin move it', async () => {
+          appsRepository.getAppByUrn.mockResolvedValue(serving as any);
+          roles.hasManagingRole.mockResolvedValue(true);
+
+          const outcome = await outcomeOf(service.updateAppConfig({ actor: OPERATOR, appUrn, form: { customDomain: 'other.acme.com' } }));
+
+          expect(outcome).not.toBe('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(roles.hasManagingRole).toHaveBeenCalledWith(7, appUrn);
+        });
+
+        it('does not ask a member about a save that leaves the domain alone', async () => {
+          appsRepository.getAppByUrn.mockResolvedValue(serving as any);
+
+          const outcome = await outcomeOf(service.updateAppConfig({ actor: OPERATOR, appUrn, form: { customDomain: 'shop.acme.com' } }));
+
+          expect(outcome).not.toBe('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(roles.hasManagingRole).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['an unmanaged MCP key', { kind: 'mcp', ownerAppUrn: null }],
+          ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn }],
+        ] as Array<[string, LifecycleActor]>)('refuses %s, whatever its capability — no person to ask', async (_label, actor) => {
+          await expect(service.installApp({ actor, appUrn, form: { customDomain: 'shop.acme.com' } })).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+          expect(roles.hasManagingRole).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['a grant-exempt principal', { kind: 'exempt', principal: 'cli' }],
+          ['the Hub itself', { kind: 'system', reason: 'debug-seed' }],
+        ] as Array<[string, LifecycleActor]>)('admits %s by name', async (_label, actor) => {
+          await service.installApp({ actor, appUrn, form: { customDomain: 'shop.acme.com' } });
+
+          expect(appsRepository.createApp).toHaveBeenCalled();
+          expect(roles.hasManagingRole).not.toHaveBeenCalled();
+        });
+      });
+
       describe('the sweeps', () => {
         const IMPORTER = 'importer:ci-marketplace';
         const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER };

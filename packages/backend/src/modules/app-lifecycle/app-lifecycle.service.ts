@@ -1030,30 +1030,62 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Run `authorize` when an install / update-config form would change which
    * custom domain the app serves (R2-HUBDOMAINS-1); see
-   * {@link requestsCustomDomainChange} for what counts. Who may make such a
-   * change is the caller's to decide — the app routes and the MCP tool runner
-   * each know who is asking — and this only knows the app.
+   * {@link requestsCustomDomainChange} for what counts. `installApp` and
+   * `updateAppConfig` hand it the actor's check, so every transport — the app
+   * routes, the MCP tool runner, agent keys, rehydrate — answers to the same one.
    *
    * A release of a binding the client never saw is refused first, with the
    * answer the save itself would give (R2-HUBDOMAINS-3): whoever holds a stale
    * dialog needs to reload, and a role refusal would send them the wrong way.
    * Nothing has been written when either refusal is thrown.
    */
-  async authorizeCustomDomainChange(appUrn: AppUrn, form: CustomDomainForm, authorize: () => Promise<void>): Promise<void> {
+  async authorizeCustomDomainChange(appUrn: AppUrn, form: unknown, authorize: () => Promise<void>): Promise<void> {
+    const fields = (typeof form === 'object' && form !== null ? form : {}) as CustomDomainForm;
+
     // A form that says nothing about custom domains changes none, so it costs no read.
-    if (typeof form.customDomain !== 'string') {
+    if (typeof fields.customDomain !== 'string') {
       return;
     }
 
     const state = await this.customDomainState(appUrn);
 
     if (state) {
-      this.refuseUnseenRelease(appUrn, form, state.bound);
+      this.refuseUnseenRelease(appUrn, fields, state.bound);
     }
 
-    if (requestsCustomDomainChange(form, state)) {
+    if (requestsCustomDomainChange(fields, state)) {
       await authorize();
     }
+  }
+
+  /**
+   * The gate `installApp` and `updateAppConfig` open with: the actor may act on
+   * this app at all (`assertActorMay`), and — when the form changes which custom
+   * domain the app serves — may make that change too.
+   */
+  private async assertActorMayApplyForm(actor: LifecycleActor, appUrn: AppUrn, form: unknown, action: HubAction): Promise<void> {
+    await this.assertActorMay(actor, appUrn, action);
+    await this.authorizeCustomDomainChange(appUrn, form, () => this.assertActorMayChangeCustomDomain(actor, appUrn));
+  }
+
+  /**
+   * Who may change which custom domain an app serves (R2-HUBDOMAINS-1): an
+   * organization owner or admin, asked of WhoIs fresh, and refused when WhoIs
+   * cannot be reached. A named exempt principal and the Hub itself are admitted,
+   * as by every gate. An MCP key has no person behind it whose role could be
+   * asked, so it is refused — whatever its capability, managed or not — until
+   * keys record who minted them.
+   */
+  private async assertActorMayChangeCustomDomain(actor: LifecycleActor, appUrn: AppUrn): Promise<void> {
+    if (actor.kind === 'exempt' || actor.kind === 'system') {
+      return;
+    }
+
+    if (actor.kind === 'operator' && (await this.resolveWhois()?.hasManagingRole(actor.userId, appUrn))) {
+      return;
+    }
+
+    throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
   }
 
   /** What {@link requestsCustomDomainChange} compares a save against; `null` for an app not installed. */
@@ -1082,7 +1114,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const { appUrn, form, skipRun } = params;
 
     // Before anything is fetched, written or queued — see `assertActorMay`.
-    await this.assertActorMay(params.actor, appUrn, 'install');
+    await this.assertActorMayApplyForm(params.actor, appUrn, form, 'install');
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
@@ -2083,7 +2115,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   public async updateAppConfig(params: { appUrn: AppUrn; form: unknown; actor: LifecycleActor }) {
     const { appUrn, form } = params;
 
-    await this.assertActorMay(params.actor, appUrn, 'configure');
+    await this.assertActorMayApplyForm(params.actor, appUrn, form, 'configure');
 
     const parsedFormResult = appFormSchema.safeParse(form);
 
