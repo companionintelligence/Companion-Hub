@@ -1742,6 +1742,7 @@
   "RESTORE_APPS_ACTION_INSTALL": "Queue install",
   "RESTORE_APPS_ACTION_START": "Start existing install",
   "RESTORE_APPS_ACTION_SKIP_RUNNING": "Already running",
+  "RESTORE_APPS_ACTION_SKIP_BUSY": "Already in progress",
   "RESTORE_APPS_ACTION_SKIP_UNRESOLVED": "Skipped. No matching app store listing",
   "AI_SETTINGS_PROFILE_NOT_READY": "AI profile is not loaded yet. Please retry in a moment.",
   "AI_SETTINGS_SAVED_WITH_ISSUES": "AI settings saved with {{count}} model issue(s).",

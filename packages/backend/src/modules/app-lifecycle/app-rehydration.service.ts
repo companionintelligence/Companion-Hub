@@ -264,7 +264,7 @@ export class AppRehydrationService {
   ): Promise<void> {
     const label = item.portalApp.name;
 
-    if (item.action === 'skip_unresolved' || item.action === 'skip_running') {
+    if (item.action === 'skip_unresolved' || item.action === 'skip_running' || item.action === 'skip_busy') {
       skipped.push({ name: label, reason: item.reason ?? item.action });
       return;
     }

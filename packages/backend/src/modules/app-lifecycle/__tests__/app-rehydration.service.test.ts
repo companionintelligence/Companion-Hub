@@ -145,4 +145,29 @@ describe('AppRehydrationService.executeRehydrate', () => {
     expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: 'APP_ERROR_PORT_ALREADY_IN_USE' }] });
     expect(recovery.writeRehydrationState).toHaveBeenCalled();
   });
+
+  it('leaves an app the last run is still working on to that operation', async () => {
+    // What a Retry plans for an app the first run queued: installing it again would start it mid-install.
+    const busyPlan = {
+      portalAppCount: 1,
+      localAppDataCount: 0,
+      items: [
+        {
+          action: 'skip_busy',
+          appUrn,
+          reason: 'An operation is already in progress for this app (installing)',
+          form: { port: 8080 },
+          portalApp: { name: 'Immich', slug: 'immich' },
+          hasExistingData: false,
+        },
+      ],
+    } as unknown as RehydrationPlan;
+    vi.mocked(buildRehydrationPlan).mockReturnValue(busyPlan);
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    expect(lifecycle.installApp).not.toHaveBeenCalled();
+    expect(lifecycle.startApp).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: expect.stringContaining('in progress') }] });
+  });
 });
