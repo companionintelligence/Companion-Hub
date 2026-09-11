@@ -11,7 +11,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Request } from 'express';
 
 import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
-import { hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
+import { type HubPrincipalFields, hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 
@@ -156,7 +156,7 @@ export class MarketplaceWhoIsService {
    * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
    * principal as "no person to check, allow" all over again.
    */
-  sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
+  sweepOperatorUserId(req: HubPrincipalFields, action: HubAction): number | undefined {
     const userId = hubSessionOperatorUserId(req);
 
     if (userId == null && !isGrantExemptPrincipal(req)) {
@@ -175,7 +175,7 @@ export class MarketplaceWhoIsService {
    * an `exempt`. The service then gates on the actor, so HTTP is no longer the
    * only transport that is checked.
    */
-  lifecycleActor(req: Request, action: HubAction): LifecycleActor {
+  lifecycleActor(req: HubPrincipalFields, action: HubAction): LifecycleActor {
     const userId = this.sweepOperatorUserId(req, action);
 
     if (userId != null) {
@@ -199,7 +199,7 @@ export class MarketplaceWhoIsService {
    * A gated route reached with no recognised principal is a middleware bug, not a
    * grant verdict. The caller only ever sees a 403, so say which it was in the log.
    */
-  private logUnrecognisedPrincipal(req: Request, action: HubAction): void {
+  private logUnrecognisedPrincipal(req: HubPrincipalFields, action: HubAction): void {
     this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=${action}`);
   }
 

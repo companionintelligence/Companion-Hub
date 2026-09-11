@@ -67,7 +67,7 @@ export class DebugService {
   }
 
   public async startAllApps() {
-    await this.appLifecycleService.startAllApps({ kind: 'system', reason: 'debug-seed' });
+    await this.appLifecycleService.startAllApps({ kind: 'system', reason: 'debug-start-all' });
   }
 
   public async backupAllApps() {

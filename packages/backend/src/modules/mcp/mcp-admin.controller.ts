@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import type { HubPrincipalFields } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { McpAdminService } from './mcp-admin.service';
@@ -39,6 +40,12 @@ export class McpAdminController {
    */
   @Post('tools/:name/call')
   callTool(@Param('name') name: string, @Body() body: McpToolCallBody, @Req() req: Request) {
-    return this.adminService.callTool(name, body.arguments, body.confirmDestructive ?? false, (action) => this.whois.lifecycleActor(req, action));
+    // Only the principal, not the request: the tool's async context can outlive the reply (a sweep
+    // keeps running after it), and a closure over `req` would hold the whole request until it ends.
+    const principal: HubPrincipalFields = { hubPrincipal: req.hubPrincipal, user: req.user };
+
+    return this.adminService.callTool(name, body.arguments, body.confirmDestructive ?? false, (action) =>
+      this.whois.lifecycleActor(principal, action),
+    );
   }
 }

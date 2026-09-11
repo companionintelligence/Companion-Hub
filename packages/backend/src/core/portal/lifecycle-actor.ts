@@ -28,7 +28,7 @@ export type LifecycleActor =
    */
   | { kind: 'mcp'; ownerAppUrn: string | null }
   /** The Hub acting on its own behalf, for a reason named here. */
-  | { kind: 'system'; reason: 'update-reapply' | 'debug-seed' };
+  | { kind: 'system'; reason: 'update-reapply' | 'debug-seed' | 'debug-start-all' };
 
 /**
  * The actor for one action, for a caller that can only name itself once the verb is known: an

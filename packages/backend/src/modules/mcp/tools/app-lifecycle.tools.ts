@@ -19,12 +19,10 @@ const urnProp = { type: 'string', description: 'App identifier in appName:storeS
  * unaccompanied one today. What this predicate answers is which authority the CALL is reaching for,
  * and that answer must not depend on a parsing rule three modules away staying true.
  *
- * Why the gate has to live here at all: nothing else on this path checks a grant.
- * `assertSessionAction(req, appUrn, 'configure')` is in app-lifecycle.controller.ts, not in the
- * service, and `operatorMay` reads an absent operator as consent — which is exactly the MCP case, a
- * key with no person behind it. The service now gates every caller on its named actor
- * (CI-Hub#1397), so this is the second check rather than the only one: a form carrying either field
- * is still destructive, so it still takes a 'full' key or an operator confirmation.
+ * Why the gate lives here as well as in the service: `AppLifecycleService` gates every call on its
+ * named actor (CI-Hub#1397), but it admits an unmanaged MCP key on its capability alone, and a
+ * managed key on its own app — neither has a person's grant behind it. So a form carrying either
+ * field stays destructive here: it still takes a 'full' key or an operator confirmation.
  */
 function claimsCustomDomain(params: Record<string, unknown>): boolean {
   const form = params.form as Record<string, unknown> | undefined;
