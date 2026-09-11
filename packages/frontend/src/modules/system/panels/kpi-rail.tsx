@@ -284,12 +284,10 @@ export function DashboardRail({
 
   return (
     /*
-     * Sticky from `sm` up and static below it. `main` is the scroll container and its scrollport
-     * top IS the viewport top, so a rail at `top-0` would park under the fixed header — hence
-     * `--header-offset`. On a 667px phone, 100px of permanently-parked rail is a third of the
-     * screen, and the six figures that survive to that width are already at the top of the scroll.
+     * In flow, not sticky: a rail parked under the fixed header cost ~100px of every scroll
+     * position on the board, and the figures it holds are one flick away at the top anyway.
      */
-    <div className="sticky top-[var(--header-offset)] z-20 col-span-full -mx-1 border-b border-border/60 bg-background/95 px-1 py-1.5 backdrop-blur max-sm:static">
+    <div className="col-span-full -mx-1 border-b border-border/60 px-1 py-1.5">
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <h1 className="text-sm font-bold uppercase tracking-[0.1em]">{t('RESOURCE_MONITOR_TITLE')}</h1>
         {/* The badge appears only once the pool has actually answered. A failed status query
