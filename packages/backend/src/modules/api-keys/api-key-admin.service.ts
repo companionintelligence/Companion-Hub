@@ -33,10 +33,18 @@ export class ApiKeyAdminService {
    *
    * `capability` is what the key may do on that scope, and unlike the scope it IS a choice: a key
    * minted for a third-party MCP client to read memory has no business installing apps.
+   *
+   * `createdByUserId` is the person creating it. The key acts with that person's grants and role
+   * from then on, so it can never do more than they can; `null` is a caller with no person behind it
+   * (the CLI), and such a key has no creator, like one minted before creators were recorded.
    */
-  async createKey(name: string, capability: ApiKeyCapability = DEFAULT_API_KEY_CAPABILITY): Promise<ApiKeyInfo & { key: string }> {
-    const created = await this.apiKeys.create(name, { scopes: [MCP_SCOPE], capability });
-    this.logger.info('API key admin: key created', created.id, capability);
+  async createKey(
+    name: string,
+    capability: ApiKeyCapability = DEFAULT_API_KEY_CAPABILITY,
+    createdByUserId: number | null = null,
+  ): Promise<ApiKeyInfo & { key: string }> {
+    const created = await this.apiKeys.create(name, { scopes: [MCP_SCOPE], capability, createdByUserId });
+    this.logger.info('API key admin: key created', created.id, capability, `createdBy=${createdByUserId ?? 'none'}`);
     return created;
   }
 

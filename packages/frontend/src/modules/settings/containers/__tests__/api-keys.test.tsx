@@ -112,6 +112,32 @@ describe('ApiKeysContainer', () => {
     expect(within(managedRow).getByText('API_KEYS_LAST_USED')).toBeTruthy();
   });
 
+  it('names who created each operator key — the person it acts as — and says when nobody is recorded', async () => {
+    const [operator, managed] = KEYS.keys;
+    mockApiFetch.mockImplementation((url: string) =>
+      url === '/api/api-keys'
+        ? Promise.resolve({
+            ok: true,
+            json: async () => ({
+              keys: [
+                { ...operator, createdByUserId: 4, createdByUsername: 'owner@acme.com' },
+                { ...operator, id: 3, name: 'legacy', createdByUserId: null, createdByUsername: null },
+                { ...managed, createdByUserId: null, createdByUsername: null },
+              ],
+            }),
+          })
+        : mockGet(url),
+    );
+
+    render(<ApiKeysContainer />);
+    await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+
+    expect(screen.getByTestId('api-key-creator-1').textContent).toBe('API_KEYS_CREATED_BY');
+    expect(screen.getByTestId('api-key-creator-3').textContent).toBe('API_KEYS_CREATED_BY_UNKNOWN');
+    // A managed key acts for its app, not a person: no creator line at all.
+    expect(screen.queryByTestId('api-key-creator-2')).toBeNull();
+  });
+
   it('creates a key via POST and reveals the raw value once', async () => {
     const user = userEvent.setup();
     mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {

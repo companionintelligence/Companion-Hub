@@ -245,6 +245,12 @@ export const apiKey = pgTable(
     hashedKey: varchar('hashed_key').notNull(),
     managed: boolean().default(false).notNull(),
     ownerAppUrn: varchar('owner_app_urn'), // set for managed keys: the companion app that owns it
+    /*
+     * The Hub person who created the key, whose grants and role an unmanaged key acts with. NULL
+     * for a managed app key, for one minted by the CLI or before creators were recorded, and once
+     * that person's account is deleted.
+     */
+    createdByUserId: integer('created_by_user_id').references(() => user.id, { onDelete: 'set null' }),
     expiresAt: timestamp('expires_at', { mode: 'string' }), // null = never expires
     lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
     createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),

@@ -104,8 +104,24 @@ describe('ApiKeyService', () => {
       rowFrom({ name: 'Laptop CLI', prefix: 'p', hashedKey: sha256('raw'), managed: false, ownerAppUrn: null, expiresAt: null, ...overrides });
 
     it('returns the identity behind the key, so enforcement can consult the caller', async () => {
-      repo.findByHash.mockResolvedValue(storedRow({ id: 9, capability: 'full' }));
-      await expect(service.resolve('raw', 'mcp')).resolves.toEqual({ id: 9, name: 'Laptop CLI', capability: 'full', ownerAppUrn: null });
+      repo.findByHash.mockResolvedValue(storedRow({ id: 9, capability: 'full', createdByUserId: 4 }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toEqual({
+        id: 9,
+        name: 'Laptop CLI',
+        capability: 'full',
+        ownerAppUrn: null,
+        createdByUserId: 4,
+      });
+    });
+
+    it('names no creator for a managed key, whatever the column holds — it acts for its app, not a person', async () => {
+      repo.findByHash.mockResolvedValue(storedRow({ managed: true, ownerAppUrn: 'importer:ci-store', createdByUserId: 4 }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toMatchObject({ createdByUserId: null });
+    });
+
+    it('names no creator for a key nobody is recorded as creating', async () => {
+      repo.findByHash.mockResolvedValue(storedRow({ createdByUserId: null }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toMatchObject({ createdByUserId: null });
     });
 
     it("names a managed key's owning app, so the lifecycle can confine it (CI-Hub#1397)", async () => {
