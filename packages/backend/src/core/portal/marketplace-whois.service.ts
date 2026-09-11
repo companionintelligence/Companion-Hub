@@ -167,17 +167,20 @@ export class MarketplaceWhoIsService {
    * say (`lifecycleActor`); the service decides from that.
    */
   async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
-    const subject = await this.portalSubject(userId);
-
-    if (!subject) {
-      this.logUnlinked(userId);
-      return false;
-    }
-
+    // The identity read inside the `try` too: a database error is another way of not knowing, not a 500.
     try {
+      const subject = await this.portalSubject(userId);
+
+      if (!subject) {
+        this.logUnlinked(userId);
+        return false;
+      }
+
       const response = await this.portal.whoisApps({ subject, appIds: [extractAppUrn(appUrn).appName], surface: 'hub' });
 
       if (!response?.body || response.status < 200 || response.status >= 300) {
+        // Refused all the same, but an owner turned away by an outage reads "owner or admin only", so the log says why.
+        this.logger.warn(`custom_domain_role_unverified userId=${userId} status=${response ? response.status : 'no-portal'}`);
         return false;
       }
 
@@ -185,7 +188,7 @@ export class MarketplaceWhoIsService {
 
       return role === 'owner' || role === 'admin';
     } catch (error) {
-      this.logger.warn(`Portal WhoIs failed while checking a custom-domain change: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Could not read the organization role for a custom-domain change: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
   }

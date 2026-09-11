@@ -1012,6 +1012,27 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('writes no custom-domain intent a reinstall form smuggles in under its column name', async () => {
+      /*
+       * The form is `.passthrough()` and the reinstall patch spreads it, so a
+       * `customDomainIntent` field would write the column directly — past the
+       * owner/admin gate, which reads only `customDomain` (R2-HUBDOMAINS-1) —
+       * and the bind pass would then wire any parked organization domain to it.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, customDomain: null } as any);
+
+      await service.installApp({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomainIntent: 'shop.acme.com' },
+      } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalled();
+      for (const [, patch] of appsRepository.updateAppById.mock.calls) {
+        expect(patch).not.toHaveProperty('customDomainIntent');
+      }
+    });
+
     it('refuses the reinstall before it parks anything when another app holds the subdomain', async () => {
       /*
        * The release reaches CI-Cloud and writes the row, so it has to run AFTER
@@ -1769,6 +1790,20 @@ describe('AppLifecycleService', () => {
         await service.triggerCloudflareSync();
 
         expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      });
+
+      it('does not start the minute on answers that were not about the app holding the domain', async () => {
+        // Stopped, so absent from the payload: an empty answer is exactly what CI-Cloud should say.
+        const domainless = runningComfy({ id: 8, appName: 'immich', localSubdomain: 'immich' });
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', status: 'stopped' }), domainless] as any);
+        await service.triggerCloudflareSync();
+        now += 61_000;
+
+        // Running again: the first empty answer about it is only the first.
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' }), domainless] as any);
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
       });
 
       it('starts counting again after an answer that delivers the domain', async () => {

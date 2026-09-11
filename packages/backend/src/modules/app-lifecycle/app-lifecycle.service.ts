@@ -202,8 +202,19 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
    * has to be as well, and less obviously: its form field happens to share a name
    * with its column, so the bare spread wrote it straight through and bypassed
    * the rule that an answer is only valid alongside a choice.
+   *
+   * `customDomainIntent` too, though no client sends it: the form is
+   * `.passthrough()`, so one that did would write the intent column directly,
+   * past `customDomainColumns` and past the owner/admin gate, which reads only
+   * `customDomain` (R2-HUBDOMAINS-1). The bind pass would then wire any parked
+   * organization domain to this app with nobody having been asked.
    */
-  const { customDomain: _customDomain, customDomainTakeover: _customDomainTakeover, ...rowFields } = parsedForm;
+  const {
+    customDomain: _customDomain,
+    customDomainTakeover: _customDomainTakeover,
+    customDomainIntent: _customDomainIntent,
+    ...rowFields
+  } = parsedForm;
 
   return {
     config: toStoredConfig(parsedForm),
@@ -1047,7 +1058,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return;
     }
 
-    const state = await this.customDomainState(appUrn);
+    const state = await this.customDomainState(appUrn, normalizeStoredHostname(fields.customDomain));
 
     if (state) {
       this.refuseUnseenRelease(appUrn, fields, state.bound);
@@ -1089,24 +1100,23 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /** What {@link requestsCustomDomainChange} compares a save against; `null` for an app not installed. */
-  private async customDomainState(appUrn: AppUrn): Promise<CustomDomainState | null> {
+  private async customDomainState(appUrn: AppUrn, wanted: string | null): Promise<CustomDomainState | null> {
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
       return null;
     }
 
+    const intent = normalizeStoredHostname(app.customDomainIntent);
     const bound = normalizeStoredHostname(app.customDomain);
 
     return {
-      intent: app.customDomainIntent ?? null,
-      bound: app.customDomain ?? null,
+      intent,
+      bound,
       takeover: app.customDomainTakeover === true,
-      // Only the echo rule reads it — a binding with no choice of its own — so only that case pays for the query.
+      // Only the echo rule reads it — the binding re-submitted with no choice of its own — so only that save pays for the query.
       boundWantedElsewhere:
-        bound !== null && normalizeStoredHostname(app.customDomainIntent) === null
-          ? await this.appRepository.hasCustomDomainIntentElsewhere(app.id, bound)
-          : false,
+        bound !== null && intent === null && wanted === bound ? await this.appRepository.hasCustomDomainIntentElsewhere(app.id, bound) : false,
     };
   }
 
