@@ -83,7 +83,9 @@ function printed(): string {
 }
 
 beforeEach(() => {
-  mocks.preflightNode.mockReset().mockImplementation(async (_t: unknown, node: { name: string }) => ({ node: node.name, findings: [], verdict: 'ok', ms: 1 }));
+  mocks.preflightNode
+    .mockReset()
+    .mockImplementation(async (_t: unknown, node: { name: string }) => ({ node: node.name, findings: [], verdict: 'ok', ms: 1 }));
   process.exitCode = undefined;
   mocks.nodes = [
     { name: 'strix-1', ip: '10.0.0.1' },
