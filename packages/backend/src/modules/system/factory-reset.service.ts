@@ -94,6 +94,10 @@ export class FactoryResetService {
 
   public async wipeDatabase(): Promise<void> {
     try {
+      // `api_key` is named rather than left to CASCADE, which reaches it through
+      // `created_by_user_id` anyway: a reset has to take every key, and that must not hang on a
+      // foreign key. A key acts with its creator's grants, and `RESTART IDENTITY` hands the next
+      // account that creator's id, so a key that survived would act as whoever signs in first.
       await this.db.execute(sql`
         TRUNCATE TABLE
           link,
@@ -101,6 +105,7 @@ export class FactoryResetService {
           port_allocation,
           device_registration,
           app_store,
+          api_key,
           "user"
         RESTART IDENTITY CASCADE
       `);
