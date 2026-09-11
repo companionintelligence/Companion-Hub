@@ -428,12 +428,14 @@ const probeOutput = (parts: {
   files?: DropinFile[];
   unit?: string;
   ts?: string;
+  guard?: string;
 }) =>
   [
     'bind_probe=1',
     `unit_file=${parts.unit ?? '/etc/systemd/system/ollama.service'}`,
     ...(parts.show ?? []).map((l) => `show:${l}`),
     `tailscale_ip=${parts.ts ?? '100.124.211.75'}`,
+    ...(parts.guard ? [`guard_unit=${parts.guard}`] : []),
     ...(parts.ss ?? []).map((l) => `ss=${l}`),
     ...(parts.owners ?? []).map((l) => `owner=${l}`),
     ...(parts.userUnits ?? []).map((l) => `user_unit=${l}`),
@@ -442,6 +444,44 @@ const probeOutput = (parts: {
   ].join('\n');
 
 describe('assessOllamaBind', () => {
+  it('a 0.0.0.0 bind with no active guard is EXPOSED — that flag comes first, in the cell', () => {
+    const out = probeOutput({
+      show: ['ActiveState=active', 'UnitFileState=enabled', 'NeedDaemonReload=no', 'Environment=OLLAMA_HOST=0.0.0.0:11434'],
+      ss: ['LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:*'],
+      entries: ['zzzzz-cihub-bind.conf'],
+      files: [file('zzzzz-cihub-bind.conf', host('0.0.0.0:11434'))],
+      guard: 'inactive',
+    });
+    const a = assessOllamaBind(parseOllamaBindProbe(out));
+    expect(a.guard.unit).toBe('inactive');
+    expect(a.exposed).toBe(true);
+    expect(a.summary).toContain('EXPOSED — no guard');
+  });
+
+  it('the same bind behind an active guard is not exposed, and says guarded', () => {
+    const out = probeOutput({
+      show: ['ActiveState=active', 'UnitFileState=enabled', 'NeedDaemonReload=no', 'Environment=OLLAMA_HOST=0.0.0.0:11434'],
+      ss: ['LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:*'],
+      entries: ['zzzzz-cihub-bind.conf'],
+      files: [file('zzzzz-cihub-bind.conf', host('0.0.0.0:11434'))],
+      guard: 'active',
+    });
+    const a = assessOllamaBind(parseOllamaBindProbe(out));
+    expect(a.exposed).toBe(false);
+    expect(a.summary).toContain('guarded');
+    expect(a.summary).not.toContain('EXPOSED');
+  });
+
+  it('a tailnet or loopback bind is never "exposed", guard or no guard', () => {
+    const out = probeOutput({
+      show: ['ActiveState=active', 'UnitFileState=enabled', 'NeedDaemonReload=no', 'Environment=OLLAMA_HOST=100.124.211.75:11434'],
+      entries: ['zzzzz-cihub-bind.conf'],
+      files: [file('zzzzz-cihub-bind.conf', host('100.124.211.75:11434'))],
+      guard: 'inactive',
+    });
+    expect(assessOllamaBind(parseOllamaBindProbe(out)).exposed).toBe(false);
+  });
+
   it('beta-red: names the winner and flags the conflict, read-only', () => {
     const out = probeOutput({
       show: ['ActiveState=active', 'UnitFileState=enabled', 'NeedDaemonReload=no', 'Environment=PATH=/usr/bin OLLAMA_HOST=0.0.0.0'],
@@ -612,15 +652,31 @@ describe.skipIf(!bash)('ollamaBindApplyShell (sandboxed bash)', () => {
     stub('tailscale', `[ "$1 $2" = "ip -4" ] && printf '%s\\n' '${stubs.tailscaleIp ?? ''}'`);
     stub('ss', 'echo "LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:*"');
     stub('sleep', ':');
-    return { root, bin, dropins, log };
+    // The guard's install proves its INPUT jump with `iptables -C`; the sandbox answers yes.
+    stub('iptables', ':');
+    const units = path.join(root, 'systemd-units');
+    mkdirSync(units);
+    return { root, bin, dropins, units, log };
   }
 
-  function run(script: string, box: { bin: string; dropins: string }) {
+  function run(script: string, box: { bin: string; dropins: string; units: string }) {
     return spawnSync(bash as string, ['-e', '-c', script], {
-      env: { PATH: `${box.bin}:/usr/bin:/bin`, CIHUB_BIND_DIR: box.dropins, HOME: '/tmp' },
+      env: { PATH: `${box.bin}:/usr/bin:/bin`, CIHUB_BIND_DIR: box.dropins, CIHUB_GUARD_UNIT_DIR: box.units, HOME: '/tmp' },
       encoding: 'utf-8',
     });
   }
+
+  it('a tailnet bind removes the guard an earlier `all` left behind, so switching modes is coherent', () => {
+    const box = sandbox({ ollamaHostAfterRestart: '100.1.1.1:11434', tailscaleIp: '100.1.1.1' });
+    writeFileSync(path.join(box.units, 'ollama-tailnet-guard.service'), '[Unit]\nDescription=stale\n');
+    const res = run(ollamaBindApplyShell('tailnet'), box);
+    expect(res.status, res.stderr).toBe(0);
+    expect(existsSync(path.join(box.units, 'ollama-tailnet-guard.service'))).toBe(false);
+    const outcome = classifyBindApplyOutput(res.stdout, res.stderr);
+    expect(outcome.outcome).toBe('applied');
+    expect(outcome.detail).toContain('ollama-bind-unguarded: ollama-tailnet-guard.service removed (the bind no longer needs it)');
+    expect(readFileSync(box.log, 'utf-8')).toContain('systemctl disable --now ollama-tailnet-guard.service');
+  });
 
   it('moves single-purpose setters aside, keeps a mixed one, writes the canonical file, verifies', () => {
     const box = sandbox({ ollamaHostAfterRestart: '0.0.0.0:11434' });
@@ -641,8 +697,12 @@ describe.skipIf(!bash)('ollamaBindApplyShell (sandboxed bash)', () => {
         `ollama-bind-disabled: override.conf → override.conf.disabled-by-cihub-${stamp}`,
         `ollama-bind-disabled: zzz-tailnet-bind.conf → zzz-tailnet-bind.conf.disabled-by-cihub-${stamp}`,
         'ollama-bind-shadowed: 10-ci-models.conf also sets OLLAMA_MODELS — left in place, outranked by zzzzz-cihub-bind.conf',
+        'ollama-bind-guarded: ollama-tailnet-guard.service active; tcp/11434 accepted from lo,tailscale0,docker0,br-+, reset elsewhere',
       ].sort(),
     );
+    // `all` is only ever applied behind the guard, and the guard is up before the daemon restarts.
+    expect(existsSync(path.join(box.units, 'ollama-tailnet-guard.service'))).toBe(true);
+    expect(readFileSync(path.join(box.units, 'ollama-tailnet-guard.service'), 'utf-8')).toContain('-i br-+ -p tcp --dport 11434 -j ACCEPT');
 
     const names = readdirSync(box.dropins).sort();
     expect(names).toContain(CANONICAL_BIND_DROPIN);
@@ -654,14 +714,20 @@ describe.skipIf(!bash)('ollamaBindApplyShell (sandboxed bash)', () => {
     expect(readFileSync(path.join(box.dropins, CANONICAL_BIND_DROPIN), 'utf-8')).toContain('Environment="OLLAMA_HOST=0.0.0.0:11434"');
 
     const calls = readFileSync(box.log, 'utf-8');
-    expect(calls).toMatch(/systemctl daemon-reload[\s\S]*systemctl restart ollama[\s\S]*systemctl show ollama -p Environment/);
+    expect(calls).toMatch(
+      /systemctl daemon-reload[\s\S]*systemctl restart ollama-tailnet-guard\.service[\s\S]*systemctl restart ollama\n[\s\S]*systemctl show ollama -p Environment/,
+    );
 
     // Idempotent: the second run moves nothing and rewrites the same content.
     const again = run(ollamaBindApplyShell('all'), box);
     expect(again.status).toBe(0);
-    expect(classifyBindApplyOutput(again.stdout, again.stderr).detail).toEqual([
-      'ollama-bind-shadowed: 10-ci-models.conf also sets OLLAMA_MODELS — left in place, outranked by zzzzz-cihub-bind.conf',
-    ]);
+    expect(classifyBindApplyOutput(again.stdout, again.stderr).detail.sort()).toEqual(
+      [
+        'ollama-bind-shadowed: 10-ci-models.conf also sets OLLAMA_MODELS — left in place, outranked by zzzzz-cihub-bind.conf',
+        // The guard is re-asserted every run — idempotent by construction (create-or-flush, one jump).
+        'ollama-bind-guarded: ollama-tailnet-guard.service active; tcp/11434 accepted from lo,tailscale0,docker0,br-+, reset elsewhere',
+      ].sort(),
+    );
     // And what systemd would resolve from the files on disk is the canonical file.
     const onDisk: DropinFile[] = readdirSync(box.dropins).map((n) => ({ name: n, content: readFileSync(path.join(box.dropins, n), 'utf-8') }));
     expect(resolveOllamaBind(onDisk).setBy).toBe(CANONICAL_BIND_DROPIN);

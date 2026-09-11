@@ -480,7 +480,7 @@ describe('fleet backends --execute on an adopted ollama', () => {
       code: 0,
       ms: 1,
     });
-    await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
+    await runFleetCommand(['backends', '--backends', 'ollama', '--bind', 'tailnet', '--execute']);
     expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
     const printed = vi
       .mocked(console.log)

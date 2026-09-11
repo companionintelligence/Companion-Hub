@@ -29,6 +29,8 @@
  */
 
 export const OLLAMA_BIND_PORT = 11434;
+import { guardInstallShell, guardRemoveShell, OLLAMA_PORT_GUARD } from './fleet-port-guard.js';
+
 export const OLLAMA_DROPIN_DIR = '/etc/systemd/system/ollama.service.d';
 
 /**
@@ -814,6 +816,7 @@ export function ollamaBindProbeScript(dropinDir = OLLAMA_DROPIN_DIR): string {
     'echo "unit_file=${frag:-none}"',
     'systemctl show ollama -p ActiveState -p UnitFileState -p MainPID -p NeedDaemonReload -p DropInPaths -p Environment 2>/dev/null | sed "s/^/show:/" || true',
     'echo "tailscale_ip=$(tailscale ip -4 2>/dev/null | head -1)"',
+    `echo "guard_unit=$(systemctl is-active ${OLLAMA_PORT_GUARD.unitName} 2>/dev/null || echo inactive)"`,
     `ss -ltnp 2>/dev/null | awk '$4 ~ /:${OLLAMA_BIND_PORT}$/ {print "ss=" $0}'`,
     `for pid in $(ss -ltnp 2>/dev/null | awk '$4 ~ /:${OLLAMA_BIND_PORT}$/' | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u); do echo "owner=$pid $(stat -c %U /proc/$pid 2>/dev/null || echo '?') $(tail -1 /proc/$pid/cgroup 2>/dev/null | cut -d: -f3-)"; done`,
     'me="$(id -un 2>/dev/null)"',
@@ -832,6 +835,8 @@ export interface OllamaBindProbe {
   unitFile: string | null;
   show: Record<string, string>;
   tailscaleIp?: string;
+  /** `systemctl is-active` of the port guard. A RemainAfterExit oneshot whose rules failed is `failed`, not `active`, so this is evidence, not a hint. */
+  guard: { unit: string };
   ss: string[];
   ownerLines: string[];
   userUnits: Array<{ user: string; text: string }>;
@@ -843,6 +848,7 @@ export function parseOllamaBindProbe(out: string): OllamaBindProbe {
   const probe: OllamaBindProbe = {
     present: false,
     unitFile: null,
+    guard: { unit: 'unknown' },
     show: {},
     ss: [],
     ownerLines: [],
@@ -876,6 +882,7 @@ export function parseOllamaBindProbe(out: string): OllamaBindProbe {
     if (key === 'unit_file') probe.unitFile = value === 'none' || value === '' ? null : value;
     else if (key.startsWith('show:')) probe.show[key.slice(5)] = value;
     else if (key === 'tailscale_ip') probe.tailscaleIp = value.trim() || undefined;
+    else if (key === 'guard_unit') probe.guard.unit = value.trim() || 'unknown';
     else if (key === 'ss') probe.ss.push(value);
     else if (key === 'owner') probe.ownerLines.push(value);
     else if (key === 'dir_entry') probe.dirEntries.push(value);
@@ -908,6 +915,10 @@ export interface OllamaBindAssessment {
   tailscaleIp?: string;
   /** Legacy setters present but outranked — informational. */
   shadowed: string[];
+  /** The guard that makes a 0.0.0.0 bind tailnet-only in practice. */
+  guard: { unit: string };
+  /** Bound on every interface with no active guard: reachable from the LAN. The thing to fix first. */
+  exposed: boolean;
   /** One cell for the status table. */
   summary: string;
 }
@@ -956,6 +967,10 @@ export function assessOllamaBind(probe: OllamaBindProbe): OllamaBindAssessment {
   if (needDaemonReload || !liveMatchesFiles) flags.push(`reload pending (loaded ${live?.address ?? 'unset'})`);
   if (resolution.shadowed.length && status === 'managed') flags.push(`shadows ${resolution.shadowed.join(', ')}`);
 
+  const bindsAll = classifyBindAddress((live ?? resolution.effective).host) === 'all';
+  const guardUp = probe.guard.unit === 'active';
+  const exposed = bindsAll && !guardUp && status !== 'unknown' && status !== 'no-unit';
+
   let summary: string;
   if (status === 'unknown') summary = 'not probed';
   else if (status === 'user-scope' || status === 'foreign-owner') {
@@ -968,6 +983,7 @@ export function assessOllamaBind(probe: OllamaBindProbe): OllamaBindAssessment {
   } else {
     const shown = live ?? resolution.effective;
     const source = resolution.defaulted ? 'default, no drop-in sets it' : `← ${resolution.setBy}`;
+    if (classifyBindAddress(shown.host) === 'all') flags.unshift(exposed ? 'EXPOSED — no guard' : 'guarded');
     summary = `${shown.address} ${source}${flags.length ? `  [${flags.join('; ')}]` : ''}`;
   }
 
@@ -982,6 +998,8 @@ export function assessOllamaBind(probe: OllamaBindProbe): OllamaBindAssessment {
     ownership,
     tailscaleIp: probe.tailscaleIp,
     shadowed: resolution.shadowed,
+    guard: probe.guard,
+    exposed,
     summary,
   };
 }
@@ -996,6 +1014,8 @@ export const BIND_MARKERS = {
   disabled: 'ollama-bind-disabled:',
   shadowed: 'ollama-bind-shadowed:',
   effective: 'ollama-bind-effective:',
+  guarded: 'ollama-bind-guarded:',
+  unguarded: 'ollama-bind-unguarded:',
   complete: 'ollama-bind-complete',
 } as const;
 
@@ -1111,6 +1131,19 @@ export function ollamaBindApplyShell(mode: OllamaBindMode, opts: BindApplyOption
     'CIHUB_BIND_EOF',
     'systemctl daemon-reload',
     enable ? 'systemctl enable ollama >/dev/null 2>&1 || true' : ': # adopt path: unit already enabled by whoever set it up',
+  );
+  // `all` is only acceptable behind the guard, and the guard goes up BEFORE the daemon restarts onto
+  // 0.0.0.0 so there is no window where the LAN can reach it. A guard that fails to install fails the
+  // bind — a 0.0.0.0 with no guard is the exposure this mode exists to avoid. The other two modes do
+  // not need it and remove one left behind by an earlier `all`, so switching modes is coherent.
+  lines.push(
+    ...(mode === 'all'
+      ? guardInstallShell(OLLAMA_PORT_GUARD, {
+          heredocTag: 'CIHUB_OLLAMA_GUARD_EOF',
+          okMarker: BIND_MARKERS.guarded,
+          failMarker: BIND_MARKERS.failed,
+        })
+      : guardRemoveShell(OLLAMA_PORT_GUARD, { marker: BIND_MARKERS.unguarded })),
     'systemctl restart ollama',
     // Re-read what systemd merged. This is the check the whole file exists for.
     // `Environment=` is stripped first: the merged list often begins with OLLAMA_HOST itself, and a
@@ -1145,7 +1178,13 @@ export function classifyBindApplyOutput(
       .find((l) => l.startsWith(marker))
       ?.slice(marker.length)
       .trim();
-  const detail = lines.filter((l) => l.startsWith(BIND_MARKERS.disabled) || l.startsWith(BIND_MARKERS.shadowed));
+  const detail = lines.filter(
+    (l) =>
+      l.startsWith(BIND_MARKERS.disabled) ||
+      l.startsWith(BIND_MARKERS.shadowed) ||
+      l.startsWith(BIND_MARKERS.guarded) ||
+      l.startsWith(BIND_MARKERS.unguarded),
+  );
   const refused = pick(BIND_MARKERS.refused);
   if (refused) return { outcome: 'refused', why: refused, detail };
   const mismatch = pick(BIND_MARKERS.mismatch);
