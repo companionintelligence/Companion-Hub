@@ -48,6 +48,7 @@ import { DATA_DIR } from '@/common/constants';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { HubAction } from '@/core/portal/hub-actions';
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
@@ -1024,8 +1025,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     };
   }
 
-  async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
+  async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean; actor: LifecycleActor }) {
     const { appUrn, form, skipRun } = params;
+
+    // Before anything is fetched, written or queued — see `assertActorMay`.
+    await this.assertActorMay(params.actor, appUrn, 'install');
     const { demoMode, architecture } = this.config.getConfig();
 
     // Check if we need to download files from Companion Portal
@@ -2023,8 +2027,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
-  public async updateAppConfig(params: { appUrn: AppUrn; form: unknown }) {
+  public async updateAppConfig(params: { appUrn: AppUrn; form: unknown; actor: LifecycleActor }) {
     const { appUrn, form } = params;
+
+    await this.assertActorMay(params.actor, appUrn, 'configure');
 
     const parsedFormResult = appFormSchema.safeParse(form);
 
@@ -2351,7 +2357,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           const appInfo = await this.appFilesManager.getInstalledAppInfo(appUrn);
           const restoredStatus = appStatusBeforeUpdate === 'running' ? 'stopped' : appStatusBeforeUpdate;
 
-          await this.updateAppConfig({ appUrn, form: app.config });
+          // Part of the update the caller was already authorized for; not a new decision.
+          await this.updateAppConfig({ appUrn, form: app.config, actor: { kind: 'system', reason: 'update-reapply' } });
           await this.appRepository.updateAppById(app.id, { version: appInfo?.cihub_app_version, status: restoredStatus });
           this.sseService.emit('app', { event: 'update_success', appUrn, appStatus: restoredStatus });
           this.agentNotifyService?.notify('update_success', { appUrn }, 'info');
@@ -2386,7 +2393,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
-  async updateAllApps(operatorUserId?: number): Promise<void> {
+  async updateAllApps(actor: LifecycleActor): Promise<void> {
     const installedApps = await this.appsService.getInstalledApps();
     type InstalledApp = Awaited<ReturnType<typeof this.appsService.getInstalledApps>>[number];
     const availableUpdates: InstalledApp[] = installedApps.filter((item: InstalledApp) => {
@@ -2397,7 +2404,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     for (const { app } of availableUpdates) {
       try {
         const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-        if (!(await this.operatorMay(operatorUserId, appUrn, 'update'))) {
+        if (!(await this.actorMay(actor, appUrn, 'update'))) {
           continue;
         }
         await this.updateApp({ appUrn, performBackup: true });
@@ -2424,7 +2431,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async startAllApps(operatorUserId?: number) {
+  async startAllApps(actor: LifecycleActor) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const stoppedApps = apps.filter((app: AppFromDb) => app.status === 'stopped');
@@ -2433,7 +2440,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of stoppedApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          if (!(await this.operatorMay(operatorUserId, appUrn, 'start'))) {
+          if (!(await this.actorMay(actor, appUrn, 'start'))) {
             continue;
           }
           await this.startApp({ appUrn, skipPull: true });
@@ -2444,7 +2451,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async stopAllApps(operatorUserId?: number) {
+  async stopAllApps(actor: LifecycleActor) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -2453,7 +2460,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          if (!(await this.operatorMay(operatorUserId, appUrn, 'stop'))) {
+          if (!(await this.actorMay(actor, appUrn, 'stop'))) {
             continue;
           }
           await this.stopApp({ appUrn });
@@ -2464,7 +2471,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async restartAllApps(operatorUserId?: number) {
+  async restartAllApps(actor: LifecycleActor) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -2473,7 +2480,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          if (!(await this.operatorMay(operatorUserId, appUrn, 'restart'))) {
+          if (!(await this.actorMay(actor, appUrn, 'restart'))) {
             continue;
           }
           await this.restartApp({ appUrn });
@@ -2753,22 +2760,48 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * Hub-session grants. An omitted `operatorUserId` sweeps everything, so only a
-   * caller that has already named the principal may omit it: boot recovery, or a
-   * request `MarketplaceWhoIsService.sweepOperatorUserId` found exempt. Reading
-   * `hubSessionOperatorUserId` straight off a request would restore the
-   * exemption-by-absence this fails open for.
+   * Whether `actor` may perform `action` on `appUrn`.
+   *
+   * ⚠ NO ACTOR MEANS NO ANSWER — the type makes one required. This replaces
+   * `operatorMay`, which returned `true` for an absent operator id (the MCP
+   * case) AND whenever `MarketplaceWhoIsService` could not be resolved: two
+   * separate ways for "we could not tell" to read as "allowed".
+   *
+   * - an operator is checked against WhoIs, and REFUSED if WhoIs is unavailable;
+   * - an MCP key already passed the registry's capability gate; a managed app key
+   *   may act only on the app that owns it (item 3 of CI-Hub#1397 — a manifest
+   *   field is enough to be handed an `mcp`-scoped key, and it must not reach
+   *   its neighbours);
+   * - a grant-exempt principal and the system itself are admitted by name.
    */
-  private async operatorMay(operatorUserId: number | undefined, appUrn: AppUrn, action: HubAction): Promise<boolean> {
-    if (operatorUserId == null) {
-      return true;
-    }
+  private async actorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction): Promise<boolean> {
+    switch (actor.kind) {
+      case 'exempt':
+      case 'system':
+        return true;
+      case 'mcp':
+        return actor.ownerAppUrn === null || actor.ownerAppUrn === appUrn;
+      case 'operator': {
+        const whois = this.resolveWhois();
 
-    const whois = this.moduleRef.get(MarketplaceWhoIsService, { strict: false });
-    if (!whois) {
-      return true;
+        return whois !== null && (await whois.has(actor.userId, appUrn, action));
+      }
     }
+  }
 
-    return whois.has(operatorUserId, appUrn, action);
+  /** The same decision, as a refusal the caller sees. */
+  private async assertActorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction): Promise<void> {
+    if (!(await this.actorMay(actor, appUrn, action))) {
+      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrn).appName }, HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /** `null` when the WhoIs service cannot be resolved — a refusal, never a pass. */
+  private resolveWhois(): MarketplaceWhoIsService | null {
+    try {
+      return this.moduleRef.get(MarketplaceWhoIsService, { strict: false }) ?? null;
+    } catch {
+      return null;
+    }
   }
 }

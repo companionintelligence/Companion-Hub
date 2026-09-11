@@ -12,6 +12,7 @@ import type { Request } from 'express';
 
 import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
 import { hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
+import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 
 export type GrantSurface = 'hub' | 'store';
@@ -155,6 +156,24 @@ export class MarketplaceWhoIsService {
    * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
    * principal as "no person to check, allow" all over again.
    */
+  /**
+   * The lifecycle actor a request speaks for, or a 403 when it names none.
+   *
+   * Built on {@link sweepOperatorUserId}, which already refuses an unrecognised
+   * principal: a session person becomes an `operator`, a grant-exempt principal
+   * an `exempt`. The service then gates on the actor, so HTTP is no longer the
+   * only transport that is checked.
+   */
+  lifecycleActor(req: Request, action: HubAction): LifecycleActor {
+    const userId = this.sweepOperatorUserId(req, action);
+
+    if (userId != null) {
+      return { kind: 'operator', userId };
+    }
+
+    return { kind: 'exempt', principal: req.hubPrincipal === 'cli' ? 'cli' : 'portal-device' };
+  }
+
   sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
     const userId = hubSessionOperatorUserId(req);
 

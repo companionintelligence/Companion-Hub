@@ -10,6 +10,11 @@ export function mcpCallerCapability(): ApiKeyCapability {
   return mcpCallContext.getStore()?.capability ?? 'read';
 }
 
+/** The app a managed key belongs to, for the in-flight MCP request; `null` for any other key. */
+export function mcpCallerOwnerAppUrn(): string | null {
+  return mcpCallContext.getStore()?.ownerAppUrn ?? null;
+}
+
 /** Shared tools/call path for v1 and v2 Hub MCP servers. */
 export async function invokeRegistryTool(
   registry: McpToolRegistry,

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { mcpCallContext } from '../../mcp-call-context';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
@@ -167,6 +168,36 @@ describe('AppLifecycleTools', () => {
       lifecycleService.restartAllApps.mockResolvedValue(undefined);
       await tools.restartAllApps();
       expect(lifecycleService.restartAllApps).toHaveBeenCalled();
+    });
+  });
+
+  describe('the actor handed to the lifecycle service (CI-Hub#1397)', () => {
+    it('names an unmanaged MCP key with no owning app', async () => {
+      lifecycleService.validateAppConfig.mockResolvedValue({ valid: true, errors: [] });
+      lifecycleService.installApp.mockResolvedValue({ requestId: 'uuid-1' });
+
+      await tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } });
+
+      expect(lifecycleService.installApp).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null } }));
+    });
+
+    it("carries a managed key's owning app, so the service can confine it to that app", async () => {
+      lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
+      const managedKey = { id: 3, name: 'importer', capability: 'write', ownerAppUrn: 'importer:ci-store' } as const;
+
+      await mcpCallContext.run(managedKey, () => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }));
+
+      expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store' } }),
+      );
+    });
+
+    it.each(['updateAllApps', 'startAllApps', 'stopAllApps', 'restartAllApps'] as const)('hands %s the MCP actor', async (sweep) => {
+      lifecycleService[sweep].mockResolvedValue(undefined);
+
+      await tools[sweep]();
+
+      expect(lifecycleService[sweep]).toHaveBeenCalledWith({ kind: 'mcp', ownerAppUrn: null });
     });
   });
 });

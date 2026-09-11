@@ -1,6 +1,8 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { mcpCallerOwnerAppUrn } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -21,9 +23,9 @@ const urnProp = { type: 'string', description: 'App identifier in appName:storeS
  * Why the gate has to live here at all: nothing else on this path checks a grant.
  * `assertSessionAction(req, appUrn, 'configure')` is in app-lifecycle.controller.ts, not in the
  * service, and `operatorMay` reads an absent operator as consent — which is exactly the MCP case, a
- * key with no person behind it. Moving that check into the service so HTTP, MCP and rehydrate share
- * one gate is the real fix and is deliberately not in this change; see CI-Hub#1302. Until it lands,
- * a form carrying either field is destructive, so it takes a 'full' key or an operator confirmation.
+ * key with no person behind it. The service now gates every caller on its named actor
+ * (CI-Hub#1397), so this is the second check rather than the only one: a form carrying either field
+ * is still destructive, so it still takes a 'full' key or an operator confirmation.
  */
 function claimsCustomDomain(params: Record<string, unknown>): boolean {
   const form = params.form as Record<string, unknown> | undefined;
@@ -202,6 +204,15 @@ export class AppLifecycleTools implements OnModuleInit {
     });
   }
 
+  /**
+   * The actor every lifecycle call from this surface speaks as: an MCP key, with
+   * the app it belongs to if it is a managed one. The SERVICE decides what that
+   * admits (CI-Hub#1397) — this layer no longer has to be the only gate.
+   */
+  private actor(): LifecycleActor {
+    return { kind: 'mcp', ownerAppUrn: mcpCallerOwnerAppUrn() };
+  }
+
   async installApp(params: { appUrn: string; form?: Record<string, unknown> }) {
     const appUrn = castAppUrn(params.appUrn);
     const form = params.form ?? {};
@@ -213,7 +224,7 @@ export class AppLifecycleTools implements OnModuleInit {
         errors: validation.errors,
       };
     }
-    return this.appLifecycleService.installApp({ appUrn, form });
+    return this.appLifecycleService.installApp({ appUrn, form, actor: this.actor() });
   }
   async startApp(params: { appUrn: string }) {
     return this.appLifecycleService.startApp({ appUrn: castAppUrn(params.appUrn) });
@@ -238,18 +249,18 @@ export class AppLifecycleTools implements OnModuleInit {
     return this.appLifecycleService.updateApp({ appUrn: castAppUrn(params.appUrn), performBackup: params.performBackup ?? true });
   }
   async updateAppConfig(params: { appUrn: string; form: Record<string, unknown> }) {
-    return this.appLifecycleService.updateAppConfig({ appUrn: castAppUrn(params.appUrn), form: params.form });
+    return this.appLifecycleService.updateAppConfig({ appUrn: castAppUrn(params.appUrn), form: params.form, actor: this.actor() });
   }
   async updateAllApps() {
-    return this.appLifecycleService.updateAllApps();
+    return this.appLifecycleService.updateAllApps(this.actor());
   }
   async startAllApps() {
-    return this.appLifecycleService.startAllApps();
+    return this.appLifecycleService.startAllApps(this.actor());
   }
   async stopAllApps() {
-    return this.appLifecycleService.stopAllApps();
+    return this.appLifecycleService.stopAllApps(this.actor());
   }
   async restartAllApps() {
-    return this.appLifecycleService.restartAllApps();
+    return this.appLifecycleService.restartAllApps(this.actor());
   }
 }

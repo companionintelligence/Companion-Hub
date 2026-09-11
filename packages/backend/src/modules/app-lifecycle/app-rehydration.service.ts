@@ -14,6 +14,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { UserRepository } from '@/modules/user/user.repository';
 import { isOperational } from '@/modules/registration/registration-state';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AppLifecycleService } from './app-lifecycle.service';
 import {
   buildRehydrationPlan,
@@ -67,7 +68,12 @@ export class AppRehydrationService {
     return this.buildPlanFromPortalApps(portalApps);
   }
 
-  async executeRehydrate(options?: { force?: boolean; source?: 'restore'; operatorUserId?: number }): Promise<RehydrationExecuteResult> {
+  async executeRehydrate(options: {
+    force?: boolean;
+    source?: 'restore';
+    operatorUserId?: number;
+    actor: LifecycleActor;
+  }): Promise<RehydrationExecuteResult> {
     await this.assertCanRehydrate();
 
     const existing = await this.readRehydrationState();
@@ -92,7 +98,7 @@ export class AppRehydrationService {
     const skipped: Array<{ name: string; reason: string }> = [];
 
     for (const item of plan.items) {
-      await this.executePlanItem(item, queued, started, skipped);
+      await this.executePlanItem(item, queued, started, skipped, options.actor);
     }
 
     const state: RehydrationStateFile = {
@@ -216,6 +222,7 @@ export class AppRehydrationService {
     queued: string[],
     started: string[],
     skipped: Array<{ name: string; reason: string }>,
+    actor: LifecycleActor,
   ): Promise<void> {
     const label = item.portalApp.name;
 
@@ -236,7 +243,8 @@ export class AppRehydrationService {
         return;
       }
 
-      await this.appLifecycleService.installApp({ appUrn: item.appUrn, form: item.form });
+      // As the person who asked for the rehydrate: an app they may not install is skipped, not installed.
+      await this.appLifecycleService.installApp({ appUrn: item.appUrn, form: item.form, actor });
       queued.push(item.appUrn);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
