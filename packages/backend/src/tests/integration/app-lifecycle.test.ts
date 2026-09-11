@@ -708,8 +708,17 @@ describe('App lifecycle', () => {
       expect(boundEnv.get('APP_BASE_URL')).toBe('https://comfy.acme.com');
       expect(await appsRepository.getAppByUrn(appInfo.urn).then((row) => row?.pendingRestart)).toBe(false);
 
-      // Released in Companion Portal: the array is now empty, which is an instruction to unbind.
+      // Released in Companion Portal: the array is now empty, which is an instruction to unbind —
+      // but only once a second sync, at least a minute later, says the same (R2-PORTALMISC-5).
       await syncReporting([]);
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBe('comfy.acme.com');
+
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 61_000);
+      try {
+        await syncReporting([]);
+      } finally {
+        clock.mockRestore();
+      }
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
 
       await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
