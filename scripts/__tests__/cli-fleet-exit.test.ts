@@ -16,8 +16,12 @@ const mocks = vi.hoisted(() => ({
   sshCapture: vi.fn(),
   readHostFacts: vi.fn(),
   executeBackendPlan: vi.fn(),
+  planAllBackends: vi.fn(),
   checkAppOnNode: vi.fn(),
   probeNode: vi.fn(),
+  ensureTailscaleCert: vi.fn(),
+  probeTailscaleCert: vi.fn(),
+  preflightNode: vi.fn(),
 }));
 
 vi.mock('../lib/fleet-roster.js', async (importOriginal) => ({
@@ -49,7 +53,7 @@ vi.mock('../lib/fleet-hardware.js', async (importOriginal) => ({
 
 vi.mock('../lib/fleet-backends.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/fleet-backends.js')>()),
-  planAllBackends: () => [{ backend: 'ollama', action: 'install', why: 'no engine answering' }],
+  planAllBackends: (...args: unknown[]) => mocks.planAllBackends(...args),
   executeBackendPlan: mocks.executeBackendPlan,
 }));
 
@@ -98,6 +102,19 @@ function routeSsh(opts: { before: Record<string, string>; after?: Record<string,
     return opts.update ?? okResult('hub-update-complete');
   });
 }
+vi.mock('../lib/fleet-tailscale-cert.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/fleet-tailscale-cert.js')>()),
+  ensureTailscaleCert: mocks.ensureTailscaleCert,
+  probeTailscaleCert: mocks.probeTailscaleCert,
+}));
+
+// The probe is an SSH call of its own; the gate that reads it is real.
+vi.mock('../lib/fleet-preflight.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/fleet-preflight.js')>()),
+  preflightNode: mocks.preflightNode,
+}));
+
+import { CANONICAL_BIND_DROPIN, canonicalBindDropinContent } from '../lib/fleet-ollama-bind.js';
 
 const facts = {
   os: 'linux',
@@ -119,11 +136,19 @@ beforeEach(() => {
     { name: 'core-2', ip: '10.0.0.2' },
   ];
   mocks.installNode.mockReset();
-  mocks.sshCapture.mockReset();
+  // `backends` now reads each node's Ollama bind over SSH before planning; an unreachable probe
+  // must not turn a dry run into a crash, so the default answer is "no output".
+  mocks.sshCapture.mockReset().mockResolvedValue({ ok: false, out: '', err: '', code: 255, ms: 1 });
   mocks.readHostFacts.mockReset().mockResolvedValue({ facts });
   mocks.executeBackendPlan.mockReset();
+  mocks.planAllBackends.mockReset().mockReturnValue([{ backend: 'ollama', action: 'install', why: 'no engine answering' }]);
   mocks.checkAppOnNode.mockReset();
   mocks.probeNode.mockReset().mockResolvedValue({ ssh: true, sshFailure: 'ok', hub: true, hubDetail: 'tier a', engines: [] });
+  mocks.ensureTailscaleCert.mockReset();
+  mocks.probeTailscaleCert.mockReset();
+  mocks.preflightNode
+    .mockReset()
+    .mockImplementation(async (_target: unknown, node: { name: string }) => ({ node: node.name, findings: [], verdict: 'ok', ms: 1 }));
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -161,6 +186,14 @@ describe('fleet install', () => {
     expect(mocks.installNode).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
   });
+
+  it('hands --force and --touches-boot to the per-node installer, where the preflight gate lives', async () => {
+    mocks.installNode.mockImplementation(async (node: { name: string }) => ({ node: node.name, ok: true, steps: [] }));
+    await runFleetCommand(['install', '--execute', '--force', '--touches-boot']);
+    expect(mocks.installNode).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ force: true, touchesBoot: true }), undefined);
+    await runFleetCommand(['install', '--execute']);
+    expect(mocks.installNode).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ force: false, touchesBoot: false }), undefined);
+  });
 });
 
 describe('fleet update', () => {
@@ -181,6 +214,147 @@ describe('fleet update', () => {
     await runFleetCommand(['update', '--execute', '--hub']);
     expect(updateCalls()).toHaveLength(2);
     expect(process.exitCode).toBeUndefined();
+  });
+
+  /**
+   * The preflight runs before the first thing that changes a node. A `block` — a wedged dpkg, a
+   * held lock, no sudo — ends that node's update without touching it, and counts as a failure.
+   */
+  describe('preflight gate', () => {
+    const blocked = (name: string) => ({
+      node: name,
+      findings: [{ check: 'dpkg', ok: false, severity: 'block', value: '3 package(s) half-configured', via: 'dpkg --audit' }],
+      verdict: 'block',
+      ms: 1,
+    });
+
+    it('refuses a blocked node before running anything on it, and fails the run', async () => {
+      mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) =>
+        node.name === 'core-1' ? blocked(node.name) : { node: node.name, findings: [], verdict: 'ok', ms: 1 },
+      );
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub']);
+      // Only core-2 was dialled at all — for `--hub` that is the image probe before, the update, and
+      // the probe after; the blocked node gets none of them. The count is the image work's business;
+      // the gate's promise is the set of hosts.
+      const hosts = new Set(mocks.sshCapture.mock.calls.map((c) => (c[0] as { host: string }).host));
+      expect(hosts).toEqual(new Set(['10.0.0.2']));
+      expect(mocks.sshCapture.mock.calls.length).toBeGreaterThan(0);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('goes ahead under --force and exits 0 when the work itself succeeded', async () => {
+      mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => blocked(node.name));
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub', '--force']);
+      const hosts = new Set(mocks.sshCapture.mock.calls.map((c) => (c[0] as { host: string }).host));
+      expect(hosts).toEqual(new Set(['10.0.0.1', '10.0.0.2']));
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('continues past a warn', async () => {
+      mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+        node: node.name,
+        findings: [{ check: 'boot-recovery', ok: false, severity: 'warn', value: 'no boot window', via: '/etc/default/grub' }],
+        verdict: 'warn',
+        ms: 1,
+      }));
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub']);
+      const hosts = new Set(mocks.sshCapture.mock.calls.map((c) => (c[0] as { host: string }).host));
+      expect(hosts).toEqual(new Set(['10.0.0.1', '10.0.0.2']));
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('passes --touches-boot through to the probe', async () => {
+      mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+      await runFleetCommand(['update', '--execute', '--hub', '--touches-boot']);
+      expect(mocks.preflightNode).toHaveBeenCalledWith(expect.anything(), expect.anything(), { touchesBoot: true });
+    });
+
+    it('does not probe on a dry run', async () => {
+      await runFleetCommand(['update', '--hub']);
+      expect(mocks.preflightNode).not.toHaveBeenCalled();
+      expect(process.exitCode).toBeUndefined();
+    });
+  });
+});
+
+describe('fleet preflight', () => {
+  it('exits 0 when every node is clear, and dials nothing but the probe', async () => {
+    await runFleetCommand(['preflight']);
+    expect(mocks.preflightNode).toHaveBeenCalledTimes(2);
+    expect(mocks.sshCapture).not.toHaveBeenCalled();
+    expect(mocks.installNode).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits 1 when a node would be refused, so it can gate a script', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [{ check: 'sudo', ok: false, severity: 'block', value: 'sudo wants a password', via: 'sudo -n true' }],
+      verdict: 'block',
+      ms: 1,
+    }));
+    await runFleetCommand(['preflight']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 1 when a probe could not run — unmeasured is not clear', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [],
+      verdict: 'block',
+      error: 'Timed out after 60000ms',
+      ms: 60000,
+    }));
+    await runFleetCommand(['preflight']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 0 on info and warn findings', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [
+        { check: 'sudo', ok: false, severity: 'info', value: 'CI OS: unprivileged by design', via: 'sudo -n true' },
+        { check: 'boot-recovery', ok: false, severity: 'warn', value: 'no boot window', via: '/etc/default/grub' },
+      ],
+      verdict: 'warn',
+      ms: 1,
+    }));
+    await runFleetCommand(['preflight']);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('prints a row per node and a detail line per finding', async () => {
+    mocks.preflightNode.mockImplementation(async (_t: unknown, node: { name: string }) => ({
+      node: node.name,
+      findings: [{ check: 'apt-lock', ok: false, severity: 'block', value: 'dpkg lock held by PID 40210', via: 'lslocks', fix: 'wait for it' }],
+      verdict: 'block',
+      ms: 1,
+    }));
+    await runFleetCommand(['preflight', '--nodes=core-1']);
+    const out = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(out).toContain('APT-LOCK');
+    expect(out).toContain('dpkg lock held by PID 40210');
+    expect(out).toContain('via: lslocks');
+    expect(out).toContain('fix: wait for it');
+    expect(out).toContain('--force');
+  });
+
+  it('emits JSON with the findings when asked', async () => {
+    await runFleetCommand(['preflight', '--json']);
+    const out = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .find((line) => line.trim().startsWith('{'));
+    expect(out).toBeDefined();
+    const parsed = JSON.parse(out as string) as { nodes: { node: string; verdict: string }[]; touchesBoot: boolean };
+    expect(parsed.nodes.map((n) => n.node)).toEqual(['core-1', 'core-2']);
+    expect(parsed.touchesBoot).toBe(false);
   });
 });
 
@@ -209,6 +383,170 @@ describe('fleet backends', () => {
     expect(mocks.executeBackendPlan).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
   });
+
+  it('reads the Ollama bind read-only on a dry run, and never applies it', async () => {
+    mocks.sshCapture.mockResolvedValue({
+      ok: true,
+      out: [
+        'bind_probe=1',
+        'unit_file=/etc/systemd/system/ollama.service',
+        'show:Environment=OLLAMA_HOST=0.0.0.0',
+        'tailscale_ip=100.64.0.9',
+        '===DROPIN /etc/systemd/system/ollama.service.d/zzz-tailnet-bind.conf===',
+        '[Service]',
+        'Environment="OLLAMA_HOST=100.64.0.9:11434"',
+        '===END===',
+        '===DROPIN /etc/systemd/system/ollama.service.d/zzzz-bind-all.conf===',
+        '[Service]',
+        'Environment="OLLAMA_HOST=0.0.0.0"',
+        '===END===',
+      ].join('\n'),
+      err: '',
+      code: 0,
+      ms: 1,
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama']);
+    // One probe per node, nothing else: no sudo, no apply script.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    for (const call of mocks.sshCapture.mock.calls) {
+      expect(String(call[1])).not.toContain('sudo');
+      expect(String(call[1])).not.toContain('systemctl restart');
+    }
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain('CONFLICT');
+    expect(printed).toContain('move zzzz-bind-all.conf → zzzz-bind-all.conf.disabled-by-cihub-');
+    expect(process.exitCode).toBeUndefined();
+  });
+});
+
+/**
+ * An Ollama that is already answering is adopted, not installed — and the fourteen nodes that
+ * already run one are exactly where the bind arrangements diverge. The adopt path converges them,
+ * except where it must not.
+ */
+describe('fleet backends --execute on an adopted ollama', () => {
+  const probe = (dropins: string, extra = '') =>
+    [
+      'bind_probe=1',
+      'unit_file=/etc/systemd/system/ollama.service',
+      'show:ActiveState=active',
+      'show:UnitFileState=enabled',
+      'show:Environment=OLLAMA_HOST=100.64.0.9:11434',
+      'tailscale_ip=100.64.0.9',
+      extra,
+      dropins,
+    ].join('\n');
+  const dropin = (name: string, value: string) =>
+    `===DROPIN /etc/systemd/system/ollama.service.d/${name}===\n[Service]\nEnvironment="OLLAMA_HOST=${value}"\n===END===`;
+
+  beforeEach(() => {
+    mocks.nodes = [{ name: 'core-1', ip: '10.0.0.1' }];
+    mocks.planAllBackends.mockReturnValue([{ backend: 'ollama', action: 'adopt', why: 'already answering on :11434' }]);
+    mocks.executeBackendPlan.mockResolvedValue({ backend: 'ollama', outcome: 'adopted', why: 'already answering on :11434' });
+  });
+
+  it('refuses the system-unit path on a node whose port belongs to a user-scope unit, and exits 0', async () => {
+    // beta-1: ollama-local.service under the ci user's systemd --user, system unit disabled.
+    mocks.sshCapture.mockResolvedValue({
+      ok: true,
+      out: probe(
+        dropin('override.conf', '0.0.0.0'),
+        'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=2417,fd=3))\nowner=2417 ci /user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service',
+      ),
+      err: '',
+      code: 0,
+      ms: 1,
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
+    // The probe, and nothing under sudo.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toMatch(/skipped.*ollama-local\.service under ci's systemd --user/);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('touches nothing on a node that already reads back as managed for this bind', async () => {
+    const canonical = canonicalBindDropinContent({ host: '100.64.0.9', port: 11434, address: '100.64.0.9:11434' }).trimEnd();
+    mocks.sshCapture.mockResolvedValue({
+      ok: true,
+      out: probe(`===DROPIN /etc/systemd/system/ollama.service.d/${CANONICAL_BIND_DROPIN}===\n${canonical}\n===END===`),
+      err: '',
+      code: 0,
+      ms: 1,
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain(`bind already 100.64.0.9:11434 ← ${CANONICAL_BIND_DROPIN}`);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('applies the bind on a conflicted node, and fails the run when the read-back does not match', async () => {
+    mocks.sshCapture
+      .mockResolvedValueOnce({
+        ok: true,
+        out: probe(`${dropin('zzz-tailnet-bind.conf', '100.64.0.9:11434')}\n${dropin('zzzz-bind-all.conf', '0.0.0.0')}`),
+        err: '',
+        code: 0,
+        ms: 1,
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        out: 'ollama-bind-disabled: zzzz-bind-all.conf → zzzz-bind-all.conf.disabled-by-cihub-2026-09-10',
+        err: "ollama-bind-mismatch: requested OLLAMA_HOST=100.64.0.9:11434 but systemd resolved '0.0.0.0' (drop-ins in merge order: /etc/systemd/system/ollama.service.d/zzzzzz-manual.conf)",
+        code: 1,
+        ms: 1,
+      });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    expect(String(mocks.sshCapture.mock.calls[1]?.[1])).toContain('sudo -n bash');
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain("systemd resolved '0.0.0.0'");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('converges a conflicted node and stays exit 0 when the read-back matches', async () => {
+    mocks.sshCapture
+      .mockResolvedValueOnce({
+        ok: true,
+        out: probe(`${dropin('zzz-tailnet-bind.conf', '100.64.0.9:11434')}\n${dropin('zzzz-bind-all.conf', '0.0.0.0')}`),
+        err: '',
+        code: 0,
+        ms: 1,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        out: [
+          'ollama-bind-disabled: zzz-tailnet-bind.conf → zzz-tailnet-bind.conf.disabled-by-cihub-2026-09-10',
+          'ollama-bind-disabled: zzzz-bind-all.conf → zzzz-bind-all.conf.disabled-by-cihub-2026-09-10',
+          'ollama-bind-effective: OLLAMA_HOST=100.64.0.9:11434 listening=100.64.0.9:11434',
+          'ollama-bind-complete',
+        ].join('\n'),
+        err: '',
+        code: 0,
+        ms: 1,
+      });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--bind', 'tailnet', '--execute']);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain('OLLAMA_HOST=100.64.0.9:11434');
+    expect(printed).toContain('zzzz-bind-all.conf.disabled-by-cihub-2026-09-10');
+    expect(process.exitCode).toBeUndefined();
+  });
 });
 
 describe('fleet apps', () => {
@@ -224,6 +562,70 @@ describe('fleet apps', () => {
     mocks.checkAppOnNode.mockResolvedValue({ slug: 'clara', ok: true, detail: 'app-creds-ok' });
     await runFleetCommand(['apps']);
     expect(mocks.checkAppOnNode).toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+});
+
+/**
+ * `fleet cert` — a finding is an answer; a failed measurement or a broken promise is a failure.
+ *
+ * "absent" on a dry run exits 0: the command was asked what the fleet has and said so. A node it
+ * could not measure at all, or one where `tailscale cert` ran and the store still lacks the file,
+ * is the failure the exit code exists to carry.
+ */
+describe('fleet cert', () => {
+  const finding = (value: string, via = 'test') => ({ cert: { value, via }, fqdn: { value: 'hub.example-tailnet.ts.net', via: 'test' } });
+  const result = (over: Record<string, unknown>) => ({
+    before: finding('absent'),
+    final: finding('absent'),
+    ok: true,
+    detail: '',
+    plan: 'would run: sudo tailscale cert hub.example-tailnet.ts.net',
+    ...over,
+  });
+
+  it('exits 0 on a dry run that found certificates missing — that is the answer, not a failure', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(result({ final: finding('absent') }));
+    await runFleetCommand(['cert']);
+    expect(mocks.ensureTailscaleCert).toHaveBeenCalledTimes(2);
+    expect(mocks.ensureTailscaleCert.mock.calls.every(([, opts]) => (opts as { execute: boolean }).execute === false)).toBe(true);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits 0 when a node is skipped with a reason, such as HTTPS being off for the tailnet', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(result({ final: finding('https-not-enabled'), plan: 'would skip: HTTPS is not enabled' }));
+    await runFleetCommand(['cert', '--execute']);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails when a node could not be measured at all', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(result({ final: finding('unknown', 'ssh failed (acl-denied)'), ok: false }));
+    await runFleetCommand(['cert']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails when tailscale cert ran and the store still lacks the file', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(
+      result({ issue: { value: 'issued', via: 'sudo -n tailscale cert', ms: 10 }, after: finding('absent'), final: finding('absent'), ok: false }),
+    );
+    await runFleetCommand(['cert', '--execute']);
+    expect(mocks.ensureTailscaleCert.mock.calls.every(([, opts]) => (opts as { execute: boolean }).execute === true)).toBe(true);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 0 when every node issued and verified', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(
+      result({ issue: { value: 'issued', via: 'sudo -n tailscale cert', ms: 10 }, after: finding('present'), final: finding('present'), ok: true }),
+    );
+    await runFleetCommand(['cert', '--execute']);
+    expect(mocks.ensureTailscaleCert).toHaveBeenCalledTimes(2);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('never dials the local node, and does not count it as a failure', async () => {
+    mocks.nodes = [{ name: 'here', ip: '10.0.0.9', local: true }];
+    await runFleetCommand(['cert', '--execute']);
+    expect(mocks.ensureTailscaleCert).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
   });
 });
