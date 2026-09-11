@@ -1,14 +1,18 @@
 import { eq } from 'drizzle-orm';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { mock } from 'vitest-mock-extended';
+import type { CacheService } from '@/core/cache/cache.service';
+import type { SessionUserCache } from '@/core/cache/session-user.cache';
 import { apiKey, user } from '@/core/database/drizzle/schema';
 import { ApiKeyRepository } from '@/modules/api-keys/api-key.repository';
+import { FactoryResetService } from '@/modules/system/factory-reset.service';
 import { type TestDatabase, createTestDatabase } from '../utils/create-test-database';
 
 /*
  * Against the real database and the real migrations: that `created_by_user_id`
  * exists after `migrate`, that the admin listing's join names who created each
- * key, and that deleting that account leaves the key with no creator rather
- * than failing, or taking the key with it.
+ * key, that deleting that account leaves the key with no creator rather than
+ * failing, or taking the key with it, and that a factory reset takes every key.
  */
 describe('API keys and who created them', () => {
   let db: TestDatabase;
@@ -24,15 +28,15 @@ describe('API keys and who created them', () => {
     await db.delete(user);
   });
 
-  const insertKey = (name: string, createdByUserId: number | null) =>
+  const insertKey = (name: string, createdByUserId: number | null, managedFor?: string) =>
     repo.insert({
       scopes: ['mcp'],
       capability: 'write',
       name,
       prefix: name.slice(0, 8),
       hashedKey: `hash-${name}`,
-      managed: false,
-      ownerAppUrn: null,
+      managed: managedFor !== undefined,
+      ownerAppUrn: managedFor ?? null,
       createdByUserId,
       expiresAt: null,
     });
@@ -61,5 +65,32 @@ describe('API keys and who created them', () => {
     await db.delete(user).where(eq(user.id, member.id));
 
     expect(await repo.findById(key.id)).toMatchObject({ createdByUserId: null });
+  });
+
+  /*
+   * `RESTART IDENTITY` hands the next account the ids the reset freed, so a key
+   * that survived would act as whoever signs in first. Every kind goes: one a
+   * person created, one nobody is recorded as creating, and an app's managed key.
+   */
+  it('leaves no key behind after a factory reset, whoever created it', async () => {
+    const owner = await insertUser('owner@acme.com');
+    await insertKey('n8n', owner.id);
+    await insertKey('legacy', null);
+    await insertKey('importer', null, 'importer:ci-store');
+
+    const factoryReset = new FactoryResetService(
+      db as never,
+      mock(),
+      mock(),
+      mock(),
+      mock(),
+      mock<CacheService>(),
+      mock<SessionUserCache>(),
+      mock(),
+      mock(),
+    );
+    await factoryReset.wipeDatabase();
+
+    expect(await repo.list()).toEqual([]);
   });
 });
