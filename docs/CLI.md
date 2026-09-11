@@ -729,8 +729,12 @@ cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # 
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
+cihub fleet boot-params [--i-have-console] [--execute] # gfx1151 GTT kernel params: live vs staged, and the GRUB edit
 ```
 
+**`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
+`backends`, `install`, `update` and `boot-params` require `--execute`; without it they print the plan
+they would run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
 **`scan`, `list`, `status` and `preflight` change nothing, anywhere; `apps` reads and installs nothing.**
 `backends`, `install` and `update` require `--execute`; without it they print the plan they would
 run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
@@ -794,7 +798,7 @@ while believing it was twenty is the worse failure.
 
 | Flag | Effect |
 | ---- | ------ |
-| `--execute` | `backends`/`install`/`update` only: actually apply. Without it, the plan is printed and nothing changes |
+| `--execute` | `backends`/`install`/`update`/`boot-params` only: actually apply. Without it, the plan is printed and nothing changes |
 | `--nodes a,b` | Restrict the run to these roster entries, by name **or** address |
 | `--user <account>` | Remote account to SSH as. `FLEET_SSH_USER` sets the same thing; a roster entry's own `user` wins |
 | `--json` | Machine-readable report — `scan`, `list`, `status`, `backends`, `install`, `apps`. `update` has none |
@@ -816,6 +820,7 @@ while believing it was twenty is the worse failure.
 | `--models a,b` | `update` only: pull these models on each node |
 | `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
 | `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
+| `--i-have-console` | `boot-params` only: lift the refusal on a node with a hidden zero-timeout GRUB menu and no `console` in its roster entry. You are asserting you can reach that machine's console if the next boot fails |
 
 The Postgres password `install` needs is read from **`CIHUB_POSTGRES_PASSWORD`** and has no flag, so
 it never lands in a shell history or a process listing.
@@ -961,6 +966,37 @@ environment, so installing one grants Hub operator authority. That belongs behin
 entitlement checks, in the UI or API, not fanned out blind across a fleet — and the command prints
 the same warning when it finishes.
 
+### `cihub fleet boot-params`
+
+Brings AMD Strix Halo (gfx1151) nodes up to the kernel parameters CI-OS now sets at first boot —
+`iommu=pt amdgpu.gttsize=<N> ttm.pages_limit=<M>` — which let the GPU address the bulk of unified
+memory instead of the firmware VRAM carve-out. CI-OS applies them **at first boot only**, and ten of
+this fleet's twelve gfx1151 nodes were provisioned before that shipped. Nodes that are not gfx1151
+are reported and left alone.
+
+Per node the dry run prints **live** (`/proc/cmdline`, what the running kernel got) and **staged**
+(`/etc/default/grub`, what the next boot will get) as `full`, `partial` or `absent` — separately,
+because they disagree in both directions: staged-but-not-live needs only a reboot, live-but-not-staged
+loses the parameters on its next one. Then the target, sized from RAM with CI-OS's own formula
+(`reserve = max(4 GiB, total/8)`, `gttsize = total − reserve`, `pages_limit = gttsize × 256`, nothing
+below 30 000 MiB), and the one-line diff to `GRUB_CMDLINE_LINUX_DEFAULT`. Re-running on a node that is
+already at target plans no change.
+
+`--execute` writes `/etc/default/grub` with a copy at `grub.bak-<stamp>` beside it, runs
+`update-grub`, and **never reboots** — it ends with a "reboot required" list for you to work through
+one node at a time. The write refuses if the file changed since it was read, and the edit refuses
+outright, exactly as CI-OS does, on a `GRUB_CMDLINE_LINUX_DEFAULT` line that is not plainly
+double-quoted: a single-quoted line once got silently re-wrapped into a corrupted file and handed to
+`update-grub` with no error, and this tool would rather do nothing than guess. It also refuses when a
+`/etc/default/grub.d/*.cfg` overrides the line, since the edit would then change nothing while looking
+staged.
+
+The **console gate**: a node with `GRUB_TIMEOUT=0` and `GRUB_TIMEOUT_STYLE=hidden` shows no menu on
+boot, so if the kernel fails to come up on the new parameters there is nothing to catch it at — and
+without an out-of-band console, nobody who could. Two gfx1151 nodes here are in exactly that state.
+Such a node is refused unless its `fleet.json` entry carries a `console` (a NanoKVM/PiKVM address, an
+IPMI host, `physical`) or you pass `--i-have-console`. The refusal says which in one sentence.
+
 ---
 
 ## Maintenance
@@ -986,6 +1022,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | --- | --- |
 | `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
 | `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
+| `fleet boot-params --execute` | Any node failed, or was **refused** — by the quoting check or the console gate. A refusal is work the run did not do, and a chain must not read it as done. The dry run exits `1` only for a node it could not read |
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
@@ -1069,6 +1106,9 @@ and pinning).
 `cli-fleet.ts` owns argument parsing and the eight subcommand runners only; the work is in
 `fleet-roster.ts` (the saved fleet), `fleet-discover.ts` (the three probe axes), `fleet-ssh.ts` (the
 single SSH transport, so hosts cannot fail differently depending on which function reached them),
+`fleet-hardware.ts` (host facts and the load gate), `fleet-backends.ts`, `fleet-install.ts`,
+`fleet-apps.ts` and `fleet-boot-params.ts` (the gfx1151 GTT formula, GRUB classification and the
+console gate — all pure).
 `fleet-hardware.ts` (host facts and the load gate), `fleet-preflight.ts` (the five pre-transaction
 checks and the gate `install`/`update` apply), `fleet-backends.ts`, `fleet-install.ts` and
 `fleet-apps.ts`.
