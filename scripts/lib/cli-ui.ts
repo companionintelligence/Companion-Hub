@@ -118,8 +118,8 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Stand a Hub up on each node, register it, and claim it; prints the plan unless --execute',
       },
       {
-        command: `${BASE_COMMAND} fleet update [--hub] [--models a,b] [--execute]`,
-        description: 'Pull the Hub image and models across the roster; prints the plan unless --execute',
+        command: `${BASE_COMMAND} fleet update [--hub [--pin-digest <ref> | --to-majority]] [--models a,b] [--execute]`,
+        description: 'Pull the Hub image (floating, or pinned by digest) and models across the roster; prints the plan unless --execute',
       },
       {
         command: `${BASE_COMMAND} fleet apps [--apps a,b] [--endpoint pool|local]`,

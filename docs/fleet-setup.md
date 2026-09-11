@@ -210,6 +210,43 @@ Two settings need coordinating across the fleet rather than set independently:
 - **Re-imaging a node** means it comes back with a new pool identity. Peers have pinned the old key
   and there is no signed-rotation message in the protocol, so pair it again from scratch.
 
+## Which build the fleet is running
+
+Every node deploys the Hub from the floating tag `ghcr.io/companionintelligence/ci-hub:dev`, which
+CI re-points on every merge. That is convenient and it is also why drift is invisible: `docker ps`
+prints the same image *name* on every node whatever build is behind it. Measured on 2026-09-10 by
+comparing `docker image inspect --format '{{.Id}}'` across the fleet: twelve nodes on one image ID,
+two on a second, one each on a third and a fourth — and two of the outliers changed during the
+evening, meaning something redeployed them with nothing recording it. Nothing in the fleet tooling
+could say "the fleet runs build X", let alone hold it there.
+
+The tag is not the identity. Two are, and they answer different questions:
+
+| Identity | Looks like | Answers |
+|---|---|---|
+| **Image ID** | `sha256:d5ff45d9…` (`docker image inspect --format '{{.Id}}'`) | Are these two nodes running byte-identical software? This is what `fleet status` compares |
+| **Repo digest** | `ghcr.io/companionintelligence/ci-hub@sha256:…` (`RepoDigests`) | What can another node *pull* to get this exact build? An image ID is not addressable in a registry; a digest is. This is what a pin uses |
+
+A locally built image has an ID and no digest, so it can be recognised but never pinned to.
+
+```bash
+cihub fleet status                       # IMAGE column, and a footer: "hub image d5ff45d9 on 12/18; drifted: core-3 (9a38714f), …"
+cihub fleet update --hub --execute       # floating: each node gets whatever :dev points at when its turn comes; prints before → after per node
+cihub fleet update --hub --to-majority --execute            # pin every targeted node to the build most of the roster already runs
+cihub fleet update --hub --pin-digest <repo@sha256:…> --execute   # pin to a named build (digest from `fleet status --json`)
+```
+
+`--to-majority` measures the **whole roster**, not just `--nodes`, and refuses unless the most common
+image is on a strict majority of it — more than half of *all* rostered nodes, unknown ones included.
+A node that could not be read is reported `unknown` with the reason and is never counted as agreeing
+or as drifting: on the evening this was measured, the unread half of a fleet is exactly where the
+surprises were. A tie is refused too, with both contenders named; pick one with `--pin-digest`.
+
+A pin reaches `cihub pool update` as `CI_HUB_IMAGE` for that run only. It is not written to the
+node's env file, so a later `cihub pool update` run by hand on the node — or by whatever redeployed
+core-3 and core-6 that evening — floats back to the tag. To hold a node, set `CI_HUB_IMAGE` to the
+digest in its env file; `pool update` honours it in either place.
+
 ## Troubleshooting the seams
 
 | Symptom | Usual cause |

@@ -22,7 +22,21 @@ import { readHostFacts, isTooBusyForMaintenance } from './fleet-hardware.js';
 import { executeBackendPlan, planAllBackends, INSTALLABLE_BACKENDS, type InstallableBackend } from './fleet-backends.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
-import { sshCapture } from './fleet-ssh.js';
+import { type SshTarget, sshCapture } from './fleet-ssh.js';
+import {
+  type FleetImageSummary,
+  type HubImageProbe,
+  imageMatchesPin,
+  type NodeImageState,
+  parsePinDigest,
+  probeHubImage,
+  renderImageCell,
+  renderImageFooter,
+  renderImageTransition,
+  resolveMajorityPin,
+  shortImageId,
+  summariseFleetImages,
+} from './fleet-image.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
@@ -63,6 +77,13 @@ export interface FleetArgs {
   models: string[];
   /** Update the Hub image during `update`. */
   hub: boolean;
+  /**
+   * `update --hub` only: the exact image to deploy, `repo@sha256:…`, instead of whatever the floating
+   * tag resolves to at pull time. Validated at parse time so a typo is refused before anything dials.
+   */
+  pinDigest?: string;
+  /** `update --hub` only: pin every targeted node to the image most of the fleet already runs. */
+  toMajority: boolean;
   /** Agent apps for `apps`. Empty means both supported slugs. */
   apps: AppSlug[];
   /** Where an app should send inference. */
@@ -99,6 +120,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     poolPin: undefined,
     models: [],
     hub: false,
+    pinDigest: undefined,
+    toMajority: false,
     apps: [],
     // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
     // the cluster rather than one box.
@@ -146,6 +169,11 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
+    else if (isFlag('--pin-digest')) {
+      const pin = parsePinDigest(readValue('--pin-digest'));
+      if (!pin.ok) throw new FleetArgError(`--pin-digest: ${pin.why}`);
+      args.pinDigest = pin.ref;
+    } else if (arg === '--to-majority') args.toMajority = true;
     else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
@@ -195,6 +223,15 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     } else {
       throw new FleetArgError(`Unexpected argument '${arg}'.`);
     }
+  }
+
+  // Both pin flags only mean something on the Hub-image path, and they contradict each other: one
+  // names the build, the other asks the fleet which build. Refuse the combination rather than pick.
+  if ((args.pinDigest || args.toMajority) && !args.hub) {
+    throw new FleetArgError('--pin-digest and --to-majority only apply to `fleet update --hub`.');
+  }
+  if (args.pinDigest && args.toMajority) {
+    throw new FleetArgError('--pin-digest names an image and --to-majority asks the fleet for one. Pass one or the other.');
   }
 
   return args;
@@ -254,6 +291,51 @@ async function probeAll(nodes: readonly FleetNode[], args: FleetArgs, source: Di
   await Promise.all(Array.from({ length: Math.min(args.concurrency, Math.max(nodes.length, 1)) }, worker));
   out.sort((a, b) => a.name.localeCompare(b.name));
   return out;
+}
+
+/**
+ * Read each node's Hub image, bounded like {@link probeAll}.
+ *
+ * `skip` names nodes not worth dialling and why — a node whose SSH probe just failed would fail the
+ * same way after another timeout, and the reason is already in hand. Those are reported `unknown`
+ * with that reason rather than re-attempted, and never counted on either side of the drift line.
+ */
+async function probeImages(
+  nodes: readonly FleetNode[],
+  args: FleetArgs,
+  skip: ReadonlyMap<string, string> = new Map(),
+): Promise<{ node: string; probe: HubImageProbe }[]> {
+  const out: { node: string; probe: HubImageProbe }[] = [];
+  const queue = [...nodes];
+  const worker = async () => {
+    for (;;) {
+      const node = queue.shift();
+      if (!node) return;
+      const why = skip.get(node.name);
+      if (why !== undefined) {
+        out.push({ node: node.name, probe: { kind: 'unknown', reason: why } });
+        continue;
+      }
+      out.push({ node: node.name, probe: await probeHubImage({ host: node.ip, user: node.user ?? args.user }, Math.max(args.timeoutMs, 30_000)) });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(args.concurrency, Math.max(nodes.length, 1)) }, worker));
+  const order = new Map(nodes.map((n, i) => [n.name, i]));
+  out.sort((a, b) => (order.get(a.node) ?? 0) - (order.get(b.node) ?? 0));
+  return out;
+}
+
+/** The footer line, toned by what it says: drift is the finding this column exists to surface. */
+function printImageFooter(summary: FleetImageSummary): void {
+  const drifted = summary.nodes.some((n) => n.state === 'drifted');
+  console.log(colorize(renderImageFooter(summary), drifted || summary.tie.length > 0 ? 'yellow' : 'dim'));
+}
+
+function colorImageCell(state: NodeImageState): string {
+  const cell = renderImageCell(state);
+  if (state.state === 'drifted') return colorize(cell, 'yellow');
+  if (state.state === 'unknown') return colorize(cell, 'dim');
+  return cell;
 }
 
 async function runScan(args: FleetArgs): Promise<void> {
@@ -389,21 +471,44 @@ async function runStatus(args: FleetArgs): Promise<void> {
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   const probed = await probeAll(run, args, 'roster');
 
+  // The image column. Every node runs the same floating tag, so `docker ps` cannot show drift; the
+  // image ID can. Nodes SSH could not reach are `unknown` with that reason, not re-dialled.
+  const unreachable = new Map(probed.filter((n) => !n.probe.ssh).map((n) => [n.name, n.probe.sshFailure === 'ok' ? 'no ssh' : n.probe.sshFailure]));
+  const images = await probeImages(probed, args, unreachable);
+  const summary = summariseFleetImages(images);
+  const imageOf = new Map(summary.nodes.map((state) => [state.node, state]));
+
   if (args.json) {
-    console.log(JSON.stringify({ nodes: probed, skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          nodes: probed.map((n) => ({ ...n, image: imageOf.get(n.name) ?? null })),
+          image: { majority: summary.majority, tie: summary.tie, known: summary.known, total: summary.total },
+          skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })),
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
   console.log(
     renderTable(
-      probed.map((n) => [
-        n.name,
-        n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
-        n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
-        n.probe.engines.join(' ') || '—',
-      ]),
-      ['NODE', 'SSH', 'HUB', 'ENGINES'],
+      probed.map((n) => {
+        const image = imageOf.get(n.name);
+        return [
+          n.name,
+          n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
+          n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
+          image ? colorImageCell(image) : colorize('?', 'dim'),
+          n.probe.engines.join(' ') || '—',
+        ];
+      }),
+      ['NODE', 'SSH', 'HUB', 'IMAGE', 'ENGINES'],
     ),
   );
+  console.log('');
+  printImageFooter(summary);
   if (skipped.length) {
     console.log('');
     for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
@@ -630,6 +735,54 @@ async function runInstall(args: FleetArgs): Promise<void> {
 }
 
 /**
+ * Decide, before anything is dialled for a write, which image `update --hub` deploys.
+ *
+ * `--to-majority` measures the WHOLE roster — every node a fleet command would run on — not only the
+ * `--nodes` selection: the point is to bring the selected nodes to what the fleet runs, and asking two
+ * drifted nodes what their own majority is answers nothing. The read is SSH-only and changes nothing,
+ * so it runs in a dry run too: the plan should name the image it would pin, and refuse now if it
+ * cannot, rather than discovering that after `--execute`.
+ */
+async function resolveHubPin(
+  args: FleetArgs,
+  roster: readonly FleetNode[],
+): Promise<{ pin?: string; summary?: FleetImageSummary; refused?: string }> {
+  if (args.pinDigest) return { pin: args.pinDigest };
+  if (!args.toMajority) return {};
+  const fleet = partitionForRun(roster, []).run;
+  console.log(colorize(`Reading the Hub image on ${fleet.length} rostered node(s) to find the majority.`, 'dim'));
+  const summary = summariseFleetImages(await probeImages(fleet, args));
+  printImageFooter(summary);
+  const resolved = resolveMajorityPin(summary);
+  if (!resolved.ok) return { summary, refused: resolved.why };
+  console.log(colorize(`  majority ${shortImageId(resolved.majority?.imageId ?? '')} is ${resolved.ref}`, 'dim'));
+  return { pin: resolved.ref, summary };
+}
+
+/**
+ * `cihub pool update` on one node, bracketed by an image read on each side so the run records what
+ * it changed. The measured failure this answers: nodes redeploying with nothing writing down what
+ * they moved from or to. A pinned update that completes but is not running the pinned image is a
+ * failure, whatever `pool update` said — the operator asked for that build by digest.
+ */
+async function updateHubImageOnNode(target: SshTarget, pin: string | undefined): Promise<{ ok: boolean; after: HubImageProbe }> {
+  const before = await probeHubImage(target);
+  const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript(pin)}\nEOF`, 20 * 60_000);
+  const after = await probeHubImage(target);
+  let ok = res.ok && res.out.includes('hub-update-complete');
+  let note = '';
+  if (ok && pin && after.kind === 'known' && !imageMatchesPin(after.facts, pin)) {
+    ok = false;
+    note = ` — not on the pinned image; running ${after.facts.repoDigest ?? after.facts.tag ?? after.facts.imageId}`;
+  }
+  const last = (res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? '';
+  console.log(
+    `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} hub image — ${renderImageTransition(before, after)}${note}${ok ? '' : ` — ${last}`}`,
+  );
+  return { ok, after };
+}
+
+/**
  * `cihub fleet update` — refresh the Hub image and/or pull models across the fleet.
  *
  * Model pulls are serialised for a measured reason: concurrent cold loads of 20-50 GB blocked the
@@ -647,25 +800,38 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     console.log('Nothing to do. Pass --hub to update the Hub image, --models a,b to pull models, or both.');
     return;
   }
+
+  const { pin, refused } = args.hub ? await resolveHubPin(args, roster.nodes) : {};
+  if (refused) {
+    // Refused before anything was dialled for a write, same as install's pre-flight: exit 2, not 1.
+    console.error(colorize(`Refusing --to-majority: ${refused}`, 'red'));
+    process.exitCode = 2;
+    return;
+  }
+
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will change. Add --execute to apply.', 'dim'));
     console.log(`  ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
-    if (args.hub) console.log('  would run: cihub pool update');
+    if (args.hub) {
+      console.log(
+        pin
+          ? `  would run: CI_HUB_IMAGE=${pin} cihub pool update`
+          : '  would run: cihub pool update (floating tag — each node gets whatever the tag resolves to when its turn comes)',
+      );
+    }
     for (const m of args.models) console.log(`  would pull: ${m}`);
     return;
   }
 
   let failed = 0;
+  const afterImages: { node: string; probe: HubImageProbe }[] = [];
   for (const node of run) {
     const target = { host: node.ip, user: node.user ?? args.user };
     console.log(`\n${node.name}`);
     if (args.hub) {
-      const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript()}\nEOF`, 20 * 60_000);
-      const ok = res.ok && res.out.includes('hub-update-complete');
+      const { ok, after } = await updateHubImageOnNode(target, pin);
       if (!ok) failed += 1;
-      console.log(
-        `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} hub image — ${(res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? ''}`,
-      );
+      afterImages.push({ node: node.name, probe: after });
     }
     for (const model of args.models) {
       const res = await sshCapture(target, `bash <<'EOF'\n${pullModelScript(model)}\nEOF`, 45 * 60_000);
@@ -674,6 +840,13 @@ async function runUpdate(args: FleetArgs): Promise<void> {
       console.log(
         `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${model} — ${(res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? ''}`,
       );
+    }
+  }
+  if (afterImages.length) {
+    console.log('');
+    printImageFooter(summariseFleetImages(afterImages));
+    if (pin) {
+      console.log(colorize(`  pinned to ${pin} for this run only — a later 'cihub pool update' without CI_HUB_IMAGE floats back to the tag`, 'dim'));
     }
   }
   for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
