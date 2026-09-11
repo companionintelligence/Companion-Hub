@@ -825,7 +825,7 @@ while believing it was twenty is the worse failure.
 | `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
 | `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
 | `--backends a,b` | `backends` only: from `ollama`, `vllm`, `lucebox`, `dspark`, `mtplx`, `lemonade`. Omit for all six |
-| `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `tailnet`, the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
+| `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `all` — `0.0.0.0` behind `ollama-tailnet-guard.service`, which admits the tailnet, loopback and the Docker bridges the Hub container arrives on; `tailnet` is the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
 | `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
@@ -951,10 +951,11 @@ effective bind and the file that set it, and flags a conflict (several setters, 
 canonical file) without changing anything.
 
 > A Hub container on the same node reaches its host Ollama at `host.docker.internal:11434`, which is
-> the Docker bridge gateway — an address a tailnet-only bind does **not** listen on. On a node that
-> runs both, either pass `--bind all`, or point the Hub at the tailnet address (`OLLAMA_URL` in the
-> compose environment, or Docker's `host-gateway-ip`). This is a known seam, not yet closed by the
-> installer.
+> the Docker bridge gateway — an address a tailnet-only bind does **not** listen on. That is why the
+> default is `--bind all` behind `ollama-tailnet-guard.service`: the daemon listens everywhere, and
+> the guard admits `lo`, `tailscale0`, `docker0` and `br-+` and resets the rest. `fleet status`
+> marks a `0.0.0.0` bind whose guard is not active as **EXPOSED**. Use `--bind tailnet` only on a
+> node that runs no Hub container.
 
 ### `cihub fleet install`
 
