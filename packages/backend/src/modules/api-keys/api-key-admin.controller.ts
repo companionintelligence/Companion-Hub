@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpStatus, Param, ParseIntPipe, Patch, 
 import { ModuleRef } from '@nestjs/core';
 import type { Request } from 'express';
 import { TranslatableError } from '@/common/error/translatable-error';
+import { LoggerService } from '@/core/logger/logger.service';
 import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
@@ -20,18 +21,26 @@ export class ApiKeyAdminController {
   constructor(
     private readonly adminService: ApiKeyAdminService,
     private readonly moduleRef: ModuleRef,
+    private readonly logger: LoggerService,
   ) {}
 
-  /**
-   * List all stored API keys (operator + app-managed, every scope). Never returns raw keys.
-   *
-   * `canGrantFull` says whether the caller may give a key full capability, so the screen offers that
-   * choice only to someone who can make it. The create and change routes decide regardless.
-   */
+  /** List all stored API keys (operator + app-managed, every scope). Never returns raw keys. */
   @Get()
-  async listKeys(@Req() req: Request) {
-    const [keys, canGrantFull] = await Promise.all([this.adminService.listKeys(), this.mayGrantFull(req)]);
-    return { keys, canGrantFull };
+  async listKeys() {
+    return { keys: await this.adminService.listKeys() };
+  }
+
+  /**
+   * Whether the caller may give a key full capability, so the screen offers that choice only to
+   * someone who can make it. The create and change routes decide regardless.
+   *
+   * Its own route rather than a field on the list: answering it asks the Portal, and the list is a
+   * database read that must not wait on a slow or unreachable Portal, nor ask it again after every
+   * create, change and revoke.
+   */
+  @Get('grantable')
+  async grantableCapabilities(@Req() req: Request) {
+    return { canGrantFull: await this.mayGrantFull(req) };
   }
 
   /**
@@ -77,13 +86,15 @@ export class ApiKeyAdminController {
 
   /**
    * ⚠ FULL CAPABILITY IS THE ORGANIZATION'S TO GIVE. A key acts with its creator's grants, but `full`
-   * also opens the destructive tools no per-app grant stands behind — uninstall, reset, the bulk
-   * sweeps — so who may hand it out is an owner's or admin's call, as it is in the Portal. Asked of
+   * also opens the destructive MCP tools, and two of them, uninstall and reset, check no per-app grant
+   * today. So who may hand it out is an owner's or admin's call, as it is in the Portal. Asked of
    * WhoIs fresh and about no app (`isOrgManager`); every way of not knowing is a no.
    *
    * The exempt principals (the CLI, the Portal device push) are admitted by name, as
    * `MarketplaceWhoIsService.lifecycleActor` names them, not through `isGrantExemptPrincipal`: one
-   * added to that list later is refused here until someone decides it may hand out `full` keys.
+   * added to that list later is refused here until someone decides it may hand out `full` keys. Any
+   * other principal is refused and logged the way the other gates log it, because all its caller
+   * ever sees is a 403.
    */
   private async mayGrantFull(req: Request): Promise<boolean> {
     switch (req.hubPrincipal) {
@@ -96,6 +107,7 @@ export class ApiKeyAdminController {
         return userId !== undefined && (await this.resolveWhois()?.isOrgManager(userId)) === true;
       }
       default:
+        this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=grant_full`);
         return false;
     }
   }

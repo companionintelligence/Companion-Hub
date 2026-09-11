@@ -216,7 +216,15 @@ describe('ApiKeysContainer', () => {
 
   describe('full capability takes an organization owner or admin', () => {
     const listFor = (canGrantFull: boolean) => (url: string) =>
-      url === '/api/api-keys' ? Promise.resolve({ ok: true, json: async () => ({ ...KEYS, canGrantFull }) }) : mockGet(url);
+      url === '/api/api-keys/grantable' ? Promise.resolve({ ok: true, json: async () => ({ canGrantFull }) }) : mockGet(url);
+
+    it('shows the keys without waiting for the Portal to say who may give full capability', async () => {
+      mockApiFetch.mockImplementation((url: string) => (url === '/api/api-keys/grantable' ? new Promise(() => {}) : mockGet(url)));
+
+      render(<ApiKeysContainer />);
+
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+    });
 
     it('offers full capability only to someone who may give it, and says who can', async () => {
       const user = userEvent.setup();

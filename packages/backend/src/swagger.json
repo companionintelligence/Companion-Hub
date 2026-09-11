@@ -4312,6 +4312,20 @@
         ]
       }
     },
+    "/api/api-keys/grantable": {
+      "get": {
+        "operationId": "grantableCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
     "/api/api-keys/{id}": {
       "patch": {
         "operationId": "updateKey",

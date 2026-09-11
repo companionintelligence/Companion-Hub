@@ -45,14 +45,29 @@ export interface ApiKeyInfo {
 /** The one definition of the list read — the initial load and every post-action refresh share it,
  *  so the endpoint and response envelope live in a single place. Throws on a non-2xx; callers
  *  decide whether that surfaces as an error state or just leaves the list stale. */
-const fetchApiKeys = async (): Promise<{ keys: ApiKeyInfo[]; canGrantFull: boolean }> => {
+const fetchApiKeys = async (): Promise<ApiKeyInfo[]> => {
   const res = await apiFetch('/api/api-keys');
   if (!res.ok) {
     throw new Error('api-keys request failed');
   }
-  const body = (await res.json()) as { keys: ApiKeyInfo[]; canGrantFull?: boolean };
-  // A Hub that predates the flag offers full to everyone, as it always did; its routes decide either way.
-  return { keys: body.keys, canGrantFull: body.canGrantFull !== false };
+  return ((await res.json()) as { keys: ApiKeyInfo[] }).keys;
+};
+
+/**
+ * Whether this operator may give a key full capability. Asked on its own because answering it asks
+ * the Portal, and the list must not wait on that. Any failure (a Hub that predates the route, an
+ * outage) reads as yes: the screen then offers full as it always did, and the routes decide.
+ */
+const fetchCanGrantFull = async (): Promise<boolean> => {
+  try {
+    const res = await apiFetch('/api/api-keys/grantable');
+    if (!res.ok) {
+      return true;
+    }
+    return ((await res.json()) as { canGrantFull?: boolean }).canGrantFull !== false;
+  } catch {
+    return true;
+  }
 };
 
 /**
@@ -115,9 +130,7 @@ export const ApiKeysContainer = () => {
         setError(null);
       }
       try {
-        const listed = await fetchApiKeys();
-        setKeys(listed.keys);
-        setCanGrantFull(listed.canGrantFull);
+        setKeys(await fetchApiKeys());
       } catch {
         if (!silent) {
           setError(t('API_KEYS_LOAD_ERROR'));
@@ -136,6 +149,16 @@ export const ApiKeysContainer = () => {
   }, [load]);
 
   const refreshKeys = useCallback(() => load({ silent: true }), [load]);
+
+  // Who may give full capability is asked on mount and again after a refusal, never on the list's own
+  // refreshes, so the Portal hears about this operator once per visit rather than once per action.
+  const loadGrantable = useCallback(async () => {
+    setCanGrantFull(await fetchCanGrantFull());
+  }, []);
+
+  useEffect(() => {
+    void loadGrantable();
+  }, [loadGrantable]);
 
   const openCreate = useCallback(() => {
     setNewKeyName('');
@@ -159,8 +182,8 @@ export const ApiKeysContainer = () => {
         // A refusal says why — only an owner or admin can give a key full capability — not just "failed".
         toast.error(await refusalMessage(res, t, t('API_KEYS_CREATE_ERROR')));
         // It can also mean what this screen thinks the operator may grant is out of date (their role
-        // changed since the list loaded), so re-read it rather than keep offering the refused level.
-        await refreshKeys();
+        // changed since the page loaded), so re-read it rather than keep offering the refused level.
+        await loadGrantable();
         return;
       }
       const body = (await res.json()) as { key: string };
@@ -174,7 +197,7 @@ export const ApiKeysContainer = () => {
     } finally {
       setCreatingKey(false);
     }
-  }, [newKeyName, newKeyCapability, refreshKeys, t]);
+  }, [newKeyName, newKeyCapability, refreshKeys, loadGrantable, t]);
 
   const openCapabilityChange = useCallback((key: ApiKeyInfo) => {
     setChangeTarget(key);
@@ -209,7 +232,7 @@ export const ApiKeysContainer = () => {
         // Back to the picker, re-read: a refused promotion must not leave the confirmation up, offering
         // the level the Hub just refused.
         setChangeStep('choose');
-        await refreshKeys();
+        await loadGrantable();
         return;
       }
       const body = (await res.json()) as { changed: boolean };
@@ -223,7 +246,7 @@ export const ApiKeysContainer = () => {
     } finally {
       setSavingCapability(false);
     }
-  }, [changeTarget, changeTo, changeStep, closeCapabilityChange, refreshKeys, t]);
+  }, [changeTarget, changeTo, changeStep, closeCapabilityChange, refreshKeys, loadGrantable, t]);
 
   const revokeKey = useCallback(
     async (id: number) => {

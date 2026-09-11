@@ -2,6 +2,7 @@ import type { Request } from 'express';
 import { ModuleRef } from '@nestjs/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { LoggerService } from '@/core/logger/logger.service';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { ApiKeyAdminController } from '../api-key-admin.controller';
 import { ApiKeyAdminService } from '../api-key-admin.service';
@@ -14,6 +15,7 @@ describe('ApiKeyAdminController', () => {
   let admin: MockProxy<ApiKeyAdminService>;
   let whois: { isOrgManager: ReturnType<typeof vi.fn> };
   let moduleRef: MockProxy<ModuleRef>;
+  let logger: MockProxy<LoggerService>;
   let controller: ApiKeyAdminController;
 
   beforeEach(() => {
@@ -21,7 +23,8 @@ describe('ApiKeyAdminController', () => {
     whois = { isOrgManager: vi.fn(async () => false) };
     moduleRef = mock<ModuleRef>();
     moduleRef.get.mockImplementation(((token: unknown) => (token === MarketplaceWhoIsService ? whois : undefined)) as never);
-    controller = new ApiKeyAdminController(admin, moduleRef);
+    logger = mock<LoggerService>();
+    controller = new ApiKeyAdminController(admin, moduleRef, logger);
   });
 
   /*
@@ -42,8 +45,22 @@ describe('ApiKeyAdminController', () => {
   });
 
   /*
-   * A key acts with its creator's grants, but `full` also opens the destructive
-   * tools no per-app grant stands behind, so handing it out is an organization
+   * The list is a database read. Who may give full capability asks the Portal,
+   * so it has its own route: a slow or unreachable Portal must not hold the list.
+   */
+  describe('the key list', () => {
+    it('lists keys without asking the Portal anything', async () => {
+      admin.listKeys.mockResolvedValue([]);
+
+      await expect(controller.listKeys()).resolves.toEqual({ keys: [] });
+      expect(moduleRef.get).not.toHaveBeenCalled();
+      expect(whois.isOrgManager).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+   * A key acts with its creator's grants, but `full` also opens destructive
+   * tools that check no per-app grant, so handing it out is an organization
    * owner's or admin's call — asked fresh, and a no whenever it cannot be told.
    */
   describe('full capability takes an organization owner or admin', () => {
@@ -111,18 +128,27 @@ describe('ApiKeyAdminController', () => {
       expect(admin.createKey).not.toHaveBeenCalled();
     });
 
-    it('refuses a caller with no recognised principal, without asking', async () => {
+    it('refuses a caller with no recognised principal without asking, and logs why', async () => {
       const unrecognised = { user: { id: 7 } } as unknown as Request;
 
       await expect(controller.createKey({ name: 'n8n', capability: 'full' } as never, unrecognised)).rejects.toThrow('API_KEY_FULL_ROLE_REQUIRED');
       expect(whois.isOrgManager).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith('whois_unrecognised_principal principal=none action=grant_full');
     });
 
     it.each([true, false])('tells the screen whether the caller may give full capability (%s)', async (manager) => {
       whois.isOrgManager.mockResolvedValue(manager);
-      admin.listKeys.mockResolvedValue([]);
 
-      await expect(controller.listKeys(session())).resolves.toEqual({ keys: [], canGrantFull: manager });
+      await expect(controller.grantableCapabilities(session())).resolves.toEqual({ canGrantFull: manager });
+      expect(whois.isOrgManager).toHaveBeenCalledWith(7);
+    });
+
+    it.each([
+      ['the CLI', cli],
+      ['the Portal device push', portalPush],
+    ])('tells the screen %s may give full capability, without asking', async (_label, req) => {
+      await expect(controller.grantableCapabilities(req)).resolves.toEqual({ canGrantFull: true });
+      expect(whois.isOrgManager).not.toHaveBeenCalled();
     });
   });
 });
