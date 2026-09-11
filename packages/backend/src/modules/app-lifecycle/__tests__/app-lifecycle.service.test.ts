@@ -849,6 +849,83 @@ describe('AppLifecycleService', () => {
         expect(whois.has).not.toHaveBeenCalled();
       });
 
+      /*
+       * R2-HUBDOMAINS-1 at the one gate every transport reaches: which custom
+       * domain an app serves is the organization's, so a form that changes it
+       * also takes an owner or admin — on top of the per-app grant above.
+       */
+      describe('custom-domain changes', () => {
+        const roles = { has: vi.fn(), hasManagingRole: vi.fn() };
+        const serving = { id: 1, status: 'stopped', config: {}, customDomain: 'shop.acme.com', customDomainIntent: 'shop.acme.com' };
+        /** What an update settles to once past both gates — anything but the role refusal. */
+        const outcomeOf = (run: Promise<unknown>) =>
+          run.then(
+            () => 'done',
+            (error: Error) => error.message,
+          );
+
+        beforeEach(() => {
+          roles.has.mockReset().mockResolvedValue(true);
+          roles.hasManagingRole.mockReset();
+          vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? roles : undefined));
+        });
+
+        it('refuses a member moving the domain, before anything is written or queued', async () => {
+          appsRepository.getAppByUrn.mockResolvedValue(serving as any);
+          roles.hasManagingRole.mockResolvedValue(false);
+
+          await expect(service.updateAppConfig({ actor: OPERATOR, appUrn, form: { customDomain: 'other.acme.com' } })).rejects.toThrow(
+            'CUSTOM_DOMAIN_ROLE_REQUIRED',
+          );
+          expect(roles.hasManagingRole).toHaveBeenCalledWith(7, appUrn);
+          expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+          expect(appEventsQueue.publish).not.toHaveBeenCalled();
+        });
+
+        it('lets an owner or admin move it, all the way to the row', async () => {
+          appsRepository.getAppByUrn.mockResolvedValue(serving as any);
+          appFilesManager.getInstalledAppInfo.mockResolvedValue(baseAppInfo as any);
+          roles.hasManagingRole.mockResolvedValue(true);
+
+          await service.updateAppConfig({
+            actor: OPERATOR,
+            appUrn,
+            form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'other.acme.com' },
+          });
+
+          expect(roles.hasManagingRole).toHaveBeenCalledWith(7, appUrn);
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: 'other.acme.com' }));
+        });
+
+        it('does not ask a member about a save that leaves the domain alone', async () => {
+          appsRepository.getAppByUrn.mockResolvedValue(serving as any);
+
+          const outcome = await outcomeOf(service.updateAppConfig({ actor: OPERATOR, appUrn, form: { customDomain: 'shop.acme.com' } }));
+
+          expect(outcome).not.toBe('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(roles.hasManagingRole).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['an unmanaged MCP key', { kind: 'mcp', ownerAppUrn: null }],
+          ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn }],
+        ] as Array<[string, LifecycleActor]>)('refuses %s, whatever its capability — no person to ask', async (_label, actor) => {
+          await expect(service.installApp({ actor, appUrn, form: { customDomain: 'shop.acme.com' } })).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
+          expect(roles.hasManagingRole).not.toHaveBeenCalled();
+        });
+
+        it.each([
+          ['a grant-exempt principal', { kind: 'exempt', principal: 'cli' }],
+          ['the Hub itself', { kind: 'system', reason: 'debug-seed' }],
+        ] as Array<[string, LifecycleActor]>)('admits %s by name', async (_label, actor) => {
+          await service.installApp({ actor, appUrn, form: { customDomain: 'shop.acme.com' } });
+
+          expect(appsRepository.createApp).toHaveBeenCalled();
+          expect(roles.hasManagingRole).not.toHaveBeenCalled();
+        });
+      });
+
       describe('the sweeps', () => {
         const IMPORTER = 'importer:ci-marketplace';
         const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER };
@@ -910,7 +987,7 @@ describe('AppLifecycleService', () => {
         config: { port: 8080 },
         customDomain: 'comfy.acme.com',
       } as any);
-      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true, portalRowId: 'cd_1' });
 
       await service.installApp({
         actor: TEST_ACTOR,
@@ -934,6 +1011,31 @@ describe('AppLifecycleService', () => {
        * which the next bind pass would dutifully ask CI-Cloud to wire back.
        */
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+      // The operator's own release is a binding change too, and audited as one.
+      expect(logger.info).toHaveBeenCalledWith(
+        `custom_domain_audit app=${appUrn} previous=comfy.acme.com next=none previousPortalRowId=cd_1 nextPortalRowId=none cause=release`,
+      );
+    });
+
+    it('writes no custom-domain intent a reinstall form smuggles in under its column name', async () => {
+      /*
+       * The form is `.passthrough()` and the reinstall patch spreads it, so a
+       * `customDomainIntent` field would write the column directly — past the
+       * owner/admin gate, which reads only `customDomain` (R2-HUBDOMAINS-1) —
+       * and the bind pass would then wire any parked organization domain to it.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 }, customDomain: null } as any);
+
+      await service.installApp({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomainIntent: 'shop.acme.com' },
+      } as any);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalled();
+      for (const [, patch] of appsRepository.updateAppById.mock.calls) {
+        expect(patch).not.toHaveProperty('customDomainIntent');
+      }
     });
 
     it('refuses the reinstall before it parks anything when another app holds the subdomain', async () => {
@@ -1417,6 +1519,132 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('authorizeCustomDomainChange (R2-HUBDOMAINS-1)', () => {
+    const APP_URN = 'comfyui:ci-marketplace' as AppUrn;
+    const row = (overrides: Record<string, unknown> = {}) =>
+      ({ id: 7, customDomainIntent: 'shop.acme.com', customDomain: 'shop.acme.com', customDomainTakeover: false, ...overrides }) as any;
+
+    it('asks when a save moves the app to another domain', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'other.acme.com' }, authorize);
+
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('does not ask when the dialog re-submits what the row holds, takeover included', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row({ customDomain: 'old.acme.com', customDomainTakeover: true }));
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com', customDomainTakeover: true }, authorize);
+
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('reads nothing for a form that says nothing about custom domains', async () => {
+      const authorize = vi.fn(async () => {});
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomainTakeover: true }, authorize);
+
+      expect(appsRepository.getAppByUrn).not.toHaveBeenCalled();
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('asks when re-recording a binding would cancel a move another app is waiting on', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row({ customDomainIntent: null }));
+      appsRepository.hasCustomDomainIntentElsewhere.mockResolvedValue(true);
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+
+      expect(appsRepository.hasCustomDomainIntentElsewhere).toHaveBeenCalledWith(7, 'shop.acme.com');
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('does not ask for that re-submission when no other app is waiting', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row({ customDomainIntent: null }));
+      appsRepository.hasCustomDomainIntentElsewhere.mockResolvedValue(false);
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('looks for another app waiting only when the save would otherwise change nothing', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      // A different domain is a change whatever else is true, so it costs no query.
+      await service.authorizeCustomDomainChange(
+        APP_URN,
+        { customDomain: 'other.acme.com' },
+        vi.fn(async () => {}),
+      );
+      expect(appsRepository.hasCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+
+      await service.authorizeCustomDomainChange(
+        APP_URN,
+        { customDomain: 'shop.acme.com' },
+        vi.fn(async () => {}),
+      );
+      expect(appsRepository.hasCustomDomainIntentElsewhere).toHaveBeenCalledWith(7, 'shop.acme.com');
+    });
+
+    it('asks when re-saving its own choice would take it from another app holding the same one', async () => {
+      // Two rows can hold one intent after a failed exclusivity write; the claim on this save would wipe the other.
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+      appsRepository.hasCustomDomainIntentElsewhere.mockResolvedValue(true);
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('refuses a release of a binding the dialog never showed before asking for any role', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      await expect(service.authorizeCustomDomainChange(APP_URN, { customDomain: '', customDomainExpected: '' }, authorize)).rejects.toMatchObject({
+        message: 'APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE',
+        status: 409,
+      });
+      expect(authorize).not.toHaveBeenCalled();
+    });
+
+    it('asks for a release of the binding the dialog showed', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: '', customDomainExpected: 'shop.acme.com' }, authorize);
+
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('takes an app not installed yet to change something only by asking for a domain', async () => {
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(null as any);
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: '' }, authorize);
+      expect(authorize).not.toHaveBeenCalled();
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+      expect(authorize).toHaveBeenCalledOnce();
+    });
+
+    it('lets a refusal through to the caller', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+      const authorize = vi.fn(async () => {
+        throw new Error('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      });
+
+      await expect(service.authorizeCustomDomainChange(APP_URN, { customDomain: 'other.acme.com' }, authorize)).rejects.toThrow(
+        'CUSTOM_DOMAIN_ROLE_REQUIRED',
+      );
+    });
+  });
+
   describe('custom domain reconciliation', () => {
     const REGISTRATION = {
       id: 'org-1',
@@ -1453,6 +1681,16 @@ describe('AppLifecycleService', () => {
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(REGISTRATION as any);
       configService.getConfig.mockReturnValue(CONFIG as any);
     });
+
+    /*
+     * An empty answer while apps hold domains is believed only once it has held
+     * for a minute across a second sync (R2-PORTALMISC-5). The tests that call
+     * this are about what happens once it IS believed, so they start a minute
+     * into that run; the confirmation itself has its own block below.
+     */
+    const emptyAnswerAlreadyConfirmed = () => {
+      (exposureSyncService as any).emptyCustomDomainsSince = Date.now() - 61_000;
+    };
 
     it('binds a delivered custom domain to the app it aliases and asks for a restart', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
@@ -1516,6 +1754,96 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
+    it('names both hostnames, the CI-Cloud record and the cause in an audit line when it binds', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'custom_domain_audit app=comfyui:ci-marketplace previous=none next=comfy.acme.com previousPortalRowId=none nextPortalRowId=cd_1 cause=ci-cloud',
+      );
+    });
+
+    it("audits a binding dropped by the app's own routing settings as such", async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', openPort: true })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'custom_domain_audit app=comfyui:ci-marketplace previous=comfy.acme.com next=none previousPortalRowId=unknown nextPortalRowId=none cause=settings',
+      );
+    });
+
+    describe('an empty answer while apps still hold domains (R2-PORTALMISC-5)', () => {
+      const emptyAnswer = { ok: true, failed: [], failures: [], synced: 1, customDomains: [] } as any;
+      let now: number;
+
+      beforeEach(() => {
+        now = 1_700_000_000_000;
+        vi.spyOn(Date, 'now').mockImplementation(() => now);
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+        cloudflareClientService.syncState.mockResolvedValue(emptyAnswer);
+      });
+
+      it('changes nothing on the first one', async () => {
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+
+      it('still changes nothing when a second one follows within the minute', async () => {
+        await service.triggerCloudflareSync();
+        now += 30_000;
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+
+      it('unbinds once a sync at least a minute later says the same', async () => {
+        await service.triggerCloudflareSync();
+        now += 61_000;
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      });
+
+      it('does not start the minute on answers that were not about the app holding the domain', async () => {
+        // Stopped, so absent from the payload: an empty answer is exactly what CI-Cloud should say.
+        const domainless = runningComfy({ id: 8, appName: 'immich', localSubdomain: 'immich' });
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', status: 'stopped' }), domainless] as any);
+        await service.triggerCloudflareSync();
+        now += 61_000;
+
+        // Running again: the first empty answer about it is only the first.
+        appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' }), domainless] as any);
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+
+      it('starts counting again after an answer that delivers the domain', async () => {
+        await service.triggerCloudflareSync();
+        now += 30_000;
+        cloudflareClientService.syncState.mockResolvedValueOnce({
+          ...emptyAnswer,
+          customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+        });
+        await service.triggerCloudflareSync();
+        now += 31_000;
+        await service.triggerCloudflareSync();
+
+        expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      });
+    });
+
     it('is idempotent once the binding is already stored', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({
@@ -1536,6 +1864,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
@@ -1560,6 +1889,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
@@ -1593,6 +1923,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
       await service.triggerCloudflareSync();
 
@@ -1678,6 +2009,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
@@ -1694,6 +2026,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
       expect(restartApp).toHaveBeenCalledTimes(1);
 
@@ -1721,6 +2054,7 @@ describe('AppLifecycleService', () => {
       ] as any);
       cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true } as any);
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
@@ -1756,6 +2090,7 @@ describe('AppLifecycleService', () => {
         },
       ] as any);
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
@@ -1793,6 +2128,7 @@ describe('AppLifecycleService', () => {
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([] as any);
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       // The confirmation goes with the choice: an answer about a domain the
@@ -1833,7 +2169,7 @@ describe('AppLifecycleService', () => {
 
     it('restarts every app when several domains are genuinely disconnected at once', async () => {
       // An empty payload is CI-Cloud saying "this device has none" — the unbind
-      // instruction. Disconnecting two domains inside one five-minute poll is
+      // instruction, once confirmed. Disconnecting two domains inside one five-minute poll is
       // ordinary, so a count threshold would be the wrong shape of guard here.
       const restartApp = stubLifecycleForRevert();
       appsRepository.getApps.mockResolvedValue([
@@ -1842,6 +2178,7 @@ describe('AppLifecycleService', () => {
       ] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2, customDomains: [] });
 
+      emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
       expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
@@ -2469,7 +2806,8 @@ describe('AppLifecycleService', () => {
     it("names the domain by CI-Cloud's row id and the app by its subdomain", async () => {
       const result = await exposureSyncService.releaseCustomDomain(servingApp() as any);
 
-      expect(result).toEqual({ ok: true });
+      // The row id travels back too, for the release's audit line.
+      expect(result).toEqual({ ok: true, portalRowId: 'cd_1' });
       expect(cloudflareClientService.unbindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
     });
 
