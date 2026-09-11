@@ -181,6 +181,38 @@ cihub pool log      # routing decisions, with failovers named
 An empty routing log means nothing has routed since this Hub started, not that pooling is broken —
 the log is in-memory and holds the last 200 decisions.
 
+## Where Ollama listens
+
+One rule and one file, because the alternative was measured on 2026-09-10 and nobody could answer
+"what does this node bind" without doing systemd's job by hand:
+
+**systemd applies `ollama.service.d/*.conf` drop-ins in byte order of filename, and the last
+`Environment=OLLAMA_HOST=…` wins.** Byte order, not the priority the numeric prefixes suggest: digits
+sort before letters, so `10-tailnet-bind.conf` loses to `override.conf`, and `zzzz-bind-all.conf`
+outranks `zzz-tailnet-bind.conf` by one letter — which is why beta-red bound `0.0.0.0` while its
+tailnet-bind drop-in "was there". Six names set `OLLAMA_HOST` across the fleet, plus a
+`.bak-preclaude` copy systemd never reads. An empty `Environment=` line resets everything before it.
+
+`cihub fleet backends` writes the bind to exactly one file, **`zzzzz-cihub-bind.conf`** — the name
+sorts after every legacy name, including any future `zzzz-*.conf` — moves aside each `*.conf` that set
+`OLLAMA_HOST` and nothing else (renamed to `<name>.disabled-by-cihub-<date>`, never deleted), leaves
+any file that also carries other settings in place and outranked, restarts, and then **re-reads
+`systemctl show ollama -p Environment` and fails if the merged value is not what it asked for**. The
+default is the node's Tailscale IPv4 (`--bind tailnet`); `--bind all` and `--bind local` are the
+explicit alternatives. `cihub fleet status` shows each node's effective bind and the file that set
+it, and flags a conflict read-only.
+
+Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a user-scope unit
+(`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the
+system unit there would start a second daemon on the same port, so the installer refuses with the
+reason — before running ollama.com's installer, which would do exactly that. And a node with no
+tailnet address fails the tailnet bind rather than falling back to something else.
+
+When a drop-in seems to have no effect: `systemctl cat ollama` shows the merge order, and
+`cihub fleet status` names the winner. Note the seam in [`CLI.md`](CLI.md#ollamas-bind-one-file-read-back):
+a Hub container on the same node reaches the host Ollama over the Docker bridge, which a
+tailnet-only bind does not listen on.
+
 ## Fleet-wide settings worth knowing
 
 Pool settings are **per node**. There is no fleet-wide configuration plane: setting `poolLocalAffinity`

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   sshCapture: vi.fn(),
   readHostFacts: vi.fn(),
   executeBackendPlan: vi.fn(),
+  planAllBackends: vi.fn(),
   checkAppOnNode: vi.fn(),
   preflightNode: vi.fn(),
 }));
@@ -49,7 +50,7 @@ vi.mock('../lib/fleet-hardware.js', async (importOriginal) => ({
 
 vi.mock('../lib/fleet-backends.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/fleet-backends.js')>()),
-  planAllBackends: () => [{ backend: 'ollama', action: 'install', why: 'no engine answering' }],
+  planAllBackends: (...args: unknown[]) => mocks.planAllBackends(...args),
   executeBackendPlan: mocks.executeBackendPlan,
 }));
 
@@ -65,6 +66,7 @@ vi.mock('../lib/fleet-preflight.js', async (importOriginal) => ({
 }));
 
 import { runFleetCommand } from '../lib/cli-fleet.js';
+import { CANONICAL_BIND_DROPIN, canonicalBindDropinContent } from '../lib/fleet-ollama-bind.js';
 
 const facts = {
   os: 'linux',
@@ -86,9 +88,12 @@ beforeEach(() => {
     { name: 'core-2', ip: '10.0.0.2' },
   ];
   mocks.installNode.mockReset();
-  mocks.sshCapture.mockReset();
+  // `backends` now reads each node's Ollama bind over SSH before planning; an unreachable probe
+  // must not turn a dry run into a crash, so the default answer is "no output".
+  mocks.sshCapture.mockReset().mockResolvedValue({ ok: false, out: '', err: '', code: 255, ms: 1 });
   mocks.readHostFacts.mockReset().mockResolvedValue({ facts });
   mocks.executeBackendPlan.mockReset();
+  mocks.planAllBackends.mockReset().mockReturnValue([{ backend: 'ollama', action: 'install', why: 'no engine answering' }]);
   mocks.checkAppOnNode.mockReset();
   mocks.preflightNode
     .mockReset()
@@ -320,6 +325,170 @@ describe('fleet backends', () => {
   it('exits 0 on a dry run against readable machines', async () => {
     await runFleetCommand(['backends']);
     expect(mocks.executeBackendPlan).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reads the Ollama bind read-only on a dry run, and never applies it', async () => {
+    mocks.sshCapture.mockResolvedValue({
+      ok: true,
+      out: [
+        'bind_probe=1',
+        'unit_file=/etc/systemd/system/ollama.service',
+        'show:Environment=OLLAMA_HOST=0.0.0.0',
+        'tailscale_ip=100.64.0.9',
+        '===DROPIN /etc/systemd/system/ollama.service.d/zzz-tailnet-bind.conf===',
+        '[Service]',
+        'Environment="OLLAMA_HOST=100.64.0.9:11434"',
+        '===END===',
+        '===DROPIN /etc/systemd/system/ollama.service.d/zzzz-bind-all.conf===',
+        '[Service]',
+        'Environment="OLLAMA_HOST=0.0.0.0"',
+        '===END===',
+      ].join('\n'),
+      err: '',
+      code: 0,
+      ms: 1,
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama']);
+    // One probe per node, nothing else: no sudo, no apply script.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    for (const call of mocks.sshCapture.mock.calls) {
+      expect(String(call[1])).not.toContain('sudo');
+      expect(String(call[1])).not.toContain('systemctl restart');
+    }
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain('CONFLICT');
+    expect(printed).toContain('move zzzz-bind-all.conf → zzzz-bind-all.conf.disabled-by-cihub-');
+    expect(process.exitCode).toBeUndefined();
+  });
+});
+
+/**
+ * An Ollama that is already answering is adopted, not installed — and the fourteen nodes that
+ * already run one are exactly where the bind arrangements diverge. The adopt path converges them,
+ * except where it must not.
+ */
+describe('fleet backends --execute on an adopted ollama', () => {
+  const probe = (dropins: string, extra = '') =>
+    [
+      'bind_probe=1',
+      'unit_file=/etc/systemd/system/ollama.service',
+      'show:ActiveState=active',
+      'show:UnitFileState=enabled',
+      'show:Environment=OLLAMA_HOST=100.64.0.9:11434',
+      'tailscale_ip=100.64.0.9',
+      extra,
+      dropins,
+    ].join('\n');
+  const dropin = (name: string, value: string) =>
+    `===DROPIN /etc/systemd/system/ollama.service.d/${name}===\n[Service]\nEnvironment="OLLAMA_HOST=${value}"\n===END===`;
+
+  beforeEach(() => {
+    mocks.nodes = [{ name: 'core-1', ip: '10.0.0.1' }];
+    mocks.planAllBackends.mockReturnValue([{ backend: 'ollama', action: 'adopt', why: 'already answering on :11434' }]);
+    mocks.executeBackendPlan.mockResolvedValue({ backend: 'ollama', outcome: 'adopted', why: 'already answering on :11434' });
+  });
+
+  it('refuses the system-unit path on a node whose port belongs to a user-scope unit, and exits 0', async () => {
+    // beta-1: ollama-local.service under the ci user's systemd --user, system unit disabled.
+    mocks.sshCapture.mockResolvedValue({
+      ok: true,
+      out: probe(
+        dropin('override.conf', '0.0.0.0'),
+        'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=2417,fd=3))\nowner=2417 ci /user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service',
+      ),
+      err: '',
+      code: 0,
+      ms: 1,
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
+    // The probe, and nothing under sudo.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toMatch(/skipped.*ollama-local\.service under ci's systemd --user/);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('touches nothing on a node that already reads back as managed for this bind', async () => {
+    const canonical = canonicalBindDropinContent({ host: '100.64.0.9', port: 11434, address: '100.64.0.9:11434' }).trimEnd();
+    mocks.sshCapture.mockResolvedValue({
+      ok: true,
+      out: probe(`===DROPIN /etc/systemd/system/ollama.service.d/${CANONICAL_BIND_DROPIN}===\n${canonical}\n===END===`),
+      err: '',
+      code: 0,
+      ms: 1,
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain(`bind already 100.64.0.9:11434 ← ${CANONICAL_BIND_DROPIN}`);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('applies the bind on a conflicted node, and fails the run when the read-back does not match', async () => {
+    mocks.sshCapture
+      .mockResolvedValueOnce({
+        ok: true,
+        out: probe(`${dropin('zzz-tailnet-bind.conf', '100.64.0.9:11434')}\n${dropin('zzzz-bind-all.conf', '0.0.0.0')}`),
+        err: '',
+        code: 0,
+        ms: 1,
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        out: 'ollama-bind-disabled: zzzz-bind-all.conf → zzzz-bind-all.conf.disabled-by-cihub-2026-09-10',
+        err: "ollama-bind-mismatch: requested OLLAMA_HOST=100.64.0.9:11434 but systemd resolved '0.0.0.0' (drop-ins in merge order: /etc/systemd/system/ollama.service.d/zzzzzz-manual.conf)",
+        code: 1,
+        ms: 1,
+      });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    expect(String(mocks.sshCapture.mock.calls[1]?.[1])).toContain('sudo -n bash');
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain("systemd resolved '0.0.0.0'");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('converges a conflicted node and stays exit 0 when the read-back matches', async () => {
+    mocks.sshCapture
+      .mockResolvedValueOnce({
+        ok: true,
+        out: probe(`${dropin('zzz-tailnet-bind.conf', '100.64.0.9:11434')}\n${dropin('zzzz-bind-all.conf', '0.0.0.0')}`),
+        err: '',
+        code: 0,
+        ms: 1,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        out: [
+          'ollama-bind-disabled: zzz-tailnet-bind.conf → zzz-tailnet-bind.conf.disabled-by-cihub-2026-09-10',
+          'ollama-bind-disabled: zzzz-bind-all.conf → zzzz-bind-all.conf.disabled-by-cihub-2026-09-10',
+          'ollama-bind-effective: OLLAMA_HOST=100.64.0.9:11434 listening=100.64.0.9:11434',
+          'ollama-bind-complete',
+        ].join('\n'),
+        err: '',
+        code: 0,
+        ms: 1,
+      });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--bind', 'tailnet', '--execute']);
+    const printed = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(printed).toContain('OLLAMA_HOST=100.64.0.9:11434');
+    expect(printed).toContain('zzzz-bind-all.conf.disabled-by-cihub-2026-09-10');
     expect(process.exitCode).toBeUndefined();
   });
 });

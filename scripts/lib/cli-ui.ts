@@ -114,7 +114,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Is each node safe to hand a package transaction? sudo, dpkg, grub, boot recovery, apt lock. Reads only',
       },
       {
-        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--execute]`,
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]`,
         description: 'What inference backends a node can run, from its hardware; prints the plan unless --execute',
       },
       {

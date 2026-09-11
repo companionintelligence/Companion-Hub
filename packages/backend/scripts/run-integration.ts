@@ -73,7 +73,10 @@ async function main() {
     };
 
     console.log('Running tests...');
-    const args = ['vitest', '--watch=false', '--config', './vitest.integration.config.mts', ...process.argv.slice(2)];
+    // `pnpm run test:integration -- -u` forwards the `--` itself, and vitest then reads
+    // everything after it as file filters — so `-u`/`--grep` were silently ignored.
+    const forwarded = process.argv.slice(2).filter((arg, i) => !(i === 0 && arg === '--'));
+    const args = ['vitest', '--watch=false', '--config', './vitest.integration.config.mts', ...forwarded];
     await runCommand('npx', args, env);
   } catch (error) {
     console.error('Test run failed:', error);

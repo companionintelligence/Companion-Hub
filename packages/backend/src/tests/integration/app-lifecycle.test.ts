@@ -40,7 +40,6 @@ import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-eve
 import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { QueueFactory } from '@/modules/queue/queue.factory';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
-import { faker } from '@faker-js/faker';
 import { Test } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { eq } from 'drizzle-orm';
@@ -152,7 +151,6 @@ describe('App lifecycle', () => {
   let appEventsQueue: AppEventsQueue;
 
   beforeAll(async () => {
-    faker.seed(123);
     db = await createTestDatabase(DB_NAME);
     appEventsQueue = await queueFactory.createQueue({
       queueName: 'app-events-queue',
