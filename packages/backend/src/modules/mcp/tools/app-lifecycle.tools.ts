@@ -21,8 +21,11 @@ const urnProp = { type: 'string', description: 'App identifier in appName:storeS
  *
  * Why the gate lives here as well as in the service: `AppLifecycleService` gates every call on its
  * named actor (CI-Hub#1397), but it admits an unmanaged MCP key on its capability alone, and a
- * managed key on its own app — neither has a person's grant behind it. So a form carrying either
- * field stays destructive here: it still takes a 'full' key or an operator confirmation.
+ * managed key on its own app — neither has a person's grant behind it. The service does refuse a key
+ * any form that CHANGES which custom domain the app serves, because that takes an organization owner
+ * or admin (R2-HUBDOMAINS-1); a form that names the field and moves nothing still reaches it. So a
+ * form carrying either field stays destructive here: it still takes a 'full' key or an operator
+ * confirmation.
  */
 function claimsCustomDomain(params: Record<string, unknown>): boolean {
   const form = params.form as Record<string, unknown> | undefined;
@@ -53,7 +56,8 @@ export class AppLifecycleTools implements OnModuleInit {
             type: 'object',
             description:
               'Optional install config: port, exposed, domain, and app-specific form fields. Naming a customDomain or ' +
-              "customDomainTakeover makes the call destructive and requires a 'full'-capability key.",
+              "customDomainTakeover makes the call destructive and requires a 'full'-capability key; changing which custom " +
+              'domain the app uses also takes an organization owner or admin, so an agent key is refused for that.',
           },
         },
         required: ['appUrn'],
@@ -157,7 +161,8 @@ export class AppLifecycleTools implements OnModuleInit {
           form: {
             type: 'object',
             description:
-              "Config fields to update. Naming a customDomain or customDomainTakeover makes the call destructive and requires a 'full'-capability key.",
+              "Config fields to update. Naming a customDomain or customDomainTakeover makes the call destructive and requires a 'full'-capability key; " +
+              'changing which custom domain the app uses also takes an organization owner or admin, so an agent key is refused for that.',
           },
         },
         required: ['appUrn', 'form'],

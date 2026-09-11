@@ -32,6 +32,7 @@ describe('requestsCustomDomainChange (R2-HUBDOMAINS-1)', () => {
     ],
     ['a fresh install on the platform address', { customDomain: '' }, null],
     ['a non-string customDomain', { customDomain: 42 }, none],
+    ['the platform address on an app whose columns hold blanks, not nulls', { customDomain: '' }, { ...none, intent: '', bound: '  ' }],
   ])('is not a change: %s', (_label, form, state) => {
     expect(requestsCustomDomainChange(form, state)).toBe(false);
   });
