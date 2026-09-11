@@ -77,6 +77,13 @@ discloses no MagicDNS name, no node UUID, and no public key.
 refusal means its Hub is not serving. Every later handshake and health probe uses this exact URL shape,
 so nothing downstream can pass until this does.
 
+On a TLS error, `cihub fleet cert --user root` (from any machine with the roster) reports each node as
+present, absent, or — distinctly — *unreadable without sudo* or *HTTPS not enabled on tailnet*, and
+`--execute` runs `sudo tailscale cert <fqdn>` where it is needed and re-reads the store. The
+distinction matters: tailscaled's store is root-only, so an unprivileged look reports nothing on a
+node that has a certificate. See [`fleet-setup.md` → The TLS certificate](fleet-setup.md#the-tls-certificate)
+and [`CLI.md` → `cihub fleet cert`](CLI.md#cihub-fleet-cert).
+
 ### 1.3 Whole-tailnet enumeration on at least one node
 
 ```bash

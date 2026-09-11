@@ -141,4 +141,21 @@ describe('updateHubScript', () => {
     expect(script).toContain('cihub pool update');
     expect(script).not.toContain('cihub up');
   });
+
+  it('leaves the image floating unless a pin is given', () => {
+    expect(updateHubScript()).not.toContain('CI_HUB_IMAGE');
+  });
+
+  it('hands a pinned image to pool update as CI_HUB_IMAGE, before the command that reads it', () => {
+    // `cihub pool update` honours process.env.CI_HUB_IMAGE over its `:dev` default — this is the whole
+    // delivery path for a digest pin, so the export must precede the call.
+    const pin = `ghcr.io/companionintelligence/ci-hub@sha256:${'c'.repeat(64)}`;
+    const script = updateHubScript(pin);
+    expect(script).toContain(`export CI_HUB_IMAGE='${pin}'`);
+    expect(script.indexOf('CI_HUB_IMAGE')).toBeLessThan(script.indexOf('cihub pool update'));
+  });
+
+  it('escapes a quote in the pin rather than letting it end the export', () => {
+    expect(updateHubScript("repo@sha256:x'y")).toContain("'repo@sha256:x'\\''y'");
+  });
 });

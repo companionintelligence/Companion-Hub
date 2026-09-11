@@ -60,6 +60,7 @@ let binary = '';
 let workspace = '';
 let stubBin = '';
 let fakeHome = '';
+let fakeDataDir = '';
 
 function runCli(args: string[]): { stdout: string; stderr: string; output: string; status: number | null } {
   const result = spawnSync(binary, args, {
@@ -68,7 +69,15 @@ function runCli(args: string[]): { stdout: string; stderr: string; output: strin
     // The stub directory goes FIRST so `docker` and `git` resolve to the stubs even on a machine
     // that has the real ones. The rest of PATH stays so the CLI's read-only probes (`which`, `ps`)
     // behave as they do in the field.
-    env: { ...process.env, PATH: `${stubBin}:${process.env.PATH ?? ''}`, HOME: fakeHome, CI: '1', TERM: 'dumb', NO_COLOR: '1' },
+    env: {
+      ...process.env,
+      PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+      HOME: fakeHome,
+      CI_HUB_DATA_DIR: fakeDataDir,
+      CI: '1',
+      TERM: 'dumb',
+      NO_COLOR: '1',
+    },
     cwd: workspace,
     timeout: 60_000,
   });
@@ -96,9 +105,15 @@ describe('compiled cihub binary', () => {
     stubBin = join(workspace, 'bin');
     fakeHome = join(workspace, 'home');
     mkdirSync(stubBin, { recursive: true });
-    // resolveHubContext points `pool update` at this directory; it has to exist or the CLI aborts on
-    // a spawn ENOENT before reaching the code under test.
-    mkdirSync(join(fakeHome, '.local', 'share', 'companion-hub'), { recursive: true });
+    // resolveHubContext points `pool update` at the Hub data dir and runs docker with it as cwd; it
+    // has to exist or the CLI aborts before reaching the code under test — and Bun reports the
+    // missing cwd as `ENOENT ... posix_spawn 'docker'`, which reads as the stub not being on PATH.
+    // Where that dir lives by default is per-OS (`~/.local/share` on Linux, `~/Library/Application
+    // Support` on macOS, `%APPDATA%` on Windows), so name it through the same override the desktop
+    // app uses when it invokes the bundled CLI. That also stops a developer's XDG_DATA_HOME, which
+    // rides along in `process.env`, from pointing the binary at their real Hub.
+    fakeDataDir = join(fakeHome, 'companion-hub');
+    mkdirSync(fakeDataDir, { recursive: true });
 
     // `docker inspect <container> --format ...` is how discoverComposeIdentity reads the running
     // stack's compose labels. Answering with project `companion-hub` (not `ci-hub`) is what makes

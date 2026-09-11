@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
+  preflightNode: vi.fn(),
   nodes: [] as import('../lib/fleet-roster.js').FleetNode[],
   sshCapture: vi.fn(),
 }));
@@ -17,6 +18,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../lib/fleet-roster.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/fleet-roster.js')>()),
   loadFleetRoster: () => ({ nodes: mocks.nodes, source: 'test-roster', dropped: [] }),
+}));
+
+// runUpdate preflights each node before touching it (fleet-preflight.ts); the real probe is an SSH
+// round trip that would consume this file's scripted responses. A clean report keeps these tests
+// about the model planning alone.
+vi.mock('../lib/fleet-preflight.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/fleet-preflight.js')>()),
+  preflightNode: mocks.preflightNode,
 }));
 
 vi.mock('../lib/fleet-ssh.js', async (importOriginal) => ({
@@ -74,6 +83,7 @@ function printed(): string {
 }
 
 beforeEach(() => {
+  mocks.preflightNode.mockReset().mockImplementation(async (_t: unknown, node: { name: string }) => ({ node: node.name, findings: [], verdict: 'ok', ms: 1 }));
   process.exitCode = undefined;
   mocks.nodes = [
     { name: 'strix-1', ip: '10.0.0.1' },
