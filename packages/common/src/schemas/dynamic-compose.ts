@@ -4,12 +4,18 @@ import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 const DENIED_CUSTOM_APP_HOST_PATHS = [
   '/',
   '/var/run/docker.sock',
-  // On every systemd distro `/var/run` is a symlink to `/run`, so `/run/docker.sock` is the same
-  // socket under a name the entry above never matches: the kernel follows the link at mount time,
-  // and this list is compared as strings. `/run` also holds containerd's and dbus's sockets.
+  // On every systemd distro `/var/run` is a symlink to `/run`. The kernel follows the link at mount
+  // time and this list is compared as strings, so the directory is denied under BOTH names: `/run`
+  // alone left `/var/run/containerd/containerd.sock` open under the other one. It holds the Docker,
+  // containerd and dbus sockets, each of them a host escape by itself.
   '/run',
-  // Every other container's filesystem, image layers and volumes.
+  '/var/run',
+  // Docker's data-root: every container's volumes, and with the classic storage drivers its
+  // filesystem and image layers as well.
   '/var/lib/docker',
+  // containerd's root, where Docker 29's default image store keeps image layers and every
+  // container's filesystem instead.
+  '/var/lib/containerd',
   '/proc',
   '/sys',
   '/dev',
@@ -111,9 +117,9 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
     return false;
   }
 
-  // A denied path is denied by its ANCESTORS too. `/var/run/docker.sock` is on the list, so
-  // binding `/var/run` — or `/var` — hands over the same socket under a path the equality and
-  // prefix tests never see. The third clause denies any directory that contains a denied path.
+  // A denied path is denied by its ANCESTORS too. `/var/lib/docker` is on the list, so binding
+  // `/var/lib` — or `/var` — hands over the same data under a path the equality and prefix tests
+  // never see. The third clause denies any directory that contains a denied path.
   return DENIED_CUSTOM_APP_HOST_PATHS.some(
     (denied) => normalized === denied || normalized.startsWith(`${denied}/`) || denied.startsWith(`${normalized}/`),
   );
