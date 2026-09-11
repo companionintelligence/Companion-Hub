@@ -123,8 +123,39 @@ stored and dialed by its MagicDNS name.
 1. Connect Tailscale on each Hub — browser sign-in from **Settings → Network**, or `TAILSCALE_AUTHKEY`
    for unattended provisioning. See [`private-vpn.md`](private-vpn.md).
 2. Confirm each node reports connected: `cihub pool status` shows a `Tailscale` line under **This node**.
+3. Give each node its TLS certificate: `cihub fleet cert --user root --execute`, or `sudo tailscale
+   cert <this node's MagicDNS name>` by hand on the node. See [The TLS certificate](#the-tls-certificate) below.
 
 A Hub that has not joined a tailnet cannot pool, whatever else is configured.
+
+### The TLS certificate
+
+Every peer is dialled at `https://<fqdn>` — pairing callbacks, health polls, every proxied request —
+and the certificate behind that URL is a `tailscale cert` on the node. Nothing provisioned it until
+`cihub fleet cert` and the matching step in `cihub fleet install`; when measured on this fleet,
+fourteen of eighteen nodes had one because someone had run the command by hand, and four did not.
+Those four fail [`hub-pool-fleet-testing.md` §1.2](hub-pool-fleet-testing.md#12-each-node-can-reach-the-others-hub-over-tls)
+with a TLS error, and that gate is hard: nothing after it can pass.
+
+```bash
+cihub fleet cert --user root            # per node: present / absent / why it could not be measured
+cihub fleet cert --user root --execute  # sudo tailscale cert <fqdn> where needed, then re-read the store
+cihub fleet status --user root          # the TLS CERT column, on every re-probe from now on
+```
+
+Two things about measuring it:
+
+- **HTTPS is a tailnet setting first.** `tailscale status --json` reports `CertDomains`; an empty list
+  means HTTPS is not enabled in the admin console and `tailscale cert` refuses on every node. The tool
+  checks that before anything else and reports it as its own state — an older note here claimed this
+  tailnet had no HTTPS, which turned out to be false, but the check is still the right first step.
+- **"Unreadable" is not "absent".** tailscaled's store, `/var/lib/tailscale/certs`, is `drwx------
+  root`. An unprivileged `ls` prints nothing and exits 2, and the first probe of this fleet reported
+  zero certificates on eighteen nodes that had fourteen. Every finding therefore carries how it was
+  learned (`{ value, via }` in `--json`), `fleet status` renders anything not measured as `—` with the
+  reason, and the word `absent` is reserved for a store that was listed with privilege and lacked the
+  file. Pass `--user root`, or an account with passwordless sudo, or the column tells you it could not
+  look.
 
 ## Pooling the fleet
 
@@ -181,6 +212,38 @@ cihub pool log      # routing decisions, with failovers named
 An empty routing log means nothing has routed since this Hub started, not that pooling is broken —
 the log is in-memory and holds the last 200 decisions.
 
+## Where Ollama listens
+
+One rule and one file, because the alternative was measured on 2026-09-10 and nobody could answer
+"what does this node bind" without doing systemd's job by hand:
+
+**systemd applies `ollama.service.d/*.conf` drop-ins in byte order of filename, and the last
+`Environment=OLLAMA_HOST=…` wins.** Byte order, not the priority the numeric prefixes suggest: digits
+sort before letters, so `10-tailnet-bind.conf` loses to `override.conf`, and `zzzz-bind-all.conf`
+outranks `zzz-tailnet-bind.conf` by one letter — which is why beta-red bound `0.0.0.0` while its
+tailnet-bind drop-in "was there". Six names set `OLLAMA_HOST` across the fleet, plus a
+`.bak-preclaude` copy systemd never reads. An empty `Environment=` line resets everything before it.
+
+`cihub fleet backends` writes the bind to exactly one file, **`zzzzz-cihub-bind.conf`** — the name
+sorts after every legacy name, including any future `zzzz-*.conf` — moves aside each `*.conf` that set
+`OLLAMA_HOST` and nothing else (renamed to `<name>.disabled-by-cihub-<date>`, never deleted), leaves
+any file that also carries other settings in place and outranked, restarts, and then **re-reads
+`systemctl show ollama -p Environment` and fails if the merged value is not what it asked for**. The
+default is the node's Tailscale IPv4 (`--bind tailnet`); `--bind all` and `--bind local` are the
+explicit alternatives. `cihub fleet status` shows each node's effective bind and the file that set
+it, and flags a conflict read-only.
+
+Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a user-scope unit
+(`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the
+system unit there would start a second daemon on the same port, so the installer refuses with the
+reason — before running ollama.com's installer, which would do exactly that. And a node with no
+tailnet address fails the tailnet bind rather than falling back to something else.
+
+When a drop-in seems to have no effect: `systemctl cat ollama` shows the merge order, and
+`cihub fleet status` names the winner. Note the seam in [`CLI.md`](CLI.md#ollamas-bind-one-file-read-back):
+a Hub container on the same node reaches the host Ollama over the Docker bridge, which a
+tailnet-only bind does not listen on.
+
 ## Fleet-wide settings worth knowing
 
 Pool settings are **per node**. There is no fleet-wide configuration plane: setting `poolLocalAffinity`
@@ -216,12 +279,108 @@ a node under load (it restarts the daemon), and refuses a node with no Ollama ra
 one — that is `backends`' job. The version is always read at the bind the node resolves for itself,
 because several nodes here bind `OLLAMA_HOST` to their tailnet address and answer nothing on loopback;
 a node that cannot be read shows `—` with the reason, never a stale number.
+## Models per node, not per fleet
+
+`cihub fleet update --models a,b` applies one list to every node. On hardware as mixed as this
+fleet's — Strix Halo boxes with ~120 GB unified memory next to an 8 GB RTX A1000 — that is how the
+model sets drifted to anywhere from 2 to 23 per node, and how one node ended up with no embedding
+model at all.
+
+```bash
+cihub fleet update --models recommended            # dry run: each node's list and where it came from
+cihub fleet update --models recommended --execute  # pull, serialised node by node
+```
+
+`recommended` asks **each node's own Hub** for the hardware-fitted list it already computes
+(`GET /api/inference/onboarding-profile`, the same recommender the onboarding UI uses), takes its
+Ollama picks, and pulls what the Hub's live tag list says is missing. The dry run reads from every
+node and changes nothing. Every plan says which of three places it came from:
+
+| Provenance | Meaning |
+| ---------- | ------- |
+| `hub-recommended` | The node's Hub answered; the list is its top-N for that machine |
+| `explicit` | You named the models (`--models a,b`); no Hub is consulted |
+| `floor-only` | The Hub could not be asked, and the reason is printed next to it |
+
+Two things hold whatever the provenance:
+
+- **`nomic-embed-text` is always on the list.** CI-Server refuses to boot without a 768-dim embedder
+  (it throws on `EMBEDDING_DIMENSION ≠ 768`), so it is a platform requirement appended to every
+  node, never a recommendation a smaller machine can lose. Naming it yourself does not pull it twice.
+- **A node the Hub cannot speak for gets the floor, not a guess.** The fleet CLI deliberately does not
+  assemble a hardware profile from SSH-read facts and run its own sizing: a second recommender that
+  disagrees with the node's own Hub is exactly the drift this replaces. Fix the Hub, re-run.
+
+The request runs **on the node** with the device key from its own `state/settings.json` as
+`Authorization: Bearer` — the key never crosses the wire and is never printed. That header is the one
+the Hub accepts for a device credential (`x-api-key` is not read). Two refusals look alike and are
+kept apart because they need opposite fixes: **HTTP 409 `AUTH_ERROR_HUB_NOT_CLAIMED`** means the key
+is fine and the Hub has no operator (`cihub claim --email <addr>`); **HTTP 401
+`SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN`** means the Hub did not accept the key it was shown.
+
+Per node, `--execute` reports each model as **pulled**, **already present** (per the Hub's tag list,
+so no pull is attempted) or **failed**, with the catalog's disk estimate for what was fetched.
+`--json` emits the same per node. A node whose Hub could not be asked is a reason on the report; only
+a pull that fails makes the run exit non-zero.
+## Strix Halo nodes: GTT boot parameters
+
+AMD Strix Halo (gfx1151) boxes expose only the firmware VRAM carve-out to the GPU unless the kernel
+is booted with `iommu=pt amdgpu.gttsize=<N> ttm.pages_limit=<M>`. CI-OS sets those **at first boot
+only**, so a node provisioned before that shipped — ten of this fleet's twelve, as measured
+2026-09-10 — has them absent or partial and loads nothing above its 2 GB carve-out. `cihub fleet
+boot-params` is the catch-up path:
+
+```bash
+cihub fleet boot-params                      # per gfx1151 node: live vs staged state, target, planned diff
+cihub fleet boot-params --execute            # write /etc/default/grub (backup beside it) + update-grub
+cihub fleet boot-params --nodes core-10 --i-have-console --execute
+```
+
+Three things to know before running it. **It never reboots** — the new parameters take effect on the
+next boot, and the run ends with the list of nodes that need one; do them one at a time, when idle,
+watching each come back. **Live and staged are reported separately** because they disagree in both
+directions: staged-but-not-live is a pending reboot, live-but-not-staged will silently lose the
+parameters on the next one. **Two nodes are refused by default.** A hidden zero-timeout GRUB menu
+(`GRUB_TIMEOUT=0`, `GRUB_TIMEOUT_STYLE=hidden`) with no out-of-band console means a boot that fails on
+the new parameters is recovered at the machine and nowhere else; core-10 and razer are in that state.
+Record the console on the node's `fleet.json` entry (`"oob": "nanokvm 192.168.0.115"`) or pass
+`--i-have-console` for a node you are physically at. The sizing formula and the refusal on any
+`GRUB_CMDLINE_LINUX_DEFAULT` line that is not plainly double-quoted are CI-OS's own, so a node it
+provisions and a node this catches up end on a byte-identical line. Full detail in
+[`CLI.md` → `cihub fleet boot-params`](CLI.md#cihub-fleet-boot-params).
+## Before touching a node: preflight
+
+Run this before a fleet install, update, or anything that will install a kernel, a driver or a
+`dkms` module. It reads and changes nothing:
+
+```bash
+cihub fleet preflight                  # every rostered node, one table
+cihub fleet preflight --touches-boot   # rated as it would be before a kernel/initramfs/grub operation
+```
+
+`cihub fleet install` and `cihub fleet update` run the same five checks on each node just before the
+first thing that changes it, and refuse the node on a `block` (`--force` overrides, and says so in
+the log). Reference: [`CLI.md` → `cihub fleet preflight`](CLI.md#cihub-fleet-preflight). The five,
+each from a real day on this fleet (2026-09-10, eighteen nodes):
+
+| Check | Why it exists |
+|---|---|
+| **sudo** | Three nodes had no passwordless sudo for `ci` (sudo-rs; every working node has `/etc/sudoers.d/ci-passwordless`). Installs failed at step six with a message about a terminal. Now they fail at step zero, with the one-line fix. CI OS is unprivileged by design and is reported, not blocked |
+| **dpkg** | One node's dpkg was wedged for weeks. `dpkg --audit` and `apt-get check` showed it instantly; nothing had looked. Every package operation on such a box fails until it is cleared |
+| **grub-customizer** | The actual cause of that wedge — not the failed kernel removal it was blamed on. grub-customizer's `*_proxy` scripts in `/etc/grub.d` (and `.script_sources.txt`) emit an invalid `grub.cfg` once a kernel they name is gone; `update-grub` refuses it; every kernel postinst fails. Removing the proxies is the fix. Retrying is not |
+| **boot-recovery** | Two nodes run `GRUB_TIMEOUT_STYLE=hidden` with `GRUB_TIMEOUT=0`, and one has no IPMI. A kernel that fails to boot there is a trip. Record any console the host cannot see — a NanoKVM, a PiKVM — in the roster as `"oob"`, and the check counts it |
+| **apt-lock** | A "24-hour stuck unattended-upgrade" was `unattended-upgrade-shutdown --wait-for-signal`, an idle boot-time hook that holds no lock. The check reads the lock table, not just `ps`, and names that hook for what it is rather than flagging it |
+
+The **load gate** is unchanged and still comes first: the one outage that was blamed on an
+initramfs rebuild had, in the journal, a kernel soft-lockup cascade under inference twenty minutes
+*before* the rebuild. Load is the cause to gate on; the gate was right.
 
 ## Growing and shrinking
 
 - **Adding a node** repeats the whole one-node path: register, **claim** (`cihub claim --email <addr>`,
-  or `cihub fleet install --claim-email <addr>`, which runs it for you), join the tailnet, install
-  models, then pair. Nothing about an existing pool member carries over — including the operator.
+  or `cihub fleet install --claim-email <addr>`, which runs it for you), join the tailnet, **issue its
+  TLS certificate** (`cihub fleet cert --execute`, also run by `fleet install`), install models, then
+  pair. Nothing about an existing pool member carries over — including the operator.
 - **Taking a node out temporarily** is `cihub pool peer-disable <id>` on the other Hubs, or
   `cihub pool disable` on the node itself. Both keep the pairing and both tokens, so coming back is
   instant and needs no re-approval.
@@ -231,6 +390,43 @@ a node that cannot be read shows `—` with the reason, never a stale number.
 - **Re-imaging a node** means it comes back with a new pool identity. Peers have pinned the old key
   and there is no signed-rotation message in the protocol, so pair it again from scratch.
 
+## Which build the fleet is running
+
+Every node deploys the Hub from the floating tag `ghcr.io/companionintelligence/ci-hub:dev`, which
+CI re-points on every merge. That is convenient and it is also why drift is invisible: `docker ps`
+prints the same image *name* on every node whatever build is behind it. Measured on 2026-09-10 by
+comparing `docker image inspect --format '{{.Id}}'` across the fleet: twelve nodes on one image ID,
+two on a second, one each on a third and a fourth — and two of the outliers changed during the
+evening, meaning something redeployed them with nothing recording it. Nothing in the fleet tooling
+could say "the fleet runs build X", let alone hold it there.
+
+The tag is not the identity. Two are, and they answer different questions:
+
+| Identity | Looks like | Answers |
+|---|---|---|
+| **Image ID** | `sha256:d5ff45d9…` (`docker image inspect --format '{{.Id}}'`) | Are these two nodes running byte-identical software? This is what `fleet status` compares |
+| **Repo digest** | `ghcr.io/companionintelligence/ci-hub@sha256:…` (`RepoDigests`) | What can another node *pull* to get this exact build? An image ID is not addressable in a registry; a digest is. This is what a pin uses |
+
+A locally built image has an ID and no digest, so it can be recognised but never pinned to.
+
+```bash
+cihub fleet status                       # IMAGE column, and a footer: "hub image d5ff45d9 on 12/18; drifted: core-3 (9a38714f), …"
+cihub fleet update --hub --execute       # floating: each node gets whatever :dev points at when its turn comes; prints before → after per node
+cihub fleet update --hub --to-majority --execute            # pin every targeted node to the build most of the roster already runs
+cihub fleet update --hub --pin-digest <repo@sha256:…> --execute   # pin to a named build (digest from `fleet status --json`)
+```
+
+`--to-majority` measures the **whole roster**, not just `--nodes`, and refuses unless the most common
+image is on a strict majority of it — more than half of *all* rostered nodes, unknown ones included.
+A node that could not be read is reported `unknown` with the reason and is never counted as agreeing
+or as drifting: on the evening this was measured, the unread half of a fleet is exactly where the
+surprises were. A tie is refused too, with both contenders named; pick one with `--pin-digest`.
+
+A pin reaches `cihub pool update` as `CI_HUB_IMAGE` for that run only. It is not written to the
+node's env file, so a later `cihub pool update` run by hand on the node — or by whatever redeployed
+core-3 and core-6 that evening — floats back to the tag. To hold a node, set `CI_HUB_IMAGE` to the
+digest in its env file; `pool update` honours it in either place.
+
 ## Troubleshooting the seams
 
 | Symptom | Usual cause |
@@ -239,6 +435,8 @@ a node that cannot be read shows `—` with the reason, never a stale number.
 | A correct device key gets `409 AUTH_ERROR_HUB_NOT_CLAIMED` | Registered but never claimed: the `user` table is empty, so there is no operator for the key to speak as. Run `cihub claim --email <addr>` on the node. Before this existed the same state answered `401 SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN`, which is what got twelve nodes diagnosed as key failures |
 | `cihub pool` returns "Hub not paired" | Pool routes need the Portal device key, not an `api-key create` key |
 | `cihub pool discover` lists nothing | Expected without a tailnet connection or an OAuth client. Use `cihub pool probe` and pair by address |
+| `curl https://<fqdn>/...` to a peer fails with a TLS error | No `tailscale cert` on that node. `cihub fleet cert --user root` says which nodes, and `--execute` issues it. If it reports `HTTPS not enabled on tailnet`, turn HTTPS on in the Tailscale admin console first |
+| `fleet status` shows `— unreadable without sudo` under TLS CERT | The store is root-only and the SSH account is not. That is a measurement that did not happen, not a missing certificate — re-run with `--user root` |
 | Peer stuck `pending` | The request was never approved. Approve it on the Hub that received it |
 | Peer flips to `unreachable` | Three failed health polls. It rejoins on the first successful one; no action needed |
 | Pooling shows `disabled_by_env` | `HUB_POOL_USER_DISABLED=true` in the env file wins over the in-product switch, and needs a restart |

@@ -6,24 +6,24 @@ exports[`App lifecycle > install app > should not delete an existing app-data fo
 NODE_ENV=production
 DOMAIN=ci.test
 LOCAL_DOMAIN=ci.lan
-APP_PORT=9040
+APP_PORT=3545
 APP_URN=test2:test
 APP_ID=test2-test
 APP_NAME=test2
 APP_STORE_ID=test
 APP_DATA_DIR=/opt/ci-hub/app-data/test/test2
-APP_IMAGE_TAG=5.12.2
+APP_IMAGE_TAG=1.0.0
 APP_HOSTNAME=127.0.0.1
-APP_INTERNAL_AUTHORITY=127.0.0.1:9040
+APP_INTERNAL_AUTHORITY=127.0.0.1:3545
 APP_EXPOSED=false
 APP_SCHEME=http
 APP_PROTOCOL=http
 APP_HOST=127.0.0.1
-APP_DOMAIN=127.0.0.1:9040
-APP_URL=http://127.0.0.1:9040
-APP_BASE_URL=http://127.0.0.1:9040
-APP_BASE_HOST=127.0.0.1:9040
-APP_BASE_WSS_ORIGIN=ws://127.0.0.1:9040
+APP_DOMAIN=127.0.0.1:3545
+APP_URL=http://127.0.0.1:3545
+APP_BASE_URL=http://127.0.0.1:3545
+APP_BASE_HOST=127.0.0.1:3545
+APP_BASE_WSS_ORIGIN=ws://127.0.0.1:3545
 HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 ",
   "/app-data/test/test2/data/test.txt": "test",
@@ -33,16 +33,16 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
   "urn": "test2:test",
   "available": true,
   "deprecated": false,
-  "port": 9040,
-  "name": "color cursim",
-  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
-  "version": "5.12.2",
+  "port": 3545,
+  "name": "test2 app",
+  "description": "Description for test2",
+  "version": "1.0.0",
   "cihub_app_version": 1,
-  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "short_desc": "Short description for test2",
   "replaces": [],
-  "author": "Tyreek.Muller",
-  "source": "https://extroverted-jazz.org",
-  "website": "https://burly-swordfish.name",
+  "author": "test-author",
+  "source": "https://example.com/test2",
+  "website": "https://test2.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -120,16 +120,16 @@ networks:
   "urn": "test2:test",
   "available": true,
   "deprecated": false,
-  "port": 9040,
-  "name": "color cursim",
-  "description": "Pax impedit conicio cognomen cur stabilis utique dolore sortitus.",
-  "version": "5.12.2",
+  "port": 3545,
+  "name": "test2 app",
+  "description": "Description for test2",
+  "version": "1.0.0",
   "cihub_app_version": 1,
-  "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "short_desc": "Short description for test2",
   "replaces": [],
-  "author": "Tyreek.Muller",
-  "source": "https://extroverted-jazz.org",
-  "website": "https://burly-swordfish.name",
+  "author": "test-author",
+  "source": "https://example.com/test2",
+  "website": "https://test2.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -174,24 +174,24 @@ exports[`App lifecycle > install app > should successfully install app and creat
 NODE_ENV=production
 DOMAIN=ci.test
 LOCAL_DOMAIN=ci.lan
-APP_PORT=3041
+APP_PORT=5145
 APP_URN=test:test
 APP_ID=test-test
 APP_NAME=test
 APP_STORE_ID=test
 APP_DATA_DIR=/opt/ci-hub/app-data/test/test
-APP_IMAGE_TAG=0.8.15
+APP_IMAGE_TAG=1.0.0
 APP_HOSTNAME=127.0.0.1
-APP_INTERNAL_AUTHORITY=127.0.0.1:3041
+APP_INTERNAL_AUTHORITY=127.0.0.1:5145
 APP_EXPOSED=false
 APP_SCHEME=http
 APP_PROTOCOL=http
 APP_HOST=127.0.0.1
-APP_DOMAIN=127.0.0.1:3041
-APP_URL=http://127.0.0.1:3041
-APP_BASE_URL=http://127.0.0.1:3041
-APP_BASE_HOST=127.0.0.1:3041
-APP_BASE_WSS_ORIGIN=ws://127.0.0.1:3041
+APP_DOMAIN=127.0.0.1:5145
+APP_URL=http://127.0.0.1:5145
+APP_BASE_URL=http://127.0.0.1:5145
+APP_BASE_HOST=127.0.0.1:5145
+APP_BASE_WSS_ORIGIN=ws://127.0.0.1:5145
 HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 ",
   "/app-data/test/test/data": null,
@@ -201,16 +201,16 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
   "urn": "test:test",
   "available": true,
   "deprecated": false,
-  "port": 3041,
-  "name": "subito circumvenio",
-  "description": "Atque exercitationem exercitationem reiciendis.",
-  "version": "0.8.15",
+  "port": 5145,
+  "name": "test app",
+  "description": "Description for test",
+  "version": "1.0.0",
   "cihub_app_version": 1,
-  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "short_desc": "Short description for test",
   "replaces": [],
-  "author": "Katlyn_Kassulke",
-  "source": "https://growing-rationale.info/",
-  "website": "https://international-kettledrum.info/",
+  "author": "test-author",
+  "source": "https://example.com/test",
+  "website": "https://test.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -288,16 +288,16 @@ networks:
   "urn": "test:test",
   "available": true,
   "deprecated": false,
-  "port": 3041,
-  "name": "subito circumvenio",
-  "description": "Atque exercitationem exercitationem reiciendis.",
-  "version": "0.8.15",
+  "port": 5145,
+  "name": "test app",
+  "description": "Description for test",
+  "version": "1.0.0",
   "cihub_app_version": 1,
-  "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "short_desc": "Short description for test",
   "replaces": [],
-  "author": "Katlyn_Kassulke",
-  "source": "https://growing-rationale.info/",
-  "website": "https://international-kettledrum.info/",
+  "author": "test-author",
+  "source": "https://example.com/test",
+  "website": "https://test.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -342,24 +342,24 @@ exports[`App lifecycle > update all apps > should update multiple apps that have
 NODE_ENV=production
 DOMAIN=ci.test
 LOCAL_DOMAIN=ci.lan
-APP_PORT=1227
+APP_PORT=7527
 APP_URN=app1:test
 APP_ID=app1-test
 APP_NAME=app1
 APP_STORE_ID=test
 APP_DATA_DIR=/opt/ci-hub/app-data/test/app1
-APP_IMAGE_TAG=6.5.7
+APP_IMAGE_TAG=2.0.0
 APP_HOSTNAME=127.0.0.1
-APP_INTERNAL_AUTHORITY=127.0.0.1:1227
+APP_INTERNAL_AUTHORITY=127.0.0.1:7527
 APP_EXPOSED=false
 APP_SCHEME=http
 APP_PROTOCOL=http
 APP_HOST=127.0.0.1
-APP_DOMAIN=127.0.0.1:1227
-APP_URL=http://127.0.0.1:1227
-APP_BASE_URL=http://127.0.0.1:1227
-APP_BASE_HOST=127.0.0.1:1227
-APP_BASE_WSS_ORIGIN=ws://127.0.0.1:1227
+APP_DOMAIN=127.0.0.1:7527
+APP_URL=http://127.0.0.1:7527
+APP_BASE_URL=http://127.0.0.1:7527
+APP_BASE_HOST=127.0.0.1:7527
+APP_BASE_WSS_ORIGIN=ws://127.0.0.1:7527
 HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 ",
   "/app-data/test/app1/data": null,
@@ -367,24 +367,24 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 NODE_ENV=production
 DOMAIN=ci.test
 LOCAL_DOMAIN=ci.lan
-APP_PORT=2100
+APP_PORT=7528
 APP_URN=app2:test
 APP_ID=app2-test
 APP_NAME=app2
 APP_STORE_ID=test
 APP_DATA_DIR=/opt/ci-hub/app-data/test/app2
-APP_IMAGE_TAG=3.14.0
+APP_IMAGE_TAG=2.0.0
 APP_HOSTNAME=127.0.0.1
-APP_INTERNAL_AUTHORITY=127.0.0.1:2100
+APP_INTERNAL_AUTHORITY=127.0.0.1:7528
 APP_EXPOSED=false
 APP_SCHEME=http
 APP_PROTOCOL=http
 APP_HOST=127.0.0.1
-APP_DOMAIN=127.0.0.1:2100
-APP_URL=http://127.0.0.1:2100
-APP_BASE_URL=http://127.0.0.1:2100
-APP_BASE_HOST=127.0.0.1:2100
-APP_BASE_WSS_ORIGIN=ws://127.0.0.1:2100
+APP_DOMAIN=127.0.0.1:7528
+APP_URL=http://127.0.0.1:7528
+APP_BASE_URL=http://127.0.0.1:7528
+APP_BASE_HOST=127.0.0.1:7528
+APP_BASE_WSS_ORIGIN=ws://127.0.0.1:7528
 HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 ",
   "/app-data/test/app2/data": null,
@@ -392,24 +392,24 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 NODE_ENV=production
 DOMAIN=ci.test
 LOCAL_DOMAIN=ci.lan
-APP_PORT=4868
+APP_PORT=7529
 APP_URN=app3:test
 APP_ID=app3-test
 APP_NAME=app3
 APP_STORE_ID=test
 APP_DATA_DIR=/opt/ci-hub/app-data/test/app3
-APP_IMAGE_TAG=7.0.1
+APP_IMAGE_TAG=4.0.0
 APP_HOSTNAME=127.0.0.1
-APP_INTERNAL_AUTHORITY=127.0.0.1:4868
+APP_INTERNAL_AUTHORITY=127.0.0.1:7529
 APP_EXPOSED=false
 APP_SCHEME=http
 APP_PROTOCOL=http
 APP_HOST=127.0.0.1
-APP_DOMAIN=127.0.0.1:4868
-APP_URL=http://127.0.0.1:4868
-APP_BASE_URL=http://127.0.0.1:4868
-APP_BASE_HOST=127.0.0.1:4868
-APP_BASE_WSS_ORIGIN=ws://127.0.0.1:4868
+APP_DOMAIN=127.0.0.1:7529
+APP_URL=http://127.0.0.1:7529
+APP_BASE_URL=http://127.0.0.1:7529
+APP_BASE_HOST=127.0.0.1:7529
+APP_BASE_WSS_ORIGIN=ws://127.0.0.1:7529
 HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 ",
   "/app-data/test/app3/data": null,
@@ -419,16 +419,16 @@ HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
   "urn": "app1:test",
   "available": true,
   "deprecated": false,
-  "port": 1227,
-  "name": "soleo uredo",
-  "description": "Copiose explicabo arx.",
-  "version": "6.5.7",
+  "port": 7527,
+  "name": "app1 app",
+  "description": "Description for app1",
+  "version": "2.0.0",
   "cihub_app_version": 2,
-  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "short_desc": "Short description for app1",
   "replaces": [],
-  "author": "Dock_Bergstrom",
-  "source": "https://cautious-department.com/",
-  "website": "https://scary-vista.org/",
+  "author": "test-author",
+  "source": "https://example.com/app1",
+  "website": "https://app1.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -505,16 +505,16 @@ networks:
   "urn": "app2:test",
   "available": true,
   "deprecated": false,
-  "port": 2100,
-  "name": "curriculum libero",
-  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
-  "version": "3.14.0",
+  "port": 7528,
+  "name": "app2 app",
+  "description": "Description for app2",
+  "version": "2.0.0",
   "cihub_app_version": 2,
-  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "short_desc": "Short description for app2",
   "replaces": [],
-  "author": "Colleen_Koss",
-  "source": "https://our-cricket.net",
-  "website": "https://long-conservative.com/",
+  "author": "test-author",
+  "source": "https://example.com/app2",
+  "website": "https://app2.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -591,16 +591,16 @@ networks:
   "urn": "app3:test",
   "available": true,
   "deprecated": false,
-  "port": 4868,
-  "name": "sulum vitae",
-  "description": "Utique convoco harum minus.",
-  "version": "7.0.1",
+  "port": 7529,
+  "name": "app3 app",
+  "description": "Description for app3",
+  "version": "4.0.0",
   "cihub_app_version": 4,
-  "short_desc": "Mollitia solvo coadunatio curatio.",
+  "short_desc": "Short description for app3",
   "replaces": [],
-  "author": "Scarlett94",
-  "source": "https://cluttered-necklace.biz",
-  "website": "https://violent-morning.org/",
+  "author": "test-author",
+  "source": "https://example.com/app3",
+  "website": "https://app3.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -678,16 +678,16 @@ networks:
   "urn": "app1:test",
   "available": true,
   "deprecated": false,
-  "port": 1227,
-  "name": "soleo uredo",
-  "description": "Copiose explicabo arx.",
-  "version": "6.5.7",
+  "port": 7527,
+  "name": "app1 app",
+  "description": "Description for app1",
+  "version": "2.0.0",
   "cihub_app_version": 2,
-  "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "short_desc": "Short description for app1",
   "replaces": [],
-  "author": "Dock_Bergstrom",
-  "source": "https://cautious-department.com/",
-  "website": "https://scary-vista.org/",
+  "author": "test-author",
+  "source": "https://example.com/app1",
+  "website": "https://app1.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -727,16 +727,16 @@ networks:
   "urn": "app2:test",
   "available": true,
   "deprecated": false,
-  "port": 2100,
-  "name": "curriculum libero",
-  "description": "Adduco tamdiu demergo animus illo aeger solitudo vulnus.",
-  "version": "3.14.0",
+  "port": 7528,
+  "name": "app2 app",
+  "description": "Description for app2",
+  "version": "2.0.0",
   "cihub_app_version": 2,
-  "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "short_desc": "Short description for app2",
   "replaces": [],
-  "author": "Colleen_Koss",
-  "source": "https://our-cricket.net",
-  "website": "https://long-conservative.com/",
+  "author": "test-author",
+  "source": "https://example.com/app2",
+  "website": "https://app2.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
@@ -776,16 +776,16 @@ networks:
   "urn": "app3:test",
   "available": true,
   "deprecated": false,
-  "port": 4868,
-  "name": "sulum vitae",
-  "description": "Utique convoco harum minus.",
-  "version": "7.0.1",
+  "port": 7529,
+  "name": "app3 app",
+  "description": "Description for app3",
+  "version": "4.0.0",
   "cihub_app_version": 4,
-  "short_desc": "Mollitia solvo coadunatio curatio.",
+  "short_desc": "Short description for app3",
   "replaces": [],
-  "author": "Scarlett94",
-  "source": "https://cluttered-necklace.biz",
-  "website": "https://violent-morning.org/",
+  "author": "test-author",
+  "source": "https://example.com/app3",
+  "website": "https://app3.example.com",
   "force_expose": false,
   "generate_vapid_keys": false,
   "categories": [
