@@ -9,7 +9,7 @@ import { AppLifecycleTools } from '../../tools/app-lifecycle.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 
 /** An operator-created key: the lifecycle tools act only for a named caller, and this is the plainest one. */
-const OPERATOR_KEY: ApiKeyContext = { id: 1, name: 'Laptop CLI', capability: 'write', ownerAppUrn: null };
+const OPERATOR_KEY: ApiKeyContext = { id: 1, name: 'Laptop CLI', capability: 'write', ownerAppUrn: null, createdByUserId: null };
 const asKey = <T>(fn: () => Promise<T>, key: ApiKeyContext = OPERATOR_KEY) => mcpCallContext.run(key, fn);
 
 describe('AppLifecycleTools', () => {

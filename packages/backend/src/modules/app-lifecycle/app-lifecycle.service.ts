@@ -1094,7 +1094,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return;
     }
 
-    const person = actor.kind === 'operator' ? actor.userId : actor.ownerAppUrn === null ? (actor.createdByUserId ?? null) : null;
+    const person = actor.kind === 'operator' ? actor.userId : actor.ownerAppUrn === null ? actor.createdByUserId : null;
 
     if (person !== null && (await this.resolveWhois()?.hasManagingRole(person, appUrn))) {
       return;
@@ -2904,27 +2904,27 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       case 'exempt':
       case 'system':
         return true;
-      case 'mcp': {
+      case 'mcp':
         if (actor.ownerAppUrn !== null) {
           return actor.ownerAppUrn === appUrn;
         }
 
-        const creator = actor.createdByUserId ?? null;
-
-        if (creator === null) {
+        // A key nobody is recorded as creating keeps the per-app reach keys had before.
+        if (actor.createdByUserId === null) {
           return true;
         }
 
-        const whois = this.resolveWhois();
-
-        return whois !== null && (await whois.has(creator, appUrn, action));
-      }
-      case 'operator': {
-        const whois = this.resolveWhois();
-
-        return whois !== null && (await whois.has(actor.userId, appUrn, action));
-      }
+        return this.personMay(actor.createdByUserId, appUrn, action);
+      case 'operator':
+        return this.personMay(actor.userId, appUrn, action);
     }
+  }
+
+  /** A Hub person's WhoIs grant for `action` on `appUrn`, refused when WhoIs cannot be resolved. */
+  private async personMay(userId: number, appUrn: AppUrn, action: HubAction): Promise<boolean> {
+    const whois = this.resolveWhois();
+
+    return whois !== null && (await whois.has(userId, appUrn, action));
   }
 
   /** The same decision, as a refusal the caller sees. */
