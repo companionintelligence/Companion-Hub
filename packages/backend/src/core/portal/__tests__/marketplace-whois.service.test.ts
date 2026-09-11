@@ -370,7 +370,7 @@ describe('MarketplaceWhoIsService', () => {
     it.each(['owner', 'admin'])('admits an organization %s', async (role) => {
       portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role }, apps: [] }]));
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).resolves.toBeUndefined();
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).resolves.toBeUndefined();
       expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: ['immich'], surface: 'hub' });
     });
 
@@ -379,7 +379,7 @@ describe('MarketplaceWhoIsService', () => {
         answer([{ organizationId: 'org-hub', user: { role: 'member' }, apps: [{ appId: 'immich', can: ['configure', 'install'] }] }]),
       );
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toMatchObject({
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toMatchObject({
         message: 'CUSTOM_DOMAIN_ROLE_REQUIRED',
         status: HttpStatus.FORBIDDEN,
       });
@@ -393,7 +393,7 @@ describe('MarketplaceWhoIsService', () => {
         ]),
       );
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
     });
 
     it.each([
@@ -411,13 +411,13 @@ describe('MarketplaceWhoIsService', () => {
     ])('refuses on %s — not knowing is not permission', async (_label, arrange) => {
       arrange();
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
     });
 
     it('refuses an operator with no linked Portal subject without asking the Portal', async () => {
       federatedIdentities.findByUserId.mockResolvedValue([] as never);
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
       expect(portal.whoisApps).not.toHaveBeenCalled();
     });
 
@@ -425,13 +425,14 @@ describe('MarketplaceWhoIsService', () => {
       ['the Portal-device principal', portalPushReq],
       ['the CLI principal', cliReq],
     ])('admits %s by name', async (_label, buildReq) => {
-      await expect(service.assertCustomDomainAuthority(buildReq(), APP_URN)).resolves.toBeUndefined();
+      await expect(service.assertCustomDomainAuthority(buildReq(), APP_URN, 'configure')).resolves.toBeUndefined();
       expect(portal.whoisApps).not.toHaveBeenCalled();
     });
 
-    it('refuses a caller with no recognised principal', async () => {
-      await expect(service.assertCustomDomainAuthority(unknownPrincipalReq(), APP_URN)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+    it('refuses a caller with no recognised principal, naming the verb it came for in the log', async () => {
+      await expect(service.assertCustomDomainAuthority(unknownPrincipalReq(), APP_URN, 'install')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
       expect(portal.whoisApps).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith('whois_unrecognised_principal principal=none action=install');
     });
   });
 });

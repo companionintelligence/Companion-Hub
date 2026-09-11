@@ -8,6 +8,19 @@ export type CustomDomainState = {
   bound: string | null;
   /** An unspent "yes, move it" answer is already on record. */
   takeover: boolean;
+  /**
+   * Another app on this Hub asks for the domain this one is bound to: a move
+   * somebody started that has not landed yet. Read only for an app bound with
+   * no choice of its own; see the echo rule in {@link requestsCustomDomainChange}.
+   */
+  boundWantedElsewhere: boolean;
+};
+
+/** The fields of an install / update-config form that say anything about custom domains. */
+export type CustomDomainForm = {
+  customDomain?: unknown;
+  customDomainTakeover?: unknown;
+  customDomainExpected?: unknown;
 };
 
 /**
@@ -20,15 +33,23 @@ export type CustomDomainState = {
  * edit to an unrelated env var. Gating on presence would lock every member out
  * of their own app's settings the moment it had a domain.
  *
- * A change is: asking for a domain the app neither asks for nor serves; giving
- * one up (`''`) while it asks for or serves one; or confirming a takeover that
- * is not already on record. An app not installed yet (`state === null`) changes
- * something only by asking for a domain.
+ * ⚠ AND "NOT A CHANGE" HAS TO MEAN THE SAVE MOVES NOTHING, because it is let
+ * through without a role. So this follows what a save writes rather than what
+ * the picker shows: the service compares the domain with the recorded CHOICE,
+ * writes the takeover answer from the form, and `claimCustomDomainIntent` takes
+ * the domain from any other app asking for it. A change is:
+ * - asking for a domain other than the app's choice — or, with no choice
+ *   recorded, other than the one it is bound to;
+ * - giving one up (`''`) while it asks for or serves one;
+ * - a takeover answer other than the one on record: confirming a move nobody
+ *   approved, or withdrawing one somebody did;
+ * - re-submitting the binding while another app asks for that domain, which
+ *   would cancel the move somebody else started.
+ *
+ * An app not installed yet (`state === null`) changes something only by asking
+ * for a domain.
  */
-export function requestsCustomDomainChange(
-  form: { customDomain?: unknown; customDomainTakeover?: unknown },
-  state: CustomDomainState | null,
-): boolean {
+export function requestsCustomDomainChange(form: CustomDomainForm, state: CustomDomainState | null): boolean {
   if (typeof form.customDomain !== 'string') {
     return false;
   }
@@ -43,9 +64,18 @@ export function requestsCustomDomainChange(
     return state.intent !== null || state.bound !== null;
   }
 
-  if (form.customDomainTakeover === true && !state.takeover) {
-    return true;
+  const takeover = form.customDomainTakeover === true;
+  const intent = normalizeStoredHostname(state.intent);
+
+  /*
+   * Bound by CI-Cloud with no choice recorded: the dialog seeds the picker with
+   * `intent ?? bound`, so every save re-submits the binding. That echo moves
+   * nothing — unless another app is waiting for the domain, or it carries a
+   * takeover answer the row does not have.
+   */
+  if (intent === null && wanted === normalizeStoredHostname(state.bound)) {
+    return takeover || state.boundWantedElsewhere;
   }
 
-  return wanted !== normalizeStoredHostname(state.intent) && wanted !== normalizeStoredHostname(state.bound);
+  return wanted !== intent || takeover !== state.takeover;
 }

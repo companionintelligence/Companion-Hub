@@ -1,4 +1,3 @@
-import type { AppUrn } from '@ci-hub/common/types';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
@@ -7,7 +6,6 @@ import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { HubAccessService } from './hub-access.service';
 import { AppRehydrationService } from './app-rehydration.service';
-import { requestsCustomDomainChange } from './custom-domain-authority';
 import {
   AppFormBody,
   CancelOperationBody,
@@ -34,17 +32,6 @@ export class AppLifecycleController {
     private readonly hubAccessService: HubAccessService,
     private readonly whois: MarketplaceWhoIsService,
   ) {}
-
-  /**
-   * The per-app verb says who may change this app; a custom domain is the
-   * organization's, so changing which one the app serves also takes an owner or
-   * admin. Only an actual change is gated — see `requestsCustomDomainChange`.
-   */
-  private async assertCustomDomainAuthority(req: Request, appUrn: AppUrn, body: AppFormBody): Promise<void> {
-    if (requestsCustomDomainChange(body, await this.appLifecycleService.customDomainState(appUrn))) {
-      await this.whois.assertCustomDomainAuthority(req, appUrn);
-    }
-  }
 
   @Get('rehydrate/plan')
   async getRehydratePlan() {
@@ -96,7 +83,8 @@ export class AppLifecycleController {
   async installApp(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'install');
-    await this.assertCustomDomainAuthority(req, appUrn, body);
+    // The verb says who may change this app; which custom domain it serves is the organization's (R2-HUBDOMAINS-1).
+    await this.appLifecycleService.authorizeCustomDomainChange(appUrn, body, () => this.whois.assertCustomDomainAuthority(req, appUrn, 'install'));
     const res = await this.appLifecycleService.installApp({ appUrn, form: body });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
@@ -191,7 +179,7 @@ export class AppLifecycleController {
   async updateAppConfig(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'configure');
-    await this.assertCustomDomainAuthority(req, appUrn, body);
+    await this.appLifecycleService.authorizeCustomDomainChange(appUrn, body, () => this.whois.assertCustomDomainAuthority(req, appUrn, 'configure'));
     const res = await this.appLifecycleService.updateAppConfig({ appUrn, form: body });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }

@@ -108,10 +108,33 @@ export class AppsRepository {
          * different app, that nobody was ever asked about.
          */
         .set({ customDomainIntent: null, customDomainTakeover: false, updatedAt: new Date().toISOString() })
-        .where(and(ne(app.id, appId), sql`lower(${app.customDomainIntent}) = ${normalized}`))
+        .where(this.customDomainIntentElsewhere(appId, normalized))
         .returning({ id: app.id, appName: app.appName, appStoreSlug: app.appStoreSlug })
         .execute()
     );
+  }
+
+  /**
+   * Whether an app other than `appId` asks for `customDomain`: the rows
+   * {@link clearCustomDomainIntentElsewhere} would take it from, by the same
+   * rule. A save that re-records a domain another app is waiting for cancels
+   * that app's move, which is the organization's call (R2-HUBDOMAINS-1).
+   */
+  public async hasCustomDomainIntentElsewhere(appId: number, customDomain: string): Promise<boolean> {
+    const normalized = normalizeStoredHostname(customDomain);
+
+    if (!normalized) {
+      return false;
+    }
+
+    const [row] = await this.db.select({ id: app.id }).from(app).where(this.customDomainIntentElsewhere(appId, normalized)).limit(1).execute();
+
+    return row !== undefined;
+  }
+
+  /** Rows other than `appId` choosing `normalized`, matched case-insensitively, as DNS is. */
+  private customDomainIntentElsewhere(appId: number, normalized: string) {
+    return and(ne(app.id, appId), sql`lower(${app.customDomainIntent}) = ${normalized}`);
   }
 
   /**
