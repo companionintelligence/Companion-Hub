@@ -58,6 +58,10 @@ export class UserRepository {
         operator: true,
         hasCompletedOnboarding: true,
         advancedMode: true,
+        accessStatus: true,
+        orgRole: true,
+        membershipCheckedAt: true,
+        localPasswordSetAt: true,
       },
     });
   }
@@ -122,6 +126,8 @@ export class UserRepository {
         operator: true,
         hasCompletedOnboarding: true,
         advancedMode: true,
+        accessStatus: true,
+        orgRole: true,
       },
     });
   }

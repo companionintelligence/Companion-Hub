@@ -156,6 +156,13 @@ export const user = pgTable('user', {
   locale: varchar().default('en').notNull(),
   hasCompletedOnboarding: boolean('has_completed_onboarding').default(false).notNull(),
   advancedMode: boolean('advanced_mode').default(false).notNull(),
+  /** `active` may use this Hub. `revoked` stays on the row after Portal org removal. */
+  accessStatus: varchar('access_status').default('active').notNull(),
+  /** Last Portal WhoIs role on this Hub's org: owner, admin, or member. */
+  orgRole: varchar('org_role'),
+  membershipCheckedAt: timestamp('membership_checked_at', { mode: 'string' }),
+  /** Set when a real Companion password hash is stored; the bootstrap UUID hash does not count. */
+  localPasswordSetAt: timestamp('local_password_set_at', { mode: 'string' }),
 });
 
 /**
