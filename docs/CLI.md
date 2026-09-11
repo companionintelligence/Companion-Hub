@@ -720,7 +720,7 @@ acts on **other** machines, over SSH — which is the first thing to know about 
 read-only subcommands are the default and the rest need `--execute`.
 
 ```bash
-cihub fleet scan [--lan] [--write-roster] [--json]     # find machines, and what each one will allow
+cihub fleet scan [--all-tailnet] [--lan] [--write-roster] [--json]  # find machines tagged ci-server, and what each will allow
 cihub fleet list [--json]                              # the saved roster, and what a run would skip
 cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered node
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
@@ -793,6 +793,16 @@ been wrong in the same direction.
 nothing else. A machine that has never been scanned into the roster is invisible to `status`,
 `backends`, `install`, `update` and `apps`.
 
+**No roster is a refusal, not a fallback.** Every subcommand that dials a machine — everything but
+`scan` and `list` — stops on a missing or unreadable `fleet.json`, names the path, names
+`cihub fleet scan --write-roster`, and exits 1, so a script wrapped around `preflight` cannot read
+"nothing to check" as a pass. It never substitutes the tailnet's peer list for the file. That
+substitution is how a 57-row roster came to hold `Aine`, `Beam Pro` and `Bennett's MacBook Pro`,
+with no `skip` on any of them: the tailnet is shared, its peers are colleagues' laptops, phones and
+headsets alongside the appliances, and once a scan had seeded the file with everyone, every later
+command inherited them. A roster that exists and lists nobody is a different finding — a state the
+operator arrived at — and is reported without an error exit.
+
 Two properties of the file are load-bearing:
 
 - **`ip` is the identity; `name` is only a label.** Every merge and lookup keys on the address,
@@ -817,6 +827,7 @@ while believing it was twenty is the worse failure.
 | `--nodes a,b` | Restrict the run to these roster entries, by name **or** address |
 | `--user <account>` | Remote account to SSH as. `FLEET_SSH_USER` sets the same thing; a roster entry's own `user` wins |
 | `--json` | Machine-readable report — `scan`, `list`, `status`, `backends`, `install`, `apps`, and `update --models` (per node: provenance and each model's outcome) |
+| `--all-tailnet` | `scan` only: probe every tailnet peer, not only those tagged `ci-server`. Off by default, because the tailnet is shared and a probe is an SSH attempt in each peer's auth log. Even with it on, an untagged peer is saved as `"skip": "excluded"`, never as a target — see [`cihub fleet scan`](#cihub-fleet-scan) |
 | `--lan` | `scan` only: also sweep the local subnet. Off by default, because touching every address on the operator's subnet is a more intrusive act than listing a tailnet they already belong to |
 | `--no-tailnet` | `scan` only: skip tailnet enumeration |
 | `--write-roster` | `scan` only: save the result to `fleet.json` |
@@ -852,6 +863,19 @@ Enumerates the tailnet (add `--lan` for the local subnet), probes each candidate
 above, and prints a verdict per node. It writes nothing unless `--write-roster` is passed, and says
 so at the end rather than leaving you to wonder. With no Tailscale CLI it says that too, and
 enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
+
+**A tailnet peer is a candidate when it carries `tag:ci-server`, or is already in the roster.**
+The tag is the one CI-Engineering's tailnet classifier uses to tell appliances from everything
+else; a peer without it is what that classifier files as `unclassified` — a personal device until
+somebody says otherwise. Untagged peers are counted in the footer (`N untagged peer(s) not probed`)
+and never dialled. `--all-tailnet` probes them too, for finding a new machine nobody has tagged
+yet, but `--write-roster` still saves each one as `"skip": "excluded"` with a note saying why: to
+adopt one, tag it in the Tailscale admin console, or remove the `skip` from its roster row by hand.
+A rostered node the tailnet does *not* tag is still probed — a roster row is operator intent — but
+the footer names it and says how to mark it, since that is exactly the row an older scan left behind.
+A rostered node marked `excluded` is the one skip a default scan does not probe either (`unreachable`
+may have recovered; `llm-only` is a verdict the scan can confirm): it is counted in the footer and
+left alone until `--all-tailnet`.
 
 ### `cihub fleet list` and `cihub fleet status`
 

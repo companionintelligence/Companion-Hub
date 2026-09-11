@@ -17,6 +17,13 @@
  *    re-attempted on every single run at a 30-second timeout each, and land in the report looking
  *    exactly like a machine that broke this morning. `skip` makes "we know, and here is why"
  *    expressible.
+ *
+ * 3. **The roster is the only source of targets.** No roster means no fleet, not "everyone on the
+ *    tailnet". The tailnet is shared with colleagues' laptops, phones and headsets, and a run that
+ *    substituted its peer list for a missing file put `Bennett's MacBook Pro` and `Quest 3` in front
+ *    of the same SSH loop as the appliances. `loadFleetRoster` reports an absent or unreadable file
+ *    as a `problem`, and every operation refuses on it; only `fleet scan` — whose purpose is to build
+ *    the file — reads the tailnet, and only the peers tagged for this fleet unless told otherwise.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -134,14 +141,39 @@ function isFleetNodeSkip(value: unknown): value is FleetNodeSkip {
   return value === 'llm-only' || value === 'unreachable' || value === 'excluded';
 }
 
-/** Read the roster. A missing file is an empty fleet, not an error — that is the pre-scan state. */
-export function loadFleetRoster(path: string = fleetRosterPath()): FleetRoster & { dropped: string[] } {
-  if (!existsSync(path)) return { nodes: [], source: `${path} (not created yet — run 'cihub fleet scan --write-roster')`, dropped: [] };
+/**
+ * Why a roster could not be loaded. Distinct from a roster that loaded and lists nobody: that is a
+ * state an operator chose, this is a file that is not there or cannot be read.
+ */
+export type FleetRosterProblem =
+  /** The file does not exist — the pre-scan state. */
+  | { kind: 'absent'; path: string }
+  /** The file exists but is not JSON the parser accepts. */
+  | { kind: 'unreadable'; path: string; why: string };
+
+export interface LoadedFleetRoster extends FleetRoster {
+  dropped: string[];
+  /** Set when there is no roster to act on. Callers that dial anything must refuse on it. */
+  problem?: FleetRosterProblem;
+}
+
+/**
+ * Read the roster.
+ *
+ * A missing or unreadable file comes back with `nodes: []` AND a `problem`, so a caller that only
+ * looks at `nodes` sees an empty fleet and dials nothing — never a fallback list. The `problem` is
+ * for the caller to name the file and how to create it.
+ */
+export function loadFleetRoster(path: string = fleetRosterPath()): LoadedFleetRoster {
+  if (!existsSync(path)) {
+    return { nodes: [], source: `${path} (not created yet — run 'cihub fleet scan --write-roster')`, dropped: [], problem: { kind: 'absent', path } };
+  }
   try {
     const parsed = parseFleetRoster(JSON.parse(readFileSync(path, 'utf-8')));
     return { nodes: parsed.nodes, source: path, dropped: parsed.dropped };
   } catch (error) {
-    return { nodes: [], source: `${path} (unreadable: ${String(error)})`, dropped: [String(error)] };
+    const why = String(error);
+    return { nodes: [], source: `${path} (unreadable: ${why})`, dropped: [why], problem: { kind: 'unreadable', path, why } };
   }
 }
 

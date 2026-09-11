@@ -9,14 +9,34 @@
  *     machines should make the destructive path the one you have to ask for.
  *   · **Every failure names the machine and the reason.** A fleet command that reports "3 failed"
  *     has told the operator nothing they can act on.
+ *   · **The roster is the only list of targets.** No `fleet.json` is a refusal, never a fallback to
+ *     the tailnet's peer list — that list is colleagues' laptops and phones alongside the appliances,
+ *     and `scan` only admits a peer tagged `ci-server` unless `--all-tailnet` is asked for.
  *
  * Arg parsing is hand-rolled to match the rest of this CLI, which deliberately has no parsing
  * library (see `docs/CLI.md`).
  */
 
 import { DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readStoredLogin } from './catalog-submit.js';
-import { loadFleetRoster, mergeFleetRoster, partitionForRun, saveFleetRoster, fleetRosterPath, type FleetNode } from './fleet-roster.js';
-import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
+import {
+  loadFleetRoster,
+  mergeFleetRoster,
+  partitionForRun,
+  saveFleetRoster,
+  fleetRosterPath,
+  type FleetNode,
+  type LoadedFleetRoster,
+} from './fleet-roster.js';
+import {
+  CI_SERVER_TAG,
+  isFleetTagged,
+  probeNode,
+  resolveTailscaleCli,
+  scanLan,
+  summariseNode,
+  tailnetPeers,
+  type DiscoveredNode,
+} from './fleet-discover.js';
 import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
@@ -113,6 +133,15 @@ export interface FleetArgs {
   json: boolean;
   lan: boolean;
   tailnet: boolean;
+  /**
+   * `scan` only: consider every tailnet peer a candidate, not only those tagged `ci-server`.
+   *
+   * Off by default because the tailnet is shared — colleagues' laptops, phones and headsets are
+   * peers too, and probing them means an SSH attempt in each one's auth log. Even with this on, a
+   * peer without the tag is written to the roster as `skip: excluded`, so nothing later dials it
+   * until an operator removes that marker by hand.
+   */
+  allTailnet: boolean;
   writeRoster: boolean;
   execute: boolean;
   nodes: string[];
@@ -200,6 +229,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     // be asked for.
     lan: false,
     tailnet: true,
+    allTailnet: false,
     writeRoster: false,
     execute: false,
     nodes: [],
@@ -265,6 +295,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     if (arg === '--json') args.json = true;
     else if (arg === '--lan') args.lan = true;
     else if (arg === '--no-tailnet') args.tailnet = false;
+    else if (arg === '--all-tailnet') args.allTailnet = true;
     else if (arg === '--write-roster') args.writeRoster = true;
     else if (arg === '--execute') args.execute = true;
     else if (isFlag('--user')) args.user = readValue('--user');
@@ -404,6 +435,43 @@ function reportUnknownNodes(roster: readonly FleetNode[], wanted: readonly strin
   process.exitCode = 1;
 }
 
+/**
+ * The roster a fleet operation runs on, or `null` with the refusal already printed.
+ *
+ * Every subcommand that dials a machine starts here, and the rule is that no roster means no
+ * targets. The alternative — falling back to the tailnet's peer list — was how a roster of 57 rows
+ * came to hold `Aine`, `Beam Pro` and `Bennett's MacBook Pro`: once a scan had seeded the file with
+ * everyone, every later command inherited them, read-only or not. So an absent file is a refusal
+ * that names the path and the one command that creates it, and exits 1 so a script wrapped around
+ * `preflight` cannot read "nothing to check" as a pass.
+ *
+ * A roster that exists and lists nobody is different: that is a state the operator arrived at, and
+ * it is reported without an error exit. `list` and `scan` do not come through here — reading an
+ * absent roster is their job.
+ */
+function loadRosterForRun(args: FleetArgs): LoadedFleetRoster | null {
+  const roster = loadFleetRoster();
+  if (roster.problem) {
+    const { path } = roster.problem;
+    if (roster.problem.kind === 'absent') console.error(colorize(`No fleet roster at ${path}.`, 'red'));
+    else console.error(colorize(`The fleet roster at ${path} could not be read: ${roster.problem.why}`, 'red'));
+    console.error(
+      `  Create one with '${BASE_COMMAND} fleet scan --write-roster' — it probes the tailnet peers tagged ${CI_SERVER_TAG} and saves them.`,
+    );
+    console.error(colorize('  Fleet commands act on the roster and nothing else; without one, no machine is dialled.', 'dim'));
+    process.exitCode = 1;
+    return null;
+  }
+  reportUnknownNodes(roster.nodes, args.nodes);
+  if (roster.nodes.length === 0) {
+    console.log(`The roster at ${roster.source} lists no nodes.`);
+    for (const dropped of roster.dropped) console.log(colorize(`  dropped: ${dropped}`, 'yellow'));
+    console.log(colorize(`  Run '${BASE_COMMAND} fleet scan --write-roster' to add the tailnet peers tagged ${CI_SERVER_TAG}.`, 'dim'));
+    return null;
+  }
+  return roster;
+}
+
 /** Fixed-width table, so a 20-node listing is scannable rather than a wall of prose. */
 function renderTable(rows: string[][], headers: string[]): string {
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
@@ -435,41 +503,80 @@ async function runScan(args: FleetArgs): Promise<void> {
   const notes: string[] = [];
 
   const roster = loadFleetRoster();
-  for (const node of roster.nodes) candidates.set(node.ip, node);
+  // `excluded` means "not ours" — someone's workstation, a demo box, an untagged peer an earlier
+  // `--all-tailnet` scan recorded. Re-probing it on every scan is the SSH attempt in a colleague's
+  // auth log this gate exists to stop, so it is shelved unless `--all-tailnet` asks for everything.
+  // The other skips still get a probe: an `unreachable` node may have recovered, and `llm-only` is
+  // a verdict the scan can confirm.
+  const shelved = new Map<string, FleetNode>();
+  for (const node of roster.nodes) {
+    if (node.skip === 'excluded' && !args.allTailnet) shelved.set(node.ip, node);
+    else candidates.set(node.ip, node);
+  }
   for (const dropped of roster.dropped) notes.push(`roster: ${dropped}`);
+  if (shelved.size > 0) notes.push(`roster: ${shelved.size} node(s) marked excluded not probed — pass --all-tailnet to include them`);
 
   if (args.tailnet) {
     const cli = resolveTailscaleCli();
     if (cli) {
       const { peers, error } = tailnetPeers(cli);
       if (error) notes.push(`tailnet: ${error}`);
+      // The tailnet is shared, so its peer list is not a fleet. A peer earns a probe by carrying the
+      // fleet tag or by already being in the roster (an operator put it there); everything else is
+      // counted and left alone unless `--all-tailnet` asks for it, and even then it is written with a
+      // skip marker rather than as a target.
+      const untagged = peers.filter((peer) => !isFleetTagged(peer));
+      // Rostered, untagged, and not already marked: the shape the old scan left behind, and the one
+      // worth naming — a roster row is operator intent, so it is probed, but it is probably not.
+      const rosteredUntagged = untagged.filter((peer) => {
+        const node = candidates.get(peer.ip);
+        return node !== undefined && !node.skip && !node.local;
+      });
+      let withheld = 0;
       for (const peer of peers) {
+        if (shelved.has(peer.ip)) continue;
         const existing = candidates.get(peer.ip);
+        const tagged = isFleetTagged(peer);
+        if (!tagged && !existing && !args.allTailnet) {
+          withheld += 1;
+          continue;
+        }
+        const offline = peer.online ? undefined : 'tailnet reports offline';
         candidates.set(peer.ip, {
           name: existing?.name ?? peer.name,
           ip: peer.ip,
           tailnetName: peer.dnsName ?? existing?.tailnetName,
           user: existing?.user,
           local: existing?.local,
-          skip: existing?.skip,
-          note: existing?.note ?? (peer.online ? undefined : 'tailnet reports offline'),
+          // A new untagged peer arrives as a skip, so `--write-roster` records that it was seen but
+          // never as a target. A rostered node keeps whatever the roster says.
+          skip: existing ? existing.skip : tagged ? undefined : 'excluded',
+          note: existing?.note ?? (existing || tagged ? offline : `no tag:${CI_SERVER_TAG} — a tailnet peer, not a fleet machine`),
         });
       }
-      notes.push(`tailnet: ${peers.length} peer(s) enumerated`);
+      notes.push(`tailnet: ${peers.length} peer(s) enumerated, ${peers.length - untagged.length} tagged ${CI_SERVER_TAG}`);
+      if (withheld > 0) notes.push(`tailnet: ${withheld} untagged peer(s) not probed — pass --all-tailnet to include them, marked excluded`);
+      if (rosteredUntagged.length > 0) {
+        notes.push(
+          `roster: ${rosteredUntagged.length} rostered node(s) carry no tag:${CI_SERVER_TAG} on the tailnet: ${rosteredUntagged.map((peer) => candidates.get(peer.ip)?.name ?? peer.name).join(', ')} — if they are not fleet machines, set "skip": "excluded" on each or delete the roster and re-scan`,
+        );
+      }
     } else {
       notes.push('tailscale CLI not found — skipping tailnet enumeration (set TAILSCALE_CLI to override)');
     }
   }
 
   if (args.lan) {
-    const hits = await scanLan(new Set(candidates.keys()));
+    const hits = await scanLan(new Set([...candidates.keys(), ...shelved.keys()]));
     for (const ip of hits) candidates.set(ip, { name: ip, ip });
     notes.push(`lan: ${hits.length} additional address(es) answering an engine or Hub port`);
   }
 
   const all = [...candidates.values()];
   if (all.length === 0) {
-    console.log('No candidates found. Is Tailscale running? Try --lan to sweep the local subnet.');
+    console.log(
+      `No candidates found. Is Tailscale running, and are your machines tagged ${CI_SERVER_TAG}? Try --all-tailnet, or --lan to sweep the local subnet.`,
+    );
     for (const note of notes) console.log(colorize(`  ${note}`, 'dim'));
     return;
   }
@@ -510,6 +617,21 @@ async function runScan(args: FleetArgs): Promise<void> {
     for (const n of unadministrable) console.log(`  ${describeSshFailure(n.probe.sshFailure, n.name)}`);
     console.log('');
   }
+  // Only `--all-tailnet` produces these: peers the operator asked to see but that no fleet operation
+  // will touch. Said in prose because the table's verdict column reads as if they were candidates.
+  const rostered = new Set(roster.nodes.map((n) => n.ip));
+  const seenUntagged = probed.filter((n) => n.skip === 'excluded' && !rostered.has(n.ip));
+  if (seenUntagged.length) {
+    console.log(
+      colorize(
+        `${seenUntagged.length} peer(s) carry no tag:${CI_SERVER_TAG} and would be saved as excluded, never dialled by a fleet command:`,
+        'yellow',
+      ),
+    );
+    console.log(`  ${seenUntagged.map((n) => n.name).join(', ')}`);
+    console.log(colorize(`  To adopt one, tag it in the Tailscale admin console or remove its "skip" from the roster by hand.`, 'dim'));
+    console.log('');
+  }
   for (const note of notes) console.log(colorize(`  ${note}`, 'dim'));
 
   if (args.writeRoster) {
@@ -518,8 +640,11 @@ async function runScan(args: FleetArgs): Promise<void> {
       probed.map(({ probe: _probe, source: _source, ...node }) => node),
     );
     saveFleetRoster(merged.nodes);
+    const addedExcluded = merged.added.filter((n) => n.skip === 'excluded').length;
     console.log('');
-    console.log(`Roster written to ${fleetRosterPath()} (${merged.nodes.length} node(s), ${merged.added.length} new).`);
+    console.log(
+      `Roster written to ${fleetRosterPath()} (${merged.nodes.length} node(s), ${merged.added.length} new${addedExcluded ? `, ${addedExcluded} of them excluded` : ''}).`,
+    );
     console.log(colorize('Existing names, notes and skip markers were preserved.', 'dim'));
   } else {
     console.log(colorize(`Nothing was written. Re-run with --write-roster to save this to ${fleetRosterPath()}.`, 'dim'));
@@ -554,12 +679,8 @@ function runList(args: FleetArgs): void {
 }
 
 async function runStatus(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
-  if (roster.nodes.length === 0) {
-    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
-    return;
-  }
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   const probed = await probeAll(run, args, 'roster');
   const binds = await assessBindsAll(probed, args);
@@ -703,12 +824,8 @@ function printPreflightDetails(reports: readonly PreflightNodeReport[]): void {
  * refused mid-way through one. Exits 1 if any node would be blocked, so it can gate a script.
  */
 async function runPreflight(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
-  if (roster.nodes.length === 0) {
-    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
-    return;
-  }
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -901,12 +1018,8 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
  * run and why, which is most of the value even when nothing is installed.
  */
 async function runBackends(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
-  if (roster.nodes.length === 0) {
-    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
-    return;
-  }
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -1038,8 +1151,8 @@ export function resolvePairingCodeStrategy(input: { code?: string; canMint: bool
  * machine that was serving live traffic at load 108-116 and left it needing physical recovery.
  */
 async function runInstall(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -1156,8 +1269,8 @@ async function runInstall(args: FleetArgs): Promise<void> {
  * floor is appended, and every node reports pulled / already-present / failed per model.
  */
 async function runUpdate(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -1305,8 +1418,8 @@ async function runUpdate(args: FleetArgs): Promise<void> {
  * this slug credentials, and does an inference base URL resolve.
  */
 async function runApps(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -1354,12 +1467,8 @@ async function runApps(args: FleetArgs): Promise<void> {
  * Serialised across nodes, like the rest of the mutating subcommands here.
  */
 async function runBootParams(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
-  if (roster.nodes.length === 0) {
-    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
-    return;
-  }
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -1556,12 +1665,8 @@ async function probeCertsAll(nodes: readonly DiscoveredNode[], args: FleetArgs):
  * shares one rate limit there.
  */
 async function runCert(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
-  if (roster.nodes.length === 0) {
-    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
-    return;
-  }
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -1747,12 +1852,8 @@ function printModelPlan(plan: NodeModelPlan, execute: boolean): void {
  * roster, loop and print.
  */
 async function runRdp(args: FleetArgs): Promise<void> {
-  const roster = loadFleetRoster();
-  reportUnknownNodes(roster.nodes, args.nodes);
-  if (roster.nodes.length === 0) {
-    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
-    return;
-  }
+  const roster = loadRosterForRun(args);
+  if (!roster) return;
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');

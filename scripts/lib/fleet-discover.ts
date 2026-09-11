@@ -120,6 +120,62 @@ export interface TailnetPeer {
   dnsName?: string;
   os?: string;
   online: boolean;
+  /** Tailscale ACL tags with the `tag:` prefix stripped, so `tag:ci-server` reads as `ci-server`. */
+  tags: string[];
+}
+
+/**
+ * The tag that marks a tailnet peer as one of this fleet's machines.
+ *
+ * The tailnet is shared. Its peer list is everyone's laptop, phone, tablet and headset alongside the
+ * appliances, and a peer without this tag is what CI-Engineering's tailnet classifier files as
+ * `unclassified` — a personal device until somebody says otherwise. On this tailnet in 2026-09 fewer
+ * than half the peers carried it; the rest were phones, tablets, colleagues' laptops and KVM dongles.
+ * Discovery reads the tag rather than guessing from a hostname.
+ */
+export const CI_SERVER_TAG = 'ci-server';
+
+/** Whether a peer is tagged as a fleet machine, as opposed to merely present on the tailnet. */
+export function isFleetTagged(peer: Pick<TailnetPeer, 'tags'>): boolean {
+  return peer.tags.includes(CI_SERVER_TAG);
+}
+
+/**
+ * Parse the document `tailscale status --json` prints into the peers it names.
+ *
+ * Pure, so a test can feed it a fixture. `Self` is deliberately not a peer: the machine running the
+ * CLI is never a fleet target, and a scan that listed it would then try to SSH to itself.
+ */
+export function parseTailnetStatus(stdout: string): { peers: TailnetPeer[]; error?: string } {
+  let doc: { Peer?: Record<string, unknown>; Self?: Record<string, unknown>; BackendState?: string };
+  try {
+    doc = JSON.parse(stdout) as typeof doc;
+  } catch (error) {
+    return { peers: [], error: `tailscale status returned unparsable JSON: ${String(error)}` };
+  }
+  if (doc.BackendState && doc.BackendState !== 'Running') {
+    return { peers: [], error: `tailscale is installed but not running (BackendState=${doc.BackendState})` };
+  }
+
+  const peers: TailnetPeer[] = [];
+  const rows = Object.values(doc.Peer ?? {});
+  for (const row of rows) {
+    const p = row as { HostName?: string; DNSName?: string; TailscaleIPs?: string[]; OS?: string; Online?: boolean; Tags?: unknown };
+    const ip = p.TailscaleIPs?.find((a) => a.includes('.'));
+    if (!ip) continue;
+    peers.push({
+      name: p.HostName ?? ip,
+      ip,
+      // MagicDNS names arrive with a trailing dot; pool pairing keys on the FQDN, so normalise here
+      // rather than leaving every caller to remember.
+      dnsName: p.DNSName ? p.DNSName.replace(/\.$/, '') : undefined,
+      os: p.OS,
+      online: p.Online === true,
+      tags: Array.isArray(p.Tags) ? p.Tags.filter((t): t is string => typeof t === 'string').map((t) => t.replace(/^tag:/, '')) : [],
+    });
+  }
+  peers.sort((a, b) => a.name.localeCompare(b.name));
+  return { peers };
 }
 
 /**
@@ -133,35 +189,7 @@ export function tailnetPeers(cli: string = resolveTailscaleCli() ?? 'tailscale')
   const res = spawnSync(cli, ['status', '--json'], { encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 });
   if (res.error) return { peers: [], error: `tailscale CLI not runnable: ${String(res.error)}` };
   if (res.status !== 0) return { peers: [], error: (res.stderr || 'tailscale status failed').trim() };
-
-  let doc: { Peer?: Record<string, unknown>; Self?: Record<string, unknown>; BackendState?: string };
-  try {
-    doc = JSON.parse(res.stdout) as typeof doc;
-  } catch (error) {
-    return { peers: [], error: `tailscale status returned unparsable JSON: ${String(error)}` };
-  }
-  if (doc.BackendState && doc.BackendState !== 'Running') {
-    return { peers: [], error: `tailscale is installed but not running (BackendState=${doc.BackendState})` };
-  }
-
-  const peers: TailnetPeer[] = [];
-  const rows = Object.values(doc.Peer ?? {});
-  for (const row of rows) {
-    const p = row as { HostName?: string; DNSName?: string; TailscaleIPs?: string[]; OS?: string; Online?: boolean };
-    const ip = p.TailscaleIPs?.find((a) => a.includes('.'));
-    if (!ip) continue;
-    peers.push({
-      name: p.HostName ?? ip,
-      ip,
-      // MagicDNS names arrive with a trailing dot; pool pairing keys on the FQDN, so normalise here
-      // rather than leaving every caller to remember.
-      dnsName: p.DNSName ? p.DNSName.replace(/\.$/, '') : undefined,
-      os: p.OS,
-      online: p.Online === true,
-    });
-  }
-  peers.sort((a, b) => a.name.localeCompare(b.name));
-  return { peers };
+  return parseTailnetStatus(res.stdout);
 }
 
 // ─── LAN ─────────────────────────────────────────────────────────────────────
