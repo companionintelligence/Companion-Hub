@@ -728,6 +728,7 @@ cihub fleet backends [--backends a,b] [--execute]      # what each node can run 
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
+cihub fleet update --hub [--pin-digest <repo@sha256:…> | --to-majority] --execute   # pin the Hub build
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
 cihub fleet cert [--nodes a,b] [--execute]             # the tailscale TLS cert each node needs to pool
 ```
@@ -822,7 +823,9 @@ while believing it was twenty is the worse failure.
 | `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
 | `--join-pool <node>` | `install` only: pair each installed node into that Hub's pool |
 | `--pool-pin <digits>` | `install` only: the PIN minted on the Hub being joined, for pairing by address |
-| `--hub` | `update` only: update the Hub image |
+| `--hub` | `update` only: update the Hub image, reading the image ID on each node before and after |
+| `--pin-digest <repo@sha256:…>` | `update --hub` only: deploy this exact build instead of whatever the floating tag resolves to. A bare `sha256:…` is completed against `ghcr.io/companionintelligence/ci-hub`; a tag is refused, since a tag is the mutable thing being escaped |
+| `--to-majority` | `update --hub` only: pin every targeted node to the build most of the **whole roster** runs. Refused unless that is a strict majority — more than half of all rostered nodes, unknown ones included — and refused on a tie |
 | `--models a,b` | `update` only: pull these models on each node |
 | `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
 | `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
@@ -841,6 +844,18 @@ enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
 ### `cihub fleet list` and `cihub fleet status`
 
 `list` prints the roster as saved, plus the nodes a run would skip and why. `status` re-probes them:
+administrable, running a Hub, serving engines — and which **Hub image** each is actually running,
+as a short image ID, with a footer naming the fleet's majority and every node off it:
+
+```
+hub image d5ff45d9 on 12/18; drifted: core-3 (9a38714f), core-6 (9a38714f); unknown: core-17 (unreachable)
+```
+
+The column exists because every node runs the same floating tag, so `docker ps` cannot show drift
+and the image ID can. A node SSH could not reach, one without Docker, and one with no `ci-hub`
+container are each `unknown` with that reason — never counted on either side of the line. Neither
+command touches a node beyond the probe. See
+[`fleet-setup.md` → Which build the fleet is running](fleet-setup.md#which-build-the-fleet-is-running).
 administrable, running a Hub, serving engines, and — for every node it can SSH to — whether the
 tailscale TLS certificate pooling depends on is in the node's store. Neither touches a node beyond
 the probe.
@@ -968,10 +983,19 @@ still has to approve it, and the step output says so.
 ### `cihub fleet update`
 
 `--hub` runs [`cihub pool update`](#cihub-pool-update) on each node — the published-image redeploy,
-so a node with no build toolchain takes an update the same way as one with a checkout. `--models a,b`
-pulls each model, trying the Hub-managed container, then a host `ollama` binary, then the HTTP API,
-because this fleet runs Ollama three different ways. Pass at least one of the two flags, or the
-command says there is nothing to do and exits `0`.
+so a node with no build toolchain takes an update the same way as one with a checkout. The image ID
+is read before and after, and each node's line says what moved: `d5ff45d9 → 7370f6f3`, or
+`(unchanged)`. Without a pin, each node gets whatever `:dev` points at when its turn comes, which on
+a slow pass has been two different builds. `--pin-digest <repo@sha256:…>` deploys one named build on
+every node; `--to-majority` reads the whole roster first and pins to the build most of it already
+runs, refusing when that is half the fleet or less, or a tie, so that "majority" is never a euphemism
+for "plurality". A pinned update whose node completes but is not running the pinned image is a
+failure, whatever `pool update` said. The pin holds for that run only — it reaches `pool update` as
+`CI_HUB_IMAGE` and is not written to the node — and the run ends by saying so.
+
+`--models a,b` pulls each model, trying the Hub-managed container, then a host `ollama` binary, then
+the HTTP API, because this fleet runs Ollama three different ways. Pass at least one of the two
+flags, or the command says there is nothing to do and exits `0`.
 
 Model pulls are serialised for a measured reason: concurrent cold loads of 20–50 GB blocked the
 nodes' own HTTP listeners long enough that the tooling reported them absent while they were working.

@@ -139,9 +139,23 @@ export function joinPoolScript(peerFqdn: string, pin?: string): string {
   ].join('\n');
 }
 
-/** Update the Hub image on a node. Uses the pool-update path, which needs no build toolchain. */
-export function updateHubScript(): string {
-  return ['set -e', 'export CI_HUB_ASSUME_YES=1', 'cihub pool update', 'echo "hub-update-complete"'].join('\n');
+/**
+ * Update the Hub image on a node. Uses the pool-update path, which needs no build toolchain.
+ *
+ * `image`, when given, is an exact reference (`repo@sha256:…`) and reaches `cihub pool update` as
+ * `CI_HUB_IMAGE`, which that command honours over its floating default. Without it every node pulls
+ * whatever `:dev` points at the moment its turn comes — on a slow fleet pass that has been two
+ * different builds, which is how a fleet ends up on four images with nobody having asked for any of
+ * them. The pin holds for this run only; it is not written to the node's env file.
+ */
+export function updateHubScript(image?: string): string {
+  return [
+    'set -e',
+    'export CI_HUB_ASSUME_YES=1',
+    ...(image ? [`export CI_HUB_IMAGE='${image.replace(/'/g, "'\\''")}'`] : []),
+    'cihub pool update',
+    'echo "hub-update-complete"',
+  ].join('\n');
 }
 
 /**
