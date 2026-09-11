@@ -196,6 +196,50 @@ Two settings need coordinating across the fleet rather than set independently:
   Linux AMD with `/sys` bind-mounted. A node that cannot measure reports nothing and ranks mid-band —
   deliberately not idle. On a fleet where most nodes cannot measure, leave the weight at `0`.
 
+## Models per node, not per fleet
+
+`cihub fleet update --models a,b` applies one list to every node. On hardware as mixed as this
+fleet's — Strix Halo boxes with ~120 GB unified memory next to an 8 GB RTX A1000 — that is how the
+model sets drifted to anywhere from 2 to 23 per node, and how one node ended up with no embedding
+model at all.
+
+```bash
+cihub fleet update --models recommended            # dry run: each node's list and where it came from
+cihub fleet update --models recommended --execute  # pull, serialised node by node
+```
+
+`recommended` asks **each node's own Hub** for the hardware-fitted list it already computes
+(`GET /api/inference/onboarding-profile`, the same recommender the onboarding UI uses), takes its
+Ollama picks, and pulls what the Hub's live tag list says is missing. The dry run reads from every
+node and changes nothing. Every plan says which of three places it came from:
+
+| Provenance | Meaning |
+| ---------- | ------- |
+| `hub-recommended` | The node's Hub answered; the list is its top-N for that machine |
+| `explicit` | You named the models (`--models a,b`); no Hub is consulted |
+| `floor-only` | The Hub could not be asked, and the reason is printed next to it |
+
+Two things hold whatever the provenance:
+
+- **`nomic-embed-text` is always on the list.** CI-Server refuses to boot without a 768-dim embedder
+  (it throws on `EMBEDDING_DIMENSION ≠ 768`), so it is a platform requirement appended to every
+  node, never a recommendation a smaller machine can lose. Naming it yourself does not pull it twice.
+- **A node the Hub cannot speak for gets the floor, not a guess.** The fleet CLI deliberately does not
+  assemble a hardware profile from SSH-read facts and run its own sizing: a second recommender that
+  disagrees with the node's own Hub is exactly the drift this replaces. Fix the Hub, re-run.
+
+The request runs **on the node** with the device key from its own `state/settings.json` as
+`Authorization: Bearer` — the key never crosses the wire and is never printed. That header is the one
+the Hub accepts for a device credential (`x-api-key` is not read). Two refusals look alike and are
+kept apart because they need opposite fixes: **HTTP 409 `AUTH_ERROR_HUB_NOT_CLAIMED`** means the key
+is fine and the Hub has no operator (`cihub claim --email <addr>`); **HTTP 401
+`SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN`** means the Hub did not accept the key it was shown.
+
+Per node, `--execute` reports each model as **pulled**, **already present** (per the Hub's tag list,
+so no pull is attempted) or **failed**, with the catalog's disk estimate for what was fetched.
+`--json` emits the same per node. A node whose Hub could not be asked is a reason on the report; only
+a pull that fails makes the run exit non-zero.
+
 ## Growing and shrinking
 
 - **Adding a node** repeats the whole one-node path: register, **claim** (`cihub claim --email <addr>`,
