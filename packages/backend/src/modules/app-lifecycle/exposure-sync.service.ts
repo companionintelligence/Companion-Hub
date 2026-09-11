@@ -1303,9 +1303,12 @@ export class ExposureSyncService {
      * (R2-PORTALMISC-5), but a failure mode nobody has found yet could still
      * answer `[]` for "I could not read it". So while apps that can serve a
      * custom domain still hold one, the first empty answer changes none of
-     * them, and it is acted on once a later sync, at least a minute on, says the
-     * same. A real "the org disconnected them all" is late by a minute; a
-     * transient read failure no longer takes every customer hostname off the air.
+     * them, and it is acted on by the next sync at least a minute on that says
+     * the same — normally the five-minute poll, unless a save or a restart
+     * triggers one sooner. So a real "the org disconnected them all" lands one
+     * sync late, and until then those apps keep publishing a hostname that no
+     * longer resolves (CI-Hub#1207); a transient read failure no longer takes
+     * every customer hostname off the air.
      *
      * Only the bindings DERIVED FROM THIS ANSWER wait. An app that stopped being
      * publicly routed loses its binding because of its own settings, whatever
