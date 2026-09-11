@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { TRANSIENT_DB_RETRY_DELAYS_MS, withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { ApiKeyStoreUnavailableError, isTransientDbError } from './api-key.errors';
-import { type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
+import { type ApiKeyListRow, type ApiKeyRow, ApiKeyRepository } from './api-key.repository';
 import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
 import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY, coerceApiKeyCapability } from './api-key.capabilities';
 
@@ -29,6 +29,13 @@ export interface ApiKeyInfo {
   expiresAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;
+  /**
+   * The Hub person who created the key, whose grants and role it acts with. `null` for a managed
+   * app key, and for one minted by the CLI or before creators were recorded.
+   */
+  createdByUserId: number | null;
+  /** That person's username, where the read joined it (the admin listing); `null` otherwise. */
+  createdByUsername: string | null;
 }
 
 /**
@@ -45,9 +52,14 @@ export interface ApiKeyContext {
    * service confine a managed app key to its own app (CI-Hub#1397).
    */
   ownerAppUrn: string | null;
+  /**
+   * The Hub person an UNMANAGED key acts as — the one who created it — else `null`: always for a
+   * managed key, and for a key nobody is recorded as creating.
+   */
+  createdByUserId: number | null;
 }
 
-function toInfo(row: ApiKeyRow): ApiKeyInfo {
+function toInfo(row: ApiKeyRow | ApiKeyListRow): ApiKeyInfo {
   return {
     id: row.id,
     name: row.name,
@@ -59,6 +71,8 @@ function toInfo(row: ApiKeyRow): ApiKeyInfo {
     expiresAt: row.expiresAt,
     lastUsedAt: row.lastUsedAt,
     createdAt: row.createdAt,
+    createdByUserId: row.createdByUserId ?? null,
+    createdByUsername: 'createdByUsername' in row ? row.createdByUsername : null,
   };
 }
 
@@ -150,7 +164,13 @@ export class ApiKeyService {
     return !this.isExpired(key);
   }
 
-  /** Create a key. Returns the info PLUS the raw key — the only time the raw value is ever exposed. */
+  /**
+   * Create a key. Returns the info PLUS the raw key — the only time the raw value is ever exposed.
+   *
+   * `createdByUserId` is the Hub person creating it: an unmanaged key acts with that person's grants
+   * and role for as long as it lives, so it can never do more than they can. Omitted, nobody is
+   * recorded — right for a managed app key, which the Hub provisions.
+   */
   async create(
     name: string,
     opts: {
@@ -158,6 +178,7 @@ export class ApiKeyService {
       capability?: ApiKeyCapability;
       managed?: boolean;
       ownerAppUrn?: string | null;
+      createdByUserId?: number | null;
       expiresAt?: string | null;
     },
   ): Promise<ApiKeyInfo & { key: string }> {
@@ -172,9 +193,17 @@ export class ApiKeyService {
       hashedKey: this.hash(rawKey),
       managed: opts.managed ?? false,
       ownerAppUrn: opts.ownerAppUrn ?? null,
+      createdByUserId: opts.createdByUserId ?? null,
       expiresAt: opts.expiresAt ?? null,
     });
-    this.logger.info('API key created', row.id, `[${scopes.join(',')}]`, capability, row.managed ? '(managed)' : '(operator)');
+    this.logger.info(
+      'API key created',
+      row.id,
+      `[${scopes.join(',')}]`,
+      capability,
+      row.managed ? '(managed)' : '(operator)',
+      `createdBy=${row.createdByUserId ?? 'none'}`,
+    );
     return { ...toInfo(row), key: rawKey };
   }
 
@@ -220,6 +249,8 @@ export class ApiKeyService {
       name: row.name,
       capability: coerceApiKeyCapability(row.capability),
       ownerAppUrn: row.managed ? row.ownerAppUrn : null,
+      // A managed key belongs to its app, not to a person, whatever the column holds.
+      createdByUserId: row.managed ? null : (row.createdByUserId ?? null),
     };
   }
 
@@ -229,7 +260,7 @@ export class ApiKeyService {
     return (await this.resolve(rawKey, requiredScope)) !== null;
   }
 
-  /** All stored keys (every scope), for the hub-wide admin listing. */
+  /** All stored keys (every scope), for the hub-wide admin listing — each naming who created it. */
   async list(): Promise<ApiKeyInfo[]> {
     return (await this.repo.list()).map(toInfo);
   }

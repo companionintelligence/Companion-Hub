@@ -41,7 +41,7 @@ Use this when the Hub API is down, Docker state is corrupted, or you want the sa
 - Requires an **operator** login
 - Requires typing the confirmation phrase: `factory-reset`
 - Calls `POST /api/system/factory-reset`
-- Tears down installed apps, wipes Postgres tables (including `user`), clears `settings.json`, app data mounts, repos, backups, and registration artifacts
+- Tears down installed apps, wipes Postgres tables (including `user` and every API key, so agents and `cihub api-key` users need new keys afterwards), clears `settings.json`, app data mounts, repos, backups, and registration artifacts
 - Does **not** remove Docker named volumes — use `cihub reset --yes` if you also need `ci_hub_pgdata` removed while containers are stopped
 
 Best when the Hub is healthy but auth/setup is stuck after a partial reset.

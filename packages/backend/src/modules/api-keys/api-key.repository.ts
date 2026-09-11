@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, count, desc, eq, sql } from 'drizzle-orm';
+import { and, count, desc, eq, getTableColumns, sql } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
-import { apiKey } from '@/core/database/drizzle/schema';
+import { apiKey, user } from '@/core/database/drizzle/schema';
 import type { ApiKeyScope } from './api-key.scopes';
 
 /** A stored API key row. Only the SHA-256 `hashedKey` is persisted — never the raw key. */
@@ -16,10 +16,15 @@ export interface ApiKeyRow {
   hashedKey: string;
   managed: boolean;
   ownerAppUrn: string | null;
+  /** The Hub person who created the key; `null` when nobody is recorded (see the column). */
+  createdByUserId: number | null;
   expiresAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;
 }
+
+/** A row as the admin listing reads it: with the creator's username joined in. */
+export type ApiKeyListRow = ApiKeyRow & { createdByUsername: string | null };
 
 /** Insertable columns (id/lastUsedAt/createdAt are DB-generated). */
 export type NewApiKeyRow = Omit<ApiKeyRow, 'id' | 'lastUsedAt' | 'createdAt'>;
@@ -64,11 +69,18 @@ export class ApiKeyRepository {
     }) as Promise<ApiKeyRow | undefined>;
   }
 
-  /** All keys, newest first — the hub-wide admin listing. */
-  async list(): Promise<ApiKeyRow[]> {
-    return this.db.query.apiKey.findMany({
-      orderBy: [desc(apiKey.createdAt)],
-    }) as Promise<ApiKeyRow[]>;
+  /**
+   * All keys, newest first — the hub-wide admin listing — each with the username of the person who
+   * created it, so the listing can say whose authority a key carries. A left join: a managed key,
+   * and one minted by the CLI or before creators were recorded, has no creator.
+   */
+  async list(): Promise<ApiKeyListRow[]> {
+    return this.db
+      .select({ ...getTableColumns(apiKey), createdByUsername: user.username })
+      .from(apiKey)
+      .leftJoin(user, eq(apiKey.createdByUserId, user.id))
+      .orderBy(desc(apiKey.createdAt))
+      .execute() as Promise<ApiKeyListRow[]>;
   }
 
   async countAll(): Promise<number> {

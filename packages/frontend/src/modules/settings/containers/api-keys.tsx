@@ -35,6 +35,9 @@ export interface ApiKeyInfo {
   expiresAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;
+  /** The Hub person who created the key, whose grants and role it acts with; `null` when nobody is recorded. */
+  createdByUserId: number | null;
+  createdByUsername: string | null;
 }
 
 /** The one definition of the list read — the initial load and every post-action refresh share it,
@@ -269,6 +272,12 @@ export const ApiKeysContainer = () => {
                       <p className="text-xs text-muted-foreground">
                         {key.lastUsedAt ? t('API_KEYS_LAST_USED', { when: new Date(key.lastUsedAt).toLocaleString() }) : t('API_KEYS_NEVER_USED')}
                       </p>
+                      {/* An operator key acts as whoever created it; a managed key acts for its app, so it has no creator to name. */}
+                      {!key.managed && (
+                        <p className="text-xs text-muted-foreground" data-testid={`api-key-creator-${key.id}`}>
+                          {key.createdByUsername ? t('API_KEYS_CREATED_BY', { name: key.createdByUsername }) : t('API_KEYS_CREATED_BY_UNKNOWN')}
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       {governsTools(key) && (

@@ -35,7 +35,7 @@ async function connectClient(registry: McpToolRegistry): Promise<Client> {
 /** Make a client request as a key with the given capability — what McpController does around
  *  transport.handleRequest for every authenticated MCP request. */
 function asKey<T>(capability: ApiKeyCapability, fn: () => Promise<T>): Promise<T> {
-  return mcpCallContext.run({ id: 1, name: 'test-key', capability }, fn);
+  return mcpCallContext.run({ id: 1, name: 'test-key', capability, ownerAppUrn: null, createdByUserId: null }, fn);
 }
 
 const readTool = (name: string, result: unknown = { ok: true }) => ({

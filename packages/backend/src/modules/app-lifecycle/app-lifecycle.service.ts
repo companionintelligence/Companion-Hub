@@ -1082,17 +1082,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Who may change which custom domain an app serves (R2-HUBDOMAINS-1): an
    * organization owner or admin, asked of WhoIs fresh, and refused when WhoIs
-   * cannot be reached. A named exempt principal and the Hub itself are admitted,
-   * as by every gate. An MCP key has no person behind it whose role could be
-   * asked, so it is refused — whatever its capability, managed or not — until
-   * keys record who minted them.
+   * cannot be reached. That is the operator for a session and, for an unmanaged
+   * MCP key, the person who created it — a key acts with its creator's authority,
+   * never more. A managed app key, and a key nobody is recorded as creating, has
+   * no person whose role could be asked, so it is refused whatever its
+   * capability. A named exempt principal and the Hub itself are admitted, as by
+   * every gate.
    */
   private async assertActorMayChangeCustomDomain(actor: LifecycleActor, appUrn: AppUrn): Promise<void> {
     if (actor.kind === 'exempt' || actor.kind === 'system') {
       return;
     }
 
-    if (actor.kind === 'operator' && (await this.resolveWhois()?.hasManagingRole(actor.userId, appUrn))) {
+    const person = actor.kind === 'operator' ? actor.userId : actor.ownerAppUrn === null ? actor.createdByUserId : null;
+
+    if (person !== null && (await this.resolveWhois()?.hasManagingRole(person, appUrn))) {
       return;
     }
 
@@ -2886,10 +2890,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * separate ways for "we could not tell" to read as "allowed".
    *
    * - an operator is checked against WhoIs, and REFUSED if WhoIs is unavailable;
-   * - an MCP key already passed the registry's capability gate; a managed app key
+   * - an MCP key already passed the registry's capability gate. A managed app key
    *   may act only on the app that owns it (item 3 of CI-Hub#1397 — a manifest
    *   field is enough to be handed an `mcp`-scoped key, and it must not reach
-   *   its neighbours);
+   *   its neighbours). An unmanaged key acts as the person who created it, on
+   *   that person's WhoIs grant, and is REFUSED if WhoIs is unavailable, as the
+   *   person would be. A key nobody is recorded as creating keeps the reach keys
+   *   had before; the key listing says so, so it can be re-issued;
    * - a grant-exempt principal and the system itself are admitted by name.
    */
   private async actorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction): Promise<boolean> {
@@ -2898,13 +2905,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       case 'system':
         return true;
       case 'mcp':
-        return actor.ownerAppUrn === null || actor.ownerAppUrn === appUrn;
-      case 'operator': {
-        const whois = this.resolveWhois();
+        if (actor.ownerAppUrn !== null) {
+          return actor.ownerAppUrn === appUrn;
+        }
 
-        return whois !== null && (await whois.has(actor.userId, appUrn, action));
-      }
+        // A key nobody is recorded as creating keeps the per-app reach keys had before.
+        if (actor.createdByUserId === null) {
+          return true;
+        }
+
+        return this.personMay(actor.createdByUserId, appUrn, action);
+      case 'operator':
+        return this.personMay(actor.userId, appUrn, action);
     }
+  }
+
+  /** A Hub person's WhoIs grant for `action` on `appUrn`, refused when WhoIs cannot be resolved. */
+  private async personMay(userId: number, appUrn: AppUrn, action: HubAction): Promise<boolean> {
+    const whois = this.resolveWhois();
+
+    return whois !== null && (await whois.has(userId, appUrn, action));
   }
 
   /** The same decision, as a refusal the caller sees. */
