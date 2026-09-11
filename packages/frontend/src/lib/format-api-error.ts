@@ -7,7 +7,8 @@ import { normalizeApiErrorMessage } from './normalize-api-error';
 
 const I18N_KEY_PATTERN = /^[A-Z][A-Z0-9_]+$/;
 
-function isI18nKey(message: string): boolean {
+/** Whether an API `message` is a translation key, as opposed to raw backend text that is not copy for the screen. */
+export function isI18nKey(message: string): boolean {
   return I18N_KEY_PATTERN.test(message);
 }
 
