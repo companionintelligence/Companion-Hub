@@ -75,6 +75,8 @@ export type PortalWhoIsResponse = {
     organizationId: string;
     version?: number;
     source?: string;
+    /** The subject's membership in this organization — `role` is `owner`, `admin` or `member`. */
+    user?: { role?: string };
     apps: PortalWhoIsApp[];
   }>;
 };
