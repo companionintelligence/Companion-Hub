@@ -212,7 +212,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
   }
 
   printMessageBox(
-    'Pair with Companion Cloud',
+    'Pair with Companion Portal',
     [
       `${bold('device id')}  ${deviceId}`,
       `${bold('portal')}     ${colorize(portalUrl, 'cyan')}`,
