@@ -71,8 +71,8 @@ export class ApiKeyRepository {
 
   /**
    * All keys, newest first — the hub-wide admin listing — each with the username of the person who
-   * created it, so the listing can say whose authority a key carries. A left join: most keys have
-   * no recorded creator, and a deleted account leaves `created_by_user_id` null.
+   * created it, so the listing can say whose authority a key carries. A left join: a managed key,
+   * and one minted by the CLI or before creators were recorded, has no creator.
    */
   async list(): Promise<ApiKeyListRow[]> {
     return this.db

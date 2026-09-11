@@ -11,8 +11,8 @@ import { type TestDatabase, createTestDatabase } from '../utils/create-test-data
 /*
  * Against the real database and the real migrations: that `created_by_user_id`
  * exists after `migrate`, that the admin listing's join names who created each
- * key, that deleting that account leaves the key with no creator rather than
- * failing, or taking the key with it, and that a factory reset takes every key.
+ * key, that deleting an account deletes the keys it created and no one else's,
+ * and that a factory reset takes every key.
  */
 describe('API keys and who created them', () => {
   let db: TestDatabase;
@@ -58,13 +58,23 @@ describe('API keys and who created them', () => {
     expect(listed.find((row) => row.name === 'legacy')).toMatchObject({ createdByUserId: null, createdByUsername: null });
   });
 
-  it('keeps the key, with no creator, when the account that created it is deleted', async () => {
+  /*
+   * A key acts with its creator's grants. Left behind with no creator, it would
+   * keep the per-app reach of a key made before creators were recorded, so the
+   * account's deletion would widen its keys instead of retiring them.
+   */
+  it("deletes an account's keys with it, and leaves everyone else's", async () => {
     const member = await insertUser('member@acme.com');
-    const key = await insertKey('agent', member.id);
+    const owner = await insertUser('owner@acme.com');
+    const memberKey = await insertKey('agent', member.id);
+    const ownerKey = await insertKey('n8n', owner.id);
+    const legacyKey = await insertKey('legacy', null);
 
     await db.delete(user).where(eq(user.id, member.id));
 
-    expect(await repo.findById(key.id)).toMatchObject({ createdByUserId: null });
+    expect(await repo.findById(memberKey.id)).toBeUndefined();
+    expect(await repo.findById(ownerKey.id)).toMatchObject({ createdByUserId: owner.id });
+    expect(await repo.findById(legacyKey.id)).toMatchObject({ createdByUserId: null });
   });
 
   /*
