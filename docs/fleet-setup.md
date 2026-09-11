@@ -276,9 +276,23 @@ sorts after every legacy name, including any future `zzzz-*.conf` — moves asid
 `OLLAMA_HOST` and nothing else (renamed to `<name>.disabled-by-cihub-<date>`, never deleted), leaves
 any file that also carries other settings in place and outranked, restarts, and then **re-reads
 `systemctl show ollama -p Environment` and fails if the merged value is not what it asked for**. The
-default is the node's Tailscale IPv4 (`--bind tailnet`); `--bind all` and `--bind local` are the
-explicit alternatives. `cihub fleet status` shows each node's effective bind and the file that set
-it, and flags a conflict read-only.
+default is `--bind all` — `0.0.0.0` **behind a firewall guard**; `--bind tailnet` and `--bind local`
+are the explicit alternatives. `cihub fleet status` shows each node's effective bind and the file
+that set it, flags a conflict read-only, and marks a `0.0.0.0` bind with no active guard **EXPOSED**.
+
+**Why all-plus-guard and not tailnet-only.** The Hub container on the same node reaches its host
+Ollama at `host.docker.internal:11434` — the Docker bridge gateway — which a tailnet-only bind does
+not listen on. Two nodes measured 2026-09-10 were already tailnet-bound and running ci-hub, and their
+Hub→local-Ollama link was dead for exactly that reason. So the daemon binds everywhere, and
+`ollama-tailnet-guard.service` — a `RemainAfterExit` oneshot ordered `Before=ollama.service`, so
+there is no window — accepts tcp/11434 from `lo`, `tailscale0`, `docker0` and `br-+` (iptables'
+wildcard for the bridge compose creates per network) and **rejects everything else with a TCP
+reset**, so a LAN client sees "connection refused" rather than a hang. The apply script installs the
+guard *before* it restarts the daemon and fails the bind if the guard's INPUT jump is not there
+afterwards: a `0.0.0.0` with no guard is the exposure this mode exists to avoid. `--bind tailnet` and
+`--bind local` remove a guard an earlier `all` left behind, so switching modes is coherent. The
+status probe reads the guard as `systemctl is-active` — no sudo — which for a `RemainAfterExit`
+oneshot is evidence, not a hint: rules that failed leave the unit `failed`, not `active`.
 
 Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a user-scope unit
 (`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the

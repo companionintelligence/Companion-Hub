@@ -181,9 +181,11 @@ export interface FleetArgs {
    */
   touchesBoot: boolean;
   /**
-   * Where Ollama listens, for `backends`. One policy per run: the tailnet address by default, or
-   * `all` / `local` when asked. Whatever is chosen is written to one file and read back after the
-   * restart; `fleet status` shows the result and the file that set it.
+   * Where Ollama listens, for `backends`. One policy per run: `all` by default — 0.0.0.0 behind
+   * `ollama-tailnet-guard.service`, because the Hub container reaches the daemon over the Docker
+   * bridge, which a tailnet-only bind does not serve — or `tailnet` / `local` when asked. Whatever
+   * is chosen is written to one file and read back after the restart; `fleet status` shows the
+   * result, the file that set it, and EXPOSED for a 0.0.0.0 whose guard is not active.
    */
   bind: OllamaBindMode;
 }
@@ -806,9 +808,9 @@ function describeBindCell(assessment: OllamaBindAssessment | undefined, node: Di
     case 'foreign-owner':
       return colorize(assessment.summary, 'yellow');
     case 'managed':
-      return assessment.summary;
+      return assessment.exposed ? colorize(assessment.summary, 'yellow') : assessment.summary;
     default:
-      return colorize(assessment.summary, 'dim');
+      return colorize(assessment.summary, assessment.exposed ? 'yellow' : 'dim');
   }
 }
 

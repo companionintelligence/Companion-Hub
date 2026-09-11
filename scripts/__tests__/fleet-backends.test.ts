@@ -106,13 +106,18 @@ describe('the gfx1151 Vulkan override', () => {
 });
 
 describe('the ollama bind policy', () => {
-  it('binds the tailnet address by default, and says so in the plan', () => {
+  it('binds all interfaces by default, behind the guard, and says so in the plan', () => {
     // Measured 2026-09-10: nodes bound the Tailscale IP, 0.0.0.0 and loopback in roughly equal
     // measure, and a loopback probe read "no Ollama" on healthy tailnet-bound nodes. One policy.
     const plan = planBackend('ollama', host(), '/data');
-    expect(plan.why).toContain('tailnet address');
-    expect(plan.script).toContain('tailscale ip -4');
-    expect(plan.script).not.toContain("cihub_bind_host='0.0.0.0'");
+    expect(plan.why).toContain('all interfaces');
+    expect(plan.why).toContain('guarded');
+    expect(plan.script).toContain("cihub_bind_host='0.0.0.0'");
+    // The guard is what makes 0.0.0.0 acceptable, and it goes up before the daemon restarts onto it.
+    const guardUp = plan.script?.indexOf('systemctl restart ollama-tailnet-guard.service') ?? -1;
+    const daemonUp = plan.script?.indexOf('\nsystemctl restart ollama\n') ?? -1;
+    expect(guardUp).toBeGreaterThan(-1);
+    expect(daemonUp).toBeGreaterThan(guardUp);
   });
 
   it('honours --bind all and --bind local as explicit alternatives', () => {
@@ -140,7 +145,7 @@ describe('the ollama bind policy', () => {
   });
 
   it('fails a tailnet bind on a node with no tailnet address BEFORE downloading anything', () => {
-    const script = planBackend('ollama', host(), '/data').script ?? '';
+    const script = planBackend('ollama', host(), '/data', { ollamaBind: 'tailnet' }).script ?? '';
     const check = script.indexOf('--bind tailnet needs a tailnet address');
     expect(check).toBeGreaterThan(-1);
     expect(check).toBeLessThan(script.indexOf('https://ollama.com/install.sh'));
