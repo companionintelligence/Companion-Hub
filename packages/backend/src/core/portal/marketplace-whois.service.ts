@@ -155,6 +155,66 @@ export class MarketplaceWhoIsService {
    * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
    * principal as "no person to check, allow" all over again.
    */
+  /**
+   * Refuse a custom-domain change from anyone but an organization owner or admin.
+   *
+   * ⚠ A CUSTOM DOMAIN IS THE ORGANIZATION'S, NOT THE APP'S (R2-HUBDOMAINS-1).
+   * In the portal, connecting or retargeting one takes `MANAGING_ROLES`. Through
+   * the Hub it took `configure` on any one app — which `DEFAULT_GRANTS` hands
+   * every member — and the takeover "confirmation" was a form field ticked by
+   * the person asking. So any member could move the org's production hostname
+   * onto an app of their choosing.
+   *
+   * The role comes from the same WhoIs answer the grants do, for this device's
+   * own organization (`pickOrg`), fresh — never from the grant cache — and
+   * every way of not knowing it is a refusal: no linked Portal subject, no
+   * Portal configured, WhoIs down or answering non-2xx, or an org that did not
+   * say. A custom domain cannot be bound without the Portal anyway.
+   *
+   * A grant-exempt principal (the Portal's own device push, the local CLI) is
+   * admitted by name, exactly as for every other gate.
+   */
+  async assertCustomDomainAuthority(req: Request, appUrn: AppUrn): Promise<void> {
+    if (isGrantExemptPrincipal(req)) {
+      return;
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      this.logUnrecognisedPrincipal(req, 'configure');
+      throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
+
+    if (!(await this.hasManagingRole(userId, appUrn))) {
+      throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
+  }
+
+  private async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
+    const subject = await this.portalSubject(userId);
+
+    if (!subject) {
+      this.logUnlinked(userId);
+      return false;
+    }
+
+    try {
+      const response = await this.portal.whoisApps({ subject, appIds: [extractAppUrn(appUrn).appName], surface: 'hub' });
+
+      if (!response?.body || response.status < 200 || response.status >= 300) {
+        return false;
+      }
+
+      const role = (await this.pickOrg(response.body))?.user?.role;
+
+      return role === 'owner' || role === 'admin';
+    } catch (error) {
+      this.logger.warn(`Portal WhoIs failed while checking a custom-domain change: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
   sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
     const userId = hubSessionOperatorUserId(req);
 

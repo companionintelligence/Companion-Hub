@@ -10,6 +10,7 @@ import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import type { CustomDomainState } from './custom-domain-authority';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -1022,6 +1023,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       formFields,
       blocked: Object.values(checks).some((c) => !c.ok),
     };
+  }
+
+  /** What {@link requestsCustomDomainChange} compares a save against; `null` for an app not installed. */
+  async customDomainState(appUrn: AppUrn): Promise<CustomDomainState | null> {
+    const app = await this.appRepository.getAppByUrn(appUrn);
+
+    return app ? { intent: app.customDomainIntent ?? null, bound: app.customDomain ?? null, takeover: app.customDomainTakeover === true } : null;
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
