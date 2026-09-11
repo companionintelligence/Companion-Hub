@@ -84,8 +84,6 @@ export class AppLifecycleController {
   async installApp(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'install');
-    // The verb says who may change this app; which custom domain it serves is the organization's (R2-HUBDOMAINS-1).
-    await this.appLifecycleService.authorizeCustomDomainChange(appUrn, body, () => this.whois.assertCustomDomainAuthority(req, appUrn, 'install'));
     const res = await this.appLifecycleService.installApp({ appUrn, form: body, actor: this.whois.lifecycleActor(req, 'install') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
@@ -180,7 +178,6 @@ export class AppLifecycleController {
   async updateAppConfig(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'configure');
-    await this.appLifecycleService.authorizeCustomDomainChange(appUrn, body, () => this.whois.assertCustomDomainAuthority(req, appUrn, 'configure'));
     const res = await this.appLifecycleService.updateAppConfig({ appUrn, form: body, actor: this.whois.lifecycleActor(req, 'configure') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }

@@ -148,43 +148,25 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * Refuse a custom-domain change from anyone but an organization owner or admin.
+   * Whether this operator is an owner or admin of this device's organization —
+   * what changing which custom domain an app serves takes (R2-HUBDOMAINS-1).
    *
-   * ⚠ A CUSTOM DOMAIN IS THE ORGANIZATION'S, NOT THE APP'S (R2-HUBDOMAINS-1).
-   * In the portal, connecting or retargeting one takes `MANAGING_ROLES`. Through
-   * the Hub it took `configure` on any one app — which `DEFAULT_GRANTS` hands
-   * every member — and the takeover "confirmation" was a form field ticked by
-   * the person asking. So any member could move the org's production hostname
-   * onto an app of their choosing.
+   * ⚠ A CUSTOM DOMAIN IS THE ORGANIZATION'S, NOT THE APP'S. In the portal,
+   * connecting or retargeting one takes `MANAGING_ROLES`. Through the Hub it
+   * took `configure` on any one app — which `DEFAULT_GRANTS` hands every member
+   * — and the takeover "confirmation" was a form field ticked by the person
+   * asking. So any member could move the org's production hostname onto an app
+   * of their choosing.
    *
    * The role comes from the same WhoIs answer the grants do, for this device's
-   * own organization (`pickOrg`), fresh — never from the grant cache — and
-   * every way of not knowing it is a refusal: no linked Portal subject, no
-   * Portal configured, WhoIs down or answering non-2xx, or an org that did not
-   * say. A custom domain cannot be bound without the Portal anyway.
-   *
-   * A grant-exempt principal (the Portal's own device push, the local CLI) is
-   * admitted by name, exactly as for every other gate. `action` is the verb of
-   * the call asking, named in the log when it arrives with no principal.
+   * own organization (`pickOrg`), fresh — never from the grant cache — and every
+   * way of not knowing it is a `false`: no linked Portal subject, no Portal
+   * configured, WhoIs down or answering non-2xx, or an org that did not say. A
+   * custom domain cannot be bound without the Portal anyway. Who the operator is,
+   * and that a named exempt principal needs no role, is the lifecycle actor's to
+   * say (`lifecycleActor`); the service decides from that.
    */
-  async assertCustomDomainAuthority(req: Request, appUrn: AppUrn, action: HubAction): Promise<void> {
-    if (isGrantExemptPrincipal(req)) {
-      return;
-    }
-
-    const userId = hubSessionOperatorUserId(req);
-
-    if (userId == null) {
-      this.logUnrecognisedPrincipal(req, action);
-      throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
-    }
-
-    if (!(await this.hasManagingRole(userId, appUrn))) {
-      throw new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
-    }
-  }
-
-  private async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
+  async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
     const subject = await this.portalSubject(userId);
 
     if (!subject) {

@@ -387,25 +387,22 @@ describe('MarketplaceWhoIsService', () => {
     await expect(service.assertSessionAction(sessionReq(), APP_URN, 'install')).rejects.toBeInstanceOf(TranslatableError);
   });
 
-  describe('assertCustomDomainAuthority (R2-HUBDOMAINS-1)', () => {
+  describe('hasManagingRole (R2-HUBDOMAINS-1)', () => {
     const answer = (organizations: unknown[], status = 200) => ({ status, body: { organizations } }) as never;
 
-    it.each(['owner', 'admin'])('admits an organization %s', async (role) => {
+    it.each(['owner', 'admin'])('is true for an organization %s', async (role) => {
       portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role }, apps: [] }]));
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).resolves.toBeUndefined();
+      await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(true);
       expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: ['immich'], surface: 'hub' });
     });
 
-    it('refuses a member, whatever their per-app grants', async () => {
+    it('is false for a member, whatever their per-app grants', async () => {
       portal.whoisApps.mockResolvedValue(
         answer([{ organizationId: 'org-hub', user: { role: 'member' }, apps: [{ appId: 'immich', can: ['configure', 'install'] }] }]),
       );
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toMatchObject({
-        message: 'CUSTOM_DOMAIN_ROLE_REQUIRED',
-        status: HttpStatus.FORBIDDEN,
-      });
+      await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
     });
 
     it("reads the role from this device's organization, not the first one listed", async () => {
@@ -416,7 +413,7 @@ describe('MarketplaceWhoIsService', () => {
         ]),
       );
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
     });
 
     it.each([
@@ -431,31 +428,17 @@ describe('MarketplaceWhoIsService', () => {
           registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('disk'));
         },
       ],
-    ])('refuses on %s — not knowing is not permission', async (_label, arrange) => {
+    ])('is false on %s — not knowing is not permission', async (_label, arrange) => {
       arrange();
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
     });
 
-    it('refuses an operator with no linked Portal subject without asking the Portal', async () => {
+    it('is false for an operator with no linked Portal subject, without asking the Portal', async () => {
       federatedIdentities.findByUserId.mockResolvedValue([] as never);
 
-      await expect(service.assertCustomDomainAuthority(sessionReq(), APP_URN, 'configure')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+      await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
       expect(portal.whoisApps).not.toHaveBeenCalled();
-    });
-
-    it.each([
-      ['the Portal-device principal', portalPushReq],
-      ['the CLI principal', cliReq],
-    ])('admits %s by name', async (_label, buildReq) => {
-      await expect(service.assertCustomDomainAuthority(buildReq(), APP_URN, 'configure')).resolves.toBeUndefined();
-      expect(portal.whoisApps).not.toHaveBeenCalled();
-    });
-
-    it('refuses a caller with no recognised principal, naming the verb it came for in the log', async () => {
-      await expect(service.assertCustomDomainAuthority(unknownPrincipalReq(), APP_URN, 'install')).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
-      expect(portal.whoisApps).not.toHaveBeenCalled();
-      expect(logger.warn).toHaveBeenCalledWith('whois_unrecognised_principal principal=none action=install');
     });
   });
 });
