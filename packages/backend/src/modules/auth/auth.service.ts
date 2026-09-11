@@ -468,16 +468,17 @@ export class AuthService {
     return this.markOperatorActive(user.id, detail.role, user);
   }
 
-  private async markOperatorActive(userId: number, role: UserOrgRole | null, fallback?: User) {
+  private async markOperatorActive(userId: number, role: UserOrgRole | null, fallback?: User): Promise<User> {
     const updated = await this.userRepository.updateUser(userId, {
       accessStatus: 'active',
       orgRole: role,
       membershipCheckedAt: new Date().toISOString(),
     });
-    if (updated && fallback) {
-      return { ...fallback, ...updated };
+    const next = updated && fallback ? { ...fallback, ...updated } : (updated ?? fallback ?? (await this.userRepository.getUserById(userId)));
+    if (!next) {
+      throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND');
     }
-    return updated ?? fallback ?? (await this.userRepository.getUserById(userId));
+    return next;
   }
 
   private async persistLocalPassword(userId: number, password: string) {

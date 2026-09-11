@@ -77,7 +77,17 @@ describe('UserRepository', () => {
     it('should return user dto', async () => {
       mockDb.query.user.findFirst.mockResolvedValue({ id: 1, username: 'test' });
       const result = await repository.getUserDtoById(1);
-      expect(result).toEqual({ id: 1, username: 'test' });
+      expect(result).toEqual({
+        id: 1,
+        username: 'test',
+        totpEnabled: undefined,
+        locale: undefined,
+        operator: undefined,
+        hasCompletedOnboarding: undefined,
+        advancedMode: undefined,
+        accessStatus: 'active',
+        orgRole: null,
+      });
       // Verify columns selection logic?
       // Expect finding with specific options
       expect(mockDb.query.user.findFirst).toHaveBeenCalledWith(
@@ -165,7 +175,17 @@ describe('UserRepository', () => {
     it('should return first operator', async () => {
       mockDb.query.user.findFirst.mockResolvedValue({ id: 1, operator: true });
       const result = await repository.getFirstOperator();
-      expect(result).toEqual({ id: 1, operator: true });
+      expect(result).toEqual({
+        id: 1,
+        username: undefined,
+        totpEnabled: undefined,
+        locale: undefined,
+        operator: true,
+        hasCompletedOnboarding: undefined,
+        advancedMode: undefined,
+        accessStatus: 'active',
+        orgRole: null,
+      });
     });
 
     it('orders by id so the operator it picks is stable across calls', async () => {

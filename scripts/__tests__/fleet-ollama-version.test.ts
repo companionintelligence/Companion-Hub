@@ -368,7 +368,7 @@ describe('summariseOllamaVersions', () => {
 
   it('measures against the version the operator asked for, not only the pin', () => {
     expect(summariseOllamaVersions(fleet({ 'localhost-0': '0.30.9' }), '0.30.9')).toBe(
-      '0.30.9 on 1/18; ahead: ' + Array.from({ length: 17 }, (_, i) => `core-${i + 1} (0.34.0)`).join(', '),
+      `0.30.9 on 1/18; ahead: ${Array.from({ length: 17 }, (_, i) => `core-${i + 1} (0.34.0)`).join(', ')}`,
     );
   });
 });

@@ -2,6 +2,7 @@ import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { user } from '@/core/database/drizzle/schema';
 import type { NewUser } from '@/core/database/drizzle/types';
+import type { UserDto } from '@/modules/user/dto/user.dto';
 import { Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm/sql';
 
@@ -15,6 +16,30 @@ import { eq } from 'drizzle-orm/sql';
  */
 export function normalizeUsername(username: string): string {
   return username.trim().toLowerCase();
+}
+
+function toSessionUserDto(row: {
+  id: number;
+  username: string;
+  totpEnabled: boolean;
+  locale: string;
+  operator: boolean;
+  hasCompletedOnboarding: boolean;
+  advancedMode: boolean;
+  accessStatus?: string | null;
+  orgRole?: string | null;
+}): UserDto {
+  return {
+    id: row.id,
+    username: row.username,
+    totpEnabled: row.totpEnabled,
+    locale: row.locale,
+    operator: row.operator,
+    hasCompletedOnboarding: row.hasCompletedOnboarding,
+    advancedMode: row.advancedMode,
+    accessStatus: row.accessStatus === 'revoked' ? 'revoked' : 'active',
+    orgRole: row.orgRole === 'owner' || row.orgRole === 'admin' || row.orgRole === 'member' ? row.orgRole : null,
+  };
 }
 
 @Injectable()
@@ -48,7 +73,7 @@ export class UserRepository {
    * @param {number} id - The id of the user to return
    */
   public async getUserDtoById(id: number) {
-    return this.db.query.user.findFirst({
+    const row = await this.db.query.user.findFirst({
       where: eq(user.id, Number(id)),
       columns: {
         id: true,
@@ -64,6 +89,7 @@ export class UserRepository {
         localPasswordSetAt: true,
       },
     });
+    return row ? toSessionUserDto(row) : undefined;
   }
 
   /**
@@ -112,7 +138,7 @@ export class UserRepository {
    * unprojected row would put the operator's password hash, salt and TOTP secret on that wire.
    */
   public async getFirstOperator() {
-    return this.db.query.user.findFirst({
+    const row = await this.db.query.user.findFirst({
       where: eq(user.operator, true),
       // Ordered because Portal SSO compares the caller's address against THIS row: without it the
       // row is heap order, so on a multi-operator Hub the same login can be accepted one day and
@@ -130,6 +156,7 @@ export class UserRepository {
         orgRole: true,
       },
     });
+    return row ? toSessionUserDto(row) : undefined;
   }
 
   /**
