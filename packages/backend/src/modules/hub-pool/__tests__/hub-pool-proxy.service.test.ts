@@ -22,7 +22,14 @@ import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
-import { PoolProxyService } from '../hub-pool-proxy.service';
+import {
+  POOL_BACKEND_HEADER,
+  POOL_MODEL_HEADER,
+  POOL_SERVED_BY_HEADER,
+  POOL_SERVED_LOCALLY,
+  PoolProxyService,
+  servedByHeaders,
+} from '../hub-pool-proxy.service';
 import type { PoolPeerCapabilities } from '../hub-pool.types';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
@@ -102,6 +109,11 @@ function createMockResponse(options: { writeFails?: boolean } = {}): Response & 
   writable.setHeader = vi.fn().mockReturnValue(writable) as unknown as Response['setHeader'];
   writable.json = vi.fn().mockReturnValue(writable) as unknown as Response['json'];
   return writable;
+}
+
+/** Every header the service has set on the mock so far, lower-cased so assertions read like the wire. */
+function headersSetOn(res: Response): Record<string, string> {
+  return Object.fromEntries(vi.mocked(res.setHeader).mock.calls.map(([name, value]) => [String(name).toLowerCase(), String(value)]));
 }
 
 describe('PoolProxyService', () => {
@@ -901,6 +913,172 @@ describe('PoolProxyService', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).not.toHaveBeenCalled();
       expect(destroySpy).toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * The caller could not learn which node ran its request from the response at all: the routing log
+   * knows, but it is session-gated, in-memory and gone on restart. Proving cross-node routing on the
+   * fleet came down to asking a node for a model it does not have and checking `ollama ps` on the
+   * far side. These pin the contract that replaces that: the decision is on the response, it is on
+   * the wire before the first streamed byte, and nothing it says is something the caller could not
+   * already know.
+   */
+  describe('serving-node attribution', () => {
+    const MODEL = 'llama3.2:3b';
+    const SELF_FQDN = 'self-hub.tailxyz.ts.net';
+    const PEER_FQDN = 'peer-hub.tailxyz.ts.net';
+
+    function peerHasModel(): HubPoolPeer {
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel(MODEL) as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+      return peer;
+    }
+
+    async function route(res: Response, body: Record<string, unknown> = { model: MODEL }): Promise<void> {
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model: MODEL, res });
+    }
+
+    it('builds the three headers from the candidate, and only from the candidate', () => {
+      expect(servedByHeaders({ peerId: 'peer-1', nodeFqdn: PEER_FQDN, backend: 'vllm' }, MODEL)).toEqual({
+        [POOL_SERVED_BY_HEADER]: PEER_FQDN,
+        [POOL_BACKEND_HEADER]: 'vllm',
+        [POOL_MODEL_HEADER]: MODEL,
+      });
+      expect(servedByHeaders({ peerId: null, nodeFqdn: null, backend: 'ollama' }, MODEL)[POOL_SERVED_BY_HEADER]).toBe(POOL_SERVED_LOCALLY);
+    });
+
+    it('names the peer, its engine and the model on a response it proxied', async () => {
+      peerHasModel();
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }),
+      );
+      const res = createMockResponse();
+
+      await route(res);
+
+      const headers = headersSetOn(res);
+      expect(headers['x-hub-pool-served-by']).toBe(PEER_FQDN);
+      expect(headers['x-hub-pool-backend']).toBe('ollama');
+      expect(headers['x-hub-pool-model']).toBe(MODEL);
+      // The upstream's own headers still come through beside the attribution.
+      expect(headers['content-type']).toBe('application/json');
+    });
+
+    /**
+     * The common path: `poolLocalAffinity` defaults to 1, so with both nodes idle and both holding
+     * the model the local engine wins. A caller must be able to tell that apart from a proxied
+     * response — and the answer is the routing log's word `local`, never this node's own MagicDNS
+     * name, which `identify` deliberately stopped handing to unauthenticated callers.
+     */
+    it('marks a response this node served itself as local, and never discloses its own name', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerHasModel();
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      const res = createMockResponse();
+
+      await route(res);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toContain('local-ollama');
+      const headers = headersSetOn(res);
+      expect(headers['x-hub-pool-served-by']).toBe(POOL_SERVED_LOCALLY);
+      expect(headers['x-hub-pool-backend']).toBe('ollama');
+      expect(headers['x-hub-pool-model']).toBe(MODEL);
+      expect(Object.values(headers).join(' ')).not.toContain(SELF_FQDN);
+    });
+
+    it('names the node that actually answered after a failover, not the one tried first', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerHasModel();
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(new Response('server error', { status: 500 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      const res = createMockResponse();
+
+      await route(res);
+
+      expect(headersSetOn(res)['x-hub-pool-served-by']).toBe(PEER_FQDN);
+      // Set exactly once: the rejected local attempt never reached the commit, so it left nothing behind.
+      const servedBySets = vi.mocked(res.setHeader).mock.calls.filter(([name]) => String(name).toLowerCase() === 'x-hub-pool-served-by');
+      expect(servedBySets).toHaveLength(1);
+    });
+
+    /**
+     * `stream: true` is the common shape of a chat completion, and Node flushes headers on the first
+     * body write — anything set after that is ERR_HTTP_HEADERS_SENT. So the assertion is not "the
+     * header was set" but "it was already set when the first chunk reached the client".
+     */
+    it('has the attribution on the wire before the first streamed chunk', async () => {
+      peerHasModel();
+      const encoder = new TextEncoder();
+      const frames = ['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n', 'data: [DONE]\n\n'];
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const frame of frames) controller.enqueue(encoder.encode(frame));
+          controller.close();
+        },
+      });
+      vi.mocked(global.fetch).mockResolvedValueOnce(new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+
+      const res = createMockResponse();
+      let headersAtFirstChunk: Record<string, string> | null = null;
+      const write = res._write.bind(res);
+      res._write = (chunk, encoding, callback) => {
+        headersAtFirstChunk ??= headersSetOn(res);
+        write(chunk, encoding, callback);
+      };
+
+      await route(res, { model: MODEL, stream: true });
+
+      expect(headersAtFirstChunk).not.toBeNull();
+      expect(headersAtFirstChunk?.['x-hub-pool-served-by']).toBe(PEER_FQDN);
+      expect(headersAtFirstChunk?.['x-hub-pool-backend']).toBe('ollama');
+      expect(headersAtFirstChunk?.['x-hub-pool-model']).toBe(MODEL);
+      expect(Buffer.concat(res.chunks).toString()).toBe(frames.join(''));
+    });
+
+    /**
+     * Attribution is THIS Hub's statement about the decision it made. A peer's `/local/*` answer is
+     * an upstream like any other, and whatever `x-hub-pool-*` it carries — a spoofed served-by, or
+     * the node UUID that only ever belongs on the signed request path — must not reach the caller.
+     */
+    it('never relays an upstream x-hub-pool-* header, and its own attribution wins', async () => {
+      peerHasModel();
+      vi.mocked(global.fetch).mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'x-hub-pool-served-by': 'somewhere-else.tailxyz.ts.net',
+            'x-hub-pool-node': '0f4a1c2e-uuid-of-the-peer',
+            'x-hub-pool-backend': 'vllm',
+          },
+        }),
+      );
+      const res = createMockResponse();
+
+      await route(res);
+
+      const headers = headersSetOn(res);
+      expect(headers['x-hub-pool-served-by']).toBe(PEER_FQDN);
+      expect(headers['x-hub-pool-backend']).toBe('ollama');
+      expect(headers).not.toHaveProperty('x-hub-pool-node');
+      expect(Object.values(headers).join(' ')).not.toContain('somewhere-else');
+      expect(Object.values(headers).join(' ')).not.toContain('uuid-of-the-peer');
+      expect(headers['content-type']).toBe('application/json');
+    });
+
+    it('carries no attribution on the 502 for a model nothing can serve', async () => {
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'missing' }, model: 'missing', res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(headersSetOn(res)).not.toHaveProperty('x-hub-pool-served-by');
     });
   });
 
