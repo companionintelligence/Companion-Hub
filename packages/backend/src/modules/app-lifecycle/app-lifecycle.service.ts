@@ -10,7 +10,7 @@ import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
-import type { CustomDomainState } from './custom-domain-authority';
+import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChange } from './custom-domain-authority';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -1025,11 +1025,55 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     };
   }
 
+  /**
+   * Run `authorize` when an install / update-config form would change which
+   * custom domain the app serves (R2-HUBDOMAINS-1); see
+   * {@link requestsCustomDomainChange} for what counts. Who may make such a
+   * change is the caller's to decide — the app routes and the MCP tool runner
+   * each know who is asking — and this only knows the app.
+   *
+   * A release of a binding the client never saw is refused first, with the
+   * answer the save itself would give (R2-HUBDOMAINS-3): whoever holds a stale
+   * dialog needs to reload, and a role refusal would send them the wrong way.
+   * Nothing has been written when either refusal is thrown.
+   */
+  async authorizeCustomDomainChange(appUrn: AppUrn, form: CustomDomainForm, authorize: () => Promise<void>): Promise<void> {
+    // A form that says nothing about custom domains changes none, so it costs no read.
+    if (typeof form.customDomain !== 'string') {
+      return;
+    }
+
+    const state = await this.customDomainState(appUrn);
+
+    if (state) {
+      this.refuseUnseenRelease(appUrn, form, state.bound);
+    }
+
+    if (requestsCustomDomainChange(form, state)) {
+      await authorize();
+    }
+  }
+
   /** What {@link requestsCustomDomainChange} compares a save against; `null` for an app not installed. */
-  async customDomainState(appUrn: AppUrn): Promise<CustomDomainState | null> {
+  private async customDomainState(appUrn: AppUrn): Promise<CustomDomainState | null> {
     const app = await this.appRepository.getAppByUrn(appUrn);
 
-    return app ? { intent: app.customDomainIntent ?? null, bound: app.customDomain ?? null, takeover: app.customDomainTakeover === true } : null;
+    if (!app) {
+      return null;
+    }
+
+    const bound = normalizeStoredHostname(app.customDomain);
+
+    return {
+      intent: app.customDomainIntent ?? null,
+      bound: app.customDomain ?? null,
+      takeover: app.customDomainTakeover === true,
+      // Only the echo rule reads it — a binding with no choice of its own — so only that case pays for the query.
+      boundWantedElsewhere:
+        bound !== null && normalizeStoredHostname(app.customDomainIntent) === null
+          ? await this.appRepository.hasCustomDomainIntentElsewhere(app.id, bound)
+          : false,
+    };
   }
 
   async installApp(params: { appUrn: AppUrn; form: unknown; skipRun?: boolean }) {
@@ -2723,10 +2767,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * which hostname it means. Accepting the assertionless ones would leave the
      * defect standing for exactly the client that has it.
      */
-    const expected = normalizeStoredHostname(parsedForm.customDomainExpected);
-    if (expected !== bound) {
-      throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE', { id: appUrn, current: bound }, HttpStatus.CONFLICT);
-    }
+    this.refuseUnseenRelease(appUrn, parsedForm, bound);
 
     const released = await this.exposureSyncService.releaseCustomDomain(app);
 
@@ -2742,6 +2783,25 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     await this.appRepository.updateAppById(app.id, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+  }
+
+  /**
+   * R2-HUBDOMAINS-3: `''` gives up the binding the client says it was shown,
+   * or it gives up nothing. See {@link releaseClearedCustomDomain} for why a
+   * request that cannot say what it saw is refused too.
+   */
+  private refuseUnseenRelease(appUrn: AppUrn, form: CustomDomainForm, boundColumn: string | null): void {
+    const bound = normalizeStoredHostname(boundColumn);
+
+    if (form.customDomain !== '' || bound === null) {
+      return;
+    }
+
+    const expected = typeof form.customDomainExpected === 'string' ? normalizeStoredHostname(form.customDomainExpected) : null;
+
+    if (expected !== bound) {
+      throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE', { id: appUrn, current: bound }, HttpStatus.CONFLICT);
+    }
   }
 
   private async claimCustomDomainIntent(appId: number, customDomain: string | undefined): Promise<void> {

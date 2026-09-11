@@ -12,16 +12,19 @@ import { HubAccessService } from '../hub-access.service';
 /*
  * R2-HUBDOMAINS-1: which custom domain an app serves is the organization's call,
  * so a save that CHANGES it also needs an owner or admin — on top of, not
- * instead of, the per-app verb. A save that leaves it alone does not.
+ * instead of, the per-app verb. What counts as a change is the service's to say
+ * (`authorizeCustomDomainChange`); the route says who is asking.
  */
 describe('AppLifecycleController — custom-domain changes take an owner or admin', () => {
   const req = { hubPrincipal: 'session', user: { id: 7 } } as unknown as Request;
   const appUrn = 'comfyui:ci-marketplace';
-  const serving = { intent: 'shop.acme.com', bound: 'shop.acme.com', takeover: false };
 
   let lifecycle: MockProxy<AppLifecycleService>;
   let whois: MockProxy<MarketplaceWhoIsService>;
   let controller: AppLifecycleController;
+
+  /** The service found a change: run the check the route handed it. */
+  const aChange = () => lifecycle.authorizeCustomDomainChange.mockImplementation(async (_urn, _form, authorize) => authorize());
 
   beforeEach(() => {
     lifecycle = mock<AppLifecycleService>();
@@ -31,16 +34,21 @@ describe('AppLifecycleController — custom-domain changes take an owner or admi
     controller = new AppLifecycleController(lifecycle, mock<AppRehydrationService>(), mock<HubAccessService>(), whois);
   });
 
-  it('asks for the role when a save moves the app to another domain', async () => {
-    lifecycle.customDomainState.mockResolvedValue(serving);
+  it.each([
+    ['install', 'install', (body: never) => controller.installApp(appUrn, body, req)],
+    ['update-config', 'configure', (body: never) => controller.updateAppConfig(appUrn, body, req)],
+  ])('%s asks for the role, naming the %s verb, when the service finds a change', async (_route, verb, call) => {
+    aChange();
+    const body = { customDomain: 'other.acme.com' } as never;
 
-    await controller.updateAppConfig(appUrn, { customDomain: 'other.acme.com' } as never, req);
+    await call(body);
 
-    expect(whois.assertCustomDomainAuthority).toHaveBeenCalledWith(req, appUrn);
+    expect(lifecycle.authorizeCustomDomainChange).toHaveBeenCalledWith(appUrn, body, expect.any(Function));
+    expect(whois.assertCustomDomainAuthority).toHaveBeenCalledWith(req, appUrn, verb);
   });
 
-  it('does not ask when the dialog re-submits the domain the app already serves', async () => {
-    lifecycle.customDomainState.mockResolvedValue(serving);
+  it('does not ask when the service finds no change', async () => {
+    lifecycle.authorizeCustomDomainChange.mockResolvedValue(undefined);
 
     await controller.updateAppConfig(appUrn, { customDomain: 'shop.acme.com', port: 8080 } as never, req);
 
@@ -48,19 +56,18 @@ describe('AppLifecycleController — custom-domain changes take an owner or admi
     expect(lifecycle.updateAppConfig).toHaveBeenCalled();
   });
 
-  it('asks on an install that picks a domain', async () => {
-    lifecycle.customDomainState.mockResolvedValue(null);
+  it('asks only once the per-app verb has admitted the caller', async () => {
+    whois.assertSessionAction.mockRejectedValue(new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'configure' }, HttpStatus.FORBIDDEN));
 
-    await controller.installApp(appUrn, { customDomain: 'shop.acme.com' } as never, req);
-
-    expect(whois.assertCustomDomainAuthority).toHaveBeenCalledWith(req, appUrn);
+    await expect(controller.updateAppConfig(appUrn, { customDomain: '' } as never, req)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+    expect(lifecycle.authorizeCustomDomainChange).not.toHaveBeenCalled();
   });
 
   it.each([
     ['install', (body: never) => controller.installApp(appUrn, body, req), () => lifecycle.installApp],
     ['update-config', (body: never) => controller.updateAppConfig(appUrn, body, req), () => lifecycle.updateAppConfig],
   ])('a refused %s never reaches the service', async (_label, call, serviceCall) => {
-    lifecycle.customDomainState.mockResolvedValue(serving);
+    aChange();
     whois.assertCustomDomainAuthority.mockRejectedValue(new TranslatableError('CUSTOM_DOMAIN_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN));
 
     await expect(call({ customDomain: '' } as never)).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
