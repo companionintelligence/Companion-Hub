@@ -123,20 +123,18 @@ export interface TailnetPeer {
 }
 
 /**
- * Enumerate tailnet peers.
+ * Parse the document `tailscale status --json` prints into the peers it names.
  *
- * `tailscale status --json` carries the whole peer map. The nearest existing helper in the sibling
- * repo parses this same document and then only *counts* `j.Peer` — the enumeration below is the
- * thing that was missing, and it is the entire basis for "find my machines".
+ * Pure, so a test can feed it a fixture. `Self` is deliberately not a peer: the machine running the
+ * CLI is never a fleet target, and a scan that listed it would then try to SSH to itself.
+ *
+ * No ACL tag is read as fleet membership. The tailnet's `tag:ci-server` is an internal test tag, not
+ * an inventory, and a peer list is not a fleet either way — see `cli-fleet.ts` for what is.
  */
-export function tailnetPeers(cli: string = resolveTailscaleCli() ?? 'tailscale'): { peers: TailnetPeer[]; error?: string } {
-  const res = spawnSync(cli, ['status', '--json'], { encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 });
-  if (res.error) return { peers: [], error: `tailscale CLI not runnable: ${String(res.error)}` };
-  if (res.status !== 0) return { peers: [], error: (res.stderr || 'tailscale status failed').trim() };
-
+export function parseTailnetStatus(stdout: string): { peers: TailnetPeer[]; error?: string } {
   let doc: { Peer?: Record<string, unknown>; Self?: Record<string, unknown>; BackendState?: string };
   try {
-    doc = JSON.parse(res.stdout) as typeof doc;
+    doc = JSON.parse(stdout) as typeof doc;
   } catch (error) {
     return { peers: [], error: `tailscale status returned unparsable JSON: ${String(error)}` };
   }
@@ -162,6 +160,20 @@ export function tailnetPeers(cli: string = resolveTailscaleCli() ?? 'tailscale')
   }
   peers.sort((a, b) => a.name.localeCompare(b.name));
   return { peers };
+}
+
+/**
+ * Enumerate tailnet peers.
+ *
+ * `tailscale status --json` carries the whole peer map. The nearest existing helper in the sibling
+ * repo parses this same document and then only *counts* `j.Peer` — the enumeration below is the
+ * thing that was missing, and it is the entire basis for "find my machines".
+ */
+export function tailnetPeers(cli: string = resolveTailscaleCli() ?? 'tailscale'): { peers: TailnetPeer[]; error?: string } {
+  const res = spawnSync(cli, ['status', '--json'], { encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 });
+  if (res.error) return { peers: [], error: `tailscale CLI not runnable: ${String(res.error)}` };
+  if (res.status !== 0) return { peers: [], error: (res.stderr || 'tailscale status failed').trim() };
+  return parseTailnetStatus(res.stdout);
 }
 
 // ─── LAN ─────────────────────────────────────────────────────────────────────
