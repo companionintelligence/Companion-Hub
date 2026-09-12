@@ -23,7 +23,9 @@
       "project": ["scripts/**/*.{ts,js,cjs,mjs}", "agent/**/*.{ts,js}", "e2e/**/*.{ts,js}", "bin/**", "worker.ts", "playwright*.config.ts"]
     },
     "packages/frontend": {
-      "ignore": ["src/api-client/**", "public/mockServiceWorker.js"]
+      "entry": ["scripts/**/*.{js,mjs}"],
+      "ignore": ["src/api-client/**", "public/mockServiceWorker.js"],
+      "ignoreDependencies": ["@companionintelligence/assets"]
     },
     "packages/backend": {
       "entry": ["src/main.ts!", "scripts/**/*.{ts,js,cjs}", "vitest*.{ts,mts}"]
