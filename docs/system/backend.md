@@ -288,12 +288,17 @@ unauthorized caller read an app's state out of the 403-vs-200 answer.
 filters its report by `view`.
 
 The services check too, so HTTP is not the only transport that asks
-([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)). Every call that acts on
-one app takes a named `LifecycleActor`: install, update-config, start, stop, restart, uninstall,
-reset, update, cancel, the `BackupsService` calls, and the app-API proxy. `AppLifecycleService.assertActorMay`
+([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)). These calls on one app
+take a named `LifecycleActor`: install, update-config, start, stop, restart, uninstall, reset, update,
+cancel, `BackupsService` backup, restore, list and delete, and the app-API proxy. `AppLifecycleService.assertActorMay`
 decides from it before anything is read or queued, and refuses with `APP_ACTION_GRANT_DENIED` (403).
+Not every per-app call takes one yet: `forceStopApp`, `startAppAndWait`, `restartAppAndWait`,
+`regenerateAppEnv`, `BackupsService.uploadBackup` and `getBackupFilePath`, and the user-config,
+custom-app and `AppsService` calls behind the per-app MCP tools assert nothing, so a route or tool
+that reaches them must assert the grant itself (the MCP tools do, through `assertMcpCallerMay`).
 An operator, and the creator of an unmanaged MCP key, answer to their WhoIs grant. A managed app key
-may do anything on its own app, and on other apps may only operate them: view, start, stop, restart,
+passes every check on its own app except a custom-domain change, which takes an organization owner or
+admin, and on other apps may only operate them: view, start, stop, restart,
 take a backup, and call the app's tools and API (see
 [MCP agent bootstrap](../MCP_AGENT_BOOTSTRAP.md)). `AppLifecycleService.actorMay` is the one place
 that decides this. Where the verb cannot say which call a check is, the call site passes an

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
@@ -8,6 +9,14 @@ import type { AgentOpenApiAuth } from '@ci-hub/common/schemas';
 import { appApiAction } from '../http-method-access';
 
 const MAX_RESPONSE_SIZE = 100 * 1024; // 100KB
+
+/**
+ * What an app name or store slug may carry into the host a request is sent to. The Hub runs each app as
+ * the compose project `<app>_<store>`, and Compose accepts only lowercase letters, digits, `_` and `-`
+ * there, so no app that can run is left out. `castAppUrn` admits more — `?`, `#`, `@`, `.` — and any of
+ * those pasted into a URL moves the request to a host the actor gate never asked about.
+ */
+const APP_HOST_SEGMENT = /^[a-z0-9_][a-z0-9_-]*$/;
 
 interface OpenApiOperationRef {
   method: string;
@@ -80,9 +89,13 @@ export class ApiProxyService {
    * ⚠ THE APP ANSWERS AS IT WOULD ANSWER THE HUB. The request carries the credential the app's agent
    * config points the Hub at, so whoever reaches this reads or changes that app's data with the Hub's
    * access. It asked nothing of the caller beyond a key's capability, so a key reached every app's
-   * API; it now asks the lifecycle's actor gate — `view` to read, `configure` for any other verb —
-   * before the request leaves the Hub (CI-Hub#1397). The check is marked as an app call, which a
-   * managed app key may make on any app, with any method: calling an app is operating it.
+   * API; it now asks the lifecycle's actor gate — `view` to read, `configure` for anything else —
+   * before the request leaves the Hub (CI-Hub#1397), and sends it only to that app's host. The check is
+   * marked as an app call, which a managed app key may make on any app, with any method: calling an
+   * app is operating it.
+   *
+   * `auth` may be a lookup instead of the value, so a caller that must read the app to find it reads
+   * nothing for a request the gate refuses.
    */
   async proxyRequest(
     appUrn: AppUrn,
@@ -92,16 +105,31 @@ export class ApiProxyService {
       body?: Record<string, unknown>;
       headers?: Record<string, string>;
       queryParams?: Record<string, string>;
-      auth?: AgentOpenApiAuth;
+      auth?: AgentOpenApiAuth | (() => Promise<AgentOpenApiAuth | undefined>);
       actor: LifecycleActor;
     },
   ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
     // Outside the try below, which hands every failure back as a proxy error: a refusal is not one.
-    await this.appLifecycle.assertActorMay(options.actor, appUrn, appApiAction(options.method), { appCall: true });
+    // Decided from the whole request, not its method alone — an override header or `_method` can make
+    // a GET run as something else (`isReadOnlyHttpRequest`).
+    await this.appLifecycle.assertActorMay(options.actor, appUrn, appApiAction(options), { appCall: true });
 
     try {
       const baseUrl = this.resolveAppBaseUrl(appUrn);
       const url = new URL(options.path, baseUrl);
+
+      /*
+       * ⚠ `path` IS CALLER INPUT, AND A URL CAN REPLACE THE HOST. An absolute URL, or a `//host`,
+       * `\\host` or `/\host` path, resolves to another origin — another app's container, a Hub service,
+       * an outside host — and would carry this app's credential there, past a gate that asked only
+       * about this app.
+       */
+      if (url.origin !== baseUrl.origin) {
+        return {
+          content: [{ type: 'text', text: `Proxy error: path must be a path on ${appUrn}'s API, not a URL to another host` }],
+          isError: true,
+        };
+      }
 
       // Append query parameters
       for (const [key, value] of Object.entries(options.queryParams ?? {})) {
@@ -114,8 +142,9 @@ export class ApiProxyService {
         headers['content-type'] = 'application/json';
       }
 
-      // Inject auth (S-AOA-2.2, S-APX-1.2)
-      this.injectAuth(headers, options.auth);
+      // Inject auth (S-AOA-2.2, S-APX-1.2), looked up only now that the caller is admitted.
+      const auth = typeof options.auth === 'function' ? await options.auth() : options.auth;
+      this.injectAuth(headers, auth);
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30000);
@@ -159,13 +188,17 @@ export class ApiProxyService {
   }
 
   /**
-   * Resolve the base URL for an app container.
-   * Uses the app's internal hostname and port from the container network.
+   * Resolve the base URL for an app container: `<store>-<app>`, from the URN's segments, which are
+   * refused unless they can only ever name a host.
    */
-  private resolveAppBaseUrl(appUrn: AppUrn): string {
-    const [storeSlug, appName] = appUrn.split(':') as [string, string];
-    // Container hostname is the compose service name, typically the app name
-    return `http://${appName}-${storeSlug}`;
+  private resolveAppBaseUrl(appUrn: AppUrn): URL {
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+
+    if (!APP_HOST_SEGMENT.test(appName) || !APP_HOST_SEGMENT.test(appStoreId)) {
+      throw new Error(`${appUrn} is not an app the proxy can address`);
+    }
+
+    return new URL(`http://${appStoreId}-${appName}`);
   }
 
   private injectAuth(headers: Record<string, string>, auth?: AgentOpenApiAuth): void {

@@ -252,7 +252,13 @@ export class OpenApiBridgeService {
       destructive: method === 'DELETE',
       // The caller is named when the tool runs, not when it is generated, for this operation's verb.
       handler: async (params: Record<string, unknown>) => {
-        return this.apiProxy.proxyOpenApiCall(appUrn, op, params, mcpCallerLifecycleActor(appApiAction(method)), agentConfig.openapi.config?.auth);
+        return this.apiProxy.proxyOpenApiCall(
+          appUrn,
+          op,
+          params,
+          mcpCallerLifecycleActor(appApiAction({ method })),
+          agentConfig.openapi.config?.auth,
+        );
       },
     };
   }

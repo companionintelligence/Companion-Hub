@@ -34,20 +34,30 @@ At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
 
 Marketplace entries for `ci-hermes` and `ci-openclaw` set `mcp_client: true`.
 
-A managed key may do anything on its own app. On every other app it may operate the app but not change
-it ([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)):
+On its own app a managed key passes every per-app grant check but one: changing which custom domain the
+app serves takes an organization owner or admin, so that change is refused with
+`CUSTOM_DOMAIN_ROLE_REQUIRED`. On every other app it may operate the app but not change it
+([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)):
 
 - **Allowed:** read the app (status, logs, config, backups, skill, tools, OpenAPI spec, and operation
   status); start, stop, or restart it, including cancelling an operation in progress; take a backup;
-  and call its MCP tools (`hub_call_app_tool`), its API with any method (`hub_call_app_api`), and its
-  generated OpenAPI tools.
+  and call its MCP tools (`hub_call_app_tool`) and its API with any method (`hub_call_app_api`).
 - **Refused with `APP_ACTION_GRANT_DENIED`:** install it; change its configuration (user config,
   ignored versions, custom-app compose or metadata, availability repair, and app config); uninstall,
   reset, or update it; restore a backup; and delete a backup.
 
+These are grant rules, and the key's capability still applies on top of them, on its own app too. A
+managed key is provisioned with `write`, so the destructive tools stay refused until an organization
+owner or admin gives the key `full` in **Settings → Security**: `hub_call_app_tool`; a
+`hub_call_app_api` call that does more than read; uninstall, reset and update; restoring or deleting a
+backup; rewriting user config or a custom app's compose; an install or config form that names a custom
+domain; and the bulk update, stop and restart tools.
+
 For a managed key, the bulk start, stop, and restart tools act on every app, and the bulk update tool
-updates only the key's own app. If an agent must change other apps, give it an operator key, which acts
-with the grants of the person who created it.
+updates only the key's own app. If an agent must change other apps, give it an operator key created in
+**Settings → Security**, which acts with the grants and role of the person who created it. A key from
+`cihub api-key create` records no creator, so no one's grants bound it: it may act on every app, up to
+its capability, though it cannot change which custom domain an app serves.
 
 ## CI-Hermes path
 

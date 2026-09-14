@@ -219,4 +219,22 @@ describe('BackupsService', () => {
       });
     });
   });
+
+  describe('backupAllApps', () => {
+    it('logs each backup its actor may not take, rather than leaving the refusal unhandled', async () => {
+      appLifecycle.assertActorMay.mockImplementation(lifecycleActorGate());
+      appsRepository.getApps.mockResolvedValue([
+        { id: 1, appName: 'immich', appStoreSlug: 'ci-marketplace', status: 'running' },
+        { id: 2, appName: 'nextcloud', appStoreSlug: 'ci-marketplace', status: 'running' },
+        { id: 3, appName: 'jellyfin', appStoreSlug: 'ci-marketplace', status: 'stopped' },
+      ] as any);
+      const [, ungranted] = UNGRANTED_ACTORS[0] ?? [];
+
+      await service.backupAllApps(ungranted as LifecycleActor);
+
+      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledTimes(2));
+      expect(gateChecks(appLifecycle.assertActorMay).map(([, urn]) => urn)).toEqual(['immich:ci-marketplace', 'nextcloud:ci-marketplace']);
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+  });
 });

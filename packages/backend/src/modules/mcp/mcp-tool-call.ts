@@ -18,8 +18,9 @@ export function mcpCallerCapability(): ApiKeyCapability {
 
 /**
  * Who a lifecycle tool acts as for `action`, in the in-flight call: the signed-in person behind an
- * `/api/mcp-admin` run, or the `/api/mcp` key — confined to its own app when it is a managed one,
- * and acting as the person who created it when it is not.
+ * `/api/mcp-admin` run, or the `/api/mcp` key — which, when it is a managed one, may change only its
+ * own app and operate the others (`AppLifecycleService.actorMay`), and acts as the person who created
+ * it when it is not.
  *
  * A call that names neither is refused, the way {@link mcpCallerCapability} fails closed. Reading "no
  * key" as an unmanaged key is how the admin runner, which never has one, reached every app with no

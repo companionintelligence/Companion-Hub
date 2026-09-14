@@ -159,6 +159,8 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
     expect(lifecycle.startApp).toHaveBeenCalledWith({ appUrn, skipPull: true, actor: OPERATOR });
     expect(result).toMatchObject({ incomplete: true, started: [], skipped: [{ name: 'Immich', reason: 'APP_ACTION_GRANT_DENIED' }] });
+    // Reported as a refused start, not an install: the app is installed and only needed starting.
+    expect(result.message).toBe('Queued 0 install(s) and 0 start(s) from Portal; 1 start(s) were refused for this account');
     expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
   });
 

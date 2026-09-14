@@ -221,7 +221,9 @@ describe('AppLifecycleTools', () => {
       );
     });
 
-    it.each(SINGLE_APP_TOOLS)("hands %s the calling key — a managed one keeps its owning app, so it reaches no neighbour's", async (method) => {
+    it.each(
+      SINGLE_APP_TOOLS,
+    )("hands %s the calling key — a managed one keeps its owning app, which the gate reads to tell its own app from its neighbours'", async (method) => {
       lifecycleService[method].mockResolvedValue({ requestId: 'r' });
       const managedKey = { id: 3, name: 'importer', capability: 'full', ownerAppUrn: 'importer:ci-store', createdByUserId: null } as const;
 

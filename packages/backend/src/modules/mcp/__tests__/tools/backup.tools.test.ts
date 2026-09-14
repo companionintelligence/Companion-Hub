@@ -104,7 +104,7 @@ describe('BackupTools', () => {
 
     it.each(
       calls,
-    )('%s hands over the calling key — a managed one with its owning app, so the gate can keep it off this one', async (_tool, _action, call, service) => {
+    )('%s hands over the calling key — a managed one with its owning app, which the gate reads to tell its own app from the others', async (_tool, _action, call, service) => {
       await asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null }, call);
 
       expect(service()).toHaveBeenCalledWith(

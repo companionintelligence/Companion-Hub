@@ -232,4 +232,122 @@ describe('ApiProxyService', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
+
+  /*
+   * The gate asks about `appUrn`, so the request may go nowhere else: not to a host its `path` names,
+   * nor to one the URN's own segments spell out.
+   */
+  describe('the host a request is sent to', () => {
+    it.each([
+      'http://ci-marketplace-immich/api/assets',
+      '//ci-marketplace-immich/api/assets',
+      '\\\\ci-marketplace-immich\\api',
+      '/\\ci-marketplace-immich/api',
+      'http://nextcloud-ci-store:8080/api',
+    ])('refuses the path %s, which leaves the app the gate checked', async (path) => {
+      const result = await service.proxyRequest(TEST_URN, { method: 'DELETE', path, actor: GRANTED_ACTOR });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain('not a URL to another host');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      'nextcloud:ci-marketplace-immich#',
+      'nextcloud:evil.example?',
+      'nextcloud:user@evil.example#',
+      'evil.com:x',
+    ])('refuses the URN %s, whose segments would name another host', async (urn) => {
+      const result = await service.proxyRequest(urn as AppUrn, { method: 'GET', path: '/api/x', actor: GRANTED_ACTOR });
+
+      expect(result.isError).toBe(true);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('sends a path on the app to the app', async () => {
+      mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
+
+      await expect(
+        service.proxyRequest('nextcloud:ci-marketplace' as AppUrn, { method: 'GET', path: '/api/x?y=1', actor: GRANTED_ACTOR }),
+      ).resolves.toEqual({
+        content: [{ type: 'text', text: 'ok' }],
+      });
+      expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('/api/x?y=1'), expect.anything());
+    });
+  });
+
+  /*
+   * WordPress, Slim 3, Yii2 and Restler run a GET that carries a method override as that method, so the
+   * verb comes from the whole request, not its method alone.
+   */
+  describe('a request that asks the app to run another method', () => {
+    beforeEach(() => {
+      // WhoIs grants this person `view` on the app and nothing else.
+      lifecycle.assertActorMay.mockImplementation(lifecycleActorGate((_userId, _appUrn, action) => action === 'view'));
+      mockFetch.mockImplementation(async () => new Response('ok', { status: 200 }));
+    });
+
+    it.each([
+      ['an X-HTTP-Method-Override header', { headers: { 'X-HTTP-Method-Override': 'DELETE' } }],
+      ['an X-HTTP-Method header', { headers: { 'x-http-method': 'PUT' } }],
+      ['an X-Method-Override header', { headers: { 'X-Method-Override': 'PATCH' } }],
+      ['a _method query parameter', { queryParams: { _method: 'DELETE' } }],
+      ['a _method in its path', { path: '/api/items/1?_method=DELETE' }],
+    ])('takes configure for a GET carrying %s, so view alone never runs it', async (_label, request) => {
+      await expect(service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/items/1', actor: GRANTED_ACTOR, ...request })).rejects.toThrow(
+        'APP_ACTION_GRANT_DENIED',
+      );
+
+      expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, TEST_URN, 'configure', { appCall: true }]]);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('still takes view for an override that asks for a read, and for headers that only look alike', async () => {
+      await expect(
+        service.proxyRequest(TEST_URN, {
+          method: 'GET',
+          path: '/api/items/1',
+          headers: { 'X-HTTP-Method-Override': 'HEAD', 'X-Custom-Method': 'DELETE' },
+          actor: GRANTED_ACTOR,
+        }),
+      ).resolves.toEqual({ content: [{ type: 'text', text: 'ok' }] });
+      expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, TEST_URN, 'view', { appCall: true }]]);
+    });
+  });
+
+  describe('an auth lookup', () => {
+    it.each(UNGRANTED_ACTORS)('is never run for %s, whom the gate refuses', async (_label, actor) => {
+      const auth = vi.fn(async () => ({ type: 'bearer' as const, token_env: 'TEST_TOKEN' }));
+
+      await expect(service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', auth, actor })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+      expect(auth).not.toHaveBeenCalled();
+    });
+
+    it('is never run for a request that would leave the app', async () => {
+      const auth = vi.fn(async () => ({ type: 'bearer' as const, token_env: 'TEST_TOKEN' }));
+
+      await service.proxyRequest(TEST_URN, { method: 'GET', path: '//elsewhere/api', auth, actor: GRANTED_ACTOR });
+
+      expect(auth).not.toHaveBeenCalled();
+    });
+
+    it('is run once the caller is admitted, and its credential sent', async () => {
+      process.env.TEST_TOKEN = 'secret123';
+      mockFetch.mockResolvedValue(new Response('ok', { status: 200 }));
+      const auth = vi.fn(async () => ({ type: 'bearer' as const, token_env: 'TEST_TOKEN' }));
+
+      try {
+        await service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', auth, actor: GRANTED_ACTOR });
+      } finally {
+        delete process.env.TEST_TOKEN;
+      }
+
+      expect(auth).toHaveBeenCalledTimes(1);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer secret123' }) }),
+      );
+    });
+  });
 });

@@ -170,16 +170,13 @@ export class BackupsService {
     const apps = await this.appsRepository.getApps();
     const runningApps = apps.filter((app) => app.status === 'running');
 
-    (async () => {
-      for (const app of runningApps) {
-        try {
-          const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          this.backupApp({ appUrn, actor });
-        } catch (e) {
-          this.logger.error(`Failed to backup app ${app.id}`, e);
-        }
-      }
-    })();
+    for (const app of runningApps) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      // Not awaited, so every backup starts at once, as before. `backupApp` rejects rather than throws —
+      // a refused actor, demo mode, a missing app — so the failure is caught on its promise; a try/catch
+      // around the call never saw one, and each was left an unhandled rejection.
+      void this.backupApp({ appUrn, actor }).catch((e) => this.logger.error(`Failed to backup app ${app.id}`, e));
+    }
   }
 
   public async getBackupFilePath(params: { appUrn: AppUrn; filename: string }): Promise<string> {
