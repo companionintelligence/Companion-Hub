@@ -81,6 +81,12 @@ export type PortalWhoIsResponse = {
   }>;
 };
 
+/**
+ * The `code` on Portal's device WhoIs 403: the subject is in none of this device's organizations, or not in the
+ * one named. A 403 without it did not come from Portal's WhoIs, and is not an answer about anybody.
+ */
+export const PORTAL_GRANT_DENIED_CODE = 'GRANT_DENIED';
+
 @Injectable()
 export class PortalClientService {
   private readonly publicPortalUrl: string;
@@ -237,14 +243,28 @@ export class PortalClientService {
   }
 
   /**
-   * Hub UX WhoIs. Device key + Portal user `subject`. `organizationId` is
-   * not sent — Portal intersects memberships with this appliance.
+   * Hub UX WhoIs. Device key + Portal user `subject`, answered for the
+   * organization this device is in now.
+   *
+   * `organizationId` names that organization, and every caller must send it: a
+   * device can hold registrations in several, and a request that names none gets
+   * 409 `ORGANIZATION_REQUIRED` when two of them tie on which one paired it last.
+   * It selects, it does not authorize. A Portal with the narrowing honours it
+   * only when it is one of this device's current organizations and answers 403
+   * for any other; one that predates it ignores the field and lists every
+   * organization the subject shares with this device, so callers still match the
+   * answer against it (`MarketplaceWhoIsService.pickOrg`).
+   *
+   * `code` is Portal's machine-readable refusal code (`GRANT_DENIED`,
+   * `ORGANIZATION_REQUIRED`) when the body carries one. A refusal from something
+   * in front of Portal, such as a firewall or proxy page, carries none.
    *
    * `null` means Portal is not configured; callers apply compiled inherit.
    */
-  async whoisApps(params: { subject: string; appIds: string[]; surface: 'hub' | 'store' }): Promise<{
+  async whoisApps(params: { subject: string; appIds: string[]; surface: 'hub' | 'store'; organizationId: string }): Promise<{
     status: number;
     body: PortalWhoIsResponse | null;
+    code?: string;
   } | null> {
     if (!this.outboundPortalUrl) {
       return null;
@@ -256,6 +276,7 @@ export class PortalClientService {
         subject: params.subject,
         appIds: params.appIds,
         surface: params.surface,
+        organizationId: params.organizationId,
       },
       {
         headers: this.getDeviceAuthHeaders(),
@@ -265,8 +286,9 @@ export class PortalClientService {
     );
 
     const body = response.data && typeof response.data === 'object' ? response.data : null;
+    const code: unknown = body ? (body as { code?: unknown }).code : undefined;
 
-    return { status: response.status, body };
+    return { status: response.status, body, code: typeof code === 'string' ? code : undefined };
   }
 
   async fetchStoreMetadataText(appSlug: string, filename: string): Promise<string | null> {
