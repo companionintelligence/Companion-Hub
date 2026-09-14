@@ -237,12 +237,18 @@ export class PortalClientService {
   }
 
   /**
-   * Hub UX WhoIs. Device key + Portal user `subject`. `organizationId` is
-   * not sent — Portal intersects memberships with this appliance.
+   * Hub UX WhoIs. Device key + Portal user `subject`, answered for the
+   * organization this device is in now.
+   *
+   * `organizationId` names that organization for the case Portal cannot settle
+   * on its own: a device can hold registrations in several, and a tie on which
+   * one paired it last answers 409 `ORGANIZATION_REQUIRED`. It selects, it does
+   * not authorize — Portal honours it only when it is one of this device's
+   * current organizations, and answers 403 for any other.
    *
    * `null` means Portal is not configured; callers apply compiled inherit.
    */
-  async whoisApps(params: { subject: string; appIds: string[]; surface: 'hub' | 'store' }): Promise<{
+  async whoisApps(params: { subject: string; appIds: string[]; surface: 'hub' | 'store'; organizationId?: string }): Promise<{
     status: number;
     body: PortalWhoIsResponse | null;
   } | null> {
@@ -256,6 +262,7 @@ export class PortalClientService {
         subject: params.subject,
         appIds: params.appIds,
         surface: params.surface,
+        ...(params.organizationId ? { organizationId: params.organizationId } : {}),
       },
       {
         headers: this.getDeviceAuthHeaders(),
