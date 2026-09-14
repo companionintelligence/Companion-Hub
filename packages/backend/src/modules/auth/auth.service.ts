@@ -289,13 +289,24 @@ export class AuthService {
     // request, each one paying the full timeout again.
     let whois: Awaited<ReturnType<PortalClientService['whoisApps']>>;
     try {
-      whois = await this.portal.whoisApps({ subject, appIds: ['_membership'], surface: 'hub' });
+      // Naming our organization settles a tie Portal cannot break on its own (409
+      // `ORGANIZATION_REQUIRED` when two registrations share the newest pairing), which otherwise
+      // answered every sign-in on such a Hub with "try again" for as long as the tie stood.
+      whois = await this.portal.whoisApps({ subject, appIds: ['_membership'], surface: 'hub', organizationId: registration.id });
     } catch (error) {
       this.logger.warn(`Portal WhoIs membership lookup failed: ${error instanceof Error ? error.message : String(error)}`);
       return 'unknown';
     }
 
-    // `null` means Portal is not configured on this Hub; `>= 400` is an outage or a stale device key.
+    // ⚠ 403 IS AN ANSWER. Device WhoIs refuses a subject who is in none of this device's
+    // organizations, or not in the one we named, with 403 — "not a member", which is safe to
+    // remember. Reading it as `unknown` told a person who simply is not in the organization to try
+    // again in a moment, forever, and kept the forward-auth Bearer path asking Portal on every request.
+    if (whois?.status === 403) {
+      return 'not-member';
+    }
+
+    // `null` means Portal is not configured on this Hub; any other `>= 400` is an outage or a stale device key.
     if (!whois || whois.status >= 400 || !whois.body) {
       return 'unknown';
     }

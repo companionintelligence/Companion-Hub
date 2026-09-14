@@ -517,6 +517,47 @@ describe('AuthService', () => {
         }),
       ).rejects.toMatchObject({ message: 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE', status: 503 });
     });
+
+    it("names this Hub's organization, so Portal can settle a device paired to two at once", async () => {
+      // A tie on the newest pairing answers 409 ORGANIZATION_REQUIRED unless the request names one
+      // of the tied organizations; without it every sign-in on such a Hub was "try again".
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 200, body: { organizations: [{ organizationId: 'org-1', apps: [] }] } });
+
+      await expect(authService.resolvePairedOrgMembership('portal-person')).resolves.toBe('member');
+      expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ subject: 'portal-person', organizationId: 'org-1' }));
+    });
+
+    it('refuses a person Portal answers 403 for as not a member, rather than telling them to try again', async () => {
+      // Device WhoIs answers 403 for a subject in none of this device's organizations (or not in the
+      // one named). That is an answer, not an outage.
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 403, body: null });
+
+      await expect(authService.resolvePairedOrgMembership('portal-stranger')).resolves.toBe('not-member');
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-stranger',
+          email: 'stranger@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER' });
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('still answers 503 on a tie Portal could not settle (409)', async () => {
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 409, body: null });
+
+      await expect(authService.resolvePairedOrgMembership('portal-person')).resolves.toBe('unknown');
+    });
   });
   describe('register', () => {
     const issuer = 'https://hub.example.com';
