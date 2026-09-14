@@ -227,8 +227,11 @@ The install dialog offers the organization's connected domains (`GET /api/cloudf
   device pointing a domain into another organization's tunnel.
 - An intent that equals the delivered binding costs nothing — no listing, no bind — which is the
   steady state for the life of the app. A refusal that can clear itself (app not registered yet,
-  domain still verifying) keeps the intent and retries; only "that domain is not this
-  organization's" clears it.
+  domain still verifying) keeps the intent and retries. Two answers clear it, with its confirmation:
+  "that domain is not this organization's", and "another Hub holds it" (listed `boundElsewhere` and
+  not `bindable` once verified, or a bind refused with `DOMAIN_BOUND_TO_ANOTHER_DEVICE`). Only an
+  owner or admin can move such a domain, from the portal's organization settings → domains, and the
+  log line and the picker both say so.
 - A listing that could not be READ (older CI-Cloud, unreachable, unparseable) keeps every intent.
   `supported: false` on the Hub's own endpoint means "could not ask", which the dialog must not
   render as "you have none".

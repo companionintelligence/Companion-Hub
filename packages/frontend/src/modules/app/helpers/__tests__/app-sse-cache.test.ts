@@ -13,6 +13,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getInstalledAppUrnsQueryKey: () => ['getInstalledAppUrns'],
   getAppQueryKey: ({ path }: { path: { urn: string } }) => ['getApp', path.urn],
   appContextQueryKey: () => ['appContext'],
+  getCustomDomainsQueryKey: () => ['getCustomDomains'],
 }));
 
 describe('handleAppSseEvent', () => {
@@ -177,5 +178,26 @@ describe('handleAppSseEvent', () => {
     });
 
     expect(queryClient.setQueryData).not.toHaveBeenCalledWith(['app-install-error', 'safeos:ci-marketplace'], null);
+  });
+
+  it('refetches the custom-domain listing as well as the app on custom_domain_changed', () => {
+    // The picker disables options and names the domains another Hub holds from the listing, not from the app row.
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'custom_domain_changed',
+      appUrn: 'comfyui:ci-marketplace',
+    });
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getApp', 'comfyui:ci-marketplace'] });
+  });
+
+  it('leaves the custom-domain listing alone on other lifecycle events', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'restart_success',
+      appUrn: 'comfyui:ci-marketplace',
+      appStatus: 'running',
+    });
+
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
   });
 });

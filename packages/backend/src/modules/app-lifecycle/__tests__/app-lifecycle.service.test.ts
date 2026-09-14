@@ -83,6 +83,11 @@ describe('AppLifecycleService', () => {
   let agentNotifyService: MockProxy<AgentNotifyService>;
   let errorReportingService: MockProxy<ErrorReportingService>;
 
+  /** What every log line giving up a domain another Hub holds names as the remedy. */
+  const REMEDY = 'organization settings → domains';
+  /** The warning lines logged so far. Reads `logger` when called, so it follows the mock `beforeEach` creates. */
+  const warnings = () => logger.warn.mock.calls.map(([line]) => String(line));
+
   beforeEach(async () => {
     logger = mock<LoggerService>();
     appEventsQueue = mock<AppEventsQueue>();
@@ -2567,28 +2572,37 @@ describe('AppLifecycleService', () => {
       expect(restartApp).not.toHaveBeenCalled();
     });
 
-    it('takes the deferred revert when it refuses the move, like every other terminal branch', async () => {
+    it.each([
+      /*
+       * Its Hub was deleted, so nobody holds it and any Hub may take it — but
+       * nobody on this one confirmed taking it. (A CI-Cloud from before
+       * CI-Portal#686 listed a domain live on a sibling Hub this way too.)
+       */
+      { bindable: true, logs: 'was not confirmed' },
+      // Moved to a sibling Hub in the portal: CI-Cloud will not hand it back to this one, so the log names the portal.
+      { bindable: false, logs: REMEDY },
+    ])('takes the deferred revert when the choice is given up, like every other terminal branch (bindable: $bindable)', async ({
+      bindable,
+      logs,
+    }) => {
       /*
        * The reconcile held the revert back only because this Hub was still asking
-       * CI-Cloud for the hostname the app had just lost. Refusing the move settles
-       * that question — but the container is still injecting that hostname as
-       * `X-Forwarded-Host`, so leaving it running strands the app on a name the
-       * Hub has stopped serving (CI-Hub#1207). The missing-entry and
-       * `DOMAIN_NOT_FOUND` branches both take the revert; this one has to as well.
+       * CI-Cloud for the hostname the app had just lost. Giving the choice up
+       * settles that question — but the container is still injecting that
+       * hostname as `X-Forwarded-Host`, so leaving it running strands the app on
+       * a name the Hub has stopped serving (CI-Hub#1207).
        */
       const restartApp = stubLifecycleForRevert();
       appsRepository.getApps
         .mockResolvedValueOnce([runningComfy({ customDomain: 'comfy.acme.com', customDomainIntent: 'comfy.acme.com' })] as any)
         .mockResolvedValue([runningComfy({ customDomain: null, customDomainIntent: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
-      // The organization still holds it, but CI-Cloud now serves it from a sibling
-      // Hub — a move, and nobody confirmed one.
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
         {
           id: 'cd_1',
           domain: 'comfy.acme.com',
           state: 'live',
-          bindable: true,
+          bindable,
           targetHostname: 'comfy-core9-acme.example.com',
           boundAppSlug: null,
           boundElsewhere: true,
@@ -2605,14 +2619,15 @@ describe('AppLifecycleService', () => {
         skipPull: true,
         actor: { kind: 'system', reason: 'custom-domain-revert' },
       });
+      expect(warnings().join('\n')).toContain(logs);
     });
 
     it('refuses an unconfirmed move even when CI-Cloud has not given the domain a target yet', async () => {
       /*
        * `targetHostname` is absent while a bind is still settling, and the parser
        * NULLS one it cannot read rather than dropping the row. Gating the
-       * confirmation on it meant the one case the flag exists for — a hostname
-       * live on a sibling Hub — slipped past unconfirmed on a payload hiccup.
+       * confirmation on it meant a `boundElsewhere` row slipped past unconfirmed
+       * on a payload hiccup.
        */
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: null, customDomainIntent: 'comfy.acme.com' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
@@ -3207,6 +3222,11 @@ describe('AppLifecycleService', () => {
      * retargeted by a background heartbeat with no confirmation anywhere — and
      * an operator re-pointing a domain in the portal had it taken straight back
      * on the Hub's next sync, indefinitely.
+     *
+     * `servingElsewhere()` is still `bindable`: a row whose Hub was deleted,
+     * which any Hub may take once somebody confirms (and how a CI-Cloud from
+     * before CI-Portal#686 listed a domain live on a sibling Hub). A domain
+     * another Hub holds today is `bindable: false`; see the block after this one.
      */
     const servingElsewhere = (overrides: Record<string, unknown> = {}) =>
       parked({
@@ -3217,7 +3237,7 @@ describe('AppLifecycleService', () => {
         ...overrides,
       });
 
-    it('refuses to move a domain that is serving another Hub, and clears the unconfirmed choice', async () => {
+    it('refuses to move a domain no device holds any more without a confirmation, and clears the choice', async () => {
       appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomainTakeover: false })] as any);
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([servingElsewhere()] as any);
 
@@ -3227,6 +3247,12 @@ describe('AppLifecycleService', () => {
       // Cleared, not retained: retaining would re-ask on every heartbeat forever
       // for a move nothing a background pass can reach will ever authorize.
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
+      // The confirmation path, not the portal one: confirmed, this Hub would bind it.
+      expect(warnings().join('\n')).toContain('was not confirmed');
+      expect(warnings().join('\n')).not.toContain(REMEDY);
+      // Says where it points, not that a Hub that may be gone is serving it.
+      expect(warnings().join('\n')).toContain('pointed at another Hub (grafana-core9-acme.companionintelligence.com)');
+      expect(warnings().join('\n')).not.toContain('serving an app on another Hub');
     });
 
     it('leaves a portal re-point alone instead of taking the domain back every heartbeat', async () => {
@@ -3247,7 +3273,7 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
     });
 
-    it('moves the domain when the operator confirmed it, and spends the confirmation', async () => {
+    it('moves a domain no device holds any more when the operator confirmed it, and spends the confirmation', async () => {
       appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomainTakeover: true })] as any);
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([servingElsewhere()] as any);
 
@@ -3304,6 +3330,85 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+    });
+
+    /*
+     * ── A DOMAIN ANOTHER HUB HOLDS ─────────────────────────────────────────
+     *
+     * See `customDomainHeldByAnotherHub`. A pass that kept the choice asked again
+     * on every heartbeat and was refused every time, with nothing telling the
+     * operator where the move is actually made.
+     */
+    it.each([
+      { confirmed: true },
+      { confirmed: false },
+    ])('gives up a domain another Hub holds and names the portal as the remedy (move confirmed: $confirmed)', async ({ confirmed }) => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomainTakeover: confirmed })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([servingElsewhere({ bindable: false })] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+      // A confirmation cannot move it either, so the confirmation goes with the choice.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
+      // Said once, and as what it is: not an unconfirmed move, which no answer in the dialog could have fixed.
+      expect(warnings().filter((line) => line.includes(REMEDY))).toHaveLength(1);
+      expect(warnings().join('\n')).not.toContain('was not confirmed');
+      // Open dialogs refetch the app and the listing; one nobody has edited stops claiming the domain.
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'custom_domain_changed', appUrn: 'comfyui:ci-marketplace' });
+    });
+
+    it('waits on a confirmed choice while the domain is still verifying, because the listing cannot tell who holds it yet', async () => {
+      /*
+       * Unverified is unbindable for every Hub, so a row whose Hub was deleted
+       * reads exactly like one another Hub holds. Giving the choice up here would
+       * drop a move that binds as soon as verification comes back.
+       */
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomainTakeover: true })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([servingElsewhere({ bindable: false, state: 'pending' })] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(warnings().join('\n')).not.toContain(REMEDY);
+    });
+
+    it('gives up the choice when CI-Cloud refuses the bind because another device holds the domain', async () => {
+      // The listing still read the domain as bindable; another Hub took it before the bind arrived.
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({
+        ok: false,
+        status: 409,
+        code: 'DOMAIN_BOUND_TO_ANOTHER_DEVICE',
+        message: 'Refused',
+      } as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
+      expect(warnings().filter((line) => line.includes(REMEDY))).toHaveLength(1);
+      expect(warnings().join('\n')).not.toContain('Retrying on the next sync');
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'custom_domain_changed', appUrn: 'comfyui:ci-marketplace' });
+    });
+
+    it.each([
+      { status: 422, code: 'DOMAIN_NOT_VERIFIED' },
+      // CI-Cloud's deliberate "not installed yet, try again": a 404 is not terminal on its status alone.
+      { status: 404, code: 'APPLICATION_NOT_FOUND' },
+      { status: 500, code: undefined },
+    ])('keeps retrying a refusal that is not about another Hub ($status $code)', async (refusal) => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: false, ...refusal, message: 'Refused' } as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(warnings().join('\n')).toContain('Retrying on the next sync');
+      expect(warnings().join('\n')).not.toContain(REMEDY);
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'custom_domain_changed' }));
     });
   });
 
