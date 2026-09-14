@@ -28,7 +28,13 @@ type CachedWhoIs = {
  *
  * Not commerce. A modified Hub can skip this. Portal POST install and
  * `app_entitlement` remain the gates. Device-key WhoIs names the operator
- * by federated `subject`; we never send `organizationId` as identity.
+ * by federated `subject`. It also names this device's own `organizationId`,
+ * which is not an identity claim: a Portal with the narrowing honours it only
+ * when it is one of the organizations this device is registered to now, so it
+ * chooses among the device's own registrations and can reach no other tenant.
+ * A Portal that predates the narrowing ignores it and lists every organization
+ * the subject shares with this device; there `pickOrg`'s match is what keeps
+ * grants to our own tenant, so that match is not redundant.
  */
 @Injectable()
 export class MarketplaceWhoIsService {
@@ -159,12 +165,13 @@ export class MarketplaceWhoIsService {
    * of their choosing.
    *
    * The role comes from the same WhoIs answer the grants do, for this device's
-   * own organization (`pickOrg`), fresh — never from the grant cache — and every
-   * way of not knowing it is a `false`: no linked Portal subject, no Portal
-   * configured, WhoIs down or answering non-2xx, or an org that did not say. A
-   * custom domain cannot be bound without the Portal anyway. Who the operator is,
-   * and that a named exempt principal needs no role, is the lifecycle actor's to
-   * say (`lifecycleActor`); the service decides from that.
+   * own organization (named in the request, matched by `pickOrg`), fresh — never
+   * from the grant cache — and every way of not knowing it is a `false`: no
+   * linked Portal subject, no organization of our own to name (the Portal is not
+   * asked), no Portal configured, WhoIs down or answering non-2xx, or an org that
+   * did not say. A custom domain cannot be bound without the Portal anyway. Who
+   * the operator is, and that a named exempt principal needs no role, is the
+   * lifecycle actor's to say (`lifecycleActor`); the service decides from that.
    */
   async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
     return this.readManagingRole(userId, appUrn, 'custom_domain');
@@ -200,7 +207,15 @@ export class MarketplaceWhoIsService {
       }
 
       const appIds = appUrn === null ? [] : [extractAppUrn(appUrn).appName];
-      const response = await this.portal.whoisApps({ subject, appIds, surface: 'hub' });
+      const organizationId = await this.deviceOrganizationId();
+
+      // With no organization of our own there is no answer a role could be read from, so the Portal is not asked.
+      if (!organizationId) {
+        this.logger.warn(`${purpose}_role_unverified userId=${userId} status=no-organization`);
+        return false;
+      }
+
+      const response = await this.portal.whoisApps({ subject, appIds, surface: 'hub', organizationId });
 
       if (!response?.body || response.status < 200 || response.status >= 300) {
         // Refused all the same, but an owner turned away by an outage reads "owner or admin only", so the log says why.
@@ -208,7 +223,7 @@ export class MarketplaceWhoIsService {
         return false;
       }
 
-      const role = (await this.pickOrg(response.body))?.user?.role;
+      const role = this.pickOrg(response.body, organizationId)?.user?.role;
 
       return role === 'owner' || role === 'admin';
     } catch (error) {
@@ -344,7 +359,22 @@ export class MarketplaceWhoIsService {
 
   private async fetchBatch(subject: string, slugs: string[], surface: GrantSurface): Promise<Map<string, HubAction[] | null>> {
     try {
-      const response = await this.portal.whoisApps({ subject, appIds: slugs, surface });
+      const organizationId = await this.deviceOrganizationId();
+
+      /*
+       * `null` is "this device's own organization could not be resolved" — not
+       * "the organization granted nothing", and not worth a request: no answer
+       * could be matched to it. Reading it as no grants would write an empty
+       * `can` into the cache for every slug (poisoning it for the whole TTL, so
+       * a later Portal outage serves the empty row as if it were fresh) and hand
+       * callers `[]`, which `filterSessionByView` hides rather than failing
+       * open. Unknown belongs on the same path as a WhoIs outage.
+       */
+      if (!organizationId) {
+        return this.cacheFallback(subject, slugs);
+      }
+
+      const response = await this.portal.whoisApps({ subject, appIds: slugs, surface, organizationId });
       if (response === null) {
         return new Map(slugs.map((slug) => [slug, [...DEFAULT_MEMBER_ACTIONS]]));
       }
@@ -367,19 +397,7 @@ export class MarketplaceWhoIsService {
         return this.cacheFallback(subject, slugs);
       }
 
-      const org = await this.pickOrg(response.body);
-      /*
-       * `null` is "this device's own organization could not be resolved" — not
-       * "the organization granted nothing". Falling through would write an
-       * empty `can` into the cache for every slug (poisoning it for the whole
-       * TTL, so a later Portal outage serves the empty row as if it were fresh)
-       * and hand callers `[]`, which `filterSessionByView` hides rather than
-       * failing open. Unknown belongs on the same path as a WhoIs outage.
-       */
-      if (org === null) {
-        return this.cacheFallback(subject, slugs);
-      }
-
+      const org = this.pickOrg(response.body, organizationId);
       const version = org?.version ?? 0;
       const bySlug = new Map<string, HubAction[]>();
 
@@ -404,14 +422,47 @@ export class MarketplaceWhoIsService {
   }
 
   /**
-   * This device's organization from a WhoIs body.
+   * This device's own organization id, read before WhoIs is asked — the request
+   * names it and the answer is matched against it — or `null` when it cannot be
+   * learned: the registration read failed, or there is no organization id to
+   * read. On `null` a caller takes its WhoIs-outage path without asking at all.
    *
-   * `undefined` — Portal answered, and this device's organization grants
-   * nothing (or the subject is in no organization at all). A real answer.
-   * `null` — this device's own organization could not be resolved. Not an
-   * answer; the caller must treat it the way it treats a WhoIs outage.
+   * ⚠ A FAILED READ IS "UNKNOWN", NOT AN ANSWER. A failed read once fell
+   * through to an arbitrary pick of organization, so a transient failure to
+   * learn our own identity silently widened every grant on the appliance. It
+   * now ends here as `null`, before any Portal call, and logs as a failed read
+   * rather than as a device with no organization.
    */
-  private async pickOrg(body: PortalWhoIsResponse): Promise<PortalWhoIsResponse['organizations'][number] | undefined | null> {
+  private async deviceOrganizationId(): Promise<string | null> {
+    let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>>;
+
+    try {
+      registration = await this.registration.getDeviceRegistrationInfo();
+    } catch (error) {
+      this.warnOnce(
+        'read-failed',
+        `whois_org_unresolved: could not read this device's registration: ${error instanceof Error ? error.message : String(error)}`,
+      );
+
+      return null;
+    }
+
+    if (!registration?.id) {
+      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess');
+
+      return null;
+    }
+
+    return registration.id;
+  }
+
+  /**
+   * This device's organization from a WhoIs body, or `undefined` — Portal
+   * answered, and this device's organization grants nothing (or the subject is
+   * in no organization at all). A real answer: "could not tell" never gets
+   * here, because the organization is known before WhoIs is asked.
+   */
+  private pickOrg(body: PortalWhoIsResponse, organizationId: string): PortalWhoIsResponse['organizations'][number] | undefined {
     const organizations = body.organizations ?? [];
     if (organizations.length === 0) {
       return undefined;
@@ -426,32 +477,15 @@ export class MarketplaceWhoIsService {
      * first. That is a grant read from the wrong tenant, and it can be wider
      * than the real one.
      *
-     * The registration read failing is the same problem wearing a different
-     * hat: it used to be swallowed into `null` and fall through to the same
-     * arbitrary pick, so a transient failure to learn our own identity silently
-     * widened every grant on the appliance. It now returns `null` — "unknown",
-     * which `fetchBatch` routes to the cache fallback — rather than
-     * `undefined`, which means "asked, and the answer was no grants".
+     * The request names this organization and a current Portal answers for no
+     * other, but one that predates the narrowing accepts the field, ignores it,
+     * and lists every organization the subject shares with this device. The
+     * match is what keeps that answer to our own tenant.
      */
-    const registration = await this.registration.getDeviceRegistrationInfo().catch((error: unknown) => {
-      this.warnOnce(
-        'read-failed',
-        `whois_org_unresolved: could not read this device's registration: ${error instanceof Error ? error.message : String(error)}`,
-      );
-
-      return null;
-    });
-
-    if (!registration?.id) {
-      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess at grants');
-
-      return null;
-    }
-
-    const match = organizations.find((org) => org.organizationId === registration.id);
+    const match = organizations.find((org) => org.organizationId === organizationId);
 
     if (!match) {
-      this.warnOnce(`no-grants:${registration.id}`, `whois_org_unresolved: Portal did not return grants for organization ${registration.id}`);
+      this.warnOnce(`no-grants:${organizationId}`, `whois_org_unresolved: Portal did not return grants for organization ${organizationId}`);
     }
 
     return match;
