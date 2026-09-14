@@ -471,9 +471,15 @@ export function customDomainServesAnotherApp(
  * it is `boundElsewhere` too — but nobody holds it, CI-Cloud reports it
  * `bindable` because any of the organization's Hubs may take it, and moving it
  * is an ordinary confirmed choice rather than a trip to the portal.
+ *
+ * ⚠ AND NOT WHILE THE ROW IS `pending`. `bindable` also carries the ownership
+ * gate, so an unverified row reads `boundElsewhere` and not `bindable` whether
+ * another Hub holds it or its Hub was deleted, and the listing cannot tell the
+ * two apart. Verification settles it: a verified orphan comes back bindable,
+ * and a verified row another Hub holds comes back here.
  */
-export function customDomainHeldByAnotherHub(entry: Pick<AvailableCustomDomain, 'bindable' | 'boundElsewhere'>): boolean {
-  return entry.boundElsewhere === true && entry.bindable !== true;
+export function customDomainHeldByAnotherHub(entry: Pick<AvailableCustomDomain, 'bindable' | 'boundElsewhere' | 'state'>): boolean {
+  return entry.boundElsewhere === true && entry.bindable !== true && entry.state !== 'pending';
 }
 
 const DOMAIN_STATES = new Set(['live', 'parked', 'pending', 'securing', 'drifted', 'failed']);

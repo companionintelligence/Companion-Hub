@@ -1,5 +1,5 @@
 import type { GetAppDto } from '@/api-client';
-import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey, getCustomDomainsQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
@@ -263,6 +263,10 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
     // *_success events never flow through the `status_change` branch, so line ~296's clear never ran.
     if (appStatus === 'running') {
       queryClient.setQueryData(['app-install-error', urn], null);
+    }
+    // The picker's disabled options and its held-elsewhere note come from the domain listing, not the app row.
+    if (event === 'custom_domain_changed') {
+      void queryClient.invalidateQueries({ queryKey: getCustomDomainsQueryKey() });
     }
     invalidateAppQueries(queryClient, appUrn);
     return;

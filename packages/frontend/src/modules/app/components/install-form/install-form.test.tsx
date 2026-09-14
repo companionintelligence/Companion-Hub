@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
+import { useForm } from 'react-hook-form';
 import type { AppInfo, FormField } from '@/types/app.types';
+import { CustomDomainField } from './custom-domain-field';
 import { InstallForm } from './install-form';
 import { useAppContext } from '@/context/app-context';
 import { TranslatableError } from '@/types/error.types';
@@ -54,73 +56,11 @@ vi.mock('react-i18next', () => ({
   Trans: ({ i18nKey }: { i18nKey: string }) => <span>{i18nKey}</span>,
 }));
 
-vi.mock('@ci-hub/common/types', () => {
-  const sanitizeAppSubdomain = (subdomain: string) =>
-    (subdomain.split('.')[0] ?? '')
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '');
-
-  const buildPublicWebIdentity = ({
-    appSubdomain,
-    hubSubdomain,
-    orgSlug,
-    publicDomainRoot,
-  }: {
-    appSubdomain: string;
-    hubSubdomain?: string | null;
-    orgSlug?: string | null;
-    publicDomainRoot: string;
-  }) => {
-    const cleanAppSubdomain = sanitizeAppSubdomain(appSubdomain);
-    if (!orgSlug) {
-      const hostname = `${cleanAppSubdomain}.${publicDomainRoot}`;
-      return { hostname, publicUrl: `https://${hostname}`, publicDnsHostname: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
-    }
-
-    const withoutPrefix = (hubSubdomain ?? '').replace(/^hub-/, '');
-    const orgSuffix = `-${orgSlug}`;
-    const deviceSlug = withoutPrefix.endsWith(orgSuffix) ? withoutPrefix.slice(0, -orgSuffix.length) : withoutPrefix;
-    const fqdnSubdomain = deviceSlug && deviceSlug !== orgSlug ? `${cleanAppSubdomain}-${deviceSlug}-${orgSlug}` : `${cleanAppSubdomain}-${orgSlug}`;
-    const hostname = `${fqdnSubdomain}.${publicDomainRoot}`;
-    return { hostname, publicUrl: `https://${hostname}`, publicDnsHostname: hostname, appSubdomain: cleanAppSubdomain, publicDomainRoot };
-  };
-
-  const buildTailscalePortHost = (nodeFqdn?: string | null, port?: number | null) => {
-    if (!nodeFqdn || !port) return null;
-    return `${nodeFqdn}:${port}`;
-  };
-
-  /*
-   * The real predicate, not an approximation: the picker's confirmation, its
-   * in-use note and the Hub's bind pass all decide with this one function, and a
-   * mock that answered differently would let a divergence between them pass.
-   */
-  const customDomainServesAnotherApp = (
-    entry: { boundAppSlug: string | null; boundElsewhere: boolean },
-    appSlug: string | null | undefined,
-  ): boolean => {
-    if (entry.boundElsewhere) return true;
-
-    const theirs = entry.boundAppSlug ? sanitizeAppSubdomain(entry.boundAppSlug) : '';
-    if (!theirs) return false;
-
-    return (appSlug ? sanitizeAppSubdomain(appSlug) : '') !== theirs;
-  };
-
-  // The real one too, for the same reason: the picker disables exactly the choices the bind pass gives up.
-  const customDomainHeldByAnotherHub = (entry: { bindable: boolean; boundElsewhere: boolean }): boolean =>
-    entry.boundElsewhere === true && entry.bindable !== true;
-
-  return {
-    buildPublicWebIdentity,
-    buildTailscalePortHost,
-    customDomainHeldByAnotherHub,
-    customDomainServesAnotherApp,
-    sanitizeAppSubdomain,
-  };
-});
+/*
+ * `@ci-hub/common/types` is NOT mocked. The picker's confirmation, its notes and
+ * the Hub's bind pass all decide with the same shared predicates, and a copy here
+ * would let the picker drift from the bind pass while these tests stayed green.
+ */
 
 const MOCK_AVAILABLE_DOMAINS = { domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> };
 /**
@@ -815,11 +755,15 @@ describe('InstallForm', () => {
       expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_FAILED')).toBeInTheDocument();
     });
 
-    it('asks before moving a domain that is serving another Hub, and commits nothing until answered', async () => {
+    it('asks before moving a domain no device holds any more, and commits nothing until answered', async () => {
       /*
        * CI-Engineering#208, defect 4. The domain was selectable with only a text
        * suffix, and a background heartbeat then moved a production hostname off
        * another device in the organization with no confirmation anywhere.
+       *
+       * `boundElsewhere` and still `bindable`: its Hub was deleted, so this Hub
+       * may take it once somebody confirms. (A CI-Cloud from before CI-Portal#686
+       * listed a domain live on a sibling Hub the same way.)
        *
        * ⚠ THE FORM MUST STILL HOLD THE PLATFORM ADDRESS while the question is
        * open. Writing the choice first and the answer second means a save
@@ -828,7 +772,9 @@ describe('InstallForm', () => {
        * dropped.
        */
       MOCK_CUSTOM_DOMAINS.supported = true;
-      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundElsewhere: true, targetHostname: 'grafana-core9-acme.example.com' })];
+      MOCK_CUSTOM_DOMAINS.domains = [
+        connected({ state: 'live', boundElsewhere: true, bindable: true, targetHostname: 'grafana-core9-acme.example.com' }),
+      ];
 
       renderForm();
 
@@ -928,8 +874,8 @@ describe('InstallForm', () => {
       MOCK_CUSTOM_DOMAINS.domains = [
         connected({ state: 'live', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
       ];
-      // Configured with a trailing slash, which must not double up in the link.
-      MOCK_PORTAL_CONFIG.portalUrl = 'https://portal.example.com/';
+      // As `/api/portal/config` serves it: trimmed, with no trailing slash.
+      MOCK_PORTAL_CONFIG.portalUrl = 'https://portal.example.com';
 
       renderForm();
 
@@ -966,8 +912,8 @@ describe('InstallForm', () => {
       expect(screen.queryByRole('link', { name: 'APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL' })).not.toBeInTheDocument();
     });
 
-    it('says a domain is on another Hub whatever state it is in there', () => {
-      // Its certificate belongs to the Hub serving it. What matters on this one is why the option cannot be chosen.
+    it('says a domain is on another Hub while its certificate is still issuing there', () => {
+      // That certificate finishes on its own. What matters on this Hub is why the option cannot be chosen.
       MOCK_CUSTOM_DOMAINS.supported = true;
       MOCK_CUSTOM_DOMAINS.domains = [
         connected({ state: 'securing', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
@@ -979,6 +925,69 @@ describe('InstallForm', () => {
 
       expect(screen.getByRole('option', { name: /comfy\.acme\.com/ })).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB');
       expect(screen.queryByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING')).not.toBeInTheDocument();
+    });
+
+    it('says a domain is still verifying rather than on another Hub, while the listing cannot tell who holds it', () => {
+      /*
+       * Unverified is unbindable for every Hub, so `bindable: false` beside
+       * `boundElsewhere` is also what a row whose Hub was deleted looks like.
+       * Verification settles it; until then the portal is not the remedy.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [
+        connected({ state: 'pending', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
+      ];
+
+      renderForm();
+
+      expect(screen.queryByTestId('custom-domain-held-elsewhere')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+
+      expect(screen.getByRole('option', { name: /comfy\.acme\.com/ })).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING');
+    });
+
+    it('names a failed certificate on a domain another Hub holds, and does not send anyone to move it', () => {
+      // Moving it would not issue the certificate; reconnecting the domain fixes both.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [
+        connected({ state: 'failed', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
+      ];
+
+      renderForm();
+
+      expect(screen.queryByTestId('custom-domain-held-elsewhere')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+
+      expect(screen.getByRole('option', { name: /comfy\.acme\.com/ })).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_FAILED');
+    });
+
+    it('names the domains another Hub holds in the note, because it shows while the listbox is closed', () => {
+      const domains = [
+        connected({ state: 'live', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
+        connected({
+          id: 'cd_2',
+          domain: 'shop.acme.com',
+          state: 'live',
+          boundElsewhere: true,
+          bindable: false,
+          targetHostname: 'shop-core9-acme.example.com',
+        }),
+        connected({ id: 'cd_3', domain: 'parked.acme.com' }),
+      ];
+      // A `t` that shows its values, which the module-wide mock drops.
+      const t = (key: string, values?: Record<string, string>) => (values ? `${key} ${Object.values(values).join(' ')}` : key);
+      const Harness = () => {
+        const { control } = useForm();
+
+        return <CustomDomainField control={control} domains={domains as never} supported onTakeoverChange={vi.fn()} t={t} />;
+      };
+
+      render(<Harness />);
+
+      expect(screen.getByTestId('custom-domain-held-elsewhere')).toHaveTextContent('comfy.acme.com, shop.acme.com');
+      expect(screen.getByTestId('custom-domain-held-elsewhere')).not.toHaveTextContent('parked.acme.com');
     });
   });
 

@@ -113,11 +113,13 @@ function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
 }
 
 /**
- * CI-Cloud's bind refusals for a domain another device in the organization
- * holds. Each one wants a move grant that an owner or admin mints in the portal
- * (CI-Portal#737), and this Hub sends none, so no retry can succeed.
+ * CI-Cloud's refusal of a bind, without a move grant, for a domain another
+ * device in the organization holds. This Hub sends no grant, so no retry can
+ * succeed; see {@link customDomainHeldByAnotherHub}. `TAKEOVER_REQUIRED` and
+ * `MOVE_GRANT_INVALID` answer only a request that carries a grant, so how to
+ * treat them is decided with grant delivery rather than here.
  */
-const HELD_BY_ANOTHER_HUB_BIND_REFUSALS = new Set(['DOMAIN_BOUND_TO_ANOTHER_DEVICE', 'TAKEOVER_REQUIRED', 'MOVE_GRANT_INVALID']);
+const HELD_BY_ANOTHER_HUB_BIND_REFUSAL = 'DOMAIN_BOUND_TO_ANOTHER_DEVICE';
 
 /** Where a domain another Hub holds is moved, named by every log line that gives one up. */
 const MOVE_IN_PORTAL_REMEDY = 'To serve it here, move it to this Hub from the portal: organization settings → domains.';
@@ -1009,9 +1011,11 @@ export class ExposureSyncService {
     /*
      * Gives up a choice that can never land. Every terminal branch below ends
      * here, so none of them can skip a step: the confirmation goes with the
-     * choice, the reason is logged once, the dialog refetches the app so its
-     * picker stops claiming the domain, and the revert `reconcileCustomDomains`
-     * deferred to this pass is taken.
+     * choice, the reason is logged once, open dialogs refetch the app and the
+     * domain listing, and the revert `reconcileCustomDomains` deferred to this
+     * pass is taken. A dialog nobody has edited re-seeds its picker from the
+     * refetched row; an edited one keeps the value it holds until it is saved or
+     * closed.
      *
      * That revert is what makes "leaving the app on its platform hostname" true.
      * An app whose revert was deferred was serving on the intent moments ago and
@@ -1088,17 +1092,14 @@ export class ExposureSyncService {
         }
 
         /*
-         * ⚠ HELD BY ANOTHER HUB, WHICH NO CONFIRMATION GIVEN ON THIS ONE CAN MOVE.
-         *
-         * CI-Cloud binds a domain another device holds only on a move grant that
-         * an owner or admin mints in the portal (CI-Portal#686, #737), and this Hub
-         * sends none. Kept, the choice was refused on every heartbeat forever, and
-         * nothing told the operator where the move is actually made.
+         * ⚠ HELD BY ANOTHER HUB, WHICH NO CONFIRMATION GIVEN ON THIS ONE CAN MOVE
+         * (see {@link customDomainHeldByAnotherHub}). Kept, the choice was refused
+         * on every heartbeat forever, and nothing told the operator where the move
+         * is actually made.
          *
          * Asked before the confirmation check below, whose log line would blame a
          * missing answer that could not have helped. A row no device holds any
-         * more is still bindable and stays on that path; see
-         * {@link customDomainHeldByAnotherHub}.
+         * more, and any row still verifying, stays on that path.
          */
         if (customDomainHeldByAnotherHub(entry)) {
           await abandonChoice(
@@ -1114,13 +1115,13 @@ export class ExposureSyncService {
          * ── IT IS SERVING SOMETHING ELSE, AND ONLY A PERSON MAY MOVE IT ──────
          *
          * A non-null `targetHostname` that is not ours means CI-Cloud currently
-         * delivers this domain to another app — on this Hub or, worse, on a
-         * sibling Hub in the organization. `bindCustomDomain` would move it
-         * without asking anyone: the bind route retargets happily, the other Hub
-         * holds no intent for the domain so nothing puts it back, and a customer's
-         * production hostname changes device on a background heartbeat with
-         * nothing in the log to tell it from a fresh bind (CI-Engineering#208,
-         * defect 4).
+         * points this domain at another app. `bindCustomDomain` would move it
+         * without asking anyone: the bind route retargets an app on this Hub, or
+         * a row whose Hub was deleted, and a customer's hostname changes on a
+         * background heartbeat with nothing in the log to tell it from a fresh
+         * bind (CI-Engineering#208, defect 4). A domain another Hub holds was
+         * given up above; a CI-Cloud from before CI-Portal#686 would retarget
+         * that too.
          *
          * So the pass acts only on an answer a person gave in the dialog. Without
          * one the intent is CLEARED rather than retained — three reasons, and the
@@ -1161,20 +1162,30 @@ export class ExposureSyncService {
          * dialog does not warn about but the pass refuses is a choice that
          * evaporates after a success toast.
          *
-         * ⚠ AND NOT GATED ON `currentTarget`. A domain CI-Cloud holds against
+         * ⚠ AND NOT GATED ON `currentTarget`. A domain CI-Cloud reports against
          * another device is a move whether or not it has been given a target yet:
          * `targetHostname` is absent while a bind is still settling, and the
          * parser NULLS one it cannot read rather than dropping the row. Requiring
-         * it meant the one case the flag exists for — a hostname live on a
-         * sibling Hub — could slip past unconfirmed on a payload hiccup.
+         * it meant a `boundElsewhere` row could slip past unconfirmed on a
+         * payload hiccup.
          */
         const servesAnotherApp = customDomainServesAnotherApp(entry, appSubdomain);
 
         if (servesAnotherApp && !app.customDomainTakeover) {
+          /*
+           * `boundAppSlug` names an app on this Hub. Without one the row is
+           * `boundElsewhere`, and all the listing proves is where it points — at a
+           * Hub that may no longer exist — so the line does not claim anything is
+           * served there.
+           */
+          const whereItIs = entry.boundAppSlug
+            ? `serving ${entry.boundAppSlug}`
+            : `pointed at another Hub${entry.targetHostname ? ` (${entry.targetHostname})` : ''}`;
+
           await abandonChoice(
             app.id,
             appUrn,
-            `[Cloudflare] ${intent} is currently serving ${entry.boundAppSlug ?? (entry.boundElsewhere ? 'an app on another Hub' : 'another app')}; ` +
+            `[Cloudflare] ${intent} is currently ${whereItIs}; ` +
               `moving it to ${appUrn} was not confirmed, so the choice has been cleared and the domain left where it is.`,
           );
 
@@ -1275,7 +1286,7 @@ export class ExposureSyncService {
         }
 
         // The listing read it as bindable, and another Hub took it before this bind arrived.
-        if (bound.code && HELD_BY_ANOTHER_HUB_BIND_REFUSALS.has(bound.code)) {
+        if (bound.code === HELD_BY_ANOTHER_HUB_BIND_REFUSAL) {
           await abandonChoice(
             app.id,
             appUrn,
