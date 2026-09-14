@@ -3,7 +3,7 @@ import { ErrorCode, McpError, type CallToolResult } from '@modelcontextprotocol/
 import type { AppUrn } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import type { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
@@ -47,9 +47,15 @@ export function mcpCallerLifecycleActor(action: HubAction): LifecycleActor {
  * For a tool on one app whose own service cannot ask that gate: a service the lifecycle module
  * itself depends on, or one serving app routes that assert no grant, where a required actor would
  * change what those routes allow. Such a tool asks here, first, before it reads or changes anything.
+ * `context` marks what the check is for where the verb cannot say, as `assertActorMay` takes it.
  */
-export async function assertMcpCallerMay(lifecycle: Pick<AppLifecycleService, 'assertActorMay'>, appUrn: AppUrn, action: HubAction): Promise<void> {
-  await lifecycle.assertActorMay(mcpCallerLifecycleActor(action), appUrn, action);
+export async function assertMcpCallerMay(
+  lifecycle: Pick<AppLifecycleService, 'assertActorMay'>,
+  appUrn: AppUrn,
+  action: HubAction,
+  context?: ActorCheckContext,
+): Promise<void> {
+  await lifecycle.assertActorMay(mcpCallerLifecycleActor(action), appUrn, action, context);
 }
 
 /** Shared tools/call path for v1 and v2 Hub MCP servers. */

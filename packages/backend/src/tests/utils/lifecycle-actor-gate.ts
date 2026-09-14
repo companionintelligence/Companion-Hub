@@ -1,6 +1,6 @@
 import type { AppUrn } from '@ci-hub/common/types';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
@@ -26,16 +26,19 @@ export function lifecycleActorGate(granted: Grants = (userId) => userId === GRAN
   const gate = Object.create(AppLifecycleService.prototype);
   gate.moduleRef = { get: (token: unknown) => (token === MarketplaceWhoIsService ? whois : undefined) };
 
-  return (actor: LifecycleActor, appUrn: AppUrn, action: HubAction) => (gate as AppLifecycleService).assertActorMay(actor, appUrn, action);
+  return (actor: LifecycleActor, appUrn: AppUrn, action: HubAction, context?: ActorCheckContext) =>
+    (gate as AppLifecycleService).assertActorMay(actor, appUrn, action, context);
 }
 
 /** The actor a per-app gate must let through: a person WhoIs grants. */
 export const GRANTED_ACTOR: LifecycleActor = { kind: 'operator', userId: GRANTED_USER };
 
-/** The actors a per-app gate must turn away from an app they have no grant on. */
-export const REFUSED_ACTORS: Array<[string, LifecycleActor]> = [
+/** A managed app's key, on an app that is not the one it belongs to: it may operate the app, not change it. */
+export const MANAGED_KEY_ON_OTHER_APP: LifecycleActor = { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null };
+
+/** The actors a per-app gate must turn away from an app they hold no grant on, whatever the call. */
+export const UNGRANTED_ACTORS: Array<[string, LifecycleActor]> = [
   ['an operator without the grant', { kind: 'operator', userId: UNGRANTED_USER }],
-  ['a managed key on another app', { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null }],
   ['a key whose creator lacks the grant', { kind: 'mcp', ownerAppUrn: null, createdByUserId: UNGRANTED_USER }],
 ];
 
@@ -47,12 +50,21 @@ export const asOperator = <T>(userId: number, call: () => Promise<T>): Promise<T
 export const asKey = <T>(key: Pick<ApiKeyContext, 'ownerAppUrn' | 'createdByUserId'>, call: () => Promise<T>): Promise<T> =>
   mcpCallContext.run({ id: 1, name: 'agent', capability: 'full', ...key }, call);
 
-/** The same refused actors as {@link REFUSED_ACTORS}, as the MCP callers a tool resolves them from. */
-export const REFUSED_CALLERS: Array<[string, <T>(call: () => Promise<T>) => Promise<T>]> = [
+/** The same actors as {@link UNGRANTED_ACTORS}, as the MCP callers a tool resolves them from. */
+export const UNGRANTED_CALLERS: Array<[string, <T>(call: () => Promise<T>) => Promise<T>]> = [
   ['an operator without the grant', (call) => asOperator(UNGRANTED_USER, call)],
-  ['a managed key on another app', (call) => asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null }, call)],
   ['a key whose creator lacks the grant', (call) => asKey({ ownerAppUrn: null, createdByUserId: UNGRANTED_USER }, call)],
 ];
 
+/** Runs `call` as {@link MANAGED_KEY_ON_OTHER_APP}, from its key's context. */
+export const asManagedKeyOnOtherApp = <T>(call: () => Promise<T>): Promise<T> => asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null }, call);
+
 /** Runs `call` as {@link GRANTED_ACTOR} through the admin runner. */
 export const asGrantedOperator = <T>(call: () => Promise<T>): Promise<T> => asOperator(GRANTED_USER, call);
+
+/**
+ * The checks a mocked `assertActorMay` was asked, each as `[actor, appUrn, action, context]`, with
+ * `context` `undefined` where none was given — so a test pins the verb and the marker together.
+ */
+export const gateChecks = (gate: { mock: { calls: unknown[][] } }): unknown[][] =>
+  gate.mock.calls.map(([actor, appUrn, action, context]) => [actor, appUrn, action, context]);

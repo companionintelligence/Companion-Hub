@@ -81,7 +81,8 @@ export class ApiProxyService {
    * config points the Hub at, so whoever reaches this reads or changes that app's data with the Hub's
    * access. It asked nothing of the caller beyond a key's capability, so a key reached every app's
    * API; it now asks the lifecycle's actor gate — `view` to read, `configure` for any other verb —
-   * before the request leaves the Hub (CI-Hub#1397).
+   * before the request leaves the Hub (CI-Hub#1397). The check is marked as an app call, which a
+   * managed app key may make on any app, with any method: calling an app is operating it.
    */
   async proxyRequest(
     appUrn: AppUrn,
@@ -96,7 +97,7 @@ export class ApiProxyService {
     },
   ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
     // Outside the try below, which hands every failure back as a proxy error: a refusal is not one.
-    await this.appLifecycle.assertActorMay(options.actor, appUrn, appApiAction(options.method));
+    await this.appLifecycle.assertActorMay(options.actor, appUrn, appApiAction(options.method), { appCall: true });
 
     try {
       const baseUrl = this.resolveAppBaseUrl(appUrn);

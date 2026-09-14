@@ -1,7 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { GRANTED_ACTOR, REFUSED_CALLERS, asGrantedOperator, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import {
+  GRANTED_ACTOR,
+  UNGRANTED_CALLERS,
+  asGrantedOperator,
+  asManagedKeyOnOtherApp,
+  gateChecks,
+  lifecycleActorGate,
+} from '@/tests/utils/lifecycle-actor-gate';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { CustomAppTools } from '../../tools/custom-app.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
@@ -72,8 +79,15 @@ describe('CustomAppTools', () => {
     ];
 
     describe.each(calls)('%s', (_tool, call, service) => {
-      it.each(REFUSED_CALLERS)('refuses %s, and never reaches the service', async (_label, as) => {
+      it.each(UNGRANTED_CALLERS)('refuses %s, and never reaches the service', async (_label, as) => {
         await expect(as(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+        expect(service()).not.toHaveBeenCalled();
+      });
+
+      // Rewriting another app's compose or metadata changes it, which a managed app key may not do.
+      it("refuses a managed app's key on another app, and never reaches the service", async () => {
+        await expect(asManagedKeyOnOtherApp(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
         expect(service()).not.toHaveBeenCalled();
       });
@@ -81,7 +95,7 @@ describe('CustomAppTools', () => {
       it('reaches the service for a person holding configure', async () => {
         await asGrantedOperator(call);
 
-        expect(lifecycle.assertActorMay).toHaveBeenCalledWith(GRANTED_ACTOR, appUrn, 'configure');
+        expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, appUrn, 'configure', undefined]]);
         expect(service()).toHaveBeenCalled();
       });
     });

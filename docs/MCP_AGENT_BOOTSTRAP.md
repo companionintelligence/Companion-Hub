@@ -34,11 +34,20 @@ At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
 
 Marketplace entries for `ci-hermes` and `ci-openclaw` set `mcp_client: true`.
 
-A managed key acts for its own app only. The Hub refuses it any tool call that names another app, such
-as starting or stopping it, reading its logs or config, its backups, and `hub_call_app_api`, with
-`APP_ACTION_GRANT_DENIED` ([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)).
-An agent that manages other apps needs an operator key, which acts with the grants of the person who
-created it.
+A managed key may do anything on its own app. On every other app it may operate the app but not change
+it ([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)):
+
+- **Allowed:** read the app (status, logs, config, backups, skill, tools, OpenAPI spec, and operation
+  status); start, stop, or restart it, including cancelling an operation in progress; take a backup;
+  and call its MCP tools (`hub_call_app_tool`), its API with any method (`hub_call_app_api`), and its
+  generated OpenAPI tools.
+- **Refused with `APP_ACTION_GRANT_DENIED`:** install it; change its configuration (user config,
+  ignored versions, custom-app compose or metadata, availability repair, and app config); uninstall,
+  reset, or update it; restore a backup; and delete a backup.
+
+For a managed key, the bulk start, stop, and restart tools act on every app, and the bulk update tool
+updates only the key's own app. If an agent must change other apps, give it an operator key, which acts
+with the grants of the person who created it.
 
 ## CI-Hermes path
 

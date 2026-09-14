@@ -10,8 +10,8 @@ import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { BackupManager } from '../backup.manager';
 import { SSEService } from '@/core/sse/sse.service';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
-import { GRANTED_ACTOR, REFUSED_ACTORS, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { GRANTED_ACTOR, MANAGED_KEY_ON_OTHER_APP, UNGRANTED_ACTORS, gateChecks, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
 import type { AppUrn } from '@ci-hub/common/types';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -131,33 +131,54 @@ describe('BackupsService', () => {
     const appUrn = 'immich:ci-marketplace' as AppUrn;
     const filename = 'immich-2026-09-14.tar.gz';
 
-    /** Each call, the verb it takes — the one its HTTP route asserts — and the side effect it exists for. */
-    const calls: Array<[string, HubAction, (actor: LifecycleActor) => Promise<unknown>, () => void]> = [
+    /**
+     * Each call; the verb it takes (the one its HTTP route asserts) and the context it marks the check with;
+     * whether a managed app key may make it on another app; and the side effect it exists for.
+     */
+    const calls: Array<
+      [string, HubAction, ActorCheckContext | undefined, 'operates' | 'changes', (actor: LifecycleActor) => Promise<unknown>, () => void]
+    > = [
       [
         'backupApp',
         'backup',
+        { createsBackup: true },
+        'operates',
         (actor) => service.backupApp({ appUrn, actor }),
         () => expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'backup', appUrn })),
       ],
       [
         'restoreApp',
         'restore',
+        undefined,
+        'changes',
         (actor) => service.restoreApp({ appUrn, filename, actor }),
         () => expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restore', appUrn, filename })),
       ],
       [
         'getAppBackups',
         'view',
+        undefined,
+        'operates',
         (actor) => service.getAppBackups({ appUrn, page: 1, pageSize: 10, actor }),
         () => expect(backupManager.listBackupsByAppId).toHaveBeenCalledWith(appUrn),
       ],
       [
         'deleteAppBackup',
         'backup',
+        undefined,
+        'changes',
         (actor) => service.deleteAppBackup({ appUrn, filename, actor }),
         () => expect(backupManager.deleteBackup).toHaveBeenCalledWith(appUrn, filename),
       ],
     ];
+
+    const expectNothingTouched = () => {
+      expect(appsRepository.getAppByUrn).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      expect(backupManager.listBackupsByAppId).not.toHaveBeenCalled();
+      expect(backupManager.deleteBackup).not.toHaveBeenCalled();
+    };
 
     beforeEach(() => {
       appLifecycle.assertActorMay.mockImplementation(lifecycleActorGate());
@@ -167,22 +188,33 @@ describe('BackupsService', () => {
       backupManager.listBackupsByAppId.mockResolvedValue([]);
     });
 
-    describe.each(calls)('%s', (_name, action, call, sideEffect) => {
-      it.each(REFUSED_ACTORS)('refuses %s before it reads, writes or queues anything', async (_label, actor) => {
+    describe.each(calls)('%s', (_name, action, context, managedKey, call, sideEffect) => {
+      it.each(UNGRANTED_ACTORS)('refuses %s before it reads, writes or queues anything', async (_label, actor) => {
         await expect(call(actor)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
-        expect(appLifecycle.assertActorMay).toHaveBeenCalledWith(actor, appUrn, action);
-        expect(appsRepository.getAppByUrn).not.toHaveBeenCalled();
-        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
-        expect(appEventsQueue.publish).not.toHaveBeenCalled();
-        expect(backupManager.listBackupsByAppId).not.toHaveBeenCalled();
-        expect(backupManager.deleteBackup).not.toHaveBeenCalled();
+        expect(gateChecks(appLifecycle.assertActorMay)).toEqual([[actor, appUrn, action, context]]);
+        expectNothingTouched();
       });
+
+      // Taking and listing backups operates an app; restoring or deleting one changes it.
+      if (managedKey === 'operates') {
+        it("goes ahead for a managed app's key on another app", async () => {
+          await call(MANAGED_KEY_ON_OTHER_APP);
+
+          sideEffect();
+        });
+      } else {
+        it("refuses a managed app's key on another app, before it reads, writes or queues anything", async () => {
+          await expect(call(MANAGED_KEY_ON_OTHER_APP)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+          expectNothingTouched();
+        });
+      }
 
       it(`goes ahead for a person holding the ${action} grant`, async () => {
         await call(GRANTED_ACTOR);
 
-        expect(appLifecycle.assertActorMay).toHaveBeenCalledWith(GRANTED_ACTOR, appUrn, action);
+        expect(gateChecks(appLifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, appUrn, action, context]]);
         sideEffect();
       });
     });

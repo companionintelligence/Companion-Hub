@@ -2,7 +2,14 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { HubAction } from '@/core/portal/hub-actions';
-import { GRANTED_ACTOR, REFUSED_CALLERS, asGrantedOperator, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import {
+  GRANTED_ACTOR,
+  UNGRANTED_CALLERS,
+  asGrantedOperator,
+  asManagedKeyOnOtherApp,
+  gateChecks,
+  lifecycleActorGate,
+} from '@/tests/utils/lifecycle-actor-gate';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AppConfigTools } from '../../tools/app-config.tools';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
@@ -113,16 +120,31 @@ describe('AppConfigTools', () => {
     ];
 
     describe.each(calls)('%s', (_tool, action, call, service) => {
-      it.each(REFUSED_CALLERS)('refuses %s, and never reaches the service', async (_label, as) => {
+      it.each(UNGRANTED_CALLERS)('refuses %s, and never reaches the service', async (_label, as) => {
         await expect(as(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
         expect(service()).not.toHaveBeenCalled();
       });
 
+      // Reading an app's overrides operates it, which a managed app key may do on any app; changing them does not.
+      if (action === 'view') {
+        it("reaches the service for a managed app's key on another app", async () => {
+          await asManagedKeyOnOtherApp(call);
+
+          expect(service()).toHaveBeenCalled();
+        });
+      } else {
+        it("refuses a managed app's key on another app, and never reaches the service", async () => {
+          await expect(asManagedKeyOnOtherApp(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+          expect(service()).not.toHaveBeenCalled();
+        });
+      }
+
       it(`reaches the service for a person holding ${action}`, async () => {
         await asGrantedOperator(call);
 
-        expect(lifecycle.assertActorMay).toHaveBeenCalledWith(GRANTED_ACTOR, appUrn, action);
+        expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, appUrn, action, undefined]]);
         expect(service()).toHaveBeenCalled();
       });
     });

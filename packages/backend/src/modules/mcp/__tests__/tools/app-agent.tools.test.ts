@@ -2,7 +2,15 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { HubAction } from '@/core/portal/hub-actions';
-import { GRANTED_ACTOR, REFUSED_CALLERS, asGrantedOperator, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import type { ActorCheckContext } from '@/core/portal/lifecycle-actor';
+import {
+  GRANTED_ACTOR,
+  UNGRANTED_CALLERS,
+  asGrantedOperator,
+  asManagedKeyOnOtherApp,
+  gateChecks,
+  lifecycleActorGate,
+} from '@/tests/utils/lifecycle-actor-gate';
 import { AppAgentTools } from '../../tools/app-agent.tools';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AgentConfigService } from '../../agents/agent-config.service';
@@ -202,11 +210,12 @@ describe('AppAgentTools', () => {
   describe('the actor gate', () => {
     const appUrn = 'immich:ci-marketplace';
 
-    const calls: Array<[string, HubAction, () => Promise<unknown>]> = [
-      ['hub_get_app_skill', 'view', () => tools.getAppSkill({ appUrn })],
-      ['hub_list_app_tools', 'view', () => tools.listAppTools({ appUrn })],
-      ['hub_call_app_tool', 'configure', () => tools.callAppTool({ appUrn, tool: 'delete_everything', arguments: {} })],
-      ['hub_get_app_openapi', 'view', () => tools.getAppOpenApi({ appUrn })],
+    /** Each tool, the grant a person needs for it, and the context its check is marked with. */
+    const calls: Array<[string, HubAction, ActorCheckContext | undefined, () => Promise<unknown>]> = [
+      ['hub_get_app_skill', 'view', undefined, () => tools.getAppSkill({ appUrn })],
+      ['hub_list_app_tools', 'view', undefined, () => tools.listAppTools({ appUrn })],
+      ['hub_call_app_tool', 'configure', { appCall: true }, () => tools.callAppTool({ appUrn, tool: 'delete_everything', arguments: {} })],
+      ['hub_get_app_openapi', 'view', undefined, () => tools.getAppOpenApi({ appUrn })],
     ];
 
     beforeEach(() => {
@@ -214,8 +223,8 @@ describe('AppAgentTools', () => {
       agentConfigService.getAgentConfig.mockResolvedValue(null);
     });
 
-    describe.each(calls)('%s', (_tool, action, call) => {
-      it.each(REFUSED_CALLERS)('refuses %s before it reads the app', async (_label, as) => {
+    describe.each(calls)('%s', (_tool, action, context, call) => {
+      it.each(UNGRANTED_CALLERS)('refuses %s before it reads the app', async (_label, as) => {
         await expect(as(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
         expect(appsService.getApp).not.toHaveBeenCalled();
@@ -223,12 +232,29 @@ describe('AppAgentTools', () => {
         expect(mcpBridge.discoverTools).not.toHaveBeenCalled();
       });
 
+      // Reading about an app and calling its tools both operate it, which a managed app key may do on any app.
+      it("reads the app for a managed app's key on another app", async () => {
+        await asManagedKeyOnOtherApp(call);
+
+        expect(appsService.getApp).toHaveBeenCalledWith(appUrn);
+      });
+
       it(`reads the app for a person holding ${action}`, async () => {
         await asGrantedOperator(call);
 
-        expect(lifecycle.assertActorMay).toHaveBeenCalledWith(GRANTED_ACTOR, appUrn, action);
+        expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, appUrn, action, context]]);
         expect(appsService.getApp).toHaveBeenCalledWith(appUrn);
       });
+    });
+
+    it('still takes configure from a person to call a tool: view alone is refused', async () => {
+      lifecycle.assertActorMay.mockImplementation(lifecycleActorGate((_userId, _appUrn, action) => action === 'view'));
+
+      await expect(asGrantedOperator(() => tools.callAppTool({ appUrn, tool: 'delete_everything', arguments: {} }))).rejects.toThrow(
+        'APP_ACTION_GRANT_DENIED',
+      );
+      expect(appsService.getApp).not.toHaveBeenCalled();
+      expect(mcpBridge.callTool).not.toHaveBeenCalled();
     });
   });
 });

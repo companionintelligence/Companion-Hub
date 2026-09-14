@@ -5,7 +5,7 @@ import { ApiProxyService } from '../../agents/api-proxy.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { GRANTED_ACTOR, REFUSED_ACTORS, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import { GRANTED_ACTOR, MANAGED_KEY_ON_OTHER_APP, UNGRANTED_ACTORS, gateChecks, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
 import type { AppUrn } from '@ci-hub/common/types';
 
 const TEST_URN = 'ci-store:nextcloud' as AppUrn;
@@ -174,22 +174,31 @@ describe('ApiProxyService', () => {
   /*
    * The request carries the credential the app's agent config points the Hub at, so reaching an app's
    * API reads or changes its data with the Hub's access. The proxy asks the lifecycle's actor gate
-   * first (CI-Hub#1397).
+   * first (CI-Hub#1397), marked as an app call, which a managed app key may make on any app.
    */
   describe('the actor gate', () => {
-    it.each(REFUSED_ACTORS)('refuses %s before any request leaves the Hub', async (_label, actor) => {
+    it.each(UNGRANTED_ACTORS)('refuses %s before any request leaves the Hub', async (_label, actor) => {
       await expect(service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', actor })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
-      expect(lifecycle.assertActorMay).toHaveBeenCalledWith(actor, TEST_URN, 'view');
+      expect(gateChecks(lifecycle.assertActorMay)).toEqual([[actor, TEST_URN, 'view', { appCall: true }]]);
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('throws the refusal rather than handing it back as a proxy error the caller might read as the app answering', async () => {
-      const [, neighbour] = REFUSED_ACTORS[1] ?? [];
+      const [, ungranted] = UNGRANTED_ACTORS[0] ?? [];
 
-      await expect(service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', actor: neighbour as never })).rejects.toMatchObject({
+      await expect(service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', actor: ungranted as never })).rejects.toMatchObject({
         status: 403,
       });
+    });
+
+    it.each(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])("lets a managed app's key call another app's API with %s", async (method) => {
+      mockFetch.mockImplementation(async () => new Response('ok', { status: 200 }));
+
+      await expect(service.proxyRequest(TEST_URN, { method, path: '/api/users', actor: MANAGED_KEY_ON_OTHER_APP })).resolves.toEqual({
+        content: [{ type: 'text', text: 'ok' }],
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('takes view to read and configure for every other verb, so view alone never writes', async () => {
@@ -203,20 +212,24 @@ describe('ApiProxyService', () => {
 
       for (const method of ['POST', 'PUT', 'PATCH', 'DELETE', 'TRACE']) {
         await expect(service.proxyRequest(TEST_URN, { method, path: '/api/users', actor: GRANTED_ACTOR })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
-        expect(lifecycle.assertActorMay).toHaveBeenLastCalledWith(GRANTED_ACTOR, TEST_URN, 'configure');
+        expect(gateChecks(lifecycle.assertActorMay).at(-1)).toEqual([GRANTED_ACTOR, TEST_URN, 'configure', { appCall: true }]);
       }
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('gates a generated OpenAPI call the same way, as the caller it is given', async () => {
-      const [, neighbour] = REFUSED_ACTORS[1] ?? [];
+      const [, ungranted] = UNGRANTED_ACTORS[1] ?? [];
 
-      await expect(service.proxyOpenApiCall(TEST_URN, { method: 'delete', path: '/api/users/1' }, {}, neighbour as never)).rejects.toThrow(
+      await expect(service.proxyOpenApiCall(TEST_URN, { method: 'delete', path: '/api/users/1' }, {}, ungranted as never)).rejects.toThrow(
         'APP_ACTION_GRANT_DENIED',
       );
-
-      expect(lifecycle.assertActorMay).toHaveBeenCalledWith(neighbour, TEST_URN, 'configure');
+      expect(gateChecks(lifecycle.assertActorMay)).toEqual([[ungranted, TEST_URN, 'configure', { appCall: true }]]);
       expect(mockFetch).not.toHaveBeenCalled();
+
+      // The same generated call, from a managed app's key on another app, reaches the app.
+      mockFetch.mockImplementation(async () => new Response('ok', { status: 200 }));
+      await service.proxyOpenApiCall(TEST_URN, { method: 'delete', path: '/api/users/1' }, {}, MANAGED_KEY_ON_OTHER_APP);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 });

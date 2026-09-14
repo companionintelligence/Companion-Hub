@@ -2,7 +2,14 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
-import { GRANTED_ACTOR, REFUSED_CALLERS, asGrantedOperator, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import {
+  GRANTED_ACTOR,
+  UNGRANTED_CALLERS,
+  asGrantedOperator,
+  asManagedKeyOnOtherApp,
+  gateChecks,
+  lifecycleActorGate,
+} from '@/tests/utils/lifecycle-actor-gate';
 import { mcpAdminCallContext } from '../../mcp-call-context';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { OperationsTools } from '../../tools/operations.tools';
@@ -64,11 +71,20 @@ describe('OperationsTools', () => {
     });
 
     // Neither the operation registry nor the app read has a gate of its own, so the tool asks first (CI-Hub#1397).
-    it.each(REFUSED_CALLERS)('refuses %s before it reads the operation or the app', async (_label, as) => {
+    it.each(UNGRANTED_CALLERS)('refuses %s before it reads the operation or the app', async (_label, as) => {
       await expect(as(() => tools.getOperationStatus({ appUrn: 'nextcloud:ci-store' }))).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
       expect(operationRegistry.get).not.toHaveBeenCalled();
       expect(appsService.getApp).not.toHaveBeenCalled();
+    });
+
+    it("reports to a managed app's key on another app: following an operation is viewing the app", async () => {
+      appsService.getApp.mockResolvedValue({ app: { status: 'running' } } as never);
+
+      await expect(asManagedKeyOnOtherApp(() => tools.getOperationStatus({ appUrn: 'nextcloud:ci-store' }))).resolves.toEqual({
+        inFlight: false,
+        appStatus: 'running',
+      });
     });
 
     it('asks for view', async () => {
@@ -76,7 +92,7 @@ describe('OperationsTools', () => {
 
       await asGrantedOperator(() => tools.getOperationStatus({ appUrn: 'nextcloud:ci-store' }));
 
-      expect(appLifecycleService.assertActorMay).toHaveBeenCalledWith(GRANTED_ACTOR, 'nextcloud:ci-store', 'view');
+      expect(gateChecks(appLifecycleService.assertActorMay)).toEqual([[GRANTED_ACTOR, 'nextcloud:ci-store', 'view', undefined]]);
     });
   });
 

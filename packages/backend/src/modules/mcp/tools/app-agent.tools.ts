@@ -177,7 +177,8 @@ export class AppAgentTools implements OnModuleInit {
   /** Forward a tool call to an app's bridged MCP server (#936). */
   async callAppTool(params: { appUrn: string; tool: string; arguments?: Record<string, unknown> }): Promise<unknown> {
     const appUrn = castAppUrn(params.appUrn);
-    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
+    // An app call: `configure` to a person, and made by a managed app key on any app.
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure', { appCall: true });
     const { info } = await this.appsService.getApp(appUrn);
     const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
 

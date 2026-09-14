@@ -293,7 +293,12 @@ one app takes a named `LifecycleActor`: install, update-config, start, stop, res
 reset, update, cancel, the `BackupsService` calls, and the app-API proxy. `AppLifecycleService.assertActorMay`
 decides from it before anything is read or queued, and refuses with `APP_ACTION_GRANT_DENIED` (403).
 An operator, and the creator of an unmanaged MCP key, answer to their WhoIs grant. A managed app key
-reaches only its own app.
+may do anything on its own app, and on other apps may only operate them: view, start, stop, restart,
+take a backup, and call the app's tools and API (see
+[MCP agent bootstrap](../MCP_AGENT_BOOTSTRAP.md)). `AppLifecycleService.actorMay` is the one place
+that decides this. Where the verb cannot say which call a check is, the call site passes an
+`ActorCheckContext`: `appCall` for a call into the app's tools or API, and `createsBackup` for taking a
+backup. Leave the marker off every other call, so a managed key is refused it on other apps.
 
 When you add an MCP tool that acts on one app, pass `mcpCallerLifecycleActor(action)` to a service that
 takes an actor, or call `assertMcpCallerMay` before the tool reads or changes anything. Give an internal

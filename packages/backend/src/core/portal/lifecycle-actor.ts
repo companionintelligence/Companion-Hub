@@ -24,12 +24,13 @@ export type LifecycleActor =
   /**
    * An MCP key. Its capability is already enforced by the tool registry.
    *
-   * `ownerAppUrn` is set for a MANAGED app key, which may act on its own app and
-   * nothing else. `createdByUserId` names the Hub person who created an unmanaged
-   * key: it acts with that person's grants and role, never more. `null` there is
-   * a key nobody is recorded as creating — minted by the CLI, or before creators
-   * were recorded — which keeps the per-app reach keys had before, and gets
-   * nothing that takes a role.
+   * `ownerAppUrn` is set for a MANAGED app key, which may do anything on its own
+   * app and only operate the others (`AppLifecycleService.actorMay`).
+   * `createdByUserId` names the Hub person who created an unmanaged key: it acts
+   * with that person's grants and role, never more. `null` there is a key nobody
+   * is recorded as creating — minted by the CLI, or before creators were
+   * recorded — which keeps the per-app reach keys had before, and gets nothing
+   * that takes a role.
    */
   | { kind: 'mcp'; ownerAppUrn: string | null; createdByUserId: number | null }
   /** The Hub acting on its own behalf, for a reason named here. */
@@ -60,6 +61,20 @@ export type SystemLifecycleReason =
   | 'debug-start-all'
   | 'debug-uninstall-all'
   | 'debug-backup-all';
+
+/**
+ * What a check is for, where its verb cannot say. A person is still checked on the verb alone: only a
+ * managed app key, on an app that is not its own, reads this (`AppLifecycleService.actorMay`).
+ *
+ * Only the call a managed key may make is marked. A check that leaves the marker off is refused that key
+ * on other apps, so a caller that forgets it fails closed rather than open.
+ */
+export interface ActorCheckContext {
+  /** A call into the app's own MCP tools or HTTP API — `configure` to a person, or `view` for a read. */
+  appCall?: true;
+  /** Taking a backup. Deleting one is `backup` to a person too, and is not marked. */
+  createsBackup?: true;
+}
 
 /**
  * The actor for one action, for a caller that can only name itself once the verb is known: an

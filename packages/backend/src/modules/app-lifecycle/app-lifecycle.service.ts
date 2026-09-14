@@ -50,7 +50,7 @@ import { DATA_DIR } from '@/common/constants';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
@@ -2921,22 +2921,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    *
    * - an operator is checked against WhoIs, and REFUSED if WhoIs is unavailable;
    * - an MCP key already passed the registry's capability gate. A managed app key
-   *   may act only on the app that owns it (item 3 of CI-Hub#1397 — a manifest
-   *   field is enough to be handed an `mcp`-scoped key, and it must not reach
+   *   may do anything on the app that owns it, and on any other app only what
+   *   {@link managedKeyMayOperate} admits (item 3 of CI-Hub#1397 — a manifest
+   *   field is enough to be handed an `mcp`-scoped key, so it must not change
    *   its neighbours). An unmanaged key acts as the person who created it, on
    *   that person's WhoIs grant, and is REFUSED if WhoIs is unavailable, as the
    *   person would be. A key nobody is recorded as creating keeps the reach keys
    *   had before; the key listing says so, so it can be re-issued;
    * - a grant-exempt principal and the system itself are admitted by name.
+   *
+   * `context` says what the check is for where the verb cannot. Only the
+   * managed-key rule reads it; everyone else is checked on the verb.
    */
-  private async actorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction): Promise<boolean> {
+  private async actorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction, context: ActorCheckContext = {}): Promise<boolean> {
     switch (actor.kind) {
       case 'exempt':
       case 'system':
         return true;
       case 'mcp':
         if (actor.ownerAppUrn !== null) {
-          return actor.ownerAppUrn === appUrn;
+          return actor.ownerAppUrn === appUrn || AppLifecycleService.managedKeyMayOperate(action, context);
         }
 
         // A key nobody is recorded as creating keeps the per-app reach keys had before.
@@ -2948,6 +2952,32 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       case 'operator':
         return this.personMay(actor.userId, appUrn, action);
     }
+  }
+
+  /** What a managed app key may do on an app that is not its own, whatever the check is marked with. */
+  private static readonly MANAGED_KEY_OPERATES: readonly HubAction[] = ['view', 'start', 'stop', 'restart'];
+
+  /**
+   * Whether a managed app's MCP key may perform `action` on an app that is not its own: operate it,
+   * never change it.
+   *
+   * ⚠ AN AGENT APP'S KEY LOOKS AFTER THE APPS BESIDE IT. Hermes and OpenClaw hold one to read their
+   * neighbours' state, start and stop them, back them up, and call their tools and APIs, so confining
+   * the key to its own app broke the agents. Nothing admitted here installs software, rewrites an app's
+   * configuration or destroys data: `install`, `configure`, `uninstall`, `reset`, `update`, `restore`
+   * and deleting a backup still take the key's own app. A marker admits only the verbs of the call it
+   * names, so it cannot stretch to another.
+   */
+  private static managedKeyMayOperate(action: HubAction, context: ActorCheckContext): boolean {
+    if (context.appCall && (action === 'view' || action === 'configure')) {
+      return true;
+    }
+
+    if (context.createsBackup && action === 'backup') {
+      return true;
+    }
+
+    return AppLifecycleService.MANAGED_KEY_OPERATES.includes(action);
   }
 
   /** A Hub person's WhoIs grant for `action` on `appUrn`, refused when WhoIs cannot be resolved. */
@@ -2963,8 +2993,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Public so per-app work outside this service — backups, a request to an app's own API, and the MCP
    * tools whose own service cannot take an actor — answers to this one decision, not a copy of it.
    */
-  async assertActorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction): Promise<void> {
-    if (!(await this.actorMay(actor, appUrn, action))) {
+  async assertActorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction, context?: ActorCheckContext): Promise<void> {
+    if (!(await this.actorMay(actor, appUrn, action, context))) {
       throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrn).appName }, HttpStatus.FORBIDDEN);
     }
   }

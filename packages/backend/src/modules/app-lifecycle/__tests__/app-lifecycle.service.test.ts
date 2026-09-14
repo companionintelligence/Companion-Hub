@@ -1,4 +1,5 @@
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { HUB_ACTIONS, type HubAction } from '@/core/portal/hub-actions';
+import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
@@ -829,7 +830,8 @@ describe('AppLifecycleService', () => {
         await expect(service.updateAppConfig({ actor: OPERATOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
       });
 
-      it("confines a managed app's MCP key to its own app", async () => {
+      // Installing and configuring change an app, which a managed app's key may do only to its own.
+      it("refuses a managed app's key install and configuration on any app but its own", async () => {
         const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null };
 
         await expect(service.installApp({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
@@ -1032,12 +1034,36 @@ describe('AppLifecycleService', () => {
           expect(update).not.toHaveBeenCalled();
         });
 
-        it("stops only a managed key's own app", async () => {
+        /*
+         * Starting, stopping and restarting operate an app, which a managed key may do on any app, so those
+         * sweeps reach every app for it. Updating changes an app, so update-all stays on the key's own.
+         */
+        it.each([
+          ['stopAllApps', 'stopApp', 'running'],
+          ['startAllApps', 'startApp', 'stopped'],
+          ['restartAllApps', 'restartApp', 'running'],
+        ] as const)('%s reaches every app for a managed key, not only its own', async (sweep, perAppCall, status) => {
+          appsRepository.getApps.mockResolvedValue([
+            { ...row('neighbour'), status },
+            { ...row('importer'), status },
+          ] as any);
+          const perApp = vi.spyOn(service, perAppCall).mockResolvedValue({ requestId: 's' } as any);
+
+          await service[sweep](importerKey);
+
+          await vi.waitFor(() => expect(perApp).toHaveBeenCalledTimes(2));
+          expect(perApp).toHaveBeenCalledWith(expect.objectContaining({ appUrn: 'neighbour:ci-marketplace' }));
+          expect(perApp).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
+          expect(whois.has).not.toHaveBeenCalled();
+        });
+
+        it('still stops only the apps an operator may stop', async () => {
           // The refused app comes first, so by the time the allowed stop is seen it was already weighed.
+          whois.has.mockImplementation(async (_userId: number, urn: string) => urn === IMPORTER);
           appsRepository.getApps.mockResolvedValue([row('neighbour'), row('importer')] as any);
           const stop = vi.spyOn(service, 'stopApp').mockResolvedValue({ requestId: 's' } as any);
 
-          await service.stopAllApps(importerKey);
+          await service.stopAllApps(OPERATOR);
 
           await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER })));
           expect(stop).toHaveBeenCalledTimes(1);
@@ -1508,14 +1534,17 @@ describe('AppLifecycleService', () => {
     const MANAGED_NEIGHBOUR: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null };
     const CREATED_BY_7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
 
-    /** Each single-app call, and the verb it takes — the one its app route asserts, and the command it queues. */
-    const calls: Array<[string, string, (actor: LifecycleActor) => Promise<unknown>]> = [
-      ['startApp', 'start', (actor) => service.startApp({ actor, appUrn })],
-      ['stopApp', 'stop', (actor) => service.stopApp({ actor, appUrn })],
-      ['restartApp', 'restart', (actor) => service.restartApp({ actor, appUrn })],
-      ['uninstallApp', 'uninstall', (actor) => service.uninstallApp({ actor, appUrn, deleteAllData: true })],
-      ['resetApp', 'reset', (actor) => service.resetApp({ actor, appUrn })],
-      ['updateApp', 'update', (actor) => service.updateApp({ actor, appUrn, performBackup: true })],
+    /**
+     * Each single-app call; the verb it takes (the one its app route asserts, and the command it queues);
+     * and whether it operates the app, which a managed app key may do on any app, or changes it.
+     */
+    const calls: Array<[string, string, 'operates' | 'changes', (actor: LifecycleActor) => Promise<unknown>]> = [
+      ['startApp', 'start', 'operates', (actor) => service.startApp({ actor, appUrn })],
+      ['stopApp', 'stop', 'operates', (actor) => service.stopApp({ actor, appUrn })],
+      ['restartApp', 'restart', 'operates', (actor) => service.restartApp({ actor, appUrn })],
+      ['uninstallApp', 'uninstall', 'changes', (actor) => service.uninstallApp({ actor, appUrn, deleteAllData: true })],
+      ['resetApp', 'reset', 'changes', (actor) => service.resetApp({ actor, appUrn })],
+      ['updateApp', 'update', 'changes', (actor) => service.updateApp({ actor, appUrn, performBackup: true })],
     ];
 
     const expectNothingTouched = () => {
@@ -1531,7 +1560,7 @@ describe('AppLifecycleService', () => {
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
     });
 
-    describe.each(calls)('%s', (_name, action, call) => {
+    describe.each(calls)('%s', (_name, action, kind, call) => {
       it(`refuses an operator without the ${action} grant, before the app is even read`, async () => {
         whois.has.mockResolvedValue(false);
 
@@ -1540,11 +1569,20 @@ describe('AppLifecycleService', () => {
         expectNothingTouched();
       });
 
-      it("refuses a managed app's key on any app but its own", async () => {
-        await expect(call(MANAGED_NEIGHBOUR)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
-        expect(whois.has).not.toHaveBeenCalled();
-        expectNothingTouched();
-      });
+      if (kind === 'operates') {
+        it("lets a managed app's key do it on another app, without consulting WhoIs", async () => {
+          await call(MANAGED_NEIGHBOUR);
+
+          expect(whois.has).not.toHaveBeenCalled();
+          expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: action, appUrn }));
+        });
+      } else {
+        it("refuses a managed app's key on any app but its own", async () => {
+          await expect(call(MANAGED_NEIGHBOUR)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+          expect(whois.has).not.toHaveBeenCalled();
+          expectNothingTouched();
+        });
+      }
 
       it('refuses an unmanaged key whose creator lacks the grant — the key acts as that person', async () => {
         whois.has.mockResolvedValue(false);
@@ -1591,7 +1629,6 @@ describe('AppLifecycleService', () => {
 
       it.each([
         ['an operator without the stop grant', OPERATOR],
-        ["a managed app's key on another app", MANAGED_NEIGHBOUR],
         ['a key whose creator lacks the stop grant', CREATED_BY_7],
       ] as Array<[string, LifecycleActor]>)("refuses %s, and leaves somebody else's operation running", async (_label, actor) => {
         whois.has.mockResolvedValue(false);
@@ -1603,11 +1640,92 @@ describe('AppLifecycleService', () => {
         expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(false);
       });
 
+      it("lets a managed app's key cancel an operation on another app: cancelling is stopping", async () => {
+        await expect(service.cancelOperation({ actor: MANAGED_NEIGHBOUR, appUrn, requestId })).resolves.toMatchObject({
+          outcome: 'cancelled_queued',
+        });
+
+        expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(true);
+        expect(whois.has).not.toHaveBeenCalled();
+      });
+
       it('cancels for an operator holding the stop grant', async () => {
         whois.has.mockResolvedValue(true);
 
         await expect(service.cancelOperation({ actor: OPERATOR, appUrn, requestId })).resolves.toMatchObject({ outcome: 'cancelled_queued' });
         expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'stop');
+      });
+    });
+
+    /*
+     * The managed-key rule at the one place that decides it: a managed app's key operates other apps and
+     * changes only its own. Everyone else is still checked on the verb alone.
+     */
+    describe('what a managed app key may do on an app that is not its own', () => {
+      const OWN_KEY: LifecycleActor = { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null };
+      /** Whether the gate admits the check, rather than throwing its refusal. */
+      const admitted = (actor: LifecycleActor, action: HubAction, context?: ActorCheckContext) =>
+        service.assertActorMay(actor, appUrn, action, context).then(
+          () => true,
+          (error: Error) => {
+            if (error.message !== 'APP_ACTION_GRANT_DENIED') {
+              throw error;
+            }
+
+            return false;
+          },
+        );
+
+      it.each([
+        ['view it', 'view', undefined],
+        ['start it', 'start', undefined],
+        ['stop it, or cancel its operation', 'stop', undefined],
+        ['restart it', 'restart', undefined],
+        ['take a backup of it', 'backup', { createsBackup: true }],
+        ['call its tools, or its API with a method that writes', 'configure', { appCall: true }],
+        ['read its API', 'view', { appCall: true }],
+      ] as Array<[string, HubAction, ActorCheckContext | undefined]>)('may %s', async (_label, action, context) => {
+        await expect(admitted(MANAGED_NEIGHBOUR, action, context)).resolves.toBe(true);
+        expect(whois.has).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['install it', 'install', undefined],
+        ['change its configuration', 'configure', undefined],
+        ['uninstall it', 'uninstall', undefined],
+        ['reset it', 'reset', undefined],
+        ['update it', 'update', undefined],
+        ['restore a backup over it', 'restore', undefined],
+        ['delete its backups', 'backup', undefined],
+        // A marker admits the verbs of the call it names, and nothing else.
+        ['uninstall it by marking the check an app call', 'uninstall', { appCall: true }],
+        ['restore a backup by marking the check as taking one', 'restore', { createsBackup: true }],
+        ['change its configuration by marking the check as taking a backup', 'configure', { createsBackup: true }],
+        ['delete its backups by marking the check an app call', 'backup', { appCall: true }],
+      ] as Array<[string, HubAction, ActorCheckContext | undefined]>)('may not %s', async (_label, action, context) => {
+        await expect(admitted(MANAGED_NEIGHBOUR, action, context)).resolves.toBe(false);
+      });
+
+      it.each(HUB_ACTIONS)('may %s its own app, marked or not', async (action) => {
+        await expect(admitted(OWN_KEY, action)).resolves.toBe(true);
+        await expect(admitted(OWN_KEY, action, { appCall: true })).resolves.toBe(true);
+      });
+
+      it('changes nothing for a person: an app call still takes configure, and taking a backup still takes backup', async () => {
+        // WhoIs grants these people `view` and nothing else.
+        whois.has.mockImplementation(async (_userId: number, _urn: string, action: string) => action === 'view');
+
+        await expect(admitted(OPERATOR, 'configure', { appCall: true })).resolves.toBe(false);
+        await expect(admitted(CREATED_BY_7, 'configure', { appCall: true })).resolves.toBe(false);
+        await expect(admitted(OPERATOR, 'backup', { createsBackup: true })).resolves.toBe(false);
+        await expect(admitted(OPERATOR, 'start')).resolves.toBe(false);
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'configure');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'backup');
+      });
+
+      it('changes nothing for a key nobody is recorded as creating: it keeps its per-app reach', async () => {
+        await expect(admitted({ kind: 'mcp', ownerAppUrn: null, createdByUserId: null }, 'uninstall')).resolves.toBe(true);
+        expect(whois.has).not.toHaveBeenCalled();
       });
     });
 
