@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { CacheService } from '@/core/cache/cache.service';
-import { SessionManager } from '../session.manager';
+import { SESSION_ROTATION_GRACE_SECONDS, SESSION_TTL_SECONDS, SessionManager } from '../session.manager';
 
 describe('SessionManager', () => {
   let cache: MockProxy<CacheService>;
@@ -133,5 +133,151 @@ describe('SessionManager sign-out-everywhere against a real key space', () => {
     await manager.destroyAllSessionsByUserId(7);
 
     expect(manager.resolveSessionUserId(theirs)).toBe(9);
+  });
+});
+
+/**
+ * App sessions against a cache that keeps TTLs: the lifetime cap and the cascade from the parent
+ * only exist over time, so call assertions cannot see either.
+ */
+describe('SessionManager app sessions', () => {
+  const APP = 'importer:ci-marketplace' as never;
+  const HOUR_MS = 60 * 60 * 1000;
+
+  function ttlCache() {
+    const store = new Map<string, { value: string; expiresAt: number }>();
+    const live = (key: string) => {
+      const entry = store.get(key);
+      if (entry && entry.expiresAt < Date.now()) {
+        store.delete(key);
+        return undefined;
+      }
+      return entry;
+    };
+    return {
+      store,
+      get: (key: string) => live(key)?.value,
+      set: (key: string, value: string, ttlSeconds: number) => void store.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 }),
+      del: (key: string) => void store.delete(key),
+      getExpirationAt: (key: string) => live(key)?.expiresAt ?? null,
+      getByPrefix: (prefix: string) =>
+        [...store.keys()].flatMap((key) => {
+          const entry = key.startsWith(prefix) ? live(key) : undefined;
+          return entry ? [{ key, val: entry.value }] : [];
+        }),
+    } as unknown as MockProxy<CacheService> & { store: Map<string, { value: string; expiresAt: number }> };
+  }
+
+  let cache: ReturnType<typeof ttlCache>;
+  let manager: SessionManager;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-14T00:00:00Z'));
+    cache = ttlCache();
+    manager = new SessionManager(cache);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('resolves to its user, parent and app while the parent lives', async () => {
+    const parent = await manager.createSession(7);
+
+    const appSessionId = await manager.createAppSession(7, parent, APP);
+
+    expect(appSessionId).toEqual(expect.any(String));
+    expect(appSessionId).not.toBe(parent);
+    expect(manager.resolveAppSession(appSessionId as string)).toEqual({ userId: 7, parentSessionId: parent, appUrn: APP });
+  });
+
+  it('is never a Hub session, and a Hub session is never an app session', async () => {
+    // `AuthMiddleware` authenticates through `resolveSessionUserId` alone, so an app-session id that
+    // resolved there would be the full Hub API credential this exists to keep off app hosts.
+    const parent = await manager.createSession(7);
+    const appSessionId = (await manager.createAppSession(7, parent, APP)) as string;
+
+    expect(manager.resolveSessionUserId(appSessionId)).toBeNull();
+    expect(manager.touchSession(appSessionId)).toBe(false);
+    expect(manager.resolveAppSession(parent)).toBeNull();
+    expect([...cache.store.keys()].filter((key) => key.includes(appSessionId))).toEqual([`app_session:${appSessionId}`]);
+  });
+
+  it('caps its lifetime at what the parent session has left', async () => {
+    const parent = await manager.createSession(7);
+    const early = (await manager.createAppSession(7, parent, APP)) as string;
+    expect(cache.getExpirationAt(`app_session:${early}`)).toBe(Date.now() + SESSION_TTL_SECONDS * 1000);
+
+    // Two hours before the parent expires, a new app session gets those two hours and no more.
+    vi.advanceTimersByTime(SESSION_TTL_SECONDS * 1000 - 2 * HOUR_MS);
+    const late = (await manager.createAppSession(7, parent, APP)) as string;
+    expect(cache.getExpirationAt(`app_session:${late}`)).toBe(manager.getSessionExpiresAt(parent));
+
+    // Under a second left rounds down to no lifetime at all, which is a refusal rather than a zero TTL.
+    vi.advanceTimersByTime(2 * HOUR_MS - 500);
+    await expect(manager.createAppSession(7, parent, APP)).resolves.toBeNull();
+  });
+
+  it('refuses to derive from a session that is gone or belongs to someone else', async () => {
+    const parent = await manager.createSession(7);
+
+    await expect(manager.createAppSession(9, parent, APP)).resolves.toBeNull();
+    await expect(manager.createAppSession(7, 'no-such-session', APP)).resolves.toBeNull();
+    expect([...cache.store.keys()].some((key) => key.startsWith('app_session:'))).toBe(false);
+  });
+
+  it('derives from a rotation-grace parent for no longer than the grace window', async () => {
+    // A ticket minted just before its session rotated is consumed against the grace alias.
+    const parent = await manager.createSession(7);
+    await manager.rotateSession(parent);
+
+    const appSessionId = await manager.createAppSession(7, parent, APP);
+
+    expect(appSessionId).toEqual(expect.any(String));
+    expect(cache.getExpirationAt(`app_session:${appSessionId}`)).toBeLessThanOrEqual(Date.now() + SESSION_ROTATION_GRACE_SECONDS * 1000);
+  });
+
+  it('stops resolving when the parent session is logged out', async () => {
+    const parent = await manager.createSession(7);
+    const appSessionId = (await manager.createAppSession(7, parent, APP)) as string;
+
+    // What `AuthService.logout` does with the session it is handed.
+    await manager.deleteSession(parent);
+
+    expect(manager.resolveAppSession(appSessionId)).toBeNull();
+  });
+
+  it('stops resolving once a rotated parent is past its grace window', async () => {
+    const parent = await manager.createSession(7);
+    const appSessionId = (await manager.createAppSession(7, parent, APP)) as string;
+
+    await manager.rotateSession(parent);
+    // In-flight requests keep the rotated id for the grace window, and what hangs off it with them.
+    expect(manager.resolveAppSession(appSessionId)).not.toBeNull();
+
+    vi.advanceTimersByTime((SESSION_ROTATION_GRACE_SECONDS + 1) * 1000);
+    expect(manager.resolveAppSession(appSessionId)).toBeNull();
+  });
+
+  it('stops resolving after sign-out-everywhere', async () => {
+    const parent = await manager.createSession(7);
+    const appSessionId = (await manager.createAppSession(7, parent, APP)) as string;
+
+    await manager.destroyAllSessionsByUserId(7);
+
+    expect(manager.resolveAppSession(appSessionId)).toBeNull();
+  });
+
+  it.each([
+    ['an unreadable record', () => '{not json'],
+    ['a JSON null', () => 'null'],
+    ['a record that names no app', (parent: string) => JSON.stringify({ userId: 7, parentSessionId: parent })],
+    ["a record whose user is not the parent session's", (parent: string) => JSON.stringify({ userId: 9, parentSessionId: parent, appUrn: APP })],
+  ])('refuses %s', async (_label, record) => {
+    const parent = await manager.createSession(7);
+    cache.set('app_session:tampered', record(parent), 60);
+
+    expect(manager.resolveAppSession('tampered')).toBeNull();
   });
 });

@@ -21,6 +21,7 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { PortManagerService } from '@/modules/network/port-manager.service';
+import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from '@/modules/auth/session.manager';
 
 describe('AppService', () => {
   let appService: AppService;
@@ -206,6 +207,14 @@ describe('AppService', () => {
 
       expect(appStoreService.pullRepositories).toHaveBeenCalled();
       expect(marketplaceService.initialize).toHaveBeenCalledTimes(2);
+    });
+
+    it('spares Hub and app sessions from the version-bump cache wipe', async () => {
+      // No stored buster, so this boot counts as an upgrade and wipes the cache. App sessions are no
+      // more cache than Hub sessions are: losing them bounces every open app tab through edge SSO.
+      await appService.bootstrap();
+
+      expect(cacheService.clear).toHaveBeenCalledWith(expect.arrayContaining([SESSION_KEY_PREFIX, APP_SESSION_KEY_PREFIX]));
     });
   });
 });

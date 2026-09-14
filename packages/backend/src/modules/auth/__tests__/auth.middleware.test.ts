@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { AuthMiddleware, sessionIdsFromRequest } from '../auth.middleware';
+import { SessionManager } from '../session.manager';
 import type { Request } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
 
@@ -383,5 +384,77 @@ describe('AuthMiddleware on a Hub with no operator', () => {
     expect(req.hubUnclaimed).toBeUndefined();
     expect(req.hubPrincipal).toBeUndefined();
     expect(next).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * Edge SSO plants an app-scoped session on app hosts, and Traefik copies that cookie to every app
+ * served there. However it is presented, it must authenticate nothing on the Hub API. Driven with a
+ * real SessionManager, so what refuses it is the key space itself rather than a mock's answer.
+ */
+describe('AuthMiddleware and app sessions', () => {
+  const config = { get: vi.fn() };
+  const userRepository = { getUserDtoById: vi.fn(), getFirstOperator: vi.fn() };
+  const sessionUserCache = {
+    get: vi.fn().mockReturnValue(undefined),
+    beginRead: vi.fn().mockReturnValue({ epoch: 0, version: 0 }),
+    set: vi.fn(),
+    invalidate: vi.fn(),
+  };
+
+  function memoryCache() {
+    const store = new Map<string, string>();
+    return {
+      get: (key: string) => store.get(key),
+      set: (key: string, value: string) => void store.set(key, value),
+      del: (key: string) => void store.delete(key),
+      getExpirationAt: (key: string) => (store.has(key) ? Date.now() + 60 * 60 * 1000 : null),
+      getByPrefix: (prefix: string) => [...store.entries()].filter(([key]) => key.startsWith(prefix)).map(([key, val]) => ({ key, val })),
+    };
+  }
+
+  const requestWith = ({ cookies = {}, header, query = {} }: { cookies?: Record<string, string>; header?: string; query?: Record<string, string> }) =>
+    ({ cookies, headers: {}, query, get: (name: string) => (name === 'x-ci-hub-session' ? header : undefined) }) as unknown as Request;
+
+  let middleware: AuthMiddleware;
+  let parentSessionId: string;
+  let appSessionId: string;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    sessionUserCache.get.mockReturnValue(undefined);
+    userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com' });
+    const sessionManager = new SessionManager(memoryCache() as never);
+    middleware = new AuthMiddleware(sessionManager, config as never, userRepository as never, sessionUserCache as never);
+    parentSessionId = await sessionManager.createSession(7);
+    appSessionId = (await sessionManager.createAppSession(7, parentSessionId, 'importer:ci-marketplace' as never)) as string;
+  });
+
+  it.each([
+    ['the Hub session cookie', (id: string) => requestWith({ cookies: { 'ci-hub-sid': id } })],
+    ['the X-CI-Hub-Session header', (id: string) => requestWith({ header: id })],
+    ['the session_id query parameter', (id: string) => requestWith({ query: { session_id: id } })],
+    ['its own app-session cookie', (id: string) => requestWith({ cookies: { 'ci-hub-app-sid': id } })],
+  ])('does not accept an app-session id presented in %s', async (_label, build) => {
+    const req = build(appSessionId);
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toBeUndefined();
+    expect(req.hubSessionId).toBeUndefined();
+    expect(req.hubPrincipal).toBeUndefined();
+    expect(userRepository.getUserDtoById).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('still accepts the Hub session the app session was derived from', async () => {
+    // The control for the refusals above: this harness does authenticate a real session id.
+    const req = requestWith({ cookies: { 'ci-hub-sid': parentSessionId } });
+
+    await middleware.use(req, {} as never, vi.fn());
+
+    expect(req.user).toEqual({ id: 7, username: 'op@example.com' });
+    expect(req.hubPrincipal).toBe('session');
   });
 });

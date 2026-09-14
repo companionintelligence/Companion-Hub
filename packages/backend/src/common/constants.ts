@@ -43,6 +43,12 @@ export const tunnelUserClearedMarkerPath = () => path.join(TUNNEL_DIR, TUNNEL_US
 export const UPDATE_LISTENER_TOKEN_FILENAME = 'update-listener.token';
 
 export const SESSION_COOKIE_NAME = 'ci-hub-sid';
+/**
+ * The app-scoped session an edge-SSO consume leaves on an app host. Named apart from
+ * `SESSION_COOKIE_NAME` on purpose: `AuthMiddleware` never reads this one, so it cannot
+ * authenticate a Hub API call (see `SessionManager.resolveAppSession`).
+ */
+export const APP_SESSION_COOKIE_NAME = 'ci-hub-app-sid';
 /** Match server-side session TTL (7 days) so browser cookies stay valid for the full session. */
 export const SESSION_COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 7;
 
