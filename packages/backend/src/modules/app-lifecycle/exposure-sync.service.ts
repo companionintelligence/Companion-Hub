@@ -10,6 +10,7 @@ import {
   buildPublicWebIdentity,
   collectAmbiguousCustomDomains,
   collectContestedCustomDomainTargets,
+  customDomainHeldByAnotherHub,
   customDomainServesAnotherApp,
   indexCustomDomainsByTarget,
   normalizeHostname,
@@ -110,6 +111,16 @@ function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
     })
     .join('; ');
 }
+
+/**
+ * CI-Cloud's bind refusals for a domain another device in the organization
+ * holds. Each one wants a move grant that an owner or admin mints in the portal
+ * (CI-Portal#737), and this Hub sends none, so no retry can succeed.
+ */
+const HELD_BY_ANOTHER_HUB_BIND_REFUSALS = new Set(['DOMAIN_BOUND_TO_ANOTHER_DEVICE', 'TAKEOVER_REQUIRED', 'MOVE_GRANT_INVALID']);
+
+/** Where a domain another Hub holds is moved, named by every log line that gives one up. */
+const MOVE_IN_PORTAL_REMEDY = 'To serve it here, move it to this Hub from the portal: organization settings → domains.';
 
 @Injectable()
 export class ExposureSyncService {
@@ -995,6 +1006,29 @@ export class ExposureSyncService {
      */
     const strandedAppUrns: AppUrn[] = [];
 
+    /*
+     * Gives up a choice that can never land. Every terminal branch below ends
+     * here, so none of them can skip a step: the confirmation goes with the
+     * choice, the reason is logged once, the dialog refetches the app so its
+     * picker stops claiming the domain, and the revert `reconcileCustomDomains`
+     * deferred to this pass is taken.
+     *
+     * That revert is what makes "leaving the app on its platform hostname" true.
+     * An app whose revert was deferred was serving on the intent moments ago and
+     * is still injecting it as `X-Forwarded-Host`, so it is broken on its
+     * platform hostname until its container is recreated (CI-Hub#1207).
+     */
+    const abandonChoice = async (appId: number, appUrn: AppUrn, reason: string): Promise<void> => {
+      await this.appRepository.updateAppById(appId, { customDomainIntent: null, customDomainTakeover: false });
+      this.logger.warn(reason);
+      // No third argument: the frontend opens only `/api/sse/app`, so a per-app topic would refetch nothing.
+      this.sseService.emit('app', { event: 'custom_domain_changed', appUrn });
+
+      if (params.deferredRevertAppUrns.has(appUrn)) {
+        strandedAppUrns.push(appUrn);
+      }
+    };
+
     for (const { app, appUrn, intent } of claimed) {
       try {
         const entry = byDomain.get(intent);
@@ -1007,22 +1041,11 @@ export class ExposureSyncService {
          * hostname, and log the reason.
          */
         if (!entry) {
-          await this.appRepository.updateAppById(app.id, { customDomainIntent: null, customDomainTakeover: false });
-          this.logger.warn(
+          await abandonChoice(
+            app.id,
+            appUrn,
             `[Cloudflare] ${appUrn} was set up to serve on ${intent}, but that domain is no longer connected to this organization; clearing the choice and leaving the app on its platform hostname.`,
           );
-
-          /*
-           * "Leaving the app on its platform hostname" is only true once the
-           * container is recreated. An app whose revert the reconcile deferred to
-           * this pass was serving on `intent` moments ago and is still injecting
-           * it as `X-Forwarded-Host`, so it is broken on the platform hostname
-           * until it restarts. Now that the choice is provably nonviable, take the
-           * revert the reconcile held back.
-           */
-          if (params.deferredRevertAppUrns.has(appUrn)) {
-            strandedAppUrns.push(appUrn);
-          }
 
           continue;
         }
@@ -1060,6 +1083,29 @@ export class ExposureSyncService {
          */
         if (currentTarget === target) {
           this.logger.debug(`[Cloudflare] ${appUrn} is waiting for CI-Cloud to report ${intent} delivered; it is already pointed here.`);
+
+          continue;
+        }
+
+        /*
+         * ⚠ HELD BY ANOTHER HUB, WHICH NO CONFIRMATION GIVEN ON THIS ONE CAN MOVE.
+         *
+         * CI-Cloud binds a domain another device holds only on a move grant that
+         * an owner or admin mints in the portal (CI-Portal#686, #737), and this Hub
+         * sends none. Kept, the choice was refused on every heartbeat forever, and
+         * nothing told the operator where the move is actually made.
+         *
+         * Asked before the confirmation check below, whose log line would blame a
+         * missing answer that could not have helped. A row no device holds any
+         * more is still bindable and stays on that path; see
+         * {@link customDomainHeldByAnotherHub}.
+         */
+        if (customDomainHeldByAnotherHub(entry)) {
+          await abandonChoice(
+            app.id,
+            appUrn,
+            `[Cloudflare] ${intent} is serving an app on another Hub, which this Hub cannot move; clearing the choice on ${appUrn}. ${MOVE_IN_PORTAL_REMEDY}`,
+          );
 
           continue;
         }
@@ -1125,23 +1171,12 @@ export class ExposureSyncService {
         const servesAnotherApp = customDomainServesAnotherApp(entry, appSubdomain);
 
         if (servesAnotherApp && !app.customDomainTakeover) {
-          await this.appRepository.updateAppById(app.id, { customDomainIntent: null, customDomainTakeover: false });
-          this.logger.warn(
+          await abandonChoice(
+            app.id,
+            appUrn,
             `[Cloudflare] ${intent} is currently serving ${entry.boundAppSlug ?? (entry.boundElsewhere ? 'an app on another Hub' : 'another app')}; ` +
               `moving it to ${appUrn} was not confirmed, so the choice has been cleared and the domain left where it is.`,
           );
-
-          /*
-           * Terminal in the same way as the missing-entry and `DOMAIN_NOT_FOUND`
-           * cases, so the deferred revert applies here too. The reconcile held it
-           * back only because this Hub was still asking for the hostname the app
-           * had just lost; refusing the move settles that question, and the app is
-           * now injecting `X-Forwarded-Host` for a name it no longer serves until
-           * its container is recreated (CI-Hub#1207).
-           */
-          if (params.deferredRevertAppUrns.has(appUrn)) {
-            strandedAppUrns.push(appUrn);
-          }
 
           continue;
         }
@@ -1158,9 +1193,10 @@ export class ExposureSyncService {
            * `pending` represents that user-controlled verification. The state
            * clears after the DNS change, so warning on each sync would add noise.
            * Other states that Companion Portal cannot bind do not necessarily
-           * clear themselves: another Hub can hold the domain, the zone can leave
-           * the account, or an entitlement can lapse. Report those states as
-           * warnings so operators can explain a choice that never takes effect.
+           * clear themselves: the zone can leave the account, or an entitlement
+           * can lapse. Report those states as warnings so operators can explain a
+           * choice that never takes effect. A domain another Hub holds never
+           * reaches this wait; it was given up above.
            */
           if (entry.state === 'pending') {
             this.logger.debug(`[Cloudflare] ${appUrn} is waiting for ${intent} to finish verifying before it can be bound`);
@@ -1225,18 +1261,26 @@ export class ExposureSyncService {
          * Retain the intent after a refusal that can clear itself and retry on the
          * next sync. The app's first registration sync can land after this pass,
          * and a domain under verification can become bindable without another Hub
-         * action. Only a missing or unowned domain is terminal, matching the
-         * missing-entry case above.
+         * action. Only a missing or unowned domain, or one another Hub holds, is
+         * terminal, matching the listing checks above.
          */
         if (bound.code === 'DOMAIN_NOT_FOUND') {
-          await this.appRepository.updateAppById(app.id, { customDomainIntent: null, customDomainTakeover: false });
-          this.logger.warn(`[Cloudflare] CI-Cloud does not recognise ${intent} for this organization; clearing the choice on ${appUrn}.`);
+          await abandonChoice(
+            app.id,
+            appUrn,
+            `[Cloudflare] CI-Cloud does not recognise ${intent} for this organization; clearing the choice on ${appUrn}.`,
+          );
 
-          // Terminal in the same way as the missing-entry case above, so the
-          // deferred revert applies here too.
-          if (params.deferredRevertAppUrns.has(appUrn)) {
-            strandedAppUrns.push(appUrn);
-          }
+          continue;
+        }
+
+        // The listing read it as bindable, and another Hub took it before this bind arrived.
+        if (bound.code && HELD_BY_ANOTHER_HUB_BIND_REFUSALS.has(bound.code)) {
+          await abandonChoice(
+            app.id,
+            appUrn,
+            `[Cloudflare] CI-Cloud will not wire ${intent} to ${appUrn}: ${bound.message} (${bound.code}). Clearing the choice. ${MOVE_IN_PORTAL_REMEDY}`,
+          );
 
           continue;
         }

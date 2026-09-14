@@ -1,6 +1,7 @@
 import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
 import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
 import { formatApiError } from '@/lib/format-api-error';
+import { portalConfigQueryOptions } from '@/lib/portal-config';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
@@ -255,6 +256,13 @@ export const InstallForm: React.FC<IProps> = ({
    */
   const { data: customDomainsData } = useQuery(getCustomDomainsOptions());
   const customDomains = useMemo(() => customDomainsData?.domains ?? EMPTY_CUSTOM_DOMAINS, [customDomainsData?.domains]);
+
+  /*
+   * The portal's address, for the picker's link to where a domain another Hub
+   * holds can be moved. Read alongside the listing rather than once such a
+   * domain shows up, so the link does not arrive a request after its note.
+   */
+  const { data: portalConfig } = useQuery(portalConfigQueryOptions());
 
   const requiredFieldNames = formFields.filter((f) => f.required && !isHiddenFieldType(f.type)).map((f) => f.env_variable);
   const _watchedRequiredValues = watch(requiredFieldNames);
@@ -843,6 +851,7 @@ export const InstallForm: React.FC<IProps> = ({
              * irreversible-release hint for a domain that is still being served.
              */
             currentAppSlug={watchLocalSubdomain?.trim() || routingAppSubdomain}
+            portalUrl={portalConfig?.portalUrl}
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}

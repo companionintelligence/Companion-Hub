@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/Button';
-import { customDomainServesAnotherApp } from '@ci-hub/common/types';
+import { customDomainHeldByAnotherHub, customDomainServesAnotherApp } from '@ci-hub/common/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import type { AvailableCustomDomainsResponseDto } from '@/api-client';
 import type { Control, FieldValues, Path } from 'react-hook-form';
@@ -18,6 +18,17 @@ type AvailableCustomDomain = AvailableCustomDomainsResponseDto['domains'][number
 const PLATFORM_ADDRESS = '__platform__';
 
 /**
+ * The portal page where an owner or admin moves a domain between Hubs
+ * (organization settings → domains), or `null` when this Hub has no portal
+ * address to link to.
+ */
+function portalDomainsUrl(portalUrl: string | null | undefined): string | null {
+  const base = portalUrl?.trim().replace(/\/+$/, '');
+
+  return base ? `${base}/org-settings?tab=domains` : null;
+}
+
+/**
  * Returns the status shown beside a domain, or `null` when no status is useful.
  *
  * Centralizing the mutually exclusive states keeps bindable states such as
@@ -28,6 +39,11 @@ const PLATFORM_ADDRESS = '__platform__';
  * settings state and does not represent a transfer.
  */
 function describeEntry(entry: AvailableCustomDomain, currentAppSlug: string | undefined, t: (key: string) => string): string | null {
+  /*
+   * Ahead of every state, because it is the reason the option is disabled:
+   * whatever state the domain is in on that Hub, this one cannot take it.
+   */
+  if (customDomainHeldByAnotherHub(entry)) return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB');
   if (entry.state === 'pending') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING');
   if (entry.state === 'securing') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING');
   if (entry.state === 'drifted') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED');
@@ -79,6 +95,12 @@ interface CustomDomainFieldProps<TFormValues extends FieldValues> {
    */
   currentAppSlug?: string;
   /**
+   * The portal's address, when this Hub has one. A domain another Hub holds
+   * links to the page where it can be moved; without an address the remedy is
+   * named but not linked.
+   */
+  portalUrl?: string | null;
+  /**
    * Records the operator's answer to the takeover question on the form.
    *
    * A separate field rather than something inferred from `customDomain` at save
@@ -114,6 +136,7 @@ export function CustomDomainField<TFormValues extends FieldValues>({
   supported,
   platformHostname,
   currentAppSlug,
+  portalUrl,
   onTakeoverChange,
   loading,
   t,
@@ -147,6 +170,9 @@ export function CustomDomainField<TFormValues extends FieldValues>({
    * hand-rolled spelling of the same comparison.
    */
   const isServingCustomDomain = domains.some((entry) => entry.boundAppSlug !== null && !customDomainServesAnotherApp(entry, currentAppSlug));
+  /** Whether any listed domain is one only the portal can move here. See the note under the picker. */
+  const listsDomainHeldByAnotherHub = domains.some((entry) => customDomainHeldByAnotherHub(entry));
+  const moveInPortalUrl = portalDomainsUrl(portalUrl);
   /*
    * Hide the field when no connected domains are available or the Portal cannot
    * list them. An empty dropdown would advertise an unusable feature; Companion
@@ -298,6 +324,23 @@ export function CustomDomainField<TFormValues extends FieldValues>({
           );
         }}
       />
+      {listsDomainHeldByAnotherHub ? (
+        /*
+         * ⚠ UNDER THE PICKER, NOT INSIDE THE OPTION. A disabled option takes no
+         * pointer events, and the listbox moves focus between options only, so a
+         * link placed in one could be read and never followed.
+         */
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="custom-domain-held-elsewhere">
+          {t('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB_HINT')}{' '}
+          {moveInPortalUrl ? (
+            <a href={moveInPortalUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline-offset-2 hover:underline">
+              {t('APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL')}
+            </a>
+          ) : (
+            t('APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL')
+          )}
+        </p>
+      ) : null}
     </div>
   );
 }

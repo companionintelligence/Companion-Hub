@@ -109,9 +109,14 @@ vi.mock('@ci-hub/common/types', () => {
     return (appSlug ? sanitizeAppSubdomain(appSlug) : '') !== theirs;
   };
 
+  // The real one too, for the same reason: the picker disables exactly the choices the bind pass gives up.
+  const customDomainHeldByAnotherHub = (entry: { bindable: boolean; boundElsewhere: boolean }): boolean =>
+    entry.boundElsewhere === true && entry.bindable !== true;
+
   return {
     buildPublicWebIdentity,
     buildTailscalePortHost,
+    customDomainHeldByAnotherHub,
     customDomainServesAnotherApp,
     sanitizeAppSubdomain,
   };
@@ -140,17 +145,22 @@ const MOCK_USE_QUERY_RESULT = {
   data: MOCK_AVAILABLE_DOMAINS,
   isLoading: false,
 };
+/** `GET /portal/config`. No portal address by default, as on a Hub with none configured. */
+const MOCK_PORTAL_CONFIG = { portalUrl: null as string | null, deviceId: null, registrationUrl: null, demoMode: false };
 
 vi.mock('@tanstack/react-query', () => ({
   useMutation: () => ({
     mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   }),
-  // Keyed, so the two listings the form reads cannot answer each other's
+  // Keyed, so the queries the form reads cannot answer each other's
   // question — a single shared result had the custom-domain picker reading the
   // platform domain list.
-  useQuery: (options: { queryKey?: unknown[] }) =>
-    options?.queryKey?.[0] === 'getCustomDomains' ? { data: MOCK_CUSTOM_DOMAINS, isLoading: false } : MOCK_USE_QUERY_RESULT,
+  useQuery: (options: { queryKey?: unknown[] }) => {
+    if (options?.queryKey?.[0] === 'getCustomDomains') return { data: MOCK_CUSTOM_DOMAINS, isLoading: false };
+    if (options?.queryKey?.[0] === 'getPortalConfig') return { data: MOCK_PORTAL_CONFIG, isLoading: false };
+    return MOCK_USE_QUERY_RESULT;
+  },
   queryOptions: (options: unknown) => options,
 }));
 
@@ -159,6 +169,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getRandomPortMutation: () => ({ mutationFn: vi.fn() }),
   getDomainsOptions: () => ({ queryKey: ['getDomains'], queryFn: vi.fn() }),
   getCustomDomainsOptions: () => ({ queryKey: ['getCustomDomains'], queryFn: vi.fn() }),
+  getPortalConfigOptions: () => ({ queryKey: ['getPortalConfig'], queryFn: vi.fn() }),
 }));
 
 describe('InstallForm', () => {
@@ -166,6 +177,7 @@ describe('InstallForm', () => {
     MOCK_AVAILABLE_DOMAINS.domains = [];
     MOCK_CUSTOM_DOMAINS.supported = false;
     MOCK_CUSTOM_DOMAINS.domains = [];
+    MOCK_PORTAL_CONFIG.portalUrl = null;
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -827,6 +839,8 @@ describe('InstallForm', () => {
 
       expect(screen.getByTestId('custom-domain-takeover-confirm')).toBeInTheDocument();
       expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+      // Bindable, so a move this Hub can make itself: no errand to the portal for it.
+      expect(screen.queryByTestId('custom-domain-held-elsewhere')).not.toBeInTheDocument();
     });
 
     it('leaves the domain where it is when the move is declined', async () => {
@@ -901,6 +915,70 @@ describe('InstallForm', () => {
 
       expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT')).toBeInTheDocument();
       expect(screen.queryByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT')).not.toBeInTheDocument();
+    });
+
+    it('disables a domain another Hub holds, and links to where it can be moved', () => {
+      /*
+       * CI-Cloud will not bind a domain another device holds, so choosing it here
+       * could only be refused. The option used to say "currently serving another
+       * app" and nothing more, which left the operator no idea where the move is
+       * actually made.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [
+        connected({ state: 'live', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
+      ];
+      // Configured with a trailing slash, which must not double up in the link.
+      MOCK_PORTAL_CONFIG.portalUrl = 'https://portal.example.com/';
+
+      renderForm();
+
+      // Asked before the listbox opens: an open Radix select hides the rest of the dialog from role queries.
+      const link = screen.getByRole('link', { name: 'APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL' });
+      expect(link).toHaveAttribute('href', 'https://portal.example.com/org-settings?tab=domains');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+      expect(screen.getByTestId('custom-domain-held-elsewhere')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB_HINT');
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      const option = screen.getByRole('option', { name: /comfy\.acme\.com/ });
+
+      expect(option).toHaveAttribute('aria-disabled', 'true');
+      expect(option).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB');
+
+      fireEvent.click(option);
+
+      // Nothing to confirm, because no answer given on this Hub could move it.
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+    });
+
+    it('names the remedy without a link when this Hub has no portal address', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [
+        connected({ state: 'live', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
+      ];
+      MOCK_PORTAL_CONFIG.portalUrl = null;
+
+      renderForm();
+
+      expect(screen.getByTestId('custom-domain-held-elsewhere')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL');
+      expect(screen.queryByRole('link', { name: 'APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL' })).not.toBeInTheDocument();
+    });
+
+    it('says a domain is on another Hub whatever state it is in there', () => {
+      // Its certificate belongs to the Hub serving it. What matters on this one is why the option cannot be chosen.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [
+        connected({ state: 'securing', boundElsewhere: true, bindable: false, targetHostname: 'grafana-core9-acme.example.com' }),
+      ];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+
+      expect(screen.getByRole('option', { name: /comfy\.acme\.com/ })).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB');
+      expect(screen.queryByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING')).not.toBeInTheDocument();
     });
   });
 
