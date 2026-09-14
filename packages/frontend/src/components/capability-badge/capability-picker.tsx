@@ -1,6 +1,12 @@
 import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
-import { API_KEY_CAPABILITIES, type ApiKeyCapability, CAPABILITY_HINT_KEYS, CAPABILITY_LABEL_KEYS } from './capability-badge';
+import {
+  API_KEY_CAPABILITIES,
+  type ApiKeyCapability,
+  CAPABILITY_HINT_KEYS,
+  CAPABILITY_LABEL_KEYS,
+  MANAGED_CAPABILITY_HINT_KEYS,
+} from './capability-badge';
 
 /**
  * The three-way choice of what a key may do. Shared by the create dialog and the change dialog so an
@@ -13,6 +19,9 @@ import { API_KEY_CAPABILITIES, type ApiKeyCapability, CAPABILITY_HINT_KEYS, CAPA
  * `unavailable` lists levels this operator may not grant — full capability takes an organization owner
  * or admin — shown disabled with `unavailableHint` in place of their consequence line, rather than
  * hidden, so a member can see the level exists and who to ask.
+ *
+ * `managed` is for a key the Hub provisioned to an app: its level also decides how far it reaches the
+ * apps beside its own, so each consequence line says that instead.
  */
 export const CapabilityPicker = ({
   value,
@@ -21,6 +30,7 @@ export const CapabilityPicker = ({
   disabled,
   unavailable = [],
   unavailableHint,
+  managed = false,
 }: {
   value: ApiKeyCapability;
   onChange: (capability: ApiKeyCapability) => void;
@@ -29,8 +39,10 @@ export const CapabilityPicker = ({
   disabled?: boolean;
   unavailable?: readonly ApiKeyCapability[];
   unavailableHint?: string;
+  managed?: boolean;
 }) => {
   const { t } = useTranslation();
+  const hintKeys = managed ? MANAGED_CAPABILITY_HINT_KEYS : CAPABILITY_HINT_KEYS;
 
   return (
     <fieldset className="min-w-0 space-y-2" data-testid={`${name}-capability`}>
@@ -60,7 +72,7 @@ export const CapabilityPicker = ({
                 {t(CAPABILITY_LABEL_KEYS[capability])}
               </span>
               <span className="block text-xs text-muted-foreground">
-                {isUnavailable && unavailableHint ? unavailableHint : t(CAPABILITY_HINT_KEYS[capability])}
+                {isUnavailable && unavailableHint ? unavailableHint : t(hintKeys[capability])}
               </span>
             </span>
           </label>

@@ -232,12 +232,28 @@ describe('AppAgentTools', () => {
         expect(mcpBridge.discoverTools).not.toHaveBeenCalled();
       });
 
-      // Reading about an app and calling its tools both operate it, which a managed app key may do on any app.
-      it("reads the app for a managed app's key on another app", async () => {
+      // Reading about an app and calling its tools both operate it, which a managed app key at `write` may do on any app.
+      it("reads the app for a managed app's key at write on another app", async () => {
         await asManagedKeyOnOtherApp(call);
 
         expect(appsService.getApp).toHaveBeenCalledWith(appUrn);
       });
+
+      // At `read` it may read about the app, but not call into it.
+      if (action === 'view') {
+        it("reads the app for a managed app's key at read on another app", async () => {
+          await asManagedKeyOnOtherApp(call, 'read');
+
+          expect(appsService.getApp).toHaveBeenCalledWith(appUrn);
+        });
+      } else {
+        it("refuses a managed app's key at read on another app, before it reads the app", async () => {
+          await expect(asManagedKeyOnOtherApp(call, 'read')).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+          expect(appsService.getApp).not.toHaveBeenCalled();
+          expect(mcpBridge.callTool).not.toHaveBeenCalled();
+        });
+      }
 
       it(`reads the app for a person holding ${action}`, async () => {
         await asGrantedOperator(call);

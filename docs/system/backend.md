@@ -298,12 +298,14 @@ custom-app and `AppsService` calls behind the per-app MCP tools assert nothing, 
 that reaches them must assert the grant itself (the MCP tools do, through `assertMcpCallerMay`).
 An operator, and the creator of an unmanaged MCP key, answer to their WhoIs grant. A managed app key
 passes every check on its own app except a custom-domain change, which takes an organization owner or
-admin, and on other apps may only operate them: view, start, stop, restart,
-take a backup, and call the app's tools and API (see
-[MCP agent bootstrap](../MCP_AGENT_BOOTSTRAP.md)). `AppLifecycleService.actorMay` is the one place
-that decides this. Where the verb cannot say which call a check is, the call site passes an
-`ActorCheckContext`: `appCall` for a call into the app's tools or API, and `createsBackup` for taking a
-backup. Leave the marker off every other call, so a managed key is refused it on other apps.
+admin at any capability. On other apps its capability decides: `read` may view them; `write` may also
+start, stop and restart them and call their tools and API; `full` may do everything (see
+[MCP agent bootstrap](../MCP_AGENT_BOOTSTRAP.md)). The `mcp` actor carries the capability its key was
+resolved with for this request, so a change in Settings applies from the next call.
+`AppLifecycleService.actorMay` is the one place that decides this. Where the verb cannot say which call
+a check is, the call site passes an `ActorCheckContext`: `appCall` for a call into the app's tools or
+API, and `stopsApp` for stopping the app (cancelling its operation is `stop` too, and stays unmarked).
+Leave the marker off every other call, so a `write` managed key is refused it on other apps.
 
 When you add an MCP tool that acts on one app, pass `mcpCallerLifecycleActor(action)` to a service that
 takes an actor, or call `assertMcpCallerMay` before the tool reads or changes anything. Give an internal

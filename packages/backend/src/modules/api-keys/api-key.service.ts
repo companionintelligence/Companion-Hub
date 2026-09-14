@@ -50,7 +50,7 @@ export interface ApiKeyContext {
   /**
    * The app a MANAGED key was provisioned to, else `null`. Lets the lifecycle
    * service tell a managed app key's own app, which it may change, from the
-   * others, which it may only operate (CI-Hub#1397).
+   * others, which `capability` decides how far it reaches (CI-Hub#1397).
    */
   ownerAppUrn: string | null;
   /**

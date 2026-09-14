@@ -11,7 +11,14 @@ import { BackupManager } from '../backup.manager';
 import { SSEService } from '@/core/sse/sse.service';
 import type { HubAction } from '@/core/portal/hub-actions';
 import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
-import { GRANTED_ACTOR, MANAGED_KEY_ON_OTHER_APP, UNGRANTED_ACTORS, gateChecks, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import {
+  GRANTED_ACTOR,
+  MANAGED_KEY_ON_OTHER_APP,
+  UNGRANTED_ACTORS,
+  gateChecks,
+  lifecycleActorGate,
+  managedKeyOnOtherApp,
+} from '@/tests/utils/lifecycle-actor-gate';
 import type { AppUrn } from '@ci-hub/common/types';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -133,7 +140,7 @@ describe('BackupsService', () => {
 
     /**
      * Each call; the verb it takes (the one its HTTP route asserts) and the context it marks the check with;
-     * whether a managed app key may make it on another app; and the side effect it exists for.
+     * whether a managed app key at `write` may make it on another app; and the side effect it exists for.
      */
     const calls: Array<
       [string, HubAction, ActorCheckContext | undefined, 'operates' | 'changes', (actor: LifecycleActor) => Promise<unknown>, () => void]
@@ -141,8 +148,8 @@ describe('BackupsService', () => {
       [
         'backupApp',
         'backup',
-        { createsBackup: true },
-        'operates',
+        undefined,
+        'changes',
         (actor) => service.backupApp({ appUrn, actor }),
         () => expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'backup', appUrn })),
       ],
@@ -196,20 +203,27 @@ describe('BackupsService', () => {
         expectNothingTouched();
       });
 
-      // Taking and listing backups operates an app; restoring or deleting one changes it.
+      // Listing backups operates an app. Restoring or deleting one changes it, and so does taking one,
+      // whose retention cleanup deletes the oldest: those take `full` on another app.
       if (managedKey === 'operates') {
-        it("goes ahead for a managed app's key on another app", async () => {
+        it("goes ahead for a managed app's key at write on another app", async () => {
           await call(MANAGED_KEY_ON_OTHER_APP);
 
           sideEffect();
         });
       } else {
-        it("refuses a managed app's key on another app, before it reads, writes or queues anything", async () => {
+        it("refuses a managed app's key at write on another app, before it reads, writes or queues anything", async () => {
           await expect(call(MANAGED_KEY_ON_OTHER_APP)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
           expectNothingTouched();
         });
       }
+
+      it("goes ahead for a managed app's key at full on another app", async () => {
+        await call(managedKeyOnOtherApp('full'));
+
+        sideEffect();
+      });
 
       it(`goes ahead for a person holding the ${action} grant`, async () => {
         await call(GRANTED_ACTOR);

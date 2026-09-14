@@ -197,14 +197,14 @@ describe('AppApiProxyTools', () => {
       apiProxy.proxyRequest.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] });
     });
 
-    it('hands over the calling key — a managed one with its owning app, which the gate reads to tell its own app from the others', async () => {
-      await asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null }, () =>
+    it('hands over the calling key — a managed one with its owning app and level, so the gate can tell this app from its own and how far it reaches', async () => {
+      await asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' }, () =>
         tools.callAppApi({ appUrn: 'ci-store:test', method: 'GET', path: '/api' }),
       );
 
       expect(apiProxy.proxyRequest).toHaveBeenCalledWith(
         'ci-store:test',
-        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null } }),
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' } }),
       );
     });
 

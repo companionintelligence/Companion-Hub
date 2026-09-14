@@ -85,11 +85,17 @@ describe('CustomAppTools', () => {
         expect(service()).not.toHaveBeenCalled();
       });
 
-      // Rewriting another app's compose or metadata changes it, which a managed app key may not do.
-      it("refuses a managed app's key on another app, and never reaches the service", async () => {
+      // Rewriting another app's compose or metadata changes it, which a managed app key needs `full` for.
+      it("refuses a managed app's key at write on another app, and never reaches the service", async () => {
         await expect(asManagedKeyOnOtherApp(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
         expect(service()).not.toHaveBeenCalled();
+      });
+
+      it("reaches the service for a managed app's key at full on another app", async () => {
+        await asManagedKeyOnOtherApp(call, 'full');
+
+        expect(service()).toHaveBeenCalled();
       });
 
       it('reaches the service for a person holding configure', async () => {

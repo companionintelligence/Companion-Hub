@@ -18,9 +18,10 @@ export function mcpCallerCapability(): ApiKeyCapability {
 
 /**
  * Who a lifecycle tool acts as for `action`, in the in-flight call: the signed-in person behind an
- * `/api/mcp-admin` run, or the `/api/mcp` key — which, when it is a managed one, may change only its
- * own app and operate the others (`AppLifecycleService.actorMay`), and acts as the person who created
- * it when it is not.
+ * `/api/mcp-admin` run, or the `/api/mcp` key — which, when it is a managed one, may do anything on its
+ * own app and on the others as far as its capability reaches (`AppLifecycleService.actorMay`), and acts
+ * as the person who created it when it is not. The capability is the one this request's key was
+ * resolved with, so a change made in Settings applies from the next call.
  *
  * A call that names neither is refused, the way {@link mcpCallerCapability} fails closed. Reading "no
  * key" as an unmanaged key is how the admin runner, which never has one, reached every app with no
@@ -36,7 +37,7 @@ export function mcpCallerLifecycleActor(action: HubAction): LifecycleActor {
   const key = mcpCallContext.getStore();
 
   if (key) {
-    return { kind: 'mcp', ownerAppUrn: key.ownerAppUrn, createdByUserId: key.createdByUserId };
+    return { kind: 'mcp', ownerAppUrn: key.ownerAppUrn, createdByUserId: key.createdByUserId, capability: key.capability };
   }
 
   throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);

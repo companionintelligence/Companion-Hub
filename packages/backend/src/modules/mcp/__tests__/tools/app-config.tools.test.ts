@@ -126,20 +126,27 @@ describe('AppConfigTools', () => {
         expect(service()).not.toHaveBeenCalled();
       });
 
-      // Reading an app's overrides operates it, which a managed app key may do on any app; changing them does not.
+      // Reading an app's overrides operates it, which a managed app key may do on any app at any level;
+      // changing them takes `full`.
       if (action === 'view') {
-        it("reaches the service for a managed app's key on another app", async () => {
-          await asManagedKeyOnOtherApp(call);
+        it.each(['read', 'write'] as const)("reaches the service for a managed app's key at %s on another app", async (capability) => {
+          await asManagedKeyOnOtherApp(call, capability);
 
           expect(service()).toHaveBeenCalled();
         });
       } else {
-        it("refuses a managed app's key on another app, and never reaches the service", async () => {
+        it("refuses a managed app's key at write on another app, and never reaches the service", async () => {
           await expect(asManagedKeyOnOtherApp(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
           expect(service()).not.toHaveBeenCalled();
         });
       }
+
+      it("reaches the service for a managed app's key at full on another app", async () => {
+        await asManagedKeyOnOtherApp(call, 'full');
+
+        expect(service()).toHaveBeenCalled();
+      });
 
       it(`reaches the service for a person holding ${action}`, async () => {
         await asGrantedOperator(call);

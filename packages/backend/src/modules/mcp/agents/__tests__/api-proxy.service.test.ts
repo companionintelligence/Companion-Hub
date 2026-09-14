@@ -5,7 +5,14 @@ import { ApiProxyService } from '../../agents/api-proxy.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { GRANTED_ACTOR, MANAGED_KEY_ON_OTHER_APP, UNGRANTED_ACTORS, gateChecks, lifecycleActorGate } from '@/tests/utils/lifecycle-actor-gate';
+import {
+  GRANTED_ACTOR,
+  MANAGED_KEY_ON_OTHER_APP,
+  UNGRANTED_ACTORS,
+  gateChecks,
+  lifecycleActorGate,
+  managedKeyOnOtherApp,
+} from '@/tests/utils/lifecycle-actor-gate';
 import type { AppUrn } from '@ci-hub/common/types';
 
 const TEST_URN = 'ci-store:nextcloud' as AppUrn;
@@ -174,7 +181,8 @@ describe('ApiProxyService', () => {
   /*
    * The request carries the credential the app's agent config points the Hub at, so reaching an app's
    * API reads or changes its data with the Hub's access. The proxy asks the lifecycle's actor gate
-   * first (CI-Hub#1397), marked as an app call, which a managed app key may make on any app.
+   * first (CI-Hub#1397), marked as an app call, which a managed app key at `write` may make on any app
+   * with any method, and at `read` with a method that only reads.
    */
   describe('the actor gate', () => {
     it.each(UNGRANTED_ACTORS)('refuses %s before any request leaves the Hub', async (_label, actor) => {
@@ -192,12 +200,25 @@ describe('ApiProxyService', () => {
       });
     });
 
-    it.each(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])("lets a managed app's key call another app's API with %s", async (method) => {
+    it.each(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])("lets a managed app's key at write call another app's API with %s", async (method) => {
       mockFetch.mockImplementation(async () => new Response('ok', { status: 200 }));
 
       await expect(service.proxyRequest(TEST_URN, { method, path: '/api/users', actor: MANAGED_KEY_ON_OTHER_APP })).resolves.toEqual({
         content: [{ type: 'text', text: 'ok' }],
       });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("lets a managed app's key at read read another app's API, and write nothing", async () => {
+      mockFetch.mockImplementation(async () => new Response('ok', { status: 200 }));
+      const readKey = managedKeyOnOtherApp('read');
+
+      await expect(service.proxyRequest(TEST_URN, { method: 'GET', path: '/api/users', actor: readKey })).resolves.toEqual({
+        content: [{ type: 'text', text: 'ok' }],
+      });
+      for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
+        await expect(service.proxyRequest(TEST_URN, { method, path: '/api/users', actor: readKey })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+      }
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 

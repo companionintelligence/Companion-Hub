@@ -1,3 +1,4 @@
+import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import type { HubAction } from './hub-actions';
 
 /**
@@ -22,17 +23,20 @@ export type LifecycleActor =
   /** A grant-exempt named principal; see `isGrantExemptPrincipal`. */
   | { kind: 'exempt'; principal: 'portal-device' | 'cli' }
   /**
-   * An MCP key. Its capability is already enforced by the tool registry.
+   * An MCP key. The tool registry already enforces its capability on each tool.
    *
    * `ownerAppUrn` is set for a MANAGED app key, which may do anything on its own
-   * app and only operate the others (`AppLifecycleService.actorMay`).
-   * `createdByUserId` names the Hub person who created an unmanaged key: it acts
-   * with that person's grants and role, never more. `null` there is a key nobody
-   * is recorded as creating — minted by the CLI, or before creators were
-   * recorded — which keeps the per-app reach keys had before, and gets nothing
-   * that takes a role.
+   * app; on the others, its `capability` decides how far it reaches
+   * (`AppLifecycleService.actorMay`). `createdByUserId` names the Hub person who
+   * created an unmanaged key: it acts with that person's grants and role, never
+   * more. `null` there is a key nobody is recorded as creating — minted by the
+   * CLI, or before creators were recorded — which keeps the per-app reach keys
+   * had before, and gets nothing that takes a role.
+   *
+   * `capability` is the key's level as read for this request, so a change made in
+   * Settings applies from the next call. Only the managed-key rule reads it here.
    */
-  | { kind: 'mcp'; ownerAppUrn: string | null; createdByUserId: number | null }
+  | { kind: 'mcp'; ownerAppUrn: string | null; createdByUserId: number | null; capability: ApiKeyCapability }
   /** The Hub acting on its own behalf, for a reason named here. */
   | { kind: 'system'; reason: SystemLifecycleReason };
 
@@ -64,16 +68,17 @@ export type SystemLifecycleReason =
 
 /**
  * What a check is for, where its verb cannot say. A person is still checked on the verb alone: only a
- * managed app key, on an app that is not its own, reads this (`AppLifecycleService.actorMay`).
+ * managed app key with `write` capability, on an app that is not its own, reads this
+ * (`AppLifecycleService.actorMay`).
  *
- * Only the call a managed key may make is marked. A check that leaves the marker off is refused that key
+ * Only the call such a key may make is marked. A check that leaves the marker off is refused that key
  * on other apps, so a caller that forgets it fails closed rather than open.
  */
 export interface ActorCheckContext {
   /** A call into the app's own MCP tools or HTTP API — `configure` to a person, or `view` for a read. */
   appCall?: true;
-  /** Taking a backup. Deleting one is `backup` to a person too, and is not marked. */
-  createsBackup?: true;
+  /** Stopping the app. Cancelling its operation is `stop` to a person too, and is not marked. */
+  stopsApp?: true;
 }
 
 /**

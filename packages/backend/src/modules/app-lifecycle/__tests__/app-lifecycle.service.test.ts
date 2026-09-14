@@ -830,18 +830,32 @@ describe('AppLifecycleService', () => {
         await expect(service.updateAppConfig({ actor: OPERATOR, appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
       });
 
-      // Installing and configuring change an app, which a managed app's key may do only to its own.
-      it("refuses a managed app's key install and configuration on any app but its own", async () => {
-        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null };
+      // Installing and configuring change an app, which a managed app's key below `full` may do only to its own.
+      it.each([
+        'read',
+        'write',
+      ] as const)("refuses a managed app's key at %s install and configuration on any app but its own", async (capability) => {
+        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null, capability };
 
         await expect(service.installApp({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
         await expect(service.updateAppConfig({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
         expect(appsRepository.createApp).not.toHaveBeenCalled();
       });
 
+      it("installs and configures another app for a managed app's key at full, without consulting WhoIs", async () => {
+        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null, capability: 'full' };
+
+        await service.installApp({ actor: neighbour, appUrn, form: {} });
+        expect(appsRepository.createApp).toHaveBeenCalled();
+
+        // Past the gate this app would be "not found".
+        await expect(service.updateAppConfig({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+        expect(whois.has).not.toHaveBeenCalled();
+      });
+
       it.each([
-        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null }],
-        ['an unmanaged MCP key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null }],
+        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null, capability: 'read' }],
+        ['an unmanaged MCP key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'write' }],
         ['a grant-exempt principal', { kind: 'exempt', principal: 'portal-device' }],
         ['the Hub itself', { kind: 'system', reason: 'debug-seed' }],
       ] as Array<[string, LifecycleActor]>)('installs for %s without consulting WhoIs', async (_label, actor) => {
@@ -852,7 +866,7 @@ describe('AppLifecycleService', () => {
       });
 
       it("acts as the person who created an unmanaged key, on that person's grant", async () => {
-        const createdBy7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
+        const createdBy7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7, capability: 'write' };
         whois.has.mockResolvedValue(false);
 
         await expect(service.installApp({ actor: createdBy7, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
@@ -868,9 +882,9 @@ describe('AppLifecycleService', () => {
       it('refuses a key whose creator cannot be checked because WhoIs is unavailable, as it would the person', async () => {
         vi.mocked((service as any).moduleRef.get).mockImplementation(() => undefined);
 
-        await expect(service.installApp({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 }, appUrn, form: {} })).rejects.toThrow(
-          'APP_ACTION_GRANT_DENIED',
-        );
+        await expect(
+          service.installApp({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7, capability: 'write' }, appUrn, form: {} }),
+        ).rejects.toThrow('APP_ACTION_GRANT_DENIED');
         expect(appsRepository.createApp).not.toHaveBeenCalled();
       });
 
@@ -943,9 +957,13 @@ describe('AppLifecycleService', () => {
         });
 
         it.each([
-          ['an unmanaged key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null }],
-          // A managed key acts for its app; a creator recorded against it is never asked.
-          ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: 9 }],
+          ['an unmanaged key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'full' }],
+          // A managed key acts for its app; a creator recorded against it is never asked, and `full` is no role.
+          ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: 9, capability: 'full' }],
+          [
+            'a managed key at full on another app',
+            { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null, capability: 'full' },
+          ],
         ] as Array<[string, LifecycleActor]>)('refuses %s, whatever its capability — no person to ask', async (_label, actor) => {
           await expect(service.installApp({ actor, appUrn, form: { customDomain: 'shop.acme.com' } })).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
           expect(appsRepository.createApp).not.toHaveBeenCalled();
@@ -956,7 +974,7 @@ describe('AppLifecycleService', () => {
           roles.hasManagingRole.mockResolvedValue(true);
 
           await service.installApp({
-            actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 9 },
+            actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 9, capability: 'write' },
             appUrn,
             form: { customDomain: 'shop.acme.com' },
           });
@@ -969,7 +987,11 @@ describe('AppLifecycleService', () => {
           roles.hasManagingRole.mockResolvedValue(false);
 
           await expect(
-            service.installApp({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 9 }, appUrn, form: { customDomain: 'shop.acme.com' } }),
+            service.installApp({
+              actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 9, capability: 'full' },
+              appUrn,
+              form: { customDomain: 'shop.acme.com' },
+            }),
           ).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
           expect(appsRepository.createApp).not.toHaveBeenCalled();
         });
@@ -987,7 +1009,13 @@ describe('AppLifecycleService', () => {
 
       describe('the sweeps', () => {
         const IMPORTER = 'importer:ci-marketplace';
-        const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER, createdByUserId: null };
+        const importerKeyAt = (capability: 'read' | 'write' | 'full'): LifecycleActor => ({
+          kind: 'mcp',
+          ownerAppUrn: IMPORTER,
+          createdByUserId: null,
+          capability,
+        });
+        const importerKey = importerKeyAt('write');
         const row = (appName: string) => ({
           id: appName.length,
           appName,
@@ -1009,8 +1037,21 @@ describe('AppLifecycleService', () => {
           expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
         });
 
+        it('updates every app for a managed key at full, without consulting WhoIs', async () => {
+          appsService.getInstalledApps.mockResolvedValue(
+            ['neighbour', 'importer'].map((name) => ({ app: row(name), metadata: { latestVersion: 2 } })) as any,
+          );
+          const update = vi.spyOn(service, 'updateApp').mockResolvedValue({ requestId: 'u' } as any);
+
+          await service.updateAllApps(importerKeyAt('full'));
+
+          expect(update).toHaveBeenCalledTimes(2);
+          expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: 'neighbour:ci-marketplace' }));
+          expect(whois.has).not.toHaveBeenCalled();
+        });
+
         it("updates only the apps an unmanaged key's creator may update", async () => {
-          const createdBy7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
+          const createdBy7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7, capability: 'write' };
           whois.has.mockImplementation(async (_userId: number, urn: string) => urn === IMPORTER);
           appsService.getInstalledApps.mockResolvedValue(
             ['neighbour', 'importer'].map((name) => ({ app: row(name), metadata: { latestVersion: 2 } })) as any,
@@ -1035,14 +1076,33 @@ describe('AppLifecycleService', () => {
         });
 
         /*
-         * Starting, stopping and restarting operate an app, which a managed key may do on any app, so those
-         * sweeps reach every app for it. Updating changes an app, so update-all stays on the key's own.
+         * Starting, stopping and restarting operate an app, which a managed key at `write` may do on any app,
+         * so those sweeps reach every app for it. Updating changes an app, so below `full` update-all stays on
+         * the key's own. At `read` a key operates only its own app, so every sweep stays on it.
          */
         it.each([
           ['stopAllApps', 'stopApp', 'running'],
           ['startAllApps', 'startApp', 'stopped'],
           ['restartAllApps', 'restartApp', 'running'],
-        ] as const)('%s reaches every app for a managed key, not only its own', async (sweep, perAppCall, status) => {
+        ] as const)('%s reaches only its own app for a managed key at read', async (sweep, perAppCall, status) => {
+          appsRepository.getApps.mockResolvedValue([
+            { ...row('neighbour'), status },
+            { ...row('importer'), status },
+          ] as any);
+          const perApp = vi.spyOn(service, perAppCall).mockResolvedValue({ requestId: 's' } as any);
+
+          await service[sweep](importerKeyAt('read'));
+
+          // The neighbour comes first, so it would already have been reached.
+          await vi.waitFor(() => expect(perApp).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER })));
+          expect(perApp).toHaveBeenCalledTimes(1);
+        });
+
+        it.each([
+          ['stopAllApps', 'stopApp', 'running'],
+          ['startAllApps', 'startApp', 'stopped'],
+          ['restartAllApps', 'restartApp', 'running'],
+        ] as const)('%s reaches every app for a managed key at write, not only its own', async (sweep, perAppCall, status) => {
           appsRepository.getApps.mockResolvedValue([
             { ...row('neighbour'), status },
             { ...row('importer'), status },
@@ -1531,8 +1591,12 @@ describe('AppLifecycleService', () => {
     const installed = { id: 3, appName: 'immich', appStoreSlug: 'ci-marketplace', status: 'stopped', config: {}, exposedLocal: false };
     const whois = { has: vi.fn() };
     const OPERATOR: LifecycleActor = { kind: 'operator', userId: 7 };
-    const MANAGED_NEIGHBOUR: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null };
-    const CREATED_BY_7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
+    /** A managed app's key on this app, which is not its own, at the level it is provisioned with. */
+    const MANAGED_NEIGHBOUR: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null, capability: 'write' };
+    const MANAGED_NEIGHBOUR_READ: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null, capability: 'read' };
+    const MANAGED_NEIGHBOUR_FULL: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null, capability: 'full' };
+    // At `full`: a key acting as its creator gets that person's grants, whatever its own level.
+    const CREATED_BY_7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7, capability: 'full' };
 
     /**
      * Each single-app call; the verb it takes (the one its app route asserts, and the command it queues);
@@ -1570,17 +1634,29 @@ describe('AppLifecycleService', () => {
       });
 
       if (kind === 'operates') {
-        it("lets a managed app's key do it on another app, without consulting WhoIs", async () => {
+        it("lets a managed app's key at write do it on another app, without consulting WhoIs", async () => {
           await call(MANAGED_NEIGHBOUR);
 
           expect(whois.has).not.toHaveBeenCalled();
           expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: action, appUrn }));
         });
+
+        it("refuses a managed app's key at read on any app but its own", async () => {
+          await expect(call(MANAGED_NEIGHBOUR_READ)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+          expectNothingTouched();
+        });
       } else {
-        it("refuses a managed app's key on any app but its own", async () => {
+        it("refuses a managed app's key below full on any app but its own", async () => {
           await expect(call(MANAGED_NEIGHBOUR)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
           expect(whois.has).not.toHaveBeenCalled();
           expectNothingTouched();
+        });
+
+        it("lets a managed app's key at full do it on another app, without consulting WhoIs", async () => {
+          await call(MANAGED_NEIGHBOUR_FULL);
+
+          expect(whois.has).not.toHaveBeenCalled();
+          expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: action, appUrn }));
         });
       }
 
@@ -1609,7 +1685,7 @@ describe('AppLifecycleService', () => {
       });
 
       it.each([
-        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null }],
+        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null, capability: 'read' }],
         ['a grant-exempt principal', { kind: 'exempt', principal: 'cli' }],
         ['the Hub itself', { kind: 'system', reason: 'sweep' }],
       ] as Array<[string, LifecycleActor]>)('queues it for %s without consulting WhoIs', async (_label, actor) => {
@@ -1640,8 +1716,18 @@ describe('AppLifecycleService', () => {
         expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(false);
       });
 
-      it("lets a managed app's key cancel an operation on another app: cancelling is stopping", async () => {
-        await expect(service.cancelOperation({ actor: MANAGED_NEIGHBOUR, appUrn, requestId })).resolves.toMatchObject({
+      it("refuses a managed app's key below full, and leaves the other app's operation running: cancelling can undo an install", async () => {
+        const abort = vi.spyOn(operationRegistry, 'abort');
+
+        await expect(service.cancelOperation({ actor: MANAGED_NEIGHBOUR, appUrn, requestId })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+        expect(abort).not.toHaveBeenCalled();
+        expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(false);
+        expect(whois.has).not.toHaveBeenCalled();
+      });
+
+      it("lets a managed app's key at full cancel an operation on another app", async () => {
+        await expect(service.cancelOperation({ actor: MANAGED_NEIGHBOUR_FULL, appUrn, requestId })).resolves.toMatchObject({
           outcome: 'cancelled_queued',
         });
 
@@ -1658,11 +1744,14 @@ describe('AppLifecycleService', () => {
     });
 
     /*
-     * The managed-key rule at the one place that decides it: a managed app's key operates other apps and
-     * changes only its own. Everyone else is still checked on the verb alone.
+     * The managed-key rule at the one place that decides it: a managed app's key may do anything on its own
+     * app, and on other apps as far as its capability reaches. Everyone else is still checked on the verb
+     * alone, whatever their key's level.
      */
     describe('what a managed app key may do on an app that is not its own', () => {
-      const OWN_KEY: LifecycleActor = { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null };
+      /** A managed app's key at `capability` (typed loosely, so a level nobody knows can be tried). */
+      const keyAt = (capability: unknown, ownerAppUrn = 'importer:ci-marketplace') =>
+        ({ kind: 'mcp', ownerAppUrn, createdByUserId: null, capability }) as LifecycleActor;
       /** Whether the gate admits the check, rather than throwing its refusal. */
       const admitted = (actor: LifecycleActor, action: HubAction, context?: ActorCheckContext) =>
         service.assertActorMay(actor, appUrn, action, context).then(
@@ -1676,55 +1765,116 @@ describe('AppLifecycleService', () => {
           },
         );
 
-      it.each([
-        ['view it', 'view', undefined],
-        ['start it', 'start', undefined],
-        ['stop it, or cancel its operation', 'stop', undefined],
-        ['restart it', 'restart', undefined],
-        ['take a backup of it', 'backup', { createsBackup: true }],
-        ['call its tools, or its API with a method that writes', 'configure', { appCall: true }],
-        ['read its API', 'view', { appCall: true }],
-      ] as Array<[string, HubAction, ActorCheckContext | undefined]>)('may %s', async (_label, action, context) => {
-        await expect(admitted(MANAGED_NEIGHBOUR, action, context)).resolves.toBe(true);
-        expect(whois.has).not.toHaveBeenCalled();
-      });
-
-      it.each([
+      /** What only `full` adds on another app, and each marker stretched to a verb it does not name. */
+      const ONLY_AT_FULL = [
         ['install it', 'install', undefined],
         ['change its configuration', 'configure', undefined],
         ['uninstall it', 'uninstall', undefined],
         ['reset it', 'reset', undefined],
         ['update it', 'update', undefined],
         ['restore a backup over it', 'restore', undefined],
-        ['delete its backups', 'backup', undefined],
+        // Taking and deleting a backup share the verb, and retention makes taking one delete others.
+        ['take or delete its backups', 'backup', undefined],
+        // Cancelling is `stop` to a person, and is not marked: it can undo an install down to its data.
+        ['cancel its operation', 'stop', undefined],
         // A marker admits the verbs of the call it names, and nothing else.
         ['uninstall it by marking the check an app call', 'uninstall', { appCall: true }],
-        ['restore a backup by marking the check as taking one', 'restore', { createsBackup: true }],
-        ['change its configuration by marking the check as taking a backup', 'configure', { createsBackup: true }],
-        ['delete its backups by marking the check an app call', 'backup', { appCall: true }],
-      ] as Array<[string, HubAction, ActorCheckContext | undefined]>)('may not %s', async (_label, action, context) => {
-        await expect(admitted(MANAGED_NEIGHBOUR, action, context)).resolves.toBe(false);
+        ['uninstall it by marking the check as stopping the app', 'uninstall', { stopsApp: true }],
+        ['change its configuration by marking the check as stopping the app', 'configure', { stopsApp: true }],
+        ['back it up by marking the check an app call', 'backup', { appCall: true }],
+        ['cancel its operation by marking the check an app call', 'stop', { appCall: true }],
+      ] as Array<[string, HubAction, ActorCheckContext | undefined]>;
+
+      describe('at write, the level a managed key is provisioned with', () => {
+        it.each([
+          ['view it', 'view', undefined],
+          ['start it', 'start', undefined],
+          ['stop it', 'stop', { stopsApp: true }],
+          ['restart it', 'restart', undefined],
+          ['call its tools, or its API with a method that writes', 'configure', { appCall: true }],
+          ['read its API', 'view', { appCall: true }],
+        ] as Array<[string, HubAction, ActorCheckContext | undefined]>)('may %s', async (_label, action, context) => {
+          await expect(admitted(keyAt('write'), action, context)).resolves.toBe(true);
+          expect(whois.has).not.toHaveBeenCalled();
+        });
+
+        it.each(ONLY_AT_FULL)('may not %s', async (_label, action, context) => {
+          await expect(admitted(keyAt('write'), action, context)).resolves.toBe(false);
+        });
       });
 
-      it.each(HUB_ACTIONS)('may %s its own app, marked or not', async (action) => {
-        await expect(admitted(OWN_KEY, action)).resolves.toBe(true);
-        await expect(admitted(OWN_KEY, action, { appCall: true })).resolves.toBe(true);
+      describe('at read', () => {
+        it.each([
+          ['view it', 'view', undefined],
+          ['read its API', 'view', { appCall: true }],
+        ] as Array<[string, HubAction, ActorCheckContext | undefined]>)('may %s', async (_label, action, context) => {
+          await expect(admitted(keyAt('read'), action, context)).resolves.toBe(true);
+        });
+
+        it.each([
+          ['start it', 'start', undefined],
+          ['stop it', 'stop', { stopsApp: true }],
+          ['restart it', 'restart', undefined],
+          ['call its tools, or its API with a method that writes', 'configure', { appCall: true }],
+          ...ONLY_AT_FULL,
+        ] as Array<[string, HubAction, ActorCheckContext | undefined]>)('may not %s', async (_label, action, context) => {
+          await expect(admitted(keyAt('read'), action, context)).resolves.toBe(false);
+        });
       });
 
-      it('changes nothing for a person: an app call still takes configure, and taking a backup still takes backup', async () => {
+      it.each(HUB_ACTIONS)('may %s it at full, marked or not, without consulting WhoIs', async (action) => {
+        await expect(admitted(keyAt('full'), action)).resolves.toBe(true);
+        await expect(admitted(keyAt('full'), action, { appCall: true })).resolves.toBe(true);
+        await expect(admitted(keyAt('full'), action, { stopsApp: true })).resolves.toBe(true);
+        expect(whois.has).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['a level it does not know', 'admin'],
+        ['no level at all', undefined],
+      ])('reads %s as read — view, and nothing more — never as full', async (_label, capability) => {
+        const key = keyAt(capability);
+
+        await expect(admitted(key, 'view')).resolves.toBe(true);
+        for (const [action, context] of [
+          ['start', undefined],
+          ['stop', { stopsApp: true }],
+          ['configure', { appCall: true }],
+          ['uninstall', undefined],
+        ] as Array<[HubAction, ActorCheckContext | undefined]>) {
+          await expect(admitted(key, action, context)).resolves.toBe(false);
+        }
+      });
+
+      it.each(['read', 'write', 'full'])('may do everything to its own app at %s, marked or not', async (capability) => {
+        for (const action of HUB_ACTIONS) {
+          await expect(admitted(keyAt(capability, appUrn), action)).resolves.toBe(true);
+          await expect(admitted(keyAt(capability, appUrn), action, { appCall: true })).resolves.toBe(true);
+        }
+      });
+
+      it('changes nothing for a person, or a key acting as one: an app call still takes configure, and stopping still takes stop', async () => {
         // WhoIs grants these people `view` and nothing else.
         whois.has.mockImplementation(async (_userId: number, _urn: string, action: string) => action === 'view');
 
         await expect(admitted(OPERATOR, 'configure', { appCall: true })).resolves.toBe(false);
         await expect(admitted(CREATED_BY_7, 'configure', { appCall: true })).resolves.toBe(false);
-        await expect(admitted(OPERATOR, 'backup', { createsBackup: true })).resolves.toBe(false);
+        await expect(admitted(CREATED_BY_7, 'uninstall')).resolves.toBe(false);
+        await expect(admitted(OPERATOR, 'stop', { stopsApp: true })).resolves.toBe(false);
         await expect(admitted(OPERATOR, 'start')).resolves.toBe(false);
         expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'configure');
-        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'backup');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'uninstall');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'stop');
       });
 
-      it('changes nothing for a key nobody is recorded as creating: it keeps its per-app reach', async () => {
-        await expect(admitted({ kind: 'mcp', ownerAppUrn: null, createdByUserId: null }, 'uninstall')).resolves.toBe(true);
+      it.each([
+        'read',
+        'write',
+        'full',
+      ])('changes nothing for a key nobody is recorded as creating, at %s: it keeps its per-app reach', async (capability) => {
+        await expect(admitted({ kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability } as LifecycleActor, 'uninstall')).resolves.toBe(
+          true,
+        );
         expect(whois.has).not.toHaveBeenCalled();
       });
     });

@@ -195,7 +195,7 @@ describe('AppLifecycleTools', () => {
       await asKey(() => tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } }));
 
       expect(lifecycleService.installApp).toHaveBeenCalledWith(
-        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: null } }),
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'write' } }),
       );
     });
 
@@ -206,32 +206,50 @@ describe('AppLifecycleTools', () => {
       await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }), createdKey);
 
       expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 4 } }),
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 4, capability: 'write' } }),
       );
     });
 
-    it("carries a managed key's owning app, so the service can confine it to that app", async () => {
+    it("carries a managed key's owning app and level, so the service can tell how far it reaches another app", async () => {
       lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
       const managedKey = { id: 3, name: 'importer', capability: 'write', ownerAppUrn: 'importer:ci-store', createdByUserId: null } as const;
 
       await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }), managedKey);
 
       expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null } }),
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null, capability: 'write' } }),
       );
     });
 
     it.each(
       SINGLE_APP_TOOLS,
-    )("hands %s the calling key — a managed one keeps its owning app, which the gate reads to tell its own app from its neighbours'", async (method) => {
+    )('hands %s the calling key — a managed one keeps its owning app and level, so the gate can tell its own app from a neighbour and how far it reaches', async (method) => {
       lifecycleService[method].mockResolvedValue({ requestId: 'r' });
       const managedKey = { id: 3, name: 'importer', capability: 'full', ownerAppUrn: 'importer:ci-store', createdByUserId: null } as const;
 
       await asKey(() => tools[method]({ appUrn: 'ci-store:test' }), managedKey);
 
       expect(lifecycleService[method]).toHaveBeenCalledWith(
-        expect.objectContaining({ appUrn: 'ci-store:test', actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null } }),
+        expect.objectContaining({
+          appUrn: 'ci-store:test',
+          actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null, capability: 'full' },
+        }),
       );
+    });
+
+    it("reads the key's level on every call, so a change made in Settings applies from the next one", async () => {
+      lifecycleService.stopApp.mockResolvedValue({ requestId: 'r' });
+      const managedKey = { id: 3, name: 'importer', ownerAppUrn: 'importer:ci-store', createdByUserId: null } as const;
+
+      await asKey(() => tools.stopApp({ appUrn: 'ci-store:test' }), { ...managedKey, capability: 'write' });
+      await asKey(() => tools.stopApp({ appUrn: 'ci-store:test' }), { ...managedKey, capability: 'full' });
+      await asKey(() => tools.stopApp({ appUrn: 'ci-store:test' }), { ...managedKey, capability: 'read' });
+
+      expect(lifecycleService.stopApp.mock.calls.map(([params]) => params.actor)).toEqual([
+        { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null, capability: 'write' },
+        { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null, capability: 'full' },
+        { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null, capability: 'read' },
+      ]);
     });
 
     it.each(SINGLE_APP_TOOLS)('hands %s the person an admin-runner call names, for %s', async (method, action) => {
@@ -250,7 +268,7 @@ describe('AppLifecycleTools', () => {
 
       await asKey(() => tools[sweep]());
 
-      expect(lifecycleService[sweep]).toHaveBeenCalledWith({ kind: 'mcp', ownerAppUrn: null, createdByUserId: null });
+      expect(lifecycleService[sweep]).toHaveBeenCalledWith({ kind: 'mcp', ownerAppUrn: null, createdByUserId: null, capability: 'write' });
     });
 
     it('acts as the person an admin-runner call names, for the verb it runs', async () => {

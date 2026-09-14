@@ -38,8 +38,9 @@ export class BackupsService {
   public async backupApp(params: { appUrn: AppUrn; actor: LifecycleActor }) {
     const { appUrn } = params;
 
-    // Marked as taking a backup: a managed app key may back up any app, but not delete another app's backups.
-    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'backup', { createsBackup: true });
+    // A managed app key needs `full` to back up another app: each backup's retention cleanup deletes
+    // that app's oldest backups, which is deleting them.
+    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'backup');
 
     if (this.config.get('demoMode')) {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
@@ -160,7 +161,7 @@ export class BackupsService {
   public async deleteAppBackup(params: { appUrn: AppUrn; filename: string; actor: LifecycleActor }): Promise<void> {
     const { appUrn, filename } = params;
 
-    // Unmarked, unlike taking a backup: a managed app key may not delete another app's backups.
+    // A managed app key needs `full` to delete another app's backups.
     await this.appLifecycle.assertActorMay(params.actor, appUrn, 'backup');
 
     await this.backupManager.deleteBackup(appUrn, filename);

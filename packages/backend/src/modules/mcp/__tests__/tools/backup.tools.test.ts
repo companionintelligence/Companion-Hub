@@ -104,11 +104,11 @@ describe('BackupTools', () => {
 
     it.each(
       calls,
-    )('%s hands over the calling key — a managed one with its owning app, which the gate reads to tell its own app from the others', async (_tool, _action, call, service) => {
-      await asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null }, call);
+    )('%s hands over the calling key — a managed one with its owning app and level, so the gate can tell this app from its own and how far it reaches', async (_tool, _action, call, service) => {
+      await asKey({ ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' }, call);
 
       expect(service()).toHaveBeenCalledWith(
-        expect.objectContaining({ appUrn, actor: { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null } }),
+        expect.objectContaining({ appUrn, actor: { kind: 'mcp', ownerAppUrn: OTHER_APP, createdByUserId: null, capability: 'write' } }),
       );
     });
 
