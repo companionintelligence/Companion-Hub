@@ -1,6 +1,7 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
@@ -1704,7 +1705,7 @@ export class ExposureSyncService {
      * undefined at decoration time — the same reason `AppsService` reaches for
      * it this way.
      */
-    let lifecycleService: { restartApp(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<unknown> } | undefined;
+    let lifecycleService: { restartApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }): Promise<unknown> } | undefined;
     try {
       const { AppLifecycleService } = await import('./app-lifecycle.service');
       // `ModuleRef.get` throws when a provider cannot be resolved; it does not
@@ -1743,7 +1744,7 @@ export class ExposureSyncService {
       try {
         // Skip the pull: nothing about the image changed, and a registry round
         // trip would extend the outage this restart exists to end.
-        await lifecycleService.restartApp({ appUrn, skipPull: true });
+        await lifecycleService.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'custom-domain-revert' } });
         // Recorded only once the command is queued. A dispatch that threw
         // restarted nothing, so it must not spend the cooldown.
         this.lastCustomDomainRestartAt.set(appUrn, now);

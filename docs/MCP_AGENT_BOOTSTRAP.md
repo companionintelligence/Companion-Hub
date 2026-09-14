@@ -34,6 +34,12 @@ At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
 
 Marketplace entries for `ci-hermes` and `ci-openclaw` set `mcp_client: true`.
 
+A managed key acts for its own app only. The Hub refuses it any tool call that names another app, such
+as starting or stopping it, reading its logs or config, its backups, and `hub_call_app_api`, with
+`APP_ACTION_GRANT_DENIED` ([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)).
+An agent that manages other apps needs an operator key, which acts with the grants of the person who
+created it.
+
 ## CI-Hermes path
 
 Boot order (`entrypoint.sh` / `gateway-entrypoint.sh`):

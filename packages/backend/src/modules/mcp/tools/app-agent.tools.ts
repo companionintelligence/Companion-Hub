@@ -1,7 +1,9 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
+import { assertMcpCallerMay } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { AgentConfigService } from '../agents/agent-config.service';
 import { SkillResolverService } from '../agents/skill-resolver.service';
@@ -17,6 +19,7 @@ export class AppAgentTools implements OnModuleInit {
     private readonly skillResolver: SkillResolverService,
     private readonly openapiBridge: OpenApiBridgeService,
     private readonly mcpBridge: McpBridgeService,
+    private readonly appLifecycleService: AppLifecycleService,
   ) {}
 
   onModuleInit() {
@@ -101,6 +104,12 @@ export class AppAgentTools implements OnModuleInit {
     });
   }
 
+  /*
+   * Each tool on one app asks the lifecycle's actor gate first (`assertMcpCallerMay`) — `view` to read
+   * about the app, `configure` to call into it, as a mutating hub_call_app_api does — because each one's
+   * first step is `AppsService.getApp`, and the lifecycle module depends on `AppsService` (CI-Hub#1397).
+   */
+
   /**
    * S-ASK-1.1: Returns { content, available }
    * S-ASK-1.2: available=false when no SKILL.md
@@ -108,6 +117,7 @@ export class AppAgentTools implements OnModuleInit {
    */
   async getAppSkill(params: { appUrn: string }): Promise<{ content: string; available: boolean }> {
     const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
     const { info } = await this.appsService.getApp(appUrn);
     const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
     return this.skillResolver.getSkillContent(appUrn, agentConfig);
@@ -146,6 +156,7 @@ export class AppAgentTools implements OnModuleInit {
     tools: Array<{ name: string; description: string; source: 'openapi' | 'mcp' }>;
   }> {
     const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
     const { info } = await this.appsService.getApp(appUrn);
     const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
 
@@ -166,6 +177,7 @@ export class AppAgentTools implements OnModuleInit {
   /** Forward a tool call to an app's bridged MCP server (#936). */
   async callAppTool(params: { appUrn: string; tool: string; arguments?: Record<string, unknown> }): Promise<unknown> {
     const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
     const { info } = await this.appsService.getApp(appUrn);
     const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
 
@@ -182,6 +194,7 @@ export class AppAgentTools implements OnModuleInit {
    */
   async getAppOpenApi(params: { appUrn: string }): Promise<{ spec: string; available: boolean }> {
     const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
     const { info } = await this.appsService.getApp(appUrn);
     const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
 

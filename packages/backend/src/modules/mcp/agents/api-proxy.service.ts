@@ -1,8 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AgentOpenApiAuth } from '@ci-hub/common/schemas';
+import { appApiAction } from '../http-method-access';
 
 const MAX_RESPONSE_SIZE = 100 * 1024; // 100KB
 
@@ -21,6 +24,7 @@ export class ApiProxyService {
   constructor(
     readonly _appFilesManager: AppFilesManager,
     private readonly logger: LoggerService,
+    private readonly appLifecycle: AppLifecycleService,
   ) {}
 
   /**
@@ -34,6 +38,7 @@ export class ApiProxyService {
     appUrn: AppUrn,
     operation: OpenApiOperationRef,
     params: Record<string, unknown>,
+    actor: LifecycleActor,
     auth?: AgentOpenApiAuth,
   ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
     let urlPath = operation.path;
@@ -61,6 +66,7 @@ export class ApiProxyService {
       body,
       queryParams,
       auth,
+      actor,
     });
   }
 
@@ -70,6 +76,12 @@ export class ApiProxyService {
    * S-APX-1.2: Injects auth from OpenAPI config
    * S-APX-1.3: Works even without agent config using known host:port
    * S-APX-1.4: Truncates responses over 100KB
+   *
+   * ⚠ THE APP ANSWERS AS IT WOULD ANSWER THE HUB. The request carries the credential the app's agent
+   * config points the Hub at, so whoever reaches this reads or changes that app's data with the Hub's
+   * access. It asked nothing of the caller beyond a key's capability, so a key reached every app's
+   * API; it now asks the lifecycle's actor gate — `view` to read, `configure` for any other verb —
+   * before the request leaves the Hub (CI-Hub#1397).
    */
   async proxyRequest(
     appUrn: AppUrn,
@@ -80,8 +92,12 @@ export class ApiProxyService {
       headers?: Record<string, string>;
       queryParams?: Record<string, string>;
       auth?: AgentOpenApiAuth;
+      actor: LifecycleActor;
     },
   ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+    // Outside the try below, which hands every failure back as a proxy error: a refusal is not one.
+    await this.appLifecycle.assertActorMay(options.actor, appUrn, appApiAction(options.method));
+
     try {
       const baseUrl = this.resolveAppBaseUrl(appUrn);
       const url = new URL(options.path, baseUrl);

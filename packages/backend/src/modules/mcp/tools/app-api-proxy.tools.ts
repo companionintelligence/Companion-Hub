@@ -3,7 +3,8 @@ import { castAppUrn } from '@/common/helpers/app-helpers';
 import { AppsService } from '@/modules/apps/apps.service';
 import type { AgentOpenApiAuth } from '@ci-hub/common/schemas';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
-import { isReadOnlyHttpMethod } from '../http-method-access';
+import { appApiAction, isReadOnlyHttpMethod } from '../http-method-access';
+import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { AgentConfigService } from '../agents/agent-config.service';
 import { ApiProxyService } from '../agents/api-proxy.service';
 
@@ -89,6 +90,9 @@ export class AppApiProxyTools implements OnModuleInit {
     queryParams?: Record<string, string>;
   }): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
     const appUrn = castAppUrn(params.appUrn);
+    // Named before the app is read, so a call with nobody behind it is refused first. The proxy asks
+    // the lifecycle's actor gate with it, for the verb this request's method takes (CI-Hub#1397).
+    const actor = mcpCallerLifecycleActor(appApiAction(params.method));
 
     // Try to get auth config from agent config
     let auth: AgentOpenApiAuth | undefined;
@@ -107,6 +111,7 @@ export class AppApiProxyTools implements OnModuleInit {
       headers: params.headers,
       queryParams: params.queryParams,
       auth,
+      actor,
     });
   }
 }

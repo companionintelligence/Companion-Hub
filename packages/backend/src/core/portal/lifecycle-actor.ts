@@ -33,7 +33,33 @@ export type LifecycleActor =
    */
   | { kind: 'mcp'; ownerAppUrn: string | null; createdByUserId: number | null }
   /** The Hub acting on its own behalf, for a reason named here. */
-  | { kind: 'system'; reason: 'update-reapply' | 'debug-seed' | 'debug-start-all' };
+  | { kind: 'system'; reason: SystemLifecycleReason };
+
+/**
+ * Why the Hub acts on an app with nobody's grant to check. Each reason is a step of an operation
+ * somebody was already authorized for, or the Hub's own upkeep — so a new caller has to say which,
+ * rather than borrow a reason that happens to pass.
+ */
+export type SystemLifecycleReason =
+  // A step of an operation its caller was authorized for:
+  | 'update-reapply' // `updateApp` re-applies the app's own config
+  | 'reinstall-start' // `installApp` starts an app that is already installed
+  | 'start-after-reset' // `resetApp` brings back an app that was running
+  | 'restart-after-config-update' // `updateAppConfig` applies a saved config to a running app
+  | 'resume-after-backup' // a backup starts the app it stopped
+  | 'resume-after-restore' // a restore starts the app it stopped
+  | 'hub-access-rotate' // a credential rotation restarts the app to re-provision it
+  | 'sweep' // one app of an *-all sweep, which already asked `actorMay` of its own actor for that app
+  // The Hub's own upkeep:
+  | 'bootstrap-restart' // a Hub starting on a new version restarts the apps that were running
+  | 'inference-env-refresh' // inference settings or the Hub version changed; AI apps pick up the new env
+  | 'custom-domain-revert' // an app still forwarding a removed custom domain is restarted off it
+  | 'memory-connect' // a Companion Memory connection change reaches the app holding it
+  // The debug routes:
+  | 'debug-seed'
+  | 'debug-start-all'
+  | 'debug-uninstall-all'
+  | 'debug-backup-all';
 
 /**
  * The actor for one action, for a caller that can only name itself once the verb is known: an

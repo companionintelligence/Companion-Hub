@@ -1,10 +1,12 @@
 import { HttpStatus } from '@nestjs/common';
 import { ErrorCode, McpError, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { AppUrn } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import type { HubAction } from '@/core/portal/hub-actions';
 import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
+import type { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { formatToolError, formatToolSuccess } from './mcp-error.handler';
 import { mcpAdminCallContext, mcpCallContext } from './mcp-call-context';
 import { McpToolNotFoundError, McpToolRegistry } from './mcp-tool-registry.service';
@@ -37,6 +39,17 @@ export function mcpCallerLifecycleActor(action: HubAction): LifecycleActor {
   }
 
   throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+}
+
+/**
+ * Refuse the in-flight caller `action` on `appUrn` unless the lifecycle's actor gate admits it.
+ *
+ * For a tool on one app whose own service cannot ask that gate: a service the lifecycle module
+ * itself depends on, or one serving app routes that assert no grant, where a required actor would
+ * change what those routes allow. Such a tool asks here, first, before it reads or changes anything.
+ */
+export async function assertMcpCallerMay(lifecycle: Pick<AppLifecycleService, 'assertActorMay'>, appUrn: AppUrn, action: HubAction): Promise<void> {
+  await lifecycle.assertActorMay(mcpCallerLifecycleActor(action), appUrn, action);
 }
 
 /** Shared tools/call path for v1 and v2 Hub MCP servers. */

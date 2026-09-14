@@ -55,6 +55,24 @@ describe('AppLifecycleController — names the actor for every lifecycle call', 
   });
 
   it.each([
+    ['startApp', 'start', (c: AppLifecycleController) => c.startApp(appUrn, req)],
+    ['stopApp', 'stop', (c: AppLifecycleController) => c.stopApp(appUrn, req)],
+    ['restartApp', 'restart', (c: AppLifecycleController) => c.restartApp(appUrn, req)],
+    ['uninstallApp', 'uninstall', (c: AppLifecycleController) => c.uninstallApp(appUrn, { deleteAllData: true } as never, req)],
+    ['resetApp', 'reset', (c: AppLifecycleController) => c.resetApp(appUrn, {} as never, req)],
+    ['updateApp', 'update', (c: AppLifecycleController) => c.updateApp(appUrn, { performBackup: true } as never, req)],
+    // Cancelling weighs what stopping does; the route asserts `stop`, and so does the service.
+    ['cancelOperation', 'stop', (c: AppLifecycleController) => c.cancelOperation(appUrn, {} as never, req)],
+  ] as const)('%s acts as the actor for %s', async (method, action, route) => {
+    lifecycle[method].mockResolvedValue({ requestId: 'r', outcome: 'not_found' } as never);
+
+    await route(controller);
+
+    expect(whois.lifecycleActor).toHaveBeenCalledWith(req, action);
+    expect(lifecycle[method]).toHaveBeenCalledWith(expect.objectContaining({ appUrn, actor }));
+  });
+
+  it.each([
     ['updateAllApps', 'update'],
     ['startAllApps', 'start'],
     ['stopAllApps', 'stop'],

@@ -274,14 +274,15 @@ export class AppRehydrationService {
       return;
     }
 
+    // As the person who asked for the rehydrate: an app they may not start or install is skipped, not
+    // started or installed.
     try {
       if (item.action === 'start') {
-        await this.appLifecycleService.startApp({ appUrn: item.appUrn, skipPull: true });
+        await this.appLifecycleService.startApp({ appUrn: item.appUrn, skipPull: true, actor });
         started.push(item.appUrn);
         return;
       }
 
-      // As the person who asked for the rehydrate: an app they may not install is skipped, not installed.
       await this.appLifecycleService.installApp({ appUrn: item.appUrn, form: item.form, actor });
       queued.push(item.appUrn);
     } catch (error) {

@@ -146,6 +146,22 @@ describe('AppRehydrationService.executeRehydrate', () => {
     expect(recovery.writeRehydrationState).toHaveBeenCalled();
   });
 
+  it('starts an installed app as the person who asked, and keeps a refused start open for retry', async () => {
+    const startPlan = {
+      portalAppCount: 1,
+      localAppDataCount: 1,
+      items: [{ action: 'start', appUrn, form: { port: 8080 }, portalApp: { name: 'Immich', slug: 'immich' }, hasExistingData: true }],
+    } as unknown as RehydrationPlan;
+    vi.mocked(buildRehydrationPlan).mockReturnValue(startPlan);
+    lifecycle.startApp.mockRejectedValue(new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'start', app: 'immich' }, HttpStatus.FORBIDDEN));
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    expect(lifecycle.startApp).toHaveBeenCalledWith({ appUrn, skipPull: true, actor: OPERATOR });
+    expect(result).toMatchObject({ incomplete: true, started: [], skipped: [{ name: 'Immich', reason: 'APP_ACTION_GRANT_DENIED' }] });
+    expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
+  });
+
   it('leaves an app the last run is still working on to that operation', async () => {
     // What a Retry plans for an app the first run queued: installing it again would start it mid-install.
     const busyPlan = {

@@ -1,6 +1,7 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -13,6 +14,12 @@ import { BackupManager } from './backup.manager';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
+/**
+ * Each call on one app's backups names its actor and asks the lifecycle's own gate
+ * (`AppLifecycleService.assertActorMay`) before it reads, writes or queues anything. The MCP
+ * backup tools reached all of these with no grant check, so a restore that overwrites an app's
+ * data was open to any key that could restart it (CI-Hub#1397).
+ */
 @Injectable()
 export class BackupsService {
   constructor(
@@ -28,12 +35,15 @@ export class BackupsService {
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {}
 
-  public async backupApp(params: { appUrn: AppUrn }) {
+  public async backupApp(params: { appUrn: AppUrn; actor: LifecycleActor }) {
+    const { appUrn } = params;
+
+    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'backup');
+
     if (this.config.get('demoMode')) {
       throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
     }
 
-    const { appUrn } = params;
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -56,7 +66,8 @@ export class BackupsService {
         }
 
         if (appStatusBeforeUpdate === 'running') {
-          await this.appLifecycle.startApp({ appUrn });
+          // Part of the backup the caller was authorized for: the app only comes back to how it was.
+          await this.appLifecycle.startApp({ appUrn, actor: { kind: 'system', reason: 'resume-after-backup' } });
         } else {
           await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
           this.sseService.emit('app', { event: 'backup_success', appUrn, appStatus: appStatusBeforeUpdate });
@@ -73,8 +84,11 @@ export class BackupsService {
     return { requestId };
   }
 
-  public async restoreApp(params: { appUrn: AppUrn; filename: string }) {
+  public async restoreApp(params: { appUrn: AppUrn; filename: string; actor: LifecycleActor }) {
     const { appUrn, filename } = params;
+
+    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'restore');
+
     const app = await this.appsRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -103,7 +117,8 @@ export class BackupsService {
         }
 
         if (appStatusBeforeUpdate === 'running') {
-          await this.appLifecycle.startApp({ appUrn });
+          // Part of the restore the caller was authorized for: the app only comes back to how it was.
+          await this.appLifecycle.startApp({ appUrn, actor: { kind: 'system', reason: 'resume-after-restore' } });
         } else {
           await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
           this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
@@ -120,8 +135,11 @@ export class BackupsService {
     return { requestId };
   }
 
-  public async getAppBackups(params: { appUrn: AppUrn; page: number; pageSize: number }) {
+  public async getAppBackups(params: { appUrn: AppUrn; page: number; pageSize: number; actor: LifecycleActor }) {
     const { appUrn, page, pageSize } = params;
+
+    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'view');
+
     const backups = await this.backupManager.listBackupsByAppId(appUrn);
 
     backups.sort((a, b) => b.date - a.date);
@@ -138,13 +156,15 @@ export class BackupsService {
     };
   }
 
-  public async deleteAppBackup(params: { appUrn: AppUrn; filename: string }): Promise<void> {
+  public async deleteAppBackup(params: { appUrn: AppUrn; filename: string; actor: LifecycleActor }): Promise<void> {
     const { appUrn, filename } = params;
+
+    await this.appLifecycle.assertActorMay(params.actor, appUrn, 'backup');
 
     await this.backupManager.deleteBackup(appUrn, filename);
   }
 
-  async backupAllApps() {
+  async backupAllApps(actor: LifecycleActor) {
     const apps = await this.appsRepository.getApps();
     const runningApps = apps.filter((app) => app.status === 'running');
 
@@ -152,7 +172,7 @@ export class BackupsService {
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          this.backupApp({ appUrn });
+          this.backupApp({ appUrn, actor });
         } catch (e) {
           this.logger.error(`Failed to backup app ${app.id}`, e);
         }

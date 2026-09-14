@@ -872,6 +872,17 @@ describe('AppLifecycleService', () => {
         expect(appsRepository.createApp).not.toHaveBeenCalled();
       });
 
+      it('starts an app it reinstalls as the Hub: allowing the install was the decision', async () => {
+        // Somebody who may install this app but not start it: starting the row a reinstall reuses is part of the install.
+        whois.has.mockImplementation(async (_userId: number, _urn: string, action: string) => action === 'install');
+        appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+        await service.installApp({ actor: OPERATOR, appUrn, form: { port: 8080 } });
+
+        expect(whois.has).not.toHaveBeenCalledWith(7, appUrn, 'start');
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn }));
+      });
+
       /*
        * R2-HUBDOMAINS-1 at the one gate every transport reaches: which custom
        * domain an app serves is the organization's, so a form that changes it
@@ -1484,6 +1495,159 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  /*
+   * Every call that acts on ONE app decides from its actor too, not only install and update-config:
+   * the MCP start/stop/restart/uninstall/reset/update and cancel tools, and the admin runner behind
+   * them, reached these with no grant check at all (CI-Hub#1397).
+   */
+  describe('the actor gate on single-app calls', () => {
+    const appUrn = 'immich:ci-marketplace' as AppUrn;
+    const installed = { id: 3, appName: 'immich', appStoreSlug: 'ci-marketplace', status: 'stopped', config: {}, exposedLocal: false };
+    const whois = { has: vi.fn() };
+    const OPERATOR: LifecycleActor = { kind: 'operator', userId: 7 };
+    const MANAGED_NEIGHBOUR: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null };
+    const CREATED_BY_7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
+
+    /** Each single-app call, and the verb it takes — the one its app route asserts, and the command it queues. */
+    const calls: Array<[string, string, (actor: LifecycleActor) => Promise<unknown>]> = [
+      ['startApp', 'start', (actor) => service.startApp({ actor, appUrn })],
+      ['stopApp', 'stop', (actor) => service.stopApp({ actor, appUrn })],
+      ['restartApp', 'restart', (actor) => service.restartApp({ actor, appUrn })],
+      ['uninstallApp', 'uninstall', (actor) => service.uninstallApp({ actor, appUrn, deleteAllData: true })],
+      ['resetApp', 'reset', (actor) => service.resetApp({ actor, appUrn })],
+      ['updateApp', 'update', (actor) => service.updateApp({ actor, appUrn, performBackup: true })],
+    ];
+
+    const expectNothingTouched = () => {
+      expect(appsRepository.getAppByUrn).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    };
+
+    beforeEach(() => {
+      whois.has.mockReset();
+      vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) => (token === MarketplaceWhoIsService ? whois : undefined));
+      appsRepository.getAppByUrn.mockResolvedValue(installed as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+    });
+
+    describe.each(calls)('%s', (_name, action, call) => {
+      it(`refuses an operator without the ${action} grant, before the app is even read`, async () => {
+        whois.has.mockResolvedValue(false);
+
+        await expect(call(OPERATOR)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, action);
+        expectNothingTouched();
+      });
+
+      it("refuses a managed app's key on any app but its own", async () => {
+        await expect(call(MANAGED_NEIGHBOUR)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(whois.has).not.toHaveBeenCalled();
+        expectNothingTouched();
+      });
+
+      it('refuses an unmanaged key whose creator lacks the grant — the key acts as that person', async () => {
+        whois.has.mockResolvedValue(false);
+
+        await expect(call(CREATED_BY_7)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, action);
+        expectNothingTouched();
+      });
+
+      it('refuses an operator when WhoIs cannot be resolved — "could not tell" is not "allowed"', async () => {
+        vi.mocked((service as any).moduleRef.get).mockReturnValue(undefined);
+
+        await expect(call(OPERATOR)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expectNothingTouched();
+      });
+
+      it(`queues the ${action} for an operator holding the grant`, async () => {
+        whois.has.mockResolvedValue(true);
+
+        await call(OPERATOR);
+
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, action);
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: action, appUrn }));
+      });
+
+      it.each([
+        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null }],
+        ['a grant-exempt principal', { kind: 'exempt', principal: 'cli' }],
+        ['the Hub itself', { kind: 'system', reason: 'sweep' }],
+      ] as Array<[string, LifecycleActor]>)('queues it for %s without consulting WhoIs', async (_label, actor) => {
+        await call(actor);
+
+        expect(whois.has).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: action, appUrn }));
+      });
+    });
+
+    describe('cancelOperation', () => {
+      const requestId = '00000000-0000-4000-8000-000000000abc';
+
+      beforeEach(() => {
+        operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      });
+
+      it.each([
+        ['an operator without the stop grant', OPERATOR],
+        ["a managed app's key on another app", MANAGED_NEIGHBOUR],
+        ['a key whose creator lacks the stop grant', CREATED_BY_7],
+      ] as Array<[string, LifecycleActor]>)("refuses %s, and leaves somebody else's operation running", async (_label, actor) => {
+        whois.has.mockResolvedValue(false);
+        const abort = vi.spyOn(operationRegistry, 'abort');
+
+        await expect(service.cancelOperation({ actor, appUrn, requestId })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+        expect(abort).not.toHaveBeenCalled();
+        expect(operationRegistry.get(appUrn)?.abortController.signal.aborted).toBe(false);
+      });
+
+      it('cancels for an operator holding the stop grant', async () => {
+        whois.has.mockResolvedValue(true);
+
+        await expect(service.cancelOperation({ actor: OPERATOR, appUrn, requestId })).resolves.toMatchObject({ outcome: 'cancelled_queued' });
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'stop');
+      });
+    });
+
+    describe('what the Hub does as itself', () => {
+      it('brings a reset app back up as the Hub, not as whoever asked for the reset', async () => {
+        // Somebody who may reset the app but not start it: the start is part of the reset they were allowed.
+        whois.has.mockImplementation(async (_userId: number, _urn: string, action: string) => action === 'reset');
+        appsRepository.getAppByUrn.mockResolvedValue({ ...installed, status: 'running' } as any);
+
+        await service.resetApp({ actor: OPERATOR, appUrn });
+
+        await vi.waitFor(() => expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn })));
+        expect(whois.has).not.toHaveBeenCalledWith(7, appUrn, 'start');
+      });
+
+      it('restarts what was running when it boots on a new version, with nobody to ask', async () => {
+        vi.mocked((service as any).moduleRef.get).mockReturnValue(undefined);
+        appsRepository.getApps.mockResolvedValue([{ ...installed, status: 'running' }] as any);
+
+        await service.restartRunningApps();
+
+        await vi.waitFor(() => expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn })));
+      });
+
+      it('stops through the single-app call only what the sweep admitted, asking WhoIs once per app', async () => {
+        whois.has.mockImplementation(async (_userId: number, urn: string) => urn === appUrn);
+        appsRepository.getApps.mockResolvedValue([
+          { ...installed, id: 4, appName: 'neighbour', status: 'running' },
+          { ...installed, status: 'running' },
+        ] as any);
+
+        await service.stopAllApps(OPERATOR);
+
+        await vi.waitFor(() => expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'stop', appUrn })));
+        expect(appEventsQueue.publish).toHaveBeenCalledTimes(1);
+        expect(whois.has).toHaveBeenCalledTimes(2);
+      });
+    });
+  });
+
   describe('startApp', () => {
     it('should start existing app', async () => {
       const appUrn = 'test-app' as any;
@@ -1491,7 +1655,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue(app as any);
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
 
-      await service.startApp({ appUrn });
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { status: 'starting' });
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'status_change', appStatus: 'starting' }));
@@ -1499,7 +1663,7 @@ describe('AppLifecycleService', () => {
 
     it('should throw if app not found', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
-      await expect(service.startApp({ appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+      await expect(service.startApp({ actor: TEST_ACTOR, appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
     });
   });
 
@@ -1953,7 +2117,11 @@ describe('AppLifecycleService', () => {
       emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
-      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenCalledWith({
+        appUrn: 'comfyui:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
     });
 
     it('restarts a running app whose custom domain was re-pointed to another name', async () => {
@@ -1972,7 +2140,11 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'new.acme.com', pendingRestart: true });
-      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenCalledWith({
+        appUrn: 'comfyui:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
     });
 
     it('restarts an app at most once per cooldown when CI-Cloud keeps changing its mind', async () => {
@@ -2096,7 +2268,11 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       expect(restartApp).toHaveBeenCalledTimes(2);
-      expect(restartApp).toHaveBeenLastCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenLastCalledWith({
+        appUrn: 'comfyui:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
     });
 
     it('defers the revert while the Hub is still asking CI-Cloud for that hostname', async () => {
@@ -2156,7 +2332,11 @@ describe('AppLifecycleService', () => {
 
       expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
-      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenCalledWith({
+        appUrn: 'comfyui:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
     });
 
     it('refuses an unconfirmed move even when CI-Cloud has not given the domain a target yet', async () => {
@@ -2195,7 +2375,11 @@ describe('AppLifecycleService', () => {
       // The confirmation goes with the choice: an answer about a domain the
       // organization no longer holds cannot authorize a later move.
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
-      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenCalledWith({
+        appUrn: 'comfyui:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
     });
 
     it('does not recreate every public app when the Hub identity moves', async () => {
@@ -2242,8 +2426,16 @@ describe('AppLifecycleService', () => {
       emptyAnswerAlreadyConfirmed();
       await service.triggerCloudflareSync();
 
-      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
-      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'wordpress:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenCalledWith({
+        appUrn: 'comfyui:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
+      expect(restartApp).toHaveBeenCalledWith({
+        appUrn: 'wordpress:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
     });
 
     it('restarts an app whose domain was re-pointed to a sibling app on this Hub', async () => {
@@ -2266,7 +2458,11 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenCalledWith({
+        appUrn: 'comfyui:ci-marketplace',
+        skipPull: true,
+        actor: { kind: 'system', reason: 'custom-domain-revert' },
+      });
     });
 
     it('changes nothing when CI-Cloud predates custom domains', async () => {
@@ -3452,7 +3648,7 @@ describe('AppLifecycleService', () => {
 
       await service.updateAppConfig({ actor: TEST_ACTOR, appUrn, form: { port: 9090 } });
 
-      expect(restartSpy).toHaveBeenCalledWith({ appUrn, skipPull: true });
+      expect(restartSpy).toHaveBeenCalledWith({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'restart-after-config-update' } });
     });
 
     it.each([
@@ -3672,7 +3868,7 @@ describe('AppLifecycleService', () => {
 
     // ── startApp ──────────────────────────────────────────────────────────
     it('startApp success: DB committed before SSE', async () => {
-      await service.startApp({ appUrn });
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       const dbIdx = callOrder.indexOf('db_update');
@@ -3684,7 +3880,7 @@ describe('AppLifecycleService', () => {
     it('startApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.startApp({ appUrn });
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('start_error', 1);
@@ -3703,7 +3899,7 @@ describe('AppLifecycleService', () => {
         settingsPath: '/settings?tab=ai&section=rocm',
       } as any);
 
-      await service.startApp({ appUrn });
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -3721,7 +3917,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('startApp: transitional status_change emitted after DB commit', async () => {
-      await service.startApp({ appUrn });
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
 
       const dbIdx = callOrder.indexOf('db_update');
       const sseIdx = callOrder.indexOf('sse:status_change');
@@ -3731,7 +3927,7 @@ describe('AppLifecycleService', () => {
 
     // ── stopApp ──────────────────────────────────────────────────────────
     it('stopApp success: DB committed before SSE', async () => {
-      await service.stopApp({ appUrn });
+      await service.stopApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('stop_success', 1);
@@ -3740,7 +3936,7 @@ describe('AppLifecycleService', () => {
     it('stopApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.stopApp({ appUrn });
+      await service.stopApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('stop_error', 1);
@@ -3755,7 +3951,7 @@ describe('AppLifecycleService', () => {
         settingsPath: '/settings?tab=ai&section=rocm',
       } as any);
 
-      await service.stopApp({ appUrn });
+      await service.stopApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -3770,7 +3966,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('stopApp: transitional status_change emitted after DB commit', async () => {
-      await service.stopApp({ appUrn });
+      await service.stopApp({ actor: TEST_ACTOR, appUrn });
 
       const dbIdx = callOrder.indexOf('db_update');
       const sseIdx = callOrder.indexOf('sse:status_change');
@@ -3836,7 +4032,7 @@ describe('AppLifecycleService', () => {
 
     // ── restartApp ───────────────────────────────────────────────────────
     it('restartApp success: DB committed before SSE', async () => {
-      await service.restartApp({ appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('restart_success', 1);
@@ -3845,7 +4041,7 @@ describe('AppLifecycleService', () => {
     it('restartApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.restartApp({ appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('restart_error', 1);
@@ -3863,7 +4059,7 @@ describe('AppLifecycleService', () => {
         settingsPath: '/settings?tab=ai&section=rocm',
       } as any);
 
-      await service.restartApp({ appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -3878,7 +4074,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('restartApp: transitional status_change emitted after DB commit', async () => {
-      await service.restartApp({ appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
 
       const dbIdx = callOrder.indexOf('db_update');
       const sseIdx = callOrder.indexOf('sse:status_change');
@@ -3938,7 +4134,7 @@ describe('AppLifecycleService', () => {
 
     // ── uninstallApp ─────────────────────────────────────────────────────
     it('uninstallApp success: syncs exposure before uninstall_success SSE', async () => {
-      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       const delIdx = callOrder.indexOf('db_delete');
@@ -3954,7 +4150,7 @@ describe('AppLifecycleService', () => {
     it('uninstallApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: false });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('uninstall_error', 1);
@@ -3972,7 +4168,7 @@ describe('AppLifecycleService', () => {
         settingsPath: '/settings?tab=ai&section=rocm',
       } as any);
 
-      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: false });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -3989,7 +4185,7 @@ describe('AppLifecycleService', () => {
     // Each scenario is its own `it` so a regression in one reports independently —
     // packed into a single test, an early failure hides whether the later rules still hold.
     it('keeps backups when the user chose to keep the data (#908)', async () => {
-      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: false });
       await flushMicrotasks();
 
       expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
@@ -4001,7 +4197,7 @@ describe('AppLifecycleService', () => {
       // but unrecoverable.
       appEventsQueue.publish.mockResolvedValueOnce({ success: false, message: 'fail' } as any);
 
-      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
@@ -4017,14 +4213,14 @@ describe('AppLifecycleService', () => {
         warningDetail: '/srv/app-data/store/app',
       } as any);
 
-      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
     });
 
     it('discards backups on a clean delete-all-data uninstall (#908)', async () => {
-      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       expect(backupManager.deleteAppBackupsByUrn).toHaveBeenCalledWith(appUrn);
@@ -4036,7 +4232,7 @@ describe('AppLifecycleService', () => {
       backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
       backupManager.getAppBackupsHostDir.mockReturnValueOnce('/srv/hub/backups/store/app');
 
-      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       // The detail must travel with the code: the client only renders an actionable
@@ -4059,7 +4255,7 @@ describe('AppLifecycleService', () => {
       backupManager.deleteAppBackupsByUrn.mockRejectedValueOnce(new Error('EACCES'));
       backupManager.getAppBackupsHostDir.mockReturnValueOnce(undefined);
 
-      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -4076,7 +4272,7 @@ describe('AppLifecycleService', () => {
         warningDetail: '/srv/app-data/store/app',
       } as any);
 
-      await service.uninstallApp({ appUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn, deleteAllData: true });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -4094,7 +4290,7 @@ describe('AppLifecycleService', () => {
     it('resetApp success: DB committed before SSE', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
 
-      await service.resetApp({ appUrn });
+      await service.resetApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expectEventAfterLastUpdate('reset_success');
@@ -4103,7 +4299,7 @@ describe('AppLifecycleService', () => {
     it('resetApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.resetApp({ appUrn });
+      await service.resetApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('reset_error', 1);
@@ -4113,7 +4309,7 @@ describe('AppLifecycleService', () => {
       appsRepository.getAppByUrn.mockResolvedValue({ ...fakeApp, status: 'stopped' } as any);
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.resetApp({ appUrn });
+      await service.resetApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'reset_error', appStatus: 'stopped', error: 'fail' }));
@@ -4128,7 +4324,7 @@ describe('AppLifecycleService', () => {
         settingsPath: '/settings?tab=ai&section=rocm',
       } as any);
 
-      await service.resetApp({ appUrn });
+      await service.resetApp({ actor: TEST_ACTOR, appUrn });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -4143,7 +4339,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('resetApp: transitional status_change emitted after DB commit', async () => {
-      await service.resetApp({ appUrn });
+      await service.resetApp({ actor: TEST_ACTOR, appUrn });
 
       const dbIdx = callOrder.indexOf('db_update');
       const sseIdx = callOrder.indexOf('sse:status_change');
@@ -4298,7 +4494,7 @@ describe('AppLifecycleService', () => {
     it('updateApp error: DB committed before SSE', async () => {
       appEventsQueue.publish.mockResolvedValue({ success: false, message: 'fail' } as any);
 
-      await service.updateApp({ appUrn, performBackup: false });
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('update_error', 1);
@@ -4313,7 +4509,7 @@ describe('AppLifecycleService', () => {
         settingsPath: '/settings?tab=ai&section=rocm',
       } as any);
 
-      await service.updateApp({ appUrn, performBackup: false });
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith(
@@ -4332,7 +4528,7 @@ describe('AppLifecycleService', () => {
       vi.spyOn(service, 'startApp').mockResolvedValue({ requestId: crypto.randomUUID() });
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ cihub_app_version: 2 } as any);
 
-      await service.updateApp({ appUrn, performBackup: false });
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('update_success', 1);
@@ -4345,7 +4541,7 @@ describe('AppLifecycleService', () => {
       appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
       reposHelpers.downloadAppFiles.mockResolvedValue({ success: true, message: 'App files downloaded' } as any);
 
-      await service.updateApp({ appUrn, performBackup: false });
+      await service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false });
       await flushMicrotasks();
 
       expect(reposHelpers.downloadAppFiles).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'myapp');
@@ -4356,7 +4552,7 @@ describe('AppLifecycleService', () => {
       appStoreService.getAppStoreBySlug.mockResolvedValue({ slug: 'ci-marketplace', url: 'http://portal/api', type: 'ci_cloud_api' } as any);
       reposHelpers.downloadAppFiles.mockResolvedValue({ success: false, message: 'boom' } as any);
 
-      await expect(service.updateApp({ appUrn, performBackup: false })).rejects.toThrow();
+      await expect(service.updateApp({ actor: TEST_ACTOR, appUrn, performBackup: false })).rejects.toThrow();
       expect(appEventsQueue.publish).not.toHaveBeenCalledWith(expect.objectContaining({ command: 'update' }));
     });
 
@@ -4406,7 +4602,7 @@ describe('AppLifecycleService', () => {
         { appUrn: 'ci-openclaw:ci-marketplace', name: 'OpenClaw' },
       ]);
 
-      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+      await expect(service.uninstallApp({ actor: TEST_ACTOR, appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
         response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '2', apps: 'Hermes, OpenClaw' } },
         status: 409,
       });
@@ -4420,7 +4616,7 @@ describe('AppLifecycleService', () => {
     it('allows a forced uninstall of the provider despite connected consumers', async () => {
       memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
 
-      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true, force: true })).resolves.toMatchObject({
+      await expect(service.uninstallApp({ actor: TEST_ACTOR, appUrn: providerUrn, deleteAllData: true, force: true })).resolves.toMatchObject({
         requestId: expect.any(String),
       });
 
@@ -4431,7 +4627,9 @@ describe('AppLifecycleService', () => {
     it('allows uninstall of the provider when no consumers remain', async () => {
       memoryConnect.listConnectedConsumers.mockResolvedValue([]);
 
-      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      await expect(service.uninstallApp({ actor: TEST_ACTOR, appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn: providerUrn }));
     });
 
@@ -4442,7 +4640,7 @@ describe('AppLifecycleService', () => {
       // still let uninstallApp resolve with a requestId (it would hang if awaited).
       memoryConnect.handleUninstall.mockReturnValue(new Promise<void>(() => {}));
 
-      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
+      await expect(service.uninstallApp({ actor: TEST_ACTOR, appUrn: providerUrn, deleteAllData: true })).resolves.toMatchObject({
         requestId: expect.any(String),
       });
 
@@ -4454,7 +4652,7 @@ describe('AppLifecycleService', () => {
     it('does not consult consumers when uninstalling a non-provider app', async () => {
       appsRepository.getAppByUrn.mockResolvedValue({ ...providerApp, appName: 'myapp' } as any);
 
-      await service.uninstallApp({ appUrn: nonProviderUrn, deleteAllData: true });
+      await service.uninstallApp({ actor: TEST_ACTOR, appUrn: nonProviderUrn, deleteAllData: true });
 
       expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
     });
@@ -4462,7 +4660,7 @@ describe('AppLifecycleService', () => {
     it('fails closed when the memory module cannot be resolved', async () => {
       moduleRefGet.mockReturnValue(undefined);
 
-      await expect(service.uninstallApp({ appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
+      await expect(service.uninstallApp({ actor: TEST_ACTOR, appUrn: providerUrn, deleteAllData: true })).rejects.toMatchObject({
         response: { message: 'APP_ERROR_MEMORY_PROVIDER_UNVERIFIABLE' },
         status: 409,
       });
@@ -4472,7 +4670,7 @@ describe('AppLifecycleService', () => {
     it('blocks reset of the provider while consumers are connected (409, no side effects)', async () => {
       memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
 
-      await expect(service.resetApp({ appUrn: providerUrn })).rejects.toMatchObject({
+      await expect(service.resetApp({ actor: TEST_ACTOR, appUrn: providerUrn })).rejects.toMatchObject({
         response: { message: 'APP_ERROR_MEMORY_PROVIDER_IN_USE', intlParams: { count: '1', apps: 'Hermes' } },
         status: 409,
       });
@@ -4484,7 +4682,9 @@ describe('AppLifecycleService', () => {
     it('allows a forced reset of the provider despite connected consumers', async () => {
       memoryConnect.listConnectedConsumers.mockResolvedValue([{ appUrn: 'ci-hermes:ci-marketplace', name: 'Hermes' }]);
 
-      await expect(service.resetApp({ appUrn: providerUrn, force: true })).resolves.toMatchObject({ requestId: expect.any(String) });
+      await expect(service.resetApp({ actor: TEST_ACTOR, appUrn: providerUrn, force: true })).resolves.toMatchObject({
+        requestId: expect.any(String),
+      });
       expect(memoryConnect.listConnectedConsumers).not.toHaveBeenCalled();
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'reset', appUrn: providerUrn }));
     });
@@ -4495,7 +4695,7 @@ describe('AppLifecycleService', () => {
     const requestId = '00000000-0000-4000-8000-000000000abc';
 
     it('returns not_found when no operation is active', async () => {
-      const res = await service.cancelOperation(appUrn);
+      const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
       expect(res.outcome).toBe('not_found');
     });
 
@@ -4503,7 +4703,7 @@ describe('AppLifecycleService', () => {
       operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
       const abortSpy = vi.spyOn(operationRegistry, 'abort');
 
-      const res = await service.cancelOperation(appUrn);
+      const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
 
       expect(res.outcome).toBe('cancelled_queued');
       expect(abortSpy).toHaveBeenCalledWith(appUrn, undefined);
@@ -4514,7 +4714,7 @@ describe('AppLifecycleService', () => {
       const entry = operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
       operationRegistry.markPhase(appUrn, 'pulling');
 
-      const res = await service.cancelOperation(appUrn);
+      const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
 
       expect(res.outcome).toBe('cancelling');
       expect(entry.abortController.signal.aborted).toBe(true);
@@ -4525,7 +4725,7 @@ describe('AppLifecycleService', () => {
       operationRegistry.markPhase(appUrn, 'finalizing');
       const abortSpy = vi.spyOn(operationRegistry, 'abort');
 
-      const res = await service.cancelOperation(appUrn);
+      const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn });
 
       expect(res.outcome).toBe('refused');
       expect(abortSpy).not.toHaveBeenCalled();
@@ -4535,7 +4735,7 @@ describe('AppLifecycleService', () => {
       operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
       const abortSpy = vi.spyOn(operationRegistry, 'abort');
 
-      const res = await service.cancelOperation(appUrn, '11111111-1111-4111-8111-111111111111');
+      const res = await service.cancelOperation({ actor: TEST_ACTOR, appUrn, requestId: '11111111-1111-4111-8111-111111111111' });
 
       expect(res.outcome).toBe('not_found');
       expect(abortSpy).not.toHaveBeenCalled();
@@ -4706,8 +4906,8 @@ describe('AppLifecycleService', () => {
     it('overlapping restarts: the first success does not win when a second restart superseded it', async () => {
       const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: false, message: 'compose failed' });
 
-      await service.restartApp({ appUrn });
-      await service.restartApp({ appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
       resolvePublish();
       await flushMicrotasks();
 
@@ -4718,8 +4918,8 @@ describe('AppLifecycleService', () => {
     it('stop-then-restart interleave: the surviving restart outcome wins over a superseded stop', async () => {
       const resolvePublish = deferPublishResults({ success: true, message: 'OK' }, { success: true, message: 'OK' });
 
-      await service.stopApp({ appUrn });
-      await service.restartApp({ appUrn });
+      await service.stopApp({ actor: TEST_ACTOR, appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
       resolvePublish();
       await flushMicrotasks();
 
@@ -4730,8 +4930,8 @@ describe('AppLifecycleService', () => {
     it('superseded restart failure does not fire phantom failure alerts', async () => {
       const resolvePublish = deferPublishResults({ success: false, message: 'compose interrupted' }, { success: true, message: 'OK' });
 
-      await service.restartApp({ appUrn });
-      await service.stopApp({ appUrn });
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await service.stopApp({ actor: TEST_ACTOR, appUrn });
       resolvePublish();
       await flushMicrotasks();
 
@@ -4753,7 +4953,7 @@ describe('AppLifecycleService', () => {
 
       await service.restartAiApps();
 
-      expect(restartSpy).toHaveBeenCalledWith({ appUrn: financeAppUrn });
+      expect(restartSpy).toHaveBeenCalledWith({ appUrn: financeAppUrn, actor: { kind: 'system', reason: 'inference-env-refresh' } });
     });
 
     it('skips running apps without ai category or inference integration', async () => {

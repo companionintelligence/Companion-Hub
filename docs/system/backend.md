@@ -287,6 +287,18 @@ unauthorized caller read an app's state out of the 403-vs-200 answer.
 `public-web/repair` rewrites app envs and restarts apps, so it carries `configure`; `public-web/diagnostics`
 filters its report by `view`.
 
+The services check too, so HTTP is not the only transport that asks
+([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)). Every call that acts on
+one app takes a named `LifecycleActor`: install, update-config, start, stop, restart, uninstall,
+reset, update, cancel, the `BackupsService` calls, and the app-API proxy. `AppLifecycleService.assertActorMay`
+decides from it before anything is read or queued, and refuses with `APP_ACTION_GRANT_DENIED` (403).
+An operator, and the creator of an unmanaged MCP key, answer to their WhoIs grant. A managed app key
+reaches only its own app.
+
+When you add an MCP tool that acts on one app, pass `mcpCallerLifecycleActor(action)` to a service that
+takes an actor, or call `assertMcpCallerMay` before the tool reads or changes anything. Give an internal
+caller a `{ kind: 'system', reason }` actor, with a reason named in `SystemLifecycleReason`.
+
 ## API client generation
 
 OpenAPI spec generated from NestJS decorators. Drift check: `pnpm run check:openapi`.

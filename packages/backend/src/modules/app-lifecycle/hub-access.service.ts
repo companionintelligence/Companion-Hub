@@ -100,7 +100,9 @@ export class HubAccessService {
     // so a failure here must be loud and must name the remedy — silently returning would leave the
     // app authenticating against nothing with no indication that a manual restart fixes it.
     try {
-      const dispatched = await this.appLifecycle.restartApp({ appUrn });
+      // As the Hub: the rotation was the authorized act (`configure`), and a refused restart would
+      // strand the app on the credentials just revoked.
+      const dispatched = await this.appLifecycle.restartApp({ appUrn, actor: { kind: 'system', reason: 'hub-access-rotate' } });
       this.logger.info('Hub access material rotated', appUrn);
       return dispatched;
     } catch (error) {

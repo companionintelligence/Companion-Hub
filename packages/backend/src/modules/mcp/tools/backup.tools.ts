@@ -1,6 +1,7 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { BackupsService } from '@/modules/backups/backups.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -65,17 +66,34 @@ export class BackupTools implements OnModuleInit {
     });
   }
 
+  /*
+   * Each call names its actor through `mcpCallerLifecycleActor`, for the verb the backup routes
+   * assert, and `BackupsService` asks the lifecycle's gate with it (CI-Hub#1397).
+   */
   async backupApp(params: { appUrn: string }) {
-    return this.backupsService.backupApp({ appUrn: castAppUrn(params.appUrn) });
+    return this.backupsService.backupApp({ appUrn: castAppUrn(params.appUrn), actor: mcpCallerLifecycleActor('backup') });
   }
   async restoreAppBackup(params: { appUrn: string; filename: string }) {
-    return this.backupsService.restoreApp({ appUrn: castAppUrn(params.appUrn), filename: params.filename });
+    return this.backupsService.restoreApp({
+      appUrn: castAppUrn(params.appUrn),
+      filename: params.filename,
+      actor: mcpCallerLifecycleActor('restore'),
+    });
   }
   async listAppBackups(params: { appUrn: string; page?: number; pageSize?: number }) {
-    return this.backupsService.getAppBackups({ appUrn: castAppUrn(params.appUrn), page: params.page ?? 0, pageSize: params.pageSize ?? 10 });
+    return this.backupsService.getAppBackups({
+      appUrn: castAppUrn(params.appUrn),
+      page: params.page ?? 0,
+      pageSize: params.pageSize ?? 10,
+      actor: mcpCallerLifecycleActor('view'),
+    });
   }
   async deleteBackup(params: { appUrn: string; filename: string }) {
-    await this.backupsService.deleteAppBackup({ appUrn: castAppUrn(params.appUrn), filename: params.filename });
+    await this.backupsService.deleteAppBackup({
+      appUrn: castAppUrn(params.appUrn),
+      filename: params.filename,
+      actor: mcpCallerLifecycleActor('backup'),
+    });
     return { success: true };
   }
 }

@@ -1,7 +1,9 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { UserConfigService } from '@/modules/user-config/user-config.service';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { assertMcpCallerMay } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -12,6 +14,7 @@ export class AppConfigTools implements OnModuleInit {
     private readonly userConfigService: UserConfigService,
     private readonly appsService: AppsService,
     private readonly registry: McpToolRegistry,
+    private readonly appLifecycleService: AppLifecycleService,
   ) {}
 
   onModuleInit() {
@@ -74,25 +77,43 @@ export class AppConfigTools implements OnModuleInit {
     });
   }
 
+  /*
+   * Each call asks the lifecycle's actor gate first (`assertMcpCallerMay`): `view` to read an app's
+   * overrides, `configure` to change them. The gate cannot sit in `AppsService`, which the lifecycle
+   * module depends on, nor in `UserConfigService`, which is kept clear of that module and serves
+   * `/api/user-config` routes that assert no grant of their own (CI-Hub#1397).
+   */
   async getUserConfig(params: { appUrn: string }) {
-    return this.userConfigService.getUserConfig(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    return this.userConfigService.getUserConfig(appUrn);
   }
   async updateUserConfig(params: { appUrn: string; dockerCompose: string; appEnv: string }) {
-    await this.userConfigService.updateUserConfig(castAppUrn(params.appUrn), { dockerCompose: params.dockerCompose, appEnv: params.appEnv });
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
+    await this.userConfigService.updateUserConfig(appUrn, { dockerCompose: params.dockerCompose, appEnv: params.appEnv });
     return { success: true };
   }
   async enableUserConfig(params: { appUrn: string }) {
-    await this.userConfigService.enableUserConfig(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
+    await this.userConfigService.enableUserConfig(appUrn);
     return { success: true };
   }
   async disableUserConfig(params: { appUrn: string }) {
-    await this.userConfigService.disableUserConfig(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
+    await this.userConfigService.disableUserConfig(appUrn);
     return { success: true };
   }
   async ignoreAppVersion(params: { appUrn: string }) {
-    return this.appsService.ignoreAppVersion(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
+    return this.appsService.ignoreAppVersion(appUrn);
   }
   async unignoreAppVersion(params: { appUrn: string }) {
-    return this.appsService.unignoreAppVersion(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
+    return this.appsService.unignoreAppVersion(appUrn);
   }
 }
