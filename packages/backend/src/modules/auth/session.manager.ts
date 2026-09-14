@@ -22,7 +22,7 @@ export const SESSION_KEY_PREFIX = 'session:';
 /**
  * ⚠ APP SESSIONS ARE KEYED OUTSIDE `session:`. `resolveSessionUserId` — and so
  * `AuthMiddleware` — only ever reads under `SESSION_KEY_PREFIX`, so an app-session id is
- * never a Hub credential, whichever cookie, header or query parameter it arrives in.
+ * never a Hub credential, whichever cookie, header, or query parameter it arrives in.
  * Spared from the version-bump wipe alongside it.
  */
 export const APP_SESSION_KEY_PREFIX = 'app_session:';
@@ -34,6 +34,18 @@ const sessionKey = (sessionId: string) => `${SESSION_KEY_PREFIX}${sessionId}`;
 const sessionGraceKey = (sessionId: string) => `${GRACE_KEY_PREFIX}${sessionId}`;
 const userSessionKey = (userId: number, sessionId: string) => `${SESSION_KEY_PREFIX}${userId}:${sessionId}`;
 const appSessionKey = (appSessionId: string) => `${APP_SESSION_KEY_PREFIX}${appSessionId}`;
+
+/**
+ * Ids are spliced into keys verbatim, and every real one is a `crypto.randomUUID()`, which never
+ * contains `:`. An id that does addresses another key under `session:`: `grace:<id>` names that
+ * session's rotation-grace alias, and touching it would re-arm the 60-second alias for a full TTL,
+ * so neither rotation nor logout would end the session.
+ */
+const isSessionIdShaped = (sessionId: unknown): sessionId is string =>
+  typeof sessionId === 'string' && sessionId.length > 0 && !sessionId.includes(':');
+
+/** An app session is extended to its parent's expiry once the parent has been extended at least this far past it. */
+const APP_SESSION_FOLLOW_PARENT_MS = 60 * 60 * 1000;
 
 /**
  * What an edge-SSO consume leaves on an app host instead of the Hub's own session: forward-auth
@@ -84,6 +96,10 @@ export class SessionManager {
 
   /** Resolve a session or rotation-grace session to its user ID. */
   public resolveSessionUserId(sessionId: string): number | null {
+    if (!isSessionIdShaped(sessionId)) {
+      return null;
+    }
+
     const userId = this.cache.get(sessionKey(sessionId)) ?? this.cache.get(sessionGraceKey(sessionId));
     if (!userId || Number.isNaN(Number(userId))) {
       return null;
@@ -94,6 +110,10 @@ export class SessionManager {
 
   /** Extend a valid session to the full TTL window. */
   public touchSession(sessionId: string): boolean {
+    if (!isSessionIdShaped(sessionId)) {
+      return false;
+    }
+
     const userId = this.cache.get(sessionKey(sessionId));
     if (!userId) {
       return false;
@@ -107,7 +127,7 @@ export class SessionManager {
 
   /** Absolute expiry timestamp (ms) for a live session, or null when missing. */
   public getSessionExpiresAt(sessionId: string): number | null {
-    return this.cache.getExpirationAt(sessionKey(sessionId));
+    return isSessionIdShaped(sessionId) ? this.cache.getExpirationAt(sessionKey(sessionId)) : null;
   }
 
   /**
@@ -115,6 +135,10 @@ export class SessionManager {
    * Returns null when the current session is missing or expired.
    */
   public async rotateSession(sessionId: string): Promise<string | null> {
+    if (!isSessionIdShaped(sessionId)) {
+      return null;
+    }
+
     const key = sessionKey(sessionId);
     const userId = this.cache.get(key);
     if (!userId || Number.isNaN(Number(userId))) {
@@ -158,7 +182,7 @@ export class SessionManager {
    *
    * The TTL is capped at what the parent has left, so the record never outlasts it, and
    * `resolveAppSession` refuses it as soon as the parent stops resolving — which is how logout,
-   * rotation and sign-out-everywhere reach app sessions without a sweep of their own.
+   * rotation, and sign-out-everywhere reach app sessions without a sweep of their own.
    */
   public async createAppSession(userId: number, parentSessionId: string, appUrn: AppUrn): Promise<string | null> {
     // A rotation-grace parent still resolves, so its (short) remaining life counts too.
@@ -174,29 +198,54 @@ export class SessionManager {
     return appSessionId;
   }
 
-  /** Resolve an app session, or null — honoured only while its parent still resolves to the same user. */
+  /**
+   * Resolve an app session, or null — honoured only while its parent still resolves to the same user.
+   *
+   * A refused record is deleted, because its parent never resolves again. A live one follows its
+   * parent: once the parent has been extended past it, it is extended to the parent's expiry, never
+   * beyond, so an app tab stays signed in for as long as the Hub session it was derived from.
+   */
   public resolveAppSession(appSessionId: string): AppSession | null {
-    const raw = this.cache.get(appSessionKey(appSessionId));
+    const key = appSessionKey(appSessionId);
+    const raw = this.cache.get(key);
     if (!raw) {
       return null;
     }
 
-    let record: Partial<AppSession> | null;
+    let record: Partial<AppSession> | null = null;
     try {
       record = JSON.parse(raw) as Partial<AppSession> | null;
     } catch {
-      return null;
+      // Unreadable, so refused below.
     }
 
     const { userId, parentSessionId, appUrn } = record ?? {};
     if (typeof userId !== 'number' || typeof parentSessionId !== 'string' || !parentSessionId || typeof appUrn !== 'string' || !appUrn) {
+      this.cache.del(key);
       return null;
     }
 
     if (this.resolveSessionUserId(parentSessionId) !== userId) {
+      this.cache.del(key);
       return null;
     }
 
+    this.followParentExpiry(key, raw, parentSessionId);
     return { userId, parentSessionId, appUrn };
+  }
+
+  /** Extend an app session to its parent's expiry once the parent has been extended well past it. */
+  private followParentExpiry(key: string, raw: string, parentSessionId: string) {
+    // Only the live session key counts: a rotation-grace alias is on its way out and extends nothing.
+    const parentExpiresAt = this.cache.getExpirationAt(sessionKey(parentSessionId));
+    const expiresAt = this.cache.getExpirationAt(key);
+    if (!parentExpiresAt || !expiresAt || parentExpiresAt - expiresAt < APP_SESSION_FOLLOW_PARENT_MS) {
+      return;
+    }
+
+    const ttlSeconds = Math.min(SESSION_TTL_SECONDS, Math.floor((parentExpiresAt - Date.now()) / 1000));
+    if (ttlSeconds > 0) {
+      this.cache.set(key, raw, ttlSeconds);
+    }
   }
 }

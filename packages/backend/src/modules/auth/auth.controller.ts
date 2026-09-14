@@ -7,9 +7,7 @@ import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { LoggerService } from '@/core/logger/logger.service';
-import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
 import type { UserDto } from '@/modules/user/dto/user.dto';
 import type { AppUrn } from '@ci-hub/common/types';
 import {
@@ -90,7 +88,7 @@ import {
   type DesktopChannel,
 } from './portal-sso';
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
-import { sessionIdsFromRequest } from './auth.middleware';
+import { loadSessionUser, sessionIdsFromRequest } from './auth.middleware';
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -102,6 +100,15 @@ const EDGE_SSO_MAX_MINTS_PER_MINUTE = 3;
 const EDGE_SSO_MINT_WINDOW_SECONDS = 60;
 /** One redirect hop needs little time, so a short lifetime limits replay exposure. */
 const EDGE_SSO_TICKET_TTL_SECONDS = 60;
+
+/** A minted edge-SSO ticket, cached under `EDGE_SSO_CACHE_PREFIX`. The mint writes it; the consume and logout read it. */
+interface EdgeSsoTicket {
+  sessionId: string;
+  targetHost: string;
+  targetUrl: string;
+  /** The app the target hostname resolved to at mint. */
+  appUrn: AppUrn;
+}
 
 /**
  * Phone Memory returns to a Capacitor webview without the Hub cookie, so its API routes must reach Nest for app-level authentication.
@@ -445,7 +452,7 @@ export class AuthController {
 
     for (const entry of this.cache.getByPrefix(EDGE_SSO_CACHE_PREFIX) ?? []) {
       try {
-        const parsed = JSON.parse(entry.val) as { sessionId?: string };
+        const parsed = JSON.parse(entry.val) as Partial<EdgeSsoTicket>;
         if (parsed.sessionId && wanted.has(parsed.sessionId)) {
           this.cache.del(entry.key);
         }
@@ -1208,28 +1215,16 @@ export class AuthController {
   }
 
   /**
-   * Loaded the way `AuthMiddleware` loads a Hub session's user: the short-lived DTO cache, then the
-   * row, retried through a DB blip and answered 503 if it stays down. Forward auth runs for every
-   * request an app serves, so neither a row read per request nor a 500 per blip is acceptable here.
+   * Loaded by `loadSessionUser`, the rules `AuthMiddleware` applies to a Hub session's user. Forward auth
+   * runs for every request an app serves, so neither a row read per request nor a 500 per blip is
+   * acceptable here.
    */
   private async loadAppSessionUser(userId: number): Promise<UserDto | undefined> {
-    const cached = this.sessionUserCache.get(userId);
-    if (cached) {
-      return cached;
-    }
-
     try {
-      return await withTransientDbRetry(async () => {
-        const readToken = this.sessionUserCache.beginRead(userId);
-        const user = await this.userRepository.getUserDtoById(userId);
-        if (user) {
-          this.sessionUserCache.set(userId, user, readToken);
-        }
-        return user;
-      });
+      return await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
     } catch (error) {
-      if (isTransientDbError(error)) {
-        throw new ServiceUnavailableException('Database temporarily unavailable');
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
       }
       // Same as a Hub session whose row cannot be read: carry on without a user.
       return undefined;
@@ -1361,12 +1356,7 @@ export class AuthController {
         let targetUrl = '';
         let appUrn: AppUrn | undefined;
         try {
-          ({ sessionId, targetHost, targetUrl, appUrn } = JSON.parse(cached) as {
-            sessionId: string;
-            targetHost: string;
-            targetUrl: string;
-            appUrn?: AppUrn;
-          });
+          ({ sessionId = '', targetHost = '', targetUrl = '', appUrn } = JSON.parse(cached) as Partial<EdgeSsoTicket>);
         } catch {
           // fall through to the login redirect
         }
@@ -1385,17 +1375,29 @@ export class AuthController {
         }
 
         // The session must still resolve — a ticket outliving its session plants nothing — and the
-        // ticket must name the one app the planted session will be good for.
+        // ticket must name an app. The session is bound to the app this forwarded host resolves to,
+        // the lookup forward auth applies to every later request here. The host binding above already
+        // ties the ticket to this host; the app recorded at mint can differ when two apps claim the
+        // ticket's hostname, and a session bound to that one would be refused on every request.
         const userId = sessionId && ticketTarget && hostMatches ? this.sessionManager.resolveSessionUserId(sessionId) : null;
-        const appSessionId = userId && appUrn ? await this.sessionManager.createAppSession(userId, sessionId, appUrn) : null;
+        const hostAppUrn = userId && appUrn ? await this.forwardAuthSecrets.resolveAppUrnForHost(forwardedHost) : null;
+        if (hostAppUrn && hostAppUrn !== appUrn) {
+          this.logger.debug('Edge-SSO ticket names another app that claims this hostname; binding to the forwarded host app', {
+            host: forwardedHost,
+            ticketApp: appUrn,
+            hostApp: hostAppUrn,
+          });
+        }
+        const appSessionId = userId && hostAppUrn ? await this.sessionManager.createAppSession(userId, sessionId, hostAppUrn) : null;
         if (ticketTarget && appSessionId) {
           // ⚠ AN APP SESSION, NEVER `sessionId` ITSELF. Traefik copies every request header, cookies
           // included, to the app it fronts, and the Hub session is a full Hub API credential
-          // (`AuthMiddleware` takes it from a cookie, a header or the query): planting it here handed
-          // the operator's Hub to every app served on this host, and a leaked ticket to whoever
-          // redeemed it. This one authenticates forward auth for the ticket's app and nothing else.
+          // (`AuthMiddleware` takes it from a cookie, a header, or the query): planting it here would
+          // hand the operator's Hub to every app served on this host, and a leaked ticket to whoever
+          // redeemed it. This one authenticates forward auth for this host's app and nothing else.
           // Host-only (no Domain), so the browser pins it to the host it actually requested, whatever
-          // the tunnel rewrote the forwarded host to, and no sibling or child host ever receives it.
+          // the tunnel rewrote the forwarded host to, and no sibling or child host receives it. A
+          // sibling can still shadow it with a same-name cookie scoped to a shared parent domain.
           res.cookie(APP_SESSION_COOKIE_NAME, appSessionId, {
             httpOnly: true,
             secure: ticketTarget.protocol === 'https:',
@@ -1504,7 +1506,7 @@ export class AuthController {
     const targetUrl = target.toString();
     this.cache.set(
       `${EDGE_SSO_CACHE_PREFIX}${ticket}`,
-      JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl, appUrn }),
+      JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl, appUrn } satisfies EdgeSsoTicket),
       EDGE_SSO_TICKET_TTL_SECONDS,
     );
 

@@ -914,9 +914,9 @@ describe('AuthController', () => {
       await authController.traefik(tunnelReq('/files?dir=%2Fdata&cihub_sso=t-123'), res);
 
       expect(cache.del).toHaveBeenCalledWith('edge_sso:t-123'); // single use, burned before acting
-      // The ticket's user, derived from the ticket's session, for the ticket's app — and that app
-      // session is what lands on the app host, never the Hub session itself. Traefik copies every
-      // request header to the app, and the Hub session is a full Hub API credential.
+      // The ticket's user, derived from the ticket's session, for the app this host resolves to — and
+      // that app session is what lands on the app host, never the Hub session itself. Traefik copies
+      // every request header to the app, and the Hub session is a full Hub API credential.
       expect(sessionManager.createAppSession).toHaveBeenCalledWith(7, 'sid-1', APP);
       // Exact options: host-only (no Domain), so there is nothing for the browser to fail to match
       // against the forwarded `.ci.lan` name, and no sibling or child host shares it.
@@ -949,6 +949,24 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith(lanTarget);
       // http on the LAN: the cookie must not be flagged Secure or the browser discards it.
       expect(res.cookie).toHaveBeenCalledWith('ci-hub-app-sid', 'app-sid-1', expect.objectContaining({ secure: false }));
+    });
+
+    it("binds the app session to the forwarded host's app when another app still claims the ticket's host", async () => {
+      // Two app rows can hold one custom domain (a stopped app keeps its binding), and the host map keeps
+      // whichever registers last, so the mint can record the stale holder. Every later request on this
+      // origin resolves to the app Traefik routes it to: a session bound to the ticket's app would be
+      // refused on each of them and loop the visitor to the mint cap.
+      const STALE_APP = 'wordpress:ci-marketplace';
+      cache.get.mockReturnValue(ticketFor({ appUrn: STALE_APP }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      forwardAuthSecrets.resolveAppUrnForHost.mockImplementation(async (host) => (host === LAN_HOST ? APP : STALE_APP) as never);
+      const res = consumeRes();
+
+      await authController.traefik(tunnelReq('/files?dir=%2Fdata&cihub_sso=t-123'), res);
+
+      expect(forwardAuthSecrets.resolveAppUrnForHost).toHaveBeenCalledWith(LAN_HOST);
+      expect(sessionManager.createAppSession).toHaveBeenCalledWith(7, 'sid-1', APP);
+      expect(res.redirect).toHaveBeenCalledWith(TARGET);
     });
 
     it('plants nothing for a ticket bound to a different app', async () => {

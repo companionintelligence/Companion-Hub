@@ -246,6 +246,8 @@ describe('SessionManager app sessions', () => {
     await manager.deleteSession(parent);
 
     expect(manager.resolveAppSession(appSessionId)).toBeNull();
+    // Its parent never resolves again, so the refused record goes with it instead of lingering for its TTL.
+    expect(cache.store.has(`app_session:${appSessionId}`)).toBe(false);
   });
 
   it('stops resolving once a rotated parent is past its grace window', async () => {
@@ -269,6 +271,42 @@ describe('SessionManager app sessions', () => {
     expect(manager.resolveAppSession(appSessionId)).toBeNull();
   });
 
+  it('is extended as its parent is extended, and never past it', async () => {
+    const DAY_MS = 24 * HOUR_MS;
+    const parent = await manager.createSession(7);
+    // Minted four days in, the app session gets the three days its parent has left.
+    vi.advanceTimersByTime(4 * DAY_MS);
+    const appSessionId = (await manager.createAppSession(7, parent, APP)) as string;
+    const key = `app_session:${appSessionId}`;
+    expect(cache.getExpirationAt(key)).toBe(manager.getSessionExpiresAt(parent));
+
+    // Hub traffic extends the parent (what `AuthMiddleware` does past half its TTL), and the app session follows.
+    manager.touchSession(parent);
+    expect(manager.resolveAppSession(appSessionId)).not.toBeNull();
+    expect(cache.getExpirationAt(key)).toBe(manager.getSessionExpiresAt(parent));
+
+    // So it still resolves past the expiry it was minted with.
+    vi.advanceTimersByTime(3 * DAY_MS + HOUR_MS);
+    expect(manager.resolveAppSession(appSessionId)).not.toBeNull();
+  });
+
+  it('lets no `grace:` id stand in for a rotated session, let alone extend it', async () => {
+    // Ids are spliced into `session:` keys verbatim, so `grace:<id>` names the rotated session's alias.
+    const rotated = await manager.createSession(7);
+    await manager.rotateSession(rotated);
+    const alias = `grace:${rotated}`;
+
+    expect(manager.resolveSessionUserId(alias)).toBeNull();
+    expect(manager.getSessionExpiresAt(alias)).toBeNull();
+    expect(manager.touchSession(alias)).toBe(false);
+    await expect(manager.rotateSession(alias)).resolves.toBeNull();
+    await expect(manager.createAppSession(7, alias, APP)).resolves.toBeNull();
+
+    // The alias keeps only its grace window, so the rotated id stops resolving when that ends.
+    vi.advanceTimersByTime((SESSION_ROTATION_GRACE_SECONDS + 1) * 1000);
+    expect(manager.resolveSessionUserId(rotated)).toBeNull();
+  });
+
   it.each([
     ['an unreadable record', () => '{not json'],
     ['a JSON null', () => 'null'],
@@ -279,5 +317,6 @@ describe('SessionManager app sessions', () => {
     cache.set('app_session:tampered', record(parent), 60);
 
     expect(manager.resolveAppSession('tampered')).toBeNull();
+    expect(cache.store.has('app_session:tampered')).toBe(false);
   });
 });

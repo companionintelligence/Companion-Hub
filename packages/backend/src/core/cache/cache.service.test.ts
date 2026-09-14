@@ -67,6 +67,22 @@ describe('CacheService', () => {
       expect(cache.get('buster')).toBeUndefined();
       expect(cache.get('browser_handoff:ticket')).toBeUndefined();
     });
+
+    it('spares a row under any one of several preserved prefixes, and only those rows', () => {
+      // The version-bump wipe preserves Hub sessions and app sessions together, so a row is deleted
+      // only when it sits under none of the prefixes. A lookalike family stays unprotected.
+      cache.set('session:abc', '1');
+      cache.set('app_session:def', '{}');
+      cache.set('app_sessions:ghi', '{}');
+      cache.set('buster', '0.2.46');
+
+      cache.clear(['session:', 'app_session:']);
+
+      expect(cache.get('session:abc')).toBe('1');
+      expect(cache.get('app_session:def')).toBe('{}');
+      expect(cache.get('app_sessions:ghi')).toBeUndefined();
+      expect(cache.get('buster')).toBeUndefined();
+    });
   });
 
   describe('getByPrefix', () => {
