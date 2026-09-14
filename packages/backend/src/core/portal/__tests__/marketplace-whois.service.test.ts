@@ -492,15 +492,6 @@ describe('MarketplaceWhoIsService', () => {
       await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
     });
 
-    it("is false without asking the Portal when this device's registration cannot be read, and the log says why", async () => {
-      portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role: 'owner' }, apps: [] }]));
-      registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('disk'));
-
-      await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
-      expect(portal.whoisApps).not.toHaveBeenCalled();
-      expect(logger.warn).toHaveBeenCalledWith(`custom_domain_role_unverified userId=${USER_ID} status=no-organization`);
-    });
-
     it('is false for an operator with no linked Portal subject, without asking the Portal', async () => {
       federatedIdentities.findByUserId.mockResolvedValue([] as never);
 
@@ -543,17 +534,29 @@ describe('MarketplaceWhoIsService', () => {
       await expect(service.isOrgManager(USER_ID)).resolves.toBe(false);
       expect(logger.warn).toHaveBeenCalledWith(`api_key_full_role_unverified userId=${USER_ID} status=409`);
     });
+  });
 
+  /*
+   * Both role reads share one early exit: with no organization of our own to name, there is no answer a role
+   * could be read from, so the Portal is not asked. One table over both entry points, so neither loses a case.
+   */
+  describe.each([
+    ['hasManagingRole', 'custom_domain', (whois: MarketplaceWhoIsService) => whois.hasManagingRole(USER_ID, APP_URN)],
+    ['isOrgManager', 'api_key_full', (whois: MarketplaceWhoIsService) => whois.isOrgManager(USER_ID)],
+  ] as const)('%s without an organization of our own', (_method, purpose, ask) => {
     it.each([
       ['cannot be read', () => registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('disk'))],
       ['does not exist', () => registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never)],
     ])("is false without asking the Portal when this device's registration %s, and the log says why", async (_label, arrange) => {
-      portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role: 'owner' }, apps: [] }]));
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-hub', user: { role: 'owner' }, apps: [] }] },
+      });
       arrange();
 
-      await expect(service.isOrgManager(USER_ID)).resolves.toBe(false);
+      await expect(ask(service)).resolves.toBe(false);
       expect(portal.whoisApps).not.toHaveBeenCalled();
-      expect(logger.warn).toHaveBeenCalledWith(`api_key_full_role_unverified userId=${USER_ID} status=no-organization`);
+      expect(logger.warn).toHaveBeenCalledWith(`${purpose}_role_unverified userId=${USER_ID} status=no-organization`);
     });
   });
 });

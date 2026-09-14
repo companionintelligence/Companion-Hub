@@ -531,12 +531,16 @@ describe('AuthService', () => {
     });
 
     it('refuses a person Portal answers 403 for as not a member, rather than telling them to try again', async () => {
-      // Device WhoIs answers 403 for a subject in none of this device's organizations (or not in the
-      // one named). That is an answer, not an outage.
+      // Device WhoIs answers 403 `GRANT_DENIED` for a subject in none of this device's organizations (or not
+      // in the one named). That is an answer, not an outage.
       federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
       userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
-      portal.whoisApps.mockResolvedValue({ status: 403, body: null });
+      portal.whoisApps.mockResolvedValue({
+        status: 403,
+        body: { error: 'Not a member of an organization this device is registered to', code: 'GRANT_DENIED' } as never,
+        code: 'GRANT_DENIED',
+      });
 
       await expect(authService.resolvePairedOrgMembership('portal-stranger')).resolves.toBe('not-member');
       await expect(
@@ -550,13 +554,69 @@ describe('AuthService', () => {
       expect(userRepository.createUser).not.toHaveBeenCalled();
     });
 
+    it('answers 503, not "not a member", for a 403 that did not come from Portal', async () => {
+      // A firewall or proxy in front of Portal answers with a page of its own: no body, no `GRANT_DENIED`. That
+      // says nothing about membership, and `not-member` would be remembered for the forward-auth Bearer TTL.
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 403, body: null });
+
+      await expect(authService.resolvePairedOrgMembership('portal-person')).resolves.toBe('unknown');
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-person',
+          email: 'person@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE', status: 503 });
+    });
+
     it('still answers 503 on a tie Portal could not settle (409)', async () => {
       federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
       userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
-      portal.whoisApps.mockResolvedValue({ status: 409, body: null });
+      // The body Portal really sends is an object, so it is the status, not a missing body, that keeps this `unknown`.
+      portal.whoisApps.mockResolvedValue({
+        status: 409,
+        body: { error: 'This device is registered to more than one organization; name the one you mean.', code: 'ORGANIZATION_REQUIRED' } as never,
+        code: 'ORGANIZATION_REQUIRED',
+      });
 
       await expect(authService.resolvePairedOrgMembership('portal-person')).resolves.toBe('unknown');
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-person',
+          email: 'person@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE', status: 503 });
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+    });
+
+    it('names the configured organization, the one grant and role reads name, on a Hub holding more than one', async () => {
+      // The first row alone is an unordered pick between two registrations, and Portal honours whichever tied
+      // organization is named: sign-in would answer for an organization this Hub's grants do not.
+      configurationService.get.mockImplementation(((key: string) => (key === 'ciHubOrganizationId' ? 'org-2' : undefined)) as never);
+      deviceRegistration.getDeviceRegistrationById.mockResolvedValue({ id: 'org-2' } as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 200, body: { organizations: [{ organizationId: 'org-2', apps: [] }] } });
+
+      await expect(authService.resolvePairedOrgMembership('portal-person')).resolves.toBe('member');
+      expect(deviceRegistration.getDeviceRegistrationById).toHaveBeenCalledWith('org-2');
+      expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-2' }));
+    });
+
+    it('names the first registration when the configured organization has no row', async () => {
+      configurationService.get.mockImplementation(((key: string) => (key === 'ciHubOrganizationId' ? 'org-gone' : undefined)) as never);
+      deviceRegistration.getDeviceRegistrationById.mockResolvedValue(null as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 200, body: { organizations: [{ organizationId: 'org-1', apps: [] }] } });
+
+      await expect(authService.resolvePairedOrgMembership('portal-person')).resolves.toBe('member');
+      expect(portal.whoisApps).toHaveBeenCalledWith(expect.objectContaining({ organizationId: 'org-1' }));
     });
   });
   describe('register', () => {

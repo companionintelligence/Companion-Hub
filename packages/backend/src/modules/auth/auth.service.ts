@@ -17,7 +17,7 @@ import {
 import { parseRetryAfterSeconds } from '@/common/helpers/retry-after';
 import { PasswordService } from '@/core/password/password.service';
 import axios, { type AxiosResponse } from 'axios';
-import { PortalClientService } from '@/core/portal/portal-client.service';
+import { PORTAL_GRANT_DENIED_CODE, PortalClientService } from '@/core/portal/portal-client.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { normalizeUsername, UserRepository } from '@/modules/user/user.repository';
@@ -260,10 +260,12 @@ export class AuthService {
    *
    * `unknown` is not `not-member`, and the distinction is the whole reason this is not a boolean:
    * a device-registration read that failed, a Portal that is not configured, a Portal that answered
-   * 5xx (or 401 after a device-key rotation), or a Portal we could not reach at all are all "we
-   * could not tell". Callers must still DENY on `unknown` — but a caller that caches must not
-   * remember it, or one blip becomes a lockout for the whole TTL. `MarketplaceWhoIsService.pickOrg`
-   * draws the same line for grants, for the same reason.
+   * 5xx (or 401 after a device-key rotation, or 409 on a pairing tie it would not settle), a 403 that
+   * is not Portal's own `GRANT_DENIED`, or a Portal we could not reach at all are all "we could not
+   * tell". Callers must still DENY on `unknown` — but a caller that caches must not remember it, or
+   * one blip becomes a lockout for the whole TTL. `MarketplaceWhoIsService` draws the same line for
+   * grants, for the same reason: an organization it cannot read, or a WhoIs that failed, takes the
+   * cache fallback rather than an empty grant.
    */
   public async resolvePairedOrgMembership(subject: string): Promise<PairedOrgMembership> {
     // A read that FAILED and a Hub paired to nothing are different answers. Collapsing both into
@@ -272,7 +274,14 @@ export class AuthService {
     // request, and told the operator at login to try again in a moment for a permanent condition.
     let registration: Awaited<ReturnType<DeviceRegistrationRepository['getFirstDeviceRegistration']>>;
     try {
-      registration = await this.deviceRegistration.getFirstDeviceRegistration();
+      // ⚠ THE CONFIGURED ORGANIZATION FIRST, THEN THE FIRST ROW — the order of
+      // `RegistrationService.getDeviceRegistrationInfo`, so this names the organization the grant and role reads
+      // name. The first row alone is an unordered pick on a Hub holding two registrations, and a Portal that cannot
+      // break a tie between them honours whichever one is named: sign-in would admit a person for an organization
+      // this Hub's grants no longer answer for.
+      const configured = this.config.get('ciHubOrganizationId');
+      const preferred = configured ? await this.deviceRegistration.getDeviceRegistrationById(configured) : null;
+      registration = preferred ?? (await this.deviceRegistration.getFirstDeviceRegistration());
     } catch (error) {
       this.logger.warn(`Device registration read failed during org membership check: ${error instanceof Error ? error.message : String(error)}`);
       return 'unknown';
@@ -298,15 +307,19 @@ export class AuthService {
       return 'unknown';
     }
 
-    // ⚠ 403 IS AN ANSWER. Device WhoIs refuses a subject who is in none of this device's
-    // organizations, or not in the one we named, with 403 — "not a member", which is safe to
-    // remember. Reading it as `unknown` told a person who simply is not in the organization to try
-    // again in a moment, forever, and kept the forward-auth Bearer path asking Portal on every request.
-    if (whois?.status === 403) {
+    // ⚠ PORTAL'S 403 IS AN ANSWER. Device WhoIs refuses a subject who is in none of this device's
+    // organizations, or not in the one we named, with 403 `GRANT_DENIED` — "not a member", which is
+    // safe to remember. Reading it as `unknown` told a person who simply is not in the organization to
+    // try again in a moment, forever, and kept the forward-auth Bearer path asking Portal on every
+    // request. The code is what makes it Portal's: a 403 page from a firewall or proxy in front of
+    // Portal carries none, says nothing about membership, and must not be remembered as a refusal.
+    if (whois?.status === 403 && whois.code === PORTAL_GRANT_DENIED_CODE) {
       return 'not-member';
     }
 
-    // `null` means Portal is not configured on this Hub; any other `>= 400` is an outage or a stale device key.
+    // `null` means Portal is not configured on this Hub. Any other `>= 400` is not an answer either: an
+    // outage, a stale device key, a 403 that did not come from Portal, or a pairing tie Portal would not
+    // settle (409 `ORGANIZATION_REQUIRED`).
     if (!whois || whois.status >= 400 || !whois.body) {
       return 'unknown';
     }

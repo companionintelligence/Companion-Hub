@@ -29,9 +29,12 @@ type CachedWhoIs = {
  * Not commerce. A modified Hub can skip this. Portal POST install and
  * `app_entitlement` remain the gates. Device-key WhoIs names the operator
  * by federated `subject`. It also names this device's own `organizationId`,
- * which is not an identity claim: Portal honours it only when it is one of the
- * organizations this device is registered to now, so it chooses among the
- * device's own registrations and can reach no other tenant.
+ * which is not an identity claim: a Portal with the narrowing honours it only
+ * when it is one of the organizations this device is registered to now, so it
+ * chooses among the device's own registrations and can reach no other tenant.
+ * A Portal that predates the narrowing ignores it and lists every organization
+ * the subject shares with this device; there `pickOrg`'s match is what keeps
+ * grants to our own tenant, so that match is not redundant.
  */
 @Injectable()
 export class MarketplaceWhoIsService {
@@ -162,12 +165,13 @@ export class MarketplaceWhoIsService {
    * of their choosing.
    *
    * The role comes from the same WhoIs answer the grants do, for this device's
-   * own organization (`pickOrg`), fresh — never from the grant cache — and every
-   * way of not knowing it is a `false`: no linked Portal subject, no Portal
-   * configured, WhoIs down or answering non-2xx, or an org that did not say. A
-   * custom domain cannot be bound without the Portal anyway. Who the operator is,
-   * and that a named exempt principal needs no role, is the lifecycle actor's to
-   * say (`lifecycleActor`); the service decides from that.
+   * own organization (named in the request, matched by `pickOrg`), fresh — never
+   * from the grant cache — and every way of not knowing it is a `false`: no
+   * linked Portal subject, no organization of our own to name (the Portal is not
+   * asked), no Portal configured, WhoIs down or answering non-2xx, or an org that
+   * did not say. A custom domain cannot be bound without the Portal anyway. Who
+   * the operator is, and that a named exempt principal needs no role, is the
+   * lifecycle actor's to say (`lifecycleActor`); the service decides from that.
    */
   async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
     return this.readManagingRole(userId, appUrn, 'custom_domain');
@@ -423,23 +427,28 @@ export class MarketplaceWhoIsService {
    * learned: the registration read failed, or there is no organization id to
    * read. On `null` a caller takes its WhoIs-outage path without asking at all.
    *
-   * ⚠ A FAILED READ IS "UNKNOWN", NOT AN ANSWER. It used to be swallowed into
-   * `null` and fall through to an arbitrary pick of organization, so a
-   * transient failure to learn our own identity silently widened every grant
-   * on the appliance.
+   * ⚠ A FAILED READ IS "UNKNOWN", NOT AN ANSWER. A failed read once fell
+   * through to an arbitrary pick of organization, so a transient failure to
+   * learn our own identity silently widened every grant on the appliance. It
+   * now ends here as `null`, before any Portal call, and logs as a failed read
+   * rather than as a device with no organization.
    */
   private async deviceOrganizationId(): Promise<string | null> {
-    const registration = await this.registration.getDeviceRegistrationInfo().catch((error: unknown) => {
+    let registration: Awaited<ReturnType<RegistrationService['getDeviceRegistrationInfo']>>;
+
+    try {
+      registration = await this.registration.getDeviceRegistrationInfo();
+    } catch (error) {
       this.warnOnce(
         'read-failed',
         `whois_org_unresolved: could not read this device's registration: ${error instanceof Error ? error.message : String(error)}`,
       );
 
       return null;
-    });
+    }
 
     if (!registration?.id) {
-      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess at grants');
+      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess');
 
       return null;
     }

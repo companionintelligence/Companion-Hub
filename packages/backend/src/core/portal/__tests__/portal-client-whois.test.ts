@@ -23,7 +23,7 @@ describe('PortalClientService.whoisApps', () => {
     vi.mocked(axios.create).mockReturnValue({ post: postMock } as any);
   });
 
-  it('names the organization in the body when one is given', async () => {
+  it('names the organization in the body', async () => {
     const service = new PortalClientService(configuration);
 
     await service.whoisApps({ subject: 'portal-user-1', appIds: ['immich'], surface: 'hub', organizationId: 'org-hub' });
@@ -35,13 +35,21 @@ describe('PortalClientService.whoisApps', () => {
     );
   });
 
-  it('sends no organizationId at all when none is given', async () => {
+  it("carries Portal's refusal code, and none for a refusal that is not Portal's", async () => {
+    // Sign-in reads a 403 as "not a member" only when it is Portal's `GRANT_DENIED`: a firewall or proxy page in
+    // front of Portal is not JSON, and says nothing about membership.
     const service = new PortalClientService(configuration);
+    const ask = () => service.whoisApps({ subject: 'portal-user-1', appIds: ['_membership'], surface: 'hub', organizationId: 'org-hub' });
 
-    await service.whoisApps({ subject: 'portal-user-1', appIds: ['_membership'], surface: 'hub' });
+    postMock.mockResolvedValueOnce({
+      status: 403,
+      data: { error: 'Not a member of an organization this device is registered to', code: 'GRANT_DENIED' },
+    });
+    await expect(ask()).resolves.toMatchObject({ status: 403, code: 'GRANT_DENIED' });
 
-    const [, body] = postMock.mock.calls[0] ?? [];
-    expect(body).toEqual({ subject: 'portal-user-1', appIds: ['_membership'], surface: 'hub' });
-    expect(body).not.toHaveProperty('organizationId');
+    postMock.mockResolvedValueOnce({ status: 403, data: '<html><body>Access denied</body></html>' });
+    const page = await ask();
+    expect(page).toMatchObject({ status: 403, body: null });
+    expect(page?.code).toBeUndefined();
   });
 });
