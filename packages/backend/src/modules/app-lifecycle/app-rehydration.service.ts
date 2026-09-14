@@ -38,8 +38,8 @@ export interface RehydrationExecuteResult {
   message: string;
   alreadyCompleted?: boolean;
   /**
-   * An install was refused by the org-grant gate, so the run was not recorded as done and the next
-   * rehydrate picks those apps up without `force`. See `executeRehydrate`.
+   * An install or a start was refused by the org-grant gate, so the run was not recorded as done and
+   * the next rehydrate picks those apps up without `force`. See `executeRehydrate`.
    */
   incomplete?: boolean;
   plan: RehydrationPlan;
@@ -117,10 +117,10 @@ export class AppRehydrationService {
     }
 
     /*
-     * ⚠ A REFUSAL IS NOT A FINISHED RUN. The requester's grant decided those installs (CI-Hub#1397),
-     * so another person — or the same one once WhoIs answers again — may be allowed. Recording the run
-     * as done made the refusal final: nothing retried it without `force`, and the restore page moved
-     * straight on without showing it.
+     * ⚠ A REFUSAL IS NOT A FINISHED RUN. The requester's grant decided those installs and starts
+     * (CI-Hub#1397), so another person — or the same one once WhoIs answers again — may be allowed.
+     * Recording the run as done made the refusal final: nothing retried it without `force`, and the
+     * restore page moved straight on without showing it.
      *
      * The restore intent below is still cleared. While it stands with no finished run, Cloudflare sync
      * stands down for the whole Hub (`ExposureSyncService.triggerCloudflareSync`), and a requester who
@@ -146,7 +146,7 @@ export class AppRehydrationService {
 
     return {
       success: true,
-      message: this.summarize(queued, started, refused),
+      message: this.summarize(queued, started, refused, plan),
       incomplete,
       plan,
       queued,
@@ -159,11 +159,18 @@ export class AppRehydrationService {
     return hasRestoreIntent();
   }
 
-  private summarize(queued: string[], started: string[], refused: string[]): string {
+  private summarize(queued: string[], started: string[], refused: string[], plan: RehydrationPlan): string {
     const acted = `Queued ${queued.length} install(s) and ${started.length} start(s) from Portal`;
 
     if (refused.length > 0) {
-      return `${acted}; ${refused.length} install(s) were refused for this account`;
+      // A refused start is an installed app its requester may not start, not one they may not install.
+      const refusedStarts = plan.items.filter((item) => item.action === 'start' && item.appUrn !== undefined && refused.includes(item.appUrn)).length;
+      const refusedInstalls = refused.length - refusedStarts;
+      const what = [refusedInstalls > 0 ? `${refusedInstalls} install(s)` : '', refusedStarts > 0 ? `${refusedStarts} start(s)` : '']
+        .filter(Boolean)
+        .join(' and ');
+
+      return `${acted}; ${what} were refused for this account`;
     }
 
     return queued.length + started.length > 0 ? acted : 'No apps required rehydration';
@@ -274,14 +281,15 @@ export class AppRehydrationService {
       return;
     }
 
+    // As the person who asked for the rehydrate: an app they may not start or install is skipped, not
+    // started or installed.
     try {
       if (item.action === 'start') {
-        await this.appLifecycleService.startApp({ appUrn: item.appUrn, skipPull: true });
+        await this.appLifecycleService.startApp({ appUrn: item.appUrn, skipPull: true, actor });
         started.push(item.appUrn);
         return;
       }
 
-      // As the person who asked for the rehydrate: an app they may not install is skipped, not installed.
       await this.appLifecycleService.installApp({ appUrn: item.appUrn, form: item.form, actor });
       queued.push(item.appUrn);
     } catch (error) {

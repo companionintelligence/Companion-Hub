@@ -50,7 +50,8 @@ import { DATA_DIR } from '@/common/constants';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
@@ -799,10 +800,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * Returns immediately; the actual `*_cancelled` SSE event arrives once the worker finishes
    * compensation. In Phase 1 only `install` registers, so other ops return `not_found`.
    */
-  async cancelOperation(
-    appUrn: AppUrn,
-    requestId?: string,
-  ): Promise<{ outcome: 'cancelling' | 'cancelled_queued' | 'refused' | 'force_reset' | 'not_found'; status?: string; message?: string }> {
+  async cancelOperation(params: {
+    appUrn: AppUrn;
+    requestId?: string;
+    actor: LifecycleActor;
+  }): Promise<{ outcome: 'cancelling' | 'cancelled_queued' | 'refused' | 'force_reset' | 'not_found'; status?: string; message?: string }> {
+    const { appUrn, requestId } = params;
+
+    // Aborting somebody else's install or update weighs what stopping the app does, so it takes
+    // `stop` — the verb the cancel route asserts. Before the registry is read; see `assertActorMay`.
+    // Unmarked, unlike stopping the app: cancelling an install undoes it, down to the data it was
+    // installing onto, so a managed key needs `full` to cancel another app's operation.
+    await this.assertActorMay(params.actor, appUrn, 'stop');
     const entry = this.operationRegistry.get(appUrn);
     if (!entry) {
       return { outcome: 'not_found', message: 'No operation in progress for this app' };
@@ -844,8 +853,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return oldJSON !== newJSON;
   }
 
-  async startApp(params: { appUrn: AppUrn; skipPull?: boolean }) {
+  async startApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
     const { appUrn, skipPull } = params;
+
+    // Before the app is even read — see `assertActorMay`.
+    await this.assertActorMay(params.actor, appUrn, 'start');
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1309,7 +1321,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (existingApp && existingApp.status !== 'install_failed') {
       await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
       await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
-      return this.startApp({ appUrn });
+      // Part of the install the caller was authorized for, not a new decision.
+      return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
     }
 
     // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-CIHub migration).
@@ -1371,7 +1384,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (raced.status !== 'install_failed') {
           await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
           await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
-          return this.startApp({ appUrn });
+          return this.startApp({ appUrn, actor: { kind: 'system', reason: 'reinstall-start' } });
         }
 
         installRecord = { id: raced.id, status: raced.status, port: raced.port, exposedLocal: raced.exposedLocal };
@@ -1481,8 +1494,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Stop an app by its ID
    */
-  public async stopApp(params: { appUrn: AppUrn }) {
+  public async stopApp(params: { appUrn: AppUrn; actor: LifecycleActor }) {
     const { appUrn } = params;
+
+    // Marked as stopping the app, which a managed key at `write` may do to any app; see `managedKeyMayOperate`.
+    await this.assertActorMay(params.actor, appUrn, 'stop', { stopsApp: true });
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1624,8 +1640,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Restart an app by its ID
    */
-  public async restartApp(params: { appUrn: AppUrn; skipPull?: boolean }) {
+  public async restartApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
     const { appUrn, skipPull } = params;
+
+    await this.assertActorMay(params.actor, appUrn, 'restart');
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -1921,9 +1939,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Uninstall an app by its ID
    */
-  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean }) {
+  public async uninstallApp(params: { appUrn: AppUrn; deleteAllData: boolean; force?: boolean; actor: LifecycleActor }) {
     const { appUrn, deleteAllData, force } = params;
 
+    await this.assertActorMay(params.actor, appUrn, 'uninstall');
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2064,8 +2083,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Reset an app by its ID
    */
-  public async resetApp(params: { appUrn: AppUrn; force?: boolean }) {
+  public async resetApp(params: { appUrn: AppUrn; force?: boolean; actor: LifecycleActor }) {
     const { appUrn, force } = params;
+
+    await this.assertActorMay(params.actor, appUrn, 'reset');
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2098,7 +2119,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               event: 'reset_success',
               afterApply: async () => {
                 if (appStatusBeforeReset === 'running') {
-                  this.fireAndForgetLifecycle('start-after-reset', appUrn, () => this.startApp({ appUrn }));
+                  // Part of the reset the caller was authorized for: the app only comes back to how it was.
+                  this.fireAndForgetLifecycle('start-after-reset', appUrn, () =>
+                    this.startApp({ appUrn, actor: { kind: 'system', reason: 'start-after-reset' } }),
+                  );
                 }
               },
             },
@@ -2378,7 +2402,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const runningStatuses = ['running', 'starting', 'restarting'] as const;
     if (runningStatuses.includes(app.status as (typeof runningStatuses)[number])) {
       this.logger.info(`App ${appUrn} is running — triggering automatic restart after config update`);
-      this.fireAndForgetLifecycle('restart-after-config-update', appUrn, () => this.restartApp({ appUrn, skipPull: true }));
+      // Part of the save the caller was authorized for: the app only picks up the config they saved.
+      this.fireAndForgetLifecycle('restart-after-config-update', appUrn, () =>
+        this.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'restart-after-config-update' } }),
+      );
     }
 
     return { requestId };
@@ -2416,8 +2443,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return this.exposureSyncService.triggerCloudflareSync(options);
   }
 
-  public async updateApp(params: { appUrn: AppUrn; performBackup: boolean }) {
+  public async updateApp(params: { appUrn: AppUrn; performBackup: boolean; actor: LifecycleActor }) {
     const { appUrn, performBackup } = params;
+
+    await this.assertActorMay(params.actor, appUrn, 'update');
     const app = await this.appRepository.getAppByUrn(appUrn);
 
     if (!app) {
@@ -2496,6 +2525,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
+  /*
+   * Each *-all sweep asks `actorMay` of its own actor for every app, and hands the single-app call for
+   * an app it admitted the Hub as actor, for `sweep`: that call is a step of a decision already made,
+   * and asking WhoIs again would double the sweep's Portal round trips for the same answer.
+   */
   async updateAllApps(actor: LifecycleActor): Promise<void> {
     const installedApps = await this.appsService.getInstalledApps();
     type InstalledApp = Awaited<ReturnType<typeof this.appsService.getInstalledApps>>[number];
@@ -2510,7 +2544,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         if (!(await this.actorMay(actor, appUrn, 'update'))) {
           continue;
         }
-        await this.updateApp({ appUrn, performBackup: true });
+        await this.updateApp({ appUrn, performBackup: true, actor: { kind: 'system', reason: 'sweep' } });
       } catch (e) {
         this.logger.error(`Failed to update app ${app.id}`, e);
       }
@@ -2526,7 +2560,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          await this.startApp({ appUrn, skipPull: true });
+          await this.startApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'bootstrap-restart' } });
         } catch (e) {
           this.logger.error(`Failed to start app ${app.id}`, e);
         }
@@ -2546,7 +2580,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           if (!(await this.actorMay(actor, appUrn, 'start'))) {
             continue;
           }
-          await this.startApp({ appUrn, skipPull: true });
+          await this.startApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'sweep' } });
         } catch (e) {
           this.logger.error(`Failed to start app ${app.id}`, e);
         }
@@ -2563,10 +2597,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          if (!(await this.actorMay(actor, appUrn, 'stop'))) {
+          if (!(await this.actorMay(actor, appUrn, 'stop', { stopsApp: true }))) {
             continue;
           }
-          await this.stopApp({ appUrn });
+          await this.stopApp({ appUrn, actor: { kind: 'system', reason: 'sweep' } });
         } catch (e) {
           this.logger.error(`Failed to stop app ${app.id}`, e);
         }
@@ -2586,7 +2620,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           if (!(await this.actorMay(actor, appUrn, 'restart'))) {
             continue;
           }
-          await this.restartApp({ appUrn });
+          await this.restartApp({ appUrn, actor: { kind: 'system', reason: 'sweep' } });
         } catch (e) {
           this.logger.error(`Failed to restart app ${app.id}`, e);
         }
@@ -2616,7 +2650,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             return;
           }
           this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
-          return this.restartApp({ appUrn });
+          return this.restartApp({ appUrn, actor: { kind: 'system', reason: 'inference-env-refresh' } });
         } catch (e) {
           this.logger.error(`Failed to restart AI app ${app.id}`, e);
         }
@@ -2891,22 +2925,27 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    *
    * - an operator is checked against WhoIs, and REFUSED if WhoIs is unavailable;
    * - an MCP key already passed the registry's capability gate. A managed app key
-   *   may act only on the app that owns it (item 3 of CI-Hub#1397 — a manifest
-   *   field is enough to be handed an `mcp`-scoped key, and it must not reach
-   *   its neighbours). An unmanaged key acts as the person who created it, on
+   *   may do anything on the app that owns it, and on any other app only what
+   *   {@link managedKeyMayOperate} admits at its capability (item 3 of
+   *   CI-Hub#1397 — a manifest field is enough to be handed an `mcp`-scoped key,
+   *   so how far it reaches its neighbours is the key's level, which only an
+   *   organization owner or admin can raise to `full`). An unmanaged key acts as the person who created it, on
    *   that person's WhoIs grant, and is REFUSED if WhoIs is unavailable, as the
    *   person would be. A key nobody is recorded as creating keeps the reach keys
    *   had before; the key listing says so, so it can be re-issued;
    * - a grant-exempt principal and the system itself are admitted by name.
+   *
+   * `context` says what the check is for where the verb cannot. Only the
+   * managed-key rule reads it; everyone else is checked on the verb.
    */
-  private async actorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction): Promise<boolean> {
+  private async actorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction, context: ActorCheckContext = {}): Promise<boolean> {
     switch (actor.kind) {
       case 'exempt':
       case 'system':
         return true;
       case 'mcp':
         if (actor.ownerAppUrn !== null) {
-          return actor.ownerAppUrn === appUrn;
+          return actor.ownerAppUrn === appUrn || AppLifecycleService.managedKeyMayOperate(actor.capability, action, context);
         }
 
         // A key nobody is recorded as creating keeps the per-app reach keys had before.
@@ -2920,6 +2959,44 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
+  /** What a managed app key at `write` may do on an app that is not its own, whatever the check is marked with. */
+  private static readonly MANAGED_WRITE_KEY_OPERATES: readonly HubAction[] = ['view', 'start', 'restart'];
+
+  /**
+   * Whether a managed app's MCP key, at `capability`, may perform `action` on an app that is not its own.
+   *
+   * ⚠ THE KEY'S LEVEL IS THE OWNER'S DIAL FOR THE APPS BESIDE IT. Hermes and OpenClaw hold one to look
+   * after their neighbours, and how far is set in Settings → Security, the same level the tool registry
+   * gates each tool on — so this only ever narrows what the registry let through:
+   *
+   * - `full`: everything, as on its own app. Only an organization owner or admin can grant it.
+   * - `write`, which a managed key is provisioned with: operate the app, never change it or put its
+   *   data at risk — view, start, stop and restart it, and call its tools and API. Cancelling its
+   *   operation (which undoes an install down to the data under it) and taking a backup (whose
+   *   retention deletes the oldest backups) are left to `full`, with install, configure, uninstall,
+   *   reset, update, restore and deleting a backup. A marker admits only the verbs of the call it
+   *   names, so it cannot stretch to another.
+   * - `read`, and any level this does not know: view only.
+   */
+  private static managedKeyMayOperate(capability: ApiKeyCapability, action: HubAction, context: ActorCheckContext): boolean {
+    switch (capability) {
+      case 'full':
+        return true;
+      case 'write':
+        if (context.appCall && (action === 'view' || action === 'configure')) {
+          return true;
+        }
+
+        if (context.stopsApp && action === 'stop') {
+          return true;
+        }
+
+        return AppLifecycleService.MANAGED_WRITE_KEY_OPERATES.includes(action);
+      default:
+        return action === 'view';
+    }
+  }
+
   /** A Hub person's WhoIs grant for `action` on `appUrn`, refused when WhoIs cannot be resolved. */
   private async personMay(userId: number, appUrn: AppUrn, action: HubAction): Promise<boolean> {
     const whois = this.resolveWhois();
@@ -2927,9 +3004,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return whois !== null && (await whois.has(userId, appUrn, action));
   }
 
-  /** The same decision, as a refusal the caller sees. */
-  private async assertActorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction): Promise<void> {
-    if (!(await this.actorMay(actor, appUrn, action))) {
+  /**
+   * The same decision, as a refusal the caller sees.
+   *
+   * Public so per-app work outside this service — backups, a request to an app's own API, and the MCP
+   * tools whose own service cannot take an actor — answers to this one decision, not a copy of it.
+   */
+  async assertActorMay(actor: LifecycleActor, appUrn: AppUrn, action: HubAction, context?: ActorCheckContext): Promise<void> {
+    if (!(await this.actorMay(actor, appUrn, action, context))) {
       throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrn).appName }, HttpStatus.FORBIDDEN);
     }
   }

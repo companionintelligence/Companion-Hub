@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { formatToolError, formatToolSuccess } from '../mcp-error.handler';
 
 describe('mcp-error.handler', () => {
@@ -57,6 +58,13 @@ describe('mcp-error.handler', () => {
       const error = new HttpException('Forbidden', HttpStatus.FORBIDDEN);
       const result = formatToolError(error);
       expect(result.content[0].text).toContain('Authentication failed');
+    });
+
+    it('reports a grant refusal as that refusal, naming the verb and the app, not as a broken key', () => {
+      const error = new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'restore', app: 'immich' }, HttpStatus.FORBIDDEN);
+      const result = formatToolError(error, 'immich:ci-marketplace');
+      expect(result.content[0].text).toBe('APP_ACTION_GRANT_DENIED {"action":"restore","app":"immich"}');
+      expect(result.isError).toBe(true);
     });
 
     it('should handle non-Error values', () => {

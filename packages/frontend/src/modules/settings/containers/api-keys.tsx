@@ -269,8 +269,16 @@ export const ApiKeysContainer = () => {
 
   // Which confirmation to show is keyed on the level being granted, not on the jump: read → full and
   // write → full both hand over destructive tools, so both get the destructive wording.
+  // A managed key's level also decides how far it reaches the apps beside its own, so its confirmation
+  // says that, and names the app it belongs to.
   const confirmTitleKey = changeTo === 'full' ? 'API_KEYS_CAPABILITY_CONFIRM_FULL_TITLE' : 'API_KEYS_CAPABILITY_CONFIRM_WRITE_TITLE';
-  const confirmBodyKey = changeTo === 'full' ? 'API_KEYS_CAPABILITY_CONFIRM_FULL_BODY' : 'API_KEYS_CAPABILITY_CONFIRM_WRITE_BODY';
+  const confirmBodyKey = changeTarget?.managed
+    ? changeTo === 'full'
+      ? 'API_KEYS_CAPABILITY_CONFIRM_MANAGED_FULL_BODY'
+      : 'API_KEYS_CAPABILITY_CONFIRM_MANAGED_WRITE_BODY'
+    : changeTo === 'full'
+      ? 'API_KEYS_CAPABILITY_CONFIRM_FULL_BODY'
+      : 'API_KEYS_CAPABILITY_CONFIRM_WRITE_BODY';
 
   return (
     <Card data-testid="api-keys">
@@ -437,6 +445,7 @@ export const ApiKeysContainer = () => {
                 value={changeTo}
                 onChange={setChangeTo}
                 disabled={savingCapability}
+                managed={Boolean(changeTarget?.managed)}
                 unavailable={canGrantFull ? [] : ['full']}
                 unavailableHint={t('API_KEY_FULL_ROLE_REQUIRED')}
               />
@@ -468,7 +477,7 @@ export const ApiKeysContainer = () => {
                 {/* The key is named in the title: an operator with several keys must not be able to
                     promote the wrong one because the dialog only said "this key". */}
                 <DialogTitle>{t(confirmTitleKey, { name: changeTarget?.name ?? '' })}</DialogTitle>
-                <DialogDescription>{t(confirmBodyKey)}</DialogDescription>
+                <DialogDescription>{t(confirmBodyKey, { app: changeTarget?.ownerAppUrn ?? changeTarget?.name ?? '' })}</DialogDescription>
               </DialogHeader>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setChangeStep('choose')}>
