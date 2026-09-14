@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   collectContestedCustomDomainTargets,
+  customDomainHeldByAnotherHub,
   customDomainServesAnotherApp,
   indexCustomDomainsByTarget,
   parseAvailableCustomDomains,
@@ -386,6 +387,32 @@ describe('customDomainServesAnotherApp', () => {
   it('answers "somebody else" when we cannot name ourselves', () => {
     expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy' }), undefined)).toBe(true);
     expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy' }), '')).toBe(true);
+  });
+});
+
+describe('customDomainHeldByAnotherHub', () => {
+  it('says yes when CI-Cloud reports the domain bound elsewhere and will not bind it here', () => {
+    expect(customDomainHeldByAnotherHub({ boundElsewhere: true, bindable: false, state: 'live' })).toBe(true);
+  });
+
+  it('says no for a row no device holds any more, which any Hub may take', () => {
+    // `device_id` is ON DELETE SET NULL, and the row keeps naming the deleted Hub's hostname.
+    expect(customDomainHeldByAnotherHub({ boundElsewhere: true, bindable: true, state: 'live' })).toBe(false);
+  });
+
+  it('says no while the row is still verifying, when an orphan and a held row read the same', () => {
+    // Unverified is unbindable for every Hub, so `bindable: false` says nothing yet about who holds it.
+    expect(customDomainHeldByAnotherHub({ boundElsewhere: true, bindable: false, state: 'pending' })).toBe(false);
+  });
+
+  it('says no for a domain that is only unbindable, or free', () => {
+    // Still verifying, say: that clears on its own, and no other Hub is involved.
+    expect(customDomainHeldByAnotherHub({ boundElsewhere: false, bindable: false, state: 'pending' })).toBe(false);
+    expect(customDomainHeldByAnotherHub({ boundElsewhere: false, bindable: true, state: 'parked' })).toBe(false);
+  });
+
+  it('says no when the flags are missing, rather than sending anyone to the portal on a guess', () => {
+    expect(customDomainHeldByAnotherHub({} as never)).toBe(false);
   });
 });
 
