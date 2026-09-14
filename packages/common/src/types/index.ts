@@ -30,6 +30,7 @@ export {
 export {
   collectAmbiguousCustomDomains,
   collectContestedCustomDomainTargets,
+  customDomainHeldByAnotherHub,
   customDomainServesAnotherApp,
   indexCustomDomainsByTarget,
   normalizeHostname,
