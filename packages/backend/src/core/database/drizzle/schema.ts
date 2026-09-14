@@ -115,10 +115,10 @@ export const app = pgTable(
      *
      * Only ever true alongside an intent, and cleared with it. It exists because
      * the bind pass runs long after the dialog is closed and cannot ask anyone
-     * anything: CI-Cloud will happily retarget a domain that is live on a
-     * sibling Hub in the organization, so without a recorded answer the pass has
-     * to choose between silently moving a production hostname off another device
-     * and never honouring a deliberate move at all. Neither is acceptable, so
+     * anything: CI-Cloud will retarget a domain serving another app on this Hub,
+     * or one whose Hub was deleted, so without a recorded answer the pass has to
+     * choose between silently moving a live hostname off whatever serves it and
+     * never honouring a deliberate move at all. Neither is acceptable, so
      * the person choosing is asked once, in the dialog, and their answer is
      * carried here.
      *
