@@ -1,3 +1,4 @@
+import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import type { HubAction } from './hub-actions';
 
 /**
@@ -22,18 +23,63 @@ export type LifecycleActor =
   /** A grant-exempt named principal; see `isGrantExemptPrincipal`. */
   | { kind: 'exempt'; principal: 'portal-device' | 'cli' }
   /**
-   * An MCP key. Its capability is already enforced by the tool registry.
+   * An MCP key. The tool registry already enforces its capability on each tool.
    *
-   * `ownerAppUrn` is set for a MANAGED app key, which may act on its own app and
-   * nothing else. `createdByUserId` names the Hub person who created an unmanaged
-   * key: it acts with that person's grants and role, never more. `null` there is
-   * a key nobody is recorded as creating — minted by the CLI, or before creators
-   * were recorded — which keeps the per-app reach keys had before, and gets
-   * nothing that takes a role.
+   * `ownerAppUrn` is set for a MANAGED app key, which may do anything on its own
+   * app; on the others, its `capability` decides how far it reaches
+   * (`AppLifecycleService.actorMay`). `createdByUserId` names the Hub person who
+   * created an unmanaged key: it acts with that person's grants and role, never
+   * more. `null` there is a key nobody is recorded as creating — minted by the
+   * CLI, or before creators were recorded — which keeps the per-app reach keys
+   * had before, and gets nothing that takes a role.
+   *
+   * `capability` is the key's level as read for this request, so a change made in
+   * Settings applies from the next call. Only the managed-key rule reads it here.
    */
-  | { kind: 'mcp'; ownerAppUrn: string | null; createdByUserId: number | null }
+  | { kind: 'mcp'; ownerAppUrn: string | null; createdByUserId: number | null; capability: ApiKeyCapability }
   /** The Hub acting on its own behalf, for a reason named here. */
-  | { kind: 'system'; reason: 'update-reapply' | 'debug-seed' | 'debug-start-all' };
+  | { kind: 'system'; reason: SystemLifecycleReason };
+
+/**
+ * Why the Hub acts on an app with nobody's grant to check. Each reason is a step of an operation
+ * somebody was already authorized for, or the Hub's own upkeep — so a new caller has to say which,
+ * rather than borrow a reason that happens to pass.
+ */
+export type SystemLifecycleReason =
+  // A step of an operation its caller was authorized for:
+  | 'update-reapply' // `updateApp` re-applies the app's own config
+  | 'reinstall-start' // `installApp` starts an app that is already installed
+  | 'start-after-reset' // `resetApp` brings back an app that was running
+  | 'restart-after-config-update' // `updateAppConfig` applies a saved config to a running app
+  | 'resume-after-backup' // a backup starts the app it stopped
+  | 'resume-after-restore' // a restore starts the app it stopped
+  | 'hub-access-rotate' // a credential rotation restarts the app to re-provision it
+  | 'sweep' // one app of an *-all sweep, which already asked `actorMay` of its own actor for that app
+  // The Hub's own upkeep:
+  | 'bootstrap-restart' // a Hub starting on a new version restarts the apps that were running
+  | 'inference-env-refresh' // inference settings or the Hub version changed; AI apps pick up the new env
+  | 'custom-domain-revert' // an app still forwarding a removed custom domain is restarted off it
+  | 'memory-connect' // a Companion Memory connection change reaches the app holding it
+  // The debug routes:
+  | 'debug-seed'
+  | 'debug-start-all'
+  | 'debug-uninstall-all'
+  | 'debug-backup-all';
+
+/**
+ * What a check is for, where its verb cannot say. A person is still checked on the verb alone: only a
+ * managed app key with `write` capability, on an app that is not its own, reads this
+ * (`AppLifecycleService.actorMay`).
+ *
+ * Only the call such a key may make is marked. A check that leaves the marker off is refused that key
+ * on other apps, so a caller that forgets it fails closed rather than open.
+ */
+export interface ActorCheckContext {
+  /** A call into the app's own MCP tools or HTTP API — `configure` to a person, or `view` for a read. */
+  appCall?: true;
+  /** Stopping the app. Cancelling its operation is `stop` to a person too, and is not marked. */
+  stopsApp?: true;
+}
 
 /**
  * The actor for one action, for a caller that can only name itself once the verb is known: an

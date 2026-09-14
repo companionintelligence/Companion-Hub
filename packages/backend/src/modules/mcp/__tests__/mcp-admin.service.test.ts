@@ -165,5 +165,22 @@ describe('McpAdminService', () => {
       expect(lifecycle.validateAppConfig).not.toHaveBeenCalled();
       expect(lifecycle.installApp).not.toHaveBeenCalled();
     });
+
+    // The runner calls as 'full', with a confirmation standing in for a key's capability, so what
+    // stands between a member and uninstalling or resetting an app they hold no grant on is the person
+    // the service is handed.
+    it.each([
+      ['hub_uninstall_app', 'uninstall', 'uninstallApp'],
+      ['hub_reset_app', 'reset', 'resetApp'],
+    ] as const)('hands %s the person, named for %s', async (tool, action, method) => {
+      lifecycle[method].mockResolvedValue({ requestId: 'r' });
+      const actorFor = vi.fn<LifecycleActorFor>(() => OPERATOR);
+
+      const res = await service.callTool(tool, { appUrn: 'immich:ci-marketplace' }, true, actorFor);
+
+      expect(res).toEqual({ ok: true, result: { requestId: 'r' } });
+      expect(actorFor).toHaveBeenCalledWith(action);
+      expect(lifecycle[method]).toHaveBeenCalledWith(expect.objectContaining({ appUrn: 'immich:ci-marketplace', actor: OPERATOR }));
+    });
   });
 });

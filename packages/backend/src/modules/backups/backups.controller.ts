@@ -37,7 +37,7 @@ export class BackupsController {
   async backupApp(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'backup');
-    const res = await this.backupsService.backupApp({ appUrn });
+    const res = await this.backupsService.backupApp({ appUrn, actor: this.whois.lifecycleActor(req, 'backup') });
     return BackupRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -46,7 +46,7 @@ export class BackupsController {
   async restoreAppBackup(@Param('urn') urn: string, @Body() body: RestoreAppBackupDto, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'restore');
-    const res = await this.backupsService.restoreApp({ appUrn, filename: body.filename });
+    const res = await this.backupsService.restoreApp({ appUrn, filename: body.filename, actor: this.whois.lifecycleActor(req, 'restore') });
     return BackupRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -55,7 +55,12 @@ export class BackupsController {
   async getAppBackups(@Param('urn') urn: string, @Query() query: GetAppBackupsQueryDto, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'view');
-    const backups = await this.backupsService.getAppBackups({ appUrn, page: query.page ?? 0, pageSize: query.pageSize ?? 10 });
+    const backups = await this.backupsService.getAppBackups({
+      appUrn,
+      page: query.page ?? 0,
+      pageSize: query.pageSize ?? 10,
+      actor: this.whois.lifecycleActor(req, 'view'),
+    });
 
     return GetAppBackupsDto.parse(backups, { reportOnly: true });
   }
@@ -64,7 +69,7 @@ export class BackupsController {
   async deleteAppBackup(@Param('urn') urn: string, @Body() body: DeleteAppBackupBodyDto, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'backup');
-    return this.backupsService.deleteAppBackup({ appUrn, filename: body.filename });
+    return this.backupsService.deleteAppBackup({ appUrn, filename: body.filename, actor: this.whois.lifecycleActor(req, 'backup') });
   }
 
   @Get(':urn/:filename/download')

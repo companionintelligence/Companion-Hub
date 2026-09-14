@@ -1,10 +1,12 @@
 import { HttpStatus } from '@nestjs/common';
 import { ErrorCode, McpError, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { AppUrn } from '@ci-hub/common/types';
 import { TranslatableError } from '@/common/error/translatable-error';
 import type { HubAction } from '@/core/portal/hub-actions';
-import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
+import type { ActorCheckContext, LifecycleActor } from '@/core/portal/lifecycle-actor';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
+import type { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { formatToolError, formatToolSuccess } from './mcp-error.handler';
 import { mcpAdminCallContext, mcpCallContext } from './mcp-call-context';
 import { McpToolNotFoundError, McpToolRegistry } from './mcp-tool-registry.service';
@@ -16,8 +18,10 @@ export function mcpCallerCapability(): ApiKeyCapability {
 
 /**
  * Who a lifecycle tool acts as for `action`, in the in-flight call: the signed-in person behind an
- * `/api/mcp-admin` run, or the `/api/mcp` key — confined to its own app when it is a managed one,
- * and acting as the person who created it when it is not.
+ * `/api/mcp-admin` run, or the `/api/mcp` key — which, when it is a managed one, may do anything on its
+ * own app and on the others as far as its capability reaches (`AppLifecycleService.actorMay`), and acts
+ * as the person who created it when it is not. The capability is the one this request's key was
+ * resolved with, so a change made in Settings applies from the next call.
  *
  * A call that names neither is refused, the way {@link mcpCallerCapability} fails closed. Reading "no
  * key" as an unmanaged key is how the admin runner, which never has one, reached every app with no
@@ -33,10 +37,27 @@ export function mcpCallerLifecycleActor(action: HubAction): LifecycleActor {
   const key = mcpCallContext.getStore();
 
   if (key) {
-    return { kind: 'mcp', ownerAppUrn: key.ownerAppUrn, createdByUserId: key.createdByUserId };
+    return { kind: 'mcp', ownerAppUrn: key.ownerAppUrn, createdByUserId: key.createdByUserId, capability: key.capability };
   }
 
   throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+}
+
+/**
+ * Refuse the in-flight caller `action` on `appUrn` unless the lifecycle's actor gate admits it.
+ *
+ * For a tool on one app whose own service cannot ask that gate: a service the lifecycle module
+ * itself depends on, or one serving app routes that assert no grant, where a required actor would
+ * change what those routes allow. Such a tool asks here, first, before it reads or changes anything.
+ * `context` marks what the check is for where the verb cannot say, as `assertActorMay` takes it.
+ */
+export async function assertMcpCallerMay(
+  lifecycle: Pick<AppLifecycleService, 'assertActorMay'>,
+  appUrn: AppUrn,
+  action: HubAction,
+  context?: ActorCheckContext,
+): Promise<void> {
+  await lifecycle.assertActorMay(mcpCallerLifecycleActor(action), appUrn, action, context);
 }
 
 /** Shared tools/call path for v1 and v2 Hub MCP servers. */

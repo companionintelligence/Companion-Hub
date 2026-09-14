@@ -65,4 +65,48 @@ describe('DebugService', () => {
       expect(marketplaceService.initialize).toHaveBeenCalled();
     });
   });
+
+  /*
+   * Every call on one app takes an actor now (CI-Hub#1397). The debug routes act on apps nobody chose,
+   * so each names the Hub for its own reason; borrowing a person would be refused on any app that
+   * person holds no grant on.
+   */
+  describe('the actor each debug route names', () => {
+    const row = { id: 1, appName: 'app-1', appStoreSlug: 'seed', version: 1 };
+
+    it('uninstalls every app as the Hub, for debug-uninstall-all', async () => {
+      mockDb.select.mockReturnValue({ from: vi.fn().mockResolvedValue([row]) });
+
+      await service.uninstallAllApps();
+
+      expect(appLifecycleService.uninstallApp).toHaveBeenCalledWith({
+        appUrn: 'app-1:seed',
+        deleteAllData: true,
+        force: true,
+        actor: { kind: 'system', reason: 'debug-uninstall-all' },
+      });
+    });
+
+    it('clears the previous seed apps as the Hub, for debug-seed', async () => {
+      // The first query finds one seed app left over; every later one finds nothing.
+      mockDb.select.mockReturnValue({ from: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValueOnce([row]).mockResolvedValue([]) }) });
+
+      await service.seedDatabase();
+
+      expect(appLifecycleService.uninstallApp).toHaveBeenCalledWith({
+        appUrn: 'app-1:seed',
+        deleteAllData: true,
+        force: true,
+        actor: { kind: 'system', reason: 'debug-seed' },
+      });
+    });
+
+    it('starts and backs up every app as the Hub, each for its own reason', async () => {
+      await service.startAllApps();
+      await service.backupAllApps();
+
+      expect(appLifecycleService.startAllApps).toHaveBeenCalledWith({ kind: 'system', reason: 'debug-start-all' });
+      expect(backupsService.backupAllApps).toHaveBeenCalledWith({ kind: 'system', reason: 'debug-backup-all' });
+    });
+  });
 });

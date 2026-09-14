@@ -113,7 +113,7 @@ export class AppLifecycleController {
   async startApp(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'start');
-    const res = await this.appLifecycleService.startApp({ appUrn });
+    const res = await this.appLifecycleService.startApp({ appUrn, actor: this.whois.lifecycleActor(req, 'start') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -122,7 +122,7 @@ export class AppLifecycleController {
   async stopApp(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'stop');
-    const res = await this.appLifecycleService.stopApp({ appUrn });
+    const res = await this.appLifecycleService.stopApp({ appUrn, actor: this.whois.lifecycleActor(req, 'stop') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -140,7 +140,7 @@ export class AppLifecycleController {
   async restartApp(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'restart');
-    const res = await this.appLifecycleService.restartApp({ appUrn });
+    const res = await this.appLifecycleService.restartApp({ appUrn, actor: this.whois.lifecycleActor(req, 'restart') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -149,7 +149,12 @@ export class AppLifecycleController {
   async uninstallApp(@Param('urn') urn: string, @Body() body: UninstallAppBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'uninstall');
-    const res = await this.appLifecycleService.uninstallApp({ appUrn, deleteAllData: body.deleteAllData, force: body.force });
+    const res = await this.appLifecycleService.uninstallApp({
+      appUrn,
+      deleteAllData: body.deleteAllData,
+      force: body.force,
+      actor: this.whois.lifecycleActor(req, 'uninstall'),
+    });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -160,7 +165,7 @@ export class AppLifecycleController {
   async resetApp(@Param('urn') urn: string, @Body() body: ResetAppBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'reset');
-    const res = await this.appLifecycleService.resetApp({ appUrn, force: body.force });
+    const res = await this.appLifecycleService.resetApp({ appUrn, force: body.force, actor: this.whois.lifecycleActor(req, 'reset') });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -169,7 +174,11 @@ export class AppLifecycleController {
   async updateApp(@Param('urn') urn: string, @Body() body: UpdateAppBody, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'update');
-    const res = await this.appLifecycleService.updateApp({ appUrn, performBackup: body.performBackup });
+    const res = await this.appLifecycleService.updateApp({
+      appUrn,
+      performBackup: body.performBackup,
+      actor: this.whois.lifecycleActor(req, 'update'),
+    });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -195,7 +204,7 @@ export class AppLifecycleController {
     // other on this controller; `stop` is the verb whose weight it matches
     // (`force-stop` next to it asserts the same one).
     await this.whois.assertSessionAction(req, appUrn, 'stop');
-    const res = await this.appLifecycleService.cancelOperation(appUrn, body.requestId);
+    const res = await this.appLifecycleService.cancelOperation({ appUrn, requestId: body.requestId, actor: this.whois.lifecycleActor(req, 'stop') });
     return CancelOperationResponseDto.parse(res, { reportOnly: true });
   }
 

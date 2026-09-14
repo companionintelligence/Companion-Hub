@@ -183,7 +183,11 @@ describe('MemoryConnectService.handleCallback', () => {
     );
     // The restart is scheduled (fire-and-track, skipPull — env-only change), NOT
     // awaited to completion: the browser must not hang out the compose cycle.
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({
+      appUrn: 'ci-openclaw:local',
+      skipPull: true,
+      actor: { kind: 'system', reason: 'memory-connect' },
+    });
     expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
     // The real outcome is recorded so a later replay repeats this exact redirect.
     expect(pending.recordOutcome).toHaveBeenCalledWith('state-nonce', FINISHING_PATH);
@@ -300,7 +304,11 @@ describe('MemoryConnectService.handleCallback', () => {
 
     expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'fresh-code');
     expect(connections.storeConnected).toHaveBeenCalled();
-    expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
+    expect(lifecycle.restartApp).toHaveBeenCalledWith({
+      appUrn: 'ci-openclaw:local',
+      skipPull: true,
+      actor: { kind: 'system', reason: 'memory-connect' },
+    });
     expect(result).toEqual({ next: FINISHING_PATH });
   });
 

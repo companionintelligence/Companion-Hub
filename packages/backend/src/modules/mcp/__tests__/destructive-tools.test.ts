@@ -99,16 +99,16 @@ const EXPECTED_READ = [
 function registerAllTools(): McpToolRegistry {
   const registry = new McpToolRegistry();
   const m = () => mock() as never;
-  new AppDiscoveryTools(m(), m(), registry).onModuleInit();
+  new AppDiscoveryTools(m(), m(), registry, m()).onModuleInit();
   new AppLifecycleTools(m(), registry).onModuleInit();
-  new AppConfigTools(m(), m(), registry).onModuleInit();
+  new AppConfigTools(m(), m(), registry, m()).onModuleInit();
   new MarketplaceTools(m(), m(), registry).onModuleInit();
-  new CustomAppTools(m(), registry).onModuleInit();
+  new CustomAppTools(m(), registry, m()).onModuleInit();
   new BackupTools(m(), registry).onModuleInit();
   new SystemTools(m(), m(), m(), registry).onModuleInit();
   new RegistrationTools(m(), m(), registry).onModuleInit();
   new LinkTools(m(), registry).onModuleInit();
-  new AppAgentTools(m(), registry, m(), m(), m(), m()).onModuleInit();
+  new AppAgentTools(m(), registry, m(), m(), m(), m(), m()).onModuleInit();
   new AppApiProxyTools(m(), registry, m(), m()).onModuleInit();
   new OperationsTools(registry, m(), m(), m()).onModuleInit();
   new InferenceTools(m(), registry, m(), m(), m(), m(), m(), m(), m()).onModuleInit();

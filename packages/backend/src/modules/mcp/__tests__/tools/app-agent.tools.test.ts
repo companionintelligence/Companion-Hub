@@ -1,12 +1,23 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import type { HubAction } from '@/core/portal/hub-actions';
+import type { ActorCheckContext } from '@/core/portal/lifecycle-actor';
+import {
+  GRANTED_ACTOR,
+  UNGRANTED_CALLERS,
+  asGrantedOperator,
+  asManagedKeyOnOtherApp,
+  gateChecks,
+  lifecycleActorGate,
+} from '@/tests/utils/lifecycle-actor-gate';
 import { AppAgentTools } from '../../tools/app-agent.tools';
 import { McpToolRegistry } from '../../mcp-tool-registry.service';
 import { AgentConfigService } from '../../agents/agent-config.service';
 import { SkillResolverService } from '../../agents/skill-resolver.service';
 import { OpenApiBridgeService } from '../../agents/openapi-bridge.service';
 import { McpBridgeService } from '../../agents/mcp-bridge.service';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
 
 describe('AppAgentTools', () => {
@@ -17,6 +28,7 @@ describe('AppAgentTools', () => {
   let skillResolver: MockProxy<SkillResolverService>;
   let openapiBridge: MockProxy<OpenApiBridgeService>;
   let mcpBridge: MockProxy<McpBridgeService>;
+  let lifecycle: MockProxy<AppLifecycleService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -28,6 +40,7 @@ describe('AppAgentTools', () => {
         { provide: SkillResolverService, useValue: mock<SkillResolverService>() },
         { provide: OpenApiBridgeService, useValue: mock<OpenApiBridgeService>() },
         { provide: McpBridgeService, useValue: mock<McpBridgeService>() },
+        { provide: AppLifecycleService, useValue: mock<AppLifecycleService>() },
       ],
     }).compile();
 
@@ -38,6 +51,9 @@ describe('AppAgentTools', () => {
     skillResolver = module.get(SkillResolverService);
     openapiBridge = module.get(OpenApiBridgeService);
     mcpBridge = module.get(McpBridgeService);
+    lifecycle = module.get(AppLifecycleService);
+    // The real actor decision, which every per-app tool here asks before it touches the app.
+    lifecycle.assertActorMay.mockImplementation(lifecycleActorGate());
   });
 
   it('should be defined', () => {
@@ -76,7 +92,7 @@ describe('AppAgentTools', () => {
       });
       skillResolver.getSkillContent.mockResolvedValue({ content: '# Test App', available: true });
 
-      const result = await tools.getAppSkill({ appUrn: 'ci-store:test' });
+      const result = await asGrantedOperator(() => tools.getAppSkill({ appUrn: 'ci-store:test' }));
       expect(result.available).toBe(true);
       expect(result.content).toBe('# Test App');
     });
@@ -86,7 +102,7 @@ describe('AppAgentTools', () => {
       agentConfigService.getAgentConfig.mockResolvedValue(null);
       skillResolver.getSkillContent.mockResolvedValue({ content: '', available: false });
 
-      const result = await tools.getAppSkill({ appUrn: 'ci-store:test' });
+      const result = await asGrantedOperator(() => tools.getAppSkill({ appUrn: 'ci-store:test' }));
       expect(result.available).toBe(false);
     });
   });
@@ -131,7 +147,7 @@ describe('AppAgentTools', () => {
       ]);
       mcpBridge.discoverTools.mockResolvedValue([{ name: 'ci-store_test__custom_tool', description: 'Custom tool', source: 'mcp' }]);
 
-      const result = await tools.listAppTools({ appUrn: 'ci-store:test' });
+      const result = await asGrantedOperator(() => tools.listAppTools({ appUrn: 'ci-store:test' }));
       expect(result.tools).toHaveLength(2);
       expect(result.tools[0]?.source).toBe('openapi');
       expect(result.tools[1]?.source).toBe('mcp');
@@ -149,7 +165,7 @@ describe('AppAgentTools', () => {
       mcpBridge.discoverTools.mockRejectedValue(new Error('app not running'));
       mcpBridge.listToolInfo.mockReturnValue([{ name: 'ci-store_test__cached', description: 'Cached', source: 'mcp' }]);
 
-      const result = await tools.listAppTools({ appUrn: 'ci-store:test' });
+      const result = await asGrantedOperator(() => tools.listAppTools({ appUrn: 'ci-store:test' }));
       expect(result.tools).toEqual([{ name: 'ci-store_test__cached', description: 'Cached', source: 'mcp' }]);
     });
 
@@ -157,7 +173,7 @@ describe('AppAgentTools', () => {
       appsService.getApp.mockResolvedValue({ info: { urn: 'ci-store:test' } } as any);
       agentConfigService.getAgentConfig.mockResolvedValue(null);
 
-      const result = await tools.listAppTools({ appUrn: 'ci-store:test' });
+      const result = await asGrantedOperator(() => tools.listAppTools({ appUrn: 'ci-store:test' }));
       expect(result.tools).toEqual([]);
     });
   });
@@ -172,7 +188,7 @@ describe('AppAgentTools', () => {
       } as any);
       openapiBridge.getRawSpec.mockResolvedValue({ spec: '{"openapi":"3.0.0"}', available: true });
 
-      const result = await tools.getAppOpenApi({ appUrn: 'ci-store:test' });
+      const result = await asGrantedOperator(() => tools.getAppOpenApi({ appUrn: 'ci-store:test' }));
       expect(result.available).toBe(true);
       expect(result.spec).toContain('3.0.0');
     });
@@ -181,8 +197,80 @@ describe('AppAgentTools', () => {
       appsService.getApp.mockResolvedValue({ info: { urn: 'ci-store:test' } } as any);
       agentConfigService.getAgentConfig.mockResolvedValue(null);
 
-      const result = await tools.getAppOpenApi({ appUrn: 'ci-store:test' });
+      const result = await asGrantedOperator(() => tools.getAppOpenApi({ appUrn: 'ci-store:test' }));
       expect(result.available).toBe(false);
+    });
+  });
+
+  /*
+   * Each tool on one app starts by reading it through `AppsService`, which cannot ask the lifecycle's
+   * actor gate, so the tool asks first (CI-Hub#1397): `view` to read about the app, `configure` to call
+   * into it. A refused caller never reads the app, nor reaches its MCP server.
+   */
+  describe('the actor gate', () => {
+    const appUrn = 'immich:ci-marketplace';
+
+    /** Each tool, the grant a person needs for it, and the context its check is marked with. */
+    const calls: Array<[string, HubAction, ActorCheckContext | undefined, () => Promise<unknown>]> = [
+      ['hub_get_app_skill', 'view', undefined, () => tools.getAppSkill({ appUrn })],
+      ['hub_list_app_tools', 'view', undefined, () => tools.listAppTools({ appUrn })],
+      ['hub_call_app_tool', 'configure', { appCall: true }, () => tools.callAppTool({ appUrn, tool: 'delete_everything', arguments: {} })],
+      ['hub_get_app_openapi', 'view', undefined, () => tools.getAppOpenApi({ appUrn })],
+    ];
+
+    beforeEach(() => {
+      appsService.getApp.mockResolvedValue({ info: { urn: appUrn } } as any);
+      agentConfigService.getAgentConfig.mockResolvedValue(null);
+    });
+
+    describe.each(calls)('%s', (_tool, action, context, call) => {
+      it.each(UNGRANTED_CALLERS)('refuses %s before it reads the app', async (_label, as) => {
+        await expect(as(call)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+        expect(appsService.getApp).not.toHaveBeenCalled();
+        expect(mcpBridge.callTool).not.toHaveBeenCalled();
+        expect(mcpBridge.discoverTools).not.toHaveBeenCalled();
+      });
+
+      // Reading about an app and calling its tools both operate it, which a managed app key at `write` may do on any app.
+      it("reads the app for a managed app's key at write on another app", async () => {
+        await asManagedKeyOnOtherApp(call);
+
+        expect(appsService.getApp).toHaveBeenCalledWith(appUrn);
+      });
+
+      // At `read` it may read about the app, but not call into it.
+      if (action === 'view') {
+        it("reads the app for a managed app's key at read on another app", async () => {
+          await asManagedKeyOnOtherApp(call, 'read');
+
+          expect(appsService.getApp).toHaveBeenCalledWith(appUrn);
+        });
+      } else {
+        it("refuses a managed app's key at read on another app, before it reads the app", async () => {
+          await expect(asManagedKeyOnOtherApp(call, 'read')).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+          expect(appsService.getApp).not.toHaveBeenCalled();
+          expect(mcpBridge.callTool).not.toHaveBeenCalled();
+        });
+      }
+
+      it(`reads the app for a person holding ${action}`, async () => {
+        await asGrantedOperator(call);
+
+        expect(gateChecks(lifecycle.assertActorMay)).toEqual([[GRANTED_ACTOR, appUrn, action, context]]);
+        expect(appsService.getApp).toHaveBeenCalledWith(appUrn);
+      });
+    });
+
+    it('still takes configure from a person to call a tool: view alone is refused', async () => {
+      lifecycle.assertActorMay.mockImplementation(lifecycleActorGate((_userId, _appUrn, action) => action === 'view'));
+
+      await expect(asGrantedOperator(() => tools.callAppTool({ appUrn, tool: 'delete_everything', arguments: {} }))).rejects.toThrow(
+        'APP_ACTION_GRANT_DENIED',
+      );
+      expect(appsService.getApp).not.toHaveBeenCalled();
+      expect(mcpBridge.callTool).not.toHaveBeenCalled();
     });
   });
 });

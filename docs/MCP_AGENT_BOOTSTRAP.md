@@ -34,6 +34,39 @@ At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
 
 Marketplace entries for `ci-hermes` and `ci-openclaw` set `mcp_client: true`.
 
+On its own app a managed key passes every per-app grant check but one: changing which custom domain the
+app serves takes an organization owner or admin, so that change is refused with
+`CUSTOM_DOMAIN_ROLE_REQUIRED` at every level. On every other app, the level the key is given in
+**Settings → Security** decides how far it reaches
+([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)). The level is read on
+every call, so a change applies from the agent's next call:
+
+| Level | On an app that is not its own |
+| --- | --- |
+| `read` | Read the app: status, logs, config, backups, skill, tools, OpenAPI spec, and operation status. |
+| `write` (what a managed key is provisioned with) | Also start, stop, or restart it, and call its MCP tools (`hub_call_app_tool`) and its API with any method (`hub_call_app_api`). |
+| `full` | Everything it may do on its own app. Only an organization owner or admin can give a key `full`. |
+
+Below `full`, the rest is refused with `APP_ACTION_GRANT_DENIED`: installing the app; changing its
+configuration (user config, ignored versions, custom-app compose or metadata, availability repair, and
+app config); uninstalling, resetting, or updating it; cancelling its operation in progress; and taking,
+restoring, or deleting a backup. Cancelling and taking a backup sit with `full` because both can lose
+data: cancelling an install undoes it down to the data it was installing onto, and each backup's
+retention cleanup deletes the app's oldest backups.
+
+These are grant rules, and the key's capability still gates each tool on top of them, on its own app
+too. At `write` the destructive tools stay refused: `hub_call_app_tool`; a `hub_call_app_api` call that
+does more than read; uninstall, reset and update; restoring or deleting a backup; rewriting user config
+or a custom app's compose; an install or config form that names a custom domain; and the bulk update,
+stop and restart tools.
+
+The bulk tools apply the same rule to each app. At `full`, start, stop, restart, and update all act on
+every app; below `full`, the bulk start tool starts every app, and the bulk update tool updates only
+the key's own app. If an agent must change other apps, give it an operator key created in
+**Settings → Security**, which acts with the grants and role of the person who created it. A key from
+`cihub api-key create` records no creator, so no one's grants bound it: it may act on every app, up to
+its capability, though it cannot change which custom domain an app serves.
+
 ## CI-Hermes path
 
 Boot order (`entrypoint.sh` / `gateway-entrypoint.sh`):
