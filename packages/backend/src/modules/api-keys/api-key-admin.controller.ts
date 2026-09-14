@@ -86,9 +86,10 @@ export class ApiKeyAdminController {
 
   /**
    * ⚠ FULL CAPABILITY IS THE ORGANIZATION'S TO GIVE. A key acts with its creator's grants, but `full`
-   * also opens the destructive MCP tools, and two of them, uninstall and reset, check no per-app grant
-   * today. So who may hand it out is an owner's or admin's call, as it is in the Portal. Asked of
-   * WhoIs fresh and about no app (`isOrgManager`); every way of not knowing is a no.
+   * also opens the destructive MCP tools, and some act on no app a per-app grant could bound: updating
+   * the Hub, and adding, re-enabling or deleting an app store. So who may hand it out is an owner's or
+   * admin's call, as it is in the Portal. Asked of WhoIs fresh and about no app (`isOrgManager`); every
+   * way of not knowing is a no.
    *
    * The exempt principals (the CLI, the Portal device push) are admitted by name, as
    * `MarketplaceWhoIsService.lifecycleActor` names them, not through `isGrantExemptPrincipal`: one

@@ -3,6 +3,7 @@ import { castAppUrn } from '@/common/helpers/app-helpers';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppOperationRegistry } from '@/modules/app-lifecycle/app-operation-registry';
+import { assertMcpCallerMay, mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -73,6 +74,8 @@ export class OperationsTools implements OnModuleInit {
     appStatus: string | null;
   }> {
     const appUrn = castAppUrn(params.appUrn);
+    // Asked here, first: neither the operation registry nor the app read below has a gate of its own (CI-Hub#1397).
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
     const op = this.operationRegistry.get(appUrn);
     const matches = op && (!params.requestId || op.requestId === params.requestId);
 
@@ -92,6 +95,10 @@ export class OperationsTools implements OnModuleInit {
 
   /** Cancel an in-flight operation via the same guarded path as the REST cancel endpoint. */
   async cancelOperation(params: { appUrn: string; requestId?: string }) {
-    return this.appLifecycleService.cancelOperation(castAppUrn(params.appUrn), params.requestId);
+    return this.appLifecycleService.cancelOperation({
+      appUrn: castAppUrn(params.appUrn),
+      requestId: params.requestId,
+      actor: mcpCallerLifecycleActor('stop'),
+    });
   }
 }

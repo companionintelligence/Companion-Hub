@@ -1,8 +1,10 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { DockerService } from '@/modules/docker/docker.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { assertMcpCallerMay } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 @Injectable()
@@ -11,6 +13,7 @@ export class AppDiscoveryTools implements OnModuleInit {
     private readonly appsService: AppsService,
     private readonly dockerService: DockerService,
     private readonly registry: McpToolRegistry,
+    private readonly appLifecycleService: AppLifecycleService,
   ) {}
 
   onModuleInit() {
@@ -103,13 +106,21 @@ export class AppDiscoveryTools implements OnModuleInit {
     return this.appsService.getInstalledApps();
   }
 
+  /*
+   * Each call on one app asks the lifecycle's actor gate first (`assertMcpCallerMay`): `view` to read
+   * it, `configure` to repair it — the verbs the app routes assert. The gate cannot sit in
+   * `AppsService` or `DockerService`, which the lifecycle module itself depends on (CI-Hub#1397).
+   */
   async getApp(params: { appUrn: string }) {
-    return this.appsService.getApp(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    return this.appsService.getApp(appUrn);
   }
 
   async getAppLogs(params: { appUrn: string; maxLines?: number }): Promise<{ lines: string[] }> {
     const maxLines = Math.max(1, Math.min(params.maxLines ?? 100, 1000));
     const appUrn = castAppUrn(params.appUrn) as AppUrn;
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
 
     return new Promise((resolve) => {
       const lines: string[] = [];
@@ -154,20 +165,28 @@ export class AppDiscoveryTools implements OnModuleInit {
   }
 
   async checkAppAvailability(params: { appUrn: string }) {
-    const result = await this.appsService.checkAppAvailability(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    const result = await this.appsService.checkAppAvailability(appUrn);
     return { available: result.available, url: result.appUrl, error: result.reason };
   }
 
   async resolveAppAvailability(params: { appUrn: string }) {
-    const result = await this.appsService.resolveAppAvailability(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'configure');
+    const result = await this.appsService.resolveAppAvailability(appUrn);
     return { success: result.success, message: result.detail };
   }
 
   async getComposeDiff(params: { appUrn: string }) {
-    return this.appsService.getAppComposeDiff(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    return this.appsService.getAppComposeDiff(appUrn);
   }
 
   async getConfigDiff(params: { appUrn: string }) {
-    return this.appsService.getAppConfigDiff(castAppUrn(params.appUrn));
+    const appUrn = castAppUrn(params.appUrn);
+    await assertMcpCallerMay(this.appLifecycleService, appUrn, 'view');
+    return this.appsService.getAppConfigDiff(appUrn);
   }
 }

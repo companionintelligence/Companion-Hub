@@ -87,7 +87,8 @@ describe('HubAccessService', () => {
       expect(written).not.toContain('CI_HUB_FORWARD_AUTH_SECRET');
       expect(written).toContain('OTHER=1');
       // The restart is what regenerates env + reloads the container in one event.
-      expect(appLifecycle.restartApp).toHaveBeenCalledWith({ appUrn: urn });
+      // As the Hub: the rotation was the authorized act, and a refused restart would strand the app.
+      expect(appLifecycle.restartApp).toHaveBeenCalledWith({ appUrn: urn, actor: { kind: 'system', reason: 'hub-access-rotate' } });
       expect(res).toEqual({ requestId: 'req-1' });
     });
 

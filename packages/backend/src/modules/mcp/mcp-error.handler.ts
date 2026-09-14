@@ -1,4 +1,5 @@
 import { HttpStatus } from '@nestjs/common';
+import { TranslatableError } from '@/common/error/translatable-error';
 
 export interface McpToolResult {
   content: Array<{ type: 'text'; text: string }>;
@@ -42,7 +43,10 @@ export function formatToolError(error: unknown, appUrn?: string): McpToolResult 
 
     if (statusCode === HttpStatus.NOT_FOUND) {
       message = appUrn ? `App ${appUrn} not found. Use hub_search_apps to find available apps.` : `Resource not found. ${error.message}`;
-    } else if (statusCode === HttpStatus.UNAUTHORIZED || statusCode === HttpStatus.FORBIDDEN) {
+    } else if ((statusCode === HttpStatus.UNAUTHORIZED || statusCode === HttpStatus.FORBIDDEN) && !(error instanceof TranslatableError)) {
+      // A bare 401/403 is the key itself being turned away. A TranslatableError one is a refusal with a
+      // reason — `APP_ACTION_GRANT_DENIED` names the verb and the app — and is reported below as that
+      // reason: read as "check the key", it sent an agent holding a valid key off to fix nothing.
       message = 'Authentication failed. Check the Hub API key configuration.';
     } else {
       // TranslatableError carries the human-readable detail (e.g. the still-connected

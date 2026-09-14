@@ -474,6 +474,45 @@ describe('ApiKeysContainer', () => {
       await user.click(screen.getByTestId('api-key-change-2'));
       expect(await screen.findByTestId('api-key-change-managed-warning')).toBeTruthy();
     });
+
+    it.each([
+      ['a managed key, by how far each level reaches the apps beside its own', 2, 'API_KEYS_CAPABILITY_MANAGED_', 'API_KEYS_CAPABILITY_'],
+      ['an operator key, in the words that say nothing about other apps', 1, 'API_KEYS_CAPABILITY_', 'API_KEYS_CAPABILITY_MANAGED_'],
+    ])('describes the levels of %s', async (_label, id, shown, hidden) => {
+      const user = userEvent.setup();
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+      await user.click(screen.getByTestId(`api-key-change-${id}`));
+
+      await screen.findByTestId('api-key-change-capability');
+      // Each line next to the level it describes, so two levels' words can never be swapped unnoticed.
+      for (const level of ['read', 'write', 'full']) {
+        const option = screen.getByTestId(`api-key-change-capability-${level}`).closest('label') as HTMLElement;
+        expect(within(option).getByText(`${shown}${level.toUpperCase()}_HINT`)).toBeTruthy();
+        expect(within(option).queryByText(`${hidden}${level.toUpperCase()}_HINT`)).toBeNull();
+      }
+    });
+
+    it.each([
+      ['full', 'read', 'API_KEYS_CAPABILITY_CONFIRM_MANAGED_FULL_BODY', 'API_KEYS_CAPABILITY_CONFIRM_FULL_BODY'],
+      ['write', 'read', 'API_KEYS_CAPABILITY_CONFIRM_MANAGED_WRITE_BODY', 'API_KEYS_CAPABILITY_CONFIRM_WRITE_BODY'],
+    ])('confirms raising a managed key to %s in words about every app, not just this one', async (to, from, shown, hidden) => {
+      const user = userEvent.setup();
+      const managedKey = { ...KEYS.keys[1], capability: from };
+      mockApiFetch.mockImplementation((url: string) =>
+        url === '/api/api-keys' ? Promise.resolve({ ok: true, json: async () => ({ keys: [KEYS.keys[0], managedKey] }) }) : mockGet(url),
+      );
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-change-2'));
+      await user.click(await screen.findByTestId(`api-key-change-capability-${to}`));
+      await user.click(screen.getByTestId('api-key-change-submit'));
+
+      expect(screen.getByText(shown)).toBeTruthy();
+      expect(screen.queryByText(hidden)).toBeNull();
+      expect(mockApiFetch).not.toHaveBeenCalledWith('/api/api-keys/2', expect.objectContaining({ method: 'PATCH' }));
+    });
   });
 
   it('revokes a key via DELETE and refreshes the list so the row disappears', async () => {

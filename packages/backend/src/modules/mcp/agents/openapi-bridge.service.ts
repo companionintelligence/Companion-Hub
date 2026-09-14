@@ -4,7 +4,8 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { ResolvedAgentConfig } from './agent-config.service';
 import type { McpToolDefinition } from '../mcp-tool-registry.service';
-import { isReadOnlyHttpMethod } from '../http-method-access';
+import { appApiAction, isReadOnlyHttpMethod } from '../http-method-access';
+import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { ApiProxyService } from './api-proxy.service';
 
 interface OpenApiOperation {
@@ -249,8 +250,15 @@ export class OpenApiBridgeService {
       // Only DELETE is treated as data loss. PUT/PATCH/POST mutate, which 'write' already covers;
       // calling them destructive would put ordinary app interactions behind the 'full' capability.
       destructive: method === 'DELETE',
+      // The caller is named when the tool runs, not when it is generated, for this operation's verb.
       handler: async (params: Record<string, unknown>) => {
-        return this.apiProxy.proxyOpenApiCall(appUrn, op, params, agentConfig.openapi.config?.auth);
+        return this.apiProxy.proxyOpenApiCall(
+          appUrn,
+          op,
+          params,
+          mcpCallerLifecycleActor(appApiAction({ method })),
+          agentConfig.openapi.config?.auth,
+        );
       },
     };
   }

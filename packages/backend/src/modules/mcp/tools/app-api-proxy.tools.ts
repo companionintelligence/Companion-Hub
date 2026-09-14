@@ -2,23 +2,26 @@ import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { AppsService } from '@/modules/apps/apps.service';
 import type { AgentOpenApiAuth } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
-import { isReadOnlyHttpMethod } from '../http-method-access';
+import { appApiAction, isReadOnlyHttpRequest } from '../http-method-access';
+import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { AgentConfigService } from '../agents/agent-config.service';
 import { ApiProxyService } from '../agents/api-proxy.service';
 
 /**
  * Whether a proxied request only reads. One predicate feeds both the destructive gate and the
- * read/write gate, so the two can never disagree about the same call — a method that is "not
- * destructive" is exactly a method that is "read-only" here.
+ * read/write gate, so the two can never disagree about the same call — a request that is "not
+ * destructive" is exactly a request that is "read-only" here.
  *
- * The verb list itself is shared with the OpenAPI bridge (see http-method-access.ts), which makes the
- * same decision ahead of time for each generated tool. A missing or unrecognised method counts as
- * mutating: the schema requires `method`, so its absence means the call is malformed, and a malformed
- * call must not be handed the safest classification.
+ * The decision is shared with the proxy's actor gate and, for the verb list, the OpenAPI bridge (see
+ * http-method-access.ts). A missing or unrecognised method counts as mutating: the schema requires
+ * `method`, so its absence means the call is malformed, and a malformed call must not be handed the
+ * safest classification. So does a read-only method carrying an override that asks the app to run
+ * another one.
  */
 function isReadOnlyRequest(params: Record<string, unknown>): boolean {
-  return isReadOnlyHttpMethod((params as { method?: string }).method);
+  return isReadOnlyHttpRequest({ method: params.method, path: params.path, headers: params.headers, queryParams: params.queryParams });
 }
 
 @Injectable()
@@ -89,16 +92,10 @@ export class AppApiProxyTools implements OnModuleInit {
     queryParams?: Record<string, string>;
   }): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
     const appUrn = castAppUrn(params.appUrn);
-
-    // Try to get auth config from agent config
-    let auth: AgentOpenApiAuth | undefined;
-    try {
-      const { info } = await this.appsService.getApp(appUrn);
-      const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
-      auth = agentConfig?.openapi?.config?.auth;
-    } catch {
-      // S-APX-1.3: Still works without agent config
-    }
+    // Named first, so a call with nobody behind it is refused before anything else. The proxy asks the
+    // lifecycle's actor gate with it, for the verb this request takes, and only then looks the app's
+    // auth up — so a caller the gate refuses reads nothing of the app (CI-Hub#1397).
+    const actor = mcpCallerLifecycleActor(appApiAction(params));
 
     return this.apiProxy.proxyRequest(appUrn, {
       method: params.method,
@@ -106,7 +103,20 @@ export class AppApiProxyTools implements OnModuleInit {
       body: params.body,
       headers: params.headers,
       queryParams: params.queryParams,
-      auth,
+      auth: () => this.resolveAuth(appUrn),
+      actor,
     });
+  }
+
+  /** The auth the app's agent config points the Hub at (S-APX-1.2), or none when there is no agent config. */
+  private async resolveAuth(appUrn: AppUrn): Promise<AgentOpenApiAuth | undefined> {
+    try {
+      const { info } = await this.appsService.getApp(appUrn);
+      const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
+      return agentConfig?.openapi?.config?.auth;
+    } catch {
+      // S-APX-1.3: Still works without agent config
+      return undefined;
+    }
   }
 }
