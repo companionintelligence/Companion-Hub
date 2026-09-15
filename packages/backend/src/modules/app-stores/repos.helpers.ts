@@ -6,11 +6,13 @@ import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { PORTAL_STORE_LISTING_TIMEOUT_MS } from '@/core/portal/portal.constants';
 import { Injectable, Inject, forwardRef } from '@nestjs/common';
 import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
+import { buildCatalogSnapshotIndex, catalogSnapshotIndexPath, isSafeCatalogSlug } from './catalog-snapshot-index';
 
 @Injectable()
 export class ReposHelpers {
@@ -127,7 +129,11 @@ export class ReposHelpers {
         throw retryableError;
       } catch (error) {
         lastError = error;
-        const retryableTransportError = axios.isAxiosError(error) && !error.response;
+        // A request that used up its whole timeout is not retried: the store listing waits up to 45s,
+        // and back-to-back attempts held a manual Check for Updates for ~135s on a Portal that does not
+        // answer. Refused or reset connections, and 408/429/5xx answers, still retry.
+        const timedOut = axios.isAxiosError(error) && (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT');
+        const retryableTransportError = axios.isAxiosError(error) && !error.response && !timedOut;
         const retryableHttpError = error instanceof Error && 'retryable' in error && error.retryable === true;
         if (!retryableTransportError && !retryableHttpError) {
           throw error;
@@ -325,20 +331,32 @@ export class ReposHelpers {
         url: storeUrl,
         params: { _ts: String(Date.now()) },
         headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+        timeout: PORTAL_STORE_LISTING_TIMEOUT_MS,
       });
+      if (!Array.isArray(apps)) {
+        throw new Error(`CI Cloud store listing is not an array: GET ${storeUrl}`);
+      }
 
       const limit = pLimit(12);
-      await Promise.all(
+      // Settle every app instead of stopping at the first failure, so the index can still name the apps
+      // that synced. Each resolves to whether its folder now matches this listing.
+      const outcomes = await Promise.allSettled(
         apps.map((app) =>
-          limit(async () => {
+          limit(async (): Promise<boolean> => {
             const appSlug = app.slug || app.id;
+            // The slug names a folder under `apps/`. One that could leave it (`../`) would write this
+            // listing's config and compose over another path, such as an installed app's folder.
+            if (!isSafeCatalogSlug(appSlug)) {
+              this.logger.warn(`Skipping CI Cloud app with an unsafe slug: ${JSON.stringify(appSlug)}`);
+              return false;
+            }
             const appDir = path.join(appsPath, appSlug);
 
             // Incremental sync: this runs on a 15-minute cron, so skip apps whose
             // local config already matches the published version instead of
             // re-downloading every description and icon on each pass.
             if (await this.isCiCloudAppUpToDate(appDir, app)) {
-              return;
+              return true;
             }
 
             await this.ensureDirectoryWithPermissions(appDir);
@@ -440,18 +458,48 @@ export class ReposHelpers {
                 // Non-fatal: logo will fall back to generic thumbnail
               }
             }
+            return true;
           }),
         ),
       );
 
-      // Also write a repo.json or config.json so Hub sees it as a valid repo?
-      // CI Hub expects `repo.json` in root of repo?
-      // Existing `downloadZipRepo` unzips a file.
-      // Let's check `downloadZipRepo` implementation to see what files are expected.
+      // Index the listed apps whose folders now match this listing, even when others failed. The local
+      // catalog fallback reads nothing else. Waiting for a sync where every app succeeds would keep an
+      // older index, naming apps Portal has since withdrawn, for as long as one app keeps failing; a
+      // failed app is left out rather than served from a stale folder.
+      await this.writeCatalogSnapshotIndex(
+        repoPath,
+        url,
+        apps.filter((_, index) => {
+          const outcome = outcomes[index];
+          return outcome?.status === 'fulfilled' && outcome.value;
+        }),
+      );
+
+      const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected');
+      if (failure) {
+        return this.handleRepoError(failure.reason);
+      }
 
       return { success: true, message: 'CI Cloud Repo updated' };
     } catch (err) {
       return this.handleRepoError(err);
+    }
+  }
+
+  private async writeCatalogSnapshotIndex(repoPath: string, source: string, apps: Array<{ id?: unknown; slug?: unknown }>) {
+    const indexPath = catalogSnapshotIndexPath(repoPath);
+    // Syncs can overlap (the 15-minute job, the hourly pull, a manual pull). A shared temp name would
+    // let one sync rename or remove the file another is still writing.
+    const tmpPath = `${indexPath}.${crypto.randomUUID()}.tmp`;
+    try {
+      await fs.promises.writeFile(tmpPath, JSON.stringify(buildCatalogSnapshotIndex(source, apps)));
+      await fs.promises.rename(tmpPath, indexPath);
+    } catch (error) {
+      // A stale index could still name apps Portal has since withdrawn; without one the fallback
+      // serves nothing, which is the safe side. The next sync that fetches the listing writes a fresh index.
+      this.logger.warn(`Failed to write CI Marketplace catalog index: ${error instanceof Error ? error.message : String(error)}`);
+      await Promise.allSettled([fs.promises.rm(tmpPath, { force: true }), fs.promises.rm(indexPath, { force: true })]);
     }
   }
 

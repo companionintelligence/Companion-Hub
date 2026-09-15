@@ -9,12 +9,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { InstallSummary } from '../helpers/types';
 import OnboardingPage from './onboarding-page';
 
-const { mockCatalogState, mockAppContext, mockCompleteOnboarding, mockNavigate, mockToast } = vi.hoisted(() => ({
+const { mockCatalogState, mockCatalogRefetch, mockAppContext, mockCompleteOnboarding, mockNavigate, mockToast } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockCatalogState: {
     isLoading: false,
     isError: false,
+    /** The Hub answered with no apps (e.g. Portal down and no synced catalog). */
+    isEmpty: false,
+    isCatalogUnavailable: false,
   },
+  mockCatalogRefetch: vi.fn(),
   // Stable across renders so tests can assert on them; a fresh vi.fn() per useAppContext() call
   // would record nothing the test can see.
   mockAppContext: {
@@ -62,36 +66,38 @@ vi.mock('@/api-client/sdk.gen', async (importOriginal) => ({
 
 vi.mock('../helpers/use-marketplace-catalog-apps', () => ({
   useMarketplaceCatalogApps: () => ({
-    apps: mockCatalogState.isLoading
-      ? []
-      : [
-          {
-            id: 'ci-openclaw',
-            name: 'OpenClaw',
-            urn: 'urn:store:ci-openclaw',
-            short_desc: 'Agent',
-            available: true,
-            deprecated: false,
-            categories: [],
-            created_at: 0,
-            supported_architectures: [],
-          },
-          {
-            id: 'ci-hermes',
-            name: 'Hermes',
-            urn: 'urn:store:ci-hermes',
-            short_desc: 'Agent',
-            available: true,
-            deprecated: false,
-            categories: [],
-            created_at: 0,
-            supported_architectures: [],
-          },
-        ],
+    apps:
+      mockCatalogState.isLoading || mockCatalogState.isEmpty
+        ? []
+        : [
+            {
+              id: 'ci-openclaw',
+              name: 'OpenClaw',
+              urn: 'urn:store:ci-openclaw',
+              short_desc: 'Agent',
+              available: true,
+              deprecated: false,
+              categories: [],
+              created_at: 0,
+              supported_architectures: [],
+            },
+            {
+              id: 'ci-hermes',
+              name: 'Hermes',
+              urn: 'urn:store:ci-hermes',
+              short_desc: 'Agent',
+              available: true,
+              deprecated: false,
+              categories: [],
+              created_at: 0,
+              supported_architectures: [],
+            },
+          ],
     isLoading: mockCatalogState.isLoading,
     isFetching: mockCatalogState.isLoading,
     isError: mockCatalogState.isError,
-    refetch: vi.fn(),
+    isCatalogUnavailable: mockCatalogState.isCatalogUnavailable,
+    refetch: mockCatalogRefetch,
   }),
 }));
 
@@ -319,6 +325,9 @@ describe('OnboardingPage (single vertical form)', () => {
   beforeEach(() => {
     mockCatalogState.isLoading = false;
     mockCatalogState.isError = false;
+    mockCatalogState.isEmpty = false;
+    mockCatalogState.isCatalogUnavailable = false;
+    mockCatalogRefetch.mockReset();
     mockAppContext.setAppContext.mockClear();
     mockAppContext.refreshAppContext.mockClear().mockResolvedValue(undefined);
     mockNavigate.mockClear();
@@ -326,6 +335,26 @@ describe('OnboardingPage (single vertical form)', () => {
     mockToast.dismiss.mockClear();
     // The generated client resolves with a real `Response`; `sdkResult` reads `.ok`/`.status` off it.
     mockCompleteOnboarding.mockReset().mockResolvedValue(sdkOk(undefined));
+  });
+
+  describe('empty marketplace catalog', () => {
+    it('keeps asking for the catalog while automatic retries remain', async () => {
+      mockCatalogState.isEmpty = true;
+
+      renderPage();
+
+      await waitFor(() => expect(mockCatalogRefetch).toHaveBeenCalled(), { timeout: 3_000 });
+    });
+
+    it('stops asking once the catalog is reported unavailable, leaving Retry to the operator', async () => {
+      mockCatalogState.isEmpty = true;
+      mockCatalogState.isCatalogUnavailable = true;
+
+      renderPage();
+      await new Promise((resolve) => setTimeout(resolve, 1_800));
+
+      expect(mockCatalogRefetch).not.toHaveBeenCalled();
+    });
   });
 
   it('renders config sections and step 4 (app picker) on the same page', () => {
