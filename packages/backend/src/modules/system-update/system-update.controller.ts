@@ -1,6 +1,6 @@
-import { Controller, Get, Post, UseGuards, Body, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Post, UseGuards, Body, NotFoundException } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { SystemUpdateService } from './system-update.service';
+import { HUB_VERSION_TAG_MESSAGE, isHubVersionTag, SystemUpdateService } from './system-update.service';
 
 @Controller('system/update')
 export class SystemUpdateController {
@@ -15,7 +15,13 @@ export class SystemUpdateController {
   @Post()
   @UseGuards(AuthGuard)
   async performUpdate(@Body() body?: { targetVersion?: string }) {
-    return this.systemUpdateService.performUpdate(body?.targetVersion);
+    const targetVersion: unknown = body?.targetVersion;
+    // The service checks again for its other callers (MCP, auto-update). Refusing here keeps a
+    // bad request from reaching any update work.
+    if (targetVersion !== undefined && (typeof targetVersion !== 'string' || !isHubVersionTag(targetVersion.trim()))) {
+      throw new BadRequestException(HUB_VERSION_TAG_MESSAGE);
+    }
+    return this.systemUpdateService.performUpdate(targetVersion);
   }
 
   @Get('auto-updates')
