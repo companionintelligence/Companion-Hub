@@ -18,6 +18,7 @@ vi.mock('node:fs', async () => {
         mkdir: vi.fn(),
         chmod: vi.fn(),
         writeFile: vi.fn(),
+        rename: vi.fn(),
         rm: vi.fn(),
         readFile: vi.fn().mockResolvedValue(''),
       },
@@ -334,6 +335,69 @@ describe('ReposHelpers', () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain('404 Not Found');
       expect(axiosMock.request).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('CI Marketplace catalog index', () => {
+    const INDEX_PATH = path.join('/tmp/data', 'repos', 'ci-marketplace', 'catalog-index.json');
+    const indexWrites = () => vi.mocked(fs.promises.writeFile).mock.calls.filter(([filePath]) => filePath === `${INDEX_PATH}.tmp`);
+
+    it('records exactly the listed slugs and their Portal after a complete sync', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [
+          { slug: 'app1', name: 'App 1' },
+          { id: 'app2', name: 'App 2' },
+          { slug: '../escape', name: 'Escape' },
+        ],
+      });
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(true);
+      expect(indexWrites()).toHaveLength(1);
+      const written = JSON.parse(String(indexWrites()[0]?.[1]));
+      expect(written).toMatchObject({ version: 1, source: 'http://cloud.api', slugs: ['app1', 'app2'] });
+      expect(fs.promises.rename).toHaveBeenCalledWith(`${INDEX_PATH}.tmp`, INDEX_PATH);
+    });
+
+    it('does not write an index when an app in the listing fails to sync', async () => {
+      axiosMock.request.mockResolvedValue({ status: 200, statusText: 'OK', data: [{ slug: 'app1', name: 'App 1' }] });
+      vi.mocked(fs.promises.writeFile).mockRejectedValueOnce(new Error('ENOSPC'));
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(false);
+      expect(indexWrites()).toHaveLength(0);
+      expect(fs.promises.rename).not.toHaveBeenCalled();
+    });
+
+    it('removes the previous index when the new one cannot be written', async () => {
+      axiosMock.request.mockResolvedValue({ status: 200, statusText: 'OK', data: [{ slug: 'app1', name: 'App 1' }] });
+      vi.mocked(fs.promises.rename).mockRejectedValueOnce(new Error('EACCES'));
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(true);
+      expect(fs.promises.rm).toHaveBeenCalledWith(INDEX_PATH, { force: true });
+    });
+
+    it('does not write an index when Portal does not answer with a listing', async () => {
+      axiosMock.request.mockResolvedValue({ status: 200, statusText: 'OK', data: { error: 'maintenance' } });
+
+      const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(result.success).toBe(false);
+      expect(indexWrites()).toHaveLength(0);
+    });
+
+    it('gives the store listing a timeout above the observed Portal build time', async () => {
+      axiosMock.request.mockResolvedValue({ status: 200, statusText: 'OK', data: [] });
+
+      await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+      expect(axiosMock.request).toHaveBeenCalledWith(expect.objectContaining({ url: 'http://cloud.api/store', timeout: 45_000 }));
     });
   });
 

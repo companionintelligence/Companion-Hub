@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 const CATALOG_STALE_MS = 5 * 60_000;
 const EMPTY_CATALOG_REFETCH_MS = 3_000;
-const EMPTY_CATALOG_MAX_REFETCHES = 5;
+export const EMPTY_CATALOG_MAX_REFETCHES = 5;
 
 /** On-demand marketplace catalog for onboarding — avoids loading the full catalog via app-context. */
 export function useMarketplaceCatalogApps() {
@@ -27,6 +27,14 @@ export function useMarketplaceCatalogApps() {
   const apps = data?.data ?? [];
   const isCatalogSettled = !isLoading && !isFetching;
   const isRetryingEmptyCatalog = !isLoading && isFetching && apps.length === 0;
+  // `dataUpdateCount` is on the query state, not the observer result. Every fetch settling
+  // re-renders this hook, so the read is current whenever the flags above change.
+  const dataUpdateCount = queryClient.getQueryState(queryOptions.queryKey)?.dataUpdateCount ?? 0;
+  /**
+   * The Hub kept answering with an empty catalog and the automatic refetches are used up. Callers
+   * show a retry control rather than a spinner that never resolves.
+   */
+  const isCatalogUnavailable = isCatalogSettled && !isError && apps.length === 0 && dataUpdateCount >= EMPTY_CATALOG_MAX_REFETCHES;
 
   return {
     apps,
@@ -37,6 +45,7 @@ export function useMarketplaceCatalogApps() {
     refetch,
     isCatalogSettled,
     isRetryingEmptyCatalog,
+    isCatalogUnavailable,
     dataUpdatedAt,
   };
 }

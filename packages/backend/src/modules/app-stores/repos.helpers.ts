@@ -11,6 +11,7 @@ import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
 import git from 'isomorphic-git';
 import http from 'isomorphic-git/http/node';
 import { RegistrationService } from '../registration/registration.service';
+import { buildCatalogSnapshotIndex, catalogSnapshotIndexPath, CI_CLOUD_STORE_LISTING_TIMEOUT_MS } from './catalog-snapshot-index';
 
 @Injectable()
 export class ReposHelpers {
@@ -325,7 +326,13 @@ export class ReposHelpers {
         url: storeUrl,
         params: { _ts: String(Date.now()) },
         headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+        // The full listing is one large response Portal builds on demand (16–37s observed). This
+        // sync is a background job, so give it room instead of failing and leaving the snapshot stale.
+        timeout: CI_CLOUD_STORE_LISTING_TIMEOUT_MS,
       });
+      if (!Array.isArray(apps)) {
+        throw new Error(`CI Cloud store listing is not an array: GET ${storeUrl}`);
+      }
 
       const limit = pLimit(12);
       await Promise.all(
@@ -444,14 +451,31 @@ export class ReposHelpers {
         ),
       );
 
-      // Also write a repo.json or config.json so Hub sees it as a valid repo?
-      // CI Hub expects `repo.json` in root of repo?
-      // Existing `downloadZipRepo` unzips a file.
-      // Let's check `downloadZipRepo` implementation to see what files are expected.
+      // Only a listing whose every app synced reaches here, so the index names exactly the
+      // folders that match what Portal published. The local catalog fallback reads nothing else.
+      await this.writeCatalogSnapshotIndex(repoPath, url, apps);
 
       return { success: true, message: 'CI Cloud Repo updated' };
     } catch (err) {
       return this.handleRepoError(err);
+    }
+  }
+
+  private async writeCatalogSnapshotIndex(repoPath: string, source: string, apps: Array<{ id?: unknown; slug?: unknown }>) {
+    const indexPath = catalogSnapshotIndexPath(repoPath);
+    const tmpPath = `${indexPath}.tmp`;
+    try {
+      await fs.promises.writeFile(tmpPath, JSON.stringify(buildCatalogSnapshotIndex(source, apps)));
+      await fs.promises.rename(tmpPath, indexPath);
+    } catch (error) {
+      // A stale index could still name apps Portal has since withdrawn; without one the fallback
+      // serves nothing, which is the safe side.
+      this.logger.warn(`Failed to write CI Marketplace catalog index: ${error instanceof Error ? error.message : String(error)}`);
+      try {
+        await fs.promises.rm(indexPath, { force: true });
+      } catch {
+        // Nothing more to do; the next complete sync writes a fresh index.
+      }
     }
   }
 

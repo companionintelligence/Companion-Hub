@@ -53,6 +53,13 @@ type PortalCatalogApp = {
   replaces?: string[];
 };
 
+/**
+ * The full `/store` listing is fetched once per cache cycle, deduped, and only a cold catalog
+ * waits on it. Portal has taken 16–37s to build it, past the 30s client default, so the fetch
+ * failed every time and the catalog never warmed. A longer ceiling lets a slow Portal still land.
+ */
+export const PORTAL_CATALOG_FETCH_TIMEOUT_MS = 45_000;
+
 const HUB_MANAGED_MARKETPLACE_APP_IDS = new Set(['cloudflared', 'cloudflare-tunnel']);
 
 function isHubManagedMarketplaceApp(slug: string): boolean {
@@ -77,6 +84,14 @@ export type PortalCatalogEntry = {
   cihub_app_version: number;
   version: string;
   min_hub_version?: number | null;
+};
+
+export type CatalogSearchParams = {
+  search?: string | null;
+  category?: string | null;
+  pageSize?: number;
+  cursor?: string | null;
+  storeId?: string;
 };
 
 export type PortalCatalogUpdateInfo = {
@@ -182,11 +197,38 @@ export class PortalCatalogService {
     return apps.filter((app) => !app.deprecated && app.available);
   }
 
+  /**
+   * Map raw `/store` rows to catalog entries, dropping Hub-managed, deprecated and unavailable
+   * listings. The on-disk catalog snapshot is a copy of those same rows, so it is mapped here too
+   * rather than through a looser local path.
+   */
+  mapCatalogRows(rows: unknown[]): PortalCatalogEntry[] {
+    const mapped = rows
+      .filter((row): row is PortalCatalogApp => row !== null && typeof row === 'object')
+      .map((row) => this.mapPortalApp(row))
+      .filter((entry): entry is PortalCatalogEntry => entry !== null);
+    return this.filterCatalogEntries(mapped);
+  }
+
+  /** True when a Portal catalog answer is held in memory — fresh, or kept after a failed refresh. */
+  hasCatalog(): boolean {
+    return (this.cache?.length ?? 0) > 0;
+  }
+
   async getCatalogEntries(force = false): Promise<PortalCatalogEntry[]> {
-    if (!force && this.cache && Date.now() - this.cacheUpdatedAt < this.cacheTtlMs) {
+    if (!force && this.cache) {
+      // Past its TTL, answer with the catalog in hand and refresh behind it: a slow Portal must
+      // not hold a store or onboarding request for the length of the listing fetch.
+      if (Date.now() - this.cacheUpdatedAt >= this.cacheTtlMs && !this.inflightFetch) {
+        void this.fetchCatalogEntries(false);
+      }
       return this.cache;
     }
 
+    return this.fetchCatalogEntries(force);
+  }
+
+  private fetchCatalogEntries(force: boolean): Promise<PortalCatalogEntry[]> {
     // Dedupe concurrent callers into a single Portal round-trip so hot paths
     // (e.g. per-app fan-outs) never trigger a thundering herd of fetches.
     // Force refresh may join an inflight fetch that is already cache-busting.
@@ -202,10 +244,8 @@ export class PortalCatalogService {
     const generation = this.cacheGeneration;
     const fetch = (async () => {
       try {
-        const raw = await this.portalClient.fetchStoreCatalog({ bypassCache: force });
-        const list = Array.isArray(raw) ? raw : [];
-        const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
-        const filtered = this.filterCatalogEntries(mapped);
+        const raw = await this.portalClient.fetchStoreCatalog({ bypassCache: force, timeoutMs: PORTAL_CATALOG_FETCH_TIMEOUT_MS });
+        const filtered = this.mapCatalogRows(Array.isArray(raw) ? raw : []);
         if (generation !== this.cacheGeneration) {
           return this.inflightFetch ?? filtered;
         }
@@ -229,14 +269,36 @@ export class PortalCatalogService {
     return fetch;
   }
 
-  async searchCatalog(params: { search?: string | null; category?: string | null; pageSize?: number; cursor?: string | null; storeId?: string }) {
-    const { search, category, pageSize, cursor, storeId } = params;
-
-    if (storeId && storeId !== CI_MARKETPLACE_STORE_SLUG) {
+  async searchCatalog(params: CatalogSearchParams) {
+    if (params.storeId && params.storeId !== CI_MARKETPLACE_STORE_SLUG) {
       return null;
     }
 
-    let filtered = await this.getCatalogEntries();
+    const entries = await this.getCatalogEntries();
+    const alternatives = params.search?.trim() ? await this.getAlternativesCatalog() : {};
+    return this.searchEntries(entries, params, alternatives);
+  }
+
+  /**
+   * Search a catalog already in hand (the on-disk snapshot) with the same matching and paging as
+   * `searchCatalog`, without waiting on Portal: alias matches use the cached alternatives, and a
+   * cold alternatives cache is warmed in the background for the next search.
+   */
+  searchCatalogEntries(entries: PortalCatalogEntry[], params: CatalogSearchParams) {
+    let alternatives: StoreSearchCatalog = {};
+    if (params.search?.trim()) {
+      if (this.alternativesCache) {
+        alternatives = this.alternativesCache;
+      } else {
+        void this.getAlternativesCatalog();
+      }
+    }
+    return this.searchEntries(entries, params, alternatives);
+  }
+
+  private searchEntries(entries: PortalCatalogEntry[], params: CatalogSearchParams, alternatives: StoreSearchCatalog) {
+    const { search, category, pageSize, cursor } = params;
+    let filtered = [...entries];
 
     if (category) {
       filtered = filtered.filter((app) => app.categories.includes(category));
@@ -244,7 +306,7 @@ export class PortalCatalogService {
 
     if (search?.trim()) {
       const q = search.trim();
-      const aliasSlugs = new Set(alternativeSlugsMatchingSearch(await this.getAlternativesCatalog(), q));
+      const aliasSlugs = new Set(alternativeSlugsMatchingSearch(alternatives, q));
       filtered = filtered.filter((app) => {
         const replacesHit = app.replaces.some((name) => textMatchesSearch(name, q));
         if (replacesHit || aliasSlugs.has(app.id)) return true;

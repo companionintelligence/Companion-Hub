@@ -1,7 +1,7 @@
 import { LoggerService } from '@/core/logger/logger.service';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, MockProxy } from 'vitest-mock-extended';
-import { PortalCatalogService } from '../portal-catalog.service';
+import { PORTAL_CATALOG_FETCH_TIMEOUT_MS, PortalCatalogService } from '../portal-catalog.service';
 import { PortalClientService } from '../portal-client.service';
 
 describe('PortalCatalogService', () => {
@@ -282,7 +282,90 @@ describe('PortalCatalogService', () => {
 
     const cached = await service.getCatalogEntries(false);
     expect(cached[0]?.version).toBe('2026.8.23');
-    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith({ bypassCache: true });
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith(expect.objectContaining({ bypassCache: true }));
+  });
+
+  it('fetches the store listing with the extended catalog timeout', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([]);
+
+    await service.getCatalogEntries(true);
+
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith({ bypassCache: true, timeoutMs: PORTAL_CATALOG_FETCH_TIMEOUT_MS });
+    expect(PORTAL_CATALOG_FETCH_TIMEOUT_MS).toBeGreaterThan(37_000);
+  });
+
+  it('answers from a catalog past its TTL at once and refreshes it in the background', async () => {
+    const now = vi.spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(1_000_000);
+      portalClient.fetchStoreCatalog.mockResolvedValueOnce([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.18' }] as any);
+      await service.getCatalogEntries(true);
+
+      now.mockReturnValue(1_000_000 + 16 * 60_000);
+      let resolveRefresh: (value: unknown) => void = () => {};
+      portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveRefresh = resolve)));
+
+      // Resolves with the catalog in hand even though the refresh has not answered.
+      const stale = await service.getCatalogEntries(false);
+      expect(stale[0]?.version).toBe('2026.8.18');
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+      // A second caller joins the running refresh rather than starting another.
+      await service.getCatalogEntries(false);
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+      resolveRefresh([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.23' }]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const fresh = await service.getCatalogEntries(false);
+      expect(fresh[0]?.version).toBe('2026.8.23');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('hasCatalog reports a held catalog, including one kept after a failed refresh', async () => {
+    expect(service.hasCatalog()).toBe(false);
+
+    portalClient.fetchStoreCatalog.mockResolvedValueOnce([{ slug: 'ghost', name: 'Ghost' }] as any);
+    await service.getCatalogEntries(true);
+    expect(service.hasCatalog()).toBe(true);
+
+    portalClient.fetchStoreCatalog.mockRejectedValueOnce(new Error('timeout of 45000ms exceeded'));
+    await service.getCatalogEntries(true);
+    expect(service.hasCatalog()).toBe(true);
+
+    service.invalidateCache();
+    expect(service.hasCatalog()).toBe(false);
+  });
+
+  it('mapCatalogRows applies the live catalog filters to rows from any source', () => {
+    const entries = service.mapCatalogRows([
+      { slug: 'ci-memory', name: 'Companion Memory', categories: ['ai'] },
+      { slug: 'cloudflared', name: 'Cloudflare Tunnel' },
+      { slug: 'old-app', name: 'Old', deprecated: true },
+      { slug: 'withdrawn', name: 'Withdrawn', available: false },
+      { name: 'No identity' },
+      null,
+      'not-a-row',
+    ]);
+
+    expect(entries.map((entry) => entry.urn)).toEqual(['ci-memory:ci-marketplace']);
+  });
+
+  it('searchCatalogEntries searches a catalog in hand without waiting on Portal alternatives', () => {
+    portalClient.fetchStoreAlternatives.mockReturnValue(new Promise(() => {}));
+    const entries = service.mapCatalogRows([
+      { slug: 'nextcloud', name: 'Nextcloud', categories: ['data'], replaces: ['Google Drive'] },
+      { slug: 'ghost', name: 'Ghost', categories: ['social'] },
+    ]);
+
+    const result = service.searchCatalogEntries(entries, { search: 'google drive', pageSize: 50 });
+
+    expect(result.data.map((entry) => entry.id)).toEqual(['nextcloud']);
+    // The cold alternatives cache is warmed for the next search, not awaited for this one.
+    expect(portalClient.fetchStoreAlternatives).toHaveBeenCalledTimes(1);
+    expect(service.searchCatalogEntries(entries, { category: 'social' }).data.map((entry) => entry.id)).toEqual(['ghost']);
   });
 
   it('force-refreshes even when a warm cache already exists', async () => {
@@ -313,7 +396,7 @@ describe('PortalCatalogService', () => {
     const [stale, fresh] = await Promise.all([stalePromise, freshPromise]);
     expect(fresh[0]?.version).toBe('2026.8.23');
     expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
-    expect(portalClient.fetchStoreCatalog).toHaveBeenLastCalledWith({ bypassCache: true });
+    expect(portalClient.fetchStoreCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ bypassCache: true }));
 
     const cached = await service.getCatalogEntries(false);
     expect(cached[0]?.version).toBe('2026.8.23');
