@@ -1,8 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
-import { resolveHostListenerBaseUrl, SystemUpdateService } from '../system-update.service';
+import {
+  buildStackUpdaterRunArgs,
+  forwardableEnvKeys,
+  resolveHostListenerBaseUrl,
+  shellQuote,
+  stackUpdaterContainerName,
+  SystemUpdateService,
+} from '../system-update.service';
 import fs from 'node:fs';
 import axios from 'axios';
+
+/** The two files `detectHubContainer` looks for. */
+const isContainerMarker = (target: unknown) => /\/\.dockerenv$|\/run\/\.containerenv$/.test(String(target));
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
@@ -103,7 +113,8 @@ describe('SystemUpdateService', () => {
       vi.stubEnv('CI_HUB_IMAGE', `${HUB_STACK_IMAGE_REPO}:old`);
       vi.stubEnv('HUB_CONTAINER_NAME', hubContainerName);
       vi.stubEnv('RABBITMQ_HOST', rabbitmqHost);
-      vi.mocked(fs.existsSync).mockReturnValue(true);
+      // Not inside Docker: no /.dockerenv, so the recreate is spawned directly.
+      vi.mocked(fs.existsSync).mockImplementation((target) => !isContainerMarker(target));
       vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
       vi.mocked(fs.mkdirSync).mockImplementation(() => undefined);
       vi.mocked(fs.appendFileSync).mockImplementation(() => undefined);
@@ -163,6 +174,109 @@ describe('SystemUpdateService', () => {
       vi.unstubAllEnvs();
     });
 
+    // The failure this guards against is on record on every appliance that ever auto-updated:
+    // `hub-stack-update.log` ends at `Container ci-hub  Recreate` and the Hub is down until an
+    // operator runs `up` by hand (fzzy 2026-09-11 and 2026-09-15, beta-max 2026-09-11). A compose
+    // client spawned inside the container it is recreating dies when compose stops that container.
+    it('runs the recreate from a separate updater container when the Hub itself is in Docker', async () => {
+      vi.useFakeTimers();
+      vi.stubEnv('ROOT_FOLDER_HOST', '/host/companion-hub');
+      vi.stubEnv('CI_HUB_IMAGE', `${HUB_STACK_IMAGE_REPO}:old`);
+      vi.stubEnv('HUB_CONTAINER_NAME', 'ci-hub');
+      vi.stubEnv('RABBITMQ_HOST', 'ci-hub-queue');
+      vi.stubEnv('DOCKER_CONFIG', '/data/.docker');
+      vi.mocked(fs.existsSync).mockImplementation(
+        (target) => isContainerMarker(target) || String(target).endsWith('.env') || String(target).endsWith('.yml'),
+      );
+      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
+
+      const { spawn } = await import('node:child_process');
+      const mockProcess = () => ({
+        stdout: { on: vi.fn() },
+        stderr: { on: vi.fn() },
+        on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+          if (event === 'close') cb(0);
+          if (event === 'spawn') cb();
+        }),
+        unref: vi.fn(),
+      });
+      (spawn as any).mockImplementation(() => mockProcess());
+
+      const resultPromise = service.performUpdate('1.2.0');
+      await vi.runAllTimersAsync();
+      const result = await resultPromise;
+      expect(result.stack).toBe('updating');
+
+      // pull, rm (leftover helper), run — and never a bare `docker compose` from this process.
+      const calls = (spawn as any).mock.calls as [string, string[], { env: NodeJS.ProcessEnv; detached?: boolean }][];
+      expect(calls.map((call) => `${call[0]} ${call[1][0]}`)).toEqual(['docker pull', 'docker rm', 'docker run']);
+      expect(calls.some((call) => call[2]?.detached)).toBe(false);
+
+      const [, rmArgs] = calls[1];
+      expect(rmArgs).toEqual(['rm', 'ci-hub-stack-updater']);
+
+      const [, runArgs, runOpts] = calls[2];
+      expect(runArgs.slice(0, 5)).toEqual(['run', '-d', '--rm', '--name', 'ci-hub-stack-updater']);
+      expect(runArgs).toContain('--volumes-from');
+      expect(runArgs[runArgs.indexOf('--volumes-from') + 1]).toBe('ci-hub');
+      expect(runArgs[runArgs.indexOf('--network') + 1]).toBe('none');
+      // The helper is the image just pulled — present by construction, and it ships the docker CLI.
+      expect(runArgs[runArgs.indexOf('--entrypoint') + 2]).toBe(`${HUB_STACK_IMAGE_REPO}:1.2.0`);
+      // Values reach the helper through the CLI's environment, never argv.
+      expect(runArgs).toContain('-e');
+      expect(runArgs).not.toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:1.2.0`);
+      expect(runArgs.filter((arg) => arg === 'CI_HUB_IMAGE')).toHaveLength(1);
+      expect(runArgs.filter((arg) => arg === 'DOCKER_CONFIG')).toHaveLength(1);
+      expect(runOpts.env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.2.0`);
+
+      const script = runArgs[runArgs.length - 1];
+      expect(runArgs[runArgs.length - 2]).toBe('-c');
+      expect(script).toMatch(/^exec 'docker' 'compose' /);
+      for (const expected of ['--force-recreate', '--no-deps', '--remove-orphans', 'ci-hub', 'ci-hub-queue', '/host/companion-hub']) {
+        expect(script).toContain(`'${expected}'`);
+      }
+      expect(script).toMatch(/ >> '\/data\/logs\/hub-stack-update\.log' 2>&1$/);
+
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    });
+
+    it('records a helper that could not start instead of failing silently', async () => {
+      vi.useFakeTimers();
+      vi.stubEnv('HUB_CONTAINER_NAME', 'ci-hub');
+      vi.stubEnv('RABBITMQ_HOST', 'ci-hub-queue');
+      vi.mocked(fs.existsSync).mockImplementation((target) => isContainerMarker(target));
+
+      const { spawn } = await import('node:child_process');
+      let runs = 0;
+      (spawn as any).mockImplementation((_bin: string, args: string[]) => {
+        const failing = args[0] === 'run' && ++runs === 1;
+        return {
+          stdout: { on: vi.fn() },
+          stderr: { on: vi.fn((_event: string, cb: (data: Buffer) => void) => failing && cb(Buffer.from('conflict: name in use'))) },
+          on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+            if (event === 'close') cb(failing ? 125 : 0);
+          }),
+          unref: vi.fn(),
+        };
+      });
+
+      const resultPromise = service.performUpdate('1.2.0');
+      await vi.runAllTimersAsync();
+      await resultPromise;
+
+      expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('ci-hub-stack-updater'), expect.any(Error));
+      const appended = vi
+        .mocked(fs.appendFileSync)
+        .mock.calls.map((call) => String(call[1]))
+        .join('');
+      expect(appended).toContain('updater container failed to start');
+      expect(appended).toContain('conflict: name in use');
+
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    });
+
     it('skips compose recreate when the host listener accepts the update', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue('listener-token\n');
@@ -216,6 +330,66 @@ describe('SystemUpdateService', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
 
       expect(service.getHostUpdateListenerToken()).toBeNull();
+    });
+  });
+
+  describe('stack updater container', () => {
+    it('names the helper after the Hub container, legacy topology included', () => {
+      expect(stackUpdaterContainerName({ HUB_CONTAINER_NAME: 'ci-hub' })).toBe('ci-hub-stack-updater');
+      expect(stackUpdaterContainerName({ RABBITMQ_HOST: 'ci-os-hub-queue' })).toBe('ci-os-hub-stack-updater');
+    });
+
+    it('forwards compose-relevant env and drops the process-local names', () => {
+      const keys = forwardableEnvKeys({
+        ROOT_FOLDER_HOST: '/host',
+        CI_HUB_IMAGE: 'img',
+        DOCKER_CONFIG: '/data/.docker',
+        JWT_SECRET: 's',
+        PATH: '/usr/bin',
+        HOME: '/root',
+        HOSTNAME: 'abc',
+        PWD: '/app',
+        'not a key': 'x',
+        UNSET: undefined,
+      });
+      expect(keys).toEqual(['CI_HUB_IMAGE', 'DOCKER_CONFIG', 'JWT_SECRET', 'ROOT_FOLDER_HOST']);
+    });
+
+    it('single-quotes for sh, including embedded quotes', () => {
+      expect(shellQuote('plain')).toBe("'plain'");
+      expect(shellQuote("it's")).toBe(`'it'\\''s'`);
+      expect(shellQuote('$HOME `x` "y"')).toBe(`'$HOME \`x\` "y"'`);
+    });
+
+    it('builds a detached, socket-only run that inherits the Hub mounts and appends to the update log', () => {
+      const args = buildStackUpdaterRunArgs({
+        helperName: 'ci-hub-stack-updater',
+        hubContainer: 'ci-hub',
+        image: 'ghcr.io/companionintelligence/ci-hub:1.2.0',
+        envKeys: ['CI_HUB_IMAGE', 'ROOT_FOLDER_HOST'],
+        composeArgs: ['compose', '--env-file', '/data/.env', 'up', '-d', "it's"],
+        logPath: '/data/logs/hub-stack-update.log',
+      });
+      expect(args).toEqual([
+        'run',
+        '-d',
+        '--rm',
+        '--name',
+        'ci-hub-stack-updater',
+        '--network',
+        'none',
+        '--volumes-from',
+        'ci-hub',
+        '-e',
+        'CI_HUB_IMAGE',
+        '-e',
+        'ROOT_FOLDER_HOST',
+        '--entrypoint',
+        'sh',
+        'ghcr.io/companionintelligence/ci-hub:1.2.0',
+        '-c',
+        `exec 'docker' 'compose' '--env-file' '/data/.env' 'up' '-d' 'it'\\''s' >> '/data/logs/hub-stack-update.log' 2>&1`,
+      ]);
     });
   });
 

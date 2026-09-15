@@ -20,7 +20,8 @@ const IDENTITY_RETRY_MS = 60_000;
  * deliberately NOT collapsed into "no identity": `node_uuid` and `public_key` are stored in the
  * clear, so a Hub whose `JWT_SECRET` changed can still *verify* its peers' signed requests (which
  * needs only their public keys and this node's own UUID) even though it can no longer *sign*. It
- * falls back to the bearer token outbound and keeps routing.
+ * cannot fall back to the bearer token either — `present_token_encrypted` is sealed with the same
+ * key — so its pairings have to be redone after `rotate()`; see docs/hub-pool.md "Failure modes".
  */
 export interface LoadedPoolIdentity {
   nodeUuid: string;
