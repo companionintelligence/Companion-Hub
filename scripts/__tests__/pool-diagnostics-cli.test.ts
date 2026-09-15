@@ -1668,10 +1668,10 @@ describe('D3 non-streaming headroom', () => {
     expect(countPoolIssues([check])).toBe(0);
   });
 
-  it('fails past the 15s peer connect timeout and explains the streaming asymmetry', () => {
-    const check = checkNonStreamingHeadroom(probe({ ms: 16_400 }), { id: 'gemma3:27b' } as never, { pooled: false, servedBy: 'local' });
+  it('fails past the peer first-byte budget and explains the streaming asymmetry', () => {
+    const check = checkNonStreamingHeadroom(probe({ ms: 301_400 }), { id: 'gemma3:27b' } as never, { pooled: false, servedBy: 'local' });
     expect(check.verdict).toBe('fail');
-    expect(check.detail).toContain('OVER the 15000ms');
+    expect(check.detail).toContain('OVER the 300000ms');
     expect(text(check.notes ?? [])).toContain('streaming');
   });
 

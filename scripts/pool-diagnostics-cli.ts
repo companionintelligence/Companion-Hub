@@ -51,8 +51,13 @@ export const CAPABILITIES_WARN_MS = CAPABILITIES_PROBE_TIMEOUT_MS / 2;
  * construction, not by timing luck.
  */
 export const OWN_INVENTORY_TTL_MS = 20_000;
-/** CONNECT_TIMEOUT_MS (hub-pool-proxy.service.ts:28) — how long a peer waits for response HEADERS. */
-export const POOL_PROXY_CONNECT_TIMEOUT_MS = 15_000;
+/**
+ * CONNECT_TIMEOUT_MS (hub-pool-proxy.service.ts) — how long a peer waits for response HEADERS on a
+ * streamed request; the default, `HUB_POOL_FIRST_BYTE_TIMEOUT_MS` can raise or lower it per node.
+ * Was 15 s until 2026-09-15, when a 150 KB agent prompt into a cold 27B model measured 131.8 s to
+ * its first byte and every such turn was being abandoned as "unreachable".
+ */
+export const POOL_PROXY_CONNECT_TIMEOUT_MS = 300_000;
 /** MIN_PAIR_BY_ADDRESS_PROTOCOL (hub-pool-peer-auth.ts). Below this, pairing by address cannot work. */
 export const MIN_PAIR_BY_ADDRESS_PROTOCOL = 2;
 /**
