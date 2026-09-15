@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import axios from 'axios';
-import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
+import { BadRequestException, Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import {
   DATA_DIR,
   HUB_STACK_IMAGE_REPO,
@@ -49,9 +49,27 @@ export function resolveHostListenerBaseUrl(inContainer: boolean = detectHubConta
   return `http://${host}:${HOST_LISTENER_PORT}`;
 }
 
+/**
+ * A Hub stack version as the release pipeline publishes it (`0.2.71`, `0.2.72-rc.1`), with an
+ * optional leading `v`: the shape the desktop accepts as a pin (`is_version_image_tag`). The
+ * version is written into the Hub `.env` as `KEY=value` lines, and the desktop reads that file
+ * at launch, so anything else (a line break above all) is refused rather than trimmed.
+ */
+const HUB_VERSION_TAG_PATTERN = /^[vV]?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
+
+export const HUB_VERSION_TAG_MESSAGE = 'targetVersion must be a Hub version such as 0.2.71';
+
+export function isHubVersionTag(value: string): boolean {
+  return HUB_VERSION_TAG_PATTERN.test(value);
+}
+
 /** GHCR tags are unprefixed (`0.2.56`). A leading `v` makes the pull 404. */
 function normalizeHubVersionTag(version: string): string {
-  return version.trim().replace(/^v/i, '');
+  const tag = version.trim();
+  if (!isHubVersionTag(tag)) {
+    throw new BadRequestException(HUB_VERSION_TAG_MESSAGE);
+  }
+  return tag.replace(/^v/i, '');
 }
 
 @Injectable()
@@ -116,6 +134,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private upsertEnvLine(lines: string[], key: string, value: string): string[] {
+    // A line break would add a line of its own to the Hub .env, which the desktop reads at launch.
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`Refusing to write ${key} to the Hub .env: the value contains a line break`);
+    }
     const line = `${key}=${value}`;
     let replaced = false;
     const next = lines.map((entry) => {
