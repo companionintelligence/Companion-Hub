@@ -47,6 +47,7 @@ describe('portal-session-hint', () => {
       email: 'operator@example.com',
       portalBaseUrl: 'https://ci-portal.localhost',
       source: 'hub_operator',
+      portalReachable: true,
     });
     expect(readRememberedPortalAccountEmail()).toBeNull();
   });
@@ -67,6 +68,7 @@ describe('portal-session-hint', () => {
       email: 'hello@lifescope.io',
       portalBaseUrl: 'https://ci-portal.localhost',
       source: 'portal_session',
+      portalReachable: true,
     });
     expect(readRememberedPortalAccountEmail()).toBe('hello@lifescope.io');
   });
@@ -91,6 +93,7 @@ describe('portal-session-hint', () => {
       email: 'portal@example.com',
       portalBaseUrl: window.location.origin,
       source: 'portal_session',
+      portalReachable: true,
     });
     expect(fetchSpy).toHaveBeenCalledWith(`${window.location.origin}/api/auth/get-session`, expect.objectContaining({ credentials: 'include' }));
   });
@@ -114,6 +117,7 @@ describe('portal-session-hint', () => {
       email: 'operator@example.com',
       portalBaseUrl: 'https://ci-portal.localhost',
       source: 'hub_operator',
+      portalReachable: true,
     });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
@@ -136,6 +140,7 @@ describe('portal-session-hint', () => {
       email: 'remembered@example.com',
       portalBaseUrl: 'https://ci-portal.localhost',
       source: 'remembered',
+      portalReachable: true,
     });
   });
 
@@ -158,6 +163,7 @@ describe('portal-session-hint', () => {
       email: 'user@example.com',
       portalBaseUrl: 'https://hub.ci.computer',
       source: 'remembered',
+      portalReachable: true,
     });
     expect(readRememberedPortalAccountEmail()).toBe('user@example.com');
   });

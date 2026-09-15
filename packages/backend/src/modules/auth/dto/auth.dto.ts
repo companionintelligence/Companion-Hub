@@ -100,6 +100,20 @@ const portalSessionHintResponseSchema = z.object({
   email: z.string().nullable(),
   portalBaseUrl: z.string().nullable(),
   source: z.enum(['hub_operator', 'hub_user', 'portal_session']).nullable(),
+  portalReachable: z.boolean(),
+});
+
+const hubOperatorSchema = z.object({
+  id: z.number().int(),
+  username: z.string(),
+  orgRole: z.enum(['owner', 'admin', 'member']).nullable(),
+  accessStatus: z.enum(['active', 'revoked']),
+  membershipCheckedAt: z.string().nullable(),
+  localPasswordSet: z.boolean(),
+});
+
+const hubOperatorsResponseSchema = z.object({
+  operators: z.array(hubOperatorSchema),
 });
 
 const sessionRefreshResponseSchema = z.object({
@@ -161,6 +175,7 @@ export class RegisterDto extends createZodDto(registerResponseSchema) {}
 export class HubClaimBody extends createZodDto(hubClaimSchema) {}
 export class HubClaimDto extends createZodDto(hubClaimResponseSchema) {}
 export class HubClaimStatusDto extends createZodDto(hubClaimStatusResponseSchema) {}
+export class HubOperatorsDto extends createZodDto(hubOperatorsResponseSchema) {}
 
 // Change username
 export class ChangeUsernameBody extends createZodDto(changeUsernameSchema) {}

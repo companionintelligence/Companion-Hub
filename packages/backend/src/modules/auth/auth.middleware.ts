@@ -6,6 +6,7 @@ import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
 import { Injectable, type NestMiddleware, ServiceUnavailableException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
+import type { UserDto } from '../user/dto/user.dto';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
@@ -108,6 +109,33 @@ export async function loadSessionUser(sessionUserCache: SessionUserCache, userRe
   });
 }
 
+/**
+ * The row is the appliance ACL: a `revoked` operator authenticates nothing, whatever session they
+ * still hold. True when this person is refused — and then every session they have is swept on the
+ * spot and the cached DTO dropped with it, so the refusal is not what `loadSessionUser` remembers
+ * for its TTL once the row is set back to `active`.
+ *
+ * `revokeOperator` sweeps as it flips the row, so a Portal removal rarely reaches here; this is for
+ * the session that would otherwise outlive the verdict — a row flipped without `revokeOperator`
+ * (a CLI or DB edit, a restored backup), or a read that landed between the row update and the sweep.
+ * Both callers must apply it: a Hub session in `AuthMiddleware`, and the app session edge SSO
+ * derives from it in Traefik forward auth, which is otherwise the one credential that would keep
+ * answering for a person the row refuses.
+ */
+export async function refuseRevokedSessionUser(
+  user: Pick<UserDto, 'accessStatus'> | undefined,
+  sessionManager: Pick<SessionManager, 'destroyAllSessionsByUserId'>,
+  sessionUserCache: Pick<SessionUserCache, 'invalidate'>,
+  userId: number,
+): Promise<boolean> {
+  if (user?.accessStatus !== 'revoked') {
+    return false;
+  }
+  await sessionManager.destroyAllSessionsByUserId(userId);
+  sessionUserCache.invalidate(userId);
+  return true;
+}
+
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
   constructor(
@@ -173,6 +201,9 @@ export class AuthMiddleware implements NestMiddleware {
 
       try {
         const user = await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
+        if (await refuseRevokedSessionUser(user, this.sessionManager, this.sessionUserCache, userId)) {
+          continue;
+        }
         req.user = user;
         req.hubSessionId = sessionId;
         req.hubPrincipal = 'session';
