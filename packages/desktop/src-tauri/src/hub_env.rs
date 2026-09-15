@@ -184,7 +184,7 @@ fn resolve_runtime_hub_image_for(
 /// Without this, a quoted `CI_HUB_IMAGE` fails the repository check, gets replaced on every
 /// single start, and — because the rewritten file counts as a config change — forces a full
 /// image pull and container recreate each launch.
-fn unquote_env_value(value: &str) -> &str {
+pub(crate) fn unquote_env_value(value: &str) -> &str {
     let trimmed = value.trim();
     trimmed
         .strip_prefix('"')

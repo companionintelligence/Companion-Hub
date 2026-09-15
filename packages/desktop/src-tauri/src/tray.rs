@@ -342,8 +342,10 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "open_portal" => {
-                let portal_url =
-                    option_env!("CI_HUB_CLOUD_URL").unwrap_or(crate::hub_env::default_ci_cloud_url());
+                // The CI_CLOUD_URL the running stack was started with, so an override opens here
+                // only once a launch has applied it (and in stack-dev, the stack-dev env file).
+                let paths = app.state::<crate::hub_manager::HubPaths>();
+                let portal_url = crate::hub_manager::portal_url_from_env_file(&paths.env_path);
                 let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {
