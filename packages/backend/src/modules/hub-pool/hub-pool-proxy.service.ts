@@ -1,11 +1,13 @@
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
-import { Injectable, Logger } from '@nestjs/common';
+import { forwardRef, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { Response } from 'express';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
@@ -23,6 +25,10 @@ import { HubPoolRoutingLogService, type PoolRoutingOutcome, type PoolRoutingPin 
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 /** Header-wait timeout for a forwarded request. Cleared as soon as the upstream responds, so it never caps how long a streamed generation may run. */
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -241,6 +247,20 @@ export function describePinForLog(pin: HubPoolPin | null): PoolRoutingPin | null
  * not what caused this. Deliberately does NOT name the peer: resolving a name here would mean a
  * database read on an error path, and the pin is on the status card either way.
  */
+/**
+ * The pseudo-model apps send when they want "whatever this Hub's default LLM is". The local router
+ * has always accepted it (`InferenceRouterService.resolveAutoModel`); the pool matches engine
+ * inventories verbatim and so answered it with `No pool node currently has model "auto"` — the
+ * moment a single peer connected, every app on `auto` lost inference. OpenClaw's primary is
+ * `ci-hub/auto`, which is how it surfaced.
+ */
+export const AUTO_MODEL = 'auto';
+
+/** What an `auto` request is told when this Hub has nothing to stand it in for. */
+export function describeUnresolvableAuto(): string {
+  return `No default model is available to stand in for "${AUTO_MODEL}": pin or load an LLM on this Hub, or ask for a model by name.`;
+}
+
 export function describeNoCandidates(model: string, pin: HubPoolPin | null): string {
   const base = `No pool node currently has model "${model}" available.`;
   if (!pin) {
@@ -289,7 +309,35 @@ export class PoolProxyService {
     private readonly configuration: ConfigurationService,
     private readonly routingLog: HubPoolRoutingLogService,
     private readonly pressureService: HubPoolPressureService,
+    // Appended last, and optional: every pool test file constructs this service positionally, and
+    // the `auto` resolution below is the only thing that needs the local model registry.
+    @Optional() @Inject(forwardRef(() => InferenceRouterService)) private readonly router?: InferenceRouterService,
+    @Optional() @Inject(forwardRef(() => ModelRegistryService)) private readonly modelRegistry?: ModelRegistryService,
   ) {}
+
+  /**
+   * `auto` → the engine id of this Hub's default LLM; any other model unchanged.
+   *
+   * Same answer the peerless path gives (`resolveAutoModel`: the pinned LLM, else a loaded one,
+   * else the first model a healthy backend reports), then mapped from catalog id to the id the
+   * engine inventory actually lists — `qwen3-6-27b` is what the registry pins, `qwen3.6:27b` is
+   * what every node's `modelsLoaded` says, and candidate matching reads the latter verbatim.
+   * Resolved on THIS node deliberately: "auto" means this operator's default, and a peer that
+   * also has that model is then a legitimate candidate for it like any other.
+   */
+  async resolveModelAlias(model: string): Promise<string | undefined> {
+    if (model !== AUTO_MODEL) {
+      return model;
+    }
+    if (!this.router) {
+      return undefined;
+    }
+    const resolved = await this.router.resolveAutoModel();
+    if (!resolved) {
+      return undefined;
+    }
+    return this.modelRegistry?.getTrackedModel(resolved)?.backendModelId ?? resolved;
+  }
 
   /** Read per request, not cached: a settings PATCH must change routing on the next request, not on the next restart. */
   private localAffinity(): number {
@@ -377,8 +425,32 @@ export class PoolProxyService {
   }
 
   async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
-    const { path, method, body, model, res } = params;
+    const { path, method, res } = params;
     const startedAt = Date.now();
+    const model = await this.resolveModelAlias(params.model);
+    if (!model) {
+      this.routingLog.record({
+        at: new Date().toISOString(),
+        direction: 'outbound',
+        path,
+        model: params.model,
+        node: null,
+        peerId: null,
+        backend: null,
+        candidates: 0,
+        attempt: 0,
+        failedOverFrom: [],
+        pin: null,
+        outcome: 'failed',
+        status: null,
+        durationMs: Date.now() - startedAt,
+      });
+      res.status(502).json({ error: describeUnresolvableAuto() });
+      return;
+    }
+    // The engine gets the resolved id, never the alias: it is the pool that knows what `auto` means
+    // here, and a peer's engine would refuse the literal word.
+    const body = model === params.model || !isRecord(params.body) ? params.body : { ...params.body, model };
     const { candidates, pin } = await this.rankCandidates(model);
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
