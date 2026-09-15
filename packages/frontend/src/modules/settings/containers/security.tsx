@@ -5,6 +5,7 @@ import { ChangePasswordForm } from '../components/change-password-form/change-pa
 import { ChangeUsernameForm } from '../components/change-username-form/change-username-form';
 import { OtpForm } from '../components/otp-form/otp-form';
 import { ApiKeysContainer } from './api-keys';
+import { OperatorsList } from '../components/operators-list/operators-list';
 
 export const SecurityContainer = (props: { totpEnabled: boolean; username?: string }) => {
   const { totpEnabled, username } = props;
@@ -54,6 +55,8 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
           <OtpForm totpEnabled={totpEnabled} />
         </CardContent>
       </Card>
+
+      <OperatorsList />
 
       {/* Hub-wide API keys (agents + apps). Renders its own Card; moved here from the MCP tab. */}
       <ApiKeysContainer />

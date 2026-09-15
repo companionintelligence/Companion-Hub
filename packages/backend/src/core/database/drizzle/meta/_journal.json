@@ -449,6 +449,13 @@
       "when": 1781400000000,
       "tag": "0063_api_key_created_by",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1781500000000,
+      "tag": "0064_user_membership_acl",
+      "breakpoints": true
     }
   ]
 }

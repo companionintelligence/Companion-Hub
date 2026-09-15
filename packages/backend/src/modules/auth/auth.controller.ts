@@ -48,6 +48,7 @@ import {
   HubClaimBody,
   HubClaimDto,
   HubClaimStatusDto,
+  HubOperatorsDto,
   LoginBody,
   LoginDto,
   PasswordResetCompleteBody,
@@ -75,6 +76,7 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  probePortalReachable,
   type PortalDesktopExchange,
   type PortalSsoErrorCode,
   type PortalSsoState,
@@ -88,7 +90,7 @@ import {
   type DesktopChannel,
 } from './portal-sso';
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
-import { loadSessionUser, sessionIdsFromRequest } from './auth.middleware';
+import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -796,14 +798,17 @@ export class AuthController {
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
     if (!portalBaseUrl) {
-      return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null }, { reportOnly: true });
+      return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null, portalReachable: false }, { reportOnly: true });
     }
 
     const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
-    const portalEmail = await fetchPortalSessionEmail({
-      publicPortalBaseUrl: portalBaseUrl,
-      cookieHeader,
-    });
+    const [portalEmail, portalReachable] = await Promise.all([
+      fetchPortalSessionEmail({
+        publicPortalBaseUrl: portalBaseUrl,
+        cookieHeader,
+      }),
+      probePortalReachable(portalBaseUrl),
+    ]);
 
     if (portalEmail) {
       return PortalSessionHintDto.parse(
@@ -811,6 +816,7 @@ export class AuthController {
           email: portalEmail,
           portalBaseUrl,
           source: 'portal_session',
+          portalReachable,
         },
         { reportOnly: true },
       );
@@ -823,6 +829,7 @@ export class AuthController {
           email: sessionEmail,
           portalBaseUrl,
           source: 'hub_user',
+          portalReachable,
         },
         { reportOnly: true },
       );
@@ -835,12 +842,33 @@ export class AuthController {
           email: operator.username.trim(),
           portalBaseUrl,
           source: 'hub_operator',
+          portalReachable,
         },
         { reportOnly: true },
       );
     }
 
-    return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null }, { reportOnly: true });
+    return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null, portalReachable }, { reportOnly: true });
+  }
+
+  @Get('/operators')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: HubOperatorsDto })
+  async listOperators() {
+    const operators = await this.authService.listOperators();
+    return HubOperatorsDto.parse(
+      {
+        operators: operators.map((operator) => ({
+          id: operator.id,
+          username: operator.username,
+          orgRole: operator.orgRole === 'owner' || operator.orgRole === 'admin' || operator.orgRole === 'member' ? operator.orgRole : null,
+          accessStatus: operator.accessStatus === 'revoked' ? 'revoked' : 'active',
+          membershipCheckedAt: operator.membershipCheckedAt ?? null,
+          localPasswordSet: Boolean(operator.localPasswordSetAt),
+        })),
+      },
+      { reportOnly: true },
+    );
   }
 
   @Get('/portal/desktop-exchange')
@@ -1215,13 +1243,21 @@ export class AuthController {
   }
 
   /**
-   * Loaded by `loadSessionUser`, the rules `AuthMiddleware` applies to a Hub session's user. Forward auth
-   * runs for every request an app serves, so neither a row read per request nor a 500 per blip is
-   * acceptable here.
+   * Loaded by `loadSessionUser` and admitted by `refuseRevokedSessionUser`, the rules `AuthMiddleware`
+   * applies to a Hub session's user. Forward auth runs for every request an app serves, so neither a
+   * row read per request nor a 500 per blip is acceptable here.
+   *
+   * ⚠ THE ROW REFUSES AN APP SESSION TOO. `revokeOperator` destroys the parent Hub session and
+   * `resolveAppSession` refuses an app session whose parent is gone, so a removed operator's app tab
+   * is normally signed out before this reads their row. When it is not — the row flipped without
+   * `revokeOperator`, or this read landed between the update and the sweep — a `revoked` row still
+   * authenticates nothing here: the request goes on as unauthenticated, to the login that
+   * `admitHubPerson` refuses, and their sessions are swept on the way.
    */
   private async loadAppSessionUser(userId: number): Promise<UserDto | undefined> {
+    let user: UserDto | undefined;
     try {
-      return await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
+      user = await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {
         throw error;
@@ -1229,6 +1265,7 @@ export class AuthController {
       // Same as a Hub session whose row cannot be read: carry on without a user.
       return undefined;
     }
+    return (await refuseRevokedSessionUser(user, this.sessionManager, this.sessionUserCache, userId)) ? undefined : user;
   }
 
   @Get('/traefik')

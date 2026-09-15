@@ -378,6 +378,24 @@ export interface PortalTokenExchangeFailure {
 
 export type PortalOAuthExchangeResult = PortalTokenExchangeResult | PortalTokenExchangeFailure;
 
+export async function probePortalReachable(publicPortalBaseUrl: string): Promise<boolean> {
+  const internalOverride = readPortalInternalUrlOverride();
+  const portalBaseUrl = resolveOutboundPortalBaseUrl(publicPortalBaseUrl, internalOverride);
+  const axiosConfig = buildPortalAxiosConfig(publicPortalBaseUrl, internalOverride);
+  const discoveryUrl = new URL('/api/auth/.well-known/openid-configuration', portalBaseUrl).toString();
+
+  try {
+    const res = await axios.get(discoveryUrl, {
+      ...withPortalAxiosHeaders(axiosConfig, {}),
+      validateStatus: () => true,
+      timeout: 4_000,
+    });
+    return res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchPortalSessionEmail(input: { publicPortalBaseUrl: string; cookieHeader?: string }): Promise<string | null> {
   const internalOverride = readPortalInternalUrlOverride();
   const portalBaseUrl = resolveOutboundPortalBaseUrl(input.publicPortalBaseUrl, internalOverride);

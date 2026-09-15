@@ -63,6 +63,7 @@ export default () => {
   const { isLoggedIn, refreshUserContext, setUserContext } = useUserContext();
   const [totpSessionId, setTotpSessionId] = useState<string | null>(null);
   const [portalAccountEmail, setPortalAccountEmail] = useState<string | null>(null);
+  const [portalReachable, setPortalReachable] = useState(true);
 
   const [searchParams, setSearchParams] = useSearchParams();
   const redirect_url = searchParams.get('redirect_url');
@@ -110,8 +111,11 @@ export default () => {
 
     void (async () => {
       const hint = await resolvePortalSessionHint();
-      if (!cancelled && hint.email) {
-        setPortalAccountEmail(hint.email);
+      if (!cancelled) {
+        setPortalReachable(hint.portalReachable);
+        if (hint.email) {
+          setPortalAccountEmail(hint.email);
+        }
       }
     })();
 
@@ -208,6 +212,7 @@ export default () => {
         loginType={loginType}
         portalSsoHref={portalSsoHref}
         portalAccountEmail={portalAccountEmail}
+        portalReachable={portalReachable}
         openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
         onSwitchAccount={() => {
           forgetPortalAccountEmail();

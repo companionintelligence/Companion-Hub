@@ -1626,6 +1626,27 @@
         ]
       }
     },
+    "/api/auth/operators": {
+      "get": {
+        "operationId": "listOperators",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubOperatorsDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/portal/desktop-exchange": {
       "get": {
         "operationId": "exchangePortalDesktopLogin",
@@ -6985,6 +7006,22 @@
               },
               "advancedMode": {
                 "type": "boolean"
+              },
+              "accessStatus": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "revoked"
+                ]
+              },
+              "orgRole": {
+                "nullable": true,
+                "type": "string",
+                "enum": [
+                  "owner",
+                  "admin",
+                  "member"
+                ]
               }
             },
             "required": [
@@ -7801,14 +7838,22 @@
               "hub_user",
               "portal_session"
             ]
+          },
+          "portalReachable": {
+            "type": "boolean"
           }
         },
         "required": [
           "email",
           "portalBaseUrl",
-          "source"
+          "source",
+          "portalReachable"
         ],
         "additionalProperties": false
+      },
+      "HubOperatorsDto": {
+        "type": "object",
+        "properties": {}
       },
       "PortalDesktopExchangeDto": {
         "type": "object",

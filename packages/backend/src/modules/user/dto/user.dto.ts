@@ -9,6 +9,8 @@ export const userSchema = z.object({
   operator: z.boolean(),
   hasCompletedOnboarding: z.boolean(),
   advancedMode: z.boolean(),
+  accessStatus: z.enum(['active', 'revoked']).optional(),
+  orgRole: z.enum(['owner', 'admin', 'member']).nullable().optional(),
 });
 
 export class UserDto extends createZodDto(userSchema) {}
