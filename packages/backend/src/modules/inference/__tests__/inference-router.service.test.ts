@@ -339,6 +339,32 @@ describe('InferenceRouterService', () => {
       expect(await service.resolveAutoModel()).toBe('my-custom:latest');
     });
 
+    it('skips embedding models in the last-resort fallback, by catalog modality or by name', async () => {
+      modelRegistry.getCatalog.mockReturnValue([
+        {
+          catalogId: 'nomic-embed-text',
+          backend: 'ollama',
+          backendModelId: 'nomic-embed-text:latest',
+          modality: 'embedding',
+        } as unknown as CuratedModel,
+        { catalogId: 'gemma4-e4b', backend: 'ollama', backendModelId: 'gemma4:e4b', modality: 'llm' } as unknown as CuratedModel,
+      ]);
+      ollamaBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['nomic-embed-text:latest', 'mxbai-embed-large:latest', 'gemma4:e4b'],
+      });
+
+      expect(await service.resolveAutoModel()).toBe('gemma4:e4b');
+    });
+
+    it('resolves to nothing when a healthy backend lists only embedding models', async () => {
+      modelRegistry.getCatalog.mockReturnValue([]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
+
+      expect(await service.resolveAutoModel()).toBeUndefined();
+    });
+
     it('probes nothing extra when no preference is set', async () => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['resident-model'] });
       modelRegistry.getPinnedModels.mockReturnValue([{ catalogId: 'pinned-llm' } as TrackedModel]);

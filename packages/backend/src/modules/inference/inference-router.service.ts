@@ -257,12 +257,25 @@ export class InferenceRouterService {
     // One concurrent sweep. Walking the registry with `await` per backend is what made a single
     // unresolvable backend URL cost the sum of every stall rather than the worst one (#1287).
     for (const [, , health] of await probe()) {
-      if (health.running && health.healthy && health.modelsLoaded.length > 0) {
-        return health.modelsLoaded[0];
-      }
+      if (!health.running || !health.healthy) continue;
+      const chat = health.modelsLoaded.find((id) => this.canChat(id));
+      if (chat) return chat;
     }
 
     return undefined;
+  }
+
+  /**
+   * Whether an engine model id can serve a chat request. The last-resort `auto` fallback used to
+   * take whatever an engine listed first, and on a node with only embeddings ahead of its LLMs that
+   * was `nomic-embed-text` — every `auto` chat then failed with "does not support chat" (core-14,
+   * beta-red, beta-glass, 2026-09-15). Catalogued ids answer by modality; an uncatalogued id is
+   * taken unless its name says it embeds.
+   */
+  private canChat(engineId: string): boolean {
+    const curated = this.modelRegistry.getCatalog().find((m) => m.backendModelId === engineId);
+    if (curated) return curated.modality === 'llm';
+    return !/embed/i.test(engineId);
   }
 
   /** Route chat completion request */
