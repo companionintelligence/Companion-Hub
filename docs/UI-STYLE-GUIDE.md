@@ -48,8 +48,8 @@ also packaged as a Tauri 2 desktop app.
 
 ### Conformance to canon
 
-- ✅ Tokens are the teal-primary shadcn set (`--primary: #0f717a` / `#abd4d8`). **CI-Hub is the
-  reference implementation of the canonical palette.**
+- ✅ Tokens are canon phthalo-mist (`--primary: #0a6358` / `#c5e8dc`), imported directly from
+  `@companionintelligence/tokens/globals.css` — no local copy to drift.
 - ✅ `cn()` is canonical (`twMerge(clsx(inputs))`).
 - ✅ Radius, font, custom font-sizes, `.dark` theming, lucide sizing all match canon.
 - ✅ Primitives via Radix UI; `glass-container` present.
@@ -83,87 +83,23 @@ Concrete deltas from Part I. Severity: 🔴 fix · 🟡 align when convenient ·
 | H-6 | ⚪       | **Ambient background differs** from Portal (static gradient vs animated cursor-glow).                                                                                                      | Intentional per-surface; no action. Listed for awareness.                                                                                                                                                                   |
 | H-7 | ⚪       | **Primitives are Radix-only**; Portal is adopting Base UI.                                                                                                                                 | Track org direction. No action until a shared `@ci/ui` package forces a choice.                                                                                                                                             |
 
-> **Note:** CI-Hub is the closest repo to canon (it _is_ the palette source of truth). The only
-> behavioral convergence worth scheduling is **H-1 (sonner)** and **H-2 (badge)**.
+> **Note:** the only behavioral convergence worth scheduling is **H-1 (sonner)** and
+> **H-2 (badge)**.
 
 ---
 
-## Appendix — Canonical token block (copy-paste)
+## Appendix
 
-Reference `globals.css` token definitions (CI-Hub is the source of truth for these values):
-
-```css
-:root {
-  --radius: 0.625rem;
-  --background: #f3f3f3;
-  --foreground: #010f16;
-  --card: #f7f7f9;
-  --card-foreground: #041620;
-  --popover: #ffffff;
-  --popover-foreground: #041620;
-  --primary: #0f717a; /* CI teal */
-  --primary-foreground: #f8fafc;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #0a222e;
-  --muted: #f1f5f9;
-  --muted-foreground: #62748e;
-  --accent: #f1f5f9;
-  --accent-foreground: #0a222e;
-  --destructive: #ee3533;
-  --destructive-foreground: #f8fafc;
-  --border: #e2e8f0;
-  --input: #e2e8f0;
-  --ring: #90a1b9;
-  --chart-1: #f54900;
-  --chart-2: #009689;
-  --chart-3: #104e64;
-  --chart-4: #ffb900;
-  --chart-5: #fe9a00;
-  --sidebar: #f8fafc;
-  --sidebar-foreground: #020618;
-  --sidebar-primary: #0f172b;
-  --sidebar-primary-foreground: #f8fafc;
-  --sidebar-accent: #f1f5f9;
-  --sidebar-accent-foreground: #0a222e;
-  --sidebar-border: #e2e8f0;
-  --sidebar-ring: #70a6af;
-}
-
-.dark {
-  --background: #041620;
-  --foreground: #88a29e;
-  --card: #0a222e;
-  --card-foreground: #88a29e;
-  --popover: #0a222e;
-  --popover-foreground: #88a29e;
-  --primary: #abd4d8; /* CI teal (dark) */
-  --primary-foreground: #041620;
-  --secondary: #0a222e;
-  --secondary-foreground: #f5f8fa;
-  --muted: #0a222e;
-  --muted-foreground: #8f98a3;
-  --accent: #2c676d;
-  --accent-foreground: #f5f8fa;
-  --destructive: #ef7070;
-  --destructive-foreground: #f5f8fa;
-  --border: #2c676d;
-  --input: #6992a2;
-  --ring: #58ebbf;
-  --chart-1: #58ebbf;
-  --chart-2: #409b9b;
-  --chart-3: #079d99;
-  --chart-4: #70a6af;
-  --chart-5: #2c676d;
-  --sidebar: #041620;
-  --sidebar-foreground: #f5f8fa;
-  --sidebar-primary: #abd4d8;
-  --sidebar-primary-foreground: #041620;
-  --sidebar-accent: #1d293d;
-  --sidebar-accent-foreground: #f5f8fa;
-  --sidebar-border: #2c676d;
-  --sidebar-ring: #58ebbf;
-}
-```
+No copy-paste token block here on purpose — see Part I above: a copy of the canon
+values is exactly what drifted in this file before (`--primary: #0f717a` long after
+canon moved to `#0a6358`; the chart series, sidebar, and several other tokens had
+drifted the same way). The live values are always
+[`packages/frontend/src/styles/globals.css`](../packages/frontend/src/styles/globals.css)
+— that file imports `@companionintelligence/tokens/globals.css` directly and defines
+nothing of its own beyond the Hub-only extensions in Part II, so it cannot disagree
+with canon by construction. For the values themselves, read
+[`CI-Common/styles/colors.md`](https://github.com/companionintelligence/CI-Common/blob/main/styles/colors.md)
+(generated from `tokens.json`, always current) rather than either file.
 
 `cn()` (identical in every repo):
 
