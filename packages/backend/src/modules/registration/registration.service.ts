@@ -38,6 +38,8 @@ import {
 import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
 import { buildCheckInPayload } from './check-in-payload';
 import { resolveDeviceId } from './device-id.resolver';
+import { ModuleRef } from '@nestjs/core';
+import { AuthService } from '@/modules/auth/auth.service';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
@@ -116,11 +118,31 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // check-in working on a Hub whose Cloudflare module never came up — the tunnel-health field
     // is a diagnostic, not a precondition.
     @Optional() private readonly tunnelHealthService?: TunnelHealthService,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   private portalAxiosConfig() {
     const { ciCloudUrl } = this.config.getConfig();
     return buildPortalAxiosConfig(ciCloudUrl, readPortalInternalUrlOverride());
+  }
+
+  /**
+   * After Portal accepts this device, pull org membership for every local operator.
+   * ModuleRef avoids AuthModule importing RegistrationModule and the reverse.
+   */
+  private reconcileOperatorMembershipsAfterCheckIn() {
+    let auth: AuthService | undefined;
+    try {
+      auth = this.moduleRef?.get(AuthService, { strict: false });
+    } catch {
+      return;
+    }
+    if (!auth) {
+      return;
+    }
+    void auth.reconcileOperatorMemberships().catch((error) => {
+      this.logger.warn(`Operator membership sweep failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   onApplicationShutdown() {
@@ -585,6 +607,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       this.consecutiveValidationFailures = 0;
+      this.reconcileOperatorMembershipsAfterCheckIn();
 
       // A successful check-in restores a registration degraded by remote failures.
       if (this._currentPhase === 'degraded') {

@@ -27,10 +27,11 @@ const {
   mockIsMobile: vi.fn(() => false),
   mockHubUrl: vi.fn((): string | null => null),
   mockResolveHint: vi.fn(
-    async (): Promise<{ email: string | null; portalBaseUrl: string | null; source: string | null }> => ({
+    async (): Promise<{ email: string | null; portalBaseUrl: string | null; source: string | null; portalReachable: boolean }> => ({
       email: null,
       portalBaseUrl: null,
       source: null,
+      portalReachable: true,
     }),
   ),
   mockIsTauriDesktopApp: vi.fn(() => false),
@@ -141,7 +142,7 @@ describe('LoginPage', () => {
     mockSearchParams.mockReturnValue([new URLSearchParams(), vi.fn()]);
     mockIsMobile.mockReturnValue(false);
     mockHubUrl.mockReturnValue(null);
-    mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null });
+    mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null, portalReachable: true });
   });
 
   it('defaults the login heading to the local admin account copy', () => {
@@ -243,6 +244,7 @@ describe('LoginPage', () => {
       email: 'user@example.com',
       portalBaseUrl: 'https://hub.ci.computer',
       source: 'remembered',
+      portalReachable: true,
     });
 
     render(<LoginPage />);

@@ -28,8 +28,9 @@ async function main() {
   const document = buildSwaggerDocument(app);
   SwaggerModule.setup('api/docs', app, document);
   await writeSwaggerJsonFile(document);
-
-  await app.close();
+  // Do not await app.close(): registration bootstrap leaves cloud/interval handles open
+  // and this CLI's only job is the written file.
+  process.exit(0);
 }
 
 main().catch((err) => {

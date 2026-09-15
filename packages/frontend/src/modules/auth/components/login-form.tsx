@@ -28,6 +28,8 @@ interface IProps {
   openPortalSsoExternally?: boolean;
   /** Clear the sticky Portal hint and let another family member sign in. */
   onSwitchAccount?: () => void;
+  /** False when this Hub cannot reach CI Portal. OIDC needs WAN; the password form does not. */
+  portalReachable?: boolean;
 }
 
 export const LoginForm: React.FC<IProps> = ({
@@ -38,6 +40,7 @@ export const LoginForm: React.FC<IProps> = ({
   portalAccountEmail,
   openPortalSsoExternally = false,
   onSwitchAccount,
+  portalReachable = true,
 }) => {
   const { t } = useTranslation();
   const {
@@ -73,6 +76,7 @@ export const LoginForm: React.FC<IProps> = ({
               type="button"
               variant="outline"
               className="h-10 w-full text-sm font-semibold"
+              disabled={!portalReachable}
               onClick={() => {
                 // Do not discard the rejection. openAuthInSystemBrowser THROWS on
                 // an opener ACL/plugin failure rather than swallowing it, so a
@@ -90,12 +94,18 @@ export const LoginForm: React.FC<IProps> = ({
                 : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
             </Button>
           ) : (
-            <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold">
-              <a href={portalSsoHref}>
-                {portalAccountEmail
-                  ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
-                  : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
-              </a>
+            <Button asChild={portalReachable} variant="outline" className="h-10 w-full text-sm font-semibold" disabled={!portalReachable}>
+              {portalReachable ? (
+                <a href={portalSsoHref}>
+                  {portalAccountEmail
+                    ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
+                    : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
+                </a>
+              ) : portalAccountEmail ? (
+                t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
+              ) : (
+                t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')
+              )}
             </Button>
           )}
           {/* The hint has to follow the branch above: the <a href> branch is a
@@ -103,7 +113,13 @@ export const LoginForm: React.FC<IProps> = ({
               native shell — phone and desktop alike — takes the button branch and
               really does open the system browser. */}
           <div className="text-xs text-muted-foreground text-center mt-2">
-            {t(openPortalSsoExternally ? 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT' : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')}
+            {t(
+              portalReachable
+                ? openPortalSsoExternally
+                  ? 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT'
+                  : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP'
+                : 'AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET',
+            )}
           </div>
           {portalAccountEmail && onSwitchAccount ? (
             <button
@@ -120,6 +136,7 @@ export const LoginForm: React.FC<IProps> = ({
       ) : null}
 
       <p className="text-sm text-muted-foreground text-center mb-4">{t('AUTH_LOGIN_COMPANION_ACCOUNT_EMAIL_HINT')}</p>
+      <p className="text-xs text-muted-foreground text-center mb-4">{t('AUTH_LOGIN_NEW_ACCOUNT_NEEDS_PORTAL')}</p>
 
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input

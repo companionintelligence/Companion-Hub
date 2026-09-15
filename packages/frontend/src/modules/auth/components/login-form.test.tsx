@@ -51,6 +51,24 @@ describe('LoginForm', () => {
     // not the "opens in your browser" line that belongs to the native shells.
     expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')).toBeInTheDocument();
     expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).not.toBeInTheDocument();
+    expect(screen.getByText('AUTH_LOGIN_NEW_ACCOUNT_NEEDS_PORTAL')).toBeInTheDocument();
+  });
+
+  it('explains that Companion Account SSO needs Portal when the Hub is offline', () => {
+    render(
+      <MemoryRouter>
+        <LoginForm
+          loading={false}
+          loginType="your local admin account"
+          onSubmit={vi.fn()}
+          portalSsoHref="https://portal.example.com"
+          portalReachable={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toBeDisabled();
   });
 
   it('shows a personalized portal sign-in label when an account email is known', () => {

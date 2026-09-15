@@ -20,6 +20,6 @@ import { SessionManager } from './session.manager';
   imports: [UserModule, EncryptionModule, PasswordModule, RegistrationModule, forwardRef(() => PortalModule), AppsModule, EnvModule],
   controllers: [AuthController],
   providers: [AuthService, SessionManager, ForwardAuthSecretResolver, BearerOrgMembershipCache],
-  exports: [SessionManager, BearerOrgMembershipCache],
+  exports: [AuthService, SessionManager, BearerOrgMembershipCache],
 })
 export class AuthModule {}

@@ -88,6 +88,16 @@ describe('BearerOrgMembershipCache', () => {
     expect(cache.get('subject-1499')).toBe(true);
   });
 
+  it('forgets one subject so a revoke cannot ride the 60s grant', () => {
+    cache.set('allowed', true);
+    cache.set('other', true);
+
+    cache.delete('allowed');
+
+    expect(cache.get('allowed')).toBeUndefined();
+    expect(cache.get('other')).toBe(true);
+  });
+
   it('drops every verdict on clear, so factory reset revokes cached authority', () => {
     cache.set('allowed', true);
     cache.set('refused', false);

@@ -89,6 +89,14 @@ export class BearerOrgMembershipCache {
   }
 
   /**
+   * Forget one subject immediately. Called when Hub revokes an operator so Traefik
+   * forward-auth cannot keep serving apps from a stale 60s grant.
+   */
+  delete(subject: string): void {
+    this.verdicts.delete(subject);
+  }
+
+  /**
    * Drop every remembered verdict. Called by factory reset, where the appliance is being unbound
    * from the organisation these verdicts were granted against — in-flight lookups are left alone
    * because they resolve against `AuthService`, which reads the (now absent) registration row.
