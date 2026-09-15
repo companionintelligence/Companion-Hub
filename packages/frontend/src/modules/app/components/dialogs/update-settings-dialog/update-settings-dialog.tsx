@@ -78,7 +78,6 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             initialValues={{ ...config }}
             formId={formId}
             appStatus={status}
-            scrollable
             editingAppUrn={info.urn}
             onDirtyChange={setHasChanges}
           />
