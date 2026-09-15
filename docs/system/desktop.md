@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-09-07
+> **Last updated:** 2026-09-15
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -67,6 +67,56 @@ pnpm run dev:desktop      # Tauri WebView → :5002 (stack-dev; does not spawn a
 macOS signing identity in `tauri.conf.json` — devs without cert see TCC prompts.
 
 Dev Portal is `https://hub.companionintelligence.com`. Production Portal is `https://hub.ci.computer`. `local:desktop` / `dev:desktop` force `CI_HUB_ENVIRONMENT=development` so a stray `CI_HUB_ENVIRONMENT=production` in `.env.dev` cannot compile the Tauri binary against prod. The appliance image still honors `CI_CLOUD_URL` from `.env.dev`.
+
+### Point a desktop Hub at another Portal
+
+A published bundle compiles its Portal in (production: `https://hub.ci.computer`) and rewrites `CI_CLOUD_URL` in the Hub env files on every launch, so hand-editing `CI_CLOUD_URL` is undone by the next launch. To use another Portal, set `CI_HUB_CLOUD_URL_OVERRIDE` in the Hub data dir instead. The desktop app keeps that key and writes its value into `CI_CLOUD_URL` in both env files on every launch.
+
+| OS | Data dir | Primary env file |
+|---|---|---|
+| Linux | `~/.local/share/companion-hub` | `.env.dev` (the app mirrors it to `.env`) |
+| macOS | `~/Library/Application Support/companion-hub` | `.env.dev` (mirrored to `.env`) |
+| Windows | `%APPDATA%\companion-hub` | `.env` (mirrored to `.env.dev`) |
+
+Switch to dev Portal (Linux shown):
+
+```bash
+# 1. Quit Companion Hub (tray → Quit).
+echo 'CI_HUB_CLOUD_URL_OVERRIDE=https://hub.companionintelligence.com' >> ~/.local/share/companion-hub/.env.dev
+# 2. Launch Companion Hub. It writes CI_CLOUD_URL into both env files and recreates ci-hub.
+grep -h '^CI_CLOUD_URL=' ~/.local/share/companion-hub/.env ~/.local/share/companion-hub/.env.dev
+```
+
+Switch back. The app copied the key into both files, so remove it from both:
+
+```bash
+# Quit Companion Hub first.
+sed -i '/^CI_HUB_CLOUD_URL_OVERRIDE=/d' ~/.local/share/companion-hub/.env ~/.local/share/companion-hub/.env.dev
+# Launch Companion Hub. CI_CLOUD_URL returns to the Portal compiled into the build.
+```
+
+Rules:
+
+- **Where it's read.** The app reads the key only from those env files. No Hub API or app writes it; the backend's only `.env` writer is the stack updater, which touches `CI_HUB_IMAGE` and `CI_HUB_VERSION`. Anyone who can edit the data dir can already read the Hub's device key, so the override gives them nothing new.
+- **Allowed values.** The value must be a bare origin: `https://host[:port]`, with no path, query, fragment or credentials. Plain `http` is accepted only for `localhost`, `*.localhost`, `127.0.0.1` and `[::1]`, for a local Portal.
+- **Invalid values.** An invalid value is ignored and the compiled Portal is used. The value stays in the file, and every launch logs `Ignoring CI_HUB_CLOUD_URL_OVERRIDE ...: <reason>` to `logs/desktop.log`.
+- **Logging.** A valid override logs `Portal URL override active: CI_CLOUD_URL=<url> ...` on every launch.
+- **What follows it.** Everything that reads `CI_CLOUD_URL` from the env file follows the override:
+  - the backend: pairing, check-in, the catalog, the tunnel API, Companion Account sign-in and Bearer JWKS;
+  - app OIDC issuer injection, and the `CI_CLOUD_URL`/`HUB_API_KEY` given to Memory;
+  - desktop Sentry tags;
+  - the bundled `cihub register`;
+  - the tray's Account Management item.
+- **What doesn't.** The SPA's own Sentry environment tag comes from the image build, so it doesn't follow.
+
+**Registrations belong to one Portal.** Pairing stores a device key (`state/settings.json`), organization rows and a tunnel token, and none of them records which Portal issued them. If you switch Portals while the Hub is paired, the Hub keeps sending the old device key to the new Portal:
+
+- The new Portal rejects check-in with 401. After three failed check-ins the Hub shows `degraded` (`cloud_validation_failed`). It doesn't clear the registration or open pairing.
+- The tunnel keeps serving the old Portal's hostname.
+
+When the desktop sees the Portal change under a Hub that still holds a device key or tunnel token, it logs `WARNING: Portal changed from <old> to <new> ...` to `desktop.log`. To use the new Portal, open Settings → Network → Reset registration and pair again. The tray item "Clear Tunnel Token" is not a full reset.
+
+A reset while pointed at the new Portal can't deregister the device from the old Portal. When you switch back, the old Portal may still list the device as active, and the pairing page offers to restore it.
 
 `pnpm run dev` always passes `docker compose up --build`. A source image build needs `NODE_AUTH_TOKEN` (GitHub `read:packages` for `@companionintelligence/tokens`). To skip the build, set `CI_HUB_IMAGE` in `.env.dev` so `docker-compose.dev-image.yml` pulls `ghcr.io/companionintelligence/ci-hub:dev` (or the tag you set).
 

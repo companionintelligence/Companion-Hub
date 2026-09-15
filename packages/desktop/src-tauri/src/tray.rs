@@ -342,8 +342,9 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "open_portal" => {
-                let portal_url =
-                    option_env!("CI_HUB_CLOUD_URL").unwrap_or(crate::hub_env::default_ci_cloud_url());
+                // Same resolution the launch used for CI_CLOUD_URL, so this opens the Portal
+                // the Hub is actually paired with when an override is set.
+                let portal_url = crate::hub_manager::effective_portal_url();
                 let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {
