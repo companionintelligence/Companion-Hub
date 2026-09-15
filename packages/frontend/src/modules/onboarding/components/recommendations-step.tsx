@@ -187,7 +187,9 @@ export const RecommendationsStep = ({
     isError: isCatalogError,
     refetch: refetchCatalog,
     isRetryingEmptyCatalog,
+    isCatalogUnavailable,
   } = useMarketplaceCatalogApps();
+  const showCatalogRetry = isCatalogError || Boolean(isCatalogUnavailable);
   // Memoized so the chart and embedded selection effect keep stable inputs across re-renders.
   const detectedNames = useMemo(() => detectedServices.map((s) => s.friendlyName), [detectedServices]);
   const {
@@ -411,8 +413,11 @@ export const RecommendationsStep = ({
 
   const content = (
     <>
-      {isCatalogError && (
-        <div className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      {showCatalogRetry && (
+        <div
+          className="mb-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+          data-testid="recommendations-catalog-unavailable"
+        >
           {t('ONBOARDING_RECOMMENDATIONS_UNAVAILABLE')}{' '}
           <button type="button" className="font-medium underline" onClick={() => void refetchCatalog()}>
             {t('COMMON_RETRY')}
@@ -449,7 +454,7 @@ export const RecommendationsStep = ({
           </div>
         )}
         {showCatalogLoading && <p className="py-2 text-sm text-muted-foreground">{t('ONBOARDING_RECOMMENDATIONS_LOADING')}</p>}
-        {!showCatalogLoading && alternativeGroups.length === 0 && !isCatalogError && !isAltsError && (
+        {!showCatalogLoading && alternativeGroups.length === 0 && !showCatalogRetry && !isAltsError && (
           <p className="py-4 text-base text-muted-foreground">{t('ONBOARDING_NO_MATCHING_STORE_APPS')}</p>
         )}
         {!showCatalogLoading && alternativeGroups.length > 0 && (
