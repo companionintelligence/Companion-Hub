@@ -17,10 +17,7 @@ use crate::hub_env::{
     runtime_hub_version_for_image,
 };
 use crate::hub_names::*;
-use crate::portal_url::{
-    compiled_ci_cloud_url, resolve_portal_url_from_env, same_portal_url, PortalUrlResolution,
-    PortalUrlSource, PORTAL_URL_OVERRIDE_KEY,
-};
+use crate::portal_url::{compiled_ci_cloud_url, launch_portal_url, PortalUrlResolution};
 
 mod cli_install;
 mod compose;

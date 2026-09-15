@@ -3,36 +3,54 @@
 //! A desktop bundle compiles its Portal in (`CI_HUB_CLOUD_URL`, else the default for
 //! `CI_HUB_ENVIRONMENT`), and every launch rewrites `CI_CLOUD_URL` in the Hub env files from
 //! it. An operator who needs a published bundle to use another Portal (QA against dev Portal,
-//! for example) sets [`PORTAL_URL_OVERRIDE_KEY`] in the Hub data dir env file instead.
+//! for example) writes that Portal's origin to the override file at
+//! [`portal_url_override_path`].
 //!
-//! The Portal URL decides where the Hub pairs, where users sign in and where the device key is
+//! The Portal URL decides where the Hub pairs, where users sign in, and where the device key is
 //! sent, so the override is deliberately narrow:
 //!
-//! - It is read only from the env file in the Hub data dir, which only someone who controls
-//!   the machine can edit. No Hub API writes that key: the backend's only `.env` writer is the
-//!   stack updater, which upserts `CI_HUB_IMAGE` and `CI_HUB_VERSION` by name.
+//! - It is read only from the desktop app's own config dir, which no container mounts. It is
+//!   never read from the Hub env files: the primary one is mounted into the `ci-hub` container
+//!   as `/data/.env` and the backend writes to it, so a line that reaches that file must not be
+//!   able to choose the Portal.
+//! - Only the resolved `CI_CLOUD_URL` is written to the env files, never the override itself.
 //! - It must be a bare `https` origin. Plain `http` is accepted only for loopback hosts (the
 //!   same set the backend bridges to `host.docker.internal`), for local Portal development.
 //! - A value that fails validation is ignored and the compiled Portal is used, exactly as if
-//!   the key were absent. The reason is logged on every launch until the value is fixed.
+//!   there were no override file. The reason is logged on every launch until the file is fixed.
 
-use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::hub_env::{default_ci_cloud_url, unquote_env_value};
 
-/// Env file key an operator sets to point this desktop Hub at another Portal.
-pub(crate) const PORTAL_URL_OVERRIDE_KEY: &str = "CI_HUB_CLOUD_URL_OVERRIDE";
+/// The desktop app's own directory under the platform config dir. It is the Tauri app
+/// identifier, so this is the directory Tauri calls the app config dir. No compose file mounts it.
+const DESKTOP_CONFIG_DIRNAME: &str = "computer.ci.app.hub";
+
+/// Override file in [`DESKTOP_CONFIG_DIRNAME`]. Its first value line is the Portal origin.
+const PORTAL_URL_OVERRIDE_FILENAME: &str = "portal-url-override";
 
 /// Portal compiled into this binary: what every launch used before overrides existed.
 pub(crate) fn compiled_ci_cloud_url() -> &'static str {
     option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url())
 }
 
-/// Where the effective Portal URL came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PortalUrlSource {
-    Compiled,
-    Override,
+/// Where this desktop reads its Portal URL override, when the platform has a config dir.
+///
+/// `None` under `cargo test`, so no test can pick up an override file on the developer's own
+/// machine. Tests pass an explicit path to [`resolve_portal_url_at`] instead.
+pub(crate) fn portal_url_override_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    dirs::config_dir().map(|config_dir| portal_url_override_path_in(&config_dir))
+}
+
+/// [`portal_url_override_path`] under a given platform config dir.
+pub(crate) fn portal_url_override_path_in(config_dir: &Path) -> PathBuf {
+    config_dir
+        .join(DESKTOP_CONFIG_DIRNAME)
+        .join(PORTAL_URL_OVERRIDE_FILENAME)
 }
 
 /// Outcome of resolving the Portal URL for one launch.
@@ -40,105 +58,122 @@ pub(crate) enum PortalUrlSource {
 pub(crate) struct PortalUrlResolution {
     /// Value written to `CI_CLOUD_URL`.
     pub(crate) url: String,
-    pub(crate) source: PortalUrlSource,
-    /// The override exactly as the operator wrote it (trimmed), carried forward into the
-    /// regenerated env files so a launch never deletes it. `None` when the key is absent or blank.
-    pub(crate) raw_override: Option<String>,
-    /// Why a present override was refused. The compiled Portal is used instead.
+    /// The override file that held a value, whether that value was used or refused.
+    pub(crate) source: Option<PathBuf>,
+    /// Why the override was refused. The compiled Portal is used instead.
     pub(crate) rejected: Option<String>,
 }
 
-/// Resolve the Portal URL from the Hub env values loaded for this launch.
-pub(crate) fn resolve_portal_url_from_env(
-    existing: &HashMap<String, String>,
-) -> PortalUrlResolution {
-    resolve_portal_url(
-        existing.get(PORTAL_URL_OVERRIDE_KEY).map(String::as_str),
-        compiled_ci_cloud_url(),
-    )
+impl PortalUrlResolution {
+    /// This build's Portal, verbatim rather than normalized, so a Hub without an override
+    /// renders byte-for-byte the env file that earlier builds rendered.
+    fn compiled() -> Self {
+        Self {
+            url: compiled_ci_cloud_url().to_string(),
+            source: None,
+            rejected: None,
+        }
+    }
 }
 
-/// Pure form of [`resolve_portal_url_from_env`], so the compiled value can be varied in tests.
-///
-/// Without a usable override the compiled value is returned verbatim, not normalized, so a
-/// Hub that never sets the key renders byte-for-byte the env file it rendered before.
-pub(crate) fn resolve_portal_url(
-    override_value: Option<&str>,
-    compiled: &str,
-) -> PortalUrlResolution {
-    let raw_override = override_value
-        .map(str::trim)
-        .filter(|value| !unquote_env_value(value).is_empty())
-        .map(str::to_string);
+/// Resolve the Portal URL for a launch of this desktop.
+pub(crate) fn launch_portal_url() -> PortalUrlResolution {
+    resolve_portal_url_at(portal_url_override_path().as_deref())
+}
 
-    let Some(raw) = raw_override.as_deref() else {
-        return PortalUrlResolution {
-            url: compiled.to_string(),
-            source: PortalUrlSource::Compiled,
-            raw_override: None,
-            rejected: None,
-        };
+/// Resolve the Portal URL from the override file at `path`. No path, a missing file, and a file
+/// with no value line all mean there is no override.
+pub(crate) fn resolve_portal_url_at(path: Option<&Path>) -> PortalUrlResolution {
+    let Some(path) = path else {
+        return PortalUrlResolution::compiled();
     };
-
-    match validate_portal_url_override(raw) {
-        Ok(url) => PortalUrlResolution {
+    let validated = read_portal_url_override(path).and_then(|value| {
+        value
+            .map(|value| validate_portal_url_override(&value))
+            .transpose()
+    });
+    match validated {
+        Ok(None) => PortalUrlResolution::compiled(),
+        Ok(Some(url)) => PortalUrlResolution {
             url,
-            source: PortalUrlSource::Override,
-            raw_override,
+            source: Some(path.to_path_buf()),
             rejected: None,
         },
         Err(reason) => PortalUrlResolution {
-            url: compiled.to_string(),
-            source: PortalUrlSource::Compiled,
-            raw_override,
+            source: Some(path.to_path_buf()),
             rejected: Some(reason),
+            ..PortalUrlResolution::compiled()
         },
     }
+}
+
+/// The override value: the first line that is neither blank nor a `#` comment, without quotes.
+/// `Ok(None)` when the file does not exist or holds no value.
+fn read_portal_url_override(path: &Path) -> Result<Option<String>, String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("the file could not be read ({error})")),
+    };
+    Ok(content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| unquote_env_value(line).trim().to_string())
+        .filter(|value| !value.is_empty()))
 }
 
 /// Validate an override and return it as a normalized origin (`https://host[:port]`).
 ///
 /// Everything that consumes `CI_CLOUD_URL` treats it as an origin: the backend appends
-/// `/api/...`, and app OIDC injection uses it as the token issuer. A path, query or fragment
-/// would silently produce a different issuer or API base, so they are refused rather than cut.
-pub(crate) fn validate_portal_url_override(raw: &str) -> Result<String, String> {
-    let value = unquote_env_value(raw);
+/// `/api/...`, and app OIDC injection uses it as the token issuer. A path, query, fragment, or
+/// trailing dot would silently produce a different issuer or API base, so they are refused
+/// rather than cut.
+pub(crate) fn validate_portal_url_override(value: &str) -> Result<String, String> {
     let parsed = reqwest::Url::parse(value).map_err(|_| {
-        format!(
-            "{PORTAL_URL_OVERRIDE_KEY} is not an absolute URL (expected e.g. https://hub.companionintelligence.com)"
-        )
+        "it is not an absolute URL (expected e.g. https://hub.companionintelligence.com)"
+            .to_string()
     })?;
 
     let host = parsed
         .host_str()
         .filter(|host| !host.is_empty())
-        .ok_or_else(|| format!("{PORTAL_URL_OVERRIDE_KEY} has no host"))?;
+        .ok_or_else(|| "it has no host".to_string())?;
+
+    // `domain()` is `None` for IP addresses, which the parser has already normalized. The URL
+    // parser accepts `$`, `{` and quotes in a domain, and docker compose interpolates `$` when it
+    // reads CI_CLOUD_URL from the env file, so the container would get a different Portal. A
+    // trailing dot never matches the Portal's token issuer.
+    if let Some(domain) = parsed.domain() {
+        let is_dns_name = domain.split('.').all(|label| {
+            !label.is_empty()
+                && label
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        });
+        if !is_dns_name {
+            return Err(
+                "its host is not a DNS name (letters, digits, hyphens, and dots, with no trailing dot)"
+                    .to_string(),
+            );
+        }
+    }
 
     match parsed.scheme() {
         "https" => {}
         "http" if is_loopback_portal_host(host) => {}
         "http" => {
-            return Err(format!(
-            "{PORTAL_URL_OVERRIDE_KEY} must use https; plain http is accepted only for localhost"
-        ))
+            return Err("it must use https; plain http is accepted only for localhost".to_string())
         }
-        scheme => {
-            return Err(format!(
-                "{PORTAL_URL_OVERRIDE_KEY} must use https, not {scheme}"
-            ))
-        }
+        scheme => return Err(format!("it must use https, not {scheme}")),
     }
 
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(format!(
-            "{PORTAL_URL_OVERRIDE_KEY} must not contain credentials"
-        ));
+        return Err("it must not contain credentials".to_string());
     }
 
     if parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(format!(
-            "{PORTAL_URL_OVERRIDE_KEY} must be a bare origin with no path, query or fragment"
-        ));
+        return Err("it must be a bare origin with no path, query, or fragment".to_string());
     }
 
     Ok(parsed.origin().ascii_serialization())
@@ -150,67 +185,119 @@ fn is_loopback_portal_host(host: &str) -> bool {
     host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host.ends_with(".localhost")
 }
 
-/// Whether two `CI_CLOUD_URL` values name the same Portal, ignoring quoting, a trailing
-/// slash and ASCII case.
-pub(crate) fn same_portal_url(left: &str, right: &str) -> bool {
-    fn normalize(value: &str) -> String {
-        unquote_env_value(value)
-            .trim()
-            .trim_end_matches('/')
-            .to_ascii_lowercase()
-    }
-    normalize(left) == normalize(right)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const COMPILED: &str = "https://hub.ci.computer";
     const DEV: &str = "https://hub.companionintelligence.com";
 
-    #[test]
-    fn without_an_override_the_compiled_portal_is_used_verbatim() {
-        for absent in [None, Some(""), Some("   "), Some("\"\"")] {
-            let resolved = resolve_portal_url(absent, COMPILED);
-            assert_eq!(
-                resolved,
-                PortalUrlResolution {
-                    url: COMPILED.to_string(),
-                    source: PortalUrlSource::Compiled,
-                    raw_override: None,
-                    rejected: None,
-                },
-                "override {absent:?} must behave as if the key were absent"
-            );
-        }
-
-        // Verbatim, not normalized: an unset override must not change a single byte of the
-        // value earlier builds wrote, or every existing Hub would see a config change.
-        let odd_compiled = "https://Hub.CI.computer/";
-        assert_eq!(resolve_portal_url(None, odd_compiled).url, odd_compiled);
+    fn override_file(content: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(PORTAL_URL_OVERRIDE_FILENAME);
+        std::fs::write(&path, content).expect("write override");
+        (dir, path)
     }
 
     #[test]
-    fn a_valid_override_replaces_the_compiled_portal() {
-        let resolved =
-            resolve_portal_url(Some(" https://hub.companionintelligence.com/ "), COMPILED);
-        assert_eq!(resolved.url, DEV);
-        assert_eq!(resolved.source, PortalUrlSource::Override);
-        assert_eq!(resolved.rejected, None);
+    fn the_override_file_lives_in_the_desktop_config_dir() {
         assert_eq!(
-            resolved.raw_override.as_deref(),
-            Some("https://hub.companionintelligence.com/"),
-            "the operator's spelling is what gets carried forward into the env files"
+            portal_url_override_path_in(Path::new("/config")),
+            Path::new("/config/computer.ci.app.hub/portal-url-override")
+        );
+        assert_eq!(
+            portal_url_override_path(),
+            None,
+            "tests must never read an override file from the developer's machine"
         );
     }
 
     #[test]
-    fn a_quoted_override_is_accepted() {
-        for quoted in [format!("\"{DEV}\""), format!("'{DEV}'")] {
-            let resolved = resolve_portal_url(Some(&quoted), COMPILED);
-            assert_eq!(resolved.url, DEV, "{quoted}");
-            assert_eq!(resolved.source, PortalUrlSource::Override);
+    fn without_an_override_the_compiled_portal_is_used() {
+        let missing_dir = tempfile::tempdir().expect("tempdir");
+        let missing = missing_dir.path().join(PORTAL_URL_OVERRIDE_FILENAME);
+        assert_eq!(resolve_portal_url_at(None), PortalUrlResolution::compiled());
+        assert_eq!(
+            resolve_portal_url_at(Some(&missing)),
+            PortalUrlResolution::compiled()
+        );
+
+        for content in [
+            "",
+            "\n\n",
+            "   \r\n",
+            "# https://hub.companionintelligence.com\n",
+            "\"\"\n",
+            "\" \"\n",
+        ] {
+            let (_dir, path) = override_file(content);
+            let resolved = resolve_portal_url_at(Some(&path));
+            assert_eq!(
+                resolved,
+                PortalUrlResolution::compiled(),
+                "{content:?} holds no override"
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_value_line_of_the_file_is_the_override() {
+        for content in [
+            "https://hub.companionintelligence.com\n",
+            "https://hub.companionintelligence.com/",
+            "# dev Portal\r\n\r\n  https://hub.companionintelligence.com  \r\nhttps://ignored.example.test\r\n",
+            "\"https://hub.companionintelligence.com\"\n",
+            "'https://HUB.companionintelligence.com:443'\n",
+        ] {
+            let (_dir, path) = override_file(content);
+            let resolved = resolve_portal_url_at(Some(&path));
+            assert_eq!(resolved.url, DEV, "{content:?}");
+            assert_eq!(resolved.rejected, None, "{content:?}");
+            assert_eq!(resolved.source.as_deref(), Some(path.as_path()));
+        }
+    }
+
+    #[test]
+    fn an_unreadable_or_invalid_override_is_refused_and_the_compiled_portal_is_kept() {
+        // A directory where the file should be cannot be read.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let resolved = resolve_portal_url_at(Some(dir.path()));
+        assert_eq!(resolved.url, compiled_ci_cloud_url());
+        assert!(
+            resolved
+                .rejected
+                .as_deref()
+                .is_some_and(|reason| reason.contains("could not be read")),
+            "{resolved:?}"
+        );
+
+        let (_dir, path) = override_file("http://portal.example.test\n");
+        let resolved = resolve_portal_url_at(Some(&path));
+        assert_eq!(resolved.url, compiled_ci_cloud_url());
+        assert_eq!(resolved.source.as_deref(), Some(path.as_path()));
+        assert!(resolved
+            .rejected
+            .as_deref()
+            .is_some_and(|reason| reason.contains("must use https")));
+    }
+
+    #[test]
+    fn a_valid_override_is_normalized_to_its_origin() {
+        for (value, expected) in [
+            ("https://hub.companionintelligence.com/", DEV),
+            ("HTTPS://HUB.COMPANIONINTELLIGENCE.COM", DEV),
+            ("https://hub.companionintelligence.com:443", DEV),
+            (
+                "https://portal.example.test:8443",
+                "https://portal.example.test:8443",
+            ),
+            ("https://bücher.example", "https://xn--bcher-kva.example"),
+            ("https://10.0.0.5", "https://10.0.0.5"),
+        ] {
+            assert_eq!(
+                validate_portal_url_override(value).as_deref(),
+                Ok(expected),
+                "{value}"
+            );
         }
     }
 
@@ -222,21 +309,21 @@ mod tests {
             ("http://ci-portal.localhost", "http://ci-portal.localhost"),
             ("http://[::1]:8415", "http://[::1]:8415"),
         ] {
-            let resolved = resolve_portal_url(Some(value), COMPILED);
-            assert_eq!(resolved.url, expected, "{value}");
-            assert_eq!(resolved.source, PortalUrlSource::Override, "{value}");
+            assert_eq!(
+                validate_portal_url_override(value).as_deref(),
+                Ok(expected),
+                "{value}"
+            );
         }
 
-        let resolved = resolve_portal_url(Some("http://hub.companionintelligence.com"), COMPILED);
-        assert_eq!(resolved.url, COMPILED);
-        assert!(resolved
-            .rejected
-            .as_deref()
-            .is_some_and(|reason| reason.contains("must use https")));
+        assert!(
+            validate_portal_url_override("http://hub.companionintelligence.com")
+                .is_err_and(|reason| reason.contains("must use https"))
+        );
     }
 
     #[test]
-    fn an_invalid_override_is_refused_and_the_compiled_portal_is_kept() {
+    fn an_invalid_override_is_refused_with_a_reason() {
         for (value, reason_fragment) in [
             ("hub.companionintelligence.com", "not an absolute URL"),
             ("not a url", "not an absolute URL"),
@@ -245,6 +332,7 @@ mod tests {
             ("file:///etc/passwd", "has no host"),
             ("javascript:alert(1)", "has no host"),
             ("http://localhost.example.com", "must use https"),
+            ("http://127.0.0.1.nip.io", "must use https"),
             (
                 "https://user:secret@hub.companionintelligence.com",
                 "credentials",
@@ -252,48 +340,16 @@ mod tests {
             ("https://hub.companionintelligence.com/api", "bare origin"),
             ("https://hub.companionintelligence.com/?x=1", "bare origin"),
             ("https://hub.companionintelligence.com/#top", "bare origin"),
+            ("https://hub.companionintelligence.com.", "not a DNS name"),
+            ("https://a${x}.example.test", "not a DNS name"),
+            ("https://hub{portal}.example.test", "not a DNS name"),
         ] {
-            let resolved = resolve_portal_url(Some(value), COMPILED);
-            assert_eq!(
-                resolved.url, COMPILED,
-                "{value} must fall back to the compiled Portal"
-            );
-            assert_eq!(resolved.source, PortalUrlSource::Compiled, "{value}");
-            assert_eq!(
-                resolved.raw_override.as_deref(),
-                Some(value),
-                "{value} must be kept in the env file so the operator can see and fix it"
-            );
-            let reason = resolved.rejected.unwrap_or_default();
+            let reason =
+                validate_portal_url_override(value).expect_err(&format!("{value} must be refused"));
             assert!(
-                reason.contains(PORTAL_URL_OVERRIDE_KEY) && reason.contains(reason_fragment),
-                "{value}: expected a reason naming the key and {reason_fragment:?}, got {reason:?}"
+                reason.contains(reason_fragment),
+                "{value}: expected a reason containing {reason_fragment:?}, got {reason:?}"
             );
         }
-    }
-
-    #[test]
-    fn same_portal_url_ignores_spelling_differences_only() {
-        assert!(same_portal_url(
-            DEV,
-            "https://hub.companionintelligence.com/"
-        ));
-        assert!(same_portal_url(
-            DEV,
-            "\"https://HUB.companionintelligence.com\""
-        ));
-        assert!(!same_portal_url(DEV, COMPILED));
-        assert!(!same_portal_url(
-            DEV,
-            "http://hub.companionintelligence.com"
-        ));
-    }
-
-    #[test]
-    fn compiled_portal_matches_the_build_default() {
-        assert_eq!(
-            compiled_ci_cloud_url(),
-            option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url())
-        );
     }
 }

@@ -334,6 +334,16 @@ pub(crate) fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
 ) -> String {
+    render_runtime_env_content_for_portal(data_dir, existing, &launch_portal_url())
+}
+
+/// [`render_runtime_env_content`] with the Portal decided by the caller, so tests can supply an
+/// override file without reading the one on the developer's machine.
+pub(crate) fn render_runtime_env_content_for_portal(
+    data_dir: &Path,
+    existing: &std::collections::HashMap<String, String>,
+    portal: &PortalUrlResolution,
+) -> String {
     let root_folder_host = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST")
         .map(|value| normalize_docker_host_path(&value))
         .unwrap_or_else(|| docker_bind_mount_path(data_dir));
@@ -368,16 +378,8 @@ pub(crate) fn render_runtime_env_content(
         .unwrap_or_default();
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
-    let portal = resolve_portal_url_from_env(existing);
-    log_portal_url_resolution(data_dir, existing, &portal);
+    log_portal_url_resolution(data_dir, portal);
     let cloud_url = portal.url.as_str();
-    // Carried forward verbatim (even when refused) so a launch never erases what the operator
-    // wrote. Omitted entirely when unset, which keeps the file identical to earlier builds.
-    let portal_override_line = portal
-        .raw_override
-        .as_deref()
-        .map(|raw| format!("{PORTAL_URL_OVERRIDE_KEY}={raw}\n"))
-        .unwrap_or_default();
     let hub_image = resolve_runtime_hub_image(existing);
     // Make pin supersession observable in desktop.log. Most starts resolve to the same
     // reference already on disk and log nothing; a line here means a pin was dropped —
@@ -434,7 +436,6 @@ pub(crate) fn render_runtime_env_content(
          JWT_SECRET={jwt_secret}\n\
          POSTGRES_PASSWORD={postgres_password}\n\
          RABBITMQ_PASSWORD={rabbitmq_password}\n\
-         {portal_override_line}\
          \n\
          # Derived (recomputed every launch from the current binary)\n\
          INTERNAL_IP=0.0.0.0\n\
@@ -475,88 +476,52 @@ pub(crate) fn render_runtime_env_content(
     )
 }
 
-/// Portal URL the Hub in the default data dir uses, resolved the same way a launch resolves it.
-pub(crate) fn effective_portal_url() -> String {
-    let data_dir = get_hub_data_dir();
-    let env_path = hub_env_path_for(&data_dir);
-    resolve_portal_url_from_env(&load_runtime_env_values(&data_dir, &env_path)).url
+/// The Portal the stack using `env_path` was started with: its `CI_CLOUD_URL`, or this build's
+/// Portal before a launch has written one. Only http(s) URLs are returned, because the tray
+/// hands the value to the system opener.
+pub(crate) fn portal_url_from_env_file(env_path: &Path) -> String {
+    get_non_empty_env_value(&parse_env_file(env_path), "CI_CLOUD_URL")
+        .map(|value| crate::hub_env::unquote_env_value(&value).to_string())
+        .filter(|value| {
+            reqwest::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        })
+        .unwrap_or_else(|| compiled_ci_cloud_url().to_string())
 }
 
-/// Record the Portal decision in desktop.log, and warn when the Portal changes under a Hub
-/// that still holds a registration issued by the previous one.
-///
-/// The backend keeps no record of which Portal issued its device key, tunnel token and
-/// organization rows, so after a switch it keeps presenting them to the new Portal. The new
-/// Portal answers check-in with 401 (unknown device key), which the backend counts toward
-/// `degraded` rather than clearing the registration, and the tunnel keeps serving the old
-/// Portal's hostname. The desktop is the one place that sees both URLs, so it says so here.
-fn log_portal_url_resolution(
-    data_dir: &Path,
-    existing: &std::collections::HashMap<String, String>,
-    portal: &PortalUrlResolution,
-) {
-    let compiled = compiled_ci_cloud_url();
-    if let Some(reason) = portal.rejected.as_deref() {
-        let message = format!(
-            "Ignoring {PORTAL_URL_OVERRIDE_KEY} in the Hub env file: {reason}. Using this build's Portal {compiled}."
-        );
-        log::error!("{message}");
-        let _ = append_desktop_log_for(data_dir, "hub.portal", &message);
-    } else if portal.source == PortalUrlSource::Override {
-        let message = format!(
-            "Portal URL override active: CI_CLOUD_URL={} from {PORTAL_URL_OVERRIDE_KEY} (this build's Portal is {compiled}).",
-            portal.url
-        );
-        log::warn!("{message}");
-        let _ = append_desktop_log_for(data_dir, "hub.portal", &message);
-    }
-
-    let Some(previous) = get_non_empty_env_value(existing, "CI_CLOUD_URL") else {
+/// Record the override in desktop.log: the Portal it selects, or why it was refused. A launch
+/// without an override file logs nothing, as launches did before overrides existed.
+fn log_portal_url_resolution(data_dir: &Path, portal: &PortalUrlResolution) {
+    let Some(source) = portal.source.as_deref() else {
         return;
     };
-    if same_portal_url(&previous, &portal.url) || !hub_holds_portal_registration(data_dir, existing)
-    {
-        return;
-    }
-    let message = format!(
-        "WARNING: Portal changed from {previous} to {url} while this Hub still holds a registration from a Portal (device key or tunnel token). \
-         Registrations are issued per Portal, so {url} will reject the existing device key and the Hub will turn degraded. \
-         Reset the Hub registration and pair again against {url}, or switch back to {previous}.",
-        url = portal.url
-    );
-    log::warn!("{message}");
+    let compiled = compiled_ci_cloud_url();
+    let message = match portal.rejected.as_deref() {
+        Some(reason) => format!(
+            "Ignoring the Portal URL override in {}: {reason}. Using this build's Portal {compiled}.",
+            source.display()
+        ),
+        None => format!(
+            "Portal URL override active: CI_CLOUD_URL={} from {} (this build's Portal is {compiled}).",
+            portal.url,
+            source.display()
+        ),
+    };
     let _ = append_desktop_log_for(data_dir, "hub.portal", &message);
 }
 
-/// Whether the data dir holds Portal-issued credentials: a device key in `state/settings.json`
-/// (the file the backend reads) or a Cloudflare tunnel token.
-pub(crate) fn hub_holds_portal_registration(
-    data_dir: &Path,
-    existing: &std::collections::HashMap<String, String>,
-) -> bool {
-    let host_data_dir = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST")
-        .map(|root| host_path_from_docker_path(&root))
-        .unwrap_or_else(|| data_dir.to_path_buf());
-
-    if tunnel_token_present_for_data_dir(&host_data_dir) {
-        return true;
-    }
-
-    std::fs::read_to_string(host_data_dir.join("state").join("settings.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|settings| {
-            settings
-                .get("ciHubApiKey")
-                .and_then(|key| key.as_str())
-                .map(|key| !key.trim().is_empty())
-        })
-        .unwrap_or(false)
+pub(crate) fn ensure_runtime_env_state(data_dir: &Path, env_path: &Path) -> Result<bool, String> {
+    ensure_runtime_env_state_for_portal(data_dir, env_path, &launch_portal_url())
 }
 
-pub(crate) fn ensure_runtime_env_state(data_dir: &Path, env_path: &Path) -> Result<bool, String> {
+/// [`ensure_runtime_env_state`] with the Portal decided by the caller (see
+/// [`render_runtime_env_content_for_portal`]).
+pub(crate) fn ensure_runtime_env_state_for_portal(
+    data_dir: &Path,
+    env_path: &Path,
+    portal: &PortalUrlResolution,
+) -> Result<bool, String> {
     let existing = load_runtime_env_values(data_dir, env_path);
-    let env_content = render_runtime_env_content(data_dir, &existing);
+    let env_content = render_runtime_env_content_for_portal(data_dir, &existing, portal);
     let previous_content = std::fs::read_to_string(env_path).unwrap_or_default();
     let changed = strip_port_vars(&previous_content) != env_content;
 

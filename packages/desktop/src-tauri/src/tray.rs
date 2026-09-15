@@ -342,9 +342,10 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
             "open_portal" => {
-                // Same resolution the launch used for CI_CLOUD_URL, so this opens the Portal
-                // the Hub is actually paired with when an override is set.
-                let portal_url = crate::hub_manager::effective_portal_url();
+                // The CI_CLOUD_URL the running stack was started with, so an override opens here
+                // only once a launch has applied it (and in stack-dev, the stack-dev env file).
+                let paths = app.state::<crate::hub_manager::HubPaths>();
+                let portal_url = crate::hub_manager::portal_url_from_env_file(&paths.env_path);
                 let _ = app.opener().open_url(portal_url, None::<&str>);
             }
             "view_logs" => {
