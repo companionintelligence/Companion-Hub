@@ -1,13 +1,30 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
-import { SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
+import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
 import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { BadRequestException, Body, Controller, Delete, Get, HttpStatus, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import type { UserDto } from '@/modules/user/dto/user.dto';
+import type { AppUrn } from '@ci-hub/common/types';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpStatus,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  ServiceUnavailableException,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
 import { AuthService, type PairedOrgMembership } from './auth.service';
@@ -73,7 +90,7 @@ import {
   type DesktopChannel,
 } from './portal-sso';
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
-import { sessionIdsFromRequest } from './auth.middleware';
+import { loadSessionUser, sessionIdsFromRequest } from './auth.middleware';
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -85,6 +102,15 @@ const EDGE_SSO_MAX_MINTS_PER_MINUTE = 3;
 const EDGE_SSO_MINT_WINDOW_SECONDS = 60;
 /** One redirect hop needs little time, so a short lifetime limits replay exposure. */
 const EDGE_SSO_TICKET_TTL_SECONDS = 60;
+
+/** A minted edge-SSO ticket, cached under `EDGE_SSO_CACHE_PREFIX`. The mint writes it; the consume and logout read it. */
+interface EdgeSsoTicket {
+  sessionId: string;
+  targetHost: string;
+  targetUrl: string;
+  /** The app the target hostname resolved to at mint. */
+  appUrn: AppUrn;
+}
 
 /**
  * Phone Memory returns to a Capacitor webview without the Hub cookie, so its API routes must reach Nest for app-level authentication.
@@ -127,23 +153,20 @@ export class AuthController {
     private readonly registrationService: RegistrationService,
     private readonly deviceRegistration: DeviceRegistrationRepository,
     private readonly bearerOrgMembership: BearerOrgMembershipCache,
+    private readonly sessionUserCache: SessionUserCache,
   ) {}
 
-  private sessionCookieOptions(req: Request, scope?: { host?: string; proto?: string }) {
+  private sessionCookieOptions(req: Request) {
     // Normalize ports and repeated headers before `getCookieDomain` applies its FQDN check.
-    const host = normalizeForwardedHost(scope?.host ?? req.headers['x-forwarded-host']);
-    const proto = (scope?.proto ?? (req.headers['x-forwarded-proto'] as string | undefined))?.split(',')[0]?.trim();
+    const host = normalizeForwardedHost(req.headers['x-forwarded-host']);
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
     const domain = this.authService.getCookieDomain(host);
     const secure = proto === 'https';
     return { host, proto, domain, secure };
   }
 
-  /**
-   * Edge SSO overrides cookie scope because the tunnel-rewritten host and protocol differ from the browser's public origin.
-   * Using forwarded values would violate RFC 6265 domain matching and cause a redirect loop.
-   */
-  private async setSessionCookie(res: Response, sessionId: string, req: Request, scope?: { host?: string; proto?: string }) {
-    const options = this.sessionCookieOptions(req, scope);
+  private async setSessionCookie(res: Response, sessionId: string, req: Request) {
+    const options = this.sessionCookieOptions(req);
     this.logger.debug('Setting session cookie', { host: options.host, domain: options.domain, proto: options.proto, secure: options.secure });
 
     if (this.config.get('userSettings').experimental.insecureCookie) {
@@ -162,8 +185,8 @@ export class AuthController {
   }
 
   /** Must pass the same Domain/Secure flags as Set-Cookie or the browser keeps the stale session. */
-  private async clearSessionCookie(res: Response, req: Request, scope?: { host?: string; proto?: string }) {
-    const options = this.sessionCookieOptions(req, scope);
+  private async clearSessionCookie(res: Response, req: Request) {
+    const options = this.sessionCookieOptions(req);
     if (this.config.get('userSettings').experimental.insecureCookie) {
       res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: false, sameSite: 'lax' });
       return;
@@ -431,7 +454,7 @@ export class AuthController {
 
     for (const entry of this.cache.getByPrefix(EDGE_SSO_CACHE_PREFIX) ?? []) {
       try {
-        const parsed = JSON.parse(entry.val) as { sessionId?: string };
+        const parsed = JSON.parse(entry.val) as Partial<EdgeSsoTicket>;
         if (parsed.sessionId && wanted.has(parsed.sessionId)) {
           this.cache.del(entry.key);
         }
@@ -1097,8 +1120,9 @@ export class AuthController {
    * The resolver host map provides an exact allowlist of installed app routers, including unregistered LAN appliances.
    * HTTP is limited to this appliance's local domain so public siblings cannot be downgraded.
    * Loopback is rejected because local open bypasses ticket SSO under ADR 001 and ADR 002.
+   * The app the host resolves to is returned with it: that app is all the consumed ticket will authenticate to.
    */
-  private async validateEdgeSsoTarget(redirect: string | undefined): Promise<URL | null> {
+  private async validateEdgeSsoTarget(redirect: string | undefined): Promise<{ url: URL; appUrn: AppUrn } | null> {
     // Repeated query keys arrive as arrays, which URL would stringify into a corrupted allowed target.
     if (typeof redirect !== 'string' || !redirect) {
       return null;
@@ -1124,7 +1148,7 @@ export class AuthController {
       }
     }
     const appUrn = await this.forwardAuthSecrets.resolveAppUrnForHost(url.hostname);
-    return appUrn ? url : null;
+    return appUrn ? { url, appUrn } : null;
   }
 
   /**
@@ -1187,6 +1211,54 @@ export class AuthController {
     return allowed;
   }
 
+  /**
+   * The user an app-session cookie authenticates on this forwarded host, or undefined.
+   *
+   * ⚠ BOUND TO THE APP, NOT THE HOSTNAME. An app answers on several names — platform hostname, LAN
+   * origin, custom domain — that all resolve to its one URN, so each of them accepts its session,
+   * while a session minted for one app is refused on every other app's host.
+   */
+  private async resolveAppSessionUser(req: Request, forwardedHost: string): Promise<UserDto | undefined> {
+    const appSessionId = req.cookies?.[APP_SESSION_COOKIE_NAME];
+    if (typeof appSessionId !== 'string' || !appSessionId || !forwardedHost) {
+      return undefined;
+    }
+
+    const appSession = this.sessionManager.resolveAppSession(appSessionId);
+    if (!appSession) {
+      return undefined;
+    }
+
+    const hostAppUrn = await this.forwardAuthSecrets.resolveAppUrnForHost(forwardedHost);
+    if (!hostAppUrn || hostAppUrn !== appSession.appUrn) {
+      this.logger.debug('Traefik forward auth ignored an app session minted for another app', {
+        host: forwardedHost,
+        targetApp: hostAppUrn,
+        sessionApp: appSession.appUrn,
+      });
+      return undefined;
+    }
+
+    return this.loadAppSessionUser(appSession.userId);
+  }
+
+  /**
+   * Loaded by `loadSessionUser`, the rules `AuthMiddleware` applies to a Hub session's user. Forward auth
+   * runs for every request an app serves, so neither a row read per request nor a 500 per blip is
+   * acceptable here.
+   */
+  private async loadAppSessionUser(userId: number): Promise<UserDto | undefined> {
+    try {
+      return await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
+      }
+      // Same as a Hub session whose row cannot be read: carry on without a user.
+      return undefined;
+    }
+  }
+
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
@@ -1198,9 +1270,14 @@ export class AuthController {
     const viaTunnel = this.viaCloudflareTunnel(req);
     const { ticket, cleanUri } = this.parseForwardedUri(uri);
 
+    // An app session planted by edge SSO stands in for `req.user` from here on, ahead of the public
+    // paths and the Bearer check just as the Hub session it replaces was: Memory's
+    // `/api/authenticate/hub-bridge` is a public path, and it needs the signed identity.
+    const forwardAuthUser = req.user ?? (await this.resolveAppSessionUser(req, forwardedHost));
+
     // Phone Memory returns to a cookie-less webview, so its API authentication must reach the app.
     // Browser HTML remains on cookie or edge SSO.
-    if (!req.user && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
+    if (!forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
       return res.status(200).send();
     }
 
@@ -1216,7 +1293,7 @@ export class AuthController {
 
     // Machine clients use Portal bearer tokens, so valid tokens bypass browser SSO.
     // Invalid tokens return 401 instead of login HTML.
-    if (!req.user) {
+    if (!forwardAuthUser) {
       const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
       if (bearer) {
         const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
@@ -1249,8 +1326,8 @@ export class AuthController {
       }
     }
 
-    if (req.user) {
-      // A ticket on an authenticated request was bypassed by a domain cookie, so burn it and remove it from the URL.
+    if (forwardAuthUser) {
+      // A ticket on an authenticated request was bypassed by a domain or app-session cookie, so burn it and remove it from the URL.
       // Leaving it valid would preserve a replayable session-planting credential.
       if (ticket) {
         // Check before deleting so junk parameters cannot force synchronous store writes on every app request.
@@ -1270,11 +1347,11 @@ export class AuthController {
       // Unknown hosts retain the Hub-global fallback.
       const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
       this.logger.debug('User authenticated for Traefik forward auth', {
-        username: req.user.username,
+        username: forwardAuthUser.username,
         secretSource: resolved.source,
         targetApp: resolved.appUrn,
       });
-      const signed = buildSignedForwardAuthHeaders(resolved.secret, req.user.username);
+      const signed = buildSignedForwardAuthHeaders(resolved.secret, forwardAuthUser.username);
       for (const [header, value] of Object.entries(signed)) {
         res.setHeader(header, value);
       }
@@ -1305,8 +1382,9 @@ export class AuthController {
         let sessionId = '';
         let targetHost = '';
         let targetUrl = '';
+        let appUrn: AppUrn | undefined;
         try {
-          ({ sessionId, targetHost, targetUrl } = JSON.parse(cached) as { sessionId: string; targetHost: string; targetUrl: string });
+          ({ sessionId = '', targetHost = '', targetUrl = '', appUrn } = JSON.parse(cached) as Partial<EdgeSsoTicket>);
         } catch {
           // fall through to the login redirect
         }
@@ -1324,12 +1402,35 @@ export class AuthController {
           ticketTarget = null;
         }
 
-        // The session must still resolve — a ticket outliving its session plants nothing.
-        if (sessionId && ticketTarget && hostMatches && this.sessionManager.resolveSessionUserId(sessionId)) {
-          // Scope to the minted browser target because the tunnel-rewritten host is neither cookie-valid nor remotely resolvable.
-          await this.setSessionCookie(res, sessionId, req, {
-            host: ticketTarget.hostname,
-            proto: ticketTarget.protocol.replace(':', ''),
+        // The session must still resolve — a ticket outliving its session plants nothing — and the
+        // ticket must name an app. The session is bound to the app this forwarded host resolves to,
+        // the lookup forward auth applies to every later request here. The host binding above already
+        // ties the ticket to this host; the app recorded at mint can differ when two apps claim the
+        // ticket's hostname, and a session bound to that one would be refused on every request.
+        const userId = sessionId && ticketTarget && hostMatches ? this.sessionManager.resolveSessionUserId(sessionId) : null;
+        const hostAppUrn = userId && appUrn ? await this.forwardAuthSecrets.resolveAppUrnForHost(forwardedHost) : null;
+        if (hostAppUrn && hostAppUrn !== appUrn) {
+          this.logger.debug('Edge-SSO ticket names another app that claims this hostname; binding to the forwarded host app', {
+            host: forwardedHost,
+            ticketApp: appUrn,
+            hostApp: hostAppUrn,
+          });
+        }
+        const appSessionId = userId && hostAppUrn ? await this.sessionManager.createAppSession(userId, sessionId, hostAppUrn) : null;
+        if (ticketTarget && appSessionId) {
+          // ⚠ AN APP SESSION, NEVER `sessionId` ITSELF. Traefik copies every request header, cookies
+          // included, to the app it fronts, and the Hub session is a full Hub API credential
+          // (`AuthMiddleware` takes it from a cookie, a header, or the query): planting it here would
+          // hand the operator's Hub to every app served on this host, and a leaked ticket to whoever
+          // redeemed it. This one authenticates forward auth for this host's app and nothing else.
+          // Host-only (no Domain), so the browser pins it to the host it actually requested, whatever
+          // the tunnel rewrote the forwarded host to, and no sibling or child host receives it. A
+          // sibling can still shadow it with a same-name cookie scoped to a shared parent domain.
+          res.cookie(APP_SESSION_COOKIE_NAME, appSessionId, {
+            httpOnly: true,
+            secure: ticketTarget.protocol === 'https:',
+            sameSite: 'lax',
+            maxAge: SESSION_COOKIE_MAX_AGE,
           });
           return res.status(302).redirect(ticketTarget.toString());
         }
@@ -1387,10 +1488,11 @@ export class AuthController {
    */
   @Get('/edge-sso')
   async edgeSso(@Query('redirect') redirect: string | undefined, @Req() req: Request, @Res() res: Response) {
-    const target = await this.validateEdgeSsoTarget(redirect);
-    if (!target) {
+    const validated = await this.validateEdgeSsoTarget(redirect);
+    if (!validated) {
       throw new BadRequestException('Unsupported edge SSO target');
     }
+    const { url: target, appUrn } = validated;
 
     const sessionId = req.user ? (req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session')) : undefined;
     if (!sessionId) {
@@ -1427,12 +1529,12 @@ export class AuthController {
     this.cache.set(counterKey, String(mints + 1), windowTtl);
 
     const ticket = crypto.randomUUID();
-    // Keep the session server-side and bind it to one hostname.
+    // Keep the session server-side and bind it to one hostname and the app behind it.
     // Store the full browser target because the tunnel-rewritten forwarded host may be remotely unreachable.
     const targetUrl = target.toString();
     this.cache.set(
       `${EDGE_SSO_CACHE_PREFIX}${ticket}`,
-      JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl }),
+      JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl, appUrn } satisfies EdgeSsoTicket),
       EDGE_SSO_TICKET_TTL_SECONDS,
     );
 

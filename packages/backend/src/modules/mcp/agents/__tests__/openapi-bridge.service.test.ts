@@ -1,6 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
+import { GRANTED_ACTOR } from '@/tests/utils/lifecycle-actor-gate';
+import { mcpAdminCallContext } from '../../mcp-call-context';
 import { OpenApiBridgeService } from '../../agents/openapi-bridge.service';
 import { ApiProxyService } from '../../agents/api-proxy.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -244,6 +247,49 @@ describe('OpenApiBridgeService', () => {
       const toolInfos = await service.listToolInfo(TEST_URN, config);
       expect(toolInfos.length).toBeGreaterThanOrEqual(4);
       expect(toolInfos.every((t) => t.source === 'openapi')).toBe(true);
+    });
+  });
+
+  /*
+   * A generated tool reaches the app's API through the proxy, which asks the lifecycle's actor gate
+   * (CI-Hub#1397). The tool names its caller when it runs — never when it was generated — for the
+   * grant its operation's verb takes.
+   */
+  describe('the caller a generated tool names', () => {
+    const config = makeConfig({
+      enabled: true,
+      specPath: '/data/apps/ci-store/nextcloud/agents/openapi.yaml',
+      config: { enabled: true, spec_path: 'agents/openapi.yaml' },
+    });
+
+    beforeEach(() => {
+      filesystem.readTextFile.mockResolvedValue(SAMPLE_SPEC);
+    });
+
+    it.each([
+      ['ci-store_nextcloud__listUsers', 'view'],
+      ['ci-store_nextcloud__createUser', 'configure'],
+    ])('%s runs as the admin-runner person, for %s', async (name, action) => {
+      const tool = (await service.generateTools(TEST_URN, config)).find((candidate) => candidate.name === name);
+      const actorFor = vi.fn<LifecycleActorFor>(() => GRANTED_ACTOR);
+
+      await mcpAdminCallContext.run(actorFor, () => tool?.handler({}) ?? Promise.reject(new Error(`no tool ${name}`)));
+
+      expect(actorFor).toHaveBeenCalledWith(action);
+      expect(_apiProxy.proxyOpenApiCall).toHaveBeenCalledWith(
+        TEST_URN,
+        expect.objectContaining({ method: expect.any(String) }),
+        {},
+        GRANTED_ACTOR,
+        undefined,
+      );
+    });
+
+    it('refuses to run with no caller named, before the proxy is reached', async () => {
+      const [tool] = await service.generateTools(TEST_URN, config);
+
+      await expect(tool?.handler({})).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+      expect(_apiProxy.proxyOpenApiCall).not.toHaveBeenCalled();
     });
   });
 });

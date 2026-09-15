@@ -912,7 +912,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
 
       if (restart === 'schedule') {
-        await lifecycle.restartApp({ appUrn, skipPull: true });
+        await lifecycle.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'memory-connect' } });
 
         return 'restarting';
       }

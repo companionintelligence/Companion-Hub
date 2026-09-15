@@ -67,6 +67,47 @@ export function pickNewestSessionId(
   return bestId;
 }
 
+/**
+ * Session/API-key auth looks up the user on every request. A Docker DNS blip
+ * (`EAI_AGAIN ci-hub-db`) used to fail the whole request as a 500 and flood
+ * Sentry (NODE-NESTJS-HUB-BACKEND-EC). Retry briefly, then answer 503 so the
+ * client can retry instead of treating the session as invalid.
+ */
+async function loadUserResilient<T>(load: () => Promise<T>): Promise<T> {
+  try {
+    return await withTransientDbRetry(load);
+  } catch (err) {
+    if (isTransientDbError(err)) {
+      throw new ServiceUnavailableException('Database temporarily unavailable');
+    }
+    throw err;
+  }
+}
+
+/**
+ * The user a session authenticates, loaded by the same rules for a Hub session here and for an
+ * edge-SSO app session in Traefik forward auth: the short-lived DTO cache, then the row, retried
+ * through a DB blip and answered 503 if it stays down.
+ */
+export async function loadSessionUser(sessionUserCache: SessionUserCache, userRepository: Pick<UserRepository, 'getUserDtoById'>, userId: number) {
+  const cached = sessionUserCache.get(userId);
+  if (cached) {
+    return cached;
+  }
+  // Stamp the read: a write that invalidates while this SELECT is in flight would otherwise
+  // be undone here, re-caching the pre-write DTO for a fresh TTL. Stamped inside the retry
+  // closure so each attempt is judged against the SELECT it actually issued — a token taken
+  // before the backoff would discard the correct post-write row a later attempt just read.
+  return loadUserResilient(async () => {
+    const readToken = sessionUserCache.beginRead(userId);
+    const user = await userRepository.getUserDtoById(userId);
+    if (user) {
+      sessionUserCache.set(userId, user, readToken);
+    }
+    return user;
+  });
+}
+
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
   constructor(
@@ -75,23 +116,6 @@ export class AuthMiddleware implements NestMiddleware {
     private readonly userRepository: UserRepository,
     private readonly sessionUserCache: SessionUserCache,
   ) {}
-
-  /**
-   * Session/API-key auth looks up the user on every request. A Docker DNS blip
-   * (`EAI_AGAIN ci-hub-db`) used to fail the whole request as a 500 and flood
-   * Sentry (NODE-NESTJS-HUB-BACKEND-EC). Retry briefly, then answer 503 so the
-   * client can retry instead of treating the session as invalid.
-   */
-  private async loadUserResilient<T>(load: () => Promise<T>): Promise<T> {
-    try {
-      return await withTransientDbRetry(load);
-    } catch (err) {
-      if (isTransientDbError(err)) {
-        throw new ServiceUnavailableException('Database temporarily unavailable');
-      }
-      throw err;
-    }
-  }
 
   /**
    * Speak as the first operator on behalf of a host-local credential — or, when there is no
@@ -115,7 +139,7 @@ export class AuthMiddleware implements NestMiddleware {
    * Throwing here would turn all of them into 409s and lock the Hub out of its own remedy.
    */
   private async attachFirstOperator(req: Request, principal: 'portal-device' | 'cli') {
-    const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
+    const user = await loadUserResilient(() => this.userRepository.getFirstOperator());
     req.hubPrincipal = principal;
 
     if (!user) {
@@ -124,25 +148,6 @@ export class AuthMiddleware implements NestMiddleware {
     }
 
     req.user = user;
-  }
-
-  private async loadSessionUser(userId: number) {
-    const cached = this.sessionUserCache.get(userId);
-    if (cached) {
-      return cached;
-    }
-    // Stamp the read: a write that invalidates while this SELECT is in flight would otherwise
-    // be undone here, re-caching the pre-write DTO for a fresh TTL. Stamped inside the retry
-    // closure so each attempt is judged against the SELECT it actually issued — a token taken
-    // before the backoff would discard the correct post-write row a later attempt just read.
-    return this.loadUserResilient(async () => {
-      const readToken = this.sessionUserCache.beginRead(userId);
-      const user = await this.userRepository.getUserDtoById(userId);
-      if (user) {
-        this.sessionUserCache.set(userId, user, readToken);
-      }
-      return user;
-    });
   }
 
   async use(req: Request, _: Response, next: NextFunction) {
@@ -167,7 +172,7 @@ export class AuthMiddleware implements NestMiddleware {
       }
 
       try {
-        const user = await this.loadSessionUser(userId);
+        const user = await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
         if (user?.accessStatus === 'revoked') {
           await this.sessionManager.destroyAllSessionsByUserId(userId);
           this.sessionUserCache.invalidate(userId);

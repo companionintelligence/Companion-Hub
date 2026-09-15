@@ -334,6 +334,16 @@ pub(crate) fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
 ) -> String {
+    render_runtime_env_content_for_portal(data_dir, existing, &launch_portal_url())
+}
+
+/// [`render_runtime_env_content`] with the Portal decided by the caller, so tests can supply an
+/// override file without reading the one on the developer's machine.
+pub(crate) fn render_runtime_env_content_for_portal(
+    data_dir: &Path,
+    existing: &std::collections::HashMap<String, String>,
+    portal: &PortalUrlResolution,
+) -> String {
     let root_folder_host = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST")
         .map(|value| normalize_docker_host_path(&value))
         .unwrap_or_else(|| docker_bind_mount_path(data_dir));
@@ -368,7 +378,8 @@ pub(crate) fn render_runtime_env_content(
         .unwrap_or_default();
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
-    let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
+    log_portal_url_resolution(data_dir, portal);
+    let cloud_url = portal.url.as_str();
     let hub_image = resolve_runtime_hub_image(existing);
     // Make pin supersession observable in desktop.log. Most starts resolve to the same
     // reference already on disk and log nothing; a line here means a pin was dropped —
@@ -465,9 +476,52 @@ pub(crate) fn render_runtime_env_content(
     )
 }
 
+/// The Portal the stack using `env_path` was started with: its `CI_CLOUD_URL`, or this build's
+/// Portal before a launch has written one. Only http(s) URLs are returned, because the tray
+/// hands the value to the system opener.
+pub(crate) fn portal_url_from_env_file(env_path: &Path) -> String {
+    get_non_empty_env_value(&parse_env_file(env_path), "CI_CLOUD_URL")
+        .map(|value| crate::hub_env::unquote_env_value(&value).to_string())
+        .filter(|value| {
+            reqwest::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
+        })
+        .unwrap_or_else(|| compiled_ci_cloud_url().to_string())
+}
+
+/// Record the override in desktop.log: the Portal it selects, or why it was refused. A launch
+/// without an override file logs nothing, as launches did before overrides existed.
+fn log_portal_url_resolution(data_dir: &Path, portal: &PortalUrlResolution) {
+    let Some(source) = portal.source.as_deref() else {
+        return;
+    };
+    let compiled = compiled_ci_cloud_url();
+    let message = match portal.rejected.as_deref() {
+        Some(reason) => format!(
+            "Ignoring the Portal URL override in {}: {reason}. Using this build's Portal {compiled}.",
+            source.display()
+        ),
+        None => format!(
+            "Portal URL override active: CI_CLOUD_URL={} from {} (this build's Portal is {compiled}).",
+            portal.url,
+            source.display()
+        ),
+    };
+    let _ = append_desktop_log_for(data_dir, "hub.portal", &message);
+}
+
 pub(crate) fn ensure_runtime_env_state(data_dir: &Path, env_path: &Path) -> Result<bool, String> {
+    ensure_runtime_env_state_for_portal(data_dir, env_path, &launch_portal_url())
+}
+
+/// [`ensure_runtime_env_state`] with the Portal decided by the caller (see
+/// [`render_runtime_env_content_for_portal`]).
+pub(crate) fn ensure_runtime_env_state_for_portal(
+    data_dir: &Path,
+    env_path: &Path,
+    portal: &PortalUrlResolution,
+) -> Result<bool, String> {
     let existing = load_runtime_env_values(data_dir, env_path);
-    let env_content = render_runtime_env_content(data_dir, &existing);
+    let env_content = render_runtime_env_content_for_portal(data_dir, &existing, portal);
     let previous_content = std::fs::read_to_string(env_path).unwrap_or_default();
     let changed = strip_port_vars(&previous_content) != env_content;
 

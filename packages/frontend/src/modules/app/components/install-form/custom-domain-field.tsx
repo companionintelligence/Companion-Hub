@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/Button';
-import { customDomainServesAnotherApp } from '@ci-hub/common/types';
+import { customDomainHeldByAnotherHub, customDomainServesAnotherApp } from '@ci-hub/common/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import type { AvailableCustomDomainsResponseDto } from '@/api-client';
 import type { Control, FieldValues, Path } from 'react-hook-form';
@@ -18,6 +18,16 @@ type AvailableCustomDomain = AvailableCustomDomainsResponseDto['domains'][number
 const PLATFORM_ADDRESS = '__platform__';
 
 /**
+ * The portal page where an owner or admin moves a domain between Hubs
+ * (organization settings → domains), or `null` when this Hub has no portal
+ * address to link to. `/api/portal/config` already trims the address and strips
+ * its trailing slash.
+ */
+function portalDomainsUrl(portalUrl: string | null | undefined): string | null {
+  return portalUrl ? `${portalUrl}/org-settings?tab=domains` : null;
+}
+
+/**
  * Returns the status shown beside a domain, or `null` when no status is useful.
  *
  * Centralizing the mutually exclusive states keeps bindable states such as
@@ -28,22 +38,31 @@ const PLATFORM_ADDRESS = '__platform__';
  * settings state and does not represent a transfer.
  */
 function describeEntry(entry: AvailableCustomDomain, currentAppSlug: string | undefined, t: (key: string) => string): string | null {
-  if (entry.state === 'pending') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING');
-  if (entry.state === 'securing') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING');
-  if (entry.state === 'drifted') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED');
   /*
    * ⚠ `failed` IS BINDABLE, WHICH IS WHY IT HAS TO BE NAMED HERE.
    *
-   * CI-Cloud reports a permanently failed certificate on the same terms as the
-   * two states above and deliberately leaves `bindable` true. Unlike them it
-   * never clears itself — there is no in-place reissue, only
+   * CI-Cloud reports a permanently failed certificate on the same terms as
+   * `securing` and `drifted` and deliberately leaves `bindable` true. Unlike
+   * them it never clears itself — there is no in-place reissue, only
    * disconnect-and-reconnect — so a build that had not heard of the state
    * parsed it as `unknown`, matched none of the conditions here, and rendered
    * the domain as an ordinary selectable option with NO note at all: a domain
    * that can never serve, offered silently. The row stays selectable, because
    * `bindable` is CI-Cloud's gate and not ours to override, but it says so.
+   *
+   * First, even for a domain another Hub holds: moving it would not issue the
+   * certificate, and reconnecting it fixes both.
    */
   if (entry.state === 'failed') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_FAILED');
+  /*
+   * Ahead of the other states, because it is the reason the option is
+   * disabled: whatever else the domain is doing on that Hub, this one cannot
+   * take it. A row still verifying never answers yes; see the predicate.
+   */
+  if (customDomainHeldByAnotherHub(entry)) return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB');
+  if (entry.state === 'pending') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING');
+  if (entry.state === 'securing') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING');
+  if (entry.state === 'drifted') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED');
   if (entry.state !== 'live') return null;
   /*
    * Name the current binding before selection because choosing this live domain
@@ -78,6 +97,12 @@ interface CustomDomainFieldProps<TFormValues extends FieldValues> {
    * transfer occurs in that case.
    */
   currentAppSlug?: string;
+  /**
+   * The portal's address, when this Hub has one. A domain another Hub holds
+   * links to the page where it can be moved; without an address the remedy is
+   * named but not linked.
+   */
+  portalUrl?: string | null;
   /**
    * Records the operator's answer to the takeover question on the form.
    *
@@ -114,6 +139,7 @@ export function CustomDomainField<TFormValues extends FieldValues>({
   supported,
   platformHostname,
   currentAppSlug,
+  portalUrl,
   onTakeoverChange,
   loading,
   t,
@@ -147,6 +173,13 @@ export function CustomDomainField<TFormValues extends FieldValues>({
    * hand-rolled spelling of the same comparison.
    */
   const isServingCustomDomain = domains.some((entry) => entry.boundAppSlug !== null && !customDomainServesAnotherApp(entry, currentAppSlug));
+  /*
+   * The listed domains only the portal can move here, named in the note under
+   * the picker. A certificate that failed for good is left out: a move would not
+   * make it serve, and its option already says to reconnect it.
+   */
+  const heldByAnotherHub = domains.filter((entry) => customDomainHeldByAnotherHub(entry) && entry.state !== 'failed').map((entry) => entry.domain);
+  const moveInPortalUrl = portalDomainsUrl(portalUrl);
   /*
    * Hide the field when no connected domains are available or the Portal cannot
    * list them. An empty dropdown would advertise an unusable feature; Companion
@@ -298,6 +331,24 @@ export function CustomDomainField<TFormValues extends FieldValues>({
           );
         }}
       />
+      {heldByAnotherHub.length > 0 ? (
+        /*
+         * ⚠ UNDER THE PICKER, NOT INSIDE THE OPTION. A disabled option takes no
+         * pointer events, and the listbox moves focus between options only, so a
+         * link placed in one could be read and never followed. It names the
+         * domains, because it shows while the listbox is closed.
+         */
+        <p className="mt-1 text-xs text-muted-foreground" data-testid="custom-domain-held-elsewhere">
+          {t('APP_INSTALL_FORM_CUSTOM_DOMAIN_ON_ANOTHER_HUB_HINT', { domains: heldByAnotherHub.join(', ') })}{' '}
+          {moveInPortalUrl ? (
+            <a href={moveInPortalUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline-offset-2 hover:underline">
+              {t('APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL')}
+            </a>
+          ) : (
+            t('APP_INSTALL_FORM_CUSTOM_DOMAIN_MOVE_IN_PORTAL')
+          )}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -227,8 +227,11 @@ The install dialog offers the organization's connected domains (`GET /api/cloudf
   device pointing a domain into another organization's tunnel.
 - An intent that equals the delivered binding costs nothing — no listing, no bind — which is the
   steady state for the life of the app. A refusal that can clear itself (app not registered yet,
-  domain still verifying) keeps the intent and retries; only "that domain is not this
-  organization's" clears it.
+  domain still verifying) keeps the intent and retries. Two answers clear it, with its confirmation:
+  "that domain is not this organization's", and "another Hub holds it" (listed `boundElsewhere` and
+  not `bindable` once verified, or a bind refused with `DOMAIN_BOUND_TO_ANOTHER_DEVICE`). Only an
+  owner or admin can move such a domain, from the portal's organization settings → domains, and the
+  log line and the picker both say so.
 - A listing that could not be READ (older CI-Cloud, unreachable, unparseable) keeps every intent.
   `supported: false` on the Hub's own endpoint means "could not ask", which the dialog must not
   render as "you have none".
@@ -286,6 +289,30 @@ unauthorized caller read an app's state out of the 403-vs-200 answer.
 
 `public-web/repair` rewrites app envs and restarts apps, so it carries `configure`; `public-web/diagnostics`
 filters its report by `view`.
+
+The services check too, so HTTP is not the only transport that asks
+([CI-Hub#1397](https://github.com/companionintelligence/CI-Hub/issues/1397)). These calls on one app
+take a named `LifecycleActor`: install, update-config, start, stop, restart, uninstall, reset, update,
+cancel, `BackupsService` backup, restore, list and delete, and the app-API proxy. `AppLifecycleService.assertActorMay`
+decides from it before anything is read or queued, and refuses with `APP_ACTION_GRANT_DENIED` (403).
+Not every per-app call takes one yet: `forceStopApp`, `startAppAndWait`, `restartAppAndWait`,
+`regenerateAppEnv`, `BackupsService.uploadBackup` and `getBackupFilePath`, and the user-config,
+custom-app and `AppsService` calls behind the per-app MCP tools assert nothing, so a route or tool
+that reaches them must assert the grant itself (the MCP tools do, through `assertMcpCallerMay`).
+An operator, and the creator of an unmanaged MCP key, answer to their WhoIs grant. A managed app key
+passes every check on its own app except a custom-domain change, which takes an organization owner or
+admin at any capability. On other apps its capability decides: `read` may view them; `write` may also
+start, stop and restart them and call their tools and API; `full` may do everything (see
+[MCP agent bootstrap](../MCP_AGENT_BOOTSTRAP.md)). The `mcp` actor carries the capability its key was
+resolved with for this request, so a change in Settings applies from the next call.
+`AppLifecycleService.actorMay` is the one place that decides this. Where the verb cannot say which call
+a check is, the call site passes an `ActorCheckContext`: `appCall` for a call into the app's tools or
+API, and `stopsApp` for stopping the app (cancelling its operation is `stop` too, and stays unmarked).
+Leave the marker off every other call, so a `write` managed key is refused it on other apps.
+
+When you add an MCP tool that acts on one app, pass `mcpCallerLifecycleActor(action)` to a service that
+takes an actor, or call `assertMcpCallerMay` before the tool reads or changes anything. Give an internal
+caller a `{ kind: 'system', reason }` actor, with a reason named in `SystemLifecycleReason`.
 
 ## API client generation
 

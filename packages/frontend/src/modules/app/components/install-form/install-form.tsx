@@ -1,6 +1,7 @@
 import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
 import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
 import { formatApiError } from '@/lib/format-api-error';
+import { portalConfigQueryOptions } from '@/lib/portal-config';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
@@ -13,7 +14,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu';
 import { Input } from '@/components/ui/Input';
-import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
@@ -76,7 +76,6 @@ interface IProps {
   appStatus?: AppStatus;
   onValidityChange?: (isValid: boolean) => void;
   onDirtyChange?: (isDirty: boolean) => void;
-  scrollable?: boolean;
   editingAppUrn?: string;
 }
 
@@ -130,17 +129,6 @@ function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null):
   return `${cleanNodeFqdn}:${port}`;
 }
 
-const ConfigSection: React.FC<{ scrollable?: boolean; children: React.ReactNode }> = ({ scrollable, children }) => {
-  if (scrollable) {
-    return (
-      <ScrollArea maxheight={350}>
-        <div className="pr-4">{children}</div>
-      </ScrollArea>
-    );
-  }
-  return <div>{children}</div>;
-};
-
 export const InstallForm: React.FC<IProps> = ({
   formFields = [],
   info,
@@ -151,7 +139,6 @@ export const InstallForm: React.FC<IProps> = ({
   appStatus,
   onValidityChange,
   onDirtyChange,
-  scrollable,
   editingAppUrn,
 }) => {
   const { t } = useTranslation();
@@ -255,6 +242,13 @@ export const InstallForm: React.FC<IProps> = ({
    */
   const { data: customDomainsData } = useQuery(getCustomDomainsOptions());
   const customDomains = useMemo(() => customDomainsData?.domains ?? EMPTY_CUSTOM_DOMAINS, [customDomainsData?.domains]);
+
+  /*
+   * The portal's address, for the picker's link to where a domain another Hub
+   * holds can be moved. Read alongside the listing rather than once such a
+   * domain shows up, so the link does not arrive a request after its note.
+   */
+  const { data: portalConfig } = useQuery(portalConfigQueryOptions());
 
   const requiredFieldNames = formFields.filter((f) => f.required && !isHiddenFieldType(f.type)).map((f) => f.env_variable);
   const _watchedRequiredValues = watch(requiredFieldNames);
@@ -843,6 +837,7 @@ export const InstallForm: React.FC<IProps> = ({
              * irreversible-release hint for a domain that is still being served.
              */
             currentAppSlug={watchLocalSubdomain?.trim() || routingAppSubdomain}
+            portalUrl={portalConfig?.portalUrl}
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}
@@ -1031,9 +1026,10 @@ export const InstallForm: React.FC<IProps> = ({
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
       {renderHostnameSettings()}
 
-      {/* Configuration section — scrollable when in a dialog */}
+      {/* Configuration section. No scroll container of its own: both dialogs that host this form
+          already scroll their body, and a nested fixed-height one showed a second scrollbar. */}
       {hasConfigSection && (
-        <ConfigSection scrollable={scrollable}>
+        <div>
           {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
           {shouldShowAdvancedSettingsToggle && (
             <Switch
@@ -1098,7 +1094,7 @@ export const InstallForm: React.FC<IProps> = ({
               <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CPU_LIMIT_HINT')}</span>
             </div>
           )}
-        </ConfigSection>
+        </div>
       )}
     </form>
   );

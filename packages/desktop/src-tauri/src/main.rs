@@ -10,6 +10,7 @@ pub mod hub_manager;
 mod hub_names;
 mod inference_runners;
 pub mod port_manager;
+mod portal_url;
 mod sentry_scrubber;
 mod tray;
 mod updater;

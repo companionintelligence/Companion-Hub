@@ -24,6 +24,14 @@ export const CAPABILITY_HINT_KEYS: Record<ApiKeyCapability, string> = {
   full: 'API_KEYS_CAPABILITY_FULL_HINT',
 };
 
+/** The same levels for a managed key, which acts for the app that owns it: there each level says what it
+ *  may do on that app and how far it reaches every other app, which is what an operator is deciding. */
+export const MANAGED_CAPABILITY_HINT_KEYS: Record<ApiKeyCapability, string> = {
+  read: 'API_KEYS_CAPABILITY_MANAGED_READ_HINT',
+  write: 'API_KEYS_CAPABILITY_MANAGED_WRITE_HINT',
+  full: 'API_KEYS_CAPABILITY_MANAGED_FULL_HINT',
+};
+
 /**
  * Three steps of one escalating scale, so a row's authority is legible at a glance rather than by
  * reading the word: inert → ordinary → caution.

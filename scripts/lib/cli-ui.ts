@@ -101,8 +101,8 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     title: 'Fleet (other machines, over SSH)',
     entries: [
       {
-        command: `${BASE_COMMAND} fleet scan [--lan] [--write-roster] [--json]`,
-        description: 'Find machines on your tailnet (and optionally the LAN), and report SSH, Hub and engines separately',
+        command: `${BASE_COMMAND} fleet scan [--all-tailnet] [--lan] [--write-roster] [--json]`,
+        description: 'Re-probe the roster (every tailnet peer with --all-tailnet; the LAN with --lan), and report SSH, Hub and engines separately',
       },
       { command: `${BASE_COMMAND} fleet list [--json]`, description: 'The saved roster, and which nodes fleet commands will skip' },
       {

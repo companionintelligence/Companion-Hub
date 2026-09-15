@@ -430,7 +430,7 @@ describe('App lifecycle', () => {
       await fs.promises.writeFile(`${APP_DATA_DIR}/test/${appInfo.id}/data/preserved.txt`, 'data to preserve');
 
       // act
-      await appLifecycleService.updateApp({ appUrn: appInfo.urn, performBackup: false });
+      await appLifecycleService.updateApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, performBackup: false });
 
       await waitFor(async () => {
         const app = await appsRepository.getAppByUrn(appInfo.urn);
@@ -516,7 +516,7 @@ describe('App lifecycle', () => {
       await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/preserved.txt`, 'keep-me');
 
       // act
-      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: false });
+      await appLifecycleService.uninstallApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, deleteAllData: false });
 
       // assert
       await waitFor(async () => {
@@ -546,7 +546,7 @@ describe('App lifecycle', () => {
       await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/delete-me.txt`, 'remove-me');
 
       // act
-      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: true });
+      await appLifecycleService.uninstallApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, deleteAllData: true });
 
       // assert
       await waitFor(async () => {
@@ -581,7 +581,7 @@ describe('App lifecycle', () => {
       expect(app?.subnet).toBeNull();
 
       // act
-      await appLifecycleService.startApp({ appUrn: appInfo.urn });
+      await appLifecycleService.startApp({ actor: TEST_ACTOR, appUrn: appInfo.urn });
 
       // assert
       await waitFor(async () => {
@@ -701,7 +701,7 @@ describe('App lifecycle', () => {
       expect(bound?.pendingRestart).toBe(true);
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
 
-      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, skipPull: true });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
       });
@@ -725,7 +725,7 @@ describe('App lifecycle', () => {
       }
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
 
-      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, skipPull: true });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
       });
@@ -795,7 +795,7 @@ describe('App lifecycle', () => {
       expect(bound?.customDomain).toBe('comfy.acme.com');
       expect(bound?.pendingRestart).toBe(true);
 
-      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, skipPull: true });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
       });

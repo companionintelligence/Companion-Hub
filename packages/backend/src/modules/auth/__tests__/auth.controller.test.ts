@@ -1,4 +1,5 @@
 import { CacheService } from '@/core/cache/cache.service';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -63,6 +64,7 @@ describe('AuthController', () => {
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
         // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
         BearerOrgMembershipCache,
+        SessionUserCache,
       ],
     }).compile();
 
@@ -83,8 +85,8 @@ describe('AuthController', () => {
   });
 
   describe('session cookie flags', () => {
-    // `login` is the call site that derives host and proto from the REQUEST HEADERS. The edge-SSO
-    // consume passes an explicit scope instead, so it cannot exercise either of these.
+    // `login` stands in for every Hub-session cookie call site: all of them derive host and proto from
+    // the REQUEST HEADERS. (The edge-SSO consume plants an app-session cookie, pinned in its own tests.)
     const loginReq = (headers: Record<string, string>) => ({ headers }) as unknown as Request;
     const cookieRes = () => ({ cookie: vi.fn() }) as unknown as Response;
 
@@ -696,6 +698,173 @@ describe('AuthController', () => {
       expect(res.status).toHaveBeenCalledWith(401);
       expect(res.redirect).not.toHaveBeenCalled();
     });
+
+    describe('app sessions planted by edge SSO', () => {
+      const APP = 'importer:ci-marketplace';
+      const APP_HOST = 'importer-core-2-org.companionintelligence.com';
+      // One app answers on several names; a custom domain is another name for the same app.
+      const APP_CUSTOM_DOMAIN = 'files.acme.example';
+      const OTHER_APP_HOST = 'comfyui-core-2-org.companionintelligence.com';
+
+      const appSessionReq = (host: string, { uri = '/files', headers = {} }: { uri?: string; headers?: Record<string, string> } = {}) =>
+        ({
+          user: undefined,
+          headers: { 'x-forwarded-uri': uri, 'x-forwarded-proto': 'https', 'x-forwarded-host': host, ...headers },
+          cookies: { 'ci-hub-app-sid': 'app-sid-1' },
+        }) as unknown as Request;
+      const makeRes = () => ({ status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn() }) as unknown as Response;
+      const signedHeaders = (res: Response) => Object.fromEntries((res.setHeader as ReturnType<typeof vi.fn>).mock.calls);
+
+      const memoryCache = () => {
+        const store = new Map<string, string>();
+        return {
+          get: (key: string) => store.get(key),
+          set: (key: string, value: string) => void store.set(key, value),
+          del: (key: string) => void store.delete(key),
+          getExpirationAt: (key: string) => (store.has(key) ? Date.now() + 60 * 60 * 1000 : null),
+          getByPrefix: (prefix: string) => [...store.entries()].filter(([key]) => key.startsWith(prefix)).map(([key, val]) => ({ key, val })),
+        };
+      };
+
+      beforeEach(() => {
+        sessionManager.resolveAppSession.mockImplementation((id: string) =>
+          id === 'app-sid-1' ? { userId: 7, parentSessionId: 'sid-1', appUrn: APP as never } : null,
+        );
+        forwardAuthSecrets.resolveAppUrnForHost.mockImplementation(async (host) => {
+          if (host === APP_HOST || host === APP_CUSTOM_DOMAIN) return APP as never;
+          return host === OTHER_APP_HOST ? ('comfyui:ci-marketplace' as never) : null;
+        });
+        forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 'per-app-secret', appUrn: APP as never, source: 'app-env' });
+        userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com' } as never);
+      });
+
+      it.each([
+        ['its platform hostname', APP_HOST],
+        ['its custom domain', APP_CUSTOM_DOMAIN],
+      ])('signs as the app-session user on %s', async (_label, host) => {
+        // Bound to the app rather than to a hostname: every name the app answers on resolves to its URN.
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq(host), res);
+
+        expect(sessionManager.resolveAppSession).toHaveBeenCalledWith('app-sid-1');
+        expect(res.status).toHaveBeenCalledWith(200);
+        const headers = signedHeaders(res);
+        expect(headers['X-CI-Hub-User']).toBe('op@example.com');
+        expect(headers['X-CI-Hub-User-Signature']).toBe(
+          signForwardAuthUser('per-app-secret', 'op@example.com', Number(headers['X-CI-Hub-User-Timestamp'])),
+        );
+      });
+
+      it("does not sign an app session on another app's host", async () => {
+        // Minted for importer. comfyui is a legitimate app on the same appliance and still must not be
+        // told importer's user: the request falls through to the ordinary unauthenticated handling.
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq(OTHER_APP_HOST), res);
+
+        expect(res.setHeader).not.toHaveBeenCalled();
+        expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+        expect(userRepository.getUserDtoById).not.toHaveBeenCalled();
+        expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).toContain('/api/auth/edge-sso');
+      });
+
+      it('does not sign on a host no app claims, even for a record that names no app', async () => {
+        sessionManager.resolveAppSession.mockReturnValue({ userId: 7, parentSessionId: 'sid-1', appUrn: null } as never);
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq('unmapped.ci.lan'), res);
+
+        expect(res.setHeader).not.toHaveBeenCalled();
+      });
+
+      it('stops signing once the parent Hub session is logged out', async () => {
+        // A real SessionManager behind the mock, so what refuses the second request is the cascade from
+        // the parent session rather than a stubbed null.
+        const real = new SessionManager(memoryCache() as never);
+        const parent = await real.createSession(7);
+        const appSessionId = (await real.createAppSession(7, parent, APP as never)) as string;
+        sessionManager.resolveAppSession.mockImplementation((id: string) => real.resolveAppSession(id));
+        const req = { ...appSessionReq(APP_HOST), cookies: { 'ci-hub-app-sid': appSessionId } } as unknown as Request;
+
+        const before = makeRes();
+        await authController.traefik(req, before);
+        expect(signedHeaders(before)['X-CI-Hub-User']).toBe('op@example.com');
+
+        // What `AuthService.logout` does with the session it is handed.
+        await real.deleteSession(parent);
+
+        const after = makeRes();
+        await authController.traefik(req, after);
+        expect(after.setHeader).not.toHaveBeenCalled();
+        expect(after.status).not.toHaveBeenCalledWith(200);
+      });
+
+      it('wins over a Bearer the app sends for itself, as the Hub session it replaces did', async () => {
+        // Judged Bearer-first, an app's own token would be read as a Portal id_token and every call 401.
+        config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+        vi.mocked(verifyPortalIdToken).mockClear();
+        vi.mocked(verifyPortalIdToken).mockResolvedValue(null);
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq(APP_HOST, { headers: { authorization: 'Bearer app.own.jwt' } }), res);
+
+        expect(verifyPortalIdToken).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(signedHeaders(res)['X-CI-Hub-User']).toBe('op@example.com');
+      });
+
+      it("carries the user's identity to a public path such as Memory's hub-bridge", async () => {
+        // `/api/authenticate/hub-bridge` aligns Memory's own session to the signed Hub identity; the
+        // anonymous pass-through for public paths would hand it none.
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq(APP_HOST, { uri: '/api/authenticate/hub-bridge' }), res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(signedHeaders(res)['X-CI-Hub-User']).toBe('op@example.com');
+      });
+
+      it('burns a lingering ticket on a request its app session already authenticates', async () => {
+        // A second tab entering the flow after the first tab's consume planted the cookie. A ticket left
+        // live stays a replayable session-planting credential for the rest of its TTL.
+        cache.get.mockReturnValue(JSON.stringify({ sessionId: 'sid-1' }));
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq(APP_HOST, { uri: '/home?cihub_sso=t-9' }), res);
+
+        expect(cache.del).toHaveBeenCalledWith('edge_sso:t-9');
+        expect(res.redirect).toHaveBeenCalledWith(`https://${APP_HOST}/home`);
+        expect(sessionManager.createAppSession).not.toHaveBeenCalled();
+      });
+
+      it("reads the user's row once and serves repeat requests from the session-user cache", async () => {
+        // Forward auth runs for every asset and call an app makes; a row read per request is load the
+        // Hub session this replaces never put on the database.
+        await authController.traefik(appSessionReq(APP_HOST), makeRes());
+        await authController.traefik(appSessionReq(APP_HOST), makeRes());
+
+        expect(userRepository.getUserDtoById).toHaveBeenCalledTimes(1);
+      });
+
+      it('answers 503 rather than 500 when the user row stays unreachable', async () => {
+        const transient = Object.assign(new Error('getaddrinfo EAI_AGAIN ci-hub-db'), { code: 'EAI_AGAIN' });
+        userRepository.getUserDtoById.mockRejectedValue(transient);
+
+        await expect(authController.traefik(appSessionReq(APP_HOST), makeRes())).rejects.toMatchObject({ status: HttpStatus.SERVICE_UNAVAILABLE });
+        expect(userRepository.getUserDtoById).toHaveBeenCalledTimes(3);
+      });
+
+      it('carries on unauthenticated when the user row fails for a non-transient reason', async () => {
+        userRepository.getUserDtoById.mockRejectedValue(new Error('Failed query: select id from user'));
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq(APP_HOST), res);
+
+        expect(res.setHeader).not.toHaveBeenCalled();
+        expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).toContain('/api/auth/edge-sso');
+      });
+    });
   });
 
   describe('traefik — edge-SSO ticket consume', () => {
@@ -718,8 +887,10 @@ describe('AuthController', () => {
     const consumeRes = () =>
       ({ status: vi.fn().mockReturnThis(), redirect: vi.fn(), cookie: vi.fn(), send: vi.fn(), setHeader: vi.fn() }) as unknown as Response;
 
+    const APP = 'importer:ci-marketplace';
+
     const ticketFor = (over: Record<string, unknown> = {}) =>
-      JSON.stringify({ sessionId: 'sid-1', targetHost: APP_HOST, targetUrl: TARGET, ...over });
+      JSON.stringify({ sessionId: 'sid-1', targetHost: APP_HOST, targetUrl: TARGET, appUrn: APP, ...over });
 
     beforeEach(() => {
       config.get.mockImplementation((key: string) => {
@@ -731,8 +902,9 @@ describe('AuthController', () => {
       // The rewritten host resolves back to the app's public hostname.
       forwardAuthSecrets.resolvePublicHostForHost.mockResolvedValue(APP_HOST);
       // ...and the map vouches for it, so the edge-SSO hop will accept it as a redirect target.
-      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('importer:ci-marketplace' as never);
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue(APP as never);
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ hubSubdomain: 'hub-core-2-org', slug: 'org' } as never);
+      sessionManager.createAppSession.mockResolvedValue('app-sid-1');
     });
 
     it('accepts a ticket bound to the PUBLIC host when the tunnel presents the rewritten LAN host', async () => {
@@ -743,10 +915,20 @@ describe('AuthController', () => {
       await authController.traefik(tunnelReq('/files?dir=%2Fdata&cihub_sso=t-123'), res);
 
       expect(cache.del).toHaveBeenCalledWith('edge_sso:t-123'); // single use, burned before acting
-      // Cookie scoped to the host the BROWSER is on. Scoping it to the forwarded `.ci.lan` name
-      // would emit a Domain the browser cannot match, so it would silently drop the cookie.
-      expect(authService.getCookieDomain).toHaveBeenCalledWith(APP_HOST);
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ httpOnly: true, secure: true }));
+      // The ticket's user, derived from the ticket's session, for the app this host resolves to — and
+      // that app session is what lands on the app host, never the Hub session itself. Traefik copies
+      // every request header to the app, and the Hub session is a full Hub API credential.
+      expect(sessionManager.createAppSession).toHaveBeenCalledWith(7, 'sid-1', APP);
+      // Exact options: host-only (no Domain), so there is nothing for the browser to fail to match
+      // against the forwarded `.ci.lan` name, and no sibling or child host shares it.
+      expect(res.cookie).toHaveBeenCalledTimes(1);
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-app-sid', 'app-sid-1', {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+      expect(authService.getCookieDomain).not.toHaveBeenCalled();
       // And the retry goes to the public URL — the `.ci.lan` name does not resolve for a remote
       // browser. Query encoding is preserved exactly.
       expect(res.redirect).toHaveBeenCalledWith(TARGET);
@@ -767,7 +949,25 @@ describe('AuthController', () => {
 
       expect(res.redirect).toHaveBeenCalledWith(lanTarget);
       // http on the LAN: the cookie must not be flagged Secure or the browser discards it.
-      expect(res.cookie).toHaveBeenCalledWith('ci-hub-sid', 'sid-1', expect.objectContaining({ secure: false }));
+      expect(res.cookie).toHaveBeenCalledWith('ci-hub-app-sid', 'app-sid-1', expect.objectContaining({ secure: false }));
+    });
+
+    it("binds the app session to the forwarded host's app when another app still claims the ticket's host", async () => {
+      // Two app rows can hold one custom domain (a stopped app keeps its binding), and the host map keeps
+      // whichever registers last, so the mint can record the stale holder. Every later request on this
+      // origin resolves to the app Traefik routes it to: a session bound to the ticket's app would be
+      // refused on each of them and loop the visitor to the mint cap.
+      const STALE_APP = 'wordpress:ci-marketplace';
+      cache.get.mockReturnValue(ticketFor({ appUrn: STALE_APP }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      forwardAuthSecrets.resolveAppUrnForHost.mockImplementation(async (host) => (host === LAN_HOST ? APP : STALE_APP) as never);
+      const res = consumeRes();
+
+      await authController.traefik(tunnelReq('/files?dir=%2Fdata&cihub_sso=t-123'), res);
+
+      expect(forwardAuthSecrets.resolveAppUrnForHost).toHaveBeenCalledWith(LAN_HOST);
+      expect(sessionManager.createAppSession).toHaveBeenCalledWith(7, 'sid-1', APP);
+      expect(res.redirect).toHaveBeenCalledWith(TARGET);
     });
 
     it('plants nothing for a ticket bound to a different app', async () => {
@@ -780,6 +980,7 @@ describe('AuthController', () => {
       await authController.traefik(tunnelReq('/?cihub_sso=t-123'), res);
 
       expect(cache.del).toHaveBeenCalledWith('edge_sso:t-123'); // still burned
+      expect(sessionManager.createAppSession).not.toHaveBeenCalled();
       expect(res.cookie).not.toHaveBeenCalled();
       const location = String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
       expect(location).toContain('/api/auth/edge-sso');
@@ -789,6 +990,34 @@ describe('AuthController', () => {
     it('plants nothing when the ticket outlived its session', async () => {
       cache.get.mockReturnValue(ticketFor({ sessionId: 'sid-dead' }));
       sessionManager.resolveSessionUserId.mockReturnValue(undefined as never);
+      const res = consumeRes();
+
+      await authController.traefik(tunnelReq('/?cihub_sso=t-123'), res);
+
+      expect(sessionManager.createAppSession).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).toContain('/api/auth/edge-sso');
+    });
+
+    it('plants nothing for a ticket that names no app', async () => {
+      // A ticket minted before tickets carried their app, or a malformed one: there is no app to scope
+      // a session to, and a fresh mint is one redirect away.
+      cache.get.mockReturnValue(ticketFor({ appUrn: undefined }));
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      const res = consumeRes();
+
+      await authController.traefik(tunnelReq('/?cihub_sso=t-123'), res);
+
+      expect(sessionManager.createAppSession).not.toHaveBeenCalled();
+      expect(res.cookie).not.toHaveBeenCalled();
+      expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).toContain('/api/auth/edge-sso');
+    });
+
+    it('plants nothing when no app session could be derived from the ticket session', async () => {
+      // `createAppSession` refuses a parent with no life left — one that expired between the two reads.
+      cache.get.mockReturnValue(ticketFor());
+      sessionManager.resolveSessionUserId.mockReturnValue(7 as never);
+      sessionManager.createAppSession.mockResolvedValue(null);
       const res = consumeRes();
 
       await authController.traefik(tunnelReq('/?cihub_sso=t-123'), res);
@@ -1165,7 +1394,14 @@ describe('AuthController', () => {
       expect(ticketCall).toBeDefined();
       // The full target rides with the ticket: the consume hop cannot rebuild it from the
       // tunnel-rewritten forwarded host, which names the same app but is unreachable remotely.
-      expect(JSON.parse(String(ticketCall?.[1]))).toEqual({ sessionId: 'sid-9', targetHost: APP_HOST, targetUrl: TARGET });
+      // So does the app that host resolves to, which is the only app the consumed ticket authenticates to.
+      expect(JSON.parse(String(ticketCall?.[1]))).toEqual({
+        sessionId: 'sid-9',
+        targetHost: APP_HOST,
+        targetUrl: TARGET,
+        appUrn: 'importer:ci-marketplace',
+      });
+      expect(forwardAuthSecrets.resolveAppUrnForHost).toHaveBeenCalledWith(APP_HOST);
       expect(ticketCall?.[2]).toBe(60); // short-lived — the browser consumes it within one hop
 
       const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);

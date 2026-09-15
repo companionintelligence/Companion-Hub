@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { apiFetch } from '@/lib/api-fetch';
 import { copyToClipboard } from '@/lib/copy-to-clipboard';
+import { isI18nKey } from '@/lib/format-api-error';
+import type { TFunction } from 'i18next';
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -35,6 +37,9 @@ export interface ApiKeyInfo {
   expiresAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;
+  /** The Hub person who created the key, whose grants and role it acts with; `null` when nobody is recorded. */
+  createdByUserId: number | null;
+  createdByUsername: string | null;
 }
 
 /** The one definition of the list read — the initial load and every post-action refresh share it,
@@ -46,6 +51,43 @@ const fetchApiKeys = async (): Promise<ApiKeyInfo[]> => {
     throw new Error('api-keys request failed');
   }
   return ((await res.json()) as { keys: ApiKeyInfo[] }).keys;
+};
+
+/**
+ * Whether this operator may give a key full capability. Asked on its own because answering it asks
+ * the Portal, and the list must not wait on that. Any failure (a Hub that predates the route, an
+ * outage) reads as yes: the screen then offers full as it always did, and the routes decide.
+ */
+const fetchCanGrantFull = async (): Promise<boolean> => {
+  try {
+    const res = await apiFetch('/api/api-keys/grantable');
+    if (!res.ok) {
+      return true;
+    }
+    return ((await res.json()) as { canGrantFull?: boolean }).canGrantFull !== false;
+  } catch {
+    return true;
+  }
+};
+
+/**
+ * The server's own reason for a refusal, translated, when it sent one — "only an owner or admin can
+ * give a key full capability" says what to do next, a generic "could not save" does not.
+ *
+ * Only a translation key is a reason. Raw backend text — a validation failure's "Bad Request
+ * Exception", a 503's "Database temporarily unavailable" — is not copy for the screen, so it gets
+ * `fallback`, and so does a body that is not JSON at all.
+ */
+const refusalMessage = async (res: Response, t: TFunction, fallback: string): Promise<string> => {
+  try {
+    const body = (await res.json()) as { message?: unknown; intlParams?: Record<string, string> };
+    if (typeof body.message === 'string' && isI18nKey(body.message)) {
+      return t(body.message, { ...(body.intlParams ?? {}), defaultValue: fallback });
+    }
+  } catch {
+    // Not JSON: a proxy's error page, say.
+  }
+  return fallback;
 };
 
 /** Capability gates the MCP tool surface only, so it is meaningful for a key that can reach it and
@@ -74,6 +116,9 @@ export const ApiKeysContainer = () => {
   const [changeTo, setChangeTo] = useState<ApiKeyCapability>('write');
   const [changeStep, setChangeStep] = useState<'choose' | 'confirm'>('choose');
   const [savingCapability, setSavingCapability] = useState(false);
+  // Whether this operator may give a key full capability — an organization owner or admin. The routes
+  // decide regardless; this only keeps the screen from offering a choice the Hub will refuse.
+  const [canGrantFull, setCanGrantFull] = useState(true);
 
   // One loader with a `silent` mode. The initial load drives the loading/error UI; a post-action
   // refresh runs silent — a failed refresh must not be misreported as the action itself failing
@@ -105,6 +150,16 @@ export const ApiKeysContainer = () => {
 
   const refreshKeys = useCallback(() => load({ silent: true }), [load]);
 
+  // Who may give full capability is asked on mount and again after a refusal, never on the list's own
+  // refreshes, so the Portal hears about this operator once per visit rather than once per action.
+  const loadGrantable = useCallback(async () => {
+    setCanGrantFull(await fetchCanGrantFull());
+  }, []);
+
+  useEffect(() => {
+    void loadGrantable();
+  }, [loadGrantable]);
+
   const openCreate = useCallback(() => {
     setNewKeyName('');
     // Reset to the default every time: a level chosen for the last key must not silently carry over
@@ -123,7 +178,14 @@ export const ApiKeysContainer = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, capability: newKeyCapability }),
       });
-      if (!res.ok) throw new Error('create');
+      if (!res.ok) {
+        // A refusal says why — only an owner or admin can give a key full capability — not just "failed".
+        toast.error(await refusalMessage(res, t, t('API_KEYS_CREATE_ERROR')));
+        // It can also mean what this screen thinks the operator may grant is out of date (their role
+        // changed since the page loaded), so re-read it rather than keep offering the refused level.
+        await loadGrantable();
+        return;
+      }
       const body = (await res.json()) as { key: string };
       setCreatedKey(body.key); // shown once
       setCreateKeyOpen(false);
@@ -135,7 +197,7 @@ export const ApiKeysContainer = () => {
     } finally {
       setCreatingKey(false);
     }
-  }, [newKeyName, newKeyCapability, refreshKeys, t]);
+  }, [newKeyName, newKeyCapability, refreshKeys, loadGrantable, t]);
 
   const openCapabilityChange = useCallback((key: ApiKeyInfo) => {
     setChangeTarget(key);
@@ -165,7 +227,14 @@ export const ApiKeysContainer = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ capability: changeTo }),
       });
-      if (!res.ok) throw new Error('patch');
+      if (!res.ok) {
+        toast.error(await refusalMessage(res, t, t('API_KEYS_CAPABILITY_SAVE_ERROR')));
+        // Back to the picker, re-read: a refused promotion must not leave the confirmation up, offering
+        // the level the Hub just refused.
+        setChangeStep('choose');
+        await loadGrantable();
+        return;
+      }
       const body = (await res.json()) as { changed: boolean };
       // changed:false means the level was already this one, or the key is gone (revoked in another
       // tab). Neither is an error and neither deserves a success toast — the refresh reconciles it.
@@ -177,7 +246,7 @@ export const ApiKeysContainer = () => {
     } finally {
       setSavingCapability(false);
     }
-  }, [changeTarget, changeTo, changeStep, closeCapabilityChange, refreshKeys, t]);
+  }, [changeTarget, changeTo, changeStep, closeCapabilityChange, refreshKeys, loadGrantable, t]);
 
   const revokeKey = useCallback(
     async (id: number) => {
@@ -200,8 +269,16 @@ export const ApiKeysContainer = () => {
 
   // Which confirmation to show is keyed on the level being granted, not on the jump: read → full and
   // write → full both hand over destructive tools, so both get the destructive wording.
+  // A managed key's level also decides how far it reaches the apps beside its own, so its confirmation
+  // says that, and names the app it belongs to.
   const confirmTitleKey = changeTo === 'full' ? 'API_KEYS_CAPABILITY_CONFIRM_FULL_TITLE' : 'API_KEYS_CAPABILITY_CONFIRM_WRITE_TITLE';
-  const confirmBodyKey = changeTo === 'full' ? 'API_KEYS_CAPABILITY_CONFIRM_FULL_BODY' : 'API_KEYS_CAPABILITY_CONFIRM_WRITE_BODY';
+  const confirmBodyKey = changeTarget?.managed
+    ? changeTo === 'full'
+      ? 'API_KEYS_CAPABILITY_CONFIRM_MANAGED_FULL_BODY'
+      : 'API_KEYS_CAPABILITY_CONFIRM_MANAGED_WRITE_BODY'
+    : changeTo === 'full'
+      ? 'API_KEYS_CAPABILITY_CONFIRM_FULL_BODY'
+      : 'API_KEYS_CAPABILITY_CONFIRM_WRITE_BODY';
 
   return (
     <Card data-testid="api-keys">
@@ -269,6 +346,12 @@ export const ApiKeysContainer = () => {
                       <p className="text-xs text-muted-foreground">
                         {key.lastUsedAt ? t('API_KEYS_LAST_USED', { when: new Date(key.lastUsedAt).toLocaleString() }) : t('API_KEYS_NEVER_USED')}
                       </p>
+                      {/* An operator key acts as whoever created it; a managed key acts for its app, so it has no creator to name. */}
+                      {!key.managed && (
+                        <p className="text-xs text-muted-foreground" data-testid={`api-key-creator-${key.id}`}>
+                          {key.createdByUsername ? t('API_KEYS_CREATED_BY', { name: key.createdByUsername }) : t('API_KEYS_CREATED_BY_UNKNOWN')}
+                        </p>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       {governsTools(key) && (
@@ -322,14 +405,23 @@ export const ApiKeysContainer = () => {
           </div>
           {/* What the key may do IS a choice, at the moment the key is minted — so a key made for a
               third-party client that only needs to read is never wide open in between. */}
-          <CapabilityPicker name="api-key-new" value={newKeyCapability} onChange={setNewKeyCapability} disabled={creatingKey} />
+          <CapabilityPicker
+            name="api-key-new"
+            value={newKeyCapability}
+            onChange={setNewKeyCapability}
+            disabled={creatingKey}
+            unavailable={canGrantFull ? [] : ['full']}
+            unavailableHint={t('API_KEY_FULL_ROLE_REQUIRED')}
+          />
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateKeyOpen(false)}>
               {t('COMMON_CANCEL')}
             </Button>
             <Button
               loading={creatingKey}
-              disabled={creatingKey || !newKeyName.trim()}
+              // Never send a level the Hub has said it will refuse: after a refusal the re-read can take
+              // `full` away while it is still the selected choice.
+              disabled={creatingKey || !newKeyName.trim() || (!canGrantFull && newKeyCapability === 'full')}
               onClick={() => void createKey()}
               data-testid="api-key-create-submit"
             >
@@ -348,7 +440,15 @@ export const ApiKeysContainer = () => {
                 <DialogTitle>{t('API_KEYS_CAPABILITY_CHANGE_TITLE', { name: changeTarget?.name ?? '' })}</DialogTitle>
                 <DialogDescription>{t('API_KEYS_CAPABILITY_CHANGE_DESC')}</DialogDescription>
               </DialogHeader>
-              <CapabilityPicker name="api-key-change" value={changeTo} onChange={setChangeTo} disabled={savingCapability} />
+              <CapabilityPicker
+                name="api-key-change"
+                value={changeTo}
+                onChange={setChangeTo}
+                disabled={savingCapability}
+                managed={Boolean(changeTarget?.managed)}
+                unavailable={canGrantFull ? [] : ['full']}
+                unavailableHint={t('API_KEY_FULL_ROLE_REQUIRED')}
+              />
               {/* A managed key belongs to an installed app, and tightening it is a decision about
                   that app's behaviour — so say which app, rather than letting the operator discover
                   it when the app stops working. */}
@@ -363,7 +463,7 @@ export const ApiKeysContainer = () => {
                 </Button>
                 <Button
                   loading={savingCapability}
-                  disabled={savingCapability || changeTo === changeTarget?.capability}
+                  disabled={savingCapability || changeTo === changeTarget?.capability || (!canGrantFull && changeTo === 'full')}
                   onClick={() => void submitCapability()}
                   data-testid="api-key-change-submit"
                 >
@@ -377,7 +477,7 @@ export const ApiKeysContainer = () => {
                 {/* The key is named in the title: an operator with several keys must not be able to
                     promote the wrong one because the dialog only said "this key". */}
                 <DialogTitle>{t(confirmTitleKey, { name: changeTarget?.name ?? '' })}</DialogTitle>
-                <DialogDescription>{t(confirmBodyKey)}</DialogDescription>
+                <DialogDescription>{t(confirmBodyKey, { app: changeTarget?.ownerAppUrn ?? changeTarget?.name ?? '' })}</DialogDescription>
               </DialogHeader>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setChangeStep('choose')}>

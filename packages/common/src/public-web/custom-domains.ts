@@ -455,6 +455,33 @@ export function customDomainServesAnotherApp(
   return (appSlug ? sanitizeAppSubdomain(appSlug) : '') !== theirs;
 }
 
+/**
+ * Is this domain held by another Hub in the organization, so that only the
+ * portal can move it here?
+ *
+ * CI-Cloud refuses a bind for a domain another device holds
+ * (`DOMAIN_BOUND_TO_ANOTHER_DEVICE`) unless the request carries a move grant an
+ * owner or admin minted in the portal, and a Hub sends none. The listing says so
+ * by reporting the row `boundElsewhere` and not `bindable`. The picker and the
+ * bind pass both ask here, so the option the dialog disables and the choice the
+ * pass gives up are always the same one.
+ *
+ * ⚠ BOTH FLAGS, NOT `boundElsewhere` ALONE. A row whose device was deleted
+ * (`device_id` is `ON DELETE SET NULL`) keeps naming that device's hostname, so
+ * it is `boundElsewhere` too — but nobody holds it, CI-Cloud reports it
+ * `bindable` because any of the organization's Hubs may take it, and moving it
+ * is an ordinary confirmed choice rather than a trip to the portal.
+ *
+ * ⚠ AND NOT WHILE THE ROW IS `pending`. `bindable` also carries the ownership
+ * gate, so an unverified row reads `boundElsewhere` and not `bindable` whether
+ * another Hub holds it or its Hub was deleted, and the listing cannot tell the
+ * two apart. Verification settles it: a verified orphan comes back bindable,
+ * and a verified row another Hub holds comes back here.
+ */
+export function customDomainHeldByAnotherHub(entry: Pick<AvailableCustomDomain, 'bindable' | 'boundElsewhere' | 'state'>): boolean {
+  return entry.boundElsewhere === true && entry.bindable !== true && entry.state !== 'pending';
+}
+
 const DOMAIN_STATES = new Set(['live', 'parked', 'pending', 'securing', 'drifted', 'failed']);
 
 /**

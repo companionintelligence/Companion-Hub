@@ -117,7 +117,9 @@ describe('MarketplaceWhoIsService', () => {
     await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(false);
   });
 
-  it('does not send organizationId on device WhoIs', async () => {
+  it("sends this device's own organization id on device WhoIs, read once", async () => {
+    // Portal answers 409 `ORGANIZATION_REQUIRED` for a device two organizations paired at the same moment,
+    // unless the Hub names its own. The name is checked against the device's registrations: it narrows, never widens.
     portal.whoisApps.mockResolvedValue({
       status: 200,
       body: {
@@ -125,14 +127,16 @@ describe('MarketplaceWhoIsService', () => {
       },
     });
 
-    await service.has(USER_ID, APP_URN, 'view');
+    await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(true);
 
     expect(portal.whoisApps).toHaveBeenCalledWith({
       subject: SUBJECT,
       appIds: ['immich'],
       surface: 'hub',
+      organizationId: 'org-hub',
     });
-    expect(portal.whoisApps.mock.calls[0]?.[0]).not.toHaveProperty('organizationId');
+    // Once for the request and the match against the answer, not once each.
+    expect(registration.getDeviceRegistrationInfo).toHaveBeenCalledTimes(1);
   });
 
   it('picks this Hub’s org from a multi-org WhoIs response', async () => {
@@ -183,7 +187,7 @@ describe('MarketplaceWhoIsService', () => {
     await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(false);
   });
 
-  it("refuses when this device's own organization cannot be read", async () => {
+  it("refuses, without asking Portal, when this device's own organization cannot be read", async () => {
     // The registration read failing used to be swallowed into `null` and fall
     // through to the same arbitrary pick — so a transient failure to learn our
     // own identity silently widened every grant on the appliance.
@@ -191,11 +195,35 @@ describe('MarketplaceWhoIsService', () => {
     portal.whoisApps.mockResolvedValue({
       status: 200,
       body: {
-        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['install'] }] }],
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['install', 'start'] }] }],
       },
     });
 
     await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(false);
+    // Nor the member fallback: unknown with no fresh cache refuses even `start`.
+    await expect(service.has(USER_ID, APP_URN, 'start')).resolves.toBe(false);
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['cannot be read', () => registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'))],
+    ['does not exist', () => registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never)],
+  ])("serves the fresh cache, without asking Portal, when this device's registration %s", async (_label, arrange) => {
+    arrange();
+    cacheRows = [
+      {
+        subject: SUBJECT,
+        appId: 'immich',
+        canJson: JSON.stringify(['view', 'configure']),
+        version: 3,
+        cachedAt: new Date().toISOString(),
+      },
+    ];
+
+    // The cached grant — not an empty one, and not the member fallback.
+    await expect(service.has(USER_ID, APP_URN, 'configure')).resolves.toBe(true);
+    await expect(service.has(USER_ID, APP_URN, 'start')).resolves.toBe(false);
+    expect(portal.whoisApps).not.toHaveBeenCalled();
   });
 
   /*
@@ -266,6 +294,36 @@ describe('MarketplaceWhoIsService', () => {
     const visible = await service.filterSessionByView(sessionReq(), items, (item) => item.urn, 'hub');
 
     expect(visible).toEqual(items);
+  });
+
+  /*
+   * A 409 `ORGANIZATION_REQUIRED` is Portal declining to guess between tied organizations, not a
+   * refusal. Read as one, it would overwrite a fresh grant with nothing for the whole TTL.
+   */
+  const organizationRequired = { status: 409, body: { error: 'Name the organization', code: 'ORGANIZATION_REQUIRED' } as never };
+
+  it('keeps the fresh cache on a 409 ORGANIZATION_REQUIRED rather than caching an empty grant', async () => {
+    cacheRows = [
+      {
+        subject: SUBJECT,
+        appId: 'immich',
+        canJson: JSON.stringify(['view']),
+        version: 3,
+        cachedAt: new Date().toISOString(),
+      },
+    ];
+    portal.whoisApps.mockResolvedValue(organizationRequired);
+
+    await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(true);
+    expect(cacheRows.map((row) => row.canJson)).toEqual([JSON.stringify(['view'])]);
+    expect(logger.warn).toHaveBeenCalledWith('Portal WhoIs returned HTTP 409');
+  });
+
+  it('fails closed on mutate and open on list on a 409 ORGANIZATION_REQUIRED with no fresh cache', async () => {
+    portal.whoisApps.mockResolvedValue(organizationRequired);
+
+    await expect(service.has(USER_ID, APP_URN, 'start')).resolves.toBe(false);
+    await expect(service.filterSessionByView(sessionReq(), [APP_URN], (urn) => urn, 'hub')).resolves.toEqual([APP_URN]);
   });
 
   it('hides list rows whose WhoIs can does not include view', async () => {
@@ -394,7 +452,8 @@ describe('MarketplaceWhoIsService', () => {
       portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role }, apps: [] }]));
 
       await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(true);
-      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: ['immich'], surface: 'hub' });
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: ['immich'], surface: 'hub', organizationId: 'org-hub' });
+      expect(registration.getDeviceRegistrationInfo).toHaveBeenCalledTimes(1);
     });
 
     it('is false for a member, whatever their per-app grants', async () => {
@@ -419,16 +478,14 @@ describe('MarketplaceWhoIsService', () => {
     it.each([
       ['an organization that names no role', () => portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', apps: [] }]))],
       ['WhoIs answering non-2xx', () => portal.whoisApps.mockResolvedValue(answer([], 503))],
+      // The status decides, not whatever the body carries: a tie Portal would not settle is not knowing.
+      [
+        'WhoIs answering 409 ORGANIZATION_REQUIRED',
+        () => portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role: 'owner' }, apps: [] }], 409)),
+      ],
       ['no Portal configured', () => portal.whoisApps.mockResolvedValue(null)],
       ['WhoIs throwing', () => portal.whoisApps.mockRejectedValue(new Error('ECONNRESET'))],
       ['the linked-identity read failing', () => federatedIdentities.findByUserId.mockRejectedValue(new Error('db'))],
-      [
-        'the device registration unreadable',
-        () => {
-          portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role: 'owner' }, apps: [] }]));
-          registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('disk'));
-        },
-      ],
     ])('is false on %s — not knowing is not permission', async (_label, arrange) => {
       arrange();
 
@@ -440,6 +497,66 @@ describe('MarketplaceWhoIsService', () => {
 
       await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
       expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it('is false, not a 500, for an app urn that cannot be split', async () => {
+      await expect(service.hasManagingRole(USER_ID, 'x:' as AppUrn)).resolves.toBe(false);
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('isOrgManager — the role alone, for a decision no single app owns', () => {
+    const answer = (organizations: unknown[], status = 200) => ({ status, body: { organizations } }) as never;
+
+    it.each([
+      ['owner', true],
+      ['admin', true],
+      ['member', false],
+      // Not a Portal role today. Anything but owner or admin is not a manager, whatever it is called.
+      ['viewer', false],
+    ])('answers an organization %s with %s, asking about no app', async (role, expected) => {
+      portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role }, apps: [] }]));
+
+      await expect(service.isOrgManager(USER_ID)).resolves.toBe(expected);
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: [], surface: 'hub', organizationId: 'org-hub' });
+    });
+
+    it('is false when the Portal predates role-only questions, and the log says why', async () => {
+      portal.whoisApps.mockResolvedValue(answer([], 400));
+
+      await expect(service.isOrgManager(USER_ID)).resolves.toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(`api_key_full_role_unverified userId=${USER_ID} status=400`);
+    });
+
+    it('is false on a 409 ORGANIZATION_REQUIRED, and the log says why', async () => {
+      portal.whoisApps.mockResolvedValue(organizationRequired);
+
+      await expect(service.isOrgManager(USER_ID)).resolves.toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(`api_key_full_role_unverified userId=${USER_ID} status=409`);
+    });
+  });
+
+  /*
+   * Both role reads share one early exit: with no organization of our own to name, there is no answer a role
+   * could be read from, so the Portal is not asked. One table over both entry points, so neither loses a case.
+   */
+  describe.each([
+    ['hasManagingRole', 'custom_domain', (whois: MarketplaceWhoIsService) => whois.hasManagingRole(USER_ID, APP_URN)],
+    ['isOrgManager', 'api_key_full', (whois: MarketplaceWhoIsService) => whois.isOrgManager(USER_ID)],
+  ] as const)('%s without an organization of our own', (_method, purpose, ask) => {
+    it.each([
+      ['cannot be read', () => registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('disk'))],
+      ['does not exist', () => registration.getDeviceRegistrationInfo.mockResolvedValue(undefined as never)],
+    ])("is false without asking the Portal when this device's registration %s, and the log says why", async (_label, arrange) => {
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-hub', user: { role: 'owner' }, apps: [] }] },
+      });
+      arrange();
+
+      await expect(ask(service)).resolves.toBe(false);
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(`${purpose}_role_unverified userId=${USER_ID} status=no-organization`);
     });
   });
 });

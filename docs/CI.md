@@ -145,9 +145,3 @@ gh workflow run publish-package-managers.yml --repo companionintelligence/CI-Hub
 ```
 
 Required input: `tag` (release tag, for example `v0.2.28`)
-
-**Automatic semantic-version tag** — `semver-tag.yml`
-
-```bash
-gh workflow run semver-tag.yml --repo companionintelligence/CI-Hub --ref dev -f bump=<string>
-```

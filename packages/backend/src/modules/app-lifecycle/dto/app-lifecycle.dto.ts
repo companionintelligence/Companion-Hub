@@ -74,9 +74,9 @@ export const appFormSchema = z
      *
      * Sent only alongside a `customDomain`, and meaningless without one. The
      * bind pass runs long after this dialog closes and cannot ask anybody
-     * anything, while CI-Cloud will happily retarget a domain that is live on a
-     * sibling Hub in the organization — so the answer has to travel with the
-     * choice or the pass has to guess. See `app.custom_domain_takeover`.
+     * anything, while CI-Cloud will retarget a domain serving another app on
+     * this Hub, or one whose Hub was deleted — so the answer has to travel with
+     * the choice or the pass has to guess. See `app.custom_domain_takeover`.
      *
      * ⚠ ABSENT IS A NO, NEVER AN INHERIT. Unlike `customDomain` above, an
      * omitted value here is not "leave the existing answer alone": a client that
