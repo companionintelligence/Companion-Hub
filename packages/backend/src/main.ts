@@ -5,8 +5,10 @@ import * as Sentry from '@sentry/nestjs';
 import { NestFactory } from '@nestjs/core';
 import { SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
+import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { AppService } from './app.service';
+import { DEFAULT_BODY_LIMIT, INFERENCE_BODY_LIMIT, LARGE_BODY_PATHS, payloadTooLargeHandler } from './common/helpers/body-limits';
 import { resolveAllowedCorsOrigin } from './common/helpers/cors-origin';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
@@ -60,6 +62,8 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
     abortOnError: true,
     logger: process.env.NEST_VERBOSE === '1' ? ['log', 'error', 'warn', 'fatal'] : ['error', 'warn', 'fatal'],
+    // Body parsing is registered below with per-path limits — see common/helpers/body-limits.ts.
+    bodyParser: false,
   });
 
   const appService = app.get(AppService);
@@ -74,6 +78,16 @@ async function bootstrap() {
     credentials: true,
   });
   app.use(cookieParser());
+
+  // Inference and MCP bodies (a whole conversation, every tool schema, base64 images) get the large
+  // limit; everything else keeps Nest's default. Registered before Nest binds routes, so the
+  // scoped parser runs first and the default one skips a body that is already parsed.
+  for (const prefix of LARGE_BODY_PATHS) {
+    app.use(prefix, json({ limit: INFERENCE_BODY_LIMIT }));
+  }
+  app.use(json({ limit: DEFAULT_BODY_LIMIT }));
+  app.use(urlencoded({ extended: true, limit: DEFAULT_BODY_LIMIT }));
+  app.use(payloadTooLargeHandler);
 
   // Portal / a proxy can drop `/api/auth/portal/callback` and land on `/` with
   // `?code=&state=` or `?desktop=1`. Bounce those onto the real SSO routes.
