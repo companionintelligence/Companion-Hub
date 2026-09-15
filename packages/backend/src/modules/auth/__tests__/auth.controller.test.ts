@@ -778,6 +778,22 @@ describe('AuthController', () => {
         expect(res.setHeader).not.toHaveBeenCalled();
       });
 
+      it('refuses a revoked operator on a live app session and sweeps their sessions', async () => {
+        // `revokeOperator` normally takes the parent Hub session with it, and the app session follows. This is
+        // the row refusing on its own — flipped without `revokeOperator`, or read before the sweep landed — so
+        // the app session must not be the one credential that still signs for a person the appliance refuses.
+        userRepository.getUserDtoById.mockResolvedValue({ id: 7, username: 'op@example.com', accessStatus: 'revoked' } as never);
+        const res = makeRes();
+
+        await authController.traefik(appSessionReq(APP_HOST), res);
+
+        expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(7);
+        expect(res.setHeader).not.toHaveBeenCalled();
+        expect(res.status).not.toHaveBeenCalledWith(200);
+        // On to the ordinary unauthenticated handling, where the login `admitHubPerson` refuses them.
+        expect(String((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0])).toContain('/api/auth/edge-sso');
+      });
+
       it('stops signing once the parent Hub session is logged out', async () => {
         // A real SessionManager behind the mock, so what refuses the second request is the cascade from
         // the parent session rather than a stubbed null.

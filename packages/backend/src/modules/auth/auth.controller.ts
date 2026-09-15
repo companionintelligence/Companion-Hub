@@ -90,7 +90,7 @@ import {
   type DesktopChannel,
 } from './portal-sso';
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
-import { loadSessionUser, sessionIdsFromRequest } from './auth.middleware';
+import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -1243,13 +1243,21 @@ export class AuthController {
   }
 
   /**
-   * Loaded by `loadSessionUser`, the rules `AuthMiddleware` applies to a Hub session's user. Forward auth
-   * runs for every request an app serves, so neither a row read per request nor a 500 per blip is
-   * acceptable here.
+   * Loaded by `loadSessionUser` and admitted by `refuseRevokedSessionUser`, the rules `AuthMiddleware`
+   * applies to a Hub session's user. Forward auth runs for every request an app serves, so neither a
+   * row read per request nor a 500 per blip is acceptable here.
+   *
+   * ⚠ THE ROW REFUSES AN APP SESSION TOO. `revokeOperator` destroys the parent Hub session and
+   * `resolveAppSession` refuses an app session whose parent is gone, so a removed operator's app tab
+   * is normally signed out before this reads their row. When it is not — the row flipped without
+   * `revokeOperator`, or this read landed between the update and the sweep — a `revoked` row still
+   * authenticates nothing here: the request goes on as unauthenticated, to the login that
+   * `admitHubPerson` refuses, and their sessions are swept on the way.
    */
   private async loadAppSessionUser(userId: number): Promise<UserDto | undefined> {
+    let user: UserDto | undefined;
     try {
-      return await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
+      user = await loadSessionUser(this.sessionUserCache, this.userRepository, userId);
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {
         throw error;
@@ -1257,6 +1265,7 @@ export class AuthController {
       // Same as a Hub session whose row cannot be read: carry on without a user.
       return undefined;
     }
+    return (await refuseRevokedSessionUser(user, this.sessionManager, this.sessionUserCache, userId)) ? undefined : user;
   }
 
   @Get('/traefik')
