@@ -13,6 +13,7 @@ import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { HardwareProfile, TrackedModel, CuratedModel } from '@ci-hub/common/types';
@@ -31,6 +32,7 @@ describe('InferenceRouterService', () => {
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
   let luceboxBackend: MockProxy<LuceboxBackend>;
+  let configuration: MockProxy<ConfigurationService>;
 
   const defaultProfile: HardwareProfile = {
     gpu: { available: true, vendor: 'nvidia', model: 'RTX 4090', vramMb: 24576, unifiedMemory: false, driverVersion: '535', runtimeAvailable: true },
@@ -54,6 +56,18 @@ describe('InferenceRouterService', () => {
     mtplxBackend = mock<MtplxBackend>();
     dsparkBackend = mock<DsparkBackend>();
     luceboxBackend = mock<LuceboxBackend>();
+    configuration = mock<ConfigurationService>();
+    // No operator preference by default, so every existing case resolves exactly as before.
+    configuration.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredVllmApiKey: null,
+      preferredVllmUrl: null,
+      preferredMtplxUrl: null,
+      preferredDsparkUrl: null,
+    });
 
     hardwareInspector.getProfile.mockResolvedValue(defaultProfile);
     modelRegistry.getTrackedModels.mockReturnValue([]);
@@ -91,6 +105,7 @@ describe('InferenceRouterService', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        { provide: ConfigurationService, useValue: configuration },
         InferenceBackendRegistry,
       ],
     }).compile();
@@ -262,6 +277,75 @@ describe('InferenceRouterService', () => {
       for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
         expect(backend.healthCheck.mock.calls.length).toBeLessThanOrEqual(1);
       }
+    });
+  });
+
+  // `auto` must mean the same model apps are told is the default (`InferenceEnvResolver` →
+  // `DEFAULT_MODEL`), which comes from the operator's preference. beta-max, 2026-09-15: apps were
+  // told `qwen3.6:27b`, nothing was pinned, and `auto` ran whatever ollama listed first.
+  describe('resolveAutoModel and the operator preference', () => {
+    const preferred = (preferredModel: string | null) =>
+      configuration.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+        preferredVllmUrl: null,
+        preferredMtplxUrl: null,
+        preferredDsparkUrl: null,
+      });
+    const curatedQwen36 = { catalogId: 'qwen3-6-27b', backend: 'ollama', backendModelId: 'qwen3.6:27b', modality: 'llm' } as unknown as CuratedModel;
+
+    it('returns the preferred model, as its engine id, when a healthy backend has it', async () => {
+      preferred('qwen3-6-27b');
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-6-27b' ? curatedQwen36 : undefined));
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.8:27b', 'qwen3.6:27b'] });
+
+      expect(await service.resolveAutoModel()).toBe('qwen3.6:27b');
+    });
+
+    it('beats a pinned model: the preference is what apps were told', async () => {
+      preferred('qwen3-6-27b');
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-6-27b' ? curatedQwen36 : ({ modality: 'llm' } as CuratedModel)));
+      modelRegistry.getPinnedModels.mockReturnValue([{ catalogId: 'other-llm' } as TrackedModel]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:27b'] });
+
+      expect(await service.resolveAutoModel()).toBe('qwen3.6:27b');
+    });
+
+    it('falls through when the preferred model is not on any healthy backend', async () => {
+      preferred('qwen3-6-27b');
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-6-27b' ? curatedQwen36 : undefined));
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.8:27b'] });
+
+      expect(await service.resolveAutoModel()).toBe('qwen3.8:27b');
+    });
+
+    it('does not count the preferred model when only a different backend type lists it', async () => {
+      preferred('qwen3-6-27b');
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'qwen3-6-27b' ? curatedQwen36 : undefined));
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3.6:27b'] });
+
+      expect(await service.resolveAutoModel()).toBe('gemma3:1b');
+    });
+
+    it('takes an uncatalogued preference verbatim when the engine lists it', async () => {
+      preferred('my-custom:latest');
+      modelRegistry.getCuratedModel.mockReturnValue(undefined);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['my-custom:latest'] });
+
+      expect(await service.resolveAutoModel()).toBe('my-custom:latest');
+    });
+
+    it('probes nothing extra when no preference is set', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['resident-model'] });
+      modelRegistry.getPinnedModels.mockReturnValue([{ catalogId: 'pinned-llm' } as TrackedModel]);
+      modelRegistry.getCuratedModel.mockReturnValue({ modality: 'llm' } as CuratedModel);
+
+      expect(await service.resolveAutoModel()).toBe('pinned-llm');
+      expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
     });
   });
 });
