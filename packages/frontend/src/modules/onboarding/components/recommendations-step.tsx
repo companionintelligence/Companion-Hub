@@ -29,56 +29,61 @@ type RecommendationRow = {
 
 const RECOMMENDATIONS_COUNT = ONBOARDING_TOP_ALTERNATIVES.length;
 
+// Header/pill backgrounds are sourced from @companionintelligence/tokens' `--category-*`
+// scale (styles/colors.md § Category scale in CI-Common) — this file is what that token
+// group was modeled on. Icon/pill text keep Tailwind's own shade ladder within the same
+// hue family: they need a different *lightness* per theme for contrast (a flat token value
+// can't serve both), not a different hue, so the hue itself still traces back to canon.
 const CATEGORY_ACCENTS: Record<string, { icon: string; header: string; pill: string }> = {
   ai: {
     icon: 'text-cyan-700 dark:text-cyan-300',
-    header: 'bg-cyan-400/15 dark:bg-cyan-400/10',
-    pill: 'bg-cyan-400/15 text-cyan-800 dark:bg-cyan-400/10 dark:text-cyan-100',
+    header: 'bg-category-ai/15 dark:bg-category-ai/10',
+    pill: 'bg-category-ai/15 text-cyan-800 dark:bg-category-ai/10 dark:text-cyan-100',
   },
   automation: {
     icon: 'text-indigo-700 dark:text-indigo-300',
-    header: 'bg-indigo-400/15 dark:bg-indigo-400/10',
-    pill: 'bg-indigo-400/15 text-indigo-800 dark:bg-indigo-400/10 dark:text-indigo-100',
+    header: 'bg-category-automation/15 dark:bg-category-automation/10',
+    pill: 'bg-category-automation/15 text-indigo-800 dark:bg-category-automation/10 dark:text-indigo-100',
   },
   data: {
     icon: 'text-emerald-700 dark:text-emerald-300',
-    header: 'bg-emerald-400/15 dark:bg-emerald-400/10',
-    pill: 'bg-emerald-400/15 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-100',
+    header: 'bg-category-data/15 dark:bg-category-data/10',
+    pill: 'bg-category-data/15 text-emerald-800 dark:bg-category-data/10 dark:text-emerald-100',
   },
   development: {
     icon: 'text-rose-700 dark:text-rose-300',
-    header: 'bg-rose-400/15 dark:bg-rose-400/10',
-    pill: 'bg-rose-400/15 text-rose-800 dark:bg-rose-400/10 dark:text-rose-100',
+    header: 'bg-category-development/15 dark:bg-category-development/10',
+    pill: 'bg-category-development/15 text-rose-800 dark:bg-category-development/10 dark:text-rose-100',
   },
   finance: {
     icon: 'text-amber-800 dark:text-amber-300',
-    header: 'bg-amber-400/15 dark:bg-amber-400/10',
-    pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100',
+    header: 'bg-category-finance/15 dark:bg-category-finance/10',
+    pill: 'bg-category-finance/15 text-amber-900 dark:bg-category-finance/10 dark:text-amber-100',
   },
   media: {
     icon: 'text-violet-700 dark:text-violet-300',
-    header: 'bg-violet-400/15 dark:bg-violet-400/10',
-    pill: 'bg-violet-400/15 text-violet-800 dark:bg-violet-400/10 dark:text-violet-100',
+    header: 'bg-category-media/15 dark:bg-category-media/10',
+    pill: 'bg-category-media/15 text-violet-800 dark:bg-category-media/10 dark:text-violet-100',
   },
   photography: {
     icon: 'text-fuchsia-700 dark:text-fuchsia-300',
-    header: 'bg-fuchsia-400/15 dark:bg-fuchsia-400/10',
-    pill: 'bg-fuchsia-400/15 text-fuchsia-800 dark:bg-fuchsia-400/10 dark:text-fuchsia-100',
+    header: 'bg-category-photography/15 dark:bg-category-photography/10',
+    pill: 'bg-category-photography/15 text-fuchsia-800 dark:bg-category-photography/10 dark:text-fuchsia-100',
   },
   security: {
     icon: 'text-amber-800 dark:text-amber-300',
-    header: 'bg-amber-400/15 dark:bg-amber-400/10',
-    pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100',
+    header: 'bg-category-security/15 dark:bg-category-security/10',
+    pill: 'bg-category-security/15 text-amber-900 dark:bg-category-security/10 dark:text-amber-100',
   },
   social: {
     icon: 'text-sky-700 dark:text-sky-300',
-    header: 'bg-sky-400/15 dark:bg-sky-400/10',
-    pill: 'bg-sky-400/15 text-sky-800 dark:bg-sky-400/10 dark:text-sky-100',
+    header: 'bg-category-social/15 dark:bg-category-social/10',
+    pill: 'bg-category-social/15 text-sky-800 dark:bg-category-social/10 dark:text-sky-100',
   },
   utilities: {
     icon: 'text-slate-700 dark:text-slate-300',
-    header: 'bg-slate-400/15 dark:bg-slate-400/10',
-    pill: 'bg-slate-400/15 text-slate-800 dark:bg-slate-400/10 dark:text-slate-100',
+    header: 'bg-category-utilities/15 dark:bg-category-utilities/10',
+    pill: 'bg-category-utilities/15 text-slate-800 dark:bg-category-utilities/10 dark:text-slate-100',
   },
 };
 

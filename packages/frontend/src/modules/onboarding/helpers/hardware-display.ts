@@ -14,6 +14,14 @@ export function isAppleSiliconGpu(hardware: HardwareProfile): boolean {
   return hardware.gpu.available && hardware.gpu.unifiedMemory && hardware.gpu.vendor === 'apple';
 }
 
+// NOT migrated to @companionintelligence/tokens' new `--level-*` scale (unlike
+// ai-setup/levels.ts and recommendations-step.tsx, see companionintelligence/CI-Common#217):
+// this tier order is green(best) -> sky -> yellow -> orange -> red(worst), while `--level-*`
+// runs red -> orange -> gold -> green -> blue with green in the MIDDLE, not best. Forcing
+// this onto that scale would either put "high" on blue (breaking every "green = good"
+// reading elsewhere in this file, e.g. resourceColor in ai-setup/levels.ts) or leave it on
+// green while reusing the level palette's *different* green — a real polarity conflict, not
+// a hex to swap. Needs a decision on canonical direction before this can migrate.
 const TIER_BADGES: Record<HardwareTier, { labelKey: string; color: string; emoji: string }> = {
   high: { labelKey: 'ONBOARDING_TIER_HIGH', color: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200', emoji: '🚀' },
   medium: { labelKey: 'ONBOARDING_TIER_MEDIUM', color: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300', emoji: '⚡' },
