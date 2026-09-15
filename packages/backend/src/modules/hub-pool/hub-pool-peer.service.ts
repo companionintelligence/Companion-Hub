@@ -305,9 +305,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    *     from a request it RECEIVED, which is the side that cannot know whether its own reply — the
    *     one carrying this node's key — actually arrived. Presenting a signature the peer cannot
    *     verify would strand the pairing; presenting the bearer costs one more poll.
-   *   - Bearer, when there is no identity to sign with (no key yet, or a private key this node can
-   *     no longer decrypt). This is the branch that keeps a mixed-version fleet, and a Hub with a
-   *     regenerated `.env`, routing.
+   *   - Bearer, when there is no identity to sign with (no key yet). This is the branch that keeps
+   *     a mixed-version fleet routing. It is NOT a way out for a private key this node can no
+   *     longer decrypt: `getPresentToken` decrypts with the same key, so a regenerated `.env` needs
+   *     `rotateIdentity` and fresh pairings — see docs/hub-pool.md "Failure modes".
    *
    * `poolRequireSignedPeers` removes the bearer branch entirely, on this side as well as the guard's.
    */
