@@ -370,8 +370,8 @@ importers:
         specifier: ^6.4.0
         version: 6.5.0
       '@companionintelligence/tokens':
-        specifier: ^1.0.0
-        version: 1.0.0
+        specifier: ^1.1.0
+        version: 1.1.0
       '@hookform/resolvers':
         specifier: ^5.0.1
         version: 5.2.2(react-hook-form@7.72.1(react@19.2.5))
@@ -531,7 +531,7 @@ importers:
     devDependencies:
       '@companionintelligence/assets':
         specifier: ^1.0.0
-        version: 1.0.0(@companionintelligence/tokens@1.0.0)
+        version: 1.0.0(@companionintelligence/tokens@1.1.0)
       '@companionintelligence/config':
         specifier: ^1.0.0
         version: 1.0.0(eslint@9.39.5(jiti@2.7.0))(prettier@3.8.2)(typescript@5.9.3)
@@ -1017,6 +1017,9 @@ packages:
 
   '@companionintelligence/tokens@1.0.0':
     resolution: {integrity: sha512-KQKpH25T5NdfAD3zAydReR/sbnCjK/BYfhkunABqxCtorEmVTXJDacJe5tlvNCmo7jWhmnx3I7D64aWqOss4qA==, tarball: https://npm.pkg.github.com/download/@companionintelligence/tokens/1.0.0/1309ff378ef3fa625ff706f217d1635fa93785c6}
+
+  '@companionintelligence/tokens@1.1.0':
+    resolution: {integrity: sha512-vA+9YNymBdnBIq2SzJYeJooZUlFfF42R50rXE48oGApN5VxOkdS939RYl5O/HCiOWqITWuc+UuLQ3PcCCmWahA==, tarball: https://npm.pkg.github.com/download/@companionintelligence/tokens/1.1.0/2adb0108bc9bb9402d32a6a42c17a5debd8339ca}
 
   '@csstools/color-helpers@6.0.2':
     resolution: {integrity: sha512-LMGQLS9EuADloEFkcTBR3BwV/CGHV7zyDxVRtVDTwdI2Ca4it0CCVTT9wCkxSgokjE5Ho41hEPgb8OEUwoXr6Q==}
@@ -8871,9 +8874,9 @@ snapshots:
 
   '@colors/colors@1.6.0': {}
 
-  '@companionintelligence/assets@1.0.0(@companionintelligence/tokens@1.0.0)':
+  '@companionintelligence/assets@1.0.0(@companionintelligence/tokens@1.1.0)':
     dependencies:
-      '@companionintelligence/tokens': 1.0.0
+      '@companionintelligence/tokens': 1.1.0
 
   '@companionintelligence/config@1.0.0(eslint@9.39.5(jiti@2.7.0))(prettier@3.8.2)(typescript@5.9.3)':
     dependencies:
@@ -8894,6 +8897,8 @@ snapshots:
   '@companionintelligence/content@1.0.0': {}
 
   '@companionintelligence/tokens@1.0.0': {}
+
+  '@companionintelligence/tokens@1.1.0': {}
 
   '@csstools/color-helpers@6.0.2': {}
 
