@@ -42,7 +42,7 @@ import {
   stripAnsi,
   upsertEnvVar,
 } from '../cihub-cli';
-import { setTailscalePersistedStateProbeForTests } from '../lib/cli-compose-env';
+import { setTailscalePersistedStateProbeForTests, tailscaledStateLooksLoggedIn } from '../lib/cli-compose-env';
 
 /**
  * Pool HTTP is stubbed at the `hub-pool-cli` boundary so these tests exercise the parts that live in
@@ -579,6 +579,13 @@ describe('mergeComposeProfilesFromEnvFile', () => {
     expect(profiles).not.toContain('private-vpn');
   });
 
+  it('drops a private-vpn the file carries when nothing justifies it any more', () => {
+    // beta-max 2026-09-15: the file said private-vpn, there was no auth key, and the volume held a
+    // logged-out state — every `cihub up` kept a sidecar alive that could never log in.
+    upsertEnvVar(TMP, 'COMPOSE_PROFILES', 'private-vpn');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
+  });
+
   it('adds cloudflare profile when tunnel/token exists beside ROOT_FOLDER_HOST (sibling)', () => {
     const root = join(process.cwd(), '.internal.__vitest_tunnel__');
     const tokenDir = join(root, '..', 'tunnel');
@@ -604,6 +611,22 @@ describe('mergeComposeProfilesFromEnvFile', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('tailscaledStateLooksLoggedIn', () => {
+  it('needs a current profile, not just the machine key tailscaled writes on first start', () => {
+    expect(tailscaledStateLooksLoggedIn('{"_machinekey":"cHJpdmtleQ=="}')).toBe(false);
+    expect(tailscaledStateLooksLoggedIn('{"_machinekey":"x","_current-profile":""}')).toBe(false);
+    expect(tailscaledStateLooksLoggedIn('{"_machinekey":"x","_current-profile":"cHJvZmlsZS0xMjM0","_profiles":"e30=","profile-1234":"e30="}')).toBe(
+      true,
+    );
+  });
+
+  it('treats an unreadable or empty file as logged out', () => {
+    expect(tailscaledStateLooksLoggedIn('')).toBe(false);
+    expect(tailscaledStateLooksLoggedIn('not json')).toBe(false);
+    expect(tailscaledStateLooksLoggedIn('[]')).toBe(false);
   });
 });
 

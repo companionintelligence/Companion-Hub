@@ -100,15 +100,35 @@ function hasTailscaleAuthKey(vars: Record<string, string>): boolean {
   return Boolean(vars.TAILSCALE_AUTHKEY?.trim() || vars.HEADSCALE_PREAUTH_KEY?.trim());
 }
 
+/**
+ * Whether a `tailscaled.state` file holds a login, not just a machine key.
+ *
+ * tailscaled writes `_machinekey` the moment it starts, before any login, and keeps it after a
+ * logout — so a non-empty file is not evidence of anything. A node that is (or was) logged in
+ * carries `_current-profile` pointing at a `profile-<id>` entry. Checking size alone is what kept
+ * `private-vpn` switched on for a sidecar that had no auth key and a 119-byte logged-out state:
+ * every `cihub up` re-enabled it, and it then crash-looped once a minute against the control
+ * plane (beta-max, 2026-09-15).
+ */
+export function tailscaledStateLooksLoggedIn(raw: string): boolean {
+  try {
+    const state = JSON.parse(raw) as Record<string, unknown>;
+    const current = state['_current-profile'];
+    return typeof current === 'string' && current.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Best-effort: Tailscale login already persisted in the named Docker volume. */
 function probeTailscalePersistedState(): boolean {
   try {
     const result = spawnSync(
       'docker',
-      ['run', '--rm', '-v', 'hub_tailscale_state:/state:ro', 'alpine:3.21', 'sh', '-c', 'test -s /state/tailscaled.state'],
+      ['run', '--rm', '-v', 'hub_tailscale_state:/state:ro', 'alpine:3.21', 'sh', '-c', 'cat /state/tailscaled.state 2>/dev/null'],
       { encoding: 'utf-8' },
     );
-    return result.status === 0;
+    return result.status === 0 && tailscaledStateLooksLoggedIn(result.stdout ?? '');
   } catch {
     return false;
   }

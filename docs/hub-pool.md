@@ -311,7 +311,18 @@ be fatal, and it is not:
   so it is paid once, on first use, off the boot path.
 - `node_uuid` and `public_key` are stored in the clear, so such a Hub can still *verify* its peers
   (verification needs only their public keys and this node's own UUID) while it can no longer *sign*.
-  It falls back to the bearer token and keeps routing.
+  **It does not keep routing, though — the pairings need redoing.** The bearer token this node
+  would fall back to is `present_token_encrypted`, sealed with the same `JWT_SECRET`-derived key,
+  so it is just as unreadable, and every outbound probe fails with `No outbound pairing token
+  stored` (or the raw decrypt error). Inbound keeps working for exactly as long as the peer keeps
+  signing: the moment this node's grace window for that peer lapses without a signed request of its
+  own, the peer rolls its pin back and starts presenting *its* bearer — which this node refuses,
+  because it has already seen that peer sign (`bearerStillAccepted`). Both directions end in a 401
+  loop that never trips `unreachable` on the node that is actually up (`/identify` still answers),
+  and nothing about it self-heals. Seen on core-4 for four days in September 2026.
+  **Recovery:** `POST /pool/identity/rotate` on the affected node (it re-seals a fresh keypair under
+  the *current* secret, keeping the UUID; the unpair it does is of pairings that are already dead),
+  delete that node's row on each peer, and pair again.
 - The row is **never silently re-minted**. A new public key would unpair the whole fleet to work
   around a recoverable environment problem.
 - The reason appears as `localNode.identity.identityError` on `/pool/status`, exactly the way a down
