@@ -10,12 +10,6 @@ import path from 'node:path';
  */
 export const CATALOG_SNAPSHOT_INDEX_FILE = 'catalog-index.json';
 
-/**
- * The full store listing is one large response Portal builds on demand; it has taken 16–37s.
- * The sync is a background job, so this is a ceiling for a slow Portal, not a request-path wait.
- */
-export const CI_CLOUD_STORE_LISTING_TIMEOUT_MS = 45_000;
-
 export type CatalogSnapshotIndex = {
   version: 1;
   /** The app store URL the listing came from (`<portal>/api`). */

@@ -3,6 +3,7 @@ import { ReposHelpers } from './repos.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { PORTAL_STORE_LISTING_TIMEOUT_MS } from '@/core/portal/portal.constants';
 import { RegistrationService } from '../registration/registration.service';
 import axios from 'axios';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -336,11 +337,47 @@ describe('ReposHelpers', () => {
       expect(result.message).toContain('404 Not Found');
       expect(axiosMock.request).toHaveBeenCalledTimes(1);
     });
+
+    describe('transport failures', () => {
+      const transportError = (code: string, message: string) => Object.assign(new Error(message), { isAxiosError: true, code });
+
+      beforeEach(() => {
+        vi.mocked(axios.isAxiosError).mockImplementation(((error: unknown) =>
+          Boolean((error as { isAxiosError?: boolean } | null)?.isAxiosError)) as typeof axios.isAxiosError);
+      });
+
+      afterEach(() => {
+        vi.mocked(axios.isAxiosError).mockReset();
+      });
+
+      it('does not retry a store listing that used up its whole timeout', async () => {
+        axiosMock.request.mockRejectedValueOnce(transportError('ECONNABORTED', 'timeout of 45000ms exceeded'));
+
+        const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('timeout of 45000ms exceeded');
+        // One 45s attempt, not three: a manual Check for Updates would otherwise wait ~135s.
+        expect(axiosMock.request).toHaveBeenCalledTimes(1);
+      });
+
+      it('still retries a store listing whose connection failed', async () => {
+        axiosMock.request
+          .mockRejectedValueOnce(transportError('ECONNRESET', 'socket hang up'))
+          .mockResolvedValueOnce({ status: 200, statusText: 'OK', data: [] });
+
+        const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
+
+        expect(result.success).toBe(true);
+        expect(axiosMock.request).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 
   describe('CI Marketplace catalog index', () => {
     const INDEX_PATH = path.join('/tmp/data', 'repos', 'ci-marketplace', 'catalog-index.json');
-    const indexWrites = () => vi.mocked(fs.promises.writeFile).mock.calls.filter(([filePath]) => filePath === `${INDEX_PATH}.tmp`);
+    const isIndexTmp = (filePath: unknown) => String(filePath).startsWith(`${INDEX_PATH}.`) && String(filePath).endsWith('.tmp');
+    const indexWrites = () => vi.mocked(fs.promises.writeFile).mock.calls.filter(([filePath]) => isIndexTmp(filePath));
 
     it('records exactly the listed slugs and their Portal after a complete sync', async () => {
       axiosMock.request.mockResolvedValue({
@@ -357,20 +394,41 @@ describe('ReposHelpers', () => {
 
       expect(result.success).toBe(true);
       expect(indexWrites()).toHaveLength(1);
-      const written = JSON.parse(String(indexWrites()[0]?.[1]));
-      expect(written).toMatchObject({ version: 1, source: 'http://cloud.api', slugs: ['app1', 'app2'] });
-      expect(fs.promises.rename).toHaveBeenCalledWith(`${INDEX_PATH}.tmp`, INDEX_PATH);
+      const [indexWrite] = indexWrites();
+      expect(JSON.parse(String(indexWrite?.[1]))).toMatchObject({ version: 1, source: 'http://cloud.api', slugs: ['app1', 'app2'] });
+      expect(fs.promises.rename).toHaveBeenCalledWith(indexWrite?.[0], INDEX_PATH);
+      // The unsafe slug is neither indexed nor written outside `apps/`.
+      const escaped = path.join('/tmp/data', 'repos', 'ci-marketplace', 'escape');
+      expect(vi.mocked(fs.promises.writeFile).mock.calls.some(([filePath]) => String(filePath).startsWith(escaped))).toBe(false);
+      expect(vi.mocked(fs.promises.mkdir).mock.calls.some(([dirPath]) => String(dirPath).startsWith(escaped))).toBe(false);
     });
 
-    it('does not write an index when an app in the listing fails to sync', async () => {
-      axiosMock.request.mockResolvedValue({ status: 200, statusText: 'OK', data: [{ slug: 'app1', name: 'App 1' }] });
-      vi.mocked(fs.promises.writeFile).mockRejectedValueOnce(new Error('ENOSPC'));
+    it('indexes only the listed apps whose folders synced when another app fails', async () => {
+      axiosMock.request.mockResolvedValue({
+        status: 200,
+        statusText: 'OK',
+        data: [
+          { slug: 'app1', name: 'App 1' },
+          { slug: 'app2', name: 'App 2' },
+        ],
+      });
+      // app2's folder cannot be written (e.g. owned by another user); app1 syncs.
+      vi.mocked(fs.promises.writeFile).mockImplementation(async (filePath) => {
+        if (String(filePath).includes(`${path.sep}app2${path.sep}`)) {
+          throw new Error('EACCES');
+        }
+      });
 
       const result = await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
+      // The sync still reports the failure...
       expect(result.success).toBe(false);
-      expect(indexWrites()).toHaveLength(0);
-      expect(fs.promises.rename).not.toHaveBeenCalled();
+      expect(result.message).toContain('EACCES');
+      // ...but the index is replaced, so an older one naming apps Portal has since withdrawn does not
+      // outlive a single app that keeps failing. The failed app is left out rather than served stale.
+      expect(indexWrites()).toHaveLength(1);
+      expect(JSON.parse(String(indexWrites()[0]?.[1]))).toMatchObject({ source: 'http://cloud.api', slugs: ['app1'] });
+      expect(fs.promises.rename).toHaveBeenCalledWith(indexWrites()[0]?.[0], INDEX_PATH);
     });
 
     it('removes the previous index when the new one cannot be written', async () => {
@@ -392,12 +450,28 @@ describe('ReposHelpers', () => {
       expect(indexWrites()).toHaveLength(0);
     });
 
+    it('gives each index write its own temporary file so overlapping syncs cannot clobber each other', async () => {
+      axiosMock.request.mockResolvedValue({ status: 200, statusText: 'OK', data: [{ slug: 'app1', name: 'App 1' }] });
+
+      await Promise.all([
+        service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api'),
+        service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api'),
+      ]);
+
+      const tmpPaths = indexWrites().map(([filePath]) => filePath);
+      expect(tmpPaths).toHaveLength(2);
+      expect(new Set(tmpPaths).size).toBe(2);
+    });
+
     it('gives the store listing a timeout above the observed Portal build time', async () => {
       axiosMock.request.mockResolvedValue({ status: 200, statusText: 'OK', data: [] });
 
       await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
-      expect(axiosMock.request).toHaveBeenCalledWith(expect.objectContaining({ url: 'http://cloud.api/store', timeout: 45_000 }));
+      expect(axiosMock.request).toHaveBeenCalledWith(
+        expect.objectContaining({ url: 'http://cloud.api/store', timeout: PORTAL_STORE_LISTING_TIMEOUT_MS }),
+      );
+      expect(PORTAL_STORE_LISTING_TIMEOUT_MS).toBeGreaterThan(37_000);
     });
   });
 
