@@ -92,3 +92,287 @@ fn rejects_placeholder_host_device_ids() {
         "06151E8B-A400-470C-B48C-67AE51D297A9"
     ));
 }
+
+// --- Portal URL override (desktop config file) ---
+
+use crate::portal_url::{compiled_ci_cloud_url, resolve_portal_url_at, PortalUrlResolution};
+
+/// Differs from every compiled default, so a pass cannot come from the build's own Portal.
+const OTHER_PORTAL: &str = "https://portal.example.test";
+
+/// An env file key that must never choose the Portal: the backend can write the primary env file.
+const ENV_FILE_OVERRIDE_KEY: &str = "CI_HUB_CLOUD_URL_OVERRIDE";
+
+/// Stable secrets, so two renders of the same data dir differ only where the Portal decision does.
+fn portal_test_env_lines() -> String {
+    "JWT_SECRET=jwt-test\nPOSTGRES_PASSWORD=postgres-test\nRABBITMQ_PASSWORD=rabbit-test\nPRIVATE_VPN_USER_DISABLED=true\n"
+        .to_string()
+}
+
+fn portal_test_env_map() -> std::collections::HashMap<String, String> {
+    portal_test_env_lines()
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
+        .collect()
+}
+
+fn portal_test_data_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("companion-hub");
+    std::fs::create_dir_all(data_dir.join("state")).expect("mkdir state");
+    (tempdir, data_dir)
+}
+
+fn read_desktop_log(data_dir: &std::path::Path) -> String {
+    std::fs::read_to_string(crate::hub_manager::desktop_log_path_for(data_dir)).unwrap_or_default()
+}
+
+fn both_env_paths(data_dir: &std::path::Path) -> [std::path::PathBuf; 2] {
+    [
+        crate::hub_manager::hub_env_path_for(data_dir),
+        crate::hub_manager::compat_hub_env_path_for(data_dir),
+    ]
+}
+
+/// An override file beside the data dir, standing in for the one in the desktop config dir.
+fn override_path_beside(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir
+        .parent()
+        .expect("temp parent")
+        .join("portal-url-override")
+}
+
+/// Write `content` to the override file and resolve it the way a launch resolves the real one.
+fn portal_from_override_file(
+    data_dir: &std::path::Path,
+    content: &str,
+) -> (std::path::PathBuf, PortalUrlResolution) {
+    let path = override_path_beside(data_dir);
+    std::fs::write(&path, content).expect("write override");
+    let portal = resolve_portal_url_at(Some(&path));
+    (path, portal)
+}
+
+/// Env content without the lines derived from `DOCKER_HOST`. Another test sets that variable for
+/// the whole process while it runs, so a byte comparison of two renders would race it.
+fn without_docker_host_lines(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| !line.starts_with("DOCKER_SOCKET_PATH=") && !line.starts_with("DOCKER_GID="))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
+#[test]
+fn runtime_env_without_portal_override_uses_the_compiled_portal() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let env = render_runtime_env_content(&data_dir, &portal_test_env_map());
+    assert!(
+        env.contains(&format!("CI_CLOUD_URL={}\n", compiled_ci_cloud_url())),
+        "expected the compiled Portal: {env}"
+    );
+
+    // A missing override file renders exactly what a launch without the lookup renders.
+    let with_missing_file = render_runtime_env_content_for_portal(
+        &data_dir,
+        &portal_test_env_map(),
+        &resolve_portal_url_at(Some(&override_path_beside(&data_dir))),
+    );
+    assert_eq!(
+        without_docker_host_lines(&with_missing_file),
+        without_docker_host_lines(&env)
+    );
+    assert!(read_desktop_log(&data_dir).is_empty());
+}
+
+#[test]
+fn portal_override_changes_only_the_cloud_url_line_of_the_runtime_env() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let without = render_runtime_env_content_for_portal(
+        &data_dir,
+        &portal_test_env_map(),
+        &resolve_portal_url_at(None),
+    );
+    let (_path, portal) = portal_from_override_file(&data_dir, &format!("{OTHER_PORTAL}/\n"));
+    let rendered =
+        render_runtime_env_content_for_portal(&data_dir, &portal_test_env_map(), &portal);
+
+    let cloud_line = format!("CI_CLOUD_URL={OTHER_PORTAL}\n");
+    assert!(rendered.contains(&cloud_line), "{rendered}");
+    assert!(
+        !rendered.contains(ENV_FILE_OVERRIDE_KEY) && !rendered.contains("portal-url-override"),
+        "only the resolved CI_CLOUD_URL may reach the env file: {rendered}"
+    );
+
+    // Put the compiled Portal back, and the file must match a render without the override.
+    let reverted = rendered.replace(
+        &cloud_line,
+        &format!("CI_CLOUD_URL={}\n", compiled_ci_cloud_url()),
+    );
+    assert_eq!(
+        without_docker_host_lines(&reverted),
+        without_docker_host_lines(&without)
+    );
+}
+
+#[test]
+fn an_override_planted_in_the_env_files_does_not_choose_the_portal() {
+    // The primary env file is mounted into ci-hub as /data/.env and the backend writes to it,
+    // so neither an override key nor a CI_CLOUD_URL written there may survive a launch.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let [env_path, compat_path] = both_env_paths(&data_dir);
+    for path in [&env_path, &compat_path] {
+        std::fs::write(
+            path,
+            format!(
+                "{}CI_CLOUD_URL={OTHER_PORTAL}\n{ENV_FILE_OVERRIDE_KEY}={OTHER_PORTAL}\n",
+                portal_test_env_lines()
+            ),
+        )
+        .expect("write env");
+    }
+
+    ensure_runtime_env_state(&data_dir, &env_path).expect("launch");
+
+    for path in [&env_path, &compat_path] {
+        let content = std::fs::read_to_string(path).expect("read env");
+        assert!(
+            content.contains(&format!("CI_CLOUD_URL={}\n", compiled_ci_cloud_url())),
+            "{}: {content}",
+            path.display()
+        );
+        assert!(
+            !content.contains(ENV_FILE_OVERRIDE_KEY) && !content.contains(OTHER_PORTAL),
+            "{}: {content}",
+            path.display()
+        );
+    }
+    assert!(read_desktop_log(&data_dir).is_empty());
+}
+
+#[test]
+fn portal_override_is_written_to_both_env_files_and_survives_relaunch() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let [env_path, compat_path] = both_env_paths(&data_dir);
+    std::fs::write(
+        &env_path,
+        format!(
+            "{}CI_CLOUD_URL={}\n",
+            portal_test_env_lines(),
+            compiled_ci_cloud_url()
+        ),
+    )
+    .expect("write env");
+    let (path, portal) = portal_from_override_file(&data_dir, &format!("{OTHER_PORTAL}\n"));
+
+    assert!(
+        ensure_runtime_env_state_for_portal(&data_dir, &env_path, &portal).expect("first launch")
+    );
+    let after_first_launch = std::fs::read_to_string(&env_path).expect("read env");
+    // The second launch is the one that used to put the compiled Portal back.
+    ensure_runtime_env_state_for_portal(&data_dir, &env_path, &resolve_portal_url_at(Some(&path)))
+        .expect("relaunch");
+
+    for env_file in [&env_path, &compat_path] {
+        let content = std::fs::read_to_string(env_file).expect("read env");
+        assert!(
+            content.contains(&format!("CI_CLOUD_URL={OTHER_PORTAL}\n")),
+            "{}: {content}",
+            env_file.display()
+        );
+        assert!(!content.contains(ENV_FILE_OVERRIDE_KEY), "{content}");
+    }
+    assert_eq!(
+        without_docker_host_lines(&std::fs::read_to_string(&env_path).expect("read env")),
+        without_docker_host_lines(&after_first_launch),
+        "a relaunch with the same override must not change the env file"
+    );
+    let log = read_desktop_log(&data_dir);
+    let active = format!(
+        "Portal URL override active: CI_CLOUD_URL={OTHER_PORTAL} from {}",
+        path.display()
+    );
+    assert_eq!(log.matches(&active).count(), 2, "{log}");
+}
+
+#[test]
+fn removing_the_portal_override_file_restores_the_compiled_portal() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let [env_path, compat_path] = both_env_paths(&data_dir);
+    std::fs::write(&env_path, portal_test_env_lines()).expect("write env");
+    let (path, portal) = portal_from_override_file(&data_dir, OTHER_PORTAL);
+    ensure_runtime_env_state_for_portal(&data_dir, &env_path, &portal)
+        .expect("launch with override");
+    assert!(std::fs::read_to_string(&env_path)
+        .expect("read env")
+        .contains(&format!("CI_CLOUD_URL={OTHER_PORTAL}\n")));
+
+    std::fs::remove_file(&path).expect("remove override");
+    ensure_runtime_env_state_for_portal(&data_dir, &env_path, &resolve_portal_url_at(Some(&path)))
+        .expect("launch without override");
+
+    for env_file in [&env_path, &compat_path] {
+        let content = std::fs::read_to_string(env_file).expect("read env");
+        assert!(
+            content.contains(&format!("CI_CLOUD_URL={}\n", compiled_ci_cloud_url())),
+            "{}: {content}",
+            env_file.display()
+        );
+        assert!(!content.contains(OTHER_PORTAL), "{content}");
+    }
+}
+
+#[test]
+fn an_invalid_portal_override_keeps_the_compiled_portal_and_logs_why() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let [env_path, compat_path] = both_env_paths(&data_dir);
+    std::fs::write(&env_path, portal_test_env_lines()).expect("write env");
+    let (path, portal) = portal_from_override_file(&data_dir, "http://portal.example.test\n");
+
+    ensure_runtime_env_state_for_portal(&data_dir, &env_path, &portal).expect("launch");
+
+    for env_file in [&env_path, &compat_path] {
+        let content = std::fs::read_to_string(env_file).expect("read env");
+        assert!(
+            content.contains(&format!("CI_CLOUD_URL={}\n", compiled_ci_cloud_url())),
+            "{content}"
+        );
+        assert!(!content.contains("portal.example.test"), "{content}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read override"),
+        "http://portal.example.test\n",
+        "the refused value stays in the file so it can be corrected"
+    );
+    let log = read_desktop_log(&data_dir);
+    assert!(
+        log.contains(&format!(
+            "Ignoring the Portal URL override in {}",
+            path.display()
+        )) && log.contains("must use https"),
+        "{log}"
+    );
+    assert!(!log.contains("override active"), "{log}");
+}
+
+#[test]
+fn the_tray_opens_the_cloud_url_the_stack_was_started_with() {
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let env_path = crate::hub_manager::hub_env_path_for(&data_dir);
+    assert_eq!(
+        portal_url_from_env_file(&env_path),
+        compiled_ci_cloud_url(),
+        "before any launch there is no env file"
+    );
+
+    std::fs::write(&env_path, format!("CI_CLOUD_URL=\"{OTHER_PORTAL}\"\n")).expect("write env");
+    assert_eq!(portal_url_from_env_file(&env_path), OTHER_PORTAL);
+
+    std::fs::write(&env_path, "CI_CLOUD_URL=file:///etc/passwd\n").expect("write env");
+    assert_eq!(
+        portal_url_from_env_file(&env_path),
+        compiled_ci_cloud_url(),
+        "only http(s) URLs reach the system opener"
+    );
+}
