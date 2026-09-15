@@ -131,7 +131,10 @@ export class PortalClientService {
     };
   }
 
-  async fetchJson<T = unknown>(path: string, init?: { authenticated?: boolean; params?: Record<string, string>; bypassCache?: boolean }): Promise<T> {
+  async fetchJson<T = unknown>(
+    path: string,
+    init?: { authenticated?: boolean; params?: Record<string, string>; bypassCache?: boolean; timeoutMs?: number },
+  ): Promise<T> {
     this.requirePortalUrl();
     const headers: Record<string, string> = init?.authenticated ? this.getDeviceAuthHeaders() : {};
     if (init?.bypassCache) {
@@ -143,6 +146,7 @@ export class PortalClientService {
       headers,
       params,
       validateStatus: () => true,
+      ...(init?.timeoutMs ? { timeout: init.timeoutMs } : {}),
     });
     if (response.status < 200 || response.status >= 300) {
       throw new TranslatableError('PORTAL_REQUEST_FAILED', { status: String(response.status), path }, HttpStatus.BAD_GATEWAY);
@@ -182,8 +186,8 @@ export class PortalClientService {
     return this.fetchJson('/store/alternatives');
   }
 
-  async fetchStoreCatalog(init?: { bypassCache?: boolean }): Promise<unknown> {
-    return this.fetchJson('/store', { bypassCache: init?.bypassCache, authenticated: true });
+  async fetchStoreCatalog(init?: { bypassCache?: boolean; timeoutMs?: number }): Promise<unknown> {
+    return this.fetchJson('/store', { bypassCache: init?.bypassCache, authenticated: true, timeoutMs: init?.timeoutMs });
   }
 
   async fetchStoreAppDetails(slug: string): Promise<{ screenshots?: string[]; demo_video?: string } | null> {

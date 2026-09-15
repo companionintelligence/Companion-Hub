@@ -14,7 +14,6 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/DropdownMenu';
 import { Input } from '@/components/ui/Input';
-import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
@@ -77,7 +76,6 @@ interface IProps {
   appStatus?: AppStatus;
   onValidityChange?: (isValid: boolean) => void;
   onDirtyChange?: (isDirty: boolean) => void;
-  scrollable?: boolean;
   editingAppUrn?: string;
 }
 
@@ -131,17 +129,6 @@ function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null):
   return `${cleanNodeFqdn}:${port}`;
 }
 
-const ConfigSection: React.FC<{ scrollable?: boolean; children: React.ReactNode }> = ({ scrollable, children }) => {
-  if (scrollable) {
-    return (
-      <ScrollArea maxheight={350}>
-        <div className="pr-4">{children}</div>
-      </ScrollArea>
-    );
-  }
-  return <div>{children}</div>;
-};
-
 export const InstallForm: React.FC<IProps> = ({
   formFields = [],
   info,
@@ -152,7 +139,6 @@ export const InstallForm: React.FC<IProps> = ({
   appStatus,
   onValidityChange,
   onDirtyChange,
-  scrollable,
   editingAppUrn,
 }) => {
   const { t } = useTranslation();
@@ -1040,9 +1026,10 @@ export const InstallForm: React.FC<IProps> = ({
       {info.exposable && info.dynamic_config && renderExposureModeSelector()}
       {renderHostnameSettings()}
 
-      {/* Configuration section — scrollable when in a dialog */}
+      {/* Configuration section. No scroll container of its own: both dialogs that host this form
+          already scroll their body, and a nested fixed-height one showed a second scrollbar. */}
       {hasConfigSection && (
-        <ConfigSection scrollable={scrollable}>
+        <div>
           {visibleFields.length > 0 && <h3 className="text-base font-bold tracking-wide text-foreground mb-3">{t('COMMON_SETTINGS')}</h3>}
           {shouldShowAdvancedSettingsToggle && (
             <Switch
@@ -1107,7 +1094,7 @@ export const InstallForm: React.FC<IProps> = ({
               <span className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CPU_LIMIT_HINT')}</span>
             </div>
           )}
-        </ConfigSection>
+        </div>
       )}
     </form>
   );

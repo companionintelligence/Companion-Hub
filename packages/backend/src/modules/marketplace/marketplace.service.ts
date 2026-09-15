@@ -1,5 +1,6 @@
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { notEmpty, pLimit } from '@/common/helpers/file-helpers';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -7,10 +8,12 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import MiniSearch from 'minisearch';
-import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
+import path from 'node:path';
+import { type CatalogSearchParams, type PortalCatalogEntry, PortalCatalogService } from '@/core/portal/portal-catalog.service';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import { AppStoreFilesManager, type DemoVideoFile } from '../app-stores/app-store-files-manager';
 import { AppStoreService, RESERVED_APP_STORE_SLUGS } from '../app-stores/app-store.service';
+import { catalogSnapshotIndexPath, parseCatalogSnapshotIndex } from '../app-stores/catalog-snapshot-index';
 import {
   extractScreenshotFilename,
   isAbsoluteMediaUrl,
@@ -28,6 +31,13 @@ const sortApps = (a: AppList[number], b: AppList[number]) => a.urn.localeCompare
 /** Keep incompatible-arch apps visible in the store; install UI/backend gates them. */
 const filterApp = (app: AppList[number]): boolean => !app.deprecated;
 
+/**
+ * How long a catalog request with no Portal catalog in memory waits on Portal before answering
+ * from the last synced snapshot. Portal answers the full listing in 3–6s when healthy, so most
+ * cold requests still get live data; a Portal taking 16–37s no longer leaves onboarding empty.
+ */
+export const LIVE_CATALOG_WAIT_MS = 5_000;
+
 @Injectable()
 export class MarketplaceService implements OnModuleInit {
   private stores: Map<string, AppStoreFilesManager> = new Map();
@@ -36,6 +46,9 @@ export class MarketplaceService implements OnModuleInit {
   private cacheTimeout = 1000 * 60 * 15; // 15 minutes
   private cacheLastUpdated = 0;
   private availableAppsWarmInFlight: Promise<void> | null = null;
+  /** How long a cold catalog request waits on Portal before answering from the synced snapshot. */
+  private liveCatalogWaitMs = LIVE_CATALOG_WAIT_MS;
+  private catalogSnapshot: Promise<PortalCatalogEntry[]> | null = null;
 
   constructor(
     private readonly configuration: ConfigurationService,
@@ -202,6 +215,8 @@ export class MarketplaceService implements OnModuleInit {
     if (this.miniSearch) {
       this.miniSearch.removeAll();
     }
+    // A sync that just finished rewrote the snapshot and its index; read it again on next use.
+    this.catalogSnapshot = null;
     this.portalCatalog.invalidateCache();
   }
 
@@ -279,12 +294,103 @@ export class MarketplaceService implements OnModuleInit {
       });
   }
 
-  public async searchApps(params: { search?: string | null; category?: string | null; pageSize?: number; cursor?: string | null; storeId?: string }) {
+  /** Settle `promise` within the live-catalog wait (a failure settles as `null`), or report that it is still running. */
+  private async withinLiveCatalogWait<T>(promise: Promise<T>): Promise<{ settled: true; result: T | null } | { settled: false }> {
+    try {
+      // The inner catch turns a failure into `null`, so only the wait running out rejects here.
+      return {
+        settled: true,
+        result: await withTimeout(
+          promise.catch(() => null),
+          this.liveCatalogWaitMs,
+          'Live catalog wait elapsed',
+        ),
+      };
+    } catch {
+      return { settled: false };
+    }
+  }
+
+  /**
+   * The CI Marketplace catalog as of the last complete sync, read from disk.
+   *
+   * Only folders named in the sync's index are read, and only when that index came from the
+   * Portal this Hub's store points at now. Rows go through the same mapping and filters as the
+   * live Portal catalog. The sync fetches the public listing (no device key), so the snapshot
+   * never holds lab-channel listings; installs write into the same folders but are not indexed.
+   */
+  private loadCatalogSnapshot(): Promise<PortalCatalogEntry[]> {
+    if (!this.catalogSnapshot) {
+      const load = this.readCatalogSnapshot().catch((error) => {
+        this.logger.debug(`Marketplace catalog snapshot read failed: ${error instanceof Error ? error.message : String(error)}`);
+        return [] as PortalCatalogEntry[];
+      });
+      this.catalogSnapshot = load;
+      // Do not hold on to an empty read: a sync that lands later should be picked up.
+      void load.then((entries) => {
+        if (entries.length === 0 && this.catalogSnapshot === load) {
+          this.catalogSnapshot = null;
+        }
+      });
+    }
+    return this.catalogSnapshot;
+  }
+
+  private async readCatalogSnapshot(): Promise<PortalCatalogEntry[]> {
+    const store = this.stores.get(CI_MARKETPLACE_STORE_SLUG)?.storeConfig;
+    if (!store?.enabled || store.type !== 'ci_cloud_api') {
+      return [];
+    }
+
+    const { directories } = this.configuration.getConfig();
+    const repoPath = path.join(directories.dataDir, 'repos', CI_MARKETPLACE_STORE_SLUG);
+    const index = parseCatalogSnapshotIndex(await this.filesystem.readJsonFile(catalogSnapshotIndexPath(repoPath)));
+    if (!index || index.source !== store.url) {
+      return [];
+    }
+
+    const limit = pLimit(10);
+    const rows = await Promise.all(
+      index.slugs.map((slug) =>
+        limit(async () => {
+          const config = await this.filesystem.readJsonFile<Record<string, unknown>>(path.join(repoPath, 'apps', slug, 'config.json'));
+          // The indexed slug is the identity, as it is in the live catalog URN.
+          return config ? { ...config, id: slug, slug } : null;
+        }),
+      ),
+    );
+
+    return this.portalCatalog.mapCatalogRows(rows.filter(notEmpty));
+  }
+
+  public async searchApps(params: CatalogSearchParams) {
     const { storeId } = params;
     const usePortalCatalog = !storeId || storeId === CI_MARKETPLACE_STORE_SLUG;
 
     if (usePortalCatalog) {
-      const portalResult = await this.portalCatalog.searchCatalog(params);
+      const livePromise = this.portalCatalog.searchCatalog(params);
+      let portalResult: Awaited<typeof livePromise>;
+      if (this.portalCatalog.hasCatalog()) {
+        // A Hub that holds a Portal catalog answers from it at once; only a cold one can be slow.
+        portalResult = await livePromise;
+      } else {
+        const snapshotPromise = this.loadCatalogSnapshot();
+        const live = await this.withinLiveCatalogWait(livePromise);
+        const portalAnswered = live.settled && (Boolean(live.result?.data.length) || this.portalCatalog.hasCatalog());
+        // Portal has no catalog for this Hub yet — still answering, timed out, or failed. Serve the
+        // last synced catalog instead of nothing. A fetch still running lands in the cache and
+        // replaces this on a later request; one that already failed is retried in the background.
+        if (!portalAnswered) {
+          const snapshot = await snapshotPromise;
+          if (snapshot.length > 0) {
+            if (live.settled) {
+              void this.portalCatalog.warmCacheInBackground();
+            }
+            return this.portalCatalog.searchCatalogEntries(snapshot, params);
+          }
+        }
+        portalResult = live.settled ? live.result : await livePromise;
+      }
       // Prefer Portal catalog when it has hits. On empty/cold Portal, do NOT fall back to a
       // full FS walk of every store dir on the request path — return empty + warm in background.
       if (portalResult && portalResult.data.length > 0) {

@@ -1,34 +1,38 @@
 /**
  * Shared level-color scale (red → orange → gold → green → blue) used across the model-selection UI:
  * benchmark scores (higher = cooler/blue), tier tags, and resource sizes (bigger = warmer/red).
+ *
+ * Sourced from @companionintelligence/tokens' `--level-*` scale (styles/colors.md § Level
+ * scale in CI-Common) rather than raw Tailwind palette classes — this file is literally what
+ * that token group was modeled on, so the hex values are unchanged, just named now.
  */
 export type LevelColor = 'red' | 'orange' | 'gold' | 'green' | 'blue';
 
 /** Foreground text color per level (for numbers / values). */
 export const LEVEL_TEXT: Record<LevelColor, string> = {
-  red: 'text-red-400',
-  orange: 'text-orange-400',
-  gold: 'text-amber-400',
-  green: 'text-emerald-700 dark:text-emerald-400',
-  blue: 'text-sky-400',
+  red: 'text-level-red',
+  orange: 'text-level-orange',
+  gold: 'text-level-gold',
+  green: 'text-level-green',
+  blue: 'text-level-blue',
 };
 
 /** Solid fill per level (for score bars). */
 export const LEVEL_BG: Record<LevelColor, string> = {
-  red: 'bg-red-500',
-  orange: 'bg-orange-500',
-  gold: 'bg-amber-500',
-  green: 'bg-emerald-500',
-  blue: 'bg-sky-500',
+  red: 'bg-level-red',
+  orange: 'bg-level-orange',
+  gold: 'bg-level-gold',
+  green: 'bg-level-green',
+  blue: 'bg-level-blue',
 };
 
 /** Bordered tag (border + tinted bg + text) per level — for tier chips and group headers. */
 export const LEVEL_TAG: Record<LevelColor, string> = {
-  red: 'border-red-500/30 bg-red-500/15 text-red-800 dark:text-red-300',
-  orange: 'border-orange-500/30 bg-orange-500/15 text-orange-800 dark:text-orange-300',
-  gold: 'border-amber-500/30 bg-amber-500/15 text-amber-900 dark:text-amber-300',
-  green: 'border-emerald-500/30 bg-emerald-500/15 text-emerald-800 dark:text-emerald-300',
-  blue: 'border-sky-500/30 bg-sky-500/15 text-sky-900 dark:text-sky-300',
+  red: 'border-level-red/30 bg-level-red/15 text-level-red',
+  orange: 'border-level-orange/30 bg-level-orange/15 text-level-orange',
+  gold: 'border-level-gold/30 bg-level-gold/15 text-level-gold',
+  green: 'border-level-green/30 bg-level-green/15 text-level-green',
+  blue: 'border-level-blue/30 bg-level-blue/15 text-level-blue',
 };
 
 // Tier tag color: a heavier hardware requirement is warmer (green = runs anywhere → red = high-end only).

@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { BadRequestException } from '@nestjs/common';
 import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import {
   buildStackUpdaterRunArgs,
   forwardableEnvKeys,
+  isHubVersionTag,
   resolveHostListenerBaseUrl,
   shellQuote,
   stackUpdaterContainerName,
@@ -277,6 +279,27 @@ describe('SystemUpdateService', () => {
       vi.unstubAllEnvs();
     });
 
+    it.each([
+      '1.1.0\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example',
+      '1.1.0\r\nCI_CLOUD_URL=https://attacker.example',
+      '1.1.0 CI_HUB_VERSION=1.0.0',
+      'latest',
+      '1.1',
+      '01.1.0',
+      '',
+    ])('refuses target version %j before it writes the env file or starts an update', async (targetVersion) => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
+      const { spawn } = await import('node:child_process');
+
+      await expect(service.performUpdate(targetVersion)).rejects.toThrow(BadRequestException);
+
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+      expect(axios.get).not.toHaveBeenCalled();
+      expect(axios.post).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    });
+
     it('skips compose recreate when the host listener accepts the update', async () => {
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue('listener-token\n');
@@ -309,6 +332,39 @@ describe('SystemUpdateService', () => {
 
       await expect(service.probeHostListener()).resolves.toBe(false);
       await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+    });
+  });
+
+  describe('isHubVersionTag', () => {
+    it.each(['0.2.71', 'v0.2.71', 'V1.0.0', '0.2.72-rc.1', '1.0.0-beta.2'])('accepts %j', (tag) => {
+      expect(isHubVersionTag(tag)).toBe(true);
+    });
+
+    it.each([
+      '',
+      'latest',
+      'dev',
+      '0.2',
+      '01.2.3',
+      '0.2.71+ci.7',
+      '0.2.71-',
+      '0.2.71\n',
+      ' 0.2.71',
+      '0.2.71\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example',
+    ])('refuses %j', (tag) => {
+      expect(isHubVersionTag(tag)).toBe(false);
+    });
+  });
+
+  describe('Hub .env pinning', () => {
+    it('refuses to write a value that contains a line break', () => {
+      const upsert = (service as unknown as { upsertEnvLine(lines: string[], key: string, value: string): string[] }).upsertEnvLine.bind(service);
+
+      expect(() => upsert(['CI_HUB_VERSION=old'], 'CI_HUB_VERSION', '1.1.0\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example')).toThrow(
+        /line break/,
+      );
+      expect(() => upsert([], 'CI_HUB_VERSION', '1.1.0\r')).toThrow(/line break/);
+      expect(upsert(['CI_HUB_VERSION=old'], 'CI_HUB_VERSION', '1.1.0')).toEqual(['CI_HUB_VERSION=1.1.0']);
     });
   });
 

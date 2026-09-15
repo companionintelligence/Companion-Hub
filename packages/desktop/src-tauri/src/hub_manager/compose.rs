@@ -90,6 +90,7 @@ pub(crate) fn ensure_hub_compose_file(compose_path: &Path, data_dir: &Path) -> R
 /// Uses a regenerate-and-preserve approach:
 /// - Preserved values (read from existing .env, generated if missing): ROOT_FOLDER_HOST, JWT_SECRET, POSTGRES_PASSWORD
 /// - Derived values (always recomputed from the current binary): INTERNAL_IP, DOMAIN, CI_CLOUD_URL, CI_HUB_VERSION, CI_HUB_IMAGE, DOCKER_PLATFORM, DEVICE_ID
+/// - CI_CLOUD_URL follows the desktop-only Portal URL override file when it holds a valid origin; see `portal_url`
 ///
 /// Returns the initialized desktop data paths and Traefik preflight result.
 pub fn initialize_hub(resource_dir: &Path) -> Result<HubInitialization, String> {
