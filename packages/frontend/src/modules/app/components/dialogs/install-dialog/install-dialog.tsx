@@ -111,7 +111,6 @@ export const InstallDialog: React.FC<IProps> = ({ info, isOpen, onClose, boundCu
           formId={formId}
           editingAppUrn={info.urn}
           onValidityChange={handleValidityChange}
-          scrollable
         />
         <DialogFooter className="flex-col items-stretch gap-2 sm:flex-col">
           {!isFormValid && (
