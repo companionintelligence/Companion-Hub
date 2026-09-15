@@ -13,6 +13,7 @@ import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
   effectivePeerPressureBand,
+  inventoryListsModel,
   isCapabilitiesSnapshotFresh,
   resolveHubPoolDirections,
   resolvePinFor,
@@ -738,10 +739,19 @@ export class PoolProxyService {
    * Cross-node merging of the listing endpoints is a known gap; see docs/hub-pool.md.
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
+    // Ollama's `/api/show` names the model in `name` (older clients) or `model`, and an app whose
+    // chat model is the `auto` alias asks about `auto` here before its first chat — OpenClaw's
+    // provider does exactly that, and read the engine's 404 as "model not found" without ever
+    // sending the chat. The alias means this node's default, so it resolves here the same way.
+    const resolvedBody = await this.resolveLocalOnlyAlias(body);
+    if (resolvedBody === null) {
+      this.respondUncommitted(res, 502, { error: describeUnresolvableAuto() });
+      return;
+    }
     let committed = false;
     for (const type of INFERENCE_BACKEND_TYPES) {
       try {
-        const upstream = await this.callBackend(type, path, method, body);
+        const upstream = await this.callBackend(type, path, method, resolvedBody);
         if (!upstream.ok) {
           continue;
         }
@@ -760,6 +770,16 @@ export class PoolProxyService {
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
   }
 
+  /** `null` when the body asks for `auto` and nothing can stand in for it; otherwise the body to forward. */
+  private async resolveLocalOnlyAlias(body: unknown): Promise<unknown | null> {
+    if (!isRecord(body)) return body;
+    const fields = ['name', 'model'].filter((field) => body[field] === AUTO_MODEL);
+    if (fields.length === 0) return body;
+    const resolved = await this.resolveModelAlias(AUTO_MODEL);
+    if (!resolved) return null;
+    return { ...body, ...Object.fromEntries(fields.map((field) => [field, resolved])) };
+  }
+
   /**
    * This node's own backends that can serve `model`.
    *
@@ -776,10 +796,10 @@ export class PoolProxyService {
       this.backends.entries().map(async ([type, backend]): Promise<PoolCandidate | null> => {
         try {
           const health = await backend.healthCheck();
-          if (!health.running || !health.healthy || !health.modelsLoaded.includes(model)) {
+          if (!health.running || !health.healthy || !inventoryListsModel(health.modelsLoaded, model)) {
             return null;
           }
-          if (health.unservableModels?.includes(model)) {
+          if (inventoryListsModel(health.unservableModels, model)) {
             this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
             return null;
           }
@@ -828,7 +848,7 @@ export class PoolProxyService {
       // is pixel-identical to one whose engines are simply down. `undefined` means a peer on an
       // older build, which never refuses, so absence must read as "yes".
       if (capabilities.acceptingWork === false) continue;
-      const match = capabilities.backends.find((b) => b.healthy && b.modelsLoaded.includes(model));
+      const match = capabilities.backends.find((b) => b.healthy && inventoryListsModel(b.modelsLoaded, model));
       if (match) {
         const pressure = this.peerPressure(peer, capabilities) ?? UNKNOWN_PRESSURE;
         candidates.push({

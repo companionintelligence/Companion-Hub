@@ -587,6 +587,32 @@ export interface HubPoolPin {
 }
 
 /**
+ * Whether two engine model ids name the same model.
+ *
+ * Ollama treats `name` and `name:latest` as one model and apps say either: the Hub hands every app
+ * `EMBEDDINGS_MODEL=nomic-embed-text` while every engine's inventory lists `nomic-embed-text:latest`,
+ * so a verbatim comparison sent OpenClaw's every memory write to `502 No pool node currently has
+ * model "nomic-embed-text"` while the engine one hop away served `:latest` fine. Only the implicit
+ * `:latest` tag is folded; everything else stays verbatim and case-sensitive, as the pin docs promise.
+ * The tag is the part after the last `:` that follows the last `/`, so `Qwen/Qwen3.5-9B` (no tag)
+ * and `host:5000/ns/model` (colon in the host) are handled the way Ollama parses them.
+ */
+export function sameModelId(a: string, b: string): boolean {
+  return a === b || withLatestTag(a) === withLatestTag(b);
+}
+
+/** Whether an inventory (`modelsLoaded`, `unservableModels`) lists the model an app asked for. */
+export function inventoryListsModel(listed: readonly string[] | undefined, requested: string): boolean {
+  return (listed ?? []).some((id) => sameModelId(id, requested));
+}
+
+function withLatestTag(id: string): string {
+  const slash = id.lastIndexOf('/');
+  const colon = id.lastIndexOf(':');
+  return colon > slash ? id : `${id}:latest`;
+}
+
+/**
  * The pin that governs `model`, or `null`.
  *
  * A model pin wins over the default pin and they never stack: two pins for one request would need a
