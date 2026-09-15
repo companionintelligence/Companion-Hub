@@ -1,6 +1,7 @@
-import { Injectable, forwardRef, Inject } from '@nestjs/common';
+import { Injectable, forwardRef, Inject, Optional } from '@nestjs/common';
 import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { hubContainerName } from '@/common/constants';
 import type { BackendHealthStatus, InferenceBackendType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -29,6 +30,9 @@ export class InferenceRouterService {
     private readonly backends: InferenceBackendRegistry,
     @Inject(forwardRef(() => ModelPullerService))
     private readonly modelPuller: ModelPullerService,
+    // Optional and last: the router's own tests build it through Nest without configuration, and
+    // only the `auto` resolution below reads a preference.
+    @Optional() private readonly configuration?: ConfigurationService,
   ) {}
 
   /**
@@ -196,6 +200,27 @@ export class InferenceRouterService {
     return models;
   }
 
+  /**
+   * The operator's Settings → Inference model, as the engine id, when a healthy backend actually
+   * has it. This is the same answer `InferenceEnvResolver` writes into every app's
+   * `DEFAULT_MODEL`/`CI_CHAT_MODEL`, so `auto` and "the default this Hub advertises" agree — before
+   * this, with nothing pinned, `auto` fell through to whichever model the engine happened to list
+   * first (beta-max: apps were told `qwen3.6:27b`, `auto` ran `qwen3.8:27b`). Costs nothing when no
+   * preference is set; with one, it needs the same sweep the caller memoizes anyway.
+   */
+  private async preferredInstalledModel(probe: () => Promise<ProbedBackends>): Promise<string | undefined> {
+    const preferredId = this.configuration?.getInferencePreferences().preferredModel;
+    if (!preferredId) return undefined;
+    const curated = this.modelRegistry.getCuratedModel(preferredId);
+    const engineId = curated?.backendModelId ?? preferredId;
+    for (const [backendType, , health] of await probe()) {
+      if (!health.running || !health.healthy) continue;
+      if (curated && curated.backend !== backendType) continue;
+      if (health.modelsLoaded.includes(engineId)) return engineId;
+    }
+    return undefined;
+  }
+
   /** Get default pinned model for chat */
   getDefaultModel(): string | undefined {
     const pinned = this.modelRegistry.getPinnedModels();
@@ -223,6 +248,9 @@ export class InferenceRouterService {
    * sweep afterwards (see {@link routeChatCompletion}) can hand in a memoized one.
    */
   async resolveAutoModel(probe: () => Promise<ProbedBackends> = () => this.probeBackends()): Promise<string | undefined> {
+    const preferred = await this.preferredInstalledModel(probe);
+    if (preferred) return preferred;
+
     const defaultModel = this.getDefaultModel();
     if (defaultModel) return defaultModel;
 

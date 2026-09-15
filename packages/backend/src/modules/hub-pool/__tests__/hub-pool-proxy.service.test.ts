@@ -23,13 +23,17 @@ import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import {
+  AUTO_MODEL,
   POOL_BACKEND_HEADER,
   POOL_MODEL_HEADER,
   POOL_SERVED_BY_HEADER,
   POOL_SERVED_LOCALLY,
   PoolProxyService,
+  describeUnresolvableAuto,
   servedByHeaders,
 } from '../hub-pool-proxy.service';
+import type { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import type { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import type { PoolPeerCapabilities } from '../hub-pool.types';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
@@ -1643,6 +1647,108 @@ describe('PoolProxyService', () => {
       await service.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
 
       expect(res.status).toHaveBeenCalledWith(502);
+    });
+  });
+
+  // The alias apps send for "this Hub's default LLM". The local router always resolved it; the
+  // pool matched inventories verbatim and answered 502 — so the first connected peer took every
+  // app on `auto` (OpenClaw's primary is `ci-hub/auto`) off inference. beta-max, 2026-09-15.
+  describe('the auto alias', () => {
+    const ENGINE_ID = 'qwen3.6:27b';
+    const CATALOG_ID = 'qwen3-6-27b';
+    let router: MockProxy<InferenceRouterService>;
+    let modelRegistry: MockProxy<ModelRegistryService>;
+
+    function serviceWithRegistry(): PoolProxyService {
+      router = mock<InferenceRouterService>();
+      modelRegistry = mock<ModelRegistryService>();
+      router.resolveAutoModel.mockResolvedValue(CATALOG_ID);
+      modelRegistry.getTrackedModel.mockImplementation((id) =>
+        id === CATALOG_ID ? ({ catalogId: CATALOG_ID, backendModelId: ENGINE_ID, backend: 'ollama', state: 'pinned' } as never) : undefined,
+      );
+      return new PoolProxyService(
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        peerService,
+        tailscaleService,
+        loadService,
+        configuration,
+        routingLog,
+        pressureService,
+        router,
+        modelRegistry,
+      );
+    }
+
+    it('resolves auto to the default LLM engine id and leaves a named model alone', async () => {
+      const withRegistry = serviceWithRegistry();
+
+      expect(await withRegistry.resolveModelAlias(AUTO_MODEL)).toBe(ENGINE_ID);
+      expect(await withRegistry.resolveModelAlias('gemma3:1b')).toBe('gemma3:1b');
+      expect(router.resolveAutoModel).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to the resolved id itself when the registry does not track it', async () => {
+      const withRegistry = serviceWithRegistry();
+      // `resolveAutoModel` can also answer with the first model a healthy backend reports — already an engine id.
+      router.resolveAutoModel.mockResolvedValue('gemma3:1b');
+
+      expect(await withRegistry.resolveModelAlias(AUTO_MODEL)).toBe('gemma3:1b');
+    });
+
+    it('routes an auto request as the resolved model, rewrites the body, and ranks peers that hold it', async () => {
+      const withRegistry = serviceWithRegistry();
+      // Local is busier than the peer by more than the affinity, so the peer wins — the alias must
+      // not pin the request to this node just because this node is where it was resolved.
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [ENGINE_ID] });
+      const peer = peerServing('peer-idle', ENGINE_ID, { inFlightRequests: 0 });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      const res = createMockResponse();
+
+      await withRegistry.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: AUTO_MODEL, messages: [{ role: 'user', content: 'hi' }] },
+        model: AUTO_MODEL,
+        res,
+      });
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('peer-idle');
+      // The engine never sees the literal word.
+      expect(JSON.parse(String(init.body))).toEqual({ model: ENGINE_ID, messages: [{ role: 'user', content: 'hi' }] });
+      expect((init.headers as Record<string, string>)[POOL_MODEL_HEADER]).toBe(ENGINE_ID);
+      expect(routingLog.list()[0]).toMatchObject({ model: ENGINE_ID, node: 'peer-idle.tailxyz.ts.net', outcome: 'served' });
+    });
+
+    it('answers an unresolvable auto with the actionable 502, not "no node has model auto"', async () => {
+      const withRegistry = serviceWithRegistry();
+      router.resolveAutoModel.mockResolvedValue(undefined);
+      const res = createMockResponse();
+
+      await withRegistry.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: AUTO_MODEL }, model: AUTO_MODEL, res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(res.json).toHaveBeenCalledWith({ error: describeUnresolvableAuto() });
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(routingLog.list()[0]).toMatchObject({ model: AUTO_MODEL, outcome: 'failed', candidates: 0 });
+    });
+
+    it('without a router (the positional test shape) auto is simply unresolvable', async () => {
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: AUTO_MODEL }, model: AUTO_MODEL, res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(res.json).toHaveBeenCalledWith({ error: describeUnresolvableAuto() });
     });
   });
 });
