@@ -1,5 +1,6 @@
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { notEmpty, pLimit } from '@/common/helpers/file-helpers';
+import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -293,22 +294,20 @@ export class MarketplaceService implements OnModuleInit {
       });
   }
 
-  /** Settle `promise` within the live-catalog wait, or report that it is still running. */
+  /** Settle `promise` within the live-catalog wait (a failure settles as `null`), or report that it is still running. */
   private async withinLiveCatalogWait<T>(promise: Promise<T>): Promise<{ settled: true; result: T | null } | { settled: false }> {
-    let timer: NodeJS.Timeout | undefined;
-    const waited = new Promise<{ settled: false }>((resolve) => {
-      timer = setTimeout(() => resolve({ settled: false }), this.liveCatalogWaitMs);
-    });
     try {
-      return await Promise.race([
-        promise.then(
-          (result) => ({ settled: true as const, result }),
-          () => ({ settled: true as const, result: null }),
+      // The inner catch turns a failure into `null`, so only the wait running out rejects here.
+      return {
+        settled: true,
+        result: await withTimeout(
+          promise.catch(() => null),
+          this.liveCatalogWaitMs,
+          'Live catalog wait elapsed',
         ),
-        waited,
-      ]);
-    } finally {
-      clearTimeout(timer);
+      };
+    } catch {
+      return { settled: false };
     }
   }
 
@@ -370,30 +369,28 @@ export class MarketplaceService implements OnModuleInit {
 
     if (usePortalCatalog) {
       const livePromise = this.portalCatalog.searchCatalog(params);
-      // A Hub that holds a Portal catalog answers from it at once; only a cold one can be slow.
-      const snapshotPromise = this.portalCatalog.hasCatalog() ? null : this.loadCatalogSnapshot();
-      const live = snapshotPromise ? await this.withinLiveCatalogWait(livePromise) : { settled: true as const, result: await livePromise };
-
-      if (live.settled && live.result && live.result.data.length > 0) {
-        return live.result;
-      }
-
-      // Portal has no catalog for this Hub yet — still answering, timed out, or failed. Serve the
-      // last synced catalog instead of nothing. A fetch still running lands in the cache and
-      // replaces this on a later request; one that already failed is retried in the background.
-      if (snapshotPromise && !(live.settled && this.portalCatalog.hasCatalog())) {
-        const snapshot = await snapshotPromise;
-        if (snapshot.length > 0) {
-          if (live.settled) {
-            void this.portalCatalog.warmCacheInBackground();
-          } else {
-            livePromise.catch(() => undefined);
+      let portalResult: Awaited<typeof livePromise>;
+      if (this.portalCatalog.hasCatalog()) {
+        // A Hub that holds a Portal catalog answers from it at once; only a cold one can be slow.
+        portalResult = await livePromise;
+      } else {
+        const snapshotPromise = this.loadCatalogSnapshot();
+        const live = await this.withinLiveCatalogWait(livePromise);
+        const portalAnswered = live.settled && (Boolean(live.result?.data.length) || this.portalCatalog.hasCatalog());
+        // Portal has no catalog for this Hub yet — still answering, timed out, or failed. Serve the
+        // last synced catalog instead of nothing. A fetch still running lands in the cache and
+        // replaces this on a later request; one that already failed is retried in the background.
+        if (!portalAnswered) {
+          const snapshot = await snapshotPromise;
+          if (snapshot.length > 0) {
+            if (live.settled) {
+              void this.portalCatalog.warmCacheInBackground();
+            }
+            return this.portalCatalog.searchCatalogEntries(snapshot, params);
           }
-          return this.portalCatalog.searchCatalogEntries(snapshot, params);
         }
+        portalResult = live.settled ? live.result : await livePromise;
       }
-
-      const portalResult = live.settled ? live.result : await livePromise;
       // Prefer Portal catalog when it has hits. On empty/cold Portal, do NOT fall back to a
       // full FS walk of every store dir on the request path — return empty + warm in background.
       if (portalResult && portalResult.data.length > 0) {

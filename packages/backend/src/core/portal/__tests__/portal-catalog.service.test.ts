@@ -1,7 +1,8 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, MockProxy } from 'vitest-mock-extended';
-import { PORTAL_CATALOG_FETCH_TIMEOUT_MS, PortalCatalogService } from '../portal-catalog.service';
+import { PortalCatalogService } from '../portal-catalog.service';
+import { PORTAL_STORE_LISTING_TIMEOUT_MS } from '../portal.constants';
 import { PortalClientService } from '../portal-client.service';
 
 describe('PortalCatalogService', () => {
@@ -290,8 +291,8 @@ describe('PortalCatalogService', () => {
 
     await service.getCatalogEntries(true);
 
-    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith({ bypassCache: true, timeoutMs: PORTAL_CATALOG_FETCH_TIMEOUT_MS });
-    expect(PORTAL_CATALOG_FETCH_TIMEOUT_MS).toBeGreaterThan(37_000);
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith({ bypassCache: true, timeoutMs: PORTAL_STORE_LISTING_TIMEOUT_MS });
+    expect(PORTAL_STORE_LISTING_TIMEOUT_MS).toBeGreaterThan(37_000);
   });
 
   it('answers from a catalog past its TTL at once and refreshes it in the background', async () => {
@@ -366,6 +367,26 @@ describe('PortalCatalogService', () => {
     // The cold alternatives cache is warmed for the next search, not awaited for this one.
     expect(portalClient.fetchStoreAlternatives).toHaveBeenCalledTimes(1);
     expect(service.searchCatalogEntries(entries, { category: 'social' }).data.map((entry) => entry.id)).toEqual(['ghost']);
+  });
+
+  it('resumes paging after a cursor this catalog lacks instead of repeating the first page', () => {
+    const entries = service.mapCatalogRows([
+      { slug: 'alpha', name: 'Alpha' },
+      { slug: 'charlie', name: 'Charlie' },
+      { slug: 'echo', name: 'Echo' },
+    ]);
+
+    // e.g. a cursor from the synced snapshot naming an app Portal's catalog no longer lists.
+    const next = service.searchCatalogEntries(entries, { cursor: 'bravo:ci-marketplace', pageSize: 1 });
+    expect(next.data.map((entry) => entry.id)).toEqual(['charlie']);
+    expect(next.nextCursor).toBe('echo:ci-marketplace');
+
+    expect(service.searchCatalogEntries(entries, { cursor: 'zulu:ci-marketplace', pageSize: 1 })).toEqual({ data: [], total: 3, nextCursor: null });
+    // A cursor the catalog holds still starts its own page.
+    expect(service.searchCatalogEntries(entries, { cursor: 'charlie:ci-marketplace', pageSize: 5 }).data.map((entry) => entry.id)).toEqual([
+      'charlie',
+      'echo',
+    ]);
   });
 
   it('force-refreshes even when a warm cache already exists', async () => {

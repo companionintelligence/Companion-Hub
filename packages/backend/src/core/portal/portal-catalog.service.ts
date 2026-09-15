@@ -5,7 +5,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { appInfoSchema, APP_CATEGORIES, type AppInfo } from '@ci-hub/common/schemas';
 import axios from 'axios';
 import { createHash } from 'node:crypto';
-import { CI_MARKETPLACE_STORE_SLUG } from './portal.constants';
+import { CI_MARKETPLACE_STORE_SLUG, PORTAL_STORE_LISTING_TIMEOUT_MS } from './portal.constants';
 import { PortalClientService } from './portal-client.service';
 import { CATALOG_PAGE_SIZE } from '@/modules/marketplace/catalog-page-size';
 import {
@@ -52,13 +52,6 @@ type PortalCatalogApp = {
   demo_video?: string;
   replaces?: string[];
 };
-
-/**
- * The full `/store` listing is fetched once per cache cycle, deduped, and only a cold catalog
- * waits on it. Portal has taken 16–37s to build it, past the 30s client default, so the fetch
- * failed every time and the catalog never warmed. A longer ceiling lets a slow Portal still land.
- */
-export const PORTAL_CATALOG_FETCH_TIMEOUT_MS = 45_000;
 
 const HUB_MANAGED_MARKETPLACE_APP_IDS = new Set(['cloudflared', 'cloudflare-tunnel']);
 
@@ -244,7 +237,7 @@ export class PortalCatalogService {
     const generation = this.cacheGeneration;
     const fetch = (async () => {
       try {
-        const raw = await this.portalClient.fetchStoreCatalog({ bypassCache: force, timeoutMs: PORTAL_CATALOG_FETCH_TIMEOUT_MS });
+        const raw = await this.portalClient.fetchStoreCatalog({ bypassCache: force, timeoutMs: PORTAL_STORE_LISTING_TIMEOUT_MS });
         const filtered = this.mapCatalogRows(Array.isArray(raw) ? raw : []);
         if (generation !== this.cacheGeneration) {
           return this.inflightFetch ?? filtered;
@@ -281,19 +274,14 @@ export class PortalCatalogService {
 
   /**
    * Search a catalog already in hand (the on-disk snapshot) with the same matching and paging as
-   * `searchCatalog`, without waiting on Portal: alias matches use the cached alternatives, and a
-   * cold alternatives cache is warmed in the background for the next search.
+   * `searchCatalog`, without waiting on Portal: alias matches use the alternatives in memory, and a
+   * cold or expired alternatives cache refreshes in the background for the next search.
    */
   searchCatalogEntries(entries: PortalCatalogEntry[], params: CatalogSearchParams) {
-    let alternatives: StoreSearchCatalog = {};
     if (params.search?.trim()) {
-      if (this.alternativesCache) {
-        alternatives = this.alternativesCache;
-      } else {
-        void this.getAlternativesCatalog();
-      }
+      void this.getAlternativesCatalog();
     }
-    return this.searchEntries(entries, params, alternatives);
+    return this.searchEntries(entries, params, this.alternativesCache ?? {});
   }
 
   private searchEntries(entries: PortalCatalogEntry[], params: CatalogSearchParams, alternatives: StoreSearchCatalog) {
@@ -325,12 +313,7 @@ export class PortalCatalogService {
       filtered = filtered.sort((a, b) => a.urn.localeCompare(b.urn));
     }
 
-    const start = cursor
-      ? Math.max(
-          0,
-          filtered.findIndex((app) => app.urn === cursor),
-        )
-      : 0;
+    const start = cursor ? this.pageStart(filtered, cursor, Boolean(search?.trim())) : 0;
     const end = start + (pageSize ?? CATALOG_PAGE_SIZE);
     const data = filtered.slice(start, end);
 
@@ -339,6 +322,20 @@ export class PortalCatalogService {
       total: filtered.length,
       nextCursor: filtered[end]?.urn ?? null,
     };
+  }
+
+  /**
+   * Where the page that starts at `cursor` begins. A cursor from the other catalog source (the synced
+   * snapshot or Portal's catalog) can name an app this list lacks. Without a search the list is in URN
+   * order, so paging resumes where that app would sit instead of starting over and repeating a page.
+   */
+  private pageStart(entries: PortalCatalogEntry[], cursor: string, searching: boolean): number {
+    const index = entries.findIndex((app) => app.urn === cursor);
+    if (index >= 0 || searching) {
+      return Math.max(0, index);
+    }
+    const next = entries.findIndex((app) => app.urn.localeCompare(cursor) > 0);
+    return next >= 0 ? next : entries.length;
   }
 
   async warmCacheInBackground(): Promise<void> {
