@@ -125,6 +125,7 @@ function OnboardingWizard() {
     isError: isCatalogError,
     isFetching: isCatalogFetching,
     refetch: refetchCatalog,
+    isCatalogUnavailable,
   } = useMarketplaceCatalogApps();
   const navigate = useNavigate();
 
@@ -168,7 +169,9 @@ function OnboardingWizard() {
   }, [queryClient]);
 
   useEffect(() => {
-    if (isCatalogLoading || isCatalogFetching || isCatalogError || storeApps.length > 0) {
+    // Stop once the hook's automatic refetches are used up — the recommendations step then offers
+    // a Retry control. Refetching here without a bound kept the catalog spinner up indefinitely.
+    if (isCatalogLoading || isCatalogFetching || isCatalogError || isCatalogUnavailable || storeApps.length > 0) {
       return;
     }
 
@@ -177,7 +180,7 @@ function OnboardingWizard() {
     }, 1500);
 
     return () => clearTimeout(timer);
-  }, [isCatalogError, isCatalogFetching, isCatalogLoading, refetchCatalog, storeApps.length]);
+  }, [isCatalogError, isCatalogFetching, isCatalogLoading, isCatalogUnavailable, refetchCatalog, storeApps.length]);
 
   const recommendationsLoading = (isCatalogLoading || isCatalogFetching) && !isCatalogError;
   const canFinish = aiSetupConfig !== undefined && !aiSetupConfig.installBlocked;

@@ -248,6 +248,195 @@ describe('MarketplaceService', () => {
     });
   });
 
+  describe('searchApps catalog snapshot fallback', () => {
+    const STORE_URL = 'https://portal.example.com/api';
+    const REPO = '/data/repos/ci-marketplace';
+    const INDEX_PATH = `${REPO}/catalog-index.json`;
+    const row = (slug: string, extra: Record<string, unknown> = {}) => ({
+      id: slug,
+      slug,
+      name: slug,
+      short_desc: `${slug} app`,
+      categories: ['utilities'],
+      available: true,
+      urn: `urn:app:${slug}`,
+      ...extra,
+    });
+    const urns = (result: { data: Array<{ urn: string }> }) => result.data.map((app) => app.urn);
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    let portalClient: MockProxy<import('@/core/portal/portal-client.service').PortalClientService>;
+    let catalog: PortalCatalogService;
+    let fallbackService: MarketplaceService;
+    let files: Record<string, unknown>;
+    let marketplaceStore: Record<string, unknown>;
+
+    const start = async (waitMs = 20) => {
+      await fallbackService.initialize();
+      (fallbackService as unknown as { liveCatalogWaitMs: number }).liveCatalogWaitMs = waitMs;
+    };
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ architecture: 'amd64', directories: { dataDir: '/data' } } as any);
+      files = {
+        [INDEX_PATH]: {
+          version: 1,
+          source: STORE_URL,
+          syncedAt: 1,
+          slugs: ['ci-memory', 'nextcloud', 'cloudflared', 'old-app', 'withdrawn', '../escape'],
+        },
+        [`${REPO}/apps/ci-memory/config.json`]: row('ci-memory', { categories: ['ai'] }),
+        [`${REPO}/apps/nextcloud/config.json`]: row('nextcloud', { categories: ['data'], replaces: ['Google Drive'] }),
+        [`${REPO}/apps/cloudflared/config.json`]: row('cloudflared'),
+        [`${REPO}/apps/old-app/config.json`]: row('old-app', { deprecated: true }),
+        [`${REPO}/apps/withdrawn/config.json`]: row('withdrawn', { available: false }),
+        // Written by an install (e.g. a lab-channel app), never part of the synced public listing.
+        [`${REPO}/apps/lab-only/config.json`]: row('lab-only'),
+        [`${REPO}/escape/config.json`]: row('escape'),
+      };
+      filesystemService.readJsonFile.mockImplementation((async (filePath: string) => files[filePath] ?? null) as any);
+
+      marketplaceStore = { slug: 'ci-marketplace', name: 'CI Marketplace', url: STORE_URL, enabled: true, type: 'ci_cloud_api', branch: 'main' };
+      appStoreService.getAllAppStores.mockResolvedValue([
+        marketplaceStore as any,
+        { slug: 'store-1', name: 'Store 1', url: 'http://store1.com', enabled: true, type: 'git', branch: 'main' } as any,
+      ]);
+
+      portalClient = mock();
+      portalClient.fetchStoreAlternatives.mockResolvedValue({});
+      catalog = new PortalCatalogService(portalClient, loggerService);
+      fallbackService = new MarketplaceService(configService, filesystemService, loggerService, catalog, appStoreService, marketplaceCacheBus);
+      fallbackService.onModuleInit();
+    });
+
+    it('serves the synced catalog while Portal is slow, then Portal data once it answers', async () => {
+      let answerPortal: (value: unknown) => void = () => {};
+      portalClient.fetchStoreCatalog.mockReturnValue(new Promise((resolve) => (answerPortal = resolve)));
+      await start();
+
+      const fallback = await fallbackService.searchApps({ pageSize: 500 });
+      expect(urns(fallback)).toEqual(['ci-memory:ci-marketplace', 'nextcloud:ci-marketplace']);
+      expect(fallback.total).toBe(2);
+
+      answerPortal([row('ci-memory'), row('ghost')]);
+      await flush();
+
+      const live = await fallbackService.searchApps({ pageSize: 500 });
+      expect(urns(live)).toEqual(['ci-memory:ci-marketplace', 'ghost:ci-marketplace']);
+      // The slow request was joined and allowed to finish, not abandoned and restarted.
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+    });
+
+    it('serves the synced catalog when the Portal fetch fails, and retries Portal in the background', async () => {
+      portalClient.fetchStoreCatalog.mockRejectedValue(new Error('timeout of 45000ms exceeded'));
+      await start();
+      await flush();
+      const callsBefore = portalClient.fetchStoreCatalog.mock.calls.length;
+
+      const result = await fallbackService.searchApps({ pageSize: 500 });
+
+      expect(urns(result)).toEqual(['ci-memory:ci-marketplace', 'nextcloud:ci-marketplace']);
+      // One attempt on the request, one background retry after answering from the snapshot.
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(callsBefore + 2);
+    });
+
+    it('prefers Portal data that arrives within the wait', async () => {
+      portalClient.fetchStoreCatalog.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve([row('ghost')]), 5)));
+      await start(1_000);
+
+      const result = await fallbackService.searchApps({ pageSize: 500 });
+
+      expect(urns(result)).toEqual(['ghost:ci-marketplace']);
+    });
+
+    it('does not answer a search from the snapshot when the Portal catalog simply has no match', async () => {
+      portalClient.fetchStoreCatalog.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve([row('ghost')]), 5)));
+      await start(1_000);
+
+      // The snapshot's Nextcloud replaces Google Drive; the live catalog has nothing that does.
+      const result = await fallbackService.searchApps({ search: 'google drive', pageSize: 500 });
+
+      expect(result.data).toEqual([]);
+    });
+
+    it('keeps Portal data that arrives within the wait even when the cache was invalidated meanwhile', async () => {
+      portalClient.fetchStoreCatalog.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve([row('ghost')]), 5)));
+      await start(1_000);
+
+      const pending = fallbackService.searchApps({ pageSize: 500 });
+      // e.g. a catalog sync finishing mid-request: the answer is not cached, but it is still Portal's.
+      catalog.invalidateCache();
+
+      expect(urns(await pending)).toEqual(['ghost:ci-marketplace']);
+    });
+
+    it('keeps the empty answer and background warm when no sync has written an index', async () => {
+      delete files[INDEX_PATH];
+      portalClient.fetchStoreCatalog.mockRejectedValue(new Error('ECONNREFUSED'));
+      await start();
+      await flush();
+
+      const result = await fallbackService.searchApps({ pageSize: 500 });
+
+      expect(result).toEqual({ data: [], total: 0, nextCursor: null });
+      expect(spies.getAppInfoFromAppStoreLite).not.toHaveBeenCalled();
+    });
+
+    it('never serves Hub-managed, deprecated, withdrawn, unindexed or out-of-tree folders, or other stores', async () => {
+      portalClient.fetchStoreCatalog.mockRejectedValue(new Error('ECONNREFUSED'));
+      spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
+      await start();
+
+      const result = await fallbackService.searchApps({ pageSize: 500 });
+
+      expect(urns(result)).toEqual(['ci-memory:ci-marketplace', 'nextcloud:ci-marketplace']);
+      expect(filesystemService.readJsonFile).not.toHaveBeenCalledWith(`${REPO}/apps/lab-only/config.json`);
+      expect(filesystemService.readJsonFile).not.toHaveBeenCalledWith(`${REPO}/escape/config.json`);
+    });
+
+    it('ignores a snapshot synced from a different Portal', async () => {
+      files[INDEX_PATH] = { ...(files[INDEX_PATH] as object), source: 'https://hub.companionintelligence.com/api' };
+      portalClient.fetchStoreCatalog.mockRejectedValue(new Error('ECONNREFUSED'));
+      await start();
+
+      const result = await fallbackService.searchApps({ pageSize: 500 });
+
+      expect(result.data).toEqual([]);
+    });
+
+    it('ignores the snapshot while the CI Marketplace store is disabled', async () => {
+      marketplaceStore.enabled = false;
+      portalClient.fetchStoreCatalog.mockRejectedValue(new Error('ECONNREFUSED'));
+      await start();
+
+      const result = await fallbackService.searchApps({ pageSize: 500 });
+
+      expect(result.data).toEqual([]);
+    });
+
+    it('searches, filters and pages the snapshot the way it does the live catalog', async () => {
+      portalClient.fetchStoreCatalog.mockRejectedValue(new Error('ECONNREFUSED'));
+      await start();
+
+      expect(urns(await fallbackService.searchApps({ search: 'google drive' }))).toEqual(['nextcloud:ci-marketplace']);
+      expect(urns(await fallbackService.searchApps({ category: 'ai' }))).toEqual(['ci-memory:ci-marketplace']);
+      const firstPage = await fallbackService.searchApps({ pageSize: 1 });
+      expect(urns(firstPage)).toEqual(['ci-memory:ci-marketplace']);
+      expect(firstPage.nextCursor).toBe('nextcloud:ci-marketplace');
+    });
+
+    it('reads the snapshot again after a catalog sync invalidates the marketplace cache', async () => {
+      portalClient.fetchStoreCatalog.mockRejectedValue(new Error('ECONNREFUSED'));
+      await start();
+      expect(urns(await fallbackService.searchApps({ pageSize: 500 }))).toHaveLength(2);
+
+      files[INDEX_PATH] = { version: 1, source: STORE_URL, syncedAt: 2, slugs: ['ci-memory'] };
+      marketplaceCacheBus.invalidate();
+
+      expect(urns(await fallbackService.searchApps({ pageSize: 500 }))).toEqual(['ci-memory:ci-marketplace']);
+    });
+  });
+
   describe('getAppInfoFromAppStore', () => {
     it('falls back to portal catalog when local ci-marketplace metadata is missing', async () => {
       await service.initialize();

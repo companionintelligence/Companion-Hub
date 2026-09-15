@@ -6,28 +6,32 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { OnboardingApp } from '../../helpers/types';
 import { RecommendationsStep } from '../recommendations-step';
 
-const { mockCatalogState } = vi.hoisted(() => ({
+const { mockCatalogState, mockRefetch } = vi.hoisted(() => ({
   mockCatalogState: {
     isLoading: false,
     isRetryingEmptyCatalog: false,
     isCatalogSettled: true,
     isError: false,
+    isCatalogUnavailable: false,
     apps: undefined as Array<{ id?: string; name: string; urn: string; short_desc: string }> | undefined,
   },
+  mockRefetch: vi.fn(),
 }));
 
 vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
   useMarketplaceCatalogApps: () => ({
-    apps: mockCatalogState.isError
-      ? []
-      : mockCatalogState.isLoading || mockCatalogState.isRetryingEmptyCatalog
+    apps:
+      mockCatalogState.isError || mockCatalogState.isCatalogUnavailable
         ? []
-        : (mockCatalogState.apps ?? [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }]),
+        : mockCatalogState.isLoading || mockCatalogState.isRetryingEmptyCatalog
+          ? []
+          : (mockCatalogState.apps ?? [{ id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' }]),
     isLoading: mockCatalogState.isLoading,
     isRetryingEmptyCatalog: mockCatalogState.isRetryingEmptyCatalog,
     isCatalogSettled: mockCatalogState.isCatalogSettled,
     isError: mockCatalogState.isError,
-    refetch: vi.fn(),
+    isCatalogUnavailable: mockCatalogState.isCatalogUnavailable,
+    refetch: mockRefetch,
   }),
 }));
 
@@ -80,7 +84,23 @@ describe('RecommendationsStep (embedded emit)', () => {
     mockCatalogState.isRetryingEmptyCatalog = false;
     mockCatalogState.isCatalogSettled = true;
     mockCatalogState.isError = false;
+    mockCatalogState.isCatalogUnavailable = false;
     mockCatalogState.apps = undefined;
+    mockRefetch.mockReset();
+  });
+
+  it('offers Retry instead of a spinner once the empty-catalog retries are used up', async () => {
+    mockCatalogState.isCatalogUnavailable = true;
+    const user = userEvent.setup();
+
+    renderWithRouter(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
+
+    expect(screen.getByTestId('recommendations-catalog-unavailable')).toHaveTextContent('ONBOARDING_RECOMMENDATIONS_UNAVAILABLE');
+    expect(screen.queryByText('ONBOARDING_RECOMMENDATIONS_LOADING')).not.toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_NO_MATCHING_STORE_APPS')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'COMMON_RETRY' }));
+    expect(mockRefetch).toHaveBeenCalledTimes(1);
   });
 
   it('emits the selection once and does not loop on unchanged selections', () => {
