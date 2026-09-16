@@ -59,6 +59,60 @@ function isHubManagedMarketplaceApp(slug: string): boolean {
   return HUB_MANAGED_MARKETPLACE_APP_IDS.has(slug.trim().toLowerCase());
 }
 
+/**
+ * The raw `/store` fields the Hub reads, and so the only ones kept in the cached rows. Portal's
+ * listing also carries each free app's whole compose file — about half of a ~7.8 MB catalog — which
+ * the Hub never reads from here (an install fetches it per app), so cached rows drop it. Typing this
+ * as `Record<keyof PortalCatalogApp, true>` makes the compiler fail when a field is added to
+ * `PortalCatalogApp` without being cached.
+ */
+const CACHED_CATALOG_FIELDS: Record<keyof PortalCatalogApp, true> = {
+  id: true,
+  slug: true,
+  name: true,
+  title: true,
+  short_desc: true,
+  shortDescription: true,
+  description: true,
+  author: true,
+  source: true,
+  website: true,
+  port: true,
+  version: true,
+  icon: true,
+  runtime_platform: true,
+  categories: true,
+  tags: true,
+  deprecated: true,
+  supported_architectures: true,
+  available: true,
+  cihub_app_version: true,
+  cihub_version: true,
+  min_hub_version: true,
+  exposable: true,
+  no_gui: true,
+  dynamic_config: true,
+  form_fields: true,
+  force_pull: true,
+  url_suffix: true,
+  hub_integration: true,
+  mcp: true,
+  screenshots: true,
+  demo_video: true,
+  replaces: true,
+};
+
+const CACHED_CATALOG_FIELD_NAMES = Object.keys(CACHED_CATALOG_FIELDS) as (keyof PortalCatalogApp)[];
+
+function cacheableCatalogRow(app: PortalCatalogApp): PortalCatalogApp {
+  const row: Record<string, unknown> = {};
+  for (const field of CACHED_CATALOG_FIELD_NAMES) {
+    const value = app[field];
+    if (value !== undefined) row[field] = value;
+  }
+  return row as PortalCatalogApp;
+}
+
 function appReplacesMatch(app: { replaces: string[] }, query: string): boolean {
   return app.replaces.some((name) => textMatchesSearch(name, query));
 }
@@ -87,6 +141,19 @@ export type CatalogSearchParams = {
   storeId?: string;
 };
 
+/**
+ * One `/store` answer, mapped for the store views and indexed by slug for per-app metadata
+ * lookups. `error` is set when the Portal round-trip failed and the answer is whatever was
+ * already cached.
+ */
+type CatalogFetchResult = {
+  entries: PortalCatalogEntry[];
+  rows: Map<string, PortalCatalogApp>;
+  /** True when this answer came from a fetch that bypassed Portal's own cache. */
+  bypassedPortalCache: boolean;
+  error?: unknown;
+};
+
 export type PortalCatalogUpdateInfo = {
   latestVersion: number;
   latestDockerVersion: string;
@@ -96,16 +163,30 @@ export type PortalCatalogUpdateInfo = {
 @Injectable()
 export class PortalCatalogService {
   private cache: PortalCatalogEntry[] | null = null;
+  /**
+   * The raw `/store` rows behind `cache`, indexed by slug. `PortalCatalogEntry` is narrower than a
+   * listing row and drops the fields full app metadata needs (author, port, mcp, form_fields,
+   * url_suffix, hub_integration, screenshots, …), and it is filtered, so per-app lookups read these
+   * rows instead. Published, expired and invalidated together with `cache`.
+   */
+  private rawCache: Map<string, PortalCatalogApp> | null = null;
   private cacheUpdatedAt = 0;
   private alternativesCache: StoreSearchCatalog | null = null;
   private alternativesCacheUpdatedAt = 0;
   private alternativesInflight: Promise<StoreSearchCatalog> | null = null;
   private readonly cacheTtlMs = 1000 * 60 * 15;
-  private inflightFetch: Promise<PortalCatalogEntry[]> | null = null;
+  private inflightFetch: Promise<CatalogFetchResult> | null = null;
   /** True when `inflightFetch` was started with Portal cache-busting. */
   private inflightBypassCache = false;
   /** Bumped on invalidate so a fetch that started against a stale catalog cannot republish. */
   private cacheGeneration = 0;
+  /** When the last catalog refresh for a slug the cached rows lacked was started; null when none. */
+  private missingSlugRefreshAt: number | null = null;
+  /**
+   * At most one forced catalog refresh per window for slugs the cached rows lack, however many
+   * such lookups arrive: a fan-out over unknown apps must not fetch the whole listing per app.
+   */
+  private readonly missingSlugRefreshCooldownMs = 1000 * 60;
 
   constructor(
     private readonly portalClient: PortalClientService,
@@ -114,7 +195,9 @@ export class PortalCatalogService {
 
   invalidateCache() {
     this.cache = null;
+    this.rawCache = null;
     this.cacheUpdatedAt = 0;
+    this.missingSlugRefreshAt = null;
     this.alternativesCache = null;
     this.alternativesCacheUpdatedAt = 0;
     this.alternativesInflight = null;
@@ -203,6 +286,24 @@ export class PortalCatalogService {
     return this.filterCatalogEntries(mapped);
   }
 
+  /**
+   * Index raw `/store` rows by the slug a marketplace URN names, keeping the fields full app
+   * metadata is mapped from. Unfiltered on purpose: unlike the browseable catalog, a per-app lookup
+   * still has to answer for a deprecated or unavailable app the Hub already knows about.
+   */
+  private indexCatalogRows(rows: unknown[]): Map<string, PortalCatalogApp> {
+    const index = new Map<string, PortalCatalogApp>();
+    for (const row of rows) {
+      if (row === null || typeof row !== 'object') continue;
+      const app = row as PortalCatalogApp;
+      const slug = app.slug ?? app.id;
+      // First listing for a slug wins, as a scan over the rows did.
+      if (!slug || index.has(slug)) continue;
+      index.set(slug, cacheableCatalogRow(app));
+    }
+    return index;
+  }
+
   /** True when a Portal catalog answer is held in memory — fresh, or kept after a failed refresh. */
   hasCatalog(): boolean {
     return (this.cache?.length ?? 0) > 0;
@@ -213,15 +314,47 @@ export class PortalCatalogService {
       // Past its TTL, answer with the catalog in hand and refresh behind it: a slow Portal must
       // not hold a store or onboarding request for the length of the listing fetch.
       if (Date.now() - this.cacheUpdatedAt >= this.cacheTtlMs && !this.inflightFetch) {
-        void this.fetchCatalogEntries(false);
+        void this.fetchCatalog(false);
       }
       return this.cache;
     }
 
-    return this.fetchCatalogEntries(force);
+    return (await this.fetchCatalog(force)).entries;
   }
 
-  private fetchCatalogEntries(force: boolean): Promise<PortalCatalogEntry[]> {
+  /**
+   * The raw listing rows for per-app metadata, from the same cache, TTL, stale-while-revalidate and
+   * in-flight dedupe as `getCatalogEntries`: a single-app lookup must not download the catalog.
+   */
+  private async getRawCatalogRows(force = false): Promise<CatalogFetchResult> {
+    if (!force && this.rawCache) {
+      if (Date.now() - this.cacheUpdatedAt >= this.cacheTtlMs && !this.inflightFetch) {
+        void this.fetchCatalog(false);
+      }
+      return { entries: this.cache ?? [], rows: this.rawCache, bypassedPortalCache: false };
+    }
+
+    return this.fetchCatalog(force);
+  }
+
+  /**
+   * One forced refresh for slugs the cached rows lack — an app published since this catalog was
+   * cached must still be installable. Bounded two ways so a fan-out over unknown apps cannot fetch
+   * the listing per app: a cooldown window, and joining a cache-busting fetch already in flight
+   * instead of starting another. `null` when the window has not reopened.
+   */
+  private async refreshRawCatalogForMissingSlug(): Promise<CatalogFetchResult | null> {
+    const now = Date.now();
+    if (this.missingSlugRefreshAt !== null && now - this.missingSlugRefreshAt < this.missingSlugRefreshCooldownMs) {
+      return this.inflightFetch && this.inflightBypassCache ? this.inflightFetch : null;
+    }
+
+    // Claimed before the await so concurrent lookups join this fetch rather than queue another.
+    this.missingSlugRefreshAt = now;
+    return this.getRawCatalogRows(true);
+  }
+
+  private fetchCatalog(force: boolean): Promise<CatalogFetchResult> {
     // Dedupe concurrent callers into a single Portal round-trip so hot paths
     // (e.g. per-app fan-outs) never trigger a thundering herd of fetches.
     // Force refresh may join an inflight fetch that is already cache-busting.
@@ -238,17 +371,23 @@ export class PortalCatalogService {
     const fetch = (async () => {
       try {
         const raw = await this.portalClient.fetchStoreCatalog({ bypassCache: force, timeoutMs: PORTAL_STORE_LISTING_TIMEOUT_MS });
-        const filtered = this.mapCatalogRows(Array.isArray(raw) ? raw : []);
+        const rawRows = Array.isArray(raw) ? raw : [];
+        const result: CatalogFetchResult = {
+          entries: this.mapCatalogRows(rawRows),
+          rows: this.indexCatalogRows(rawRows),
+          bypassedPortalCache: force,
+        };
         if (generation !== this.cacheGeneration) {
-          return this.inflightFetch ?? filtered;
+          return this.inflightFetch ?? result;
         }
-        this.cache = filtered;
+        this.cache = result.entries;
+        this.rawCache = result.rows;
         this.cacheUpdatedAt = Date.now();
-        return this.cache;
+        return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         this.logger.warn(`Portal catalog fetch failed: ${message}`);
-        return this.cache ?? [];
+        return { entries: this.cache ?? [], rows: this.rawCache ?? new Map(), bypassedPortalCache: false, error };
       } finally {
         if (generation === this.cacheGeneration) {
           this.inflightFetch = null;
@@ -451,14 +590,27 @@ export class PortalCatalogService {
     if (isHubManagedMarketplaceApp(appName)) return null;
 
     try {
-      const raw = await this.portalClient.fetchStoreCatalog();
-      const list = Array.isArray(raw) ? raw : [];
-      const app = list.find((item) => {
-        const portalApp = item as PortalCatalogApp;
-        return (portalApp.slug ?? portalApp.id) === appName;
-      }) as PortalCatalogApp | undefined;
+      const cached = await this.getRawCatalogRows();
+      let app = cached.rows.get(appName);
+      let error = cached.error;
 
-      if (!app) return null;
+      // Not in the catalog in hand: it may have been published since. One cache-busting refresh,
+      // bounded by `refreshRawCatalogForMissingSlug`. A Portal that just failed is not asked again.
+      if (!app && !error && !cached.bypassedPortalCache) {
+        const refreshed = await this.refreshRawCatalogForMissingSlug();
+        if (refreshed) {
+          app = refreshed.rows.get(appName);
+          error = refreshed.error;
+        }
+      }
+
+      if (!app) {
+        if (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.warn(`Portal catalog app info fetch failed for ${appUrn}: ${message}`);
+        }
+        return null;
+      }
 
       const slug = app.slug ?? app.id;
       const markdownDescription = slug ? await this.fetchDescriptionMarkdown(slug) : null;
