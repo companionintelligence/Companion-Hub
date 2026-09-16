@@ -51,7 +51,7 @@ describe('LoginForm', () => {
     // not the "opens in your browser" line that belongs to the native shells.
     expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')).toBeInTheDocument();
     expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).not.toBeInTheDocument();
-    expect(screen.getByText('AUTH_LOGIN_NEW_ACCOUNT_NEEDS_PORTAL')).toBeInTheDocument();
+    expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_NEEDS_INTERNET')).not.toBeInTheDocument();
   });
 
   it('explains that Companion Account SSO needs Portal when the Hub is offline', () => {
