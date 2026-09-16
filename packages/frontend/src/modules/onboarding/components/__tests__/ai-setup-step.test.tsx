@@ -505,10 +505,10 @@ describe('AiSetupStep', () => {
 
     const optionIds = Array.from(screen.getByTestId('backend-options').querySelectorAll('label')).map((label) => label.dataset.testid);
     expect(optionIds).toEqual(['backend-option-dspark', 'backend-option-mtplx', 'backend-option-ollama', 'backend-option-vllm']);
-    expect(screen.getByTestId('backend-option-dspark-group')).toContainElement(screen.getByTestId('backend-option-mtplx'));
-    expect(screen.getByTestId('backend-option-dspark-group')).toHaveTextContent('Speculative inference');
+    expect(screen.getByTestId('backend-option-speculative-group')).toContainElement(screen.getByTestId('backend-option-mtplx'));
+    expect(screen.getByTestId('backend-option-speculative-group')).toHaveTextContent('Speculative inference');
     expect(screen.getByTestId('backend-option-dspark')).toHaveTextContent('mlx-dspark');
-    const dsparkDescription = screen.getByTestId('backend-option-dspark-group').querySelector('p');
+    const dsparkDescription = screen.getByTestId('backend-option-speculative-group').querySelector('p');
     expect(dsparkDescription).not.toBeNull();
     expect(dsparkDescription).toHaveTextContent('Speculative decoding on Apple Silicon, 2x - 4x Speed boost');
     expect(screen.getByTestId('backend-option-dspark')).not.toHaveTextContent('Speculative decoding on Apple Silicon, 2x - 4x Speed boost');
@@ -516,6 +516,34 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('backend-option-dspark').querySelector('input') as HTMLInputElement).toBeChecked();
     expect(screen.getByTestId('backend-option-dspark')).toHaveTextContent('Recommended');
     expect(screen.getByTestId('backend-option-mtplx')).not.toHaveTextContent('ONBOARDING_BACKEND_MTPLX_DESC');
+  });
+
+  it('hides the Apple-Silicon-only runners on Linux and heads the speculative group for GPUs', async () => {
+    api.profile = {
+      ...highTierProfile,
+      hardware: { ...highTierProfile.hardware, os: { platform: 'linux', name: 'Ubuntu', version: '24.04' } },
+      backends: {
+        recommended: 'ollama',
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'vllm', running: false, healthy: false },
+          { type: 'lemonade', running: false, healthy: false },
+          { type: 'mtplx', running: false, healthy: false },
+          { type: 'dspark', running: false, healthy: false },
+          { type: 'lucebox', running: false, healthy: false },
+        ],
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-option-ollama')).toBeInTheDocument());
+
+    const optionIds = Array.from(screen.getByTestId('backend-options').querySelectorAll('label')).map((label) => label.dataset.testid);
+    expect(optionIds).toEqual(['backend-option-lucebox', 'backend-option-ollama', 'backend-option-vllm', 'backend-option-lemonade']);
+    const group = screen.getByTestId('backend-option-speculative-group');
+    expect(group).toContainElement(screen.getByTestId('backend-option-lucebox'));
+    expect(group.querySelector('p')).toHaveTextContent('Speculative decoding on supported NVIDIA and AMD GPUs');
+    expect(screen.getByTestId('backend-options')).not.toHaveTextContent('Apple Silicon');
   });
 
   it('shows only inference memory beside capabilities on recommended model cards', async () => {

@@ -29,6 +29,7 @@ const macProfile = {
   ...amdProfile,
   hardware: {
     ...amdProfile.hardware,
+    cpu: { arch: 'x86_64' },
     os: { platform: 'darwin', name: 'macOS', version: '15.6' },
   },
 } as HardwareProfileResponse;
@@ -56,9 +57,19 @@ describe('inference-backend-availability', () => {
     expect(unavailableInferenceBackends(amdProfile)).toEqual([]);
   });
 
-  it('hides Lemonade on macOS while leaving other hosts unchanged', () => {
-    expect(hiddenInferenceBackends(macProfile)).toEqual(['lemonade']);
+  it('hides Lemonade on macOS and nothing when the host OS is unknown', () => {
+    expect(hiddenInferenceBackends(appleMacProfile)).toEqual(['lemonade']);
     expect(hiddenInferenceBackends(nvidiaProfile)).toEqual([]);
+  });
+
+  // mlx-dspark and MTPLX have no Linux, Windows or Docker build, so only Apple Silicon Macs list them.
+  it('hides the Apple-Silicon-only runners on Linux, Windows and Intel Macs', () => {
+    const withOs = (platform: string) =>
+      ({ ...amdProfile, hardware: { ...amdProfile.hardware, os: { platform, name: platform, version: '' } } }) as HardwareProfileResponse;
+    expect(hiddenInferenceBackends(withOs('linux'))).toEqual(['dspark', 'mtplx']);
+    expect(hiddenInferenceBackends(withOs('win32'))).toEqual(['dspark', 'mtplx']);
+    expect(hiddenInferenceBackends(withOs('Windows'))).toEqual(['dspark', 'mtplx']);
+    expect(hiddenInferenceBackends(macProfile)).toEqual(['lemonade', 'dspark', 'mtplx']);
   });
 
   it('defaults Apple Silicon Macs to mlx-dspark even when MTPLX is recommended', () => {
