@@ -518,6 +518,32 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('backend-option-mtplx')).not.toHaveTextContent('ONBOARDING_BACKEND_MTPLX_DESC');
   });
 
+  it('hides the Apple-Silicon-only runners on Linux but keeps speculative inference as its own option', async () => {
+    api.profile = {
+      ...highTierProfile,
+      hardware: { ...highTierProfile.hardware, os: { platform: 'linux', name: 'Ubuntu', version: '24.04' } },
+      backends: {
+        recommended: 'ollama',
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'vllm', running: false, healthy: false },
+          { type: 'lemonade', running: false, healthy: false },
+          { type: 'mtplx', running: false, healthy: false },
+          { type: 'dspark', running: false, healthy: false },
+          { type: 'lucebox', running: false, healthy: false },
+        ],
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-option-ollama')).toBeInTheDocument());
+
+    const optionIds = Array.from(screen.getByTestId('backend-options').querySelectorAll('label')).map((label) => label.dataset.testid);
+    expect(optionIds).toEqual(['backend-option-lucebox', 'backend-option-ollama', 'backend-option-vllm', 'backend-option-lemonade']);
+    expect(screen.queryByTestId('backend-option-dspark-group')).not.toBeInTheDocument();
+    expect(screen.getByTestId('backend-options')).not.toHaveTextContent('Apple Silicon');
+  });
+
   it('shows only inference memory beside capabilities on recommended model cards', async () => {
     const sourceModel = highTierProfile.recommendedModels[0];
     if (!sourceModel) throw new Error('Test fixture is missing a recommended model');

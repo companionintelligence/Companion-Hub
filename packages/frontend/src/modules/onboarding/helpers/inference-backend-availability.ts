@@ -6,9 +6,10 @@ import type { HardwareProfileResponse } from './ai-setup-types';
  * Backends grayed out in the backend picker. All registered local backends are selectable; their
  * setup cards are responsible for showing whether the operator's endpoint is reachable.
  *
- * vLLM, MTPLX, mlx-dspark, and provider-neutral speculative inference are always selectable: all are host-run (or remote)
- * OpenAI-compatible endpoints, so the real gate is the live endpoint probe in their setup cards —
- * not the local GPU or, for MTPLX/mlx-dspark, whether the Mac is Apple Silicon. Hardware still
+ * vLLM, MTPLX, mlx-dspark, and provider-neutral speculative inference are never grayed out: all are
+ * host-run OpenAI-compatible endpoints, so the real gate is the live endpoint probe in their setup
+ * cards, not the local GPU. (MTPLX/mlx-dspark are instead hidden off Apple Silicon Macs — see
+ * {@link hiddenInferenceBackends}.) Hardware still
  * drives which backend is *recommended* (server-side `getRecommendedBackend`), and the catalog only
  * recommends vLLM models that fit an NVIDIA VRAM budget, and MTPLX/mlx-dspark models that
  * fit an Apple-Silicon unified-memory budget (their rows are `gpuVendors: ['apple']`).
@@ -17,12 +18,22 @@ export function unavailableInferenceBackends(_profile: HardwareProfileResponse):
   return [];
 }
 
+/** Runners that only exist for Apple Silicon (MLX/Metal) — there is no Linux, Windows or Docker build. */
+const APPLE_SILICON_ONLY_BACKENDS: InferenceBackendType[] = ['dspark', 'mtplx'];
+
 /**
  * Backends that should be omitted from the picker for the detected host. The profile's OS is the
  * source of truth here — the browser may be connected from a different machine than the Hub.
+ *
+ * Lemonade is hidden on macOS. mlx-dspark and MTPLX are hidden on every host that is not an Apple
+ * Silicon Mac (Linux, Windows, Intel Macs). When the profile reports no OS at all, nothing is
+ * hidden rather than guessing.
  */
 export function hiddenInferenceBackends(profile: HardwareProfileResponse): InferenceBackendType[] {
-  return profile.hardware.os?.platform?.toLowerCase() === 'darwin' ? ['lemonade'] : [];
+  const platform = profile.hardware.os?.platform?.toLowerCase();
+  if (!platform) return [];
+  const hidden: InferenceBackendType[] = platform === 'darwin' ? ['lemonade'] : [];
+  return isAppleSiliconMacProfile(profile) ? hidden : [...hidden, ...APPLE_SILICON_ONLY_BACKENDS];
 }
 
 /** Whether the Hub is running on the Apple Silicon host that can run mlx-dspark natively. */

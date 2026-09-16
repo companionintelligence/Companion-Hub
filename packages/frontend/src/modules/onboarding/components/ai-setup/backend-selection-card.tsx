@@ -46,7 +46,7 @@ interface BackendSelectionCardProps {
   embedded?: boolean;
   /** Backend types that are known-unavailable and should be grayed out (unselectable). */
   unavailableTypes?: InferenceBackendType[];
-  /** Backend types that do not apply to the detected host and should not be shown. */
+  /** Backend types that do not apply to the detected host and should not be shown (unless already selected). */
   hiddenTypes?: InferenceBackendType[];
 }
 
@@ -124,7 +124,8 @@ export const BackendSelectionCard = ({
   hiddenTypes = [],
 }: BackendSelectionCardProps) => {
   const { t } = useTranslation();
-  const visibleBackends = available.filter(({ type }) => !hiddenTypes.includes(type));
+  // Never hide the current selection, so an existing configuration stays visible and changeable.
+  const visibleBackends = available.filter(({ type }) => type === selected || !hiddenTypes.includes(type));
   const backendsByType = new Map(visibleBackends.map((backend) => [backend.type, backend] as const));
   const speculativeBackend = backendsByType.get('dspark');
   const mtplxBackend = backendsByType.get('mtplx');
@@ -185,7 +186,9 @@ export const BackendSelectionCard = ({
           </div>
         )}
         {orderedBackends
-          .filter((type) => type !== 'dspark' && type !== 'lucebox' && !(type === 'mtplx' && speculativeBackend))
+          // Without mlx-dspark (any host that is not an Apple Silicon Mac) there is no Apple group, so
+          // MTPLX and speculative inference render as ordinary top-level options.
+          .filter((type) => !(speculativeBackend && (type === 'dspark' || type === 'mtplx' || type === 'lucebox')))
           .map((type) => {
             const backend = backendsByType.get(type);
             if (!backend) return null;
