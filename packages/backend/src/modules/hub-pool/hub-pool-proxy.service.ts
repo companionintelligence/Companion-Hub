@@ -125,6 +125,14 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
 }
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'upgrade']);
 
+/**
+ * The local-only routes an Ollama-native client probes to decide whether this proxy speaks
+ * Ollama's native protocol before it will use it — see the `warn` log in
+ * {@link PoolProxyService.proxyLocalOnlyRequest} for why exhausting local backends on one of
+ * these specifically deserves louder logging than any other local-only path.
+ */
+const NATIVE_CAPABILITY_PROBE_PATHS = new Set(['/api/version', '/api/tags']);
+
 // ── Serving-node attribution ────────────────────────────────────────────────
 //
 // Which node ran a routed request used to be knowable only from the routing log — session-gated,
@@ -766,6 +774,7 @@ export class PoolProxyService {
       try {
         const upstream = await this.callBackend(type, path, method, resolvedBody);
         if (!upstream.ok) {
+          this.logger.debug(`[PoolProxy] ${path} via local ${type} answered ${upstream.status}; trying the next backend`);
           continue;
         }
         this.commitResponse(upstream, res);
@@ -779,6 +788,19 @@ export class PoolProxyService {
           return;
         }
       }
+    }
+    // `/api/version` and `/api/tags` are how an Ollama-native caller (e.g. ci-hermes with
+    // CI_HERMES_OLLAMA_NATIVE=1) decides whether this proxy speaks Ollama's native protocol at
+    // all. A 502 here is read by that caller as "not Ollama" and silently downgrades it to the
+    // OpenAI-compatible `/v1` surface — which drops `num_ctx` — with nothing logged on ITS side
+    // for a plain 404/502 (see CI-Hermes `ollama_native_adapter.py::_probe_is_ollama`, which only
+    // warns on an indeterminate 401/403). This is the one place on the Hub's side that can still
+    // say so, at `warn` rather than the `debug` every other local-only path failure gets.
+    if (NATIVE_CAPABILITY_PROBE_PATHS.has(path)) {
+      this.logger.warn(
+        `[PoolProxy] no local backend could serve ${path}; a caller probing this route to decide native-vs-OpenAI-compatible ` +
+          'routing (e.g. ci-hermes) will silently fall back to /v1 and lose per-request context-length control.',
+      );
     }
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
   }

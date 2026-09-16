@@ -1,6 +1,7 @@
 import { Writable } from 'node:stream';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { Logger } from '@nestjs/common';
 import type { Response } from 'express';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -1647,6 +1648,80 @@ describe('PoolProxyService', () => {
       await service.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
 
       expect(res.status).toHaveBeenCalledWith(502);
+    });
+
+    // ci-hermes (CI_HERMES_OLLAMA_NATIVE=1) probes GET {root}/api/version to decide whether this
+    // proxy speaks Ollama's native protocol before it will use it, and only trusts a 200 whose body
+    // parses as `{"version": "<str>"}` — see CI-Hermes `ollama_native_adapter.py::_probe_is_ollama`.
+    // This passthrough is a byte-for-byte proxy to the real local Ollama, never a synthesized
+    // response, so the shape is exactly whatever Ollama itself returns.
+    it('passes Ollama’s native /api/version shape through unmodified', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ version: '0.30.11' }), { status: 200 }));
+
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(JSON.parse(Buffer.concat(res.chunks).toString())).toEqual({ version: '0.30.11' });
+    });
+
+    // Ollama's native /api/tags answers `{"models": [...]}` — a different shape from the
+    // OpenAI-compatible /v1/models list (`{"object": "list", "data": [...]}`) served by the sibling
+    // route. Confirms the pool proxy never conflates the two.
+    it('passes Ollama’s native /api/tags shape through unmodified, distinct from the /v1/models shape', async () => {
+      const nativeTags = { models: [{ name: 'llama3.2:3b', model: 'llama3.2:3b', size: 2019393189 }] };
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(nativeTags), { status: 200 }));
+
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
+
+      const [url] = vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://local-ollama:11434/api/tags');
+      const body = JSON.parse(Buffer.concat(res.chunks).toString());
+      expect(body).toEqual(nativeTags);
+      expect(body).not.toHaveProperty('object');
+      expect(body).not.toHaveProperty('data');
+    });
+
+    it('falls over to the next backend for /api/tags when the first one 404s', async () => {
+      const nativeTags = { models: [{ name: 'qwen3.6:27b' }] };
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(new Response('not found', { status: 404 })) // ollama
+        .mockResolvedValueOnce(new Response(JSON.stringify(nativeTags), { status: 200 })); // vllm
+      vllm.getBaseUrl.mockReturnValue('http://local-vllm:8000');
+
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(JSON.parse(Buffer.concat(res.chunks).toString())).toEqual(nativeTags);
+    });
+
+    it.each([
+      '/api/version',
+      '/api/tags',
+    ])('warns that a native-probe path (%s) is unservable, since a silent fallback here loses num_ctx control for callers like ci-hermes', async (path) => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest(path, 'GET', undefined, res);
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(path));
+      warnSpy.mockRestore();
+    });
+
+    // /api/ps and /api/show carry no such native-vs-fallback significance, so exhausting local
+    // backends for them stays at the existing quiet 502 — no warn log.
+    it('does not warn for an unrelated local-only path exhausting its backends', async () => {
+      const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest('/api/ps', 'GET', undefined, res);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
 
     // OpenClaw's Ollama provider asks `/api/show` about its chat model before the first chat, and on
