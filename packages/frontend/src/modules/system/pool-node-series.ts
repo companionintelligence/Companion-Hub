@@ -426,6 +426,8 @@ export interface RoutingActivity {
   total: number;
   served: number;
   failed: number;
+  /** Placed on a node and still waiting for its first byte — minutes, for an agent turn on a self-hosted engine. */
+  pending: number;
   failovers: number;
   inbound: number;
   outbound: number;
@@ -442,10 +444,11 @@ export interface RoutingActivity {
  * different settings.
  */
 export function routingActivity(entries: RoutingLogEntry[]): RoutingActivity {
-  const activity: RoutingActivity = { total: entries.length, served: 0, failed: 0, failovers: 0, inbound: 0, outbound: 0, unplaced: 0 };
+  const activity: RoutingActivity = { total: entries.length, served: 0, failed: 0, pending: 0, failovers: 0, inbound: 0, outbound: 0, unplaced: 0 };
 
   for (const entry of entries) {
     if (entry.outcome === 'served') activity.served += 1;
+    else if (entry.outcome === 'pending') activity.pending += 1;
     else activity.failed += 1;
 
     if ((entry.failedOverFrom?.length ?? 0) > 0) activity.failovers += 1;
