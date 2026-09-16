@@ -1,12 +1,12 @@
 import { findCatalogAppBySlug } from '@/lib/marketplace-app-slug';
-import { Brain, Shield } from 'lucide-react';
+import { Shield } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ExposureMode } from '../../helpers/ai-setup-types';
 import type { OnboardingApp } from '../../helpers/types';
 import { useMarketplaceCatalogApps } from '../../helpers/use-marketplace-catalog-apps';
 import { cn } from '@/lib/utils';
-import { OnboardingAppIcon } from '../onboarding-app-icon';
+import { CompanionMemoryMark } from './companion-memory-mark';
 import { SelectIndicator, StepSection } from './primitives';
 
 /** Companion Memory is the first-party memory provider offered by the Hub. */
@@ -124,7 +124,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
   const memoryAvailable = Boolean(memoryApp?.available) && !showLoadingState;
 
   return (
-    <StepSection number={5} badge="recommended" title={t('ONBOARDING_COMPANION_MEMORY_TITLE')} description={t('ONBOARDING_COMPANION_MEMORY_DESC')}>
+    <StepSection number={5} title={t('ONBOARDING_COMPANION_MEMORY_TITLE')} description={t('ONBOARDING_COMPANION_MEMORY_DESC')}>
       <div data-testid="companion-apps-card">
         <div className="mb-4 flex items-start gap-2 rounded-md border border-success/30 bg-success/10 p-3" data-testid="companion-privacy-callout">
           <Shield className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
@@ -161,11 +161,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
                 className="sr-only"
               />
             </span>
-            <OnboardingAppIcon
-              app={{ appSlug: memoryApp.slug, name: memoryApp.name, icon: memoryApp.icon, urn: memoryApp.urn }}
-              size={48}
-              fallback={<Brain className="h-6 w-6 text-primary" aria-hidden="true" />}
-            />
+            <CompanionMemoryMark size={120} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-base font-semibold text-foreground">{memoryApp.name}</span>
