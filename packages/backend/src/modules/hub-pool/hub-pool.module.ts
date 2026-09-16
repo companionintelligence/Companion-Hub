@@ -6,6 +6,7 @@ import { TailscaleModule } from '@/modules/tailscale/tailscale.module';
 import { InferenceModule } from '@/modules/inference/inference.module';
 import { PortalModule } from '@/core/portal/portal.module';
 import { HubPoolController } from './hub-pool.controller';
+import { HubPoolOllamaCompatController } from './hub-pool-ollama-compat.controller';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolIdentityRepository } from './hub-pool-identity.repository';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
@@ -27,7 +28,7 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
 // between AppsModule and InferenceModule.
 @Module({
   imports: [LoggerModule, FilesystemModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule), forwardRef(() => PortalModule)],
-  controllers: [HubPoolController],
+  controllers: [HubPoolController, HubPoolOllamaCompatController],
   providers: [
     HubPoolPeerRepository,
     HubPoolIdentityRepository,
