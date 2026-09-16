@@ -185,6 +185,9 @@ importers:
       drizzle-orm:
         specifier: 0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(pg@8.20.0)
+      express:
+        specifier: ^5.2.1
+        version: 5.2.1
       i18next:
         specifier: ^25.1.2
         version: 25.10.10(typescript@5.9.3)
@@ -7723,10 +7726,6 @@ packages:
     resolution: {integrity: sha512-TkRKr9sUTxEH8MdfuCSP7VizJyzRNMjj2J2do2Jr3Kym598JVdEksuzPQCnlFPW4ky9Q+iA+ma9BGm06XQBy8g==}
     engines: {node: '>= 0.6'}
 
-  type-is@2.0.1:
-    resolution: {integrity: sha512-OZs6gsjF4vMp32qrCbiVSkrFmXtG/AZhY3t0iAMrMBiAZyV9oALtXO8hsrHbMXF9x6L3grlFuwW2oAz7cav+Gw==}
-    engines: {node: '>= 0.6'}
-
   type-is@2.1.0:
     resolution: {integrity: sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA==}
     engines: {node: '>= 18'}
@@ -11366,7 +11365,7 @@ snapshots:
       obug: 2.2.1
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(@vitest/coverage-v8@4.1.11)(jsdom@27.4.0(@noble/hashes@1.8.0))(msw@2.13.2(@types/node@24.12.2)(typescript@5.9.3))(vite@7.3.5(@types/node@24.12.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.9.0))
+      vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(@vitest/coverage-v8@4.1.11)(jsdom@27.4.0(@noble/hashes@1.8.0))(msw@2.13.2(@types/node@24.12.2)(typescript@5.9.3))(vite@7.3.5(@types/node@24.12.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.46.1)(tsx@4.21.0)(yaml@2.8.3))
 
   '@vitest/expect@4.1.11':
     dependencies:
@@ -12900,7 +12899,7 @@ snapshots:
       send: 1.2.1
       serve-static: 2.2.1
       statuses: 2.0.2
-      type-is: 2.0.1
+      type-is: 2.1.0
       vary: 1.1.2
     transitivePeerDependencies:
       - supports-color
@@ -15983,12 +15982,6 @@ snapshots:
     dependencies:
       media-typer: 0.3.0
       mime-types: 2.1.35
-
-  type-is@2.0.1:
-    dependencies:
-      content-type: 1.0.5
-      media-typer: 1.1.0
-      mime-types: 3.0.2
 
   type-is@2.1.0:
     dependencies:
