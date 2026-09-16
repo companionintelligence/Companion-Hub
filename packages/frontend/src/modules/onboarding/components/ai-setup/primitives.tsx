@@ -4,7 +4,7 @@ import { Check, ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { LEVEL_BG, LEVEL_TEXT, scoreColor } from './levels';
+import { LEVEL_BG, LEVEL_TEXT, SCORE_BAR_MAX, scoreColor } from './levels';
 
 /* Shared presentational building blocks for the redesigned AI setup wizard. */
 
@@ -257,14 +257,14 @@ interface ModelCardProps {
   /** Place the resource metadata beside the capability tags instead of in a separate footer row. */
   metaInline?: boolean;
   /** Artificial Analysis benchmark scores (omitted fields are hidden). */
-  scores?: { intelligence?: number; toolCalling?: number };
+  scores?: { intelligence?: number };
   testId?: string;
   checkboxTestId?: string;
 }
 
 /** A small labeled benchmark score with a proportional bar, colored by level (red → blue). */
 function ScoreBar({ label, value, testId }: { label: string; value: number; testId?: string }) {
-  const pct = Math.max(4, Math.min(100, (value / 60) * 100));
+  const pct = Math.max(4, Math.min(100, (value / SCORE_BAR_MAX) * 100));
   const color = scoreColor(value);
   return (
     <span className="flex items-center gap-1.5" data-testid={testId}>
@@ -348,10 +348,9 @@ export function ModelCard({
           )}
         </span>
       )}
-      {scores && (scores.intelligence != null || scores.toolCalling != null) && (
+      {scores && scores.intelligence != null && (
         <span className="flex flex-wrap gap-x-3 gap-y-1" data-testid="model-scores">
-          {scores.intelligence != null && <ScoreBar label={t('ONBOARDING_INTELLIGENCE')} value={scores.intelligence} testId="score-intelligence" />}
-          {scores.toolCalling != null && <ScoreBar label={t('ONBOARDING_TOOL_USE')} value={scores.toolCalling} testId="score-tools" />}
+          <ScoreBar label={t('ONBOARDING_INTELLIGENCE')} value={scores.intelligence} testId="score-intelligence" />
         </span>
       )}
       {meta && !metaInline && <span className="block text-xs text-muted-foreground">{meta}</span>}

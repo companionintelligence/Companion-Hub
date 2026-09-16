@@ -82,9 +82,9 @@ export function modelMeta(model: CuratedModel, includeStorage = true): ReactNode
   );
 }
 
-/** Artificial Analysis benchmark scores (0–100ish) shown on each model — intelligence + tool calling. */
-export function modelScores(model: CuratedModel): { intelligence?: number; toolCalling?: number } {
-  return { intelligence: model.metadata?.intelligenceIndex, toolCalling: model.metadata?.toolCallingIndex };
+/** Artificial Analysis benchmark score (0–100ish) shown on each model — the Intelligence Index. */
+export function modelScores(model: CuratedModel): { intelligence?: number } {
+  return { intelligence: model.metadata?.intelligenceIndex };
 }
 
 /** Step 2 — Recommended Models. Top catalog models for the detected hardware, as selectable tiles.
@@ -244,9 +244,6 @@ function ModelTableRow({
         <ScoreCell value={model.metadata?.intelligenceIndex} />
       </td>
       <td className="py-2 pr-3 text-right align-middle">
-        <ScoreCell value={model.metadata?.toolCallingIndex} />
-      </td>
-      <td className="py-2 pr-3 text-right align-middle">
         <ResourceCell mb={model.runtime.memoryFootprintMb} />
       </td>
       <td className="py-2 pr-3 text-right align-middle">
@@ -304,7 +301,6 @@ function ModelGroup({
                 <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_TIER')}</th>
                 <th className="py-1.5 pr-3 font-medium">{t('ONBOARDING_CAPABILITIES')}</th>
                 <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_INTELLIGENCE')}</th>
-                <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_TOOL_USE')}</th>
                 <th className="py-1.5 pr-3 text-right font-medium">{t('ONBOARDING_RAM')}</th>
                 <th className="py-1.5 pr-3 text-right font-medium">{t('COMMON_DISK')}</th>
               </tr>
@@ -365,7 +361,7 @@ const OTHER_MODEL_GROUPS: { key: string; title: string; testId: string; color: L
 /**
  * Non-recommended installable models, as a color-coded table grouped by parameter range (plus
  * embedding/speech). Each category is collapsed by default; rows show colored tier and capability
- * tags alongside intelligence / tool-use scores and RAM / disk. De-duplicated by id.
+ * tags alongside the intelligence score and RAM / disk. De-duplicated by id.
  */
 export const OtherModels = ({
   recommendedModels,
