@@ -56,6 +56,20 @@ export interface PoolRoutingRecord {
    * the streamed generation, which continues afterwards. `null` while the request is `pending`.
    */
   durationMs: number | null;
+  /**
+   * Token counts, attached separately from `settle()` — settling happens at response headers, but
+   * a token count does not exist until generation finishes. `null` until then, and stays `null`
+   * forever when the backend's response never carried a usage frame (see `response-usage-tap.ts`:
+   * not every dialect reports one, and this is never estimated from `durationMs` or byte counts).
+   */
+  usage: PoolRoutingUsage | null;
+}
+
+/** Token counts as a backend reported them. Any field the response omitted is `null`, not summed around. */
+export interface PoolRoutingUsage {
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
 }
 
 /** A pin as the routing log records it: shape only, never the model or the peer id — the record already has both. */
@@ -107,8 +121,8 @@ export class HubPoolRoutingLogService {
    * that fails over three times is still one line, as before. If the ring has already evicted the
    * row by the time it settles, the mutation is harmless.
    */
-  open(entry: Omit<PoolRoutingRecord, 'outcome' | 'status' | 'durationMs'>): PoolRoutingRecord {
-    const row: PoolRoutingRecord = { ...entry, outcome: 'pending', status: null, durationMs: null };
+  open(entry: Omit<PoolRoutingRecord, 'outcome' | 'status' | 'durationMs' | 'usage'>): PoolRoutingRecord {
+    const row: PoolRoutingRecord = { ...entry, outcome: 'pending', status: null, durationMs: null, usage: null };
     this.record(row);
     return row;
   }
@@ -116,6 +130,16 @@ export class HubPoolRoutingLogService {
   /** Move a row out of `pending`. Fields not given keep what the placement wrote. */
   settle(row: PoolRoutingRecord, patch: Partial<PoolRoutingRecord> & { outcome: 'served' | 'failed' }): void {
     Object.assign(row, patch);
+  }
+
+  /**
+   * Attach token usage once the backend's response finishes, well after `settle()` already
+   * recorded the outcome at headers time. Same object-reference mutation as `settle()`, and the
+   * same tolerance for a row the ring has already evicted — a slow generation can outlive its own
+   * row's place in a 200-entry buffer, and that is not a bug in this method.
+   */
+  attachUsage(row: PoolRoutingRecord, usage: PoolRoutingUsage): void {
+    row.usage = usage;
   }
 
   /** Newest first, so a UI showing only the first page shows the most recent decisions. */

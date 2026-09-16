@@ -22,8 +22,9 @@ import {
 } from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
-import { HubPoolRoutingLogService, type PoolRoutingOutcome, type PoolRoutingPin } from './hub-pool-routing-log.service';
+import { HubPoolRoutingLogService, type PoolRoutingOutcome, type PoolRoutingPin, type PoolRoutingUsage } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
+import { injectUsageOptIn, tapResponseUsageWhileStreaming } from './response-usage-tap';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -487,13 +488,18 @@ export class PoolProxyService {
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
+        usage: null,
       });
       res.status(502).json({ error: describeUnresolvableAuto() });
       return;
     }
     // The engine gets the resolved id, never the alias: it is the pool that knows what `auto` means
     // here, and a peer's engine would refuse the literal word.
-    const body = model === params.model || !isRecord(params.body) ? params.body : { ...params.body, model };
+    const aliasedBody = model === params.model || !isRecord(params.body) ? params.body : { ...params.body, model };
+    // Streamed OpenAI-compatible dialects only report token usage when the request opts in — the
+    // app that originated this call has no reason to know that, so the proxy adds it here rather
+    // than never seeing a usage frame at all. See `response-usage-tap.ts`.
+    const body = injectUsageOptIn(aliasedBody);
     const { candidates, pin } = await this.rankCandidates(model);
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
@@ -515,6 +521,7 @@ export class PoolProxyService {
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
+        usage: null,
       });
       res.status(502).json({ error: describeNoCandidates(model, pin) });
       return;
@@ -576,7 +583,7 @@ export class PoolProxyService {
         // streamed path too — the headers are the point of no return, the body follows.
         this.commitResponse(upstream, res, servedByHeaders(candidate, model));
         committed = true;
-        await this.streamResponse(upstream, res);
+        await this.streamResponse(upstream, res, (usage) => this.routingLog.attachUsage(row, usage));
         return;
       } catch (error) {
         lastError = error;
@@ -780,6 +787,10 @@ export class PoolProxyService {
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,
+      // Inbound (peer-forwarded) usage capture is out of scope for now — see the PR description.
+      // `forwardToLocalBackendAndRespond` calls the shared `pipeResponse`/`callBackend` path, not
+      // `proxyRequest`, so wiring this in later means threading the same tap through there too.
+      usage: null,
     });
   }
 
@@ -1076,12 +1087,19 @@ export class PoolProxyService {
     }
   }
 
-  private async streamResponse(upstream: globalThis.Response, res: Response): Promise<void> {
+  /**
+   * `onUsage`, when given, taps the body for a token-usage frame while it streams through — see
+   * `response-usage-tap.ts`. Optional because not every caller has a routing-log row to attach it
+   * to (`pipeResponse`, the inbound/listing paths below, records usage nowhere today).
+   */
+  private async streamResponse(upstream: globalThis.Response, res: Response, onUsage?: (usage: PoolRoutingUsage) => void): Promise<void> {
     if (!upstream.body) {
       res.end();
       return;
     }
-    await pipeline(Readable.fromWeb(upstream.body as WebReadableStream), res);
+    const webBody = upstream.body as WebReadableStream<Uint8Array>;
+    const body = onUsage ? tapResponseUsageWhileStreaming(webBody, onUsage) : webBody;
+    await pipeline(Readable.fromWeb(body), res);
   }
 
   private async pipeResponse(upstream: globalThis.Response, res: Response): Promise<void> {

@@ -23,10 +23,12 @@ const activity = (over: Partial<RoutingActivity> = {}): RoutingActivity => ({
   total: 12,
   served: 10,
   failed: 2,
+  pending: 0,
   failovers: 3,
   inbound: 4,
   outbound: 8,
   unplaced: 0,
+  tokensServed: 0,
   ...over,
 });
 

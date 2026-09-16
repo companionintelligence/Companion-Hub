@@ -204,6 +204,14 @@ export interface RoutingLogEntry {
   candidates?: number;
   failedOverFrom?: string[];
   pin?: unknown;
+  /**
+   * Token counts, attached once the backend's response finished — `null`/absent while pending,
+   * and forever when the dialect never reported one (most entries, today: see
+   * `response-usage-tap.ts` on the backend for exactly which two shapes are recognised). Never a
+   * proxy for a real count — no estimate from `durationMs` or byte lengths, matching the same
+   * rule `workload-coverage.tsx` states for the per-workload tile this feeds `tokensByModel` for.
+   */
+  usage?: { promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } | null;
 }
 
 export interface InferenceBackendStatus {
@@ -479,6 +487,30 @@ export function routingByNode(entries: RoutingLogEntry[], unplacedLabel: string)
   if (unplaced > 0) byNode.set(unplacedLabel, unplaced);
 
   return byNode;
+}
+
+/**
+ * Total tokens per model, summed from routing-log entries that actually carry a usage frame.
+ *
+ * Most entries carry none — capture only recognises Ollama's native NDJSON trailer and an
+ * OpenAI-style `usage` object (opted into on the proxy's behalf for streamed requests), and only
+ * for OUTBOUND work this Hub itself placed. An entry with no `usage.totalTokens` contributes
+ * nothing to any model's total. Unlike {@link routingByNode}'s `unplacedLabel`, there is no
+ * "unmeasured" bucket here: absence is the expected common case for most requests today, not an
+ * operator-facing gap worth a row of its own — the partial coverage is visible instead in how much
+ * smaller this sum reads than `RoutingActivity.served`.
+ */
+export function tokensByModel(entries: RoutingLogEntry[]): Map<string, number> {
+  const byModel = new Map<string, number>();
+
+  for (const entry of entries) {
+    if (entry.direction !== 'outbound' || !entry.model) continue;
+    const total = entry.usage?.totalTokens;
+    if (typeof total !== 'number' || !Number.isFinite(total) || total <= 0) continue;
+    byModel.set(entry.model, (byModel.get(entry.model) ?? 0) + total);
+  }
+
+  return byModel;
 }
 
 export function poolReach(peers: PoolPeerSummary[], local: PoolNodeSummary | undefined): PoolReach {

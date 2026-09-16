@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
 import { type RoutingBucket, routingActivity } from '@/modules/system/pool-node-series';
-import { type LoadState, type RoutingLogEntry, routingByNode, routingLogKeys } from '@/modules/system/use-dashboard-data';
+import { type LoadState, type RoutingLogEntry, routingByNode, routingLogKeys, tokensByModel } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
 
 /*
@@ -116,6 +116,13 @@ export function PoolActivity({
     .sort((a, b) => b[1] - a[1])
     .map(([label, value], index) => ({ label, value, tone: NODE_TONES[index % NODE_TONES.length] as Tone }));
 
+  // Same partial-coverage reality as the `tokensServed` chip above: a model absent here is not
+  // "used zero tokens", it is "every request for it so far landed on an entry with no usage frame".
+  const byModel = tokensByModel(entries);
+  const tokenSegments = [...byModel.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, value], index) => ({ label, value, tone: NODE_TONES[index % NODE_TONES.length] as Tone }));
+
   return (
     <Panel
       title={t('DASHBOARD_ACTIVITY_TITLE')}
@@ -134,6 +141,13 @@ export function PoolActivity({
             <StatChipRow>
               <StatChip value={activity.total} label={t('DASHBOARD_ACTIVITY_DECISIONS')} tone={activity.total > 0 ? 'plain' : 'muted'} />
               <StatChip value={activity.served} label={t('DASHBOARD_SERVED')} tone={activity.served > 0 ? 'ok' : 'muted'} />
+              <StatChip
+                value={activity.tokensServed > 0 ? activity.tokensServed.toLocaleString() : 0}
+                label={t('DASHBOARD_ACTIVITY_TOKENS')}
+                tone={activity.tokensServed > 0 ? 'plain' : 'muted'}
+                hint={t('DASHBOARD_ACTIVITY_TOKENS_HINT')}
+                hintId="dashboard-activity-tokens"
+              />
               <StatChip value={activity.pending} label={t('DASHBOARD_ACTIVITY_IN_FLIGHT')} tone={activity.pending > 0 ? 'warn' : 'muted'} />
               <StatChip value={activity.failed} label={t('DASHBOARD_FAILED')} tone={activity.failed > 0 ? 'bad' : 'muted'} />
               <StatChip
@@ -168,6 +182,21 @@ export function PoolActivity({
                   ))}
                 </div>
                 <p className="text-[11px] text-muted-foreground/80">{t('DASHBOARD_ACTIVITY_BY_NODE_CAVEAT')}</p>
+              </div>
+            ) : null}
+
+            {tokenSegments.length > 0 ? (
+              <div className="space-y-1.5">
+                <StackedBar segments={tokenSegments} className="h-3" />
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                  {tokenSegments.map((segment) => (
+                    <span key={segment.label} className="inline-flex items-center gap-1.5">
+                      <StatusDot tone={segment.tone} className="h-2 w-2" />
+                      {segment.label} <span className="tabular-nums font-medium text-foreground">{segment.value.toLocaleString()}</span>
+                    </span>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted-foreground/80">{t('DASHBOARD_ACTIVITY_BY_MODEL_TOKENS_CAVEAT')}</p>
               </div>
             ) : null}
           </div>

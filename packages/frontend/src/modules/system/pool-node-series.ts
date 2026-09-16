@@ -433,6 +433,12 @@ export interface RoutingActivity {
   outbound: number;
   /** Outbound attempts no node took. Distinct from `failed`: nothing was even tried at a node. */
   unplaced: number;
+  /**
+   * Sum of `usage.totalTokens` over held entries that actually carry one — a real, partial count,
+   * not an estimate standing in for the entries that don't (see `RoutingLogEntry.usage`). Reads
+   * far below `served` today: most served requests still have no usage frame at all.
+   */
+  tokensServed: number;
 }
 
 /**
@@ -444,7 +450,17 @@ export interface RoutingActivity {
  * different settings.
  */
 export function routingActivity(entries: RoutingLogEntry[]): RoutingActivity {
-  const activity: RoutingActivity = { total: entries.length, served: 0, failed: 0, pending: 0, failovers: 0, inbound: 0, outbound: 0, unplaced: 0 };
+  const activity: RoutingActivity = {
+    total: entries.length,
+    served: 0,
+    failed: 0,
+    pending: 0,
+    failovers: 0,
+    inbound: 0,
+    outbound: 0,
+    unplaced: 0,
+    tokensServed: 0,
+  };
 
   for (const entry of entries) {
     if (entry.outcome === 'served') activity.served += 1;
@@ -452,6 +468,11 @@ export function routingActivity(entries: RoutingLogEntry[]): RoutingActivity {
     else activity.failed += 1;
 
     if ((entry.failedOverFrom?.length ?? 0) > 0) activity.failovers += 1;
+
+    const totalTokens = entry.usage?.totalTokens;
+    if (typeof totalTokens === 'number' && Number.isFinite(totalTokens) && totalTokens > 0) {
+      activity.tokensServed += totalTokens;
+    }
 
     if (entry.direction === 'inbound') {
       activity.inbound += 1;
