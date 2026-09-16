@@ -465,6 +465,27 @@ describe('routingActivity', () => {
   });
 
   it('is all zeros for an empty log, which is a real state after a restart', () => {
-    expect(routingActivity([])).toEqual({ total: 0, served: 0, failed: 0, pending: 0, failovers: 0, inbound: 0, outbound: 0, unplaced: 0 });
+    expect(routingActivity([])).toEqual({
+      total: 0,
+      served: 0,
+      failed: 0,
+      pending: 0,
+      failovers: 0,
+      inbound: 0,
+      outbound: 0,
+      unplaced: 0,
+      tokensServed: 0,
+    });
+  });
+
+  it('sums usage.totalTokens across held entries, and ignores entries with none', () => {
+    const activity = routingActivity([
+      row({ usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 } }),
+      row({ usage: { promptTokens: 50, completionTokens: 10, totalTokens: 60 } }),
+      row(), // no usage at all — the common case today, must not read as 0 tokens contributing anything odd
+      row({ outcome: 'pending', usage: null }),
+    ]);
+
+    expect(activity.tokensServed).toBe(180);
   });
 });

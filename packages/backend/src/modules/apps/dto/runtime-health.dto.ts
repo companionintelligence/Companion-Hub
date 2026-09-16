@@ -13,6 +13,11 @@ const containerRuntimeStatsSchema = z.object({
   memoryLimitBytes: z.number(),
 });
 
+const unattributedGpuProcessSchema = z.object({
+  processName: z.string(),
+  vramMb: z.number(),
+});
+
 const appRuntimeHistoryPointSchema = z.object({
   appUrn: z.string(),
   appName: z.string(),
@@ -20,6 +25,7 @@ const appRuntimeHistoryPointSchema = z.object({
   cpuPercent: z.number(),
   memoryUsageBytes: z.number(),
   containerCount: z.number(),
+  gpuVramMb: z.number().nullable(),
 });
 
 const appRuntimeHealthSchema = z.object({
@@ -39,6 +45,7 @@ const appRuntimeHealthSchema = z.object({
   usesDefaultCpuLimit: z.boolean(),
   sampledAt: z.string(),
   containers: z.array(containerRuntimeStatsSchema),
+  gpuVramMb: z.number().nullable(),
 });
 
 const appRuntimeHistorySampleSchema = z.object({
@@ -50,6 +57,7 @@ const appRuntimeMonitorSchema = z.object({
   sampledAt: z.string(),
   apps: z.array(appRuntimeHealthSchema),
   history: z.array(appRuntimeHistorySampleSchema),
+  unattributedGpu: z.array(unattributedGpuProcessSchema).nullable(),
 });
 
 export class AppRuntimeHealthDto extends createZodDto(appRuntimeHealthSchema) {}

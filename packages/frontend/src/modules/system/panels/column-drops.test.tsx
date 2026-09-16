@@ -63,6 +63,7 @@ const app: AppRuntimeHealth = {
   usesDefaultCpuLimit: true,
   sampledAt: '2026-09-10T02:31:00Z',
   containers: [],
+  gpuVramMb: null,
 };
 
 describe('column drops', () => {

@@ -309,6 +309,10 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           cpuPercent: Math.max(0, app.cpuPercent + Math.sin(i / 2) * (app.cpuPercent / 3)),
           memoryUsageBytes: app.memoryUsageBytes,
           containerCount: app.containers.length,
+          // None of this fixture's apps hold GPU memory in real life either — the fleet's GPU
+          // consumers are ollama (a host process) and vllm/lucebox, none of which are marketplace
+          // apps this monitor tracks as a workload.
+          gpuVramMb: null,
         })),
       })),
     };
@@ -360,7 +364,13 @@ describe('workload coverage tile', () => {
 
     // The words, in the register the copy rules fix: present tense, and never "0", "—",
     // "no data", "unavailable" or "coming soon".
-    expect(tile?.textContent).toContain('Not measured');
+    //
+    // GPU VRAM is real now (see workload-trends.tsx) — this tile's GPU tag says so precisely
+    // ("VRAM only") rather than the blanket "Not measured" it used to say; compute UTILIZATION
+    // per workload is the half that remains genuinely unmeasured. Tokens are unchanged: still
+    // "Not recorded" per workload, even though real per-model counts now exist elsewhere.
+    expect(tile?.textContent).toContain('VRAM only');
+    expect(tile?.textContent).toContain('NOT measured');
     expect(tile?.textContent).toContain('Not recorded');
     expect(tile?.textContent).toContain('GPU per workload');
     expect(tile?.textContent).toContain('LLM tokens per workload');

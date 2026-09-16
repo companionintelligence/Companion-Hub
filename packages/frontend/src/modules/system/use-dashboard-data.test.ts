@@ -12,6 +12,7 @@ import {
   poolReach,
   routingByNode,
   routingLogKeys,
+  tokensByModel,
 } from './use-dashboard-data';
 
 /*
@@ -174,6 +175,53 @@ describe('routingByNode', () => {
     expect([...counts.entries()].sort()).toEqual([
       ['Unplaced', 1],
       ['core-2', 1],
+    ]);
+  });
+});
+
+describe('tokensByModel', () => {
+  const row = (over: Record<string, unknown> = {}) =>
+    ({
+      at: '2026-01-01T00:00:00Z',
+      direction: 'outbound',
+      path: '/v1/chat/completions',
+      model: 'qwen3.5:9b',
+      node: 'core-2.tail.ts.net',
+      backend: 'ollama',
+      outcome: 'served',
+      ...over,
+    }) as never;
+
+  it('sums usage.totalTokens for a model across held entries that report one', () => {
+    const counts = tokensByModel([
+      row({ usage: { promptTokens: 100, completionTokens: 20, totalTokens: 120 } }),
+      row({ usage: { promptTokens: 50, completionTokens: 10, totalTokens: 60 } }),
+    ]);
+
+    expect(counts.get('qwen3.5:9b')).toBe(180);
+  });
+
+  it('contributes nothing for an entry with no usage frame, rather than treating it as zero tokens', () => {
+    const counts = tokensByModel([row(), row({ usage: null })]);
+
+    expect(counts.size).toBe(0);
+  });
+
+  it('ignores inbound rows — a peer forward never carries a model we asked for', () => {
+    const counts = tokensByModel([row({ direction: 'inbound', model: null, usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } })]);
+
+    expect(counts.size).toBe(0);
+  });
+
+  it('keeps two models apart', () => {
+    const counts = tokensByModel([
+      row({ model: 'qwen3.5:9b', usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } }),
+      row({ model: 'nomic-embed-text', usage: { promptTokens: 100, completionTokens: 0, totalTokens: 100 } }),
+    ]);
+
+    expect([...counts.entries()].sort()).toEqual([
+      ['nomic-embed-text', 100],
+      ['qwen3.5:9b', 15],
     ]);
   });
 });

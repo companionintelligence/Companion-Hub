@@ -4,20 +4,30 @@ import type { HardwareSummary } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
 
 /*
- * THE THIRD TILE: what this page does not measure per workload, said in words.
+ * THE FOURTH TILE: what this page still does not measure per workload, said in words.
  *
  * The request that produced this board asked for three line graphs — CPU, GPU and LLM tokens.
- * Two of those three metrics DO NOT EXIST anywhere in this product:
+ * As of the original build, two of those three metrics did not exist anywhere in this product.
+ * One of them has since become partly real, and the other has moved to a different axis:
  *
- *   - GPU per workload. The Hub measures the HOST GPU (vendor, model, VRAM, runtime availability)
- *     and a smoothed 0-3 pressure band per NODE. Neither is per container. On this fleet the GPU
- *     is driven by host processes — ollama, lucebox's dflash_server — not by containers at all,
- *     so a Docker-derived per-container figure would read near zero and mislead.
- *   - Tokens per workload. `RoutingLogEntry` is `{ at, direction, path, model, node, backend,
- *     outcome, status, durationMs, attempt, candidates, failedOverFrom, pin }` and nothing is
- *     written when a response finishes. The only `promptTokens`/`totalTokens` in this repo are in
- *     the OFFLINE eval harness at `packages/backend/src/modules/inference/eval/capture.ts`, which
- *     is not the serving path.
+ *   - GPU per workload. Real per-process VRAM now exists (`gpu-process-sampler.service.ts`,
+ *     shelling `rocm-smi --showpids` / `nvidia-smi --query-compute-apps`), attributed to whichever
+ *     workload's container holds it via `docker top` (`DockerReadFacade.mapPidsToContainers`), and
+ *     is drawn as a real chart in `workload-trends.tsx` beside CPU and memory. What is STILL not
+ *     measured, and is not a gap in this repo's code but a ceiling in the tools it shells out to:
+ *     compute UTILIZATION per process. `rocm-smi`'s own `CU OCCUPANCY` column reads `UNKNOWN` on
+ *     every process this fleet has ever shown it, and `nvidia-smi pmon`'s per-process sm/mem/enc/
+ *     dec columns are all `-` on this driver — confirmed live on beta-max (AMD) and beta-red
+ *     (NVIDIA), 2026-09-15. Neither vendor's own tooling exposes it here.
+ *   - Tokens per workload. The routing log now records real token usage when a backend's response
+ *     reports one (`response-usage-tap.ts`, wired through `HubPoolRoutingLogService.attachUsage`)
+ *     — see the per-model breakdown in `pool-activity.tsx`. But that is tokens per MODEL/NODE, not
+ *     per WORKLOAD, and the two are not interchangeable: every inference route apps call
+ *     (`v1/chat/completions` etc.) is guarded only by `InternalNetworkGuard`, which checks that the
+ *     caller's source IP is private — it has no concept of which APP is calling at all.
+ *     `HUB_INFERENCE_URL` is one shared address every app is configured with the same value for.
+ *     Attributing a request to a workload needs caller identity added to that path first; nothing
+ *     here estimates one from which model or node happened to serve it.
  *
  * ── Why this is not a Panel, and takes no LoadState ──────────────────────────────────────────
  *
@@ -45,15 +55,20 @@ import { useTranslation } from 'react-i18next';
  *
  * ── Copy rules, for whoever edits the strings later ──────────────────────────────────────────
  *
- * The words are "not measured" and "not recorded", present tense. NEVER "0". Never a dash. Never
- * "no data" (reads as an empty result set). Never "unavailable" (reads as a failed fetch). Never
- * "coming soon" (a roadmap promise this page has no business making).
+ * The GPU tag is now "VRAM only" — real, but scoped, so it must never regress back to a blanket
+ * "not measured" now that half of it is true. The tokens tag stays "not recorded", present tense —
+ * that half genuinely still is not, per-workload. NEVER "0". Never a dash. Never "no data" (reads
+ * as an empty result set). Never "unavailable" (reads as a failed fetch). Never "coming soon" (a
+ * roadmap promise this page has no business making).
  *
- * NEVER, so that a later contributor does not undo this: no zero series; no `?? 0` fill for either
- * metric; no percentage derived from `gpuPressure` (a 0-3 band — `BandMeter`'s doc comment explains
- * why a meter would be a lie); no token estimate from `durationMs` (time to response HEADERS,
- * including failed attempts, as `pool-activity.tsx` documents) or from character counts; and no
- * `containers[].cpuPercent` standing in as a GPU proxy.
+ * NEVER, so that a later contributor does not undo this: no zero series in the trend charts this
+ * tile points at; no percentage derived from `gpuPressure` (a 0-3 band — `BandMeter`'s doc comment
+ * explains why a meter would be a lie, and it is a per-NODE figure regardless, not per-workload);
+ * no per-process GPU UTILIZATION invented from VRAM, CPU%, or anything else, because the real VRAM
+ * number existing now is exactly what makes a fabricated utilization number beside it most
+ * dangerous — it would borrow the real one's credibility; and no token count attributed to a
+ * WORKLOAD by guessing from model/node/timing, because the real per-model number existing now is
+ * the same trap one level over.
  */
 
 function CoverageBlock({ label, tag, why, enable, nearest }: { label: string; tag: string; why: string; enable: string; nearest: string }) {

@@ -5,6 +5,7 @@ import { SystemModule } from '@/modules/system/system.module';
 import { DockerModule } from '@/modules/docker/docker.module';
 import { HubPoolModule } from '@/modules/hub-pool/hub-pool.module';
 import { HardwareInspectorService } from './hardware-inspector.service';
+import { GpuProcessSamplerService } from './gpu-process-sampler.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelResidencyService } from './model-residency.service';
 import { MemoryManagerService } from './memory-manager.service';
@@ -34,6 +35,7 @@ import { InferenceController } from './inference.controller';
   controllers: [InferenceController],
   providers: [
     HardwareInspectorService,
+    GpuProcessSamplerService,
     ModelRegistryService,
     ModelResidencyService,
     MemoryManagerService,
@@ -56,6 +58,7 @@ import { InferenceController } from './inference.controller';
   ],
   exports: [
     HardwareInspectorService,
+    GpuProcessSamplerService,
     ModelRegistryService,
     ModelResidencyService,
     MemoryManagerService,
