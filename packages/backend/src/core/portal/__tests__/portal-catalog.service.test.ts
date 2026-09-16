@@ -425,4 +425,443 @@ describe('PortalCatalogService', () => {
     // not republish over the force-refresh cache.
     expect(['2026.8.18', '2026.8.23']).toContain(stale[0]?.version);
   });
+  describe('per-app metadata lookups', () => {
+    const catalog = (...slugs: string[]) =>
+      slugs.map((slug) => ({ slug, name: slug, short_desc: `${slug} app`, categories: ['ai'], port: 8080, version: '1.0.0' }));
+
+    it('answers lookups for different apps from one catalog fetch', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue(catalog('ghost', 'n8n', 'ci-memory', 'immich', 'jellyfin') as any);
+
+      for (const slug of ['ghost', 'n8n', 'ci-memory', 'immich', 'jellyfin']) {
+        await expect(service.getAppInfoForUrn(`${slug}:ci-marketplace` as any)).resolves.toMatchObject({ id: slug });
+      }
+
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fetch again when the catalog is already warm', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue(catalog('ghost') as any);
+
+      await service.getCatalogEntries(true);
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ id: 'ghost' });
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses the extended catalog timeout instead of the default client timeout', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue(catalog('ghost') as any);
+
+      await service.getAppInfoForUrn('ghost:ci-marketplace' as any);
+
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: PORTAL_STORE_LISTING_TIMEOUT_MS }));
+    });
+
+    it('dedupes concurrent lookups into a single catalog fetch', async () => {
+      let resolveFetch: (value: unknown) => void = () => {};
+      portalClient.fetchStoreCatalog.mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
+
+      const lookups = Promise.all([
+        service.getAppInfoForUrn('ghost:ci-marketplace' as any),
+        service.getAppInfoForUrn('n8n:ci-marketplace' as any),
+        service.getAppInfoForUrn('ci-memory:ci-marketplace' as any),
+      ]);
+      resolveFetch(catalog('ghost', 'n8n', 'ci-memory'));
+
+      expect((await lookups).map((info) => info?.id)).toEqual(['ghost', 'n8n', 'ci-memory']);
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshes once for a slug the cached catalog lacks and resolves a just-published app', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+      await service.getCatalogEntries(true);
+
+      portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost', 'brand-new') as any);
+
+      await expect(service.getAppInfoForUrn('brand-new:ci-marketplace' as any)).resolves.toMatchObject({ id: 'brand-new' });
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+      expect(portalClient.fetchStoreCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ bypassCache: true }));
+      // The refreshed catalog is published, so the next lookup for it is a cache read.
+      await expect(service.getAppInfoForUrn('brand-new:ci-marketplace' as any)).resolves.toMatchObject({ id: 'brand-new' });
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not refresh per lookup for slugs the catalog does not list', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue(catalog('ghost') as any);
+      await service.getCatalogEntries(true);
+
+      for (const slug of ['nope-one', 'nope-two', 'nope-three', 'nope-four']) {
+        await expect(service.getAppInfoForUrn(`${slug}:ci-marketplace` as any)).resolves.toBeNull();
+      }
+
+      // One warm fetch plus exactly one refresh for the whole run of missing slugs.
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+    });
+
+    it('reopens the missing-slug refresh after its cooldown window', async () => {
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000);
+        portalClient.fetchStoreCatalog.mockResolvedValue(catalog('ghost') as any);
+        await service.getCatalogEntries(true);
+
+        await expect(service.getAppInfoForUrn('nope:ci-marketplace' as any)).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+        now.mockReturnValue(1_000 + 59_000);
+        await expect(service.getAppInfoForUrn('nope:ci-marketplace' as any)).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+        now.mockReturnValue(1_000 + 61_000);
+        await expect(service.getAppInfoForUrn('nope:ci-marketplace' as any)).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(3);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('shares one forced refresh between concurrent lookups for missing slugs', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+      await service.getCatalogEntries(true);
+
+      let resolveRefresh: (value: unknown) => void = () => {};
+      portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveRefresh = resolve)));
+
+      const lookups = Promise.all([
+        service.getAppInfoForUrn('brand-new:ci-marketplace' as any),
+        service.getAppInfoForUrn('also-new:ci-marketplace' as any),
+      ]);
+      resolveRefresh(catalog('ghost', 'brand-new', 'also-new'));
+
+      expect((await lookups).map((info) => info?.id)).toEqual(['brand-new', 'also-new']);
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+    });
+
+    it('resolves deprecated and unavailable apps the browseable catalog drops', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        { slug: 'old-app', name: 'Old App', short_desc: 'Retired', categories: ['ai'], deprecated: true },
+        { slug: 'paused-app', name: 'Paused App', short_desc: 'Unavailable', categories: ['ai'], available: false },
+      ] as any);
+
+      await expect(service.getCatalogEntries(true)).resolves.toEqual([]);
+      await expect(service.getAppInfoForUrn('old-app:ci-marketplace' as any)).resolves.toMatchObject({ id: 'old-app', deprecated: true });
+      await expect(service.getAppInfoForUrn('paused-app:ci-marketplace' as any)).resolves.toMatchObject({ id: 'paused-app', available: false });
+      // Neither lookup counts as a missing slug, so neither triggers a refresh.
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps every listing field full app metadata is mapped from', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        {
+          slug: 'filesystem-mcp',
+          name: 'Filesystem MCP',
+          short_desc: 'Files over MCP',
+          categories: ['ai'],
+          author: 'Third Party',
+          source: 'https://github.com/example/filesystem-mcp',
+          website: 'https://example.com',
+          port: 9123,
+          version: '3.2.1',
+          cihub_app_version: 7,
+          runtime_platform: 'docker',
+          supported_architectures: ['amd64'],
+          exposable: false,
+          dynamic_config: true,
+          form_fields: [{ type: 'text', label: 'Root', env_variable: 'ROOT_DIR' }],
+          force_pull: true,
+          url_suffix: '/ui',
+          hub_integration: { memory: { provider: { service: 'gateway', port: 9123 } } },
+          mcp: { transport: 'stdio' },
+          screenshots: ['https://cdn.example.com/one.png'],
+          demo_video: 'https://cdn.example.com/demo.mp4',
+          replaces: ['Dropbox'],
+          // Listing rows also carry the whole compose file, which per-app metadata never reads.
+          compose: { services: Array.from({ length: 50 }, (_, index) => ({ name: `svc-${index}`, image: 'x'.repeat(200) })) },
+        },
+      ] as any);
+
+      await expect(service.getAppInfoForUrn('filesystem-mcp:ci-marketplace' as any)).resolves.toMatchObject({
+        id: 'filesystem-mcp',
+        author: 'Third Party',
+        source: 'https://github.com/example/filesystem-mcp',
+        website: 'https://example.com',
+        port: 9123,
+        version: '3.2.1',
+        cihub_app_version: 7,
+        runtime_platform: 'docker',
+        supported_architectures: ['amd64'],
+        exposable: false,
+        dynamic_config: true,
+        form_fields: [{ type: 'text', label: 'Root', env_variable: 'ROOT_DIR' }],
+        force_pull: true,
+        url_suffix: '/ui',
+        hub_integration: { memory: { provider: { service: 'gateway', port: 9123 } } },
+        mcp: { transport: 'stdio' },
+        screenshots: ['https://cdn.example.com/one.png'],
+        demo_video: 'https://cdn.example.com/demo.mp4',
+        replaces: ['Dropbox'],
+      });
+    });
+
+    it('serves a lookup from a catalog past its TTL and refreshes behind it', async () => {
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000);
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+        await service.getCatalogEntries(true);
+
+        now.mockReturnValue(1_000 + 1000 * 60 * 15);
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce([
+          { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'], port: 2368, version: '2.0.0' },
+        ] as any);
+
+        await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ version: '1.0.0' });
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+        await vi.waitFor(() => expect(service.getUpdateInfoForUrn('ghost:ci-marketplace' as any)?.latestDockerVersion).toBe('2.0.0'));
+        await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ version: '2.0.0' });
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('fetches again for a lookup after invalidateCache', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ id: 'ghost', version: '1.0.0' });
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+
+      service.invalidateCache();
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'], port: 2368, version: '2.0.0' },
+      ] as any);
+
+      // The invalidated rows are gone, so the answer comes from the catalog fetched after it rather
+      // than from the one the invalidate was meant to drop.
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ version: '2.0.0' });
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+      // The catalog fetched after the invalidate is cached again.
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ version: '2.0.0' });
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+    });
+
+    it('reopens the missing-slug refresh after invalidateCache', async () => {
+      // Pinned so the run's own duration cannot reopen the cooldown window mid-test.
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000);
+        portalClient.fetchStoreCatalog.mockResolvedValue(catalog('ghost') as any);
+
+        await expect(service.getAppInfoForUrn('nope:ci-marketplace' as any)).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+        // Still inside the cooldown window, so a repeat of the same lookup does not refresh.
+        await expect(service.getAppInfoForUrn('nope:ci-marketplace' as any)).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+        // An invalidate drops the catalog the window was spent proving, so the next lookup may
+        // refresh again even though the window has not run out.
+        service.invalidateCache();
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost', 'nope') as any);
+
+        await expect(service.getAppInfoForUrn('nope:ci-marketplace' as any)).resolves.toMatchObject({ id: 'nope' });
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(4);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('does not spend the missing-slug refresh on a lookup that joined a cache-busting fetch', async () => {
+      // Pinned so the run's own duration cannot reopen the cooldown window mid-test.
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000);
+        let resolveWarm: (value: unknown) => void = () => {};
+        portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveWarm = resolve)));
+
+        // A forced warm is already in flight, so the lookup joins it instead of fetching for itself.
+        const warm = service.getCatalogEntries(true);
+        const lookup = service.getAppInfoForUrn('nope:ci-marketplace' as any);
+        resolveWarm(catalog('ghost'));
+        await warm;
+        await expect(lookup).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+
+        // That answer already bypassed Portal's cache, so the refresh window was not spent on it and
+        // the next lookup for the same slug can still force one.
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost', 'nope') as any);
+        await expect(service.getAppInfoForUrn('nope:ci-marketplace' as any)).resolves.toMatchObject({ id: 'nope' });
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('resolves the slug a marketplace URN names, not the listing row id', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        { id: 'app_01hzzk', slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'], port: 2368, version: '1.0.0' },
+      ] as any);
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ id: 'ghost' });
+      await expect(service.getAppInfoForUrn('app_01hzzk:ci-marketplace' as any)).resolves.toBeNull();
+    });
+
+    it('keeps the first listing for a slug, as a scan over the rows did', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'], port: 2368, version: '1.0.0' },
+        { slug: 'ghost', name: 'Ghost (shadowed)', short_desc: 'Blog', categories: ['social'], port: 9999, version: '9.9.9' },
+      ] as any);
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({
+        name: 'Ghost',
+        port: 2368,
+        version: '1.0.0',
+      });
+    });
+
+    it('caches only the fields per-app metadata reads, not the whole listing row', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        {
+          slug: 'ghost',
+          name: 'Ghost',
+          short_desc: 'Blog',
+          categories: ['social'],
+          port: 2368,
+          version: '1.0.0',
+          // Listing rows carry each free app's whole compose file — about half of the catalog by
+          // size — plus whatever else Portal adds to the listing later.
+          compose: { services: { ghost: { image: 'ghost:5', volumes: ['${APP_DATA_DIR}/data:/var/lib/ghost'] } } },
+          some_future_portal_field: 'x'.repeat(1000),
+        },
+      ] as any);
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ id: 'ghost' });
+
+      const cachedRows = (service as unknown as { rawCache: Map<string, Record<string, unknown>> | null }).rawCache;
+      expect(Object.keys(cachedRows?.get('ghost') ?? {}).sort()).toEqual(['categories', 'name', 'port', 'short_desc', 'slug', 'version']);
+    });
+
+    it('returns null and logs when Portal fails, without caching the failure', async () => {
+      portalClient.fetchStoreCatalog.mockRejectedValueOnce(new Error('timeout of 45000ms exceeded'));
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Portal catalog app info fetch failed for ghost:ci-marketplace'));
+      // A failed Portal is not asked twice for the same lookup.
+      expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+
+      portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ id: 'ghost' });
+    });
+
+    it('does not hold the refresh window shut after a refresh that resolved its own slug', async () => {
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000);
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+        await service.getCatalogEntries(true);
+
+        // A slug published since this catalog was cached: the refresh answers it.
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost', 'app-a') as any);
+        await expect(service.getAppInfoForUrn('app-a:ci-marketplace' as any)).resolves.toMatchObject({ id: 'app-a' });
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+        // Another app published a few seconds later, still inside the cooldown window. Installing it
+        // needs its metadata, and the previous refresh proved the catalog moves, so it may refresh.
+        now.mockReturnValue(1_000 + 5_000);
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost', 'app-a', 'app-b') as any);
+        await expect(service.getAppInfoForUrn('app-b:ci-marketplace' as any)).resolves.toMatchObject({ id: 'app-b' });
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(3);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('still spends the window on a slug Portal does not list', async () => {
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000);
+        portalClient.fetchStoreCatalog.mockResolvedValue(catalog('ghost') as any);
+        await service.getCatalogEntries(true);
+
+        // A refresh that still cannot find its slug keeps the window shut, so the rest of a fan-out
+        // over unknown apps does not fetch the listing per app.
+        await expect(service.getAppInfoForUrn('nope-one:ci-marketplace' as any)).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+
+        now.mockReturnValue(1_000 + 5_000);
+        await expect(service.getAppInfoForUrn('nope-two:ci-marketplace' as any)).resolves.toBeNull();
+        expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+      } finally {
+        now.mockRestore();
+      }
+    });
+
+    it('does not publish rows from a fetch invalidated while it was in flight', async () => {
+      let resolveFetch: (value: unknown) => void = () => {};
+      portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveFetch = resolve)));
+
+      const stale = service.getAppInfoForUrn('ghost:ci-marketplace' as any);
+      service.invalidateCache();
+      resolveFetch(catalog('ghost') as any);
+      await stale;
+
+      // The invalidate dropped that catalog, so its rows must not reappear as the cached rows and
+      // start answering per-app lookups behind the entries cache's back.
+      const cachedRows = (service as unknown as { rawCache: Map<string, unknown> | null }).rawCache;
+      expect(cachedRows).toBeNull();
+
+      portalClient.fetchStoreCatalog.mockResolvedValueOnce([
+        { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'], port: 2368, version: '2.0.0' },
+      ] as any);
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ version: '2.0.0' });
+    });
+
+    it('resolves a listing row that carries only an id', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        { id: 'ci-planning', name: 'Companion Planning', short_desc: 'Local planning', categories: ['ai'], port: 8080, version: '1.0.0' },
+      ] as any);
+
+      await expect(service.getAppInfoForUrn('ci-planning:ci-marketplace' as any)).resolves.toMatchObject({
+        id: 'ci-planning',
+        name: 'Companion Planning',
+      });
+    });
+
+    it('indexes the usable rows when Portal returns junk among the listings', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue([
+        null,
+        'not-a-row',
+        42,
+        { name: 'no slug or id' },
+        { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'], port: 2368, version: '1.0.0' },
+      ] as any);
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ id: 'ghost' });
+    });
+
+    it('answers null without throwing when Portal returns something that is not a list', async () => {
+      portalClient.fetchStoreCatalog.mockResolvedValue({ error: 'nope' } as any);
+
+      await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toBeNull();
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Portal catalog fetch failed'));
+    });
+
+    it('answers from the catalog in hand when a later Portal refresh fails', async () => {
+      const now = vi.spyOn(Date, 'now');
+      try {
+        now.mockReturnValue(1_000);
+        portalClient.fetchStoreCatalog.mockResolvedValueOnce(catalog('ghost') as any);
+        await service.getCatalogEntries(true);
+
+        now.mockReturnValue(1_000 + 1000 * 60 * 15);
+        portalClient.fetchStoreCatalog.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+        await expect(service.getAppInfoForUrn('ghost:ci-marketplace' as any)).resolves.toMatchObject({ id: 'ghost' });
+      } finally {
+        now.mockRestore();
+      }
+    });
+  });
 });
