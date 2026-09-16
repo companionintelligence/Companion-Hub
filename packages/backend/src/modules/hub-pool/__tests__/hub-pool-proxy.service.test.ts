@@ -1768,6 +1768,70 @@ describe('PoolProxyService', () => {
     });
   });
 
+  // The activity panel promised a row "when a request is placed"; the proxy only wrote one at first
+  // byte, so an agent turn waiting minutes on a self-hosted engine showed nothing at all.
+  describe('routing log rows opened at placement', () => {
+    it('lists the request as pending on the node being tried while headers are still awaited, then settles it', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+      let releaseUpstream!: (response: Response) => void;
+      vi.mocked(global.fetch).mockReturnValueOnce(new Promise<Response>((resolve) => (releaseUpstream = resolve)));
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({
+        path: '/v1/chat/completions',
+        method: 'POST',
+        body: { model: 'llama3.2:3b' },
+        model: 'llama3.2:3b',
+        res,
+      });
+      await vi.waitFor(() => expect(routingLog.list()).toHaveLength(1));
+
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'pending',
+        node: LOCAL_CANDIDATE_KEY,
+        backend: 'ollama',
+        status: null,
+        durationMs: null,
+        candidates: 1,
+      });
+      expect(routingLog.summary()).toMatchObject({ pending: 1, served: 0, failed: 0 });
+
+      releaseUpstream(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      await inFlight;
+
+      expect(routingLog.list()).toHaveLength(1);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: LOCAL_CANDIDATE_KEY, status: 200 });
+      expect(typeof routingLog.list()[0].durationMs).toBe('number');
+      expect(routingLog.summary()).toMatchObject({ pending: 0, served: 1 });
+    });
+
+    it('moves the pending row to the next candidate on failover instead of adding a row', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+      const peer = peerServing('peer-idle', 'llama3.2:3b', { inFlightRequests: 0 });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      // Peer ranks first (local is three deep) and 500s; local then serves.
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(new Response('engine fell over', { status: 500 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      expect(routingLog.list()).toHaveLength(1);
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'served',
+        node: LOCAL_CANDIDATE_KEY,
+        attempt: 2,
+        failedOverFrom: ['peer-idle.tailxyz.ts.net'],
+      });
+    });
+  });
+
   // Apps are handed `EMBEDDINGS_MODEL=nomic-embed-text`; every engine lists `nomic-embed-text:latest`.
   describe('the implicit :latest tag', () => {
     it('offers the local backend when the request omits the tag the inventory spells out', async () => {

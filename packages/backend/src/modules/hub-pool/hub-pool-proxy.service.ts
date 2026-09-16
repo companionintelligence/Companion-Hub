@@ -499,11 +499,35 @@ export class PoolProxyService {
       return;
     }
 
+    // Opened at placement, not at first byte. On a self-hosted engine an agent turn waits minutes
+    // for its headers (a 160 KB prompt into a cold 27B: 131.8 s measured, 245 s under load), and
+    // until this row existed the operator's activity panel showed nothing for the whole wait
+    // while its own caption promised a record "when a request is placed". The row names the
+    // candidate currently being tried and is updated in place through each failover.
+    // Non-empty: the `candidates.length === 0` branch above has already returned.
+    const first = candidates[0] as PoolCandidate;
+    const row = this.routingLog.open({
+      at: new Date().toISOString(),
+      direction: 'outbound',
+      path,
+      model,
+      node: first.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      peerId: first.peerId,
+      backend: first.backend,
+      candidates: candidates.length,
+      attempt: 1,
+      failedOverFrom,
+      pin: describePinForLog(pin),
+    });
+
     let lastError: unknown;
     let committed = false;
     for (const [index, candidate] of candidates.entries()) {
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
+      if (index > 0) {
+        Object.assign(row, { node: nodeLabel, peerId: candidate.peerId, backend: candidate.backend, attempt: index + 1 });
+      }
       this.loadService.acquire(key);
       try {
         const upstream = await this.forward(candidate, path, method, body, model);
@@ -516,21 +540,13 @@ export class PoolProxyService {
           await this.noteRejectedCandidate(candidate, upstream.status);
           continue;
         }
-        // Recorded here rather than after the stream: this is the routing decision, and a
-        // generation that runs for minutes would otherwise be invisible to the operator until
-        // it finished (or never, if the client hung up).
-        this.routingLog.record({
-          at: new Date().toISOString(),
-          direction: 'outbound',
-          path,
-          model,
+        // Settled here rather than after the stream: headers are the routing decision, and the
+        // generation that follows can run for minutes (or never end, if the client hung up).
+        this.routingLog.settle(row, {
           node: nodeLabel,
           peerId: candidate.peerId,
           backend: candidate.backend,
-          candidates: candidates.length,
           attempt: index + 1,
-          failedOverFrom: [...failedOverFrom],
-          pin: describePinForLog(pin),
           outcome: 'served',
           status: upstream.status,
           durationMs: Date.now() - startedAt,
@@ -560,18 +576,11 @@ export class PoolProxyService {
       }
     }
 
-    this.routingLog.record({
-      at: new Date().toISOString(),
-      direction: 'outbound',
-      path,
-      model,
+    this.routingLog.settle(row, {
       node: null,
       peerId: null,
       backend: null,
-      candidates: candidates.length,
       attempt: candidates.length,
-      failedOverFrom: [...failedOverFrom],
-      pin: describePinForLog(pin),
       outcome: 'failed',
       status: null,
       durationMs: Date.now() - startedAt,
