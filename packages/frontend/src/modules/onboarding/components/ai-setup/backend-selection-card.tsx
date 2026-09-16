@@ -34,6 +34,9 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
 /** Keep the Apple-Silicon speculative path prominent, with MTPLX as its variant. */
 const BACKEND_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox', 'ollama', 'vllm', 'lemonade'];
 
+/** Runners that do speculative decoding, grouped under one heading in this order. */
+const SPECULATIVE_GROUP_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox'];
+
 type BackendStatus = { type: InferenceBackendType; running: boolean; healthy: boolean };
 
 interface BackendSelectionCardProps {
@@ -127,9 +130,11 @@ export const BackendSelectionCard = ({
   // Never hide the current selection, so an existing configuration stays visible and changeable.
   const visibleBackends = available.filter(({ type }) => type === selected || !hiddenTypes.includes(type));
   const backendsByType = new Map(visibleBackends.map((backend) => [backend.type, backend] as const));
-  const speculativeBackend = backendsByType.get('dspark');
-  const mtplxBackend = backendsByType.get('mtplx');
-  const luceboxBackend = backendsByType.get('lucebox');
+  // Every runner that does speculative decoding shares one group. Its description follows the host:
+  // mlx-dspark and MTPLX are only listed on Apple Silicon Macs, so without them the group is the GPU runner alone.
+  const speculativeGroup = SPECULATIVE_GROUP_ORDER.flatMap((type) => backendsByType.get(type) ?? []);
+  const hasAppleSiliconRunner = backendsByType.has('dspark') || backendsByType.has('mtplx');
+  const speculativeGroupDescriptionKey = hasAppleSiliconRunner ? 'ONBOARDING_BACKEND_DSPARK_DESC' : 'ONBOARDING_BACKEND_SPECULATIVE_GPU_DESC';
   const orderedBackends = BACKEND_ORDER.filter((type) => backendsByType.has(type));
 
   const content = (
@@ -144,25 +149,17 @@ export const BackendSelectionCard = ({
       )}
 
       <div className="space-y-1" data-testid="backend-options">
-        {speculativeBackend && (
-          <div className="space-y-1" data-testid="backend-option-dspark-group">
+        {speculativeGroup.length > 0 && (
+          <div className="space-y-1" data-testid="backend-option-speculative-group">
             <div className="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {t('ONBOARDING_BACKEND_SPECULATIVE_GROUP')}
             </div>
-            <p className="px-3 text-xs text-muted-foreground">{t('ONBOARDING_BACKEND_DSPARK_DESC')}</p>
+            <p className="px-3 text-xs text-muted-foreground">{t(speculativeGroupDescriptionKey)}</p>
             <div className="space-y-1">
-              <BackendOption
-                backend={speculativeBackend}
-                recommended={recommended}
-                selected={selected}
-                onSelect={onSelect}
-                disabled={disabled}
-                unavailableTypes={unavailableTypes}
-                nested
-              />
-              {mtplxBackend && (
+              {speculativeGroup.map((backend) => (
                 <BackendOption
-                  backend={mtplxBackend}
+                  key={backend.type}
+                  backend={backend}
                   recommended={recommended}
                   selected={selected}
                   onSelect={onSelect}
@@ -170,25 +167,12 @@ export const BackendSelectionCard = ({
                   unavailableTypes={unavailableTypes}
                   nested
                 />
-              )}
-              {luceboxBackend && (
-                <BackendOption
-                  backend={luceboxBackend}
-                  recommended={recommended}
-                  selected={selected}
-                  onSelect={onSelect}
-                  disabled={disabled}
-                  unavailableTypes={unavailableTypes}
-                  nested
-                />
-              )}
+              ))}
             </div>
           </div>
         )}
         {orderedBackends
-          // Without mlx-dspark (any host that is not an Apple Silicon Mac) there is no Apple group, so
-          // MTPLX and speculative inference render as ordinary top-level options.
-          .filter((type) => !(speculativeBackend && (type === 'dspark' || type === 'mtplx' || type === 'lucebox')))
+          .filter((type) => !SPECULATIVE_GROUP_ORDER.includes(type))
           .map((type) => {
             const backend = backendsByType.get(type);
             if (!backend) return null;
