@@ -11,6 +11,7 @@ import {
 } from '@/components/hub-status/hub-status-tooltips';
 import { BrandLogo, LemonadeIcon, SpeculativeInferenceIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
@@ -61,9 +62,14 @@ interface BackendOptionProps {
   disabled: boolean;
   unavailableTypes: InferenceBackendType[];
   nested?: boolean;
+  /**
+   * Render as a checkbox that can be unticked. Unticking calls this instead of `onSelect`, so the
+   * caller can return to the engine that was in use before.
+   */
+  onDeselect?: () => void;
 }
 
-function BackendOption({ backend, recommended, selected, onSelect, disabled, unavailableTypes, nested = false }: BackendOptionProps) {
+function BackendOption({ backend, recommended, selected, onSelect, disabled, unavailableTypes, nested = false, onDeselect }: BackendOptionProps) {
   const { t } = useTranslation();
   const { type, running, healthy } = backend;
   const info = BACKEND_INFO[type];
@@ -82,11 +88,15 @@ function BackendOption({ backend, recommended, selected, onSelect, disabled, una
       data-testid={`backend-option-${type}`}
     >
       <input
-        type="radio"
-        name="inference-backend"
+        type={onDeselect ? 'checkbox' : 'radio'}
+        name={onDeselect ? undefined : 'inference-backend'}
         checked={isSelected && !isUnavailable}
         disabled={isDisabled}
-        onChange={() => !isUnavailable && onSelect(type)}
+        onChange={() => {
+          if (isUnavailable) return;
+          if (onDeselect && isSelected) onDeselect();
+          else onSelect(type);
+        }}
         className="text-primary"
       />
       <div className="flex-1">
@@ -137,6 +147,23 @@ export const BackendSelectionCard = ({
   const speculativeGroupDescriptionKey = hasAppleSiliconRunner ? 'ONBOARDING_BACKEND_DSPARK_DESC' : 'ONBOARDING_BACKEND_SPECULATIVE_GPU_DESC';
   const orderedBackends = BACKEND_ORDER.filter((type) => backendsByType.has(type));
 
+  // Speculative runners replace the chat engine rather than adding to it, so they share the one
+  // selection. They render as checkboxes so they can be unticked: that returns to the last regular
+  // engine picked here, else the recommended one, else the first listed.
+  const standardBackends = orderedBackends.filter((type) => !SPECULATIVE_GROUP_ORDER.includes(type));
+  const lastStandardBackend = useRef<InferenceBackendType | null>(null);
+  useEffect(() => {
+    if (!SPECULATIVE_GROUP_ORDER.includes(selected)) lastStandardBackend.current = selected;
+  }, [selected]);
+  const deselectSpeculative = () => {
+    const previous = lastStandardBackend.current;
+    const fallback =
+      (previous && standardBackends.includes(previous) ? previous : undefined) ??
+      (standardBackends.includes(recommended) ? recommended : undefined) ??
+      standardBackends[0];
+    if (fallback) onSelect(fallback);
+  };
+
   const content = (
     <>
       {!embedded && (
@@ -166,28 +193,27 @@ export const BackendSelectionCard = ({
                   disabled={disabled}
                   unavailableTypes={unavailableTypes}
                   nested
+                  onDeselect={standardBackends.length > 0 ? deselectSpeculative : undefined}
                 />
               ))}
             </div>
           </div>
         )}
-        {orderedBackends
-          .filter((type) => !SPECULATIVE_GROUP_ORDER.includes(type))
-          .map((type) => {
-            const backend = backendsByType.get(type);
-            if (!backend) return null;
-            return (
-              <BackendOption
-                key={type}
-                backend={backend}
-                recommended={recommended}
-                selected={selected}
-                onSelect={onSelect}
-                disabled={disabled}
-                unavailableTypes={unavailableTypes}
-              />
-            );
-          })}
+        {standardBackends.map((type) => {
+          const backend = backendsByType.get(type);
+          if (!backend) return null;
+          return (
+            <BackendOption
+              key={type}
+              backend={backend}
+              recommended={recommended}
+              selected={selected}
+              onSelect={onSelect}
+              disabled={disabled}
+              unavailableTypes={unavailableTypes}
+            />
+          );
+        })}
       </div>
     </>
   );
