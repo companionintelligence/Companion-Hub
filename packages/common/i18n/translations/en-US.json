@@ -1213,6 +1213,7 @@
   "ONBOARDING_BACKEND_LEMONADE_DESC": "NPU-optimized inference for supported hardware.",
   "ONBOARDING_BACKEND_MTPLX_DESC": "Multi-token-prediction inference for Apple Silicon.",
   "ONBOARDING_BACKEND_DSPARK_DESC": "Speculative decoding on Apple Silicon, 2x - 4x Speed boost",
+  "ONBOARDING_BACKEND_SPECULATIVE_GPU_DESC": "Speculative decoding on supported NVIDIA and AMD GPUs",
   "ONBOARDING_BACKEND_SPECULATIVE_DESC": "Speculative decoding for fast local inference on supported GPUs.",
   "ONBOARDING_RECOMMENDED": "Recommended",
   "ONBOARDING_UNAVAILABLE": "Unavailable",
