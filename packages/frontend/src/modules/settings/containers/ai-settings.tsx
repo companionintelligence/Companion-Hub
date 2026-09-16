@@ -51,6 +51,7 @@ import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
   isHubLoadableBackend,
+  hiddenInferenceBackends,
   unavailableInferenceBackends,
 } from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
@@ -774,6 +775,7 @@ export const AiSettingsContainer = () => {
             selected={selectedBackend}
             onSelect={setSelectedBackend}
             unavailableTypes={profile ? unavailableInferenceBackends(profile) : []}
+            hiddenTypes={profile ? hiddenInferenceBackends(profile) : []}
           />
 
           {selectedBackend === 'lucebox' && (

@@ -11,6 +11,7 @@ import {
 } from '@/components/hub-status/hub-status-tooltips';
 import { BrandLogo, LemonadeIcon, SpeculativeInferenceIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
@@ -34,6 +35,9 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
 /** Keep the Apple-Silicon speculative path prominent, with MTPLX as its variant. */
 const BACKEND_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox', 'ollama', 'vllm', 'lemonade'];
 
+/** Runners that do speculative decoding, grouped under one heading in this order. */
+const SPECULATIVE_GROUP_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox'];
+
 type BackendStatus = { type: InferenceBackendType; running: boolean; healthy: boolean };
 
 interface BackendSelectionCardProps {
@@ -46,7 +50,7 @@ interface BackendSelectionCardProps {
   embedded?: boolean;
   /** Backend types that are known-unavailable and should be grayed out (unselectable). */
   unavailableTypes?: InferenceBackendType[];
-  /** Backend types that do not apply to the detected host and should not be shown. */
+  /** Backend types that do not apply to the detected host and should not be shown (unless already selected). */
   hiddenTypes?: InferenceBackendType[];
 }
 
@@ -58,9 +62,14 @@ interface BackendOptionProps {
   disabled: boolean;
   unavailableTypes: InferenceBackendType[];
   nested?: boolean;
+  /**
+   * Render as a checkbox that can be unticked. Unticking calls this instead of `onSelect`, so the
+   * caller can return to the engine that was in use before.
+   */
+  onDeselect?: () => void;
 }
 
-function BackendOption({ backend, recommended, selected, onSelect, disabled, unavailableTypes, nested = false }: BackendOptionProps) {
+function BackendOption({ backend, recommended, selected, onSelect, disabled, unavailableTypes, nested = false, onDeselect }: BackendOptionProps) {
   const { t } = useTranslation();
   const { type, running, healthy } = backend;
   const info = BACKEND_INFO[type];
@@ -79,11 +88,15 @@ function BackendOption({ backend, recommended, selected, onSelect, disabled, una
       data-testid={`backend-option-${type}`}
     >
       <input
-        type="radio"
-        name="inference-backend"
+        type={onDeselect ? 'checkbox' : 'radio'}
+        name={onDeselect ? undefined : 'inference-backend'}
         checked={isSelected && !isUnavailable}
         disabled={isDisabled}
-        onChange={() => !isUnavailable && onSelect(type)}
+        onChange={() => {
+          if (isUnavailable) return;
+          if (onDeselect && isSelected) onDeselect();
+          else onSelect(type);
+        }}
         className="text-primary"
       />
       <div className="flex-1">
@@ -124,12 +137,32 @@ export const BackendSelectionCard = ({
   hiddenTypes = [],
 }: BackendSelectionCardProps) => {
   const { t } = useTranslation();
-  const visibleBackends = available.filter(({ type }) => !hiddenTypes.includes(type));
+  // Never hide the current selection, so an existing configuration stays visible and changeable.
+  const visibleBackends = available.filter(({ type }) => type === selected || !hiddenTypes.includes(type));
   const backendsByType = new Map(visibleBackends.map((backend) => [backend.type, backend] as const));
-  const speculativeBackend = backendsByType.get('dspark');
-  const mtplxBackend = backendsByType.get('mtplx');
-  const luceboxBackend = backendsByType.get('lucebox');
+  // Every runner that does speculative decoding shares one group. Its description follows the host:
+  // mlx-dspark and MTPLX are only listed on Apple Silicon Macs, so without them the group is the GPU runner alone.
+  const speculativeGroup = SPECULATIVE_GROUP_ORDER.flatMap((type) => backendsByType.get(type) ?? []);
+  const hasAppleSiliconRunner = backendsByType.has('dspark') || backendsByType.has('mtplx');
+  const speculativeGroupDescriptionKey = hasAppleSiliconRunner ? 'ONBOARDING_BACKEND_DSPARK_DESC' : 'ONBOARDING_BACKEND_SPECULATIVE_GPU_DESC';
   const orderedBackends = BACKEND_ORDER.filter((type) => backendsByType.has(type));
+
+  // Speculative runners replace the chat engine rather than adding to it, so they share the one
+  // selection. They render as checkboxes so they can be unticked: that returns to the last regular
+  // engine picked here, else the recommended one, else the first listed.
+  const standardBackends = orderedBackends.filter((type) => !SPECULATIVE_GROUP_ORDER.includes(type));
+  const lastStandardBackend = useRef<InferenceBackendType | null>(null);
+  useEffect(() => {
+    if (!SPECULATIVE_GROUP_ORDER.includes(selected)) lastStandardBackend.current = selected;
+  }, [selected]);
+  const deselectSpeculative = () => {
+    const previous = lastStandardBackend.current;
+    const fallback =
+      (previous && standardBackends.includes(previous) ? previous : undefined) ??
+      (standardBackends.includes(recommended) ? recommended : undefined) ??
+      standardBackends[0];
+    if (fallback) onSelect(fallback);
+  };
 
   const content = (
     <>
@@ -143,64 +176,44 @@ export const BackendSelectionCard = ({
       )}
 
       <div className="space-y-1" data-testid="backend-options">
-        {speculativeBackend && (
-          <div className="space-y-1" data-testid="backend-option-dspark-group">
+        {speculativeGroup.length > 0 && (
+          <div className="space-y-1" data-testid="backend-option-speculative-group">
             <div className="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {t('ONBOARDING_BACKEND_SPECULATIVE_GROUP')}
             </div>
-            <p className="px-3 text-xs text-muted-foreground">{t('ONBOARDING_BACKEND_DSPARK_DESC')}</p>
+            <p className="px-3 text-xs text-muted-foreground">{t(speculativeGroupDescriptionKey)}</p>
             <div className="space-y-1">
-              <BackendOption
-                backend={speculativeBackend}
-                recommended={recommended}
-                selected={selected}
-                onSelect={onSelect}
-                disabled={disabled}
-                unavailableTypes={unavailableTypes}
-                nested
-              />
-              {mtplxBackend && (
+              {speculativeGroup.map((backend) => (
                 <BackendOption
-                  backend={mtplxBackend}
+                  key={backend.type}
+                  backend={backend}
                   recommended={recommended}
                   selected={selected}
                   onSelect={onSelect}
                   disabled={disabled}
                   unavailableTypes={unavailableTypes}
                   nested
+                  onDeselect={standardBackends.length > 0 ? deselectSpeculative : undefined}
                 />
-              )}
-              {luceboxBackend && (
-                <BackendOption
-                  backend={luceboxBackend}
-                  recommended={recommended}
-                  selected={selected}
-                  onSelect={onSelect}
-                  disabled={disabled}
-                  unavailableTypes={unavailableTypes}
-                  nested
-                />
-              )}
+              ))}
             </div>
           </div>
         )}
-        {orderedBackends
-          .filter((type) => type !== 'dspark' && type !== 'lucebox' && !(type === 'mtplx' && speculativeBackend))
-          .map((type) => {
-            const backend = backendsByType.get(type);
-            if (!backend) return null;
-            return (
-              <BackendOption
-                key={type}
-                backend={backend}
-                recommended={recommended}
-                selected={selected}
-                onSelect={onSelect}
-                disabled={disabled}
-                unavailableTypes={unavailableTypes}
-              />
-            );
-          })}
+        {standardBackends.map((type) => {
+          const backend = backendsByType.get(type);
+          if (!backend) return null;
+          return (
+            <BackendOption
+              key={type}
+              backend={backend}
+              recommended={recommended}
+              selected={selected}
+              onSelect={onSelect}
+              disabled={disabled}
+              unavailableTypes={unavailableTypes}
+            />
+          );
+        })}
       </div>
     </>
   );
