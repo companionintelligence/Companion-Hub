@@ -136,7 +136,6 @@ export const LoginForm: React.FC<IProps> = ({
       ) : null}
 
       <p className="text-sm text-muted-foreground text-center mb-4">{t('AUTH_LOGIN_COMPANION_ACCOUNT_EMAIL_HINT')}</p>
-      <p className="text-xs text-muted-foreground text-center mb-4">{t('AUTH_LOGIN_NEW_ACCOUNT_NEEDS_PORTAL')}</p>
 
       <form onSubmit={handleSubmit(onSubmit)}>
         <Input
