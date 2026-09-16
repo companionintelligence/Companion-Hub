@@ -134,6 +134,7 @@ export function PoolActivity({
             <StatChipRow>
               <StatChip value={activity.total} label={t('DASHBOARD_ACTIVITY_DECISIONS')} tone={activity.total > 0 ? 'plain' : 'muted'} />
               <StatChip value={activity.served} label={t('DASHBOARD_SERVED')} tone={activity.served > 0 ? 'ok' : 'muted'} />
+              <StatChip value={activity.pending} label={t('DASHBOARD_ACTIVITY_IN_FLIGHT')} tone={activity.pending > 0 ? 'warn' : 'muted'} />
               <StatChip value={activity.failed} label={t('DASHBOARD_FAILED')} tone={activity.failed > 0 ? 'bad' : 'muted'} />
               <StatChip
                 value={activity.failovers}
@@ -209,9 +210,12 @@ export function PoolActivity({
                 entries.map((entry, index) => {
                   const inbound = entry.direction === 'inbound';
                   const failedOver = entry.failedOverFrom ?? [];
+                  // Placed on a node and still waiting for headers. The row is the placement itself,
+                  // so the node column names where it is waiting and the first-byte column counts up.
+                  const pending = entry.outcome === 'pending';
                   // An outbound row with no node is an attempt nothing took — a real outcome, and the
                   // one most worth seeing. It must not read as the local node having served it.
-                  const unplaced = !inbound && !entry.node;
+                  const unplaced = !inbound && !entry.node && !pending;
 
                   return (
                     <Tr key={keys[index]}>
@@ -241,7 +245,13 @@ export function PoolActivity({
                       </Td>
                       <Td className="hidden text-muted-foreground @2xl:table-cell">{entry.backend ?? DASH}</Td>
                       <Td align="right" className="hidden @sm:table-cell">
-                        {typeof entry.durationMs === 'number' ? `${Math.round(entry.durationMs)}ms` : DASH}
+                        {pending ? (
+                          <span className="text-warning">{t('DASHBOARD_ACTIVITY_WAITING', { elapsed: relativeAge(entry.at, now) })}</span>
+                        ) : typeof entry.durationMs === 'number' ? (
+                          `${Math.round(entry.durationMs)}ms`
+                        ) : (
+                          DASH
+                        )}
                       </Td>
                       <Td align="right" title={entry.outcome}>
                         <span className="inline-flex items-center justify-end gap-1.5">
@@ -254,7 +264,10 @@ export function PoolActivity({
                             </span>
                           ) : null}
                           {entry.pin ? <span className="text-[11px] text-muted-foreground">{t('DASHBOARD_PIN_SHORT')}</span> : null}
-                          <StatusDot tone={entry.outcome === 'served' ? 'ok' : 'bad'} />
+                          <StatusDot
+                            tone={entry.outcome === 'served' ? 'ok' : pending ? 'warn' : 'bad'}
+                            className={pending ? 'motion-safe:animate-pulse' : undefined}
+                          />
                         </span>
                       </Td>
                     </Tr>

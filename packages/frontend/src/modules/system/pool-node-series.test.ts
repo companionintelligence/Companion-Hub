@@ -458,7 +458,13 @@ describe('routingActivity', () => {
     expect(routingActivity([row({ outcome: 'refused' })])).toMatchObject({ served: 0, failed: 1 });
   });
 
+  it('counts a placed request still waiting for its first byte as in flight, not failed or unplaced', () => {
+    const activity = routingActivity([row({ outcome: 'pending', node: 'local' })]);
+
+    expect(activity).toMatchObject({ pending: 1, failed: 0, served: 0, unplaced: 0, outbound: 1 });
+  });
+
   it('is all zeros for an empty log, which is a real state after a restart', () => {
-    expect(routingActivity([])).toEqual({ total: 0, served: 0, failed: 0, failovers: 0, inbound: 0, outbound: 0, unplaced: 0 });
+    expect(routingActivity([])).toEqual({ total: 0, served: 0, failed: 0, pending: 0, failovers: 0, inbound: 0, outbound: 0, unplaced: 0 });
   });
 });
