@@ -341,9 +341,10 @@ export class PortalCatalogService {
    * One forced refresh for slugs the cached rows lack — an app published since this catalog was
    * cached must still be installable. Bounded two ways so a fan-out over unknown apps cannot fetch
    * the listing per app: a cooldown window, and joining a cache-busting fetch already in flight
-   * instead of starting another. `null` when the window has not reopened.
+   * instead of starting another. `null` when the window has not reopened. The window is only spent
+   * when the refresh could not find `appName` either; see below.
    */
-  private async refreshRawCatalogForMissingSlug(): Promise<CatalogFetchResult | null> {
+  private async refreshRawCatalogForMissingSlug(appName: string): Promise<CatalogFetchResult | null> {
     const now = Date.now();
     if (this.missingSlugRefreshAt !== null && now - this.missingSlugRefreshAt < this.missingSlugRefreshCooldownMs) {
       return this.inflightFetch && this.inflightBypassCache ? this.inflightFetch : null;
@@ -351,7 +352,15 @@ export class PortalCatalogService {
 
     // Claimed before the await so concurrent lookups join this fetch rather than queue another.
     this.missingSlugRefreshAt = now;
-    return this.getRawCatalogRows(true);
+    const refreshed = await this.getRawCatalogRows(true);
+    // A refresh that made its own slug resolvable proves the catalog moved on, so it must not hold
+    // the window shut against the next app published after it — that would fail an install Portal
+    // can answer. A slug Portal really does not list still spends the window, which is the fan-out
+    // over unknown apps this throttle exists for.
+    if (this.missingSlugRefreshAt === now && this.rawCache?.has(appName)) {
+      this.missingSlugRefreshAt = null;
+    }
+    return refreshed;
   }
 
   private fetchCatalog(force: boolean): Promise<CatalogFetchResult> {
@@ -597,7 +606,7 @@ export class PortalCatalogService {
       // Not in the catalog in hand: it may have been published since. One cache-busting refresh,
       // bounded by `refreshRawCatalogForMissingSlug`. A Portal that just failed is not asked again.
       if (!app && !error && !cached.bypassedPortalCache) {
-        const refreshed = await this.refreshRawCatalogForMissingSlug();
+        const refreshed = await this.refreshRawCatalogForMissingSlug(appName);
         if (refreshed) {
           app = refreshed.rows.get(appName);
           error = refreshed.error;
