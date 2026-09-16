@@ -18,8 +18,8 @@ import { describeAllCandidatesFailed } from '../hub-pool-proxy.service';
 
 describe('describeAllCandidatesFailed', () => {
   it('names the deadline, and refuses to call a slow node unreachable', () => {
-    const msg = describeAllCandidatesFailed('qwen3.6:35b', 2, new Error('No response headers within 15000ms'));
-    expect(msg).toContain('15000ms');
+    const msg = describeAllCandidatesFailed('qwen3.6:35b', 2, new Error('No response headers within 300000ms'));
+    expect(msg).toContain('300000ms');
     expect(msg).toContain('qwen3.6:35b');
     // The claim we must never make on this evidence.
     expect(msg).not.toMatch(/unreachable/i);
