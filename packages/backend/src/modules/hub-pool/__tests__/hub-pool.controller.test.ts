@@ -149,6 +149,7 @@ describe('HubPoolController', () => {
         outcome: 'served',
         status: 200,
         durationMs: 8,
+        usage: null,
       });
 
       const status = await controller.poolStatus();

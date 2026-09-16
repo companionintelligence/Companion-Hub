@@ -30,6 +30,7 @@ const completedJobSnapshot = {
       memoryLimitBytes: 0,
     },
   ],
+  gpuVramMb: null,
 };
 
 describe('runtime health DTOs', () => {
@@ -44,6 +45,7 @@ describe('runtime health DTOs', () => {
       sampledAt: completedJobSnapshot.sampledAt,
       apps: [completedJobSnapshot],
       history: [],
+      unattributedGpu: null,
     });
 
     expect(parsed.apps[0]?.containers[0]?.exitCode).toBe(0);

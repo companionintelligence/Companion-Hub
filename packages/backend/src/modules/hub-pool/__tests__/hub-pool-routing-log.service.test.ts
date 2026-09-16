@@ -16,6 +16,7 @@ function record(overrides: Partial<PoolRoutingRecord> = {}): PoolRoutingRecord {
     outcome: 'served',
     status: 200,
     durationMs: 12,
+    usage: null,
     ...overrides,
   };
 }
@@ -97,6 +98,31 @@ describe('HubPoolRoutingLogService', () => {
       service.settle(row, { node: null, outcome: 'failed', durationMs: 900_000 });
 
       expect(service.summary()).toMatchObject({ served: 0, failed: 1, pending: 0 });
+    });
+
+    it('opens with no usage, and settling at headers time does not invent one', () => {
+      const { outcome: _o, status: _s, durationMs: _d, ...placement } = record();
+      const row = service.open(placement);
+
+      expect(row.usage).toBeNull();
+
+      service.settle(row, { outcome: 'served', status: 200, durationMs: 50 });
+
+      expect(row.usage).toBeNull();
+    });
+
+    it('attachUsage records tokens on the same row after settle, without disturbing the outcome', () => {
+      const { outcome: _o, status: _s, durationMs: _d, ...placement } = record();
+      const row = service.open(placement);
+      service.settle(row, { outcome: 'served', status: 200, durationMs: 50 });
+
+      service.attachUsage(row, { promptTokens: 120, completionTokens: 30, totalTokens: 150 });
+
+      expect(service.list()[0]).toMatchObject({
+        outcome: 'served',
+        status: 200,
+        usage: { promptTokens: 120, completionTokens: 30, totalTokens: 150 },
+      });
     });
   });
 });

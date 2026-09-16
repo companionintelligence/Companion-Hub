@@ -37,14 +37,24 @@ function app(appUrn: string, appName: string, cpuPercent: number): AppRuntimeHea
     usesDefaultCpuLimit: true,
     sampledAt: '2026-09-10T02:31:00Z',
     containers: [],
+    gpuVramMb: null,
   };
 }
 
 /** `present` names the workloads that appear in the sample; anything else is simply not in it. */
-function sample(minute: number, present: { appUrn: string; appName: string; cpuPercent: number }[]): AppRuntimeHistorySample {
+function sample(
+  minute: number,
+  present: { appUrn: string; appName: string; cpuPercent: number; gpuVramMb?: number | null }[],
+): AppRuntimeHistorySample {
   return {
     sampledAt: `2026-09-10T02:${String(minute).padStart(2, '0')}:00Z`,
-    apps: present.map((entry) => ({ ...entry, status: 'running', memoryUsageBytes: 100_000_000, containerCount: 1 })),
+    apps: present.map((entry) => ({
+      ...entry,
+      status: 'running',
+      memoryUsageBytes: 100_000_000,
+      containerCount: 1,
+      gpuVramMb: entry.gpuVramMb ?? null,
+    })),
   };
 }
 
@@ -136,8 +146,14 @@ describe('WorkloadTrend', () => {
   it('scales memory in bytes rather than reusing the CPU axis', () => {
     const big = { appUrn: 'urn:big', appName: 'Big', cpuPercent: 5 };
     const history: AppRuntimeHistorySample[] = [
-      { sampledAt: '2026-09-10T02:20:00Z', apps: [{ ...big, status: 'running', memoryUsageBytes: 3_100_000_000, containerCount: 1 }] },
-      { sampledAt: '2026-09-10T02:21:00Z', apps: [{ ...big, status: 'running', memoryUsageBytes: 3_300_000_000, containerCount: 1 }] },
+      {
+        sampledAt: '2026-09-10T02:20:00Z',
+        apps: [{ ...big, status: 'running', memoryUsageBytes: 3_100_000_000, containerCount: 1, gpuVramMb: null }],
+      },
+      {
+        sampledAt: '2026-09-10T02:21:00Z',
+        apps: [{ ...big, status: 'running', memoryUsageBytes: 3_300_000_000, containerCount: 1, gpuVramMb: null }],
+      },
     ];
 
     const { container } = render(<WorkloadTrend metric="memory" history={history} apps={[app(big.appUrn, big.appName, 5)]} state={READY} />);
@@ -148,5 +164,42 @@ describe('WorkloadTrend', () => {
     // measured, one line above rows printing their real peaks in the same words.
     expect(container.textContent).toContain('scale to 4.0 GB');
     expect(container.textContent).not.toContain('peak 4.0 GB');
+  });
+
+  it('renders real GPU VRAM (megabytes converted to bytes), titled distinctly from CPU/memory', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+    const history = [sample(20, [{ ...engine, gpuVramMb: 512 }]), sample(21, [{ ...engine, gpuVramMb: 600 }])];
+
+    const { container } = render(<WorkloadTrend metric="gpu" history={history} apps={[app(engine.appUrn, engine.appName, 5)]} state={READY} />);
+
+    expect(container.textContent).toContain('GPU memory by workload');
+    // 600 MB, not 600 bytes — the metric is megabytes and must be converted before humanBytes sees it.
+    expect(container.textContent).toContain('600 MB');
+  });
+
+  it('leaves a workload with no GPU VRAM found unmeasured, not drawn at zero — same rule as an absent workload', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+    const idle = { appUrn: 'urn:idle', appName: 'Idle', cpuPercent: 2 };
+    // `idle` is present in every sample (it is an installed, non-missing app) but never holds any
+    // GPU memory — gpuVramMb stays null throughout, the "sampler ran, found nothing here" case,
+    // not the "workload did not exist yet" case the other tests above cover.
+    const history = [sample(20, [{ ...engine, gpuVramMb: 300 }, idle]), sample(21, [{ ...engine, gpuVramMb: 300 }, idle])];
+
+    const { container } = render(
+      <WorkloadTrend
+        metric="gpu"
+        history={history}
+        apps={[app(engine.appUrn, engine.appName, 5), app(idle.appUrn, idle.appName, 2)]}
+        state={READY}
+      />,
+    );
+
+    // Zero observations for a row draws `StepAreaChart`'s empty-track `<div>`, not an `<svg>` at
+    // all — so "no line was ever drawn at zero" is exactly the ABSENCE of this element, not an
+    // empty one. The workload still appears in the tile by name, distinguishing "measured nothing"
+    // from "dropped entirely".
+    expect(container.querySelector('svg[aria-label="Idle — GPU memory by workload"]')).toBeNull();
+    expect(container.textContent).toContain('Idle');
+    expect(lineRuns(container, 'Engine — GPU memory by workload')).toHaveLength(1);
   });
 });

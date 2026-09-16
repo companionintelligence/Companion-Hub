@@ -34,6 +34,8 @@ export type TelemetryAppPoint = {
   cpuPercent: number;
   memoryUsageBytes: number;
   containerCount: number;
+  /** Mirrors `AppRuntimeHistoryPoint.gpuVramMb` in `app-runtime-monitor.service.ts` — kept in sync by hand, same as every other field here. */
+  gpuVramMb: number | null;
 };
 
 export type HostTelemetryHistorySample = {

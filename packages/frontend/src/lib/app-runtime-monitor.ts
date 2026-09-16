@@ -30,6 +30,14 @@ export interface AppRuntimeHealth {
   usesDefaultCpuLimit: boolean;
   sampledAt: string;
   containers: AppContainerRuntimeStats[];
+  /**
+   * Real per-process GPU VRAM summed onto this workload's own containers, in MB — see
+   * `gpu-process-sampler.service.ts` and `DockerReadFacade.mapPidsToContainers` on the backend.
+   * `null`, never `0`: the underlying tools are a presence list, not a per-container gauge, so
+   * there is no way to positively confirm "measured and definitely zero". Compute UTILIZATION per
+   * workload is not represented anywhere — see `workload-coverage.tsx`.
+   */
+  gpuVramMb: number | null;
 }
 
 export interface AppRuntimeHistoryPoint {
@@ -39,6 +47,8 @@ export interface AppRuntimeHistoryPoint {
   cpuPercent: number;
   memoryUsageBytes: number;
   containerCount: number;
+  /** Same field, same `null`-means-nothing-found rule, as {@link AppRuntimeHealth.gpuVramMb}. */
+  gpuVramMb: number | null;
 }
 
 export interface AppRuntimeHistorySample {
@@ -46,10 +56,17 @@ export interface AppRuntimeHistorySample {
   apps: AppRuntimeHistoryPoint[];
 }
 
+/** GPU VRAM this sample found but could not attribute to any tracked workload — a bare host process (Ollama, normally) or an unmanaged container. */
+export interface UnattributedGpuProcess {
+  processName: string;
+  vramMb: number;
+}
+
 export interface AppRuntimeMonitorSnapshot {
   sampledAt: string;
   apps: AppRuntimeHealth[];
   history: AppRuntimeHistorySample[];
+  unattributedGpu: UnattributedGpuProcess[] | null;
 }
 
 export async function fetchAppRuntimeHealth(appUrn: string): Promise<AppRuntimeHealth> {
