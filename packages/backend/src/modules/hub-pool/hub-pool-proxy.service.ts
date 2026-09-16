@@ -13,6 +13,7 @@ import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
   effectivePeerPressureBand,
+  inventoryListsModel,
   isCapabilitiesSnapshotFresh,
   resolveHubPoolDirections,
   resolvePinFor,
@@ -30,14 +31,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Header-wait timeout for a forwarded request. Cleared as soon as the upstream responds, so it never caps how long a streamed generation may run. */
-const CONNECT_TIMEOUT_MS = 15_000;
+/**
+ * Header-wait budget for a forwarded STREAMED request. Cleared as soon as the upstream responds, so
+ * it never caps how long a streamed generation may run — but for an engine that streams, the first
+ * byte comes only after the model is loaded AND the prompt is evaluated, and that is not "well under
+ * a second" for an agent turn. Measured on beta-max, 2026-09-15: a 150 KB prompt (OpenClaw's first
+ * turn is 162 KB — system prompt, every tool schema, history) into a cold `qwen3.6:27b` took
+ * **131.8 s** to its first byte over the direct engine path, 0.97 s once the prompt was cached. At
+ * the old 15 s every such turn was abandoned here, failed over to a peer that then needed the same
+ * two minutes, and reported as "unreachable" — the routing log showed 15123 ms, 15129 ms, node
+ * `null`. Five minutes by default, like the completion budget below, and env-overridable for the
+ * same reason: the right number is a property of the operator's hardware. A dead peer is still
+ * caught quickly — a refused TCP connect fails at once, and the health poll marks a silent one
+ * unreachable after three misses — this only stops a *slow* engine reading as a dead one.
+ */
+const CONNECT_TIMEOUT_MS = Math.max(15_000, Number(process.env.HUB_POOL_FIRST_BYTE_TIMEOUT_MS) || 300_000);
 
 /**
  * Budget for a NON-STREAMED completion, which is a different thing from a connect budget.
  *
  * `CONNECT_TIMEOUT_MS` guards the wait for response headers, and for a streamed request that is
- * exactly right — the first frame arrives in well under a second and the timer is cleared. For a
+ * the wait for the first frame (see its own note on how long that can be). For a
  * non-streamed request the upstream sends no headers at all until the entire completion is ready, so
  * the same timer silently becomes a cap on TOTAL GENERATION TIME. Fifteen seconds of generation is
  * a short prompt; every real coding task, long summary or agent turn is longer, and every one of
@@ -104,7 +118,7 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
       `(${candidates} ${plural} tried; ${CONNECT_TIMEOUT_MS}ms for headers on a streamed request, ` +
       `${COMPLETION_TIMEOUT_MS}ms for a whole non-streamed completion). This is a deadline, not ` +
       'proof the nodes are down — a node loading weights or serving a long queue hits it while ' +
-      'remaining healthy. Retry, or raise HUB_POOL_COMPLETION_TIMEOUT_MS.'
+      'remaining healthy. Retry, or raise HUB_POOL_FIRST_BYTE_TIMEOUT_MS / HUB_POOL_COMPLETION_TIMEOUT_MS.'
     );
   }
   return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
@@ -738,10 +752,19 @@ export class PoolProxyService {
    * Cross-node merging of the listing endpoints is a known gap; see docs/hub-pool.md.
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
+    // Ollama's `/api/show` names the model in `name` (older clients) or `model`, and an app whose
+    // chat model is the `auto` alias asks about `auto` here before its first chat — OpenClaw's
+    // provider does exactly that, and read the engine's 404 as "model not found" without ever
+    // sending the chat. The alias means this node's default, so it resolves here the same way.
+    const resolvedBody = await this.resolveLocalOnlyAlias(body);
+    if (resolvedBody === null) {
+      this.respondUncommitted(res, 502, { error: describeUnresolvableAuto() });
+      return;
+    }
     let committed = false;
     for (const type of INFERENCE_BACKEND_TYPES) {
       try {
-        const upstream = await this.callBackend(type, path, method, body);
+        const upstream = await this.callBackend(type, path, method, resolvedBody);
         if (!upstream.ok) {
           continue;
         }
@@ -760,6 +783,16 @@ export class PoolProxyService {
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
   }
 
+  /** `null` when the body asks for `auto` and nothing can stand in for it; otherwise the body to forward. */
+  private async resolveLocalOnlyAlias(body: unknown): Promise<unknown | null> {
+    if (!isRecord(body)) return body;
+    const fields = ['name', 'model'].filter((field) => body[field] === AUTO_MODEL);
+    if (fields.length === 0) return body;
+    const resolved = await this.resolveModelAlias(AUTO_MODEL);
+    if (!resolved) return null;
+    return { ...body, ...Object.fromEntries(fields.map((field) => [field, resolved])) };
+  }
+
   /**
    * This node's own backends that can serve `model`.
    *
@@ -776,10 +809,10 @@ export class PoolProxyService {
       this.backends.entries().map(async ([type, backend]): Promise<PoolCandidate | null> => {
         try {
           const health = await backend.healthCheck();
-          if (!health.running || !health.healthy || !health.modelsLoaded.includes(model)) {
+          if (!health.running || !health.healthy || !inventoryListsModel(health.modelsLoaded, model)) {
             return null;
           }
-          if (health.unservableModels?.includes(model)) {
+          if (inventoryListsModel(health.unservableModels, model)) {
             this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
             return null;
           }
@@ -828,7 +861,7 @@ export class PoolProxyService {
       // is pixel-identical to one whose engines are simply down. `undefined` means a peer on an
       // older build, which never refuses, so absence must read as "yes".
       if (capabilities.acceptingWork === false) continue;
-      const match = capabilities.backends.find((b) => b.healthy && b.modelsLoaded.includes(model));
+      const match = capabilities.backends.find((b) => b.healthy && inventoryListsModel(b.modelsLoaded, model));
       if (match) {
         const pressure = this.peerPressure(peer, capabilities) ?? UNKNOWN_PRESSURE;
         candidates.push({

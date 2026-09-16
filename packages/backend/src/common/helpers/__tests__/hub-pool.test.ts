@@ -12,8 +12,10 @@ import {
   describeHubPoolInboundRefused,
   effectivePeerPressureBand,
   isCapabilitiesSnapshotFresh,
+  inventoryListsModel,
   isHubPoolEnabled,
   normalizePeerFqdn,
+  sameModelId,
   resolveHubPoolDirections,
   resolveHubPoolEnabled,
   type HubPoolDisabledBy,
@@ -411,5 +413,35 @@ describe('GPU-pressure helpers', () => {
       expect(MIN_POOL_PRESSURE_WEIGHT).toBe(0);
       expect(MAX_POOL_PRESSURE_WEIGHT).toBe(MAX_PRESSURE_BAND);
     });
+  });
+});
+
+// Ollama folds the implicit `:latest` tag; apps and engines disagree about spelling it out. Every
+// app is handed `EMBEDDINGS_MODEL=nomic-embed-text`; every engine lists `nomic-embed-text:latest`.
+describe('sameModelId / inventoryListsModel', () => {
+  it('treats an untagged id and its :latest as the same model, in either direction', () => {
+    expect(sameModelId('nomic-embed-text', 'nomic-embed-text:latest')).toBe(true);
+    expect(sameModelId('nomic-embed-text:latest', 'nomic-embed-text')).toBe(true);
+    expect(sameModelId('gemma3:1b', 'gemma3:1b')).toBe(true);
+  });
+
+  it('keeps every other comparison verbatim and case-sensitive', () => {
+    expect(sameModelId('gemma3:1b', 'gemma3:4b')).toBe(false);
+    expect(sameModelId('gemma3:1b', 'gemma3')).toBe(false);
+    expect(sameModelId('Gemma3:1b', 'gemma3:1b')).toBe(false);
+    expect(sameModelId('Qwen/Qwen3.5-9B', 'Qwen/Qwen3.5-9B')).toBe(true);
+    expect(sameModelId('Qwen/Qwen3.5-9B', 'Qwen/Qwen3.5-9B:latest')).toBe(true);
+  });
+
+  it('reads the tag as the part after the last colon that follows the last slash', () => {
+    // A colon inside a registry host is not a tag.
+    expect(sameModelId('host:5000/ns/model', 'host:5000/ns/model:latest')).toBe(true);
+    expect(sameModelId('host:5000/ns/model:v2', 'host:5000/ns/model')).toBe(false);
+  });
+
+  it('matches an inventory on the folded id and tolerates a missing list', () => {
+    expect(inventoryListsModel(['gemma3:1b', 'nomic-embed-text:latest'], 'nomic-embed-text')).toBe(true);
+    expect(inventoryListsModel(['gemma3:1b'], 'nomic-embed-text')).toBe(false);
+    expect(inventoryListsModel(undefined, 'gemma3:1b')).toBe(false);
   });
 });

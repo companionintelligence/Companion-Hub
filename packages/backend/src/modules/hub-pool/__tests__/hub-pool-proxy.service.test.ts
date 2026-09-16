@@ -1648,6 +1648,72 @@ describe('PoolProxyService', () => {
 
       expect(res.status).toHaveBeenCalledWith(502);
     });
+
+    // OpenClaw's Ollama provider asks `/api/show` about its chat model before the first chat, and on
+    // `auto` read the engine's 404 as "model not found" — the chat was never sent (beta-max, 2026-09-15).
+    it('resolves the auto alias in an /api/show body, under either field name Ollama accepts', async () => {
+      const router = mock<InferenceRouterService>();
+      const modelRegistry = mock<ModelRegistryService>();
+      router.resolveAutoModel.mockResolvedValue('qwen3-6-27b');
+      modelRegistry.getTrackedModel.mockReturnValue({
+        catalogId: 'qwen3-6-27b',
+        backendModelId: 'qwen3.6:27b',
+        backend: 'ollama',
+        state: 'pinned',
+      } as never);
+      const withRegistry = new PoolProxyService(
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        peerService,
+        tailscaleService,
+        loadService,
+        configuration,
+        routingLog,
+        pressureService,
+        router,
+        modelRegistry,
+      );
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValue(new Response(JSON.stringify({ details: {} }), { status: 200 }));
+
+      const res = createMockResponse();
+      await withRegistry.proxyLocalOnlyRequest('/api/show', 'POST', { name: AUTO_MODEL, model: AUTO_MODEL, verbose: true }, res);
+
+      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(JSON.parse(init.body as string)).toEqual({ name: 'qwen3.6:27b', model: 'qwen3.6:27b', verbose: true });
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('answers an unresolvable auto on /api/show with the actionable 502 and calls no engine', async () => {
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest('/api/show', 'POST', { name: AUTO_MODEL }, res);
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(res.json).toHaveBeenCalledWith({ error: describeUnresolvableAuto() });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  // Apps are handed `EMBEDDINGS_MODEL=nomic-embed-text`; every engine lists `nomic-embed-text:latest`.
+  describe('the implicit :latest tag', () => {
+    it('offers the local backend when the request omits the tag the inventory spells out', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
+
+      expect(await service.buildCandidateList('nomic-embed-text')).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('offers a peer the same way, and still honours an unservable mark spelled either way', async () => {
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['nomic-embed-text:latest'],
+        unservableModels: ['nomic-embed-text'],
+      });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', 'nomic-embed-text:latest', { inFlightRequests: 0 })]);
+
+      const candidates = await service.buildCandidateList('nomic-embed-text');
+
+      expect(candidates.map((c) => c.peerId)).toEqual(['peer-idle']);
+    });
   });
 
   // The alias apps send for "this Hub's default LLM". The local router always resolved it; the
