@@ -48,6 +48,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const CONNECT_TIMEOUT_MS = Math.max(15_000, Number(process.env.HUB_POOL_FIRST_BYTE_TIMEOUT_MS) || 300_000);
 
 /**
+ * The slowest prompt-evaluation rate a placed request is budgeted against, in tokens per second.
+ *
+ * A fixed first-byte budget is wrong for a streamed request whose prompt the engine has to READ
+ * before it can say anything, because that cost scales with the prompt. On beta-max, Ollama's own
+ * log for an OpenClaw turn: 47,104 prompt tokens at 192 → 157 tok/s (it slows as the context
+ * grows), 98% evaluated at 296.8 s — and at 300 s the fixed budget cancelled it, five minutes of
+ * GPU work were discarded, and the request moved to a peer that then started the same prefill from
+ * zero, cold. So the budget is sized from the body: tokens ≈ bytes / 4, divided by this floor rate,
+ * never below the fixed budget. 50 tok/s is below every GPU node measured on this fleet (157–312)
+ * and above the CPU-bound ones (27–37), which is the point: a node that slow reads as failed and
+ * the work moves, a node merely working through a big prompt does not.
+ */
+const MIN_PREFILL_TOKENS_PER_SEC = Math.max(1, Number(process.env.HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC) || 50);
+
+/** Header-wait budget for a streamed request carrying `bodyBytes` of prompt. Exported for the doctor and tests. */
+export function firstByteBudgetMs(bodyBytes: number): number {
+  const estimatedTokens = Math.ceil(bodyBytes / 4);
+  return Math.max(CONNECT_TIMEOUT_MS, Math.ceil(estimatedTokens / MIN_PREFILL_TOKENS_PER_SEC) * 1000);
+}
+
+/**
  * Budget for a NON-STREAMED completion, which is a different thing from a connect budget.
  *
  * `CONNECT_TIMEOUT_MS` guards the wait for response headers, and for a streamed request that is
@@ -499,11 +520,35 @@ export class PoolProxyService {
       return;
     }
 
+    // Opened at placement, not at first byte. On a self-hosted engine an agent turn waits minutes
+    // for its headers (a 160 KB prompt into a cold 27B: 131.8 s measured, 245 s under load), and
+    // until this row existed the operator's activity panel showed nothing for the whole wait
+    // while its own caption promised a record "when a request is placed". The row names the
+    // candidate currently being tried and is updated in place through each failover.
+    // Non-empty: the `candidates.length === 0` branch above has already returned.
+    const first = candidates[0] as PoolCandidate;
+    const row = this.routingLog.open({
+      at: new Date().toISOString(),
+      direction: 'outbound',
+      path,
+      model,
+      node: first.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      peerId: first.peerId,
+      backend: first.backend,
+      candidates: candidates.length,
+      attempt: 1,
+      failedOverFrom,
+      pin: describePinForLog(pin),
+    });
+
     let lastError: unknown;
     let committed = false;
     for (const [index, candidate] of candidates.entries()) {
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
+      if (index > 0) {
+        Object.assign(row, { node: nodeLabel, peerId: candidate.peerId, backend: candidate.backend, attempt: index + 1 });
+      }
       this.loadService.acquire(key);
       try {
         const upstream = await this.forward(candidate, path, method, body, model);
@@ -516,21 +561,13 @@ export class PoolProxyService {
           await this.noteRejectedCandidate(candidate, upstream.status);
           continue;
         }
-        // Recorded here rather than after the stream: this is the routing decision, and a
-        // generation that runs for minutes would otherwise be invisible to the operator until
-        // it finished (or never, if the client hung up).
-        this.routingLog.record({
-          at: new Date().toISOString(),
-          direction: 'outbound',
-          path,
-          model,
+        // Settled here rather than after the stream: headers are the routing decision, and the
+        // generation that follows can run for minutes (or never end, if the client hung up).
+        this.routingLog.settle(row, {
           node: nodeLabel,
           peerId: candidate.peerId,
           backend: candidate.backend,
-          candidates: candidates.length,
           attempt: index + 1,
-          failedOverFrom: [...failedOverFrom],
-          pin: describePinForLog(pin),
           outcome: 'served',
           status: upstream.status,
           durationMs: Date.now() - startedAt,
@@ -560,18 +597,11 @@ export class PoolProxyService {
       }
     }
 
-    this.routingLog.record({
-      at: new Date().toISOString(),
-      direction: 'outbound',
-      path,
-      model,
+    this.routingLog.settle(row, {
       node: null,
       peerId: null,
       backend: null,
-      candidates: candidates.length,
       attempt: candidates.length,
-      failedOverFrom: [...failedOverFrom],
-      pin: describePinForLog(pin),
       outcome: 'failed',
       status: null,
       durationMs: Date.now() - startedAt,
@@ -947,14 +977,16 @@ export class PoolProxyService {
     const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
+    const payload = method === 'GET' ? undefined : JSON.stringify(body);
     return this.fetchWithConnectTimeout(
       url,
       {
         method,
         headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-        body: method === 'GET' ? undefined : JSON.stringify(body),
+        body: payload,
       },
       isStreamingRequest(body),
+      payload?.length ?? 0,
     );
   }
 
@@ -974,6 +1006,7 @@ export class PoolProxyService {
     // `/local/*`, because the recipient UUID, nonce and timestamp already make a captured request
     // unreplayable, and canonicalizing a megabyte embeddings batch per hop is not affordable here.
     const authHeaders = await this.peerService.peerAuthHeaders(peer, method, requestPath, body);
+    const peerPayload = method === 'GET' ? undefined : JSON.stringify(body);
     return this.fetchWithConnectTimeout(
       url,
       {
@@ -988,9 +1021,10 @@ export class PoolProxyService {
           [POOL_MODEL_HEADER]: model,
           ...authHeaders,
         },
-        body: method === 'GET' ? undefined : JSON.stringify(body),
+        body: peerPayload,
       },
       isStreamingRequest(body),
+      peerPayload?.length ?? 0,
     );
   }
 
@@ -1002,9 +1036,11 @@ export class PoolProxyService {
    * Non-streamed: headers arrive only when the completion is finished, so the wait we are timing IS
    * the generation, and the budget has to be sized for one. See COMPLETION_TIMEOUT_MS.
    */
-  private async fetchWithConnectTimeout(url: string, init: RequestInit, streaming = false): Promise<globalThis.Response> {
+  private async fetchWithConnectTimeout(url: string, init: RequestInit, streaming = false, bodyBytes = 0): Promise<globalThis.Response> {
     const controller = new AbortController();
-    const budget = streaming ? CONNECT_TIMEOUT_MS : COMPLETION_TIMEOUT_MS;
+    // A streamed request's first byte waits on the prompt being read, so its budget grows with the
+    // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
+    const budget = streaming ? firstByteBudgetMs(bodyBytes) : Math.max(COMPLETION_TIMEOUT_MS, firstByteBudgetMs(bodyBytes));
     const timer = setTimeout(
       () => controller.abort(new Error(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`)),
       budget,

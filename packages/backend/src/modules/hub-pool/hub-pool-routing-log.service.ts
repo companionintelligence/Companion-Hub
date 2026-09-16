@@ -5,8 +5,12 @@ import type { PoolPinMode, PoolPinScope, PoolPinTargetKind } from '@/common/help
 /** How many routing decisions are retained. ~200 bytes each, so the whole buffer is well under 100 KB. */
 export const ROUTING_LOG_CAPACITY = 200;
 
-/** What happened to a request the proxy tried to route. */
-export type PoolRoutingOutcome = 'served' | 'failed';
+/**
+ * What happened to a request the proxy tried to route. `pending` is a request that has been placed
+ * on a candidate and is waiting for its first byte — for an agent turn on a self-hosted engine that
+ * wait is minutes, and until it was recorded the operator saw nothing at all.
+ */
+export type PoolRoutingOutcome = 'served' | 'failed' | 'pending';
 
 /**
  * One routing decision. Metadata only — never the request body, the prompt, the response, or any
@@ -47,8 +51,11 @@ export interface PoolRoutingRecord {
   outcome: PoolRoutingOutcome;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
-  /** Time from the proxy receiving the request to response headers — including failed attempts — not the streamed generation, which continues afterwards. */
-  durationMs: number;
+  /**
+   * Time from the proxy receiving the request to response headers — including failed attempts — not
+   * the streamed generation, which continues afterwards. `null` while the request is `pending`.
+   */
+  durationMs: number | null;
 }
 
 /** A pin as the routing log records it: shape only, never the model or the peer id — the record already has both. */
@@ -63,6 +70,8 @@ export interface PoolRoutingSummary {
   capacity: number;
   served: number;
   failed: number;
+  /** Placed on a candidate and still waiting for its first byte. */
+  pending: number;
   /** Records with a non-empty `failedOverFrom`, i.e. requests that a candidate rejected before one answered. */
   failovers: number;
   lastAt: string | null;
@@ -91,6 +100,24 @@ export class HubPoolRoutingLogService {
     }
   }
 
+  /**
+   * Record a request the moment it is placed, as `pending`, and hand back the row so the proxy can
+   * keep it current through failovers and settle it when headers arrive. The row is the same object
+   * the ring holds, so every later `list()` reflects the update without a second entry — a request
+   * that fails over three times is still one line, as before. If the ring has already evicted the
+   * row by the time it settles, the mutation is harmless.
+   */
+  open(entry: Omit<PoolRoutingRecord, 'outcome' | 'status' | 'durationMs'>): PoolRoutingRecord {
+    const row: PoolRoutingRecord = { ...entry, outcome: 'pending', status: null, durationMs: null };
+    this.record(row);
+    return row;
+  }
+
+  /** Move a row out of `pending`. Fields not given keep what the placement wrote. */
+  settle(row: PoolRoutingRecord, patch: Partial<PoolRoutingRecord> & { outcome: 'served' | 'failed' }): void {
+    Object.assign(row, patch);
+  }
+
   /** Newest first, so a UI showing only the first page shows the most recent decisions. */
   list(limit = ROUTING_LOG_CAPACITY): PoolRoutingRecord[] {
     return this.entries.slice(-limit).reverse();
@@ -98,16 +125,19 @@ export class HubPoolRoutingLogService {
 
   summary(): PoolRoutingSummary {
     let served = 0;
+    let pending = 0;
     let failovers = 0;
     for (const entry of this.entries) {
       if (entry.outcome === 'served') served += 1;
+      if (entry.outcome === 'pending') pending += 1;
       if (entry.failedOverFrom.length > 0) failovers += 1;
     }
     return {
       recorded: this.entries.length,
       capacity: ROUTING_LOG_CAPACITY,
       served,
-      failed: this.entries.length - served,
+      failed: this.entries.length - served - pending,
+      pending,
       failovers,
       lastAt: this.entries[this.entries.length - 1]?.at ?? null,
     };

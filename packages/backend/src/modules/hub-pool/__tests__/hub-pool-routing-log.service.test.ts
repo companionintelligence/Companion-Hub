@@ -57,7 +57,46 @@ describe('HubPoolRoutingLogService', () => {
   });
 
   it('reports an empty buffer without a last timestamp', () => {
-    expect(service.summary()).toMatchObject({ recorded: 0, served: 0, failed: 0, failovers: 0, lastAt: null });
+    expect(service.summary()).toMatchObject({ recorded: 0, served: 0, failed: 0, pending: 0, failovers: 0, lastAt: null });
     expect(service.list()).toEqual([]);
+  });
+
+  // A request placed on a self-hosted engine can wait minutes for its first byte. Until the row
+  // existed at placement the operator saw nothing for that whole wait.
+  describe('a row opened at placement', () => {
+    it('is listed as pending with no duration, and counts as neither served nor failed', () => {
+      const { outcome: _o, status: _s, durationMs: _d, ...placement } = record({ node: 'core-2.tail.ts.net' });
+      const row = service.open(placement);
+
+      expect(service.list()[0]).toBe(row);
+      expect(row).toMatchObject({ outcome: 'pending', status: null, durationMs: null, node: 'core-2.tail.ts.net' });
+      expect(service.summary()).toMatchObject({ recorded: 1, served: 0, failed: 0, pending: 1 });
+    });
+
+    it('settles in place — the same single row, updated, never a second entry', () => {
+      const { outcome: _o, status: _s, durationMs: _d, ...placement } = record();
+      const row = service.open(placement);
+      row.failedOverFrom.push('local');
+
+      service.settle(row, { node: 'core-2.tail.ts.net', outcome: 'served', status: 200, durationMs: 131_800 });
+
+      expect(service.list()).toHaveLength(1);
+      expect(service.list()[0]).toMatchObject({
+        outcome: 'served',
+        status: 200,
+        durationMs: 131_800,
+        node: 'core-2.tail.ts.net',
+        failedOverFrom: ['local'],
+      });
+      expect(service.summary()).toMatchObject({ served: 1, failed: 0, pending: 0, failovers: 1 });
+    });
+
+    it('settles as failed without a node when every candidate was tried', () => {
+      const row = service.open((({ outcome: _o, status: _s, durationMs: _d, ...rest }) => rest)(record()));
+
+      service.settle(row, { node: null, outcome: 'failed', durationMs: 900_000 });
+
+      expect(service.summary()).toMatchObject({ served: 0, failed: 1, pending: 0 });
+    });
   });
 });

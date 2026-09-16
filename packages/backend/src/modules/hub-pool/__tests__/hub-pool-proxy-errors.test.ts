@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { describeAllCandidatesFailed } from '../hub-pool-proxy.service';
+import { describeAllCandidatesFailed, firstByteBudgetMs } from '../hub-pool-proxy.service';
 
 describe('describeAllCandidatesFailed', () => {
   it('names the deadline, and refuses to call a slow node unreachable', () => {
@@ -48,5 +48,22 @@ describe('describeAllCandidatesFailed', () => {
   it('survives a non-Error rejection without printing [object Object]', () => {
     const msg = describeAllCandidatesFailed('m', 1, { code: 'weird' });
     expect(msg).not.toContain('[object Object]');
+  });
+});
+
+// Ollama's log for one OpenClaw turn on beta-max: 47,104 prompt tokens, 98% evaluated at 296.8 s,
+// cancelled by a fixed 300 s budget — five minutes of GPU work discarded and the request moved to a
+// cold peer. The budget has to grow with the prompt the engine must read first.
+describe('firstByteBudgetMs', () => {
+  it('keeps the fixed budget for a small body', () => {
+    expect(firstByteBudgetMs(0)).toBe(300_000);
+    expect(firstByteBudgetMs(2_000)).toBe(300_000);
+  });
+
+  it('grows with the body once the estimated prompt outruns the floor rate', () => {
+    // 160 KB ≈ 40,000 tokens; at the 50 tok/s floor that is 800 s.
+    expect(firstByteBudgetMs(160_000)).toBe(800_000);
+    // 188 KB (the 47k-token turn) ≈ 47,000 tokens → 940 s: past the 296.8 s it actually needed on a GPU node.
+    expect(firstByteBudgetMs(188_000)).toBe(940_000);
   });
 });
