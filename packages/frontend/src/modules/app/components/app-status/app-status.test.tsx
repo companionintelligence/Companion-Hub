@@ -38,6 +38,7 @@ function healthyRuntime(overrides: Partial<AppRuntimeHealth> = {}): AppRuntimeHe
     reason: null,
     cpuLimit: null,
     usesDefaultCpuLimit: false,
+    gpuVramMb: null,
     sampledAt: new Date().toISOString(),
     containers: [runningContainer],
     ...overrides,
@@ -73,6 +74,7 @@ describe('AppStatus', () => {
       reason: null,
       cpuLimit: null,
       usesDefaultCpuLimit: false,
+      gpuVramMb: null,
       sampledAt: new Date().toISOString(),
       containers: [
         {
@@ -123,6 +125,7 @@ describe('AppStatus', () => {
       reason: null,
       cpuLimit: null,
       usesDefaultCpuLimit: false,
+      gpuVramMb: null,
       sampledAt: new Date().toISOString(),
       containers: [
         setupContainer,
@@ -219,6 +222,7 @@ describe('AppStatus', () => {
       reason: null,
       cpuLimit: null,
       usesDefaultCpuLimit: false,
+      gpuVramMb: null,
       sampledAt: new Date().toISOString(),
       containers: [
         ...longLived,
@@ -319,6 +323,7 @@ describe('AppStatus', () => {
       reason: null,
       cpuLimit: null,
       usesDefaultCpuLimit: false,
+      gpuVramMb: null,
       sampledAt: new Date().toISOString(),
       containers: [failedSetup],
     });

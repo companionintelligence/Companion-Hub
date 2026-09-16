@@ -8,6 +8,8 @@ import { AppsRepository } from '../apps.repository';
 import { AppsService } from '../apps.service';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { HostTelemetryService } from '@/modules/system/host-telemetry.service';
+import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
+import { GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
 import si from 'systeminformation';
 
 vi.mock('systeminformation');
@@ -19,6 +21,8 @@ describe('AppRuntimeMonitorService', () => {
   let appsRepository: MockProxy<AppsRepository>;
   let appsService: MockProxy<AppsService>;
   let dockerReadFacade: MockProxy<DockerReadFacade>;
+  let hardwareInspector: MockProxy<HardwareInspectorService>;
+  let gpuSampler: MockProxy<GpuProcessSamplerService>;
   let service: AppRuntimeMonitorService;
 
   beforeEach(() => {
@@ -28,6 +32,8 @@ describe('AppRuntimeMonitorService', () => {
     appsRepository = mock<AppsRepository>();
     appsService = mock<AppsService>();
     dockerReadFacade = mock<DockerReadFacade>();
+    hardwareInspector = mock<HardwareInspectorService>();
+    gpuSampler = mock<GpuProcessSamplerService>();
 
     config.get.mockImplementation((key: string) => {
       if (key === 'userSettings') {
@@ -46,8 +52,14 @@ describe('AppRuntimeMonitorService', () => {
       ],
     });
     dockerReadFacade.getHubRuntimeStats.mockResolvedValue([]);
+    dockerReadFacade.mapPidsToContainers.mockResolvedValue(new Map());
+    // No GPU vendor by default, matching a node the hardware inspector has not (yet) identified
+    // one on — every existing test in this file predates GPU attribution and asserts nothing about
+    // it, so the default here must be a genuine no-op, not a fabricated reading.
+    hardwareInspector.getProfile.mockResolvedValue({} as any);
+    gpuSampler.sampleVramByProcess.mockResolvedValue([]);
 
-    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade);
+    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade, hardwareInspector, gpuSampler);
   });
 
   afterEach(() => {
@@ -480,7 +492,15 @@ describe('AppRuntimeMonitorService', () => {
       {
         sampledAt: '2026-08-18T12:00:00.000Z',
         apps: [
-          { appUrn: 'ci-memory:ci-marketplace', appName: 'ci-memory', status: 'running', cpuPercent: 55, memoryUsageBytes: 2048, containerCount: 3 },
+          {
+            appUrn: 'ci-memory:ci-marketplace',
+            appName: 'ci-memory',
+            status: 'running',
+            cpuPercent: 55,
+            memoryUsageBytes: 2048,
+            containerCount: 3,
+            gpuVramMb: null,
+          },
         ],
       },
     ]);
@@ -488,7 +508,7 @@ describe('AppRuntimeMonitorService', () => {
     dockerReadFacade.getHubRuntimeStats.mockResolvedValue([]);
     (si.processes as any).mockResolvedValue({ list: [] });
 
-    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade, telemetry);
+    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade, hardwareInspector, gpuSampler, telemetry);
     const snapshot = await service.getRuntimeMonitorSnapshot();
 
     expect(snapshot.history[0]).toMatchObject({
@@ -496,5 +516,87 @@ describe('AppRuntimeMonitorService', () => {
       apps: [expect.objectContaining({ appUrn: 'ci-memory:ci-marketplace', cpuPercent: 55 })],
     });
     expect(telemetry.recordRuntimeApps).toHaveBeenCalled();
+  });
+
+  describe('GPU VRAM attribution', () => {
+    beforeEach(() => {
+      appsRepository.getApps.mockResolvedValue([
+        { id: 1, appName: 'alpha', appStoreSlug: 'store', status: 'running', config: {}, updatedAt: new Date().toISOString() },
+      ] as any);
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
+        {
+          containerId: 'c1',
+          name: 'alpha_store-svc-1',
+          state: 'running',
+          status: 'Up',
+          health: 'healthy',
+          exitCode: null,
+          cpuPercent: 5,
+          memoryUsageBytes: 1000,
+          memoryLimitBytes: 4000,
+        },
+      ] as any);
+    });
+
+    it('leaves gpuVramMb null on every workload when the host has no supported GPU vendor', async () => {
+      // hardwareInspector.getProfile() resolves to {} in the outer beforeEach — no `gpu` key at
+      // all, the shape a host with no GPU (or one the inspector has not read yet) reports.
+      const snapshot = await service.getRuntimeMonitorSnapshot();
+
+      expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ gpuVramMb: null });
+      expect(snapshot.unattributedGpu).toBeNull();
+      expect(gpuSampler.sampleVramByProcess).toHaveBeenCalledWith(undefined);
+    });
+
+    it('sums a sampled process onto the workload whose container holds it', async () => {
+      hardwareInspector.getProfile.mockResolvedValue({ gpu: { vendor: 'amd' } } as any);
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 4242, processName: 'some-engine', vramMb: 512 }]);
+      dockerReadFacade.mapPidsToContainers.mockResolvedValue(new Map([[4242, 'alpha_store-svc-1']]));
+
+      const snapshot = await service.getRuntimeMonitorSnapshot();
+
+      expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ gpuVramMb: 512 });
+      expect(snapshot.unattributedGpu).toBeNull();
+      expect(dockerReadFacade.mapPidsToContainers).toHaveBeenCalledWith([4242]);
+    });
+
+    it('sums two processes in the same container onto one workload total', async () => {
+      hardwareInspector.getProfile.mockResolvedValue({ gpu: { vendor: 'nvidia' } } as any);
+      gpuSampler.sampleVramByProcess.mockResolvedValue([
+        { pid: 1, processName: 'engine-a', vramMb: 300 },
+        { pid: 2, processName: 'engine-b', vramMb: 200 },
+      ]);
+      dockerReadFacade.mapPidsToContainers.mockResolvedValue(
+        new Map([
+          [1, 'alpha_store-svc-1'],
+          [2, 'alpha_store-svc-1'],
+        ]),
+      );
+
+      const snapshot = await service.getRuntimeMonitorSnapshot();
+
+      expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ gpuVramMb: 500 });
+    });
+
+    it('reports a process matching no known container as unattributed, not silently dropped', async () => {
+      hardwareInspector.getProfile.mockResolvedValue({ gpu: { vendor: 'amd' } } as any);
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 9, processName: 'ollama', vramMb: 4096 }]);
+      // A bare host process: no container holds this PID at all, unlike the matched cases above.
+      dockerReadFacade.mapPidsToContainers.mockResolvedValue(new Map());
+
+      const snapshot = await service.getRuntimeMonitorSnapshot();
+
+      expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ gpuVramMb: null });
+      expect(snapshot.unattributedGpu).toEqual([{ processName: 'ollama', vramMb: 4096 }]);
+    });
+
+    it('does not let a GPU sampling failure take down the rest of the snapshot', async () => {
+      hardwareInspector.getProfile.mockRejectedValue(new Error('hardware probe timed out'));
+
+      const snapshot = await service.getRuntimeMonitorSnapshot();
+
+      expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ cpuPercent: 5, gpuVramMb: null });
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('GPU VRAM attribution failed'));
+    });
   });
 });

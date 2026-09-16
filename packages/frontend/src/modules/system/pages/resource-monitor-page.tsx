@@ -142,26 +142,34 @@ export default function ResourceMonitorPage() {
       />
 
       {/* ── A. Workloads on this machine ──────────────────────────────────── */}
-      {/* Three tiles in one row: two measured metrics and, in the third slot, a statement of what
-          is NOT measured per workload. The third tile deliberately has no plot rectangle — an
-          empty chart frame beside a populated one reads as loading-or-broken, which is the
-          absence/idleness collision this page exists to avoid, wearing a different costume. */}
+      {/* Four equal tiles in one row: three measured metrics and, in the last slot, a statement of
+          what is STILL not measured per workload (compute utilization, and tokens). The coverage
+          tile deliberately has no plot rectangle of its own — an empty chart frame beside a
+          populated one reads as loading-or-broken, which is the absence/idleness collision this
+          page exists to avoid, wearing a different costume. */}
       <BandHeader title={t('DASHBOARD_BAND_WORKLOAD')} />
       <WorkloadTrend
         metric="cpu"
         history={history.slice(-HISTORY_LIMIT)}
         apps={apps}
         state={containerState}
-        className="col-span-full md:col-span-1 xl:col-span-4"
+        className="col-span-full md:col-span-1 xl:col-span-3"
       />
       <WorkloadTrend
         metric="memory"
         history={history.slice(-HISTORY_LIMIT)}
         apps={apps}
         state={containerState}
-        className="col-span-full md:col-span-1 xl:col-span-4"
+        className="col-span-full md:col-span-1 xl:col-span-3"
       />
-      <WorkloadCoverage hardware={hardware.data} className="col-span-full md:col-span-2 xl:col-span-4" />
+      <WorkloadTrend
+        metric="gpu"
+        history={history.slice(-HISTORY_LIMIT)}
+        apps={apps}
+        state={containerState}
+        className="col-span-full md:col-span-1 xl:col-span-3"
+      />
+      <WorkloadCoverage hardware={hardware.data} className="col-span-full md:col-span-1 xl:col-span-3" />
 
       {/* ── B. This machine ───────────────────────────────────────────────── */}
       <BandHeader title={t('DASHBOARD_BAND_MACHINE')} />

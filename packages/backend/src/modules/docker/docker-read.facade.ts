@@ -453,6 +453,63 @@ export class DockerReadFacade {
   }
 
   /**
+   * Maps each of `pids` to the name of the running container whose process table contains it. A
+   * PID absent from the returned map was not found in ANY running container's process table — for
+   * a GPU PID that means a bare host process (Ollama, normally: see `gpu-process-sampler.service.ts`),
+   * which is a real, common outcome here and not a lookup failure.
+   *
+   * `docker top` reports PIDs as the host sees them (the same namespace `rocm-smi`/`nvidia-smi`
+   * see, which is what makes the correlation possible at all) — the same property
+   * {@link countContainerZombieProcesses} already relies on. One `top` call per running container,
+   * capped by `pLimit(5)` matching {@link getAppNetworkTarget}'s pattern. Read-only and tolerant:
+   * a container whose process table cannot be read is skipped rather than failing the whole sweep,
+   * same as every other method here.
+   */
+  public async mapPidsToContainers(pids: readonly number[]): Promise<Map<number, string>> {
+    const wanted = new Set(pids);
+    const result = new Map<number, string>();
+    if (wanted.size === 0) {
+      return result;
+    }
+
+    let summaries: Awaited<ReturnType<Dockerode['listContainers']>>;
+    try {
+      summaries = await withTimeout(this.docker.listContainers({ all: false }), DOCKER_INSPECT_TIMEOUT_MS, 'Docker list timed out');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`GPU PID attribution could not list containers: ${message}`);
+      return result;
+    }
+
+    const limit = pLimit(5);
+    await Promise.all(
+      summaries.map((summary) =>
+        limit(async () => {
+          const name = summary.Names?.[0]?.replace(/^\//, '') || summary.Id.slice(0, 12);
+          try {
+            const top = (await withTimeout(
+              this.docker.getContainer(summary.Id).top({ ps_args: '-eo pid' }) as Promise<{ Processes?: string[][] }>,
+              DOCKER_INSPECT_TIMEOUT_MS,
+              `Docker top timed out for ${summary.Id}`,
+            )) as { Processes?: string[][] };
+            for (const row of top.Processes ?? []) {
+              const pid = Number.parseInt(row[0]?.trim() ?? '', 10);
+              if (wanted.has(pid)) {
+                result.set(pid, name);
+              }
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.logger.debug(`Could not read the process table of ${name}: ${message}`);
+          }
+        }),
+      ),
+    );
+
+    return result;
+  }
+
+  /**
    * Count defunct processes inside a container, or `null` when the process table could not be read.
    *
    * Deliberately counts on the STAT column alone and never on "parent is PID 1": the fleet's

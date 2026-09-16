@@ -39,10 +39,31 @@ describe('WorkloadCoverage', () => {
     for (const hardware of [undefined, {}, { gpu: { vendor: 'amd', model: 'Radeon 8060S' } }]) {
       const { container } = render(<WorkloadCoverage hardware={hardware} />);
 
-      expect(container.textContent).toContain('Not measured');
+      // GPU VRAM is real now (see workload-trends.tsx) — this tile's GPU tag reflects that
+      // precisely, "VRAM only", rather than the blanket "Not measured" it used to say.
+      expect(container.textContent).toContain('VRAM only');
       expect(container.textContent).toContain('Not recorded');
       expect(container.querySelector('svg')).toBeNull();
       expect(container.querySelector('[class*="border-dashed"]')).toBeNull();
     }
+  });
+
+  it('still says compute utilization per workload is not measured, distinct from the VRAM it now does measure', () => {
+    const { container } = render(<WorkloadCoverage hardware={undefined} />);
+
+    expect(container.textContent).toContain('UTILIZATION');
+    expect(container.textContent).toContain('is NOT measured');
+    // The GPU tag itself must read as the narrower, true claim, never regress to the old blanket one.
+    expect(container.textContent).toContain('VRAM only');
+  });
+
+  it('points at the real per-model token counts now in Pool activity, not a fake per-workload figure', () => {
+    const { container } = render(<WorkloadCoverage hardware={undefined} />);
+
+    expect(container.textContent).toContain('Pool activity');
+    expect(container.textContent).toContain('per MODEL');
+    // The exact numbers this tile is forbidden from ever showing, so a later edit reintroducing
+    // one of them fails loudly here rather than silently passing review.
+    expect(container.textContent).not.toMatch(/\b0\s*(tokens|%|MB|GB)\b/i);
   });
 });

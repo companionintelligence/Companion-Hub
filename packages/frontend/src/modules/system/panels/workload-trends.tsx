@@ -6,13 +6,17 @@ import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 /*
- * PER-WORKLOAD TRENDS — the two metrics the Hub actually records per workload, as small multiples.
+ * PER-WORKLOAD TRENDS — the metrics the Hub actually records per workload, as small multiples.
  *
- * `AppRuntimeHistoryPoint` carries exactly `{ appUrn, appName, status, cpuPercent,
- * memoryUsageBytes, containerCount }`. CPU and memory over time are therefore real and are drawn
- * here. GPU per workload and tokens per workload are not in that payload, not anywhere behind it,
- * and are not drawn ANYWHERE — see `workload-coverage.tsx`, which states their absence in words
- * rather than in an empty chart frame.
+ * `AppRuntimeHistoryPoint` carries `{ appUrn, appName, status, cpuPercent, memoryUsageBytes,
+ * containerCount, gpuVramMb }`. CPU, memory and GPU VRAM over time are therefore real and drawn
+ * here. GPU VRAM is real per-process data (`gpu-process-sampler.service.ts`), attributed to
+ * whichever workload's container holds it (`DockerReadFacade.mapPidsToContainers`) — it is NOT
+ * compute utilization, which no tool this Hub shells out to can report per process on this fleet's
+ * hardware (see `workload-coverage.tsx`, which still states THAT absence in words). Tokens per
+ * workload are not in this payload, not anywhere behind it, and are not drawn ANYWHERE — the
+ * proxy has no concept of which app a request came from at all, only which model and node served
+ * it (see `pool-activity.tsx`'s per-model token breakdown, the nearest real signal there is).
  *
  * ── Why five small charts and not one five-series overlay ────────────────────────────────────
  *
@@ -53,22 +57,28 @@ const CHART_SLOTS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--char
 
 const ROW_HEIGHT = 38;
 
-type Metric = 'cpu' | 'memory';
+type Metric = 'cpu' | 'memory' | 'gpu';
 
 /**
- * One workload's value in one sample, or `null` for "this sample does not mention it".
+ * One workload's value in one sample, or `null` for "not known".
  *
- * ⚠ NOT `?? 0`, which is what this replaced. Every installed, non-missing app appears in EVERY
- * sample the backend takes, so an app absent from an older sample was not installed yet. Coalescing
- * that to zero drew a workload as having sat at 0% for the first half of the window — a measurement
- * nobody took, and indistinguishable from an idle container. `StepAreaChart` renders `null` as a
- * gap, so the trace simply starts when the workload does.
+ * ⚠ NOT `?? 0`, which is what this replaced for cpu/memory. Every installed, non-missing app
+ * appears in EVERY sample the backend takes, so an app absent from an older sample was not
+ * installed yet — coalescing that to zero drew a workload as having sat at 0% for the first half
+ * of the window, a measurement nobody took. `gpuVramMb` carries the SAME null-means-unmeasured
+ * rule one level deeper: the point itself is always present, but the field inside it is `null`
+ * whenever nothing was found for this workload that tick (see `AppRuntimeHealth.gpuVramMb`'s own
+ * doc comment for why that can mean either "genuinely holds none" or "the sampler did not run" —
+ * both look identical from here, and both are correctly a gap, never a zero). `StepAreaChart`
+ * renders `null` as a gap either way.
  */
 function valueForApp(sample: AppRuntimeHistorySample, appUrn: string, metric: Metric): number | null {
   const point = sample.apps.find((app) => app.appUrn === appUrn);
   if (!point) return null;
 
-  return metric === 'cpu' ? point.cpuPercent : point.memoryUsageBytes;
+  if (metric === 'cpu') return point.cpuPercent;
+  if (metric === 'gpu') return point.gpuVramMb;
+  return point.memoryUsageBytes;
 }
 
 function formatSampleTime(value: string): string {
@@ -91,14 +101,19 @@ export function WorkloadTrend({
   className?: string;
 }) {
   const { t } = useTranslation();
-  const title = metric === 'cpu' ? t('DASHBOARD_TRENDS_CPU_TITLE') : t('DASHBOARD_TRENDS_MEM_TITLE');
-  const format = (value: number) => (metric === 'cpu' ? `${value.toFixed(1)}%` : humanBytes(value));
+  const title =
+    metric === 'cpu' ? t('DASHBOARD_TRENDS_CPU_TITLE') : metric === 'gpu' ? t('DASHBOARD_TRENDS_GPU_TITLE') : t('DASHBOARD_TRENDS_MEM_TITLE');
+  // gpuVramMb is megabytes, not bytes — `humanBytes` expects bytes, same as memoryUsageBytes.
+  const format = (value: number) => (metric === 'cpu' ? `${value.toFixed(1)}%` : humanBytes(metric === 'gpu' ? value * 1024 * 1024 : value));
   // The axis ceiling is a round number by construction, so it is printed as one. `100.0%` reads
   // as a measurement that happened to land on the ceiling rather than as the ceiling itself.
-  const formatAxis = (value: number) => (metric === 'cpu' ? `${Math.round(value)}%` : humanBytes(value));
+  const formatAxis = (value: number) => (metric === 'cpu' ? `${Math.round(value)}%` : humanBytes(metric === 'gpu' ? value * 1024 * 1024 : value));
 
   const rows = useMemo(() => {
     const labels = new Map(apps.map((app) => [app.appUrn, app.appName]));
+
+    const metricValue = (point: { cpuPercent: number; memoryUsageBytes: number; gpuVramMb: number | null }) =>
+      metric === 'cpu' ? point.cpuPercent : metric === 'gpu' ? (point.gpuVramMb ?? 0) : point.memoryUsageBytes;
 
     /*
      * Ranked by the total across the window when there IS a window, and by the current reading
@@ -112,15 +127,14 @@ export function WorkloadTrend({
             ...history
               .reduce((totals, sample) => {
                 for (const point of sample.apps) {
-                  const value = metric === 'cpu' ? point.cpuPercent : point.memoryUsageBytes;
-                  totals.set(point.appUrn, (totals.get(point.appUrn) ?? 0) + value);
+                  totals.set(point.appUrn, (totals.get(point.appUrn) ?? 0) + metricValue(point));
                 }
 
                 return totals;
               }, new Map<string, number>())
               .entries(),
           ]
-        : apps.map((app): [string, number] => [app.appUrn, metric === 'cpu' ? app.cpuPercent : app.memoryUsageBytes]);
+        : apps.map((app): [string, number] => [app.appUrn, metricValue(app)]);
 
     return ranked
       .sort((a, b) => b[1] - a[1])
