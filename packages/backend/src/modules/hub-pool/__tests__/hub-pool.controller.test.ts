@@ -1,4 +1,5 @@
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { PATH_METADATA } from '@nestjs/common/constants';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { Request, Response } from 'express';
@@ -466,6 +467,23 @@ describe('HubPoolController', () => {
 
       expect(proxyService.proxyLocalOnlyRequest).toHaveBeenCalledWith(path, 'GET', undefined, expect.anything());
       expect(proxyService.proxyRequest).not.toHaveBeenCalled();
+    });
+
+    // Regression guard for the exact failure mode in #1460: a live fleet repro found
+    // `GET /api/version` and `GET /api/tags` 404ing on the pool proxy while the sibling
+    // `GET /v1/models` succeeded. That can happen even with the handlers above correctly wired to
+    // `proxyLocalOnlyRequest`, if the *route* itself silently moves — e.g. the controller's own
+    // `@Controller('inference/pool')` prefix changes, or a method's path segment drifts. Asserting
+    // the composed path directly off Nest's own route metadata (rather than only invoking the
+    // handler in isolation, as the tests above do) catches that class of regression, which apps
+    // reach at `http://<hub>:<API_PORT>/api/inference/pool/...` per `InferenceEndpointService`.
+    it.each([
+      ['proxyOllamaVersion', 'api/version'],
+      ['proxyOllamaTags', 'api/tags'],
+      ['proxyOpenAiModelsList', 'v1/models'],
+    ] as const)('mounts %s at inference/pool/%s, not somewhere the app-facing proxy base URL cannot reach', (method, expectedPath) => {
+      expect(Reflect.getMetadata(PATH_METADATA, HubPoolController)).toBe('inference/pool');
+      expect(Reflect.getMetadata(PATH_METADATA, HubPoolController.prototype[method])).toBe(expectedPath);
     });
   });
 
