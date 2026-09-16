@@ -10618,6 +10618,10 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "gpuVramMb": {
+                  "nullable": true,
+                  "type": "number"
                 }
               },
               "required": [
@@ -10636,7 +10640,8 @@
                 "cpuLimit",
                 "usesDefaultCpuLimit",
                 "sampledAt",
-                "containers"
+                "containers",
+                "gpuVramMb"
               ],
               "additionalProperties": false
             }
@@ -10671,6 +10676,10 @@
                       },
                       "containerCount": {
                         "type": "number"
+                      },
+                      "gpuVramMb": {
+                        "nullable": true,
+                        "type": "number"
                       }
                     },
                     "required": [
@@ -10679,7 +10688,8 @@
                       "status",
                       "cpuPercent",
                       "memoryUsageBytes",
-                      "containerCount"
+                      "containerCount",
+                      "gpuVramMb"
                     ],
                     "additionalProperties": false
                   }
@@ -10691,12 +10701,33 @@
               ],
               "additionalProperties": false
             }
+          },
+          "unattributedGpu": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "processName": {
+                  "type": "string"
+                },
+                "vramMb": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "processName",
+                "vramMb"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "required": [
           "sampledAt",
           "apps",
-          "history"
+          "history",
+          "unattributedGpu"
         ],
         "additionalProperties": false
       },
@@ -12193,6 +12224,10 @@
               ],
               "additionalProperties": false
             }
+          },
+          "gpuVramMb": {
+            "nullable": true,
+            "type": "number"
           }
         },
         "required": [
@@ -12211,7 +12246,8 @@
           "cpuLimit",
           "usesDefaultCpuLimit",
           "sampledAt",
-          "containers"
+          "containers",
+          "gpuVramMb"
         ],
         "additionalProperties": false
       },
