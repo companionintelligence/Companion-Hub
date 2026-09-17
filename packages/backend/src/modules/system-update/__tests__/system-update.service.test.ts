@@ -4,7 +4,7 @@ import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constant
 import { resolveHostListenerBaseUrl, SystemUpdateService } from '../system-update.service';
 import { ENV_RESTORE_VARIABLE } from '../stack-updater';
 import type { DockerContainerInspect } from '../hub-deployment';
-import { core14HybridCheckout, core4SourceCheckout, core6Appliance } from './fleet-hub-inspect.fixtures';
+import { core14HybridCheckout, core3EnvLabelDiffersFromMount, core4SourceCheckout, core6Appliance } from './fleet-hub-inspect.fixtures';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import axios from 'axios';
@@ -133,6 +133,33 @@ describe('SystemUpdateService', () => {
       expect(result.current).toBe('dev@dac546bcf');
       expect(result.updateBlockedReason).toContain("floating 'dev' tag");
       expect(mockRegistryService.getTagsSinceWithHubFallback).not.toHaveBeenCalled();
+    });
+
+    // core-3 on a release pin: performUpdate would 409 on the env-file mismatch, so offering the update
+    // meant a daily failed auto-update and a Settings button that could never work.
+    it('offers no update to a release pin whose stack the updater cannot reproduce, and says why', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ current: '0.2.70', updateAvailable: false });
+      expect(result.updateBlockedReason).toContain('/home/ci/.local/share/companion-hub/.env.dev');
+    });
+
+    it('still offers that update when the desktop host listener will take it instead of compose', async () => {
+      insideHubContainer(PINNED_ENV);
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ latest: '0.2.71', updateAvailable: true, updateBlockedReason: null });
     });
 
     it('says the build is unknown outside a container instead of reporting CI_HUB_VERSION', async () => {
@@ -380,6 +407,20 @@ describe('SystemUpdateService', () => {
       expect(fs.writeFileSync).not.toHaveBeenCalled();
     });
 
+    it('skips, rather than fails, a release pin whose stack the updater cannot reproduce', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core3EnvLabelDiffersFromMount(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      const perform = vi.spyOn(service, 'performUpdate');
+
+      await runCheck(service);
+
+      expect(perform).not.toHaveBeenCalled();
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringMatching(/^Auto-update skipped: .*\.env\.dev/));
+      expect(mockLogger.error).not.toHaveBeenCalled();
+    });
+
     it('advances a release pin when a newer release exists and auto-update is on', async () => {
       insideHubContainer(PINNED_ENV);
       await installDocker(core6Appliance(RELEASE_PIN));
@@ -407,6 +448,14 @@ describe('SystemUpdateService', () => {
   describe('getAutoUpdatesEnabled', () => {
     it('should default to true when no settings file exists', () => {
       expect(service.getAutoUpdatesEnabled()).toBe(true);
+    });
+  });
+
+  describe('setAutoUpdatesEnabled', () => {
+    // A string "false" was persisted as-is and read back as "on", so the node kept auto-updating.
+    it.each(['false', 0, null, undefined])('refuses %j instead of storing a value that reads as on', async (enabled) => {
+      await expect(service.setAutoUpdatesEnabled(enabled as never)).rejects.toThrow(BadRequestException);
+      expect(fs.promises.writeFile).not.toHaveBeenCalled();
     });
   });
 

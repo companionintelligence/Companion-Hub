@@ -31,6 +31,17 @@ export function stackUpdaterContainerName(hubContainer: string): string {
  */
 export const ENV_RESTORE_VARIABLE = 'CI_HUB_UPDATE_ENV_RESTORE';
 
+/**
+ * The compose binary the Hub image installs and version-checks at build time (Dockerfile, runner stage).
+ *
+ * `docker compose` only works inside the image through `$DOCKER_CONFIG/cli-plugins/docker-compose`, a
+ * symlink the Hub's CMD creates only when the host already has that directory. On 2026-09-17 it was
+ * missing on core-2, core-7, beta-max, beta-ms-a2 and beta-red (5 of 14 Hubs inspected), and that
+ * morning's update died on core-2 and beta-max with `unknown flag: --env-file`, which is the docker CLI
+ * failing to find `compose`. The binary itself is always in the image.
+ */
+export const HUB_IMAGE_STANDALONE_COMPOSE = '/usr/local/bin/docker-compose';
+
 export interface StackUpdaterScriptInput {
   plan: ComposeUpdatePlan;
   targetImage: string;
@@ -46,6 +57,8 @@ export interface StackUpdaterScriptInput {
   envFilePath: string;
   /** Lets the HTTP response that started the update leave before compose stops the Hub. */
   startDelaySeconds: number;
+  /** Standalone compose binary, used when present; `docker compose` otherwise. See {@link HUB_IMAGE_STANDALONE_COMPOSE}. */
+  standaloneCompose?: string;
 }
 
 /** The `sh` program the helper runs. Pure, so tests can run it against a stub `docker`. */
@@ -55,8 +68,8 @@ export function buildStackUpdaterScript(input: StackUpdaterScriptInput): string 
   const envAssignments = Object.entries(input.composeEnv)
     .map(([key, value]) => q(`${key}=${value}`))
     .join(' ');
+  const standaloneCompose = input.standaloneCompose ?? HUB_IMAGE_STANDALONE_COMPOSE;
   const composeArgs = [
-    'compose',
     '--project-name',
     plan.project,
     '--project-directory',
@@ -74,7 +87,11 @@ export function buildStackUpdaterScript(input: StackUpdaterScriptInput): string 
     `TARGET=${q(input.targetImage)}`,
     `HUB=${q(plan.container)}`,
     'note() { echo "stack-updater: $*"; }',
-    `compose() { env -i PATH="$PATH" HOME=/tmp ${envAssignments} docker ${composeArgs} "$@"; }`,
+    // `set --` rather than a CLI variable, so neither form is ever word-split.
+    'compose() {',
+    `  if [ -x ${q(standaloneCompose)} ]; then set -- ${q(standaloneCompose)} ${composeArgs} "$@"; else set -- docker compose ${composeArgs} "$@"; fi`,
+    `  env -i PATH="$PATH" HOME=/tmp ${envAssignments} "$@"`,
+    '}',
     // Snapshot before anything changes: these are the containers a failure must leave running.
     `RUNNING_BEFORE=$(docker ps --filter ${q(`label=com.docker.compose.project=${plan.project}`)} --format '{{.Names}}')`,
     'fail() {',
@@ -96,6 +113,7 @@ export function buildStackUpdaterScript(input: StackUpdaterScriptInput): string 
     '  note "result=failed"',
     '  exit 1',
     '}',
+    `if [ -x ${q(standaloneCompose)} ]; then note ${q(`compose CLI: ${standaloneCompose}`)}; else note 'compose CLI: docker compose'; fi`,
     `note ${q(`recreating ${describe} on`)} "$TARGET"`,
     // `env_file` is `required: false`, so compose skips a file it cannot see without a word. That
     // silence is how core-6's Hub came back without JWT_SECRET, DEVICE_ID and DOMAIN.

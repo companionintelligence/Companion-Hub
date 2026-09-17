@@ -142,7 +142,16 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
     const { build } = running;
     const current = describeRunningBuild(build);
-    const updateBlockedReason = channelUpdateRefusal(build, this.readDeclaredHubImage());
+    let updateBlockedReason = channelUpdateRefusal(build, this.readDeclaredHubImage());
+    // performUpdate refuses a stack it cannot reproduce unless the desktop listener takes the update.
+    // Without this the daily timer and Settings would offer it on core-3 and beta-3-glass (compose read
+    // `.env`, the Hub mounts `.env.dev`) and every attempt would end in a 409.
+    if (updateBlockedReason === null) {
+      const plan = resolveComposeUpdatePlan(running.container, this.composeMountTargets());
+      if (!plan.ok && !(await this.probeHostListener())) {
+        updateBlockedReason = plan.reason;
+      }
+    }
     const tags = build.version ? await this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, build.version) : [];
     const releases = tags.map((tag) => ({ version: tag, body: `Release ${tag}` }));
     const target = build.version ? selectReleaseTarget(build.version, tags) : null;
@@ -170,6 +179,12 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
   private hubEnvFilePath(): string {
     return path.join(this.config.get('directories').dataDir, '.env');
+  }
+
+  /** Where the Hub container sees the env file and compose file the updater reads and pins. */
+  private composeMountTargets(): { envFile: string; composeFile: string } {
+    const { dataDir } = this.config.get('directories');
+    return { envFile: path.join(dataDir, '.env'), composeFile: path.join(dataDir, 'docker-compose.yml') };
   }
 
   private readEnvFile(envFile: string): string | null {
@@ -297,11 +312,9 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     this.logger.info(`Hub stack update initiated from ${running.build.reference} to ${imageRef}`);
 
     const { dataDir } = this.config.get('directories');
-    const envFile = path.join(dataDir, '.env');
-    const planResult = resolveComposeUpdatePlan(running.container, {
-      envFile,
-      composeFile: path.join(dataDir, 'docker-compose.yml'),
-    });
+    const mountTargets = this.composeMountTargets();
+    const envFile = mountTargets.envFile;
+    const planResult = resolveComposeUpdatePlan(running.container, mountTargets);
 
     const listenerReachable = await this.probeHostListener();
     if (listenerReachable) {
@@ -511,6 +524,11 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async setAutoUpdatesEnabled(enabled: boolean): Promise<void> {
+    // Neither the controller body nor the MCP input is validated before this. `{"enabled": "false"}`
+    // used to be stored as a string, which the read above treats as on and the settings schema drops.
+    if (typeof enabled !== 'boolean') {
+      throw new BadRequestException('enabled must be true or false');
+    }
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
     let settings: Record<string, unknown> = {};
     try {

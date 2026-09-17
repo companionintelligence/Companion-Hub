@@ -75,6 +75,17 @@ if [ -z "$EXPLICIT_COMPOSE" ]; then
         COMPOSE_ARGS+=(--env-file "$LABEL_ENV")
         ENV_FILE_PATH="$LABEL_ENV"
       fi
+      # The compose file binds `${ENV_FILE:-.env}` at /data/.env and `${COMPOSE_FILE_HOST}` at
+      # /data/docker-compose.yml, both relative to the project directory when unset. Whatever the
+      # launcher exported for them is gone by now, so hand compose the host paths the running Hub
+      # has mounted; a wrong `.env` there is the "bind source path does not exist" failure.
+      mount_source() {
+        docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$1\"}}{{.Source}}{{end}}{{end}}" "$FOUND_HUB" 2>/dev/null || true
+      }
+      BIND_ENV="$(mount_source /data/.env)"
+      BIND_COMPOSE="$(mount_source /data/docker-compose.yml)"
+      if [ -n "$BIND_ENV" ] && [ -f "$BIND_ENV" ]; then export ENV_FILE="$BIND_ENV"; fi
+      if [ -n "$BIND_COMPOSE" ] && [ -f "$BIND_COMPOSE" ]; then export COMPOSE_FILE_HOST="$BIND_COMPOSE"; fi
       HUB_CONTAINER="$FOUND_HUB"
       echo "Using the compose invocation that created ${FOUND_HUB}: ${COMPOSE_ARGS[*]}"
     else

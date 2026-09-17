@@ -36,6 +36,8 @@ case "$1" in
     esac ;;
   start) echo "$2" >> "$dir/started" ;;
   compose)
+    # No cli-plugins symlink: the docker CLI does not know "compose" and chokes on its first flag.
+    if [ -f "$dir/no-plugin" ] && [ -z "$VIA_STANDALONE" ]; then echo "unknown flag: $2" >&2; exit 125; fi
     env | sort > "$dir/compose-env"
     for arg in "$@"; do
       case "$arg" in
@@ -49,17 +51,27 @@ esac
 exit 0
 `;
 
+/** The image's standalone compose binary: same CLI, reached without the docker plugin lookup. */
+const STUB_STANDALONE_COMPOSE = `#!/bin/sh
+dir=$(dirname "$0")
+echo "$*" >> "$dir/standalone.log"
+VIA_STANDALONE=1 exec "$dir/docker" compose "$@"
+`;
+
 describe('stack updater script, run against a stub docker', () => {
   let dir: string;
   let bin: string;
   let envFile: string;
   let logFile: string;
+  let standaloneCompose: string;
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-updater-'));
     bin = path.join(dir, 'bin');
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'docker'), STUB_DOCKER, { mode: 0o755 });
+    standaloneCompose = path.join(bin, 'docker-compose');
+    fs.writeFileSync(standaloneCompose, STUB_STANDALONE_COMPOSE, { mode: 0o755 });
     fs.writeFileSync(path.join(bin, 'running'), 'ci-hub\nci-hub-queue\nci-hub-db\ntraefik\n');
     fs.writeFileSync(path.join(bin, 'hub-image'), 'ghcr.io/companionintelligence/ci-hub:0.2.71\n');
     // Real `config --images <service>` output lists the dependencies' images as well (compose 5.5.1).
@@ -88,6 +100,7 @@ describe('stack updater script, run against a stub docker', () => {
       logPath: logFile,
       envFilePath: envFile,
       startDelaySeconds: 0,
+      standaloneCompose,
     });
     const result = spawnSync('sh', ['-c', script], {
       env: {
@@ -181,6 +194,31 @@ describe('stack updater script, run against a stub docker', () => {
     expect(status).toBe(1);
     expect(calls.some((call) => call.startsWith('compose '))).toBe(false);
     expect(log).toContain('is not readable inside the updater, so the recreated Hub would start without its env file');
+  });
+
+  // core-2, core-7, beta-max, beta-ms-a2 and beta-red have no cli-plugins directory, so `docker compose`
+  // is not a command inside the image; the 2026-09-17 update on core-2 and beta-max logged
+  // `unknown flag: --env-file` and never recreated anything.
+  it('recreates the Hub on a node without the compose CLI plugin, through the image binary', () => {
+    fs.writeFileSync(path.join(bin, 'no-plugin'), '');
+
+    const { status, log, read } = run();
+
+    expect(status).toBe(0);
+    expect(log).toContain('stack-updater: result=ok');
+    expect(log).not.toContain('unknown flag');
+    expect(read('standalone.log')).toMatch(/ up -d --no-deps --force-recreate --no-build ci-hub\n$/);
+  });
+
+  it('falls back to the docker compose plugin in an image without the standalone binary', () => {
+    fs.rmSync(standaloneCompose);
+
+    const { status, calls, log, read } = run();
+
+    expect(status).toBe(0);
+    expect(log).toContain('stack-updater: compose CLI: docker compose');
+    expect(read('standalone.log')).toBe('');
+    expect(calls.filter((call) => call.startsWith('compose '))).toHaveLength(2);
   });
 
   it('targets the legacy ci-os-hub service on core-4', () => {

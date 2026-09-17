@@ -175,6 +175,21 @@ export function core6RecreatedFromInsideContainer(image = 'ghcr.io/companioninte
   };
 }
 
+/**
+ * core-3 (beta-3-glass has the same shape under /root): compose ran without `--env-file`, so it
+ * interpolated from the project's `.env`, while `ENV_FILE` pointed the Hub's `/data/.env` bind and
+ * `env_file` at `.env.dev`. The updater can only pin `.env.dev`. Recorded 2026-09-17.
+ */
+export function core3EnvLabelDiffersFromMount(image = 'ghcr.io/companionintelligence/ci-hub:dev'): DockerContainerInspect {
+  const inspect = core6Appliance(image);
+  return {
+    ...inspect,
+    Mounts: inspect.Mounts?.map((mount) =>
+      mount.Destination === '/data/.env' ? { ...mount, Source: '/home/ci/.local/share/companion-hub/.env.dev' } : mount,
+    ),
+  };
+}
+
 /** Labels of the published `ci-hub:0.2.71` image (GHCR, 2026-09-17): the version label says `latest`. */
 export const RELEASE_0_2_71_IMAGE_LABELS = {
   'org.opencontainers.image.created': '2026-09-16T12:39:10.154Z',

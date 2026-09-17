@@ -40,13 +40,17 @@ The updater recreates the Hub the way compose created it, not the way a standard
 1. It starts a short-lived updater container named `<hub container>-stack-updater`. The container binds each host path at the same path, so the compose client reads the same files the Docker daemon mounts. Compose runs with only the env file, the target image, and absolute `ENV_FILE` and `COMPOSE_FILE_HOST` values; the Hub's own process environment does not reach it.
 1. The updater container checks that the env file is readable and that compose resolves the Hub service to the target image. Then it runs `docker compose up -d --no-deps --force-recreate --no-build <service>`. It does not recreate the queue or database and does not remove orphans.
 
+The updater container runs compose through the image's own `/usr/local/bin/docker-compose`, and only falls back to `docker compose` in an image without that binary. `docker compose` inside the image depends on a `cli-plugins` symlink under the Hub's Docker config directory, which was missing on 5 of 14 fleet Hubs on 2026-09-17.
+
 If any step in the updater container fails, it starts every container of the project that was running when it began. If the Hub container is not on the target image, it restores the previous env file.
 
 The updater refuses with HTTP 409, and leaves the env file as it was, when it cannot reproduce the stack:
 
 - The Hub container has no compose labels.
-- Compose read a different env file than the one mounted at `/data/.env`.
+- Compose read a different env file than the one mounted at `/data/.env`. For example, compose ran without `--env-file` and read the project's `.env`, while `ENV_FILE` mounted `.env.dev`, as on core-3 and beta-3-glass.
 - A compose path is not an absolute POSIX path, contains a comma, or overlaps a directory the updater container needs.
+
+`GET /api/system/update/check` reports these refusals in `updateBlockedReason` too, unless the desktop host listener is reachable, and the daily check skips such a node instead of failing on it.
 
 If the updater container cannot start at all, the Hub restores the env file and returns HTTP 500.
 
@@ -62,6 +66,8 @@ To turn it off, use any one of these:
 - Call `POST /api/system/update/auto-updates` with `{"enabled": false}` as an authenticated user.
 - Call the MCP tool `hub_set_auto_updates` with `{"enabled": false}`.
 - On the host, set `"autoUpdates": false` in `<ROOT_FOLDER_HOST>/state/settings.json`.
+
+The value must be the JSON boolean `false`. The endpoint and the MCP tool reject anything else, and a string such as `"false"` in the file counts as on.
 
 The Hub reads the file at every check, so the change applies without a restart. Other settings writes keep the value. A node on a channel such as `:dev` never auto-updates, whatever this switch says.
 

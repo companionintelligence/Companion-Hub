@@ -11,6 +11,7 @@ import {
 } from '../hub-deployment';
 import {
   core14HybridCheckout,
+  core3EnvLabelDiffersFromMount,
   core4SourceCheckout,
   core6Appliance,
   core6RecreatedFromInsideContainer,
@@ -207,6 +208,12 @@ describe('compose identity (c) and absolute env files (e), from the recorded fle
     container.Config = { ...container.Config, Labels: { 'org.opencontainers.image.version': 'dev' } };
     const result = resolveComposeUpdatePlan(container, MOUNT_TARGETS);
     expect(result).toEqual({ ok: false, reason: expect.stringContaining('no docker compose project or service label') });
+  });
+
+  it('core-3: refuses a stack whose compose env file is not the one mounted at /data/.env', () => {
+    const result = resolveComposeUpdatePlan(core3EnvLabelDiffersFromMount(), MOUNT_TARGETS);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.reason).toContain('/home/ci/.local/share/companion-hub/.env.dev');
   });
 
   it('refuses when compose interpolates from a different env file than the one the Hub can pin', () => {
