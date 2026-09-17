@@ -39,7 +39,6 @@ describe('RegistrationService', () => {
     deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
     repoEventsQueue = mock<RepoEventsQueue>();
     portalClient = mock<PortalClientService>();
-    portalClient.postDeviceDeregister.mockResolvedValue({ success: true });
     tailscaleService = mock<TailscaleService>();
     tunnelHealthService = mock<TunnelHealthService>();
     // Default to the reading a Hub that has not probed yet would give, so any test that does not
@@ -1119,17 +1118,17 @@ describe('RegistrationService', () => {
       expect(status.degradedReasons).toContain('cloud_validation_failed');
     });
 
-    it('clears local registration immediately on 400 (device removed from Portal)', async () => {
+    it('clears local registration immediately on 400 DEVICE_NOT_ACTIVE (device removed from Portal)', async () => {
       await service.setPhase('paired');
       await service.setPhase('provisioning');
       await service.setPhase('locally_ready');
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
       deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
-      mockedAxios.post.mockResolvedValue({ status: 400 } as any);
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } } as any);
 
       try {
-        await (service as any).validateRegistrationWithCloud();
+        await expect((service as any).validateRegistrationWithCloud()).resolves.toBe('removed');
 
         const status = service.getRegistrationStatus();
         expect(status.phase).toBe('unregistered');
@@ -1137,6 +1136,54 @@ describe('RegistrationService', () => {
       } finally {
         service.onApplicationShutdown();
       }
+    });
+
+    it('keeps the registration on a 400 without the DEVICE_NOT_ACTIVE code, and counts it as a failure', async () => {
+      // A schema refusal: the Portal did not like a field this Hub sent. Unpairing over that would
+      // take a healthy Hub offline, so it is treated like any other failed check-in.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { success: false, error: { name: 'ZodError' } } } as any);
+
+      await expect((service as any).validateRegistrationWithCloud()).resolves.toBe('failed');
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(service.getRegistrationStatus().phase).toBe('degraded');
+      expect(service.getRegistrationStatus().degradedReasons).toContain('cloud_validation_failed');
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
+
+    it('keeps the registration when a 400 body carries a different code', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Nope', code: 'SOMETHING_ELSE' } } as any);
+
+      await expect((service as any).validateRegistrationWithCloud()).resolves.toBe('failed');
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
+
+    it('never resets on a 401: a refused device key counts as a failure, not a removal', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Unauthorized' } } as any);
+
+      await expect((service as any).validateRegistrationWithCloud()).resolves.toBe('key_refused');
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
     });
 
     it('counts network/timeout errors toward the failure threshold', async () => {
@@ -1158,6 +1205,14 @@ describe('RegistrationService', () => {
       expect(service.getRegistrationStatus().phase).toBe('degraded');
     });
 
+    it('treats only the coded 400 as an inactive device in the drift probe', async () => {
+      mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { code: 'DEVICE_NOT_ACTIVE' } } as any);
+      await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBe(false);
+
+      mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { success: false } } as any);
+      await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBeNull();
+    });
+
     it('recovers from degraded when validation passes', async () => {
       await service.setPhase('paired');
       await service.setPhase('provisioning');
@@ -1172,6 +1227,117 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(status.phase).toBe('locally_ready');
       expect(status.degradedReasons).toEqual([]);
+    });
+  });
+
+  describe('resetRegistration', () => {
+    it('clears only local state and never contacts the Portal', async () => {
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await service.resetRegistration();
+
+      expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalled();
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+  });
+
+  describe('checkForRemoval', () => {
+    const DEVICE_NOT_ACTIVE = { status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } };
+
+    beforeEach(async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'test-api-key',
+        userSettings: { domain: 'example.com' },
+      } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+      mockedAxios.head.mockResolvedValue({ status: 200 } as any);
+
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      service.onApplicationShutdown();
+    });
+
+    it('resets the Hub and reports removed when the Portal answers DEVICE_NOT_ACTIVE', async () => {
+      mockedAxios.post.mockResolvedValue(DEVICE_NOT_ACTIVE as any);
+
+      await expect(service.checkForRemoval()).resolves.toBe('removed');
+
+      expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalled();
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+
+    it('reports still_registered while the Portal accepts the device', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { status: 'active' } } as any);
+
+      await expect(service.checkForRemoval()).resolves.toBe('still_registered');
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
+
+    it('reports key_refused on a 401 and resets nothing', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Unauthorized' } } as any);
+
+      await expect(service.checkForRemoval()).resolves.toBe('key_refused');
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+    });
+
+    it('reports not_checked when the Portal cannot be reached', async () => {
+      mockedAxios.post.mockRejectedValue(new Error('Network error'));
+
+      await expect(service.checkForRemoval()).resolves.toBe('not_checked');
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
+
+    it('sends at most one check-in per 30 seconds, answering from the last one in between', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { status: 'active' } } as any);
+
+      await expect(service.checkForRemoval()).resolves.toBe('still_registered');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+
+      // The Settings page asks every 15 seconds; the second ask rides on the first answer.
+      vi.advanceTimersByTime(15_000);
+      mockedAxios.post.mockResolvedValue(DEVICE_NOT_ACTIVE as any);
+      await expect(service.checkForRemoval()).resolves.toBe('still_registered');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(15_001);
+      await expect(service.checkForRemoval()).resolves.toBe('removed');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    });
+
+    it('shares a check-in already in flight instead of sending a second one', async () => {
+      let answer: (value: unknown) => void = () => {};
+      mockedAxios.post.mockReturnValue(new Promise((resolve) => (answer = resolve)) as any);
+
+      const first = service.checkForRemoval();
+      const second = service.checkForRemoval();
+      await vi.waitFor(() => expect(mockedAxios.post).toHaveBeenCalledTimes(1));
+      answer(DEVICE_NOT_ACTIVE);
+
+      await expect(first).resolves.toBe('removed');
+      await expect(second).resolves.toBe('removed');
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports removed without calling the Portal when the Hub is already unregistered', async () => {
+      await service.setPhase('unregistered');
+
+      await expect(service.checkForRemoval()).resolves.toBe('removed');
+      expect(mockedAxios.post).not.toHaveBeenCalled();
     });
   });
 });

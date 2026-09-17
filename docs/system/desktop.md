@@ -116,8 +116,8 @@ Rules:
 
 - The Hub sends the old device key to the new Portal on check-in, catalog, and tunnel calls. The new Portal rejects check-in with 401, and after three failed check-ins the Hub shows `degraded` (`cloud_validation_failed`). It doesn't clear the registration or open pairing.
 - The tunnel keeps serving the old Portal's hostname.
-- Settings → Network → Re-register Device keeps the device key, and pairing sends it to the Portal you pair with as proof of possession. Pair a switched Hub only with a Portal you trust with that key.
-- A reset while pointed at the new Portal can't deregister the device from the old Portal. When you switch back, the old Portal may still list the device as active, and the pairing page offers to restore it.
+- Settings → Network → Reset this Hub only keeps the device key, and pairing sends it to the Portal you pair with as proof of possession. Pair a switched Hub only with a Portal you trust with that key.
+- A reset never removes the device from a Portal, and removing it from the new Portal doesn't touch the old one. When you switch back, the old Portal may still list the device as active, and the pairing page offers to restore it.
 
 The desktop doesn't warn about a switch, because nothing records which Portal issued a registration. To test against another Portal, use a Hub that isn't paired, or switch back before you rely on the paired Hub again.
 
