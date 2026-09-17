@@ -134,6 +134,19 @@ describe('useDeepLinkInstall — routing', () => {
     await waitFor(() => expect(nav.navigate).toHaveBeenCalledWith('/store/ci-marketplace/immich?install=1', { replace: false }));
   });
 
+  it('empties the copy the desktop shell parked once it has opened the app', async () => {
+    // The shell parks every link as well as emitting it. Left parked, the next page load took the
+    // same link and opened the install dialog again.
+    renderHook(() => useDeepLinkInstall());
+    await waitFor(() => expect(ev.handler).toBeTruthy());
+    expect(dli.takePendingInstallIntentFromDesktop).toHaveBeenCalledTimes(1);
+
+    ev.handler?.({ payload: { appSlug: 'immich', storeId: 'ci-marketplace' } });
+
+    await waitFor(() => expect(nav.navigate).toHaveBeenCalledWith('/store/ci-marketplace/immich?install=1', { replace: false }));
+    expect(dli.takePendingInstallIntentFromDesktop).toHaveBeenCalledTimes(2);
+  });
+
   it.each([{ appSlug: '' }, { appSlug: '   ' }, {} as InstallIntent])('ignores a link with no app slug (%j)', async (payload) => {
     renderHook(() => useDeepLinkInstall());
     await waitFor(() => expect(ev.handler).toBeTruthy());
@@ -157,6 +170,20 @@ describe('useDeepLinkInstall — mid-setup links are held, not dropped', () => {
 
     // Stashed => the intent survives setup and is picked up afterwards.
     await waitFor(() => expect(dli.stashPendingInstallIntent).toHaveBeenCalled());
+    expect(nav.navigate).not.toHaveBeenCalled();
+  });
+
+  it('leaves a link held during setup parked for the next page load', async () => {
+    // The next page load, such as the one that ends Portal sign-in, takes the parked link and opens the app.
+    setPath('/login');
+    renderHook(() => useDeepLinkInstall());
+    await waitFor(() => expect(ev.handler).toBeTruthy());
+
+    ev.handler?.({ payload: { appSlug: 'immich', storeId: 'ci-marketplace' } });
+    await waitFor(() => expect(dli.stashPendingInstallIntent).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(dli.takePendingInstallIntentFromDesktop).toHaveBeenCalledTimes(1);
     expect(nav.navigate).not.toHaveBeenCalled();
   });
 
