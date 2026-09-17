@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-09-15
+> **Last updated:** 2026-09-17
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -28,6 +28,31 @@ packages/desktop/
 - `DockerNotAvailable` | `Stopped` | `Starting` | `Running` | `Error`
 - Optional sidecars (Tailscale, cloudflared, Ollama): only `Ready` or `Unavailable` — never `Starting`/`Failed`
 - Optional sidecars must not block `all_ready`
+
+## Startup screen
+
+The startup screen has two halves that look the same: the release bootstrap page
+(`packages/desktop/bootstrap/`, shown until the Hub API answers) and the in-app screens in
+`packages/frontend/src/components/hub-status/hub-status.tsx`. Both poll
+`get_startup_progress_command` (`hub_manager/status.rs`), which returns:
+
+- Each core service's state: `pending`, `starting`, `ready`, `failed`, `stopped`, or `not_started`.
+  An exited container only counts as `failed` when nothing explains it. If the user stopped the Hub,
+  the container exited cleanly, or it is a leftover from before a start that is running now, it is
+  not a failure. `detail` carries Docker's error or the exit code. `starting_secs` says how long a
+  container has waited on its health check.
+- `user_stopped` and `user_stopped_at_ms`, from the `.user-stopped` marker, so the screen can say
+  the Hub is stopped straight away instead of timing out.
+- `start_error` and `start_failed_at_ms`, from the sticky `.start-failed` marker.
+- `docker_access`, `hub_api_live`, image pull counts, and `start_in_progress`.
+- `progress_pct`: the average of the service states. If a poll during the current start finds an
+  image missing, downloads count for half of it until the Hub is ready, so a first start does not
+  sit at the services' floor for the whole download.
+
+The bootstrap page picks one screen from that data: starting, hasn't finished starting (after 3
+minutes, not while images are still downloading), stopped, couldn't start, or Docker not running.
+Each screen shows one action that fixes it. Pressing **Start Hub** switches to the starting screen
+immediately.
 
 ## Native inference runners
 

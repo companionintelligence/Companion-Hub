@@ -1,4 +1,7 @@
-/** Short, plain-language hints for Tauri startup service rows (keyed by Docker container name). */
+/**
+ * Short, plain-language hints for the core service rows on the startup screens (keyed by Docker
+ * container name). Optional sidecars are not listed there, so they have no hint.
+ */
 export const STARTUP_SERVICE_HINTS: Record<string, string> = {
   'ci-hub-db': 'STARTUP_SERVICE_HINT_DB',
   'ci-hub-queue': 'STARTUP_SERVICE_HINT_QUEUE',
@@ -6,13 +9,7 @@ export const STARTUP_SERVICE_HINTS: Record<string, string> = {
   'ci-hub': 'STARTUP_SERVICE_HINT_HUB',
   'ci-os-hub': 'STARTUP_SERVICE_HINT_HUB',
   traefik: 'STARTUP_SERVICE_HINT_TRAEFIK',
-  'hub-tailscale': 'STARTUP_SERVICE_HINT_TAILSCALE',
-  cloudflared: 'STARTUP_SERVICE_HINT_CLOUDFLARED',
-  'host-ollama': 'STARTUP_SERVICE_HINT_OLLAMA',
 };
-
-export const STARTUP_PROGRESS_HINT = 'STARTUP_PROGRESS_HINT';
-export const STARTUP_IMAGE_PULL_HINT = 'STARTUP_IMAGE_PULL_HINT';
 
 export const DOCKER_REQUIRED_HINT = 'DOCKER_REQUIRED_HINT';
 export const DOCKER_MAC_ARCH_HINT = 'DOCKER_MAC_ARCH_HINT';
