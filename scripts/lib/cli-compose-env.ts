@@ -95,6 +95,24 @@ function isRegularFile(filePath: string): boolean {
   }
 }
 
+/**
+ * Native host path for a `ROOT_FOLDER_HOST` value. On Windows the desktop app writes it in Docker's
+ * form, `/c/Users/...` (Docker Desktop) or `/mnt/c/Users/...` (a WSL2 engine), which Node would
+ * resolve against the current drive (`C:\c\Users\...`), so the tunnel files beside the data dir
+ * would never be found. Mirrors `host_path_from_docker_path` in the desktop app.
+ */
+export function hostPathFromDockerPath(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') return value;
+  const [, drive, rest = ''] = /^\/(?:mnt\/)?([a-zA-Z])(?:\/(.*))?$/.exec(value.trim().replace(/\\/g, '/')) ?? [];
+  if (!drive) return value;
+  return `${drive.toUpperCase()}:\\${rest.replace(/^\/+/, '').replace(/\//g, '\\')}`;
+}
+
+/** Hub data dir named by an env file, in the form this platform's filesystem calls accept. */
+function hostDataDirForEnvFile(envFileName: string): string {
+  return hostPathFromDockerPath(resolveRootFolderHost(envFileName));
+}
+
 /** True when a non-empty tunnel token exists at the sibling compose path or the legacy nested path. */
 export function hasCloudflareTunnelTokenAtDataDir(dataDir: string): boolean {
   return tunnelDirsForDataDir(dataDir).some((dir) => isNonEmptyTokenFile(path.join(dir, 'token')));
@@ -102,7 +120,7 @@ export function hasCloudflareTunnelTokenAtDataDir(dataDir: string): boolean {
 
 /** Same rules as {@link hasCloudflareTunnelTokenAtDataDir}, resolving the data dir from an env file. */
 export function hasCloudflareTunnelToken(envFileName: string): boolean {
-  return hasCloudflareTunnelTokenAtDataDir(resolveRootFolderHost(envFileName));
+  return hasCloudflareTunnelTokenAtDataDir(hostDataDirForEnvFile(envFileName));
 }
 
 /**
@@ -119,7 +137,7 @@ export function hasRegisteredCloudflareTunnelAtDataDir(dataDir: string): boolean
 
 /** Same rules as {@link hasRegisteredCloudflareTunnelAtDataDir}, resolving the data dir from an env file. */
 export function hasRegisteredCloudflareTunnel(envFileName: string): boolean {
-  return hasRegisteredCloudflareTunnelAtDataDir(resolveRootFolderHost(envFileName));
+  return hasRegisteredCloudflareTunnelAtDataDir(hostDataDirForEnvFile(envFileName));
 }
 
 function hasTailscaleAuthKey(vars: Record<string, string>): boolean {

@@ -46,6 +46,7 @@ import {
   hasCloudflareTunnelToken,
   hasRegisteredCloudflareTunnel,
   hasRegisteredCloudflareTunnelAtDataDir,
+  hostPathFromDockerPath,
   setTailscalePersistedStateProbeForTests,
   tailscaledStateLooksLoggedIn,
   TUNNEL_REGISTRATION_MARKER,
@@ -728,6 +729,28 @@ describe('cloudflare compose profile', () => {
   });
 });
 
+/**
+ * On Windows the desktop writes `ROOT_FOLDER_HOST` in Docker's form. Read as-is, Node resolves it
+ * against the current drive, the tunnel files are never found, and the CLI drops the `cloudflare`
+ * profile the desktop app kept for a registered Hub.
+ */
+describe('hostPathFromDockerPath', () => {
+  it('turns the Docker Desktop and WSL2 engine forms into the native Windows path', () => {
+    const native = 'C:\\Users\\hub\\AppData\\Roaming\\companion-hub';
+    expect(hostPathFromDockerPath('/c/Users/hub/AppData/Roaming/companion-hub', 'win32')).toBe(native);
+    expect(hostPathFromDockerPath('/mnt/c/Users/hub/AppData/Roaming/companion-hub', 'win32')).toBe(native);
+    expect(hostPathFromDockerPath('/D/hub', 'win32')).toBe('D:\\hub');
+    expect(hostPathFromDockerPath('/c', 'win32')).toBe('C:\\');
+  });
+
+  it('leaves native Windows paths and every non-Windows path alone', () => {
+    expect(hostPathFromDockerPath('C:\\Users\\hub\\companion-hub', 'win32')).toBe('C:\\Users\\hub\\companion-hub');
+    expect(hostPathFromDockerPath('/var/lib/companion-hub', 'win32')).toBe('/var/lib/companion-hub');
+    expect(hostPathFromDockerPath('/c/Users/hub/companion-hub', 'linux')).toBe('/c/Users/hub/companion-hub');
+    expect(hostPathFromDockerPath('/mnt/c/Users/hub/companion-hub', 'darwin')).toBe('/mnt/c/Users/hub/companion-hub');
+  });
+});
+
 describe('tailscaledStateLooksLoggedIn', () => {
   it('needs a current profile, not just the machine key tailscaled writes on first start', () => {
     expect(tailscaledStateLooksLoggedIn('{"_machinekey":"cHJpdmtleQ=="}')).toBe(false);
@@ -748,7 +771,13 @@ describe('buildEnvOverrides', () => {
   const TMP = '.env.__vitest_overrides__';
   const abs = join(process.cwd(), TMP);
 
+  // The profile merge otherwise runs `docker run` against the machine's real Tailscale state volume.
+  beforeEach(() => {
+    setTailscalePersistedStateProbeForTests(() => false);
+  });
+
   afterEach(() => {
+    setTailscalePersistedStateProbeForTests(null);
     if (existsSync(abs)) rmSync(abs);
     delete process.env.CI_HUB_CONTAINER_UID;
     delete process.env.CI_HUB_CONTAINER_GID;
