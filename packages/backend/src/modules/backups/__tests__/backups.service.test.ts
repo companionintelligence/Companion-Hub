@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { BackupsService } from '../backups.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -126,6 +127,30 @@ describe('BackupsService', () => {
       await vi.waitFor(() => expect(appLifecycle.startApp).toHaveBeenCalled());
 
       expect(appLifecycle.startApp).toHaveBeenCalledWith({ appUrn, actor: { kind: 'system', reason: 'resume-after-restore' } });
+    });
+  });
+
+  // startApp refuses with a 503 while the queue is down. The resume runs in a detached
+  // `.then`, so the refusal escaped as an unhandled rejection and the app sat in
+  // `backing_up` or `restoring` though the command had stopped its containers.
+  describe('resuming an app the queue will not start', () => {
+    const appUrn = 'test-app' as any;
+    const refusal = new TranslatableError('APP_ERROR_QUEUE_UNAVAILABLE', { command: 'start' }, 503);
+
+    it.each([
+      { operation: 'backup', run: () => service.backupApp({ appUrn, actor: GRANTED_ACTOR }) },
+      { operation: 'restore', run: () => service.restoreApp({ appUrn, filename: 'backup.tar.gz', actor: GRANTED_ACTOR }) },
+    ])('settles the app on stopped after a $operation instead of leaving it mid-operation', async ({ run }) => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'running', config: {} } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+      configService.get.mockReturnValue(false);
+      appLifecycle.startApp.mockRejectedValue(refusal);
+
+      await run();
+
+      await vi.waitFor(() => expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(1, { status: 'stopped' }));
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', { event: 'status_change', appUrn, appStatus: 'stopped' });
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Could not start test-app again'), refusal);
     });
   });
 

@@ -183,6 +183,7 @@
   "APP_ERROR_APP_FORCE_EXPOSED": "App {{id}} works only with exposed domain",
   "APP_ERROR_APP_NOT_EXPOSABLE": "App {{id}} is not exposable",
   "APP_ERROR_APP_NOT_FOUND": "App {{id}} not found",
+  "APP_ERROR_QUEUE_UNAVAILABLE": "Couldn't {{command}} this app because the Hub's job queue is unavailable. Its containers were left as they were. Try again in a minute.",
   "APP_ERROR_MEMORY_PROVIDER_IN_USE": "CI Memory is still connected to {{count}} installed app(s): {{apps}}. Disconnect them first, or confirm to proceed anyway.",
   "APP_ERROR_MEMORY_PROVIDER_UNVERIFIABLE": "Couldn't verify whether other apps are still connected to CI Memory. Please try again, or confirm to proceed anyway.",
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
