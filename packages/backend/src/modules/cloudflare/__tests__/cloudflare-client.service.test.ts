@@ -424,7 +424,18 @@ describe('CloudflareClientService', () => {
       await expect(service.getDeviceApplications()).resolves.toEqual([app]);
       expect(mockAxiosInstance.get).toHaveBeenCalledWith('devices/applications', {
         headers: { Authorization: 'Bearer api-key', 'x-device-key': 'api-key' },
+        timeout: expect.any(Number),
       });
+    });
+
+    // App sync after a pairing waits on this read, so a Portal that never answers must end as an error.
+    it('bounds the request with a timeout', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { applications: [] } });
+
+      await service.getDeviceApplications();
+
+      const [, requestConfig] = mockAxiosInstance.get.mock.calls[0] as [string, { timeout?: number }];
+      expect(requestConfig.timeout).toBeGreaterThan(0);
     });
 
     it('returns an empty list when the Portal says the device has no apps', async () => {

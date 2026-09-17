@@ -191,6 +191,29 @@ describe('PairingAppRestoreService', () => {
       expect(rehydration.executeRehydrate).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
     });
 
+    // The restore page's run, joined while it was under way, answered from a run an earlier pairing left.
+    it('keeps the hold when the run it joined had finished for an earlier pairing, and restores on the next pass', async () => {
+      vi.useFakeTimers({ now: Date.now() });
+      try {
+        state.rehydration = { completedAt: new Date(Date.now() - 86_400_000).toISOString(), queuedUrns: [], startedUrns: [], skipped: [] };
+        rehydration.executeRehydrate.mockResolvedValueOnce(completedRun({ alreadyCompleted: true }));
+
+        await expect(service.runCheck()).resolves.toBe('held');
+
+        expect(state.check).not.toBeNull();
+        expect(exposureSync.syncExposurePublic).not.toHaveBeenCalled();
+
+        vi.advanceTimersByTime(PairingAppRestoreService.POLL_MS);
+        apps.getApps.mockResolvedValue([localApp('wordpress', 'installing')]);
+
+        await expect(service.runCheck()).resolves.toBe('restoring');
+        expect(rehydration.executeRehydrate).toHaveBeenCalledTimes(2);
+        expect(rehydration.executeRehydrate).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('keeps the hold and retries later when the restore cannot run', async () => {
       rehydration.executeRehydrate.mockRejectedValue(
         new Error('CI Portal lists 3 app(s) for this device, but the app catalog has not been downloaded yet'),

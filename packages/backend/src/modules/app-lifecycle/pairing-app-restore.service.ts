@@ -189,6 +189,17 @@ export class PairingAppRestoreService implements OnApplicationBootstrap, OnAppli
           return this.hold('some of the apps could not be restored yet');
         }
 
+        /*
+         * ⚠ "ALREADY COMPLETED" MAY NOT BE THIS PAIRING'S RESTORE. A run already under way is joined, and
+         * its options win over `force`: a restore page run without it answers from a run an earlier
+         * pairing left, and installs nothing. Taking that as done would release every app the Portal
+         * lists. The next pass reads the state again: a run this pairing finished meanwhile is found
+         * there, and anything else runs with `force`.
+         */
+        if (result.alreadyCompleted) {
+          return this.hold('the restore that answered had not run for this pairing');
+        }
+
         this.logger.info(`[PairingAppRestore] ${result.message}`);
       } catch (error) {
         await this.pullCatalogIfEmpty();

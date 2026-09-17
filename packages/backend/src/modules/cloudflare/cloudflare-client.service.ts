@@ -15,6 +15,9 @@ import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 
+/** How long `getDeviceApplications` waits for the Portal before it counts as no answer. */
+const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
+
 export interface AppInfo {
   name: string;
   subdomain: string; // Complete Cloudflare public-hostname prefix, such as `n8n-bdc`.
@@ -407,11 +410,18 @@ export class CloudflareClientService {
    * `applications` list. This used to read as an empty list, and an empty list is an answer: a restore
    * that got it installed nothing, recorded itself as done, and let the next sync release every app the
    * Portal still had for the device.
+   *
+   * The request has a timeout because this client sets none. After a pairing, app sync stays held
+   * until this read answers (`PairingAppRestoreService`), so a connection that never answers (a laptop
+   * that slept mid-request, a dropped NAT mapping) would hold it for good instead of retrying.
    */
   async getDeviceApplications(): Promise<PortalDeviceApplication[]> {
     let applications: unknown;
     try {
-      const response = await this.client.get<{ applications?: PortalDeviceApplication[] }>('devices/applications', this.getRequestConfig());
+      const response = await this.client.get<{ applications?: PortalDeviceApplication[] }>('devices/applications', {
+        ...this.getRequestConfig(),
+        timeout: DEVICE_APPLICATIONS_TIMEOUT_MS,
+      });
       applications = response.data?.applications;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
