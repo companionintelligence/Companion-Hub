@@ -6874,6 +6874,11 @@
                 "minimum": 0,
                 "maximum": 3
               },
+              "hubPoolMaxPromptTokens": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 1048576
+              },
               "inferenceSupervisionMode": {
                 "type": "string",
                 "enum": [
@@ -7370,6 +7375,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 3
+          },
+          "hubPoolMaxPromptTokens": {
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 1048576
           },
           "inferenceSupervisionMode": {
             "type": "string",
@@ -12629,6 +12639,12 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 3
+          },
+          "poolMaxPromptTokens": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": 1024,
+            "maximum": 1048576
           }
         },
         "additionalProperties": false

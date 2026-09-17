@@ -6,9 +6,11 @@ import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import {
   MAX_POOL_HEALTH_POLL_SECONDS,
   MAX_POOL_LOCAL_AFFINITY,
+  MAX_POOL_MAX_PROMPT_TOKENS,
   MAX_POOL_PRESSURE_WEIGHT,
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
+  MIN_POOL_MAX_PROMPT_TOKENS,
   MIN_POOL_PRESSURE_WEIGHT,
   MAX_POOL_PINS,
   MAX_PINNED_MODEL_LENGTH,
@@ -47,6 +49,16 @@ const poolHealthPollSecondsSchema = z
 const poolPressureWeightSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_PRESSURE_WEIGHT).max(MAX_POOL_PRESSURE_WEIGHT));
+
+/**
+ * The prompt ceiling as persisted: a number or nothing. There is no stored `null` — clearing it
+ * removes the key, the way an unset inference URL is removed — so `.optional()` is the whole
+ * "no ceiling" encoding here, and an out-of-range value degrades to it on the read path exactly as
+ * the knobs above degrade to their defaults.
+ */
+const poolMaxPromptTokensSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_POOL_MAX_PROMPT_TOKENS).max(MAX_POOL_MAX_PROMPT_TOKENS));
 /** Same read/write split as the two pool knobs above, for the inference observation interval. */
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -142,6 +154,9 @@ export const settingsSchema = z.object({
   // See `HubPoolPreferences.poolShareContainerStats` for why the default goes this way.
   hubPoolShareContainerStats: z.boolean().optional(),
   hubPoolPressureWeight: poolPressureWeightSchema.optional().catch(undefined),
+  // Absent means no prompt ceiling, which routes exactly as a build without one does. See
+  // `HUB_POOL_MAX_PROMPT_TOKENS_ENV_VAR` for what the ceiling is and why it is only a preference.
+  hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional().catch(undefined),
   // Inference-backend observation. Opt-IN, unlike the pool switches: absent means `'off'`, which is
   // the only value that costs a deployed Hub literally nothing — no timer, no probe, no boot work.
   // `CI_HUB_INFERENCE_SUPERVISION_DISABLED=true` in the environment overrides it
@@ -285,6 +300,7 @@ export class UserSettingsBody extends createZodDto(
     hubPoolLocalAffinity: poolLocalAffinitySchema.optional(),
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
     hubPoolPressureWeight: poolPressureWeightSchema.optional(),
+    hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional(),
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
     hubPoolPins: poolPinsSchema.optional(),
   }),
