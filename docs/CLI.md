@@ -476,6 +476,7 @@ cihub pool reject <id>                        # refuse one
 cihub pool unpair <id>                        # remove a peer and revoke both tokens
 cihub pool pin <node|local> [--model <id>]    # prefer one node for a model, or for everything
 cihub pool unpin [--model <id>]               # drop that preference and rank by load again
+cihub pool ceiling <tokens>|clear [env]       # longer prompts go to another node when one can serve them
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
@@ -514,12 +515,25 @@ authentication modes are listed — there is no `pool pins` subcommand to keep i
 | `Pairing` | Only when a PIN is outstanding: until when, and how to revoke it. Never the digits |
 | `Pins` | Each pin with its target resolved, and whether it can apply right now |
 | `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
+| `Ceiling` / `Prompt ceilings` | Only when set: this node's prompt ceiling (and whether the `.env` sets it), and each peer's advertised one |
 | `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
 
 The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
 bearer token takes **both** directions of that pairing down. The upgrade runs on a health poll by
 itself, so the block names the peers not there yet, and says plainly when the switch has become safe
 to set. Peers that have not finished pairing are not counted either way.
+
+### `cihub pool ceiling`
+
+`cihub pool ceiling 16000` asks the pool not to send this node prompts estimated over 16000 tokens
+while another node can serve them; `cihub pool ceiling clear` removes it. Use it on a node that serves
+a model on CPU, where prefill slows as the context grows. See
+[Prompt ceilings](./hub-pool.md#prompt-ceilings) for how it is applied.
+
+The value is a whole number from 1024 to 1048576 — no `16k`, which means different numbers to different
+people. The box reports the ceiling actually in force after the write: when
+`HUB_POOL_MAX_PROMPT_TOKENS` is set in the Hub's environment it wins, and the box says the command
+changed nothing in effect.
 
 ### Identifying a peer
 

@@ -93,6 +93,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolLocalAffinity: number;
         poolHealthPollSeconds: number;
         poolPressureWeight: number;
+        poolMaxPromptTokens: number | null;
         poolPins: unknown[];
       };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
@@ -124,6 +125,9 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // 0 is what makes the pressure signal a no-op until an operator opts in: at 0 the band is not
       // in the ranking comparator at all, so a fresh Hub ranks byte-identically to the build before it.
       poolPressureWeight: 0,
+      // No prompt ceiling: every node serves any prompt size until an operator says otherwise, which
+      // is what the build before the ceiling did.
+      poolMaxPromptTokens: null,
       // No pins until an operator sets one, so the ranker alone decides — which is the whole
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],
@@ -200,6 +204,41 @@ describe('ConfigurationService Hub Pool preferences', () => {
     await svc.setHubPoolPreferences({ poolPressureWeight: 2 });
 
     expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolPressureWeight: 2 });
+  });
+
+  it('persists a prompt ceiling and applies it to the next read without a restart', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolMaxPromptTokens: 16_000 });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolMaxPromptTokens: 16_000 });
+    expect(svc.getHubPoolPreferences().poolMaxPromptTokens).toBe(16_000);
+  });
+
+  it('clears a prompt ceiling by removing the key, and reads the cleared value as no ceiling', async () => {
+    const svc = makePoolService();
+    await svc.setHubPoolPreferences({ poolMaxPromptTokens: 16_000 });
+
+    await svc.setHubPoolPreferences({ poolMaxPromptTokens: null });
+
+    // The PATCH has to reach the disk at all — a clear skipped as a no-op would leave the old
+    // ceiling excluding the node after the next restart.
+    expect(svc.mergeSettingsToDisk).toHaveBeenCalledTimes(2);
+    const cleared = svc.mergeSettingsToDisk.mock.calls[1][0] as Record<string, unknown>;
+    // `mergeSettingsToDisk` spreads this over the file and serialises it, so the key must vanish
+    // from settings.json rather than be written as a null the boot parse would have to degrade.
+    expect(JSON.parse(JSON.stringify({ hubPoolMaxPromptTokens: 16_000, ...cleared }))).toEqual({});
+    expect(svc.getHubPoolPreferences().poolMaxPromptTokens).toBeNull();
+  });
+
+  it('leaves a stored prompt ceiling alone when a PATCH does not mention it', async () => {
+    const svc = makePoolService();
+    svc.config.userSettings = { hubPoolMaxPromptTokens: 16_000 };
+
+    await svc.setHubPoolPreferences({ poolLocalAffinity: 2 });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolLocalAffinity: 2 });
+    expect(svc.getHubPoolPreferences().poolMaxPromptTokens).toBe(16_000);
   });
 
   it('keeps a persisted pressure weight of 0 rather than reading it as unset', () => {

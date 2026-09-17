@@ -71,7 +71,8 @@ function RestoreAppsContent() {
     if (!data.incomplete && (data.alreadyCompleted || ((data.queued?.length ?? 0) === 0 && (data.started?.length ?? 0) === 0))) {
       clearStoredDriftChoice();
       await refreshAppContext();
-      if ((data.plan?.portalAppCount ?? 0) === 0) {
+      // A finished restore reports its plan only for show, so an empty one says nothing about the account.
+      if (!data.alreadyCompleted && (data.plan?.portalAppCount ?? 0) === 0) {
         toast.success(t('RESTORE_APPS_EMPTY_PORTAL'));
       }
       navigate('/home', { replace: true });
@@ -105,9 +106,15 @@ function RestoreAppsContent() {
           throw new Error(t('RESTORE_APPS_STATUS_FAILED'));
         }
         if (status.completed) {
-          clearStoredDriftChoice();
-          await refreshAppContext();
-          navigate('/home', { replace: true });
+          // The Hub restores on its own after pairing, often before this page opens. Asking anyway
+          // finishes the restore for this person, who would otherwise be sent on to onboarding.
+          try {
+            await runRehydrate();
+          } catch {
+            clearStoredDriftChoice();
+            await refreshAppContext();
+            navigate('/home', { replace: true });
+          }
           return;
         }
 

@@ -12,11 +12,13 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
+  clampPromptCeiling,
   effectivePeerPressureBand,
   inventoryListsModel,
   isCapabilitiesSnapshotFresh,
   resolveHubPoolDirections,
   resolvePinFor,
+  resolvePoolMaxPromptTokens,
   type HubPoolDirectionalState,
   type HubPoolPin,
 } from '@/common/helpers/hub-pool';
@@ -24,8 +26,10 @@ import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import {
   HubPoolRoutingLogService,
+  type PoolRoutingCeilingExclusion,
   type PoolRoutingOutcome,
   type PoolRoutingPin,
+  type PoolRoutingPromptCeiling,
   type PoolRoutingRecordInput,
   type PoolRoutingUsage,
 } from './hub-pool-routing-log.service';
@@ -69,11 +73,40 @@ const CONNECT_TIMEOUT_MS = Math.max(15_000, Number(process.env.HUB_POOL_FIRST_BY
  */
 const MIN_PREFILL_TOKENS_PER_SEC = Math.max(1, Number(process.env.HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC) || 50);
 
+/**
+ * The prompt-size estimate every pool decision uses: tokens ≈ bytes / 4 of the forwarded payload.
+ *
+ * One function, because two decisions now hang on it — how long to wait for a first byte, and
+ * whether a node's prompt ceiling excludes it — and if they estimated differently a request could be
+ * sent to a node as "under its ceiling" and then budgeted as though it were far larger. Coarse on
+ * purpose: it counts the JSON envelope and tool schemas along with the prose, which is what the
+ * engine has to read too.
+ */
+export function estimatePromptTokens(bodyBytes: number): number {
+  return Math.ceil(bodyBytes / 4);
+}
+
 /** Header-wait budget for a streamed request carrying `bodyBytes` of prompt. Exported for the doctor and tests. */
 export function firstByteBudgetMs(bodyBytes: number): number {
-  const estimatedTokens = Math.ceil(bodyBytes / 4);
-  return Math.max(CONNECT_TIMEOUT_MS, Math.ceil(estimatedTokens / MIN_PREFILL_TOKENS_PER_SEC) * 1000);
+  return Math.max(CONNECT_TIMEOUT_MS, Math.ceil(estimatePromptTokens(bodyBytes) / MIN_PREFILL_TOKENS_PER_SEC) * 1000);
 }
+
+/** The body exactly as it goes on the wire to an engine or a peer, which is what both prompt-size decisions measure. */
+function forwardedPayload(method: string, body: unknown): string | undefined {
+  return method === 'GET' ? undefined : JSON.stringify(body);
+}
+
+/**
+ * The pooled routes a prompt ceiling applies to: the ones whose body is one context the engine
+ * prefills before its first token, which is the cost that grows with length on a CPU node.
+ *
+ * Embeddings are left out on purpose. A batch is many short inputs, each capped by the embedding
+ * model's own context, so its byte count measures how much work the batch is and says nothing about
+ * the per-sequence prefill fzzy was measured slowing on. Applying the ceiling there would move bulk
+ * indexing off a node for a cost it does not have. An allowlist rather than a denylist, so a route
+ * added later routes as it did before ceilings until someone decides it should be judged.
+ */
+const PROMPT_CEILING_PATHS: ReadonlySet<string> = new Set(['/v1/chat/completions', '/v1/completions', '/api/chat', '/api/generate']);
 
 /**
  * Budget for a NON-STREAMED completion, which is a different thing from a connect budget.
@@ -224,15 +257,53 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
   const plural = candidates === 1 ? 'candidate' : 'candidates';
   if (timedOut) {
     return (
-      `No pool candidate answered for model "${model}" within its deadline ` +
-      `(${candidates} ${plural} tried; ${CONNECT_TIMEOUT_MS}ms for headers on a streamed request, ` +
-      `${COMPLETION_TIMEOUT_MS}ms for a whole non-streamed completion). This is a deadline, not ` +
-      'proof the nodes are down — a node loading weights or serving a long queue hits it while ' +
-      'remaining healthy. Retry, or raise HUB_POOL_FIRST_BYTE_TIMEOUT_MS / HUB_POOL_COMPLETION_TIMEOUT_MS.'
+      `No pool candidate answered for model "${model}" within its deadline (${candidates} ${plural} tried; ` +
+      `${describeAppliedDeadline(message, undiciHeaderTimeout)}). This is a deadline, not proof the nodes are down — ` +
+      'a node loading weights, reading a long prompt slowly or serving a long queue hits it while remaining healthy.'
     );
   }
   return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
 }
+/**
+ * Which deadline actually expired, in the terms an operator can act on.
+ *
+ * The message used to print the two FIXED settings — "300000ms for headers on a streamed request" —
+ * whatever the request had really been given. Since #1463 a streamed request's header budget is sized
+ * from its prompt, so a 184 KB agent turn gets 922 s, and after #1478 it really waits that long; the
+ * old sentence then told the operator the proxy gave up at 300 s and pointed at a setting that was not
+ * the one that decided it. Measured on fzzy 2026-09-17: cancelled at 922.0 s, message said 300000ms.
+ *
+ * The budget that applied is in the abort reason (`fetchWithConnectTimeout` writes it), so it is read
+ * from there rather than recomputed from settings that may not describe this request.
+ */
+export function describeAppliedDeadline(message: string, undiciHeaderTimeout: boolean): string {
+  const applied = /No (response headers|completion) within (\d+)ms/.exec(message);
+  if (applied) {
+    const ms = Number(applied[2]);
+    if (applied[1] === 'completion') {
+      return (
+        `the last waited ${ms}ms for a whole non-streamed completion — HUB_POOL_COMPLETION_TIMEOUT_MS, ` +
+        'or the prompt-sized budget when that is longer'
+      );
+    }
+    if (ms > CONNECT_TIMEOUT_MS) {
+      return (
+        `the last waited ${ms}ms for response headers — a budget sized from the prompt at a floor of ` +
+        `${MIN_PREFILL_TOKENS_PER_SEC} tok/s (HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC), so a node that cannot read ` +
+        'this prompt that fast is treated as failed and the work can move to a faster one'
+      );
+    }
+    return `the last waited ${ms}ms for response headers — HUB_POOL_FIRST_BYTE_TIMEOUT_MS`;
+  }
+  if (undiciHeaderTimeout) {
+    return (
+      "Node's fetch stopped waiting for response headers at its own 300000ms limit (undici headersTimeout) " +
+      "because the pool's uncapped dispatcher is not installed — pool budgets above that cannot take effect"
+    );
+  }
+  return 'the request was aborted before any response headers arrived';
+}
+
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'upgrade']);
 
 /**
@@ -383,6 +454,61 @@ export function applyPin(ordered: PoolCandidate[], pin: HubPoolPin | null): Pool
   // Identity-preserving when nothing matched, so "pinned node cannot serve this" and "no pin" are
   // the same list rather than two code paths that could drift.
   return pinned.length === 0 ? ordered : [...pinned, ...ordered.filter((candidate) => !matches(candidate))];
+}
+
+/**
+ * Split a ranked list into the candidates under their prompt ceiling (`preferred`) and the ones over
+ * it (`overCeiling`), each in the order the ranker produced. The caller places the request on
+ * `preferred` and keeps `overCeiling` as the tail of the failover walk.
+ *
+ * The same shape of decision as {@link applyPin}, and applied just before it, for the same reasons:
+ *
+ * 1. **It is a preference, not a rule.** An over-ceiling node is moved to the back, never removed.
+ *    Removing it would let a ceiling fail a request that succeeds without one: with core-6 answering
+ *    503 for the model, a long prompt fails over to fzzy and is answered, where a list without fzzy
+ *    has nowhere left to go and returns a 502. When every candidate is over its ceiling nothing
+ *    moves at all, and `overridden: true` says so.
+ * 2. **It never re-orders within either group.** Both halves keep the ranker's order, so the walk
+ *    visits every node it would have, with the ones that asked not to take this prompt last.
+ * 3. **Pins apply within each group.** A pin at an over-ceiling node cannot bring a long prompt back
+ *    to the front of the walk: the operator said "not the long ones" about that node, and a pin
+ *    written for the ordinary case must not quietly override it.
+ *
+ * Decided on the entry node, from each node's own advertised figure, because only the entry node
+ * knows whether there was an alternative. `decision` is `null` when no candidate has a ceiling, so a
+ * fleet that never sets one gets the list back untouched and a routing log with nothing to explain.
+ *
+ * Pure and exported for its own test, like `applyPin`.
+ */
+export function applyPromptCeiling(
+  ordered: PoolCandidate[],
+  ceilingOf: (candidate: PoolCandidate) => number | null,
+  estimatedTokens: number,
+): { preferred: PoolCandidate[]; overCeiling: PoolCandidate[]; decision: PoolRoutingPromptCeiling | null } {
+  const ceilings = ordered.map(ceilingOf);
+  if (ceilings.every((ceiling) => ceiling === null)) {
+    return { preferred: ordered, overCeiling: [], decision: null };
+  }
+  const preferred: PoolCandidate[] = [];
+  const overCeiling: PoolCandidate[] = [];
+  const excluded: PoolRoutingCeilingExclusion[] = [];
+  for (const [index, candidate] of ordered.entries()) {
+    const ceiling = ceilings[index] ?? null;
+    if (ceiling === null || estimatedTokens <= ceiling) {
+      preferred.push(candidate);
+      continue;
+    }
+    overCeiling.push(candidate);
+    // One entry per node: a node with two engines holding the model is still one node that said no.
+    const node = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
+    if (!excluded.some((entry) => entry.node === node)) {
+      excluded.push({ node, maxPromptTokens: ceiling });
+    }
+  }
+  const overridden = preferred.length === 0;
+  const decision = { estimatedTokens, excluded, overridden };
+  // Identity-preserving when nothing was over or everything was, so both read as "the ranker's list".
+  return excluded.length === 0 || overridden ? { preferred: ordered, overCeiling: [], decision } : { preferred, overCeiling, decision };
 }
 
 /** The pin, reduced to the metadata the routing log may hold. Never the model or the peer id — the record already carries both. */
@@ -537,11 +663,15 @@ export class PoolProxyService {
    * the invariant the whole feature turns on: most of the fleet cannot measure, and if silence read
    * as "idle" the pool would systematically route to whichever machine knows least about itself.
    *
-   * An operator pin is applied LAST, to the finished list — see {@link applyPin}. It reorders; it
-   * cannot admit a node the steps above excluded.
+   * Then the prompt ceilings, when `promptBytes` is given: a node whose ceiling is below the
+   * request's estimate moves behind every node that is not, keeping its place in the failover walk —
+   * see {@link applyPromptCeiling}.
+   *
+   * An operator pin is applied LAST, within each of those two groups — see {@link applyPin}. It
+   * reorders; it cannot admit a node the steps above excluded.
    */
-  async buildCandidateList(model: string): Promise<PoolCandidate[]> {
-    return (await this.rankCandidates(model)).candidates;
+  async buildCandidateList(model: string, promptBytes?: number): Promise<PoolCandidate[]> {
+    return (await this.rankCandidates(model, promptBytes === undefined ? undefined : () => promptBytes)).candidates;
   }
 
   /**
@@ -553,7 +683,15 @@ export class PoolProxyService {
    * `buildCandidateList` stays as the thin wrapper it always was, because it is the shape every
    * candidate-ordering test asserts against.
    */
-  private async rankCandidates(model: string): Promise<{ candidates: PoolCandidate[]; pin: HubPoolPin | null }> {
+  private async rankCandidates(
+    model: string,
+    /**
+     * The forwarded payload's size, measured only if some candidate has a ceiling: that is one more
+     * serialisation of what can be a 184 KB agent turn, and a fleet with no ceilings should not pay
+     * it. Absent means "no body to judge", and the ceiling step is skipped.
+     */
+    measurePromptBytes?: () => number,
+  ): Promise<{ candidates: PoolCandidate[]; pin: HubPoolPin | null; promptCeiling: PoolRoutingPromptCeiling | null }> {
     const [local, peers] = await Promise.all([this.localCandidates(model), this.usablePeers()]);
     const weight = this.pressureWeight();
     const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
@@ -570,10 +708,56 @@ export class PoolProxyService {
     const ordered = ranked
       .sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank)
       .map((entry) => entry.candidate);
+    const ceiling = measurePromptBytes
+      ? this.applyPromptCeilings(model, ordered, peers, measurePromptBytes)
+      : { preferred: ordered, overCeiling: [], decision: null };
     // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
     // effect on the next request and costs no query on the inference hot path.
     const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
-    return { candidates: applyPin(ordered, pin), pin };
+    // With no over-ceiling tail this is `applyPin(ordered, pin)` exactly, which is what keeps a fleet
+    // without ceilings, and a request under every ceiling, on the order it had before ceilings existed.
+    return {
+      candidates: [...applyPin(ceiling.preferred, pin), ...applyPin(ceiling.overCeiling, pin)],
+      pin,
+      promptCeiling: ceiling.decision,
+    };
+  }
+
+  /**
+   * Each candidate's ceiling — this node's own (env override applied) for a local candidate, the
+   * figure a peer advertised for a peer — then {@link applyPromptCeiling}.
+   *
+   * Local and peer ceilings come from the same places everything else in ranking does: the in-memory
+   * settings object and the capability snapshots `usablePeers` already loaded, so this adds no query.
+   * One debug line for each request the ceiling actually changed and nothing for the rest, never at
+   * info: the routing log is where an operator reads decisions, and an agent sending long turns all
+   * day would otherwise fill the process log with the same sentence.
+   */
+  private applyPromptCeilings(
+    model: string,
+    ordered: PoolCandidate[],
+    peers: HubPoolPeer[],
+    measurePromptBytes: () => number,
+  ): ReturnType<typeof applyPromptCeiling> {
+    const localCeiling = resolvePoolMaxPromptTokens(this.configuration.getHubPoolPreferences().poolMaxPromptTokens).maxPromptTokens;
+    const peerCeilings = new Map<string, number | null>(
+      peers.map((peer) => [peer.id, clampPromptCeiling((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxPromptTokens)]),
+    );
+    const ceilingOf = (candidate: PoolCandidate) => (candidate.peerId === null ? localCeiling : (peerCeilings.get(candidate.peerId) ?? null));
+    if (!ordered.some((candidate) => ceilingOf(candidate) !== null)) {
+      return { preferred: ordered, overCeiling: [], decision: null };
+    }
+    const result = applyPromptCeiling(ordered, ceilingOf, estimatePromptTokens(measurePromptBytes()));
+    const decision = result.decision;
+    if (decision && decision.excluded.length > 0) {
+      const nodes = decision.excluded.map((entry) => `${entry.node} (ceiling ${entry.maxPromptTokens})`).join(', ');
+      this.logger.debug(
+        decision.overridden
+          ? `[PoolProxy] ~${decision.estimatedTokens}-token prompt for "${model}" is over every candidate's ceiling — ${nodes} — so placing it anyway`
+          : `[PoolProxy] ~${decision.estimatedTokens}-token prompt for "${model}" put ${nodes} behind every candidate under its ceiling`,
+      );
+    }
+    return result;
   }
 
   async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
@@ -593,6 +777,7 @@ export class PoolProxyService {
         attempt: 0,
         failedOverFrom: [],
         pin: null,
+        promptCeiling: null,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
@@ -609,7 +794,10 @@ export class PoolProxyService {
     // app that originated this call has no reason to know that, so the proxy adds it here rather
     // than never seeing a usage frame at all. See `response-usage-tap.ts`.
     const body = injectUsageOptIn(aliasedBody);
-    const { candidates, pin } = await this.rankCandidates(model);
+    const { candidates, pin, promptCeiling } = await this.rankCandidates(
+      model,
+      PROMPT_CEILING_PATHS.has(path) ? () => forwardedPayload(method, body)?.length ?? 0 : undefined,
+    );
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
     const failedOverFrom: string[] = [];
@@ -627,6 +815,7 @@ export class PoolProxyService {
         attempt: 0,
         failedOverFrom,
         pin: describePinForLog(pin),
+        promptCeiling,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
@@ -657,6 +846,7 @@ export class PoolProxyService {
       attempt: 1,
       failedOverFrom,
       pin: describePinForLog(pin),
+      promptCeiling,
       ...describeRequestShape(method, body),
     });
 
@@ -667,6 +857,14 @@ export class PoolProxyService {
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
       if (index > 0) {
         this.routingLog.update(row, { node: nodeLabel, peerId: candidate.peerId, backend: candidate.backend, attempt: index + 1 });
+      }
+      // Reaching an over-ceiling node means every node under a ceiling already failed. Recorded as an
+      // override, so the log reads "placed over its ceiling" instead of claiming the node was skipped.
+      if (row.promptCeiling && !row.promptCeiling.overridden && row.promptCeiling.excluded.some((entry) => entry.node === nodeLabel)) {
+        row.promptCeiling.overridden = true;
+        this.logger.debug(
+          `[PoolProxy] every candidate under its prompt ceiling failed for "${model}"; trying ${nodeLabel}, which is over its ceiling`,
+        );
       }
       this.loadService.acquire(key);
       try {
@@ -908,6 +1106,8 @@ export class PoolProxyService {
       // Always null: a pin is THIS Hub's policy for work it originates. Work a peer forwards us is
       // never re-routed (see `forwardToLocalBackendAndRespond`), so no pin can have shaped it.
       pin: null,
+      // Null for the same reason as the pin: the ceiling is applied by the node choosing where work goes.
+      promptCeiling: null,
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,
@@ -1112,7 +1312,7 @@ export class PoolProxyService {
     const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
-    const payload = method === 'GET' ? undefined : JSON.stringify(body);
+    const payload = forwardedPayload(method, body);
     return this.fetchWithConnectTimeout(
       url,
       {
@@ -1148,7 +1348,7 @@ export class PoolProxyService {
     // `/local/*`, because the recipient UUID, nonce and timestamp already make a captured request
     // unreplayable, and canonicalizing a megabyte embeddings batch per hop is not affordable here.
     const authHeaders = await this.peerService.peerAuthHeaders(peer, method, requestPath, body);
-    const peerPayload = method === 'GET' ? undefined : JSON.stringify(body);
+    const peerPayload = forwardedPayload(method, body);
     return this.fetchWithConnectTimeout(
       url,
       {

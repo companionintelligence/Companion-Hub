@@ -31,6 +31,7 @@ import {
   POOL_SERVED_BY_HEADER,
   POOL_SERVED_LOCALLY,
   PoolProxyService,
+  applyPromptCeiling,
   describeUnresolvableAuto,
   firstByteBudgetMs,
   normalizePoolRequestId,
@@ -152,6 +153,7 @@ describe('PoolProxyService', () => {
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
       poolPins: [],
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
+      poolMaxPromptTokens: null,
       ...overrides,
     });
   }
@@ -1793,6 +1795,323 @@ describe('PoolProxyService', () => {
 
       setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-from-a-past-life', mode: 'prefer' }] });
       expect(await service.buildCandidateList(MODEL)).toEqual(expected);
+    });
+  });
+
+  /**
+   * The per-node prompt ceiling, with the fleet's own numbers: fzzy serves `qwen3-coder:30b` on CPU,
+   * answered a 40 KB turn in 103 s, and never produced a first byte for a 184 KB one inside its 922 s
+   * budget; core-6 (GPU) served that 184 KB turn in 268 s. Every test is one of the two questions the
+   * feature has to get right: does a long prompt go first to a node that did not ask to avoid it, and
+   * does everything else — short prompts, older peers, failover, a fleet with nowhere else to go —
+   * still reach the nodes it reached before.
+   */
+  describe('prompt ceiling', () => {
+    const MODEL = 'qwen3-coder:30b';
+    const LONG_PROMPT_BYTES = 184_000; // ~46k tokens
+    const SHORT_PROMPT_BYTES = 40_000; // ~10k tokens
+    const FZZY_CEILING = 16_000;
+
+    /** A connected, idle peer holding MODEL, optionally advertising a ceiling. */
+    function node(id: string, options: { maxPromptTokens?: unknown; inFlightRequests?: number; hardwareTier?: string } = {}): HubPoolPeer {
+      return mockPeer({
+        id,
+        nodeFqdn: `${id}.tailxyz.ts.net`,
+        lastCapabilities: capabilitiesWithModel(MODEL, {
+          inFlightRequests: options.inFlightRequests ?? 0,
+          ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
+          ...('maxPromptTokens' in options ? { maxPromptTokens: options.maxPromptTokens as number } : {}),
+        }) as unknown as Record<string, unknown>,
+      });
+    }
+
+    /** fzzy idle and first by score; core-6 busier, so without a ceiling the ranker picks fzzy. */
+    function fzzyAndCore6(): HubPoolPeer[] {
+      return [node('fzzy', { maxPromptTokens: FZZY_CEILING, hardwareTier: 'cpu-only' }), node('core-6', { inFlightRequests: 2 })];
+    }
+
+    const ids = (candidates: { peerId: string | null }[]) => candidates.map((candidate) => candidate.peerId);
+
+    it('puts a peer whose advertised ceiling is below a long prompt behind the rest, even though the ranker put it first', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(fzzyAndCore6());
+
+      expect(ids(await service.buildCandidateList(MODEL))).toEqual(['fzzy', 'core-6']);
+      // Last, not gone: removing it would leave a long prompt nowhere to fail over to if core-6 fails.
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+    });
+
+    it('leaves the ranked list untouched for a prompt under every ceiling', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(fzzyAndCore6());
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+    });
+
+    it('keeps a candidate whose ceiling the estimate exactly meets — the ceiling is what it can take', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(fzzyAndCore6());
+
+      expect(ids(await service.buildCandidateList(MODEL, FZZY_CEILING * 4))).toEqual(['fzzy', 'core-6']);
+      expect(ids(await service.buildCandidateList(MODEL, FZZY_CEILING * 4 + 1))).toEqual(['core-6', 'fzzy']);
+    });
+
+    it('puts THIS node behind a peer for a long prompt when its own ceiling is below it', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([node('core-6')]);
+      setPoolPreferences({ poolMaxPromptTokens: FZZY_CEILING });
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES))).toEqual([null, 'core-6']);
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', null]);
+    });
+
+    it('honours HUB_POOL_MAX_PROMPT_TOKENS over an unset setting', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([node('core-6')]);
+      vi.stubEnv('HUB_POOL_MAX_PROMPT_TOKENS', String(FZZY_CEILING));
+      try {
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', null]);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('keeps the whole list when every candidate is over its ceiling — a slow answer beats a 502', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([node('fzzy', { maxPromptTokens: FZZY_CEILING })]);
+
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy']);
+    });
+
+    it('treats a peer on an older build, which sends no ceiling, as serving any prompt', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([node('fzzy-old-build'), node('core-6', { inFlightRequests: 2 })]);
+
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy-old-build', 'core-6']);
+    });
+
+    it.each([
+      ['a string', '16000'],
+      ['a value below the floor', 16],
+      ['a negative', -1],
+    ])('lets a malformed advertised ceiling (%s) exclude nothing', async (_label, hostile) => {
+      peerService.listConnectedPeers.mockResolvedValue([node('fzzy', { maxPromptTokens: hostile }), node('core-6', { inFlightRequests: 2 })]);
+
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+    });
+
+    it('judges nothing when the caller has no body to measure, so ranking-only callers see the old order', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue(fzzyAndCore6());
+      setPoolPreferences({ poolMaxPromptTokens: FZZY_CEILING });
+
+      expect(ids(await service.buildCandidateList(MODEL))).toEqual([null, 'fzzy', 'core-6']);
+    });
+
+    describe('with a pin', () => {
+      it('does not let a pin at an over-ceiling node put the long prompt back at the front', async () => {
+        peerService.listConnectedPeers.mockResolvedValue(fzzyAndCore6());
+        setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'fzzy', mode: 'prefer' }] });
+
+        // The pin still governs the ordinary case...
+        expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        // ...and cannot lift fzzy out of the over-ceiling tail for the case the ceiling covers.
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+      });
+
+      it('still reorders the nodes under their ceiling', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        peerService.listConnectedPeers.mockResolvedValue([...fzzyAndCore6(), node('core-7', { inFlightRequests: 5 })]);
+        setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'core-7', mode: 'prefer' }] });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', null, 'core-6', 'fzzy']);
+      });
+
+      it('applies to the whole list when the ceiling was overridden', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('fzzy', { maxPromptTokens: FZZY_CEILING }),
+          node('core-7', { maxPromptTokens: FZZY_CEILING, inFlightRequests: 3 }),
+        ]);
+        setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'core-7', mode: 'prefer' }] });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', 'fzzy']);
+      });
+    });
+
+    describe('in the routing log', () => {
+      const longTurn = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'x'.repeat(LONG_PROMPT_BYTES) }] };
+
+      function answerWith200(): void {
+        vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+      }
+
+      it('says which node its ceiling moved back, at what ceiling, for what estimate — so a skip is not read as the ranker', async () => {
+        const peers = fzzyAndCore6();
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        answerWith200();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+        // bytes / 4 of what actually went out — after the proxy's own usage opt-in — written out rather
+        // than through `estimatePromptTokens`, so a change to the estimate cannot pass by agreeing with itself.
+        const sent = String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body);
+        const entry = routingLog.list()[0];
+        // Two candidates: fzzy is still in the walk, behind core-6, and was simply never needed.
+        expect(entry).toMatchObject({ node: 'core-6.tailxyz.ts.net', candidates: 2, attempt: 1, outcome: 'served', failedOverFrom: [] });
+        expect(entry?.promptCeiling).toEqual({
+          estimatedTokens: Math.ceil(sent.length / 4),
+          excluded: [{ node: 'fzzy.tailxyz.ts.net', maxPromptTokens: FZZY_CEILING }],
+          overridden: false,
+        });
+      });
+
+      it('still fails over to the over-ceiling node when every node under a ceiling fails — a ceiling must never turn a served request into a 502', async () => {
+        const peers = fzzyAndCore6();
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        // core-6 cannot serve right now; fzzy is slow at long prompts but up. Before ceilings existed
+        // this request failed over to fzzy and was answered, so it still has to be.
+        vi.mocked(global.fetch).mockImplementation(async (url) =>
+          String(url).includes('core-6') ? new Response('model not loaded', { status: 503 }) : new Response('data: [DONE]\n\n', { status: 200 }),
+        );
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'fzzy.tailxyz.ts.net', outcome: 'served', status: 200, failedOverFrom: ['core-6.tailxyz.ts.net'] });
+        // Placed over fzzy's ceiling after all, and the record says so instead of reading as a skip.
+        expect(entry?.promptCeiling).toMatchObject({ excluded: [{ node: 'fzzy.tailxyz.ts.net', maxPromptTokens: FZZY_CEILING }], overridden: true });
+      });
+
+      it('does not call it an override when a node under its ceiling fails and another under one answers', async () => {
+        const peers = [...fzzyAndCore6(), node('core-7', { inFlightRequests: 4 })];
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        vi.mocked(global.fetch).mockImplementation(async (url) =>
+          String(url).includes('core-6') ? new Response('overloaded', { status: 503 }) : new Response('data: [DONE]\n\n', { status: 200 }),
+        );
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-7.tailxyz.ts.net', outcome: 'served', failedOverFrom: ['core-6.tailxyz.ts.net'], candidates: 3 });
+        expect(entry?.promptCeiling).toMatchObject({ overridden: false });
+      });
+
+      it.each([
+        ['/v1/embeddings'],
+        ['/api/embed'],
+        ['/api/embeddings'],
+      ])('leaves %s alone: an embeddings batch is many short inputs, not one long context', async (path) => {
+        const peers = fzzyAndCore6();
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        answerWith200();
+        const batch = { model: MODEL, input: Array.from({ length: 400 }, () => 'x'.repeat(LONG_PROMPT_BYTES / 400)) };
+
+        await service.proxyRequest({ path, method: 'POST', body: batch, model: MODEL, res: createMockResponse() });
+
+        expect(routingLog.list()[0]).toMatchObject({ node: 'fzzy.tailxyz.ts.net', candidates: 2 });
+        expect(routingLog.list()[0]?.promptCeiling).toBeNull();
+      });
+
+      it('marks the decision overridden when every candidate was over its ceiling, and still serves it', async () => {
+        const fzzy = node('fzzy', { maxPromptTokens: FZZY_CEILING });
+        peerService.listConnectedPeers.mockResolvedValue([fzzy]);
+        peerService.getPeerById.mockResolvedValue(fzzy);
+        answerWith200();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'fzzy.tailxyz.ts.net', outcome: 'served', status: 200 });
+        expect(entry?.promptCeiling).toMatchObject({ excluded: [{ node: 'fzzy.tailxyz.ts.net', maxPromptTokens: FZZY_CEILING }], overridden: true });
+      });
+
+      it('records the estimate with nothing excluded when a ceiling was in play but the prompt was under it', async () => {
+        const peers = fzzyAndCore6();
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        answerWith200();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+        expect(routingLog.list()[0]).toMatchObject({ node: 'fzzy.tailxyz.ts.net' });
+        expect(routingLog.list()[0]?.promptCeiling).toMatchObject({ excluded: [], overridden: false });
+      });
+
+      it('stays null on a fleet where no node has a ceiling', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        answerWith200();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+        expect(routingLog.list()[0]?.promptCeiling).toBeNull();
+      });
+
+      it('logs one debug line for a request the ceiling changed, and none for one it did not', async () => {
+        const debugSpy = vi.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+        const peers = fzzyAndCore6();
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        answerWith200();
+        try {
+          await service.proxyRequest({
+            path: '/v1/chat/completions',
+            method: 'POST',
+            body: { model: MODEL },
+            model: MODEL,
+            res: createMockResponse(),
+          });
+          expect(debugSpy.mock.calls.filter(([line]) => String(line).includes('ceiling'))).toHaveLength(0);
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+          const lines = debugSpy.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('ceiling'));
+          expect(lines).toHaveLength(1);
+          expect(lines[0]).toContain('put fzzy.tailxyz.ts.net (ceiling 16000) behind every candidate under its ceiling');
+          // Sizes and names only: a routing decision's log line is never a place for the prompt.
+          expect(lines[0]).not.toContain('xxxx');
+        } finally {
+          debugSpy.mockRestore();
+        }
+      });
+    });
+
+    describe('applyPromptCeiling', () => {
+      const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+      const localVllm = { peerId: null, nodeFqdn: null, backend: 'vllm' } as const;
+      const core6 = { peerId: 'core-6', nodeFqdn: 'core-6.tailxyz.ts.net', backend: 'ollama' } as const;
+
+      it('returns the ranked list, and no decision, when no candidate has a ceiling', () => {
+        const result = applyPromptCeiling([local, core6], () => null, 46_000);
+
+        expect(result).toEqual({ preferred: [local, core6], overCeiling: [], decision: null });
+      });
+
+      it('keeps every over-ceiling candidate, in ranked order, for the failover tail', () => {
+        const fzzy = { peerId: 'fzzy', nodeFqdn: 'fzzy.tailxyz.ts.net', backend: 'ollama' } as const;
+
+        const result = applyPromptCeiling([fzzy, local, core6], (candidate) => (candidate.peerId === 'core-6' ? null : FZZY_CEILING), 46_000);
+
+        expect(result.preferred).toEqual([core6]);
+        expect(result.overCeiling).toEqual([fzzy, local]);
+      });
+
+      it('moves nothing, and says it was overridden, when every candidate is over its ceiling', () => {
+        const result = applyPromptCeiling([local, core6], () => FZZY_CEILING, 46_000);
+
+        expect(result.preferred).toEqual([local, core6]);
+        expect(result.overCeiling).toEqual([]);
+        expect(result.decision?.overridden).toBe(true);
+      });
+
+      it('names this node once however many of its engines the ceiling moved back', () => {
+        const result = applyPromptCeiling([local, localVllm, core6], (candidate) => (candidate.peerId === null ? FZZY_CEILING : null), 46_000);
+
+        expect(result.preferred).toEqual([core6]);
+        expect(result.overCeiling).toEqual([local, localVllm]);
+        expect(result.decision).toEqual({
+          estimatedTokens: 46_000,
+          excluded: [{ node: LOCAL_CANDIDATE_KEY, maxPromptTokens: FZZY_CEILING }],
+          overridden: false,
+        });
+      });
     });
   });
 

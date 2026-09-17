@@ -3,6 +3,8 @@ import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
+import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { RegistrationController } from '../registration.controller';
 import { RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -86,7 +88,36 @@ describe('RegistrationController', () => {
 
       const result = await controller.resetRegistration();
       expect(result.success).toBe(true);
-      expect(registrationService.resetRegistration).toHaveBeenCalled();
+      // Local only: no option reaches the service that could ask the Portal to remove the device.
+      expect(registrationService.resetRegistration).toHaveBeenCalledWith();
+    });
+  });
+
+  describe('checkForRemoval', () => {
+    it('returns what the removal check found', async () => {
+      registrationService.checkForRemoval.mockResolvedValue('still_registered');
+
+      await expect(controller.checkForRemoval()).resolves.toEqual({ result: 'still_registered' });
+    });
+  });
+
+  describe.each(['resetRegistration', 'checkForRemoval'] as const)('%s authorization', (name) => {
+    const guardsOf = () => {
+      const handler = RegistrationController.prototype[name];
+      // Default to `[]`: an unguarded route reads back as `undefined`, and `toContain` on that passes.
+      return (Reflect.getMetadata('__guards__', handler) ?? []) as unknown[];
+    };
+
+    it('requires a signed-in person, checked after authentication', () => {
+      const guards = guardsOf();
+
+      expect(guards).toContain(AuthGuard);
+      expect(guards).toContain(HubSessionGuard);
+      expect(guards.indexOf(AuthGuard)).toBeLessThan(guards.indexOf(HubSessionGuard));
+    });
+
+    it('is blocked in demo mode', () => {
+      expect(guardsOf()).toContain(DemoModeGuard);
     });
   });
 

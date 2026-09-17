@@ -10,6 +10,13 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
+import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
+import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
+import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
+import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import type { HubPoolPeer, NewHubPoolPeer } from '@/core/database/drizzle/types';
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
@@ -31,8 +38,6 @@ import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { POOL_REQUEST_ID_HEADER, POOL_SERVED_BY_HEADER, PoolProxyService } from '../hub-pool-proxy.service';
 import { HubPoolPinService } from '../hub-pool-pin.service';
-import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
-import type { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
 import { HubPoolController } from '../hub-pool.controller';
 import { PoolPeerGuard } from '../guards/pool-peer.guard';
@@ -191,6 +196,8 @@ interface Node {
   setContainerSample(rollup: PoolContainerRollup | null): void;
   /** Stop sharing container figures with peers, as the operator switch does. */
   setShareContainerStats(enabled: boolean): void;
+  /** Set or clear this node's stored prompt ceiling, as a settings PATCH does. */
+  setMaxPromptTokens(tokens: number | null): void;
   /** Runs one health-poll tick, as the module's own timer would. */
   poll(): Promise<void>;
   /** Give this node a new MagicDNS name, as a tailnet rename would — routing and self-report together. */
@@ -210,6 +217,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolRequireSignedPeers: false,
     poolShareContainerStats: true,
     poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
+    poolMaxPromptTokens: null,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
 
@@ -340,6 +348,9 @@ function buildNode(fqdn: string, models: string[]): Node {
     /** Stop sharing container figures with peers, as the operator switch does. */
     setShareContainerStats(enabled: boolean) {
       preferences.poolShareContainerStats = enabled;
+    },
+    setMaxPromptTokens(tokens: number | null) {
+      preferences.poolMaxPromptTokens = tokens;
     },
     /** Make this node report a measured band, as its sampler would. */
     setGpuPressure(band: number | null, source: 'host-file' | 'amd-drm' | null = band === null ? null : 'amd-drm') {
@@ -1498,6 +1509,81 @@ describe('Hub Pool across two nodes', () => {
       expect(coreLog.list()[0]).toMatchObject({ id, outcome: 'failed', failedOverFrom: [BETA_FQDN] });
       expect(betaLog.list()[0]).toMatchObject({ id, direction: 'inbound', outcome: 'failed', status: 503 });
       expect(betaEngineCalls).toHaveLength(0);
+    });
+  });
+
+  /**
+   * The ceiling's whole path, across the real wire: core's operator sets it, core's `/capabilities`
+   * carries it, beta's health poll caches it, and beta's own proxy — the ENTRY node — reads it back
+   * out of that cache to decide where a long prompt goes. core stands in for fzzy here.
+   */
+  describe('prompt ceiling across the wire', () => {
+    const LONG_PROMPT_BYTES = 184_000; // ~46k tokens, the turn fzzy could not start in 922 s
+
+    function cachedOn(node: Node): PoolPeerCapabilities {
+      return node.repo.only().lastCapabilities as unknown as PoolPeerCapabilities;
+    }
+
+    /** Beta's real proxy over beta's real peer service, with beta's own engine holding the shared model. */
+    function proxyOn(node: Node): PoolProxyService {
+      const ollama = mock<OllamaBackend>();
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [SHARED_MODEL] });
+      const others = [mock<VllmBackend>(), mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+      for (const backend of others) {
+        backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      }
+      const [vllm, lemonade, mtplx, dspark, lucebox] = others as [VllmBackend, LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend];
+      const pressure = mock<HubPoolPressureService>();
+      pressure.band.mockReturnValue(null);
+      const loadService = new HubPoolLoadService();
+      // Two requests queued here, so the ranker alone would hand the next one to idle core.
+      loadService.acquire('local');
+      loadService.acquire('local');
+      return new PoolProxyService(
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        node.service,
+        mock<TailscaleService>(),
+        loadService,
+        node.configuration,
+        new HubPoolRoutingLogService(),
+        pressure,
+      );
+    }
+
+    it('carries core’s ceiling through /capabilities into beta’s cached snapshot and status card', async () => {
+      await pairNodes();
+      core.setMaxPromptTokens(16_000);
+
+      await beta.poll();
+
+      expect(cachedOn(beta).maxPromptTokens).toBe(16_000);
+      expect((await beta.service.getPoolStatus()).peers[0]?.maxPromptTokens).toBe(16_000);
+      expect((await core.service.getPoolStatus()).localNode).toMatchObject({ maxPromptTokens: 16_000, maxPromptTokensSetBy: 'setting' });
+    });
+
+    it('leaves the key off the wire when core has no ceiling, and takes it off again when one is cleared', async () => {
+      await pairNodes();
+      await beta.poll();
+      expect(cachedOn(beta)).not.toHaveProperty('maxPromptTokens');
+
+      core.setMaxPromptTokens(16_000);
+      await beta.poll();
+      core.setMaxPromptTokens(null);
+      await beta.poll();
+
+      expect(cachedOn(beta)).not.toHaveProperty('maxPromptTokens');
+      expect((await beta.service.getPoolStatus()).peers[0]?.maxPromptTokens).toBeNull();
+    });
+
+    it('makes beta route a long prompt away from core, and only a long one', async () => {
+      await pairNodes();
+      core.setMaxPromptTokens(16_000);
+      await beta.poll();
+      const proxy = proxyOn(beta);
+      const coreRowId = beta.repo.only().id;
+
+      expect((await proxy.buildCandidateList(SHARED_MODEL, 4_000)).map((candidate) => candidate.peerId)).toEqual([coreRowId, null]);
+      expect((await proxy.buildCandidateList(SHARED_MODEL, LONG_PROMPT_BYTES)).map((candidate) => candidate.peerId)).toEqual([null, coreRowId]);
     });
   });
 });
