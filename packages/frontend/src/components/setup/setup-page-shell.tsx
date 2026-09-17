@@ -39,7 +39,13 @@ export function SetupPageShell({
       )}
       style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}
     >
-      <div className={cn('w-full max-w-3xl flex flex-col gap-6 my-auto', fitShortWindows && 'compact-window:gap-3.5', contentClassName)}>
+      <div
+        className={cn(
+          'w-full max-w-3xl flex flex-col gap-6 my-auto',
+          fitShortWindows && 'tight-window:gap-4 compact-window:gap-3.5',
+          contentClassName,
+        )}
+      >
         {(showLogo || title) && (
           <div
             className={cn(
@@ -53,12 +59,17 @@ export function SetupPageShell({
                 src={getLogo(true)}
                 height={64}
                 width={64}
-                className={cn('mx-auto mb-3 opacity-90', fitShortWindows && 'compact-window:m-0 compact-window:w-[30px]')}
+                className={cn(
+                  'mx-auto mb-3 opacity-90',
+                  fitShortWindows && 'tight-window:mb-2 tight-window:w-[48px] compact-window:m-0 compact-window:w-[30px]',
+                )}
                 style={{ maxWidth: '100%', height: 'auto' }}
               />
             )}
             {resolvedTitle && (
-              <h1 className={cn('text-2xl font-bold text-foreground', fitShortWindows && 'compact-window:text-[19px]')}>{resolvedTitle}</h1>
+              <h1 className={cn('text-2xl font-bold text-foreground', fitShortWindows && 'tight-window:text-xl compact-window:text-[19px]')}>
+                {resolvedTitle}
+              </h1>
             )}
           </div>
         )}

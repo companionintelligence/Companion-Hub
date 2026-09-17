@@ -764,8 +764,9 @@ h2 {
  * Overrides last, so they read as overrides.
  *
  * The window is 800px tall by default and can be dragged to 600
- * (tauri.conf.json). Every screen fits the default height with the full
- * brand; below that the frame tightens and the brand sits on one line, so the
+ * (tauri.conf.json), and desktop text scaling shrinks the CSS height further.
+ * Every screen fits the default height with the full brand; below that the
+ * frame tightens in steps and the brand finally sits on one line, so the
  * actions never fall below the fold and the status panel never scrolls on its
  * own.
  */
@@ -774,6 +775,31 @@ h2 {
   main {
     padding-top: 1.25rem;
     padding-bottom: 1.25rem;
+  }
+}
+
+/* A maximized window at 130% text scaling lands here (about 744px of CSS height). */
+@media (max-height: 760px) {
+  .shell {
+    gap: 1rem;
+  }
+
+  .logo {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-size: 1.25rem;
+  }
+
+  .card {
+    padding: 1.5rem 2rem;
+  }
+
+  .stack {
+    gap: 1rem;
   }
 }
 
@@ -817,6 +843,14 @@ h2 {
 
   .row {
     padding: 0.3rem 1rem;
+  }
+
+  .row-detail {
+    max-height: 4.8em;
+  }
+
+  .panel-error {
+    max-height: calc(4.8em + 1.25rem);
   }
 
   .facts,

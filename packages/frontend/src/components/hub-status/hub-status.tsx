@@ -780,7 +780,7 @@ function ServiceRow({ service, stateLabel, detail, attention = false }: ServiceR
       </div>
       {detail && (
         // Four lines at most, so a long compose error cannot push the actions off screen; Copy error has the rest.
-        <p className="mt-1.5 mb-0.5 ml-5 max-h-[6.4em] overflow-y-auto whitespace-pre-wrap font-mono text-[12px] leading-[1.6] text-foreground [overflow-wrap:anywhere]">
+        <p className="mt-1.5 mb-0.5 ml-5 max-h-[6.4em] overflow-y-auto whitespace-pre-wrap font-mono compact-window:max-h-[4.8em] text-[12px] leading-[1.6] text-foreground [overflow-wrap:anywhere]">
           {detail}
         </p>
       )}
@@ -993,8 +993,8 @@ function StartupScreen({
   };
 
   return (
-    <SetupCard className="w-full max-w-2xl" contentClassName="compact-window:px-[24px] compact-window:py-[22px]">
-      <div className="flex flex-col gap-5 compact-window:gap-3.5">
+    <SetupCard className="w-full max-w-2xl" contentClassName="tight-window:px-8 tight-window:py-6 compact-window:px-[24px] compact-window:py-[22px]">
+      <div className="flex flex-col gap-5 tight-window:gap-4 compact-window:gap-3.5">
         <div className="flex flex-col items-center gap-1.5 text-center">
           <h2 className="text-xl font-semibold leading-[1.3] text-foreground">{title}</h2>
           <p role="status" className="max-w-[560px] text-balance text-sm leading-[1.55] text-muted-foreground compact-window:max-w-[600px]">
@@ -1059,7 +1059,7 @@ function StartupScreen({
               )}
 
               {panelError && (
-                <p className="max-h-[calc(6.4em_+_1.25rem)] overflow-y-auto whitespace-pre-wrap border-t border-border bg-destructive/8 px-4 py-2.5 font-mono text-[12px] leading-[1.6] text-foreground [overflow-wrap:anywhere]">
+                <p className="max-h-[calc(6.4em_+_1.25rem)] overflow-y-auto whitespace-pre-wrap compact-window:max-h-[calc(4.8em_+_1.25rem)] border-t border-border bg-destructive/8 px-4 py-2.5 font-mono text-[12px] leading-[1.6] text-foreground [overflow-wrap:anywhere]">
                   {panelError}
                 </p>
               )}

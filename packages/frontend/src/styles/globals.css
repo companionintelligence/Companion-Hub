@@ -20,6 +20,7 @@
  * `compact-window` is declared last so its rules win where both apply.
  */
 @custom-variant short-window (@media (max-height: 820px));
+@custom-variant tight-window (@media (max-height: 760px));
 @custom-variant compact-window (@media (max-height: 680px));
 
 @theme inline {
