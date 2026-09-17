@@ -727,9 +727,11 @@ A **Cloudflare Workers** deployment (`wrangler.toml`) defines a Durable Object (
 ### Self-update
 
 Users can update their Hub in-place:
-1. `SystemUpdateService.check()` compares `CI_HUB_VERSION` against the latest tag on GHCR
-2. `SystemUpdateService.perform()` runs `docker compose pull` + `docker compose up -d` to replace the running container with the new image
-3. The `scripts/updater/update.sh` script provides a shell-based alternative
+1. `SystemUpdateService.checkForUpdates()` reads the running container's image and OCI labels (never `CI_HUB_VERSION`) and lists newer releases from the Portal registry. Only a release-pinned node is offered one.
+2. `SystemUpdateService.performUpdate()` pulls the release, pins it in the env file, and starts an updater container that recreates only the Hub service from the compose files, project, and env file recorded in the container's compose labels.
+3. The `scripts/updater/update.sh` script is a host-side, whole-stack alternative that reads the same labels.
+
+See [`hub-stack-self-update.md`](hub-stack-self-update.md) for the refusals and the per-node auto-update switch.
 
 ---
 
