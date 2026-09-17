@@ -100,10 +100,10 @@ Assume the operator controls the appliance: they can patch Hub, skip local check
 `MarketplaceEntitlementService` caches Portal `/api/entitlements/check` for 24h.
 
 - **Install / update:** fail closed if Portal is unreachable and there is no fresh entitled cache.
-- **Start:** best-effort so an already-installed app can come up when Portal is down, unless a fresh cache says not entitled.
+- **Start / restart:** best-effort so an already-installed app can come up when Portal is down, unless a fresh cache says not entitled. Restart shares Start's policy and checks it before `down`.
 - **404 / free:** skip (local or unsigned apps still run).
 - **402:** `APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED`.
-- **401:** existing unauthorized string.
+- **401:** install and update refuse with the existing unauthorized string. Start and restart use the unreachable policy, because a rejected device key is not an entitlement decision. See [`portal-check-in.md`](../portal-check-in.md#entitlement-checks-on-start-and-restart).
 
 Skipping or forging this cache cannot download a paid bundle or mint an app registry JWT.
 

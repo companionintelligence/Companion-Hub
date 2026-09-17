@@ -1,4 +1,4 @@
-import { resolveHubApiBase } from '../public-web-cli.js';
+import { HubUnreachableError, resolveHubApiBase } from '../public-web-cli.js';
 
 export type RegistrationPhase = 'unregistered' | 'paired' | 'provisioning' | 'locally_ready' | 'publicly_ready' | 'degraded';
 
@@ -7,6 +7,43 @@ export type RegistrationStatusResponse = {
   registered: boolean;
   degradedReasons?: string[];
 };
+
+/** `GET /api/registration/phase`: the status plus the last check-in, read without sending one. */
+export type RegistrationPhaseResponse = RegistrationStatusResponse & {
+  lastCheckIn: { at: string; httpStatus: number | null; code: string | null; error: string | null } | null;
+  consecutiveCheckInFailures?: number;
+};
+
+/** The Hub answered 404: its build predates `GET /api/registration/phase`. */
+export class RegistrationPhaseRouteMissing extends Error {
+  constructor() {
+    super('this Hub build has no /api/registration/phase');
+    this.name = 'RegistrationPhaseRouteMissing';
+  }
+}
+
+/**
+ * Reads the phase without triggering a check-in.
+ *
+ * Not `fetchRegistrationStatus`: `GET /registration/status` sends a check-in to Portal once its
+ * 30 s throttle has passed, so a diagnostic that read it would change the `last_seen` it was trying
+ * to observe.
+ */
+export async function fetchRegistrationPhase(apiBase: string): Promise<RegistrationPhaseResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${apiBase}/api/registration/phase`, { signal: AbortSignal.timeout(10_000) });
+  } catch (error) {
+    throw new HubUnreachableError(`Cannot reach the Hub at ${apiBase} — ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (res.status === 404) {
+    throw new RegistrationPhaseRouteMissing();
+  }
+  if (!res.ok) {
+    throw new Error(`Registration phase failed (${res.status})`);
+  }
+  return (await res.json()) as RegistrationPhaseResponse;
+}
 
 export type DeviceIdResponse = {
   device_id?: string;

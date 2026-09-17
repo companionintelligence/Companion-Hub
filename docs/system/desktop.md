@@ -114,7 +114,7 @@ Rules:
 
 **Registrations belong to one Portal.** Pairing stores a device key (`state/settings.json`), organization rows, and a tunnel token, and none of them records which Portal issued them. If you switch a paired Hub to another Portal, it keeps using them there:
 
-- The Hub sends the old device key to the new Portal on check-in, catalog, and tunnel calls. The new Portal rejects check-in with 401, and after three failed check-ins the Hub shows `degraded` (`cloud_validation_failed`). It doesn't clear the registration or open pairing.
+- The Hub sends the old device key to the new Portal on check-in, catalog, and tunnel calls. The new Portal rejects check-in with 401, and the Hub shows `degraded` (`portal_rejected`). It keeps the registration and accepts a new pairing (`cihub register --code`).
 - The tunnel keeps serving the old Portal's hostname.
 - Settings → Network → Re-register Device keeps the device key, and pairing sends it to the Portal you pair with as proof of possession. Pair a switched Hub only with a Portal you trust with that key.
 - A reset while pointed at the new Portal can't deregister the device from the old Portal. When you switch back, the old Portal may still list the device as active, and the pairing page offers to restore it.

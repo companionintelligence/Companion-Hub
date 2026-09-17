@@ -38,6 +38,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`DEVELOPMENT_SETUP.md`](DEVELOPMENT_SETUP.md) | Prerequisites, the two installs that fail without them, and known-good test baselines |
 | [`License-FAQ.md`](License-FAQ.md) | License questions |
 | [`security/hub-portal-trust.md`](security/hub-portal-trust.md) | Hub ↔ Portal trust; marketplace needs a paired device key |
+| [`portal-check-in.md`](portal-check-in.md) | Portal check-in, reading registration health without sending one, and recovering a Hub whose device key Portal rejects |
 | [`telemetry.md`](telemetry.md) | What Hub reports to Sentry, and the switches that stop it |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
 | [`fleet-setup.md`](fleet-setup.md) | End-to-end setup: account, devices, operators, tailnet, and pooling — the order to do them in |

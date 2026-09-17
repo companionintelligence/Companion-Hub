@@ -7,7 +7,7 @@
 
 import { testUser } from '../helpers/constants.js';
 
-export const PORTAL_SCENARIOS = ['registered', 'unregistered', 'delayed', 'degraded'] as const;
+export const PORTAL_SCENARIOS = ['registered', 'unregistered', 'delayed', 'degraded', 'removed'] as const;
 export type PortalScenario = (typeof PORTAL_SCENARIOS)[number];
 
 /** `body` is the parsed JSON request body, or undefined for GETs / unparseable payloads. */
@@ -65,11 +65,23 @@ const signUpWithEmail: RouteHandler = (_url, body) => {
 };
 
 /**
- * Device liveness ping. `RegistrationService.validateRegistration` posts here on a
- * loop; three non-2xx answers drive the Hub into the `degraded` provisioning phase,
- * which is a state no capture or spec should be filmed in by accident.
+ * Device liveness ping. `RegistrationService.validateRegistrationWithCloud` posts here on a
+ * loop; three transient failures, or one rejection, drive the Hub into the `degraded`
+ * provisioning phase, which is a state no capture or spec should be filmed in by accident.
+ *
+ * Real Portal answers `{ status: 'OK' }` and only for a live `x-device-key`. This one accepts a
+ * check-in with no key at all, because the e2e seed writes a `device_registration` row without a
+ * device key, and a faithful 401 would degrade every spec. The `removed` scenario is the faithful
+ * refusal.
  */
-const deviceCheckIn: RouteHandler = () => ({ body: { active: true, device_id: 'test-device' }, status: 200 });
+const deviceCheckIn: RouteHandler = () => ({ body: { status: 'OK' }, status: 200 });
+
+/**
+ * What CI-Portal's `deviceAuthMiddleware` answers when no live device holds the presented key:
+ * the key is absent, the device was removed, or an owner re-registered it. It is a 401, not the
+ * 400 this mock used to send; the Hub treats the two differently, so the mock has to match.
+ */
+const deviceKeyRejected = () => ({ body: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' }, status: 401 });
 
 /** Shared routes present in every scenario (health / registry / auth). */
 const baseRoutes: RouteMap = {
@@ -238,12 +250,12 @@ const unregisteredRoutes: RouteMap = {
   'GET /api/store': () => ({ body: sampleStoreApps, status: 200 }),
   'GET /api/store/alternatives': () => ({ body: sampleAlternatives, status: 200 }),
   'GET /api/devices/registration-status': () => ({ body: { registered: false }, status: 200 }),
-  // Definitive "this hardware is not a device we know". 400 is the only status
-  // RegistrationService.probePortalDeviceActive reads as a hard no; anything else
-  // is treated as "maybe", which raises the `local_unregistered_portal_active`
-  // drift signal and puts the "Reconnect this Hub" recovery dialog over the
-  // pairing form — the wrong screen for an unregistered Hub.
-  'POST /api/devices/check-in': () => ({ body: { active: false, error: 'Device not found' }, status: 400 }),
+  // An unregistered Hub holds no live device key, so Portal refuses it before the
+  // handler runs. `probePortalDeviceActive` reads that as `false`; only `true`
+  // raises the `local_unregistered_portal_active` drift signal and puts the
+  // "Reconnect this Hub" recovery dialog over the pairing form, which is the wrong
+  // screen for an unregistered Hub.
+  'POST /api/devices/check-in': deviceKeyRejected,
   'POST /api/devices/register': () => ({
     body: { success: false, error: 'Device not found' },
     status: 404,
@@ -317,11 +329,24 @@ const degradedRoutes: RouteMap = {
   'POST /api/devices/check-in': () => ({ body: { error: 'Service unavailable' }, status: 503 }),
 };
 
+/**
+ * Removed — the Hub is registered locally, but its device was removed in Portal or an owner
+ * re-registered it. Every device-key route refuses the key, the way CI-Portal did for five fleet
+ * Hubs on 2026-09-17; pairing with a fresh code still works.
+ */
+const removedRoutes: RouteMap = {
+  ...registeredRoutes,
+  'POST /api/devices/check-in': deviceKeyRejected,
+  'GET /api/entitlements/check': deviceKeyRejected,
+  'GET /api/store': deviceKeyRejected,
+};
+
 const scenarioMap: Record<PortalScenario, RouteMap> = {
   registered: registeredRoutes,
   unregistered: unregisteredRoutes,
   delayed: delayedRoutes,
   degraded: degradedRoutes,
+  removed: removedRoutes,
 };
 
 /** Build the route map for a given scenario. */

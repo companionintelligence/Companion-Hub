@@ -66,6 +66,21 @@ describe('RegistrationController', () => {
       });
     });
 
+    it('serves GET /registration/phase from the side-effect-free report, never the live status that checks in', () => {
+      registrationService.getRegistrationPhaseReport.mockReturnValue({
+        phase: 'degraded',
+        degradedReasons: ['portal_rejected'],
+        registered: true,
+        lastCheckIn: { at: '2026-09-17T09:15:00.000Z', httpStatus: 401, code: 'UNAUTHORIZED', error: 'HTTP 401: Invalid Device Key' },
+        consecutiveCheckInFailures: 0,
+      });
+
+      const result = controller.getPhase();
+
+      expect(result.lastCheckIn?.httpStatus).toBe(401);
+      expect(registrationService.getLiveRegistrationStatus).not.toHaveBeenCalled();
+    });
+
     it('should return degraded status with reasons', async () => {
       registrationService.getLiveRegistrationStatus.mockResolvedValue({
         phase: 'degraded',

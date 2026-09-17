@@ -11,6 +11,9 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { HttpStatus } from '@nestjs/common';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -47,6 +50,7 @@ describe('RestartAppCommand — pull policy', () => {
   let dockerService: any;
   let composeArgs: string[];
   let appFilesManager: any;
+  let entitlements: ReturnType<typeof mock<MarketplaceEntitlementService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -92,6 +96,9 @@ describe('RestartAppCommand — pull policy', () => {
     const marketplaceService = mock<MarketplaceService>();
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
 
+    entitlements = mock<MarketplaceEntitlementService>();
+    entitlements.assertForStart.mockResolvedValue(undefined);
+
     const subnetManager = mock<SubnetManagerService>();
     subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
     subnetManager.releaseSubnet.mockResolvedValue(undefined);
@@ -111,6 +118,7 @@ describe('RestartAppCommand — pull policy', () => {
         if (token === MarketplaceService) return marketplaceService;
         if (token === SubnetManagerService) return subnetManager;
         if (token === EnvUtils) return new EnvUtils();
+        if (token === MarketplaceEntitlementService) return entitlements;
         return mock();
       }),
     } as unknown as ModuleRef;
@@ -156,6 +164,26 @@ describe('RestartAppCommand — pull policy', () => {
     expect(result.success).toBe(false);
     expect((result as any).errorCode).toBe('rocm_kfd_missing');
     expect(result.message).toContain('Set up ROCm in AI Settings');
+    expect(dockerService.composeApp).not.toHaveBeenCalled();
+  });
+
+  // Restart is `down` then `up --force-recreate`. Ungated, an app Start refused for a lapsed
+  // entitlement came straight back through Restart.
+  it('checks the same entitlement policy as Start', async () => {
+    await command.execute(appUrn, {});
+
+    expect(entitlements.assertForStart).toHaveBeenCalledWith(appUrn);
+  });
+
+  it('leaves a running app running when the entitlement refuses the restart', async () => {
+    entitlements.assertForStart.mockRejectedValue(
+      new TranslatableError('APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED', {}, HttpStatus.PAYMENT_REQUIRED),
+    );
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    // Refused before `down`: stopping first and then refusing `up` would turn a refusal into an outage.
     expect(dockerService.composeApp).not.toHaveBeenCalled();
   });
 });
