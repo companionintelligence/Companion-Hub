@@ -22,7 +22,13 @@ export class QueueFactory implements OnApplicationShutdown {
   private rabbit: Connection;
   private connectionAttempts = 0;
   private initializationPromise: Promise<void> | null = null;
+  private initializationStartedAt = 0;
   private reconnectPromise: Promise<Error | undefined> | null = null;
+  private reconnectStartedAt = 0;
+  // Bumped when the watchdog abandons a stalled recovery. A reconnect that wakes
+  // under an older epoch stops, so it cannot tear down the connection the newer
+  // recovery settled on.
+  private recoveryEpoch = 0;
   private connectionStatus: QueueConnectionStatus = 'connecting';
   private lastError?: string;
   // biome-ignore lint/suspicious/noExplicitAny: heterogeneous queue schemas
@@ -37,6 +43,17 @@ export class QueueFactory implements OnApplicationShutdown {
   // Upper bound on a single channel-acquire probe so the health endpoint always
   // answers well within Docker's 5s healthcheck timeout.
   private static readonly PROBE_TIMEOUT_MS = 3_000;
+  // How long a reconnect burst may stay in flight before the watchdog treats it
+  // as stuck and runs anyway. Every await in a burst is bounded: five backoffs
+  // (2+4+8+16+32 = 62 s) plus, per attempt, a 3 s probe and a 31 s connect wait
+  // come to 232 s. core-14's full five-attempt bursts measured 212 s on
+  // 2026-09-17 (DNS for the broker failing, before this change added the probe).
+  // Without this ceiling one await that never returns switches the watchdog off
+  // for good, which is how core-14 stayed 503 until a restart.
+  private static readonly RECOVERY_STALL_MS = 300_000;
+  // Docker gives a stopping container 10 s before SIGKILL, and a graceful close
+  // waits on consumer channels that do not close on their own.
+  private static readonly SHUTDOWN_CLOSE_TIMEOUT_MS = 5_000;
 
   public constructor(
     private readonly logger: LoggerService,
@@ -61,27 +78,28 @@ export class QueueFactory implements OnApplicationShutdown {
       return this.initializationPromise;
     }
 
-    this.initializationPromise = this.doInitialize()
+    const epoch = this.recoveryEpoch;
+    const initialization: Promise<void> = this.doInitialize()
       .catch((error) => {
-        this.markDegraded(error instanceof Error ? error : new Error(String(error)));
+        // An abandoned initialize must not mark the recovery that replaced it degraded.
+        if (epoch === this.recoveryEpoch) {
+          this.markDegraded(error instanceof Error ? error : new Error(String(error)));
+        }
         throw error;
       })
       .finally(() => {
-        this.initializationPromise = null;
+        if (this.initializationPromise === initialization) {
+          this.initializationPromise = null;
+        }
       });
+    this.initializationPromise = initialization;
+    this.initializationStartedAt = Date.now();
 
-    return this.initializationPromise;
+    return initialization;
   }
 
   private async doInitialize() {
-    if (this.rabbit) {
-      try {
-        this.rabbit.removeAllListeners();
-        await this.rabbit.close();
-      } catch {
-        // Old connection may already be dead
-      }
-    }
+    this.discardConnection(this.rabbit);
 
     const { host, password, username, port } = this.config.get('queue');
 
@@ -131,6 +149,33 @@ export class QueueFactory implements OnApplicationShutdown {
     });
 
     await this.waitForConnection();
+  }
+
+  /**
+   * Drop a connection without waiting on it.
+   *
+   * `Connection.close()` first waits for every channel to close, and the three
+   * consumer channels never close on their own. On core-14 (2026-09-17) a
+   * reconnect awaited close() on a connection that had already recovered; the
+   * await never returned and every later channel open failed with "connection is
+   * closing" until the container was restarted. `unsafeDestroy()` drops the
+   * socket at once. Nothing needs this connection's channels to finish: the
+   * queues rebind to the replacement when its 'connection' event fires.
+   */
+  private discardConnection(connection: Connection | undefined) {
+    if (!connection) {
+      return;
+    }
+
+    connection.removeAllListeners();
+    // A channel's last-resort error is emitted on its connection, and an
+    // EventEmitter with no 'error' listener rethrows it as an uncaught exception.
+    connection.on('error', () => undefined);
+    try {
+      connection.unsafeDestroy();
+    } catch {
+      // Already destroyed.
+    }
   }
 
   private isConnectionEstablished(): boolean {
@@ -273,23 +318,18 @@ export class QueueFactory implements OnApplicationShutdown {
   }
 
   private async runWatchdogCheck() {
-    // A reconnect or (re)initialize already in flight will settle readiness itself.
-    if (this.reconnectPromise || this.initializationPromise) {
-      return;
+    const inFlightSince = this.recoveryInFlightSince();
+    if (inFlightSince !== undefined) {
+      const inFlightMs = Date.now() - inFlightSince;
+      // A reconnect or (re)initialize in flight settles readiness itself, unless
+      // it has outlived every bounded burst and is stuck on an await.
+      if (inFlightMs < QueueFactory.RECOVERY_STALL_MS) {
+        return;
+      }
+      this.abandonStalledRecovery(inFlightMs);
     }
 
-    if (await this.probeConnection()) {
-      // Connection is genuinely usable. If we were still flagged degraded (e.g.
-      // the library recovered the socket without a fresh 'connection' event),
-      // clear the flag and refresh the RPC clients so publishes stop short-
-      // circuiting on the unavailable gate.
-      if (this.connectionStatus !== 'ready') {
-        this.logger.info('Queue watchdog: connection probe succeeded; refreshing queue bindings');
-        this.connectionAttempts = 0;
-        this.connectionStatus = 'ready';
-        this.lastError = undefined;
-        this.rebindQueues();
-      }
+    if (await this.keepConnectionIfUsable()) {
       return;
     }
 
@@ -302,29 +342,95 @@ export class QueueFactory implements OnApplicationShutdown {
     await this.reconnect(error);
   }
 
+  /**
+   * Resolve true when the current connection can open a channel. When it can but
+   * the factory still has it flagged degraded (the library recovered the socket
+   * without the factory seeing a fresh 'connection' event), clear the flag and
+   * refresh the RPC clients so publishes stop short-circuiting on the unavailable gate.
+   */
+  private async keepConnectionIfUsable(): Promise<boolean> {
+    if (!(await this.probeConnection())) {
+      return false;
+    }
+
+    if (this.connectionStatus !== 'ready') {
+      this.logger.info('Queue connection probe succeeded; refreshing queue bindings');
+      this.connectionAttempts = 0;
+      this.connectionStatus = 'ready';
+      this.lastError = undefined;
+      this.rebindQueues();
+    }
+    return true;
+  }
+
+  private recoveryInFlightSince(): number | undefined {
+    // A reconnect drives its own initializes, so its start is the earlier one.
+    if (this.reconnectPromise) {
+      return this.reconnectStartedAt;
+    }
+    if (this.initializationPromise) {
+      return this.initializationStartedAt;
+    }
+    return undefined;
+  }
+
+  private abandonStalledRecovery(inFlightMs: number) {
+    this.logger.error(
+      `Queue recovery has been in flight for ${Math.round(inFlightMs / 1000)} s, longer than a bounded reconnect burst can take; abandoning it so the watchdog can repair the connection`,
+    );
+    this.recoveryEpoch++;
+    this.reconnectPromise = null;
+    this.initializationPromise = null;
+  }
+
   // Re-establish connection to Queue with exponential backoff
   public async reconnect(error: Error) {
     if (this.reconnectPromise) {
       return this.reconnectPromise;
     }
 
-    this.reconnectPromise = this.doReconnect(error).finally(() => {
-      this.reconnectPromise = null;
+    const reconnect: Promise<Error | undefined> = this.doReconnect(error, this.recoveryEpoch).finally(() => {
+      if (this.reconnectPromise === reconnect) {
+        this.reconnectPromise = null;
+      }
     });
+    this.reconnectPromise = reconnect;
+    this.reconnectStartedAt = Date.now();
 
-    return this.reconnectPromise;
+    return reconnect;
   }
 
-  private async doReconnect(initialError: Error) {
+  private async doReconnect(initialError: Error, epoch: number) {
     let currentError = initialError;
 
     while (this.connectionAttempts < 5) {
+      if (epoch !== this.recoveryEpoch) {
+        return currentError;
+      }
       this.connectionAttempts++;
+      const attempt = this.connectionAttempts;
       this.markDegraded(currentError);
-      this.logger.warn(`Queue connection lost, attempting to reconnect... (attempt ${this.connectionAttempts}/5)`);
+      this.logger.warn(`Queue connection lost, attempting to reconnect... (attempt ${attempt}/5)`);
 
-      const timeout = 2 ** this.connectionAttempts * 1000;
+      const timeout = 2 ** attempt * 1000;
       await setTimeout(timeout);
+
+      if (epoch !== this.recoveryEpoch) {
+        return currentError;
+      }
+
+      // rabbitmq-client keeps retrying a dropped connection on its own, so the
+      // connection can come back while this attempt sleeps. On core-14 the
+      // connection attempt 3 built reconnected at 08:47:21 and attempt 4 woke at
+      // 08:47:24 and replaced it anyway. Keep a connection that can open a channel.
+      if (await this.keepConnectionIfUsable()) {
+        this.logger.info(`Queue connection recovered before reconnect attempt ${attempt}/5 ran; keeping it`);
+        return undefined;
+      }
+
+      if (epoch !== this.recoveryEpoch) {
+        return currentError;
+      }
 
       try {
         await this.initializeConnection();
@@ -337,7 +443,9 @@ export class QueueFactory implements OnApplicationShutdown {
       }
     }
 
-    this.logger.error('Queue connection lost, exceeded maximum reconnection attempts');
+    if (epoch === this.recoveryEpoch) {
+      this.logger.error('Queue connection lost, exceeded maximum reconnection attempts');
+    }
 
     return currentError;
   }
@@ -425,11 +533,19 @@ export class QueueFactory implements OnApplicationShutdown {
       queue.stopAllCronTasks();
     }
     this.createdQueues = [];
+    // Stop any reconnect in flight from building a connection after shutdown.
+    this.recoveryEpoch++;
+
+    const connection = this.rabbit;
+    if (!connection) {
+      return;
+    }
 
     try {
-      await this.rabbit?.close();
+      await this.withTimeout(connection.close(), QueueFactory.SHUTDOWN_CLOSE_TIMEOUT_MS, 'Queue connection close timed out');
     } catch (e) {
-      this.logger.warn('Error closing RabbitMQ connection during shutdown', e);
+      this.logger.warn('Error closing RabbitMQ connection during shutdown; destroying it', e);
+      this.discardConnection(connection);
     }
   }
 }
