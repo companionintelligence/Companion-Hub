@@ -153,8 +153,6 @@ export interface CuratedModel {
     creator?: string;
     /** Artificial Analysis Intelligence Index (higher = more capable). */
     intelligenceIndex?: number;
-    /** Artificial Analysis agentic / tool-calling index (higher = better at tool use). */
-    toolCallingIndex?: number;
     capabilities?: {
       reasoning?: boolean;
       vision?: boolean;

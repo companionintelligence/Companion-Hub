@@ -39,10 +39,14 @@ export const LEVEL_TAG: Record<LevelColor, string> = {
 export const TIER_TAG_COLOR: Record<string, LevelColor> = { 'cpu-only': 'green', low: 'gold', medium: 'orange', high: 'red' };
 export const TIER_TAG_LABEL: Record<string, string> = { 'cpu-only': 'cpu', low: 'low', medium: 'medium', high: 'high', insufficient: 'n/a' };
 
-// Benchmark score (0–~65): higher is better → cooler (blue).
-export const scoreColor = (v: number): LevelColor => (v >= 50 ? 'blue' : v >= 38 ? 'green' : v >= 26 ? 'gold' : v >= 14 ? 'orange' : 'red');
+// Artificial Analysis Intelligence Index v4.3 (re-pulled 2026-09-16): the best open-weight model scores
+// ~34 and the frontier ~53, about half the pre-v4.3 scale these bands were first tuned for (blue ≥ 50,
+// green ≥ 38, gold ≥ 26, orange ≥ 14). Bands follow the scale; if the catalog is re-pulled onto a new index
+// version, re-derive them from the distribution rather than keeping these numbers.
+export const SCORE_BAR_MAX = 40;
+export const scoreColor = (v: number): LevelColor => (v >= 30 ? 'blue' : v >= 20 ? 'green' : v >= 12 ? 'gold' : v >= 7 ? 'orange' : 'red');
 // Resource size in GB: bigger is heavier → warmer (red).
 export const resourceColor = (gb: number): LevelColor => (gb >= 48 ? 'red' : gb >= 16 ? 'orange' : gb >= 4 ? 'gold' : 'green');
 
-/** Source of the intelligence / tool-use benchmark scores. */
+/** Source of the intelligence benchmark score. */
 export const ARTIFICIAL_ANALYSIS_URL = 'https://artificialanalysis.ai/leaderboards/models?weights=open';

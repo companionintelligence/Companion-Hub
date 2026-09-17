@@ -1197,7 +1197,6 @@
   "ONBOARDING_TIER": "Tier",
   "ONBOARDING_CAPABILITIES": "Capabilities",
   "ONBOARDING_INTELLIGENCE": "Intelligence",
-  "ONBOARDING_TOOL_USE": "Tool use",
   "ONBOARDING_NO_ADDITIONAL_MODELS": "No additional models are available for your hardware.",
   "ONBOARDING_GROUP_LARGE_MODELS": "Large models - 70B+",
   "ONBOARDING_GROUP_MEDIUM_MODELS": "Medium models - 15-70B",

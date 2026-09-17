@@ -11,9 +11,18 @@ It's authored as a compact, pipe-delimited [TOON](https://toonformat.dev) table 
 LLMs, `EXTRAS_TOON` for voice/embedding models) — one row per model — and decoded at module load into
 `CuratedModel[]` (`CURATED_MODELS`). Every family + size in the table is verified to exist on
 [ollama.com/library](https://ollama.com/library); the catalog lists only the bare `model:size` default
-tag (the guaranteed-pullable `q4_K_M` build). `intel`/`agentic`/`tps`/`ttft`/`e2e` columns come from the
+tag (the guaranteed-pullable `q4_K_M` build). `intel`/`tps`/`ttft`/`e2e` columns come from the
 [Artificial Analysis open-weights leaderboard](https://artificialanalysis.ai/leaderboards/models?weights=open)
 where the model is listed; they're left blank otherwise.
+
+> **Scale warning (2026-09-16).** The Ollama table's `intel`/`tps`/`ttft`/`e2e` columns were re-pulled in
+> one pass from Artificial Analysis **Intelligence Index v4.3**. AA rebases its index between versions
+> (v4.3 roughly halved most scores), and `compareLlmCandidates()` ranks across rows on this column, so
+> never patch a single row from a newer leaderboard — re-pull the whole column or leave it. The old
+> `agentic` (tool-use) column was dropped on the same date: v4.3 publishes no composite agentic index,
+> and the values were a never-refreshed May 2026 snapshot that nothing ranked on. The `(MTP)` rows carry their base row's leaderboard columns on
+> purpose (identical weights, lossless speculative decoding); see the dated note in
+> `curated-models.ts`.
 
 `curated-models.ts` derives everything else (VRAM/RAM requirements, disk size, memory footprint,
 per-tier recommendation flags) from the row's `params`/`gb`/`tier` columns — there is no separate
@@ -71,7 +80,7 @@ newmodel-72b|newmodel:72b|NewModel 72B|reasoning|72|43|high|128|SomeLab|38.2|41.
 - `tier` — the lowest hardware tier this size should be offered as a default recommendation for
   (`cpu-only`/`low`/`medium`/`high`), based on the model's footprint relative to existing rows of
   similar size.
-- `intel`/`agentic`/`tps`/`ttft`/`e2e` — from the Artificial Analysis leaderboard if the model is
+- `intel`/`tps`/`ttft`/`e2e` — from the Artificial Analysis leaderboard if the model is
   listed there; leave blank (`|`) otherwise. Don't invent numbers.
 - If the model is a Mixture-of-Experts (MoE) model, also add its active-parameter count (billions) to
   the `MOE_ACTIVE_PARAMS_B` map just below the LLM table — this governs shared-memory/APU selection,
