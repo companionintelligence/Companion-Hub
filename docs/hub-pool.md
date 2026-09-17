@@ -131,6 +131,24 @@ evidence decays: it holds for 30 minutes, then halves every 30 minutes. Everythi
 2 hours, which is also how a demoted node gets tried again. All of it is in memory, so a restart
 forgets it.
 
+**Predicting a prompt larger than anything measured.** Attention is quadratic in the prompt, so the
+cost per token rises with the context: on a CPU-served model that is the dominant term, and on a GPU
+one it is nearly invisible. Both halves are on this fleet. fzzy's per-token cost more than doubled
+between 10.6k and 46k tokens; beta-max's `qwen3.6:27b` fell only from 192 to 157 tok/s across 47k.
+So a measurement is read forward to a larger prompt at `min(N / measured, 3)` times its per-token
+cost — the physical worst case, refusing to extrapolate more than threefold however much longer the
+prompt is. Only the measurement nearest the requested size is read forward, and never past the
+slowest reading at or below that size, which is a bound rather than a guess: a node already that slow
+on a shorter prompt cannot be faster on a longer one.
+
+The line this draws: a node is demoted for a much longer prompt when it was measured below about
+150 tok/s, three times the 50 tok/s floor the budget is sized from. Every GPU node measured on this
+fleet is above it (157–496 tok/s, and higher at the shorter prompts a reading is taken from), and
+every CPU-served one is below. This is what places the first long turn correctly instead of learning
+it from a missed deadline, and it is also the part most likely to be wrong on hardware unlike this
+fleet's: `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns the reordering off, and the routing log names the
+size every prediction was read forward from.
+
 **Where it applies.** The entry node predicts each candidate's time to a first byte from the slowest
 applicable evidence: what it timed itself, and what the peer advertises in `GET /capabilities` as
 `throughput` (omitted when nothing has been timed, as on every older build). It takes the slower of
@@ -154,7 +172,9 @@ this node timed, and the peer's report after the validation and ageing routing a
 lists its prefill bands (`fromTokens`, `promptTokens`, `tokensPerSec`, `deadline`, `ageMs`) and its
 `decode` rate. Each routing-log entry carries `throughput`: `null` when no candidate had applicable
 evidence, otherwise `{ estimatedTokens, budgetMs, estimates: [{ node, backend, tokensPerSec,
-predictedMs, source, deadline, slow }], overridden }`. `overridden` is `true` when the request was
+fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], overridden }`. `tokensPerSec`
+is the rate as measured, at `fromPromptTokens`, so it can be compared with an engine's own log;
+`predictedMs` includes the growth factor when `extrapolated` is true. `overridden` is `true` when the request was
 placed on a `slow` node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log`
 marks the requests a measurement moved.
 

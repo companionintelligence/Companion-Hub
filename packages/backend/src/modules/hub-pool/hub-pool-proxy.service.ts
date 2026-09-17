@@ -536,6 +536,8 @@ export function applyThroughputPlacement(
       node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
       backend: candidate.backend,
       tokensPerSec: prediction.tokensPerSec,
+      fromPromptTokens: prediction.fromPromptTokens,
+      extrapolated: prediction.extrapolated,
       predictedMs: prediction.predictedMs,
       source: prediction.source,
       deadline: prediction.deadline,
@@ -884,7 +886,10 @@ export class PoolProxyService {
     if (decision && result.demoted.size > 0) {
       const nodes = decision.estimates
         .filter((estimate) => estimate.slow)
-        .map((estimate) => `${estimate.node} (~${estimate.tokensPerSec} tok/s, ~${estimate.predictedMs}ms)`)
+        .map(
+          (estimate) =>
+            `${estimate.node} (~${estimate.tokensPerSec} tok/s at ~${estimate.fromPromptTokens} tokens${estimate.extrapolated ? ', read forward' : ''} → ~${estimate.predictedMs}ms)`,
+        )
         .join(', ');
       this.logger.debug(
         `[PoolProxy] ~${estimatedTokens}-token prompt for "${model}" put ${nodes} behind every candidate expected to meet its ${decision.budgetMs}ms budget`,

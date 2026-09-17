@@ -135,8 +135,13 @@ export interface PoolRoutingThroughput {
 export interface PoolRoutingThroughputEstimate {
   node: string;
   backend: InferenceBackendType;
-  /** Estimated prompt tokens per second, from the slowest live evidence for a prompt this size or smaller. */
+  /** The rate as measured, before any growth: comparable with the engine's own figure. */
   tokensPerSec: number;
+  /** The prompt size that measurement was taken at. */
+  fromPromptTokens: number;
+  /** `true` when a smaller measurement was read forward to this prompt's size, so `predictedMs` includes the growth factor. */
+  extrapolated: boolean;
+  /** Time to a first byte this node is expected to need for a prompt this size. */
   predictedMs: number;
   /** `observed`: this Hub timed it. `advertised`: the node reported it. The slower of the two is used. */
   source: 'observed' | 'advertised';

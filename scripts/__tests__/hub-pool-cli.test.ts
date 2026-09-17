@@ -688,6 +688,8 @@ describe('hub-pool-cli throughput', () => {
     node: FZZY,
     backend: 'ollama',
     tokensPerSec: 49.8,
+    fromPromptTokens: 46_000,
+    extrapolated: false,
     predictedMs: 921_000,
     source: 'observed' as const,
     deadline: true,
@@ -698,6 +700,13 @@ describe('hub-pool-cli throughput', () => {
     const text = logOf([routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [slowFzzy], overridden: false } })]);
 
     expect(text).toContain(`~46031-token prompt moved ${FZZY} (~49.8 tok/s, ≥921 s) behind nodes expected to answer within 921 s`);
+  });
+
+  it('names the prompt size a reading was taken at when it was read forward to a longer one', () => {
+    const readForward = { ...slowFzzy, tokensPerSec: 123, fromPromptTokens: 10_600, extrapolated: true, deadline: false, predictedMs: 1_121_951 };
+    const text = logOf([routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [readForward], overridden: false } })]);
+
+    expect(text).toContain(`${FZZY} (~123 tok/s measured at ~10600 tokens, ~1122 s)`);
   });
 
   it('says so when the prompt was placed on a node expected to miss anyway', () => {

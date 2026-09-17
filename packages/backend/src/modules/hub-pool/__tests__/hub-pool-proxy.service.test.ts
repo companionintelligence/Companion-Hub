@@ -2032,6 +2032,29 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
       });
 
+      /**
+       * The case the feature exists for. fzzy's only evidence is the 10.6k turn it served at ~123
+       * tok/s — nothing has missed a deadline yet — and the next turn is the ~46k one that ran out of
+       * its 922 s budget on the fleet. Reading the measurement forward is what places that FIRST turn
+       * on core-6 instead of learning it the expensive way.
+       */
+      it('places the first long turn away from a node measured slow at a smaller prompt, before any deadline is missed', async () => {
+        usePeers(fzzyAndCore6);
+        throughput.recordPrefill(FZZY, { promptTokens: 10_600, ms: (10_600 / 123) * 1000, deadline: false });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+        // The same measurement leaves the prompts it actually covers alone.
+        expect(ids(await service.buildCandidateList(MODEL, MEDIUM_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+      });
+
+      it('leaves a GPU node in front for that same turn: its measured rate has the headroom', async () => {
+        usePeers(() => [node('beta-max', { hardwareTier: 'high' }), node('core-6', { inFlightRequests: 2 })]);
+        // ~190 tok/s at 8k, where beta-max's 27B still is before the context grows.
+        throughput.recordPrefill({ ...FZZY, nodeKey: 'beta-max' }, { promptTokens: 8_000, ms: (8_000 / 190) * 1000, deadline: false });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['beta-max', 'core-6']);
+      });
+
       it('reads a node slow on small prompts as too slow for large ones, from the small measurement alone', async () => {
         usePeers(fzzyAndCore6);
         // `qwen3.6:27b` on fzzy and core-7: 27–37 tok/s. Prefill only gets slower as the prompt grows.
@@ -2272,7 +2295,10 @@ describe('PoolProxyService', () => {
               node: 'fzzy.tailxyz.ts.net',
               backend: 'ollama',
               tokensPerSec: 49.8,
-              predictedMs: Math.round(estimatedTokens * (922_000 / 46_000)),
+              fromPromptTokens: 46_000,
+              // A hair past the measured size, so the growth factor barely applies.
+              extrapolated: true,
+              predictedMs: Math.round(estimatedTokens * (922_000 / 46_000) * (estimatedTokens / 46_000)),
               source: 'observed',
               deadline: true,
               slow: true,

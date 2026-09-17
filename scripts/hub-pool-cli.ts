@@ -218,7 +218,12 @@ export interface PoolRoutingThroughput {
   estimates: {
     node: string;
     backend: string;
+    /** The rate as measured, before any growth. */
     tokensPerSec: number;
+    /** The prompt size it was measured at. Absent on a Hub predating reading a measurement forward. */
+    fromPromptTokens?: number;
+    /** Whether `predictedMs` grew a smaller measurement to this prompt's size. */
+    extrapolated?: boolean;
     predictedMs: number;
     source: 'observed' | 'advertised';
     deadline: boolean;
@@ -1040,7 +1045,7 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
       const nodes = slow
         .map(
           (estimate) =>
-            `${sanitizeForBox(estimate.node)} (~${estimate.tokensPerSec} tok/s, ${estimate.deadline ? '≥' : '~'}${Math.round(estimate.predictedMs / 1000)} s)`,
+            `${sanitizeForBox(estimate.node)} (~${estimate.tokensPerSec} tok/s${estimate.extrapolated && estimate.fromPromptTokens ? ` measured at ~${estimate.fromPromptTokens} tokens` : ''}, ${estimate.deadline ? '≥' : '~'}${Math.round(estimate.predictedMs / 1000)} s)`,
         )
         .join(', ');
       lines.push(

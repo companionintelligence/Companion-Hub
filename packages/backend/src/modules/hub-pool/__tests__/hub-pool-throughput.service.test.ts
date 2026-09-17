@@ -5,6 +5,7 @@ import {
   THROUGHPUT_FORGET_AFTER_MS,
   THROUGHPUT_HALF_LIFE_MS,
   THROUGHPUT_HOLD_MS,
+  MAX_PREFILL_GROWTH,
   THROUGHPUT_MIN_PROMPT_TOKENS,
   evidenceWeight,
   effectivePrefillPoint,
@@ -17,6 +18,7 @@ import {
   readAdvertisedThroughput,
   type PrefillBandEvidence,
   type PrefillPoint,
+  type PrefillPrediction,
   type SourcedPrefillPoint,
 } from '../hub-pool-throughput.service';
 
@@ -106,14 +108,11 @@ describe('mergeDecode', () => {
 });
 
 describe('predictPrefill', () => {
-  it('predicts a larger prompt from a smaller one, never a smaller prompt from a larger one', () => {
-    const measuredAt10k = [point(10_600, 123)];
-
-    expect(predictPrefill(measuredAt10k, 46_000, NOW)).toMatchObject({ predictedMs: Math.round((46_000 / 123) * 1000), tokensPerSec: 123 });
-    // A slower rate at a larger size says little about a smaller prompt, so it is not applied.
+  it('never reads a larger prompt back onto a smaller one', () => {
+    // A slower rate at a larger size says little about a smaller prompt, so it is not applied at all.
     expect(predictPrefill([point(46_000, 40)], 10_600, NOW)).toBeNull();
-    // Same band, either side of the measured size: applied.
-    expect(predictPrefill([point(46_000, 40)], 36_000, NOW)?.predictedMs).toBe(900_000);
+    // At or below the measured size there is nothing to read forward: the measurement stands flat.
+    expect(predictPrefill([point(46_000, 40)], 36_000, NOW)).toMatchObject({ predictedMs: 900_000, extrapolated: false });
   });
 
   it('uses the slowest applicable evidence from either source', () => {
@@ -123,8 +122,72 @@ describe('predictPrefill', () => {
     expect(predictPrefill([advertisedFast, observedDeadline], 46_000, NOW)).toEqual({
       predictedMs: 920_000,
       tokensPerSec: 50,
+      fromPromptTokens: 46_000,
+      extrapolated: false,
       deadline: true,
       source: 'observed',
+    });
+  });
+
+  /**
+   * Reading a measurement forward is what places the FIRST long turn correctly. The fleet numbers are
+   * the test: fzzy read a 10.6k-token prompt at ~123 tok/s and then could not start a ~46k one inside
+   * 922 s, while beta-max's GPU `qwen3.6:27b` barely slowed at all (192 → 157 tok/s over 47k).
+   */
+  describe('reading a measurement forward', () => {
+    it("demotes fzzy's 46k turn from its 10.6k measurement alone, before any deadline was missed", () => {
+      const prediction = predictPrefill([point(10_600, 123)], 46_000, NOW);
+
+      // 4.34x the prompt, so the whole growth factor applies: ~123 tok/s read forward as ~41.
+      expect(prediction).toMatchObject({ tokensPerSec: 123, fromPromptTokens: 10_600, extrapolated: true });
+      expect(prediction?.predictedMs).toBe(Math.round((46_000 / 123) * 1000 * MAX_PREFILL_GROWTH));
+      expect(missesBudget(prediction as NonNullable<typeof prediction>, 920_000)).toBe(true);
+    });
+
+    it('leaves a GPU node alone at the same prompt, because its measured rate has the headroom', () => {
+      // beta-max at 8k tokens, where its 27B is still near 190 tok/s.
+      const prediction = predictPrefill([point(8_000, 190)], 46_000, NOW);
+
+      expect(prediction?.extrapolated).toBe(true);
+      expect(missesBudget(prediction as NonNullable<typeof prediction>, 920_000)).toBe(false);
+      // The line this draws: three times the 50 tok/s floor the budget is sized from.
+      expect(missesBudget(predictPrefill([point(8_000, 149)], 46_000, NOW) as PrefillPrediction, 920_000)).toBe(true);
+      expect(missesBudget(predictPrefill([point(8_000, 151)], 46_000, NOW) as PrefillPrediction, 920_000)).toBe(false);
+    });
+
+    it('grows in proportion to how much further the prompt is, and stops at MAX_PREFILL_GROWTH', () => {
+      const measured = [point(8_000, 100)];
+
+      expect(predictPrefill(measured, 8_000, NOW)?.predictedMs).toBe(80_000);
+      expect(predictPrefill(measured, 16_000, NOW)?.predictedMs).toBe(320_000); // 2x the prompt, 2x the cost per token
+      // 12x the prompt would be 12x per token; the cap refuses to extrapolate that far.
+      expect(predictPrefill(measured, 96_000, NOW)?.predictedMs).toBe(96_000 * 10 * MAX_PREFILL_GROWTH);
+    });
+
+    it('reads only the nearest measurement forward, so a direct one is never overruled by a distant guess', () => {
+      // 200 tok/s at 5k and 125 tok/s at 40k: the same node, slowing as the prompt grows. Growing the
+      // 5k reading 3x would claim ~690 s for 46k; the 40k one is a quarter of a band away.
+      const prediction = predictPrefill([point(5_000, 200), point(40_000, 125)], 46_000, NOW);
+
+      expect(prediction).toMatchObject({ fromPromptTokens: 40_000, tokensPerSec: 125, extrapolated: true });
+      expect(prediction?.predictedMs).toBe(Math.round((46_000 / 125) * 1000 * (46_000 / 40_000)));
+    });
+
+    it('still takes the slowest reading at or below the size as a floor, even against a faster direct one', () => {
+      // 50 tok/s at 5k and 125 tok/s at 40k cannot both describe the same engine — per-token cost does
+      // not fall as a prompt grows, so the 40k reading is a prefix-cache hit and the floor holds.
+      const prediction = predictPrefill([point(5_000, 50), point(40_000, 125)], 46_000, NOW);
+
+      expect(prediction).toMatchObject({ fromPromptTokens: 5_000, tokensPerSec: 50, extrapolated: false });
+      expect(prediction?.predictedMs).toBe(46_000 * 20);
+    });
+
+    it('keeps the flat floor when it is slower than the reading-forward', () => {
+      // The 20k deadline says "at least 40 s per 1k tokens" and the nearest reading grown is under that.
+      const prediction = predictPrefill([point(20_000, 25, { deadline: true }), point(40_000, 400)], 44_000, NOW);
+
+      expect(prediction).toMatchObject({ fromPromptTokens: 20_000, deadline: true, extrapolated: false });
+      expect(prediction?.predictedMs).toBe(Math.round(44_000 * 40));
     });
   });
 
@@ -137,6 +200,7 @@ describe('predictPrefill', () => {
 
 describe('missesBudget', () => {
   it('treats a deadline replayed at its own size as a miss, and a served sample at the budget as a pass', () => {
+    // Same size, so nothing is read forward and the recorded figures stand exactly.
     const budget = 920_000;
     const deadline = predictPrefill([point(46_000, 50, { deadline: true })], 46_000, NOW);
     const served = predictPrefill([point(46_000, 50)], 46_000, NOW);

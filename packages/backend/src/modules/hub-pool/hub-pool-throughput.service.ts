@@ -21,7 +21,8 @@ import type { PoolDecodeEstimate, PoolPrefillEstimate, PoolThroughputEstimate } 
  * - **By prompt size.** A prefill rate is a rate at a size, so evidence sits in bands that double
  *   from {@link THROUGHPUT_MIN_PROMPT_TOKENS}, and a band's point is applied to prompts of that size
  *   and larger only. A node too slow for a smaller prompt is too slow for a larger one; a larger
- *   prompt's rate says little about a smaller one.
+ *   prompt's rate says little about a smaller one. Reading a smaller measurement forward costs a
+ *   growth factor — see {@link MAX_PREFILL_GROWTH}.
  * - **Slower evidence wins at once.** Most agent turns share a cached prefix with the previous one
  *   and reach their first byte in seconds. Averaged in, they would make a CPU node look fast between
  *   the cold turns that time out. So a band keeps its slowest standing evidence and the latest faster
@@ -58,6 +59,26 @@ export const THROUGHPUT_HOLD_MS = 30 * 60_000;
 export const THROUGHPUT_HALF_LIFE_MS = 30 * 60_000;
 /** After this, evidence is gone and the node is unmeasured again for that band. */
 export const THROUGHPUT_FORGET_AFTER_MS = THROUGHPUT_HOLD_MS + 3 * THROUGHPUT_HALF_LIFE_MS;
+/**
+ * The most a per-token prefill cost is assumed to grow when a measurement is read forward to a larger
+ * prompt, and the whole reason the FIRST long turn can be placed correctly rather than after a miss.
+ *
+ * Per-token cost rises with the context, because attention is quadratic in the prompt: cost per token
+ * grows in proportion to the prompt in the worst case, which is where CPU-served models live. So a
+ * measurement at `n` predicts `N` at `min(N / n, MAX_PREFILL_GROWTH)` times its per-token cost — the
+ * physical worst case, refusing to extrapolate more than threefold however much further the prompt is.
+ *
+ * Both halves come from the fleet, 2026-09-17. fzzy serves `qwen3-coder:30b` on CPU: measured at
+ * ~123 tok/s on a 10.6k-token turn, it could not start a ~46k-token one inside 922 s, so its per-token
+ * cost more than doubled over 4.3x the prompt. The cap is what keeps that inference off GPU nodes,
+ * where the same curve is nearly flat — beta-max's `qwen3.6:27b` fell only from 192 to 157 tok/s over
+ * 47k tokens. The rule this produces: a node is demoted for a much larger prompt when it was measured
+ * below about 150 tok/s, three times the 50 tok/s floor the budget is sized from. Every GPU node
+ * measured on this fleet is above that (157-496 tok/s, and higher at the short prompts this reads
+ * forward from); every CPU-served one is below it.
+ */
+export const MAX_PREFILL_GROWTH = 3;
+
 /** How many (backend, model) entries a node advertises, and how many of a peer's a reader accepts. */
 export const MAX_ADVERTISED_THROUGHPUT = 32;
 
@@ -103,9 +124,14 @@ export interface DecodeMean {
 }
 
 export interface PrefillPrediction {
-  /** Estimated time to the first byte, from the slowest applicable evidence. A lower bound on it for a deadline point. */
+  /** Estimated time to the first byte, grown from the measured size to the requested one. A lower bound on it for a deadline point. */
   predictedMs: number;
+  /** The rate as MEASURED, before any growth, so the figure can be compared with an engine's own log. */
   tokensPerSec: number;
+  /** The prompt size that measurement was taken at. */
+  fromPromptTokens: number;
+  /** `true` when the prediction reads a smaller measurement forward: {@link MAX_PREFILL_GROWTH} applied. */
+  extrapolated: boolean;
   deadline: boolean;
   source: ThroughputSource;
 }
@@ -173,9 +199,21 @@ export function mergeDecode(stored: DecodeMean | undefined, tokensPerSec: number
 }
 
 /**
- * The time to a first byte for a prompt of `estimatedTokens`, from the slowest live point in its band
- * or a smaller one, or `null` when nothing applies — unmeasured, which placement treats as neither
- * fast nor slow.
+ * The time to a first byte for a prompt of `estimatedTokens`, or `null` when nothing applies —
+ * unmeasured, which placement treats as neither fast nor slow.
+ *
+ * Two readings of the live evidence, and the slower wins:
+ *
+ * 1. **The floor.** The slowest point measured at this size or smaller, flat. Per-token cost never
+ *    falls as a prompt grows, so a node already this slow on a smaller prompt is at least this slow
+ *    here. This is a bound, not a guess.
+ * 2. **The reading-forward.** The measurement nearest the requested size, its per-token cost grown by
+ *    how much further the prompt is (see {@link MAX_PREFILL_GROWTH}). This is what lets the FIRST long
+ *    turn be placed on a node that can answer it, instead of after one has run out of its budget.
+ *
+ * Only the nearest measurement is ever grown. Growing every point would let a small, slow reading
+ * dominate a large, direct one, and would turn each new measurement into a wilder extrapolation
+ * rather than a better-supported one — the opposite of what more evidence should do.
  */
 export function predictPrefill(points: readonly SourcedPrefillPoint[], estimatedTokens: number, now: number): PrefillPrediction | null {
   const band = prefillBand(estimatedTokens);
@@ -183,6 +221,7 @@ export function predictPrefill(points: readonly SourcedPrefillPoint[], estimated
     return null;
   }
   let slowest: SourcedPrefillPoint | null = null;
+  let nearest: SourcedPrefillPoint | null = null;
   for (const point of points) {
     const pointBand = prefillBand(point.promptTokens);
     if (pointBand === null || pointBand > band || isForgotten(point.at, now)) {
@@ -191,17 +230,32 @@ export function predictPrefill(points: readonly SourcedPrefillPoint[], estimated
     if (!slowest || point.msPerToken > slowest.msPerToken || (point.msPerToken === slowest.msPerToken && point.deadline && !slowest.deadline)) {
       slowest = point;
     }
+    // Nearest from below, and the slower of two at the same size: the best-supported reading.
+    if (
+      !nearest ||
+      point.promptTokens > nearest.promptTokens ||
+      (point.promptTokens === nearest.promptTokens && point.msPerToken > nearest.msPerToken)
+    ) {
+      nearest = point;
+    }
   }
-  if (!slowest) {
+  if (!slowest || !nearest) {
     return null;
   }
+  // At or below the measured size there is nothing to read forward, so this is 1 and the floor stands.
+  const growth = Math.min(Math.max(estimatedTokens / nearest.promptTokens, 1), MAX_PREFILL_GROWTH);
+  const grownMsPerToken = nearest.msPerToken * growth;
+  const extrapolated = grownMsPerToken > slowest.msPerToken;
+  const binding = extrapolated ? nearest : slowest;
   return {
     // Whole milliseconds, so a deadline point replayed at its own size lands exactly on its budget
     // rather than a float's width either side of it.
-    predictedMs: Math.round(estimatedTokens * slowest.msPerToken),
-    tokensPerSec: floorTenth(1000 / slowest.msPerToken),
-    deadline: slowest.deadline,
-    source: slowest.source,
+    predictedMs: Math.round(estimatedTokens * Math.max(grownMsPerToken, slowest.msPerToken)),
+    tokensPerSec: floorTenth(1000 / binding.msPerToken),
+    fromPromptTokens: binding.promptTokens,
+    extrapolated: extrapolated && growth > 1,
+    deadline: binding.deadline,
+    source: binding.source,
   };
 }
 
