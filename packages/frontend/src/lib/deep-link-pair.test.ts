@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode, takeStashedPairingCode } from './deep-link-pair';
+import {
+  forgetPendingPairingCode,
+  normalizePairingCode,
+  resolvePendingPairingCode,
+  stashPendingPairingCode,
+  takeStashedPairingCode,
+} from './deep-link-pair';
 
 const core = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => core.invoke(...a) }));
@@ -94,5 +100,57 @@ describe('deep-link-pair', () => {
 
     expect(await resolvePendingPairingCode()).toBe('OLD123');
     expect(core.invoke).not.toHaveBeenCalled();
+  });
+
+  describe('forgetting a code registration has used', () => {
+    it('clears the stashed copy and empties the copy the desktop shell parked', async () => {
+      // Either copy left behind was submitted again the next time registration opened.
+      win.__TAURI_INTERNALS__ = {};
+      core.invoke.mockResolvedValueOnce('abc123');
+      stashPendingPairingCode('abc123');
+
+      await forgetPendingPairingCode('abc123');
+
+      expect(core.invoke).toHaveBeenCalledWith('consume_pending_pairing_code');
+      expect(await resolvePendingPairingCode()).toBeNull();
+    });
+
+    it('leaves a stashed code from a different link alone', async () => {
+      win.__TAURI_INTERNALS__ = {};
+      stashPendingPairingCode('new456');
+
+      await forgetPendingPairingCode('old123');
+
+      expect(takeStashedPairingCode()).toBe('NEW456');
+    });
+
+    it('keeps a different code that was parked meanwhile, for the next attempt', async () => {
+      win.__TAURI_INTERNALS__ = {};
+      core.invoke.mockResolvedValueOnce('new456');
+      stashPendingPairingCode('old123');
+
+      await forgetPendingPairingCode('old123');
+
+      expect(takeStashedPairingCode()).toBe('NEW456');
+    });
+
+    it('does nothing for a malformed code', async () => {
+      win.__TAURI_INTERNALS__ = {};
+      stashPendingPairingCode('abc123');
+
+      await forgetPendingPairingCode('nope');
+
+      expect(core.invoke).not.toHaveBeenCalled();
+      expect(takeStashedPairingCode()).toBe('ABC123');
+    });
+
+    it('only clears the stash in a plain browser', async () => {
+      stashPendingPairingCode('abc123');
+
+      await forgetPendingPairingCode('ABC123');
+
+      expect(takeStashedPairingCode()).toBeNull();
+      expect(core.invoke).not.toHaveBeenCalled();
+    });
   });
 });

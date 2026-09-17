@@ -259,9 +259,30 @@
         "responses": {
           "200": {
             "description": "Registration reset successfully"
+          },
+          "403": {
+            "description": "Only a person signed in to this Hub may reset its registration"
           }
         },
         "summary": "Reset device registration to allow re-pairing",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
+    "/api/registration/removal-check": {
+      "post": {
+        "operationId": "checkForRemoval",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns { result: \"removed\" | \"still_registered\" | \"key_refused\" | \"not_checked\" }"
+          },
+          "403": {
+            "description": "Only a person signed in to this Hub may run the removal check"
+          }
+        },
+        "summary": "Check whether this Hub was removed from its account in the Portal",
         "tags": [
           "Registration"
         ]
@@ -6688,6 +6709,9 @@
                 "pattern": "^\\d+[kmg]?b?$"
               },
               "autoAllocateAppResources": {
+                "type": "boolean"
+              },
+              "autoUpdates": {
                 "type": "boolean"
               },
               "demoMode": {

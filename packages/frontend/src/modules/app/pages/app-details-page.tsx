@@ -8,7 +8,7 @@ import { AppStatus } from '../components/app-status/app-status';
 import { AppActions } from '../containers/app-actions/app-actions';
 import { AppDetailsTabs } from '../containers/app-details-tabs/app-details-tabs';
 import type { Route } from './+types/app-details-page';
-import { PageLoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { fetchAppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { HardDrive, Star } from 'lucide-react';
@@ -30,6 +30,70 @@ export async function clientLoader({ params }: Route.ClientLoaderArgs) {
   }
 
   return null;
+}
+
+const INFORMATION_ROWS = ['provider', 'categories', 'updated', 'version', 'source', 'size'];
+
+// Laid out like the loaded page (hero card, then About and Information) so
+// nothing jumps when the app arrives.
+function AppDetailsSkeleton() {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      className="mx-auto max-w-6xl space-y-4 px-0 pb-20 sm:space-y-8"
+      role="status"
+      aria-busy="true"
+      aria-label={t('COMMON_LOADING')}
+      data-testid="app-details-skeleton"
+    >
+      <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
+        <CardContent className="space-y-4 p-3 sm:space-y-6 sm:p-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
+            <Skeleton className="h-24 w-24 shrink-0 rounded-md sm:h-28 sm:w-28 md:h-32 md:w-32" />
+            <div className="min-w-0 flex-1 space-y-3 sm:space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 space-y-2">
+                  <Skeleton className="h-8 w-44 max-w-full sm:h-10 sm:w-72" />
+                  <Skeleton className="h-6 w-40 max-w-full" />
+                </div>
+                <Skeleton className="h-9 w-20 rounded-md" />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Skeleton className="h-8 w-36 max-w-full rounded-full sm:h-9 sm:w-44" />
+                <Skeleton className="h-8 w-32 max-w-full rounded-full sm:h-9 sm:w-48" />
+                <Skeleton className="h-8 w-44 max-w-full rounded-full sm:h-9 sm:w-60" />
+              </div>
+              <Skeleton className="h-5 w-full max-w-md" />
+            </div>
+          </div>
+          {/* The install button sits right from 1280px, as in app-actions.css. */}
+          <div className="flex min-[1280px]:justify-end">
+            <Skeleton className="h-12 w-full rounded-md sm:w-44" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-[1fr_280px] md:gap-8">
+        <div className="space-y-3">
+          <Skeleton className="mb-4 h-7 w-40" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-5/6" />
+          <Skeleton className="h-4 w-2/3" />
+        </div>
+        <div className="space-y-4">
+          <Skeleton className="h-7 w-32" />
+          {INFORMATION_ROWS.map((row) => (
+            <div key={row} className="flex items-center justify-between gap-4">
+              <Skeleton className="h-5 w-20" />
+              <Skeleton className="h-5 w-24" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default () => {
@@ -76,7 +140,7 @@ export default () => {
   const { userSettings } = useAppContext();
 
   if (getApp.isLoading) {
-    return <PageLoadingSpinner />;
+    return <AppDetailsSkeleton />;
   }
 
   if (getApp.isError || !getApp.data) {

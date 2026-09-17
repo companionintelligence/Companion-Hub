@@ -13,6 +13,16 @@
 
 @import '@companionintelligence/tokens/globals.css';
 
+/*
+ * Short desktop windows. The window opens 800px tall and can be dragged down to 600px
+ * (tauri.conf.json); the Hub startup screens tighten their frame as it shrinks, at the same
+ * breakpoints as the desktop bootstrap page (packages/desktop/bootstrap/bootstrap.css).
+ * `compact-window` is declared last so its rules win where both apply.
+ */
+@custom-variant short-window (@media (max-height: 820px));
+@custom-variant tight-window (@media (max-height: 760px));
+@custom-variant compact-window (@media (max-height: 680px));
+
 @theme inline {
   /* Hub radius scale — sm/md/lg only; xl+ aliases map to lg for legacy classes */
   --radius-sm: 4px;
@@ -53,6 +63,81 @@ html.ci-mobile {
   html {
     scroll-padding-top: calc(var(--header-offset) + 0.5rem);
   }
+
+  /*
+   * The tokens package styles scrollbars twice: the standard scrollbar-width /
+   * scrollbar-color, and ::-webkit-scrollbar rules (--accent thumb on a --muted
+   * track). Chromium and current WebKit let the standard properties win, which
+   * draws a thin native scrollbar: with arrow buttons in Chromium, and as a GTK
+   * overlay scrollbar in the Linux desktop app. Where the webkit pseudo-elements
+   * exist, reset the standard properties so the tokens' styling applies; Firefox
+   * keeps the standard ones and has no buttons.
+   */
+  @supports selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
+  }
+
+  *::-webkit-scrollbar-button {
+    display: none;
+  }
+
+  /* Pointer anywhere on the scrollbar strip (see lib/scrollbar-hover.ts): show a
+     faded thumb so it can be found; hovering the thumb itself goes full --primary. */
+  [data-scrollbar-hover] {
+    /* WebKit only restyles a custom scrollbar when the element's own style changes;
+       without a declaration here the thumb keeps its old colour in the desktop app. */
+    --scrollbar-hover: 1;
+  }
+
+  [data-scrollbar-hover]::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--primary) 40%, var(--accent));
+  }
+
+  [data-scrollbar-hover]::-webkit-scrollbar-thumb:hover {
+    background: var(--primary);
+  }
+}
+
+/*
+ * The dashboard's page column. <main> spans the window so page scrollbars sit at
+ * its right edge, and pads its content into the column that
+ * `container mx-auto px-2 sm:px-4` used to make it: the container's width at each
+ * breakpoint, plus that padding. The widths are in rem like the container's, so
+ * they follow the 17px root font size while the breakpoints stay at 16px rems.
+ * --page-gutter is the distance from the window edge to the column.
+ */
+@utility dashboard-column {
+  --page-gutter: 0.5rem;
+  padding-inline: var(--page-gutter);
+
+  @variant sm {
+    --page-gutter: calc(max(0px, (100vw - 40rem) / 2) + 1rem);
+  }
+  @variant md {
+    --page-gutter: calc(max(0px, (100vw - 48rem) / 2) + 1rem);
+  }
+  @variant lg {
+    --page-gutter: calc(max(0px, (100vw - 64rem) / 2) + 1rem);
+  }
+  @variant xl {
+    --page-gutter: calc(max(0px, (100vw - 80rem) / 2) + 1rem);
+  }
+  @variant 2xl {
+    --page-gutter: calc(max(0px, (100vw - 96rem) / 2) + 1rem);
+  }
+}
+
+/*
+ * A page that scrolls in its own pane: stretch the pane over the gutter to the
+ * window's right edge so its scrollbar sits there, and pad the content back into
+ * the column. The value is the pane's own end padding, in spacing units.
+ */
+@utility page-scroller-edge-* {
+  margin-inline-end: calc(var(--page-gutter, 0px) * -1);
+  padding-inline-end: calc(var(--page-gutter, 0px) + var(--spacing) * --value(integer));
 }
 
 @layer utilities {

@@ -301,15 +301,53 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
   const plural = candidates === 1 ? 'candidate' : 'candidates';
   if (timedOut) {
     return (
-      `No pool candidate answered for model "${model}" within its deadline ` +
-      `(${candidates} ${plural} tried; ${CONNECT_TIMEOUT_MS}ms for headers on a streamed request, ` +
-      `${COMPLETION_TIMEOUT_MS}ms for a whole non-streamed completion). This is a deadline, not ` +
-      'proof the nodes are down — a node loading weights or serving a long queue hits it while ' +
-      'remaining healthy. Retry, or raise HUB_POOL_FIRST_BYTE_TIMEOUT_MS / HUB_POOL_COMPLETION_TIMEOUT_MS.'
+      `No pool candidate answered for model "${model}" within its deadline (${candidates} ${plural} tried; ` +
+      `${describeAppliedDeadline(message, undiciHeaderTimeout)}). This is a deadline, not proof the nodes are down — ` +
+      'a node loading weights, reading a long prompt slowly or serving a long queue hits it while remaining healthy.'
     );
   }
   return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
 }
+/**
+ * Which deadline actually expired, in the terms an operator can act on.
+ *
+ * The message used to print the two FIXED settings — "300000ms for headers on a streamed request" —
+ * whatever the request had really been given. Since #1463 a streamed request's header budget is sized
+ * from its prompt, so a 184 KB agent turn gets 922 s, and after #1478 it really waits that long; the
+ * old sentence then told the operator the proxy gave up at 300 s and pointed at a setting that was not
+ * the one that decided it. Measured on fzzy 2026-09-17: cancelled at 922.0 s, message said 300000ms.
+ *
+ * The budget that applied is in the abort reason (`fetchWithConnectTimeout` writes it), so it is read
+ * from there rather than recomputed from settings that may not describe this request.
+ */
+export function describeAppliedDeadline(message: string, undiciHeaderTimeout: boolean): string {
+  const applied = /No (response headers|completion) within (\d+)ms/.exec(message);
+  if (applied) {
+    const ms = Number(applied[2]);
+    if (applied[1] === 'completion') {
+      return (
+        `the last waited ${ms}ms for a whole non-streamed completion — HUB_POOL_COMPLETION_TIMEOUT_MS, ` +
+        'or the prompt-sized budget when that is longer'
+      );
+    }
+    if (ms > CONNECT_TIMEOUT_MS) {
+      return (
+        `the last waited ${ms}ms for response headers — a budget sized from the prompt at a floor of ` +
+        `${MIN_PREFILL_TOKENS_PER_SEC} tok/s (HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC), so a node that cannot read ` +
+        'this prompt that fast is treated as failed and the work can move to a faster one'
+      );
+    }
+    return `the last waited ${ms}ms for response headers — HUB_POOL_FIRST_BYTE_TIMEOUT_MS`;
+  }
+  if (undiciHeaderTimeout) {
+    return (
+      "Node's fetch stopped waiting for response headers at its own 300000ms limit (undici headersTimeout) " +
+      "because the pool's uncapped dispatcher is not installed — pool budgets above that cannot take effect"
+    );
+  }
+  return 'the request was aborted before any response headers arrived';
+}
+
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'upgrade']);
 
 /**

@@ -60,13 +60,23 @@ cask "companion-hub" do
 
   app "Companion Hub.app"
 
+  # The desktop keeps its data in Application Support/companion-hub and its Cloudflare
+  # tunnel token in Application Support/tunnel, beside the data folder. "tunnel" is a
+  # generic name, so zap trashes only the files the Hub writes there and removes the
+  # folder (and the empty certs folder the Hub creates) only when nothing else is left.
   zap trash: [
-    "~/Library/Application Support/computer.ci.app.hub",
-    "~/Library/Caches/computer.ci.app.hub",
-    "~/Library/Preferences/computer.ci.app.hub.plist",
-    "~/Library/Saved Application State/computer.ci.app.hub.savedState",
-    "~/Library/WebKit/computer.ci.app.hub",
-  ]
+        "~/Library/Application Support/companion-hub",
+        "~/Library/Application Support/computer.ci.app.hub",
+        "~/Library/Application Support/tunnel/.user-cleared-token",
+        "~/Library/Application Support/tunnel/leftover.json",
+        "~/Library/Application Support/tunnel/registration.json",
+        "~/Library/Application Support/tunnel/token",
+        "~/Library/Caches/computer.ci.app.hub",
+        "~/Library/Preferences/computer.ci.app.hub.plist",
+        "~/Library/Saved Application State/computer.ci.app.hub.savedState",
+        "~/Library/WebKit/computer.ci.app.hub",
+      ],
+      rmdir: "~/Library/Application Support/tunnel"
 end
 RUBY
 

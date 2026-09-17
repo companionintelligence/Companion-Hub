@@ -11,6 +11,7 @@ commands.allow = [
   "check_hub_status",
   "discover_hubs",
   "start_hub_command",
+  "restart_hub_command",
   "is_stack_dev_mode_command",
   "check_docker_available",
   "check_docker_access_command",
