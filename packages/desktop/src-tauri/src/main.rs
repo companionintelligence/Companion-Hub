@@ -566,10 +566,17 @@ pub fn run() {
             // macOS: config has decorations:true + titleBarStyle:Overlay which gives
             // native traffic lights over the WebView content. Perfect.
             //
-            // Windows/Linux: titleBarStyle:Overlay is macOS-only, and native decorations
+            // Windows: titleBarStyle:Overlay is macOS-only, and native decorations
             // look wrong with our custom titlebar. Turn decorations off at runtime so
             // the custom HTML titlebar takes over.
-            #[cfg(not(target_os = "macos"))]
+            //
+            // Linux: tauri.linux.conf.json creates the window undecorated and hidden
+            // instead, and it is shown below. GTK documents decoration changes on a
+            // window that is already shown as unreliable, and turning them off here
+            // (after tao had shown the window with its Wayland header bar) left a
+            // blank strip about the height of that header bar along the bottom of the
+            // window on GNOME Wayland.
+            #[cfg(target_os = "windows")]
             {
                 let _ = window.set_decorations(false);
             }
@@ -606,6 +613,13 @@ pub fn run() {
                         let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
                     }
                 }
+            }
+
+            // Linux (and every other target that reads tauri.linux.conf.json) creates the
+            // window hidden, so GTK first lays it out undecorated and at the restored size.
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                let _ = window.show();
             }
 
             // Build system tray (also registers close-to-hide handler)
@@ -1439,6 +1453,29 @@ mod tests {
             Some(value) => unsafe { std::env::set_var(STACK_DEV_ENV_PATH_ENV, value) },
             None => unsafe { std::env::remove_var(STACK_DEV_ENV_PATH_ENV) },
         }
+    }
+
+    /// Tauri merges tauri.linux.conf.json into tauri.conf.json as a JSON Merge Patch,
+    /// which replaces `app.windows` wholesale. Any setting added to the base window
+    /// must be repeated for Linux, where only the window chrome differs.
+    #[test]
+    fn linux_window_config_matches_base_apart_from_chrome() {
+        let base: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json");
+        let linux: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.linux.conf.json"))
+                .expect("tauri.linux.conf.json");
+
+        let mut expected = base["app"]["windows"].clone();
+        let main_window = expected[0].as_object_mut().expect("base main window");
+        // The macOS titlebar overlay settings do not apply on Linux.
+        main_window.remove("titleBarStyle");
+        main_window.remove("hiddenTitle");
+        // Created undecorated and hidden; setup shows it after restoring geometry.
+        main_window.insert("decorations".into(), serde_json::json!(false));
+        main_window.insert("visible".into(), serde_json::json!(false));
+
+        assert_eq!(linux["app"]["windows"], expected);
     }
 }
 
