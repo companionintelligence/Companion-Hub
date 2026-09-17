@@ -17,6 +17,7 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  MIN_POOL_MAX_PROMPT_TOKENS,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
@@ -75,7 +76,7 @@ function capabilitiesWithModel(model: string, overrides: Partial<PoolPeerCapabil
 function peerServing(
   id: string,
   model: string,
-  options: { inFlightRequests?: number; hardwareTier?: string; lastSeenAt?: string; gpuPressure?: unknown } = {},
+  options: { inFlightRequests?: number; hardwareTier?: string; lastSeenAt?: string; gpuPressure?: unknown; maxPromptTokens?: number } = {},
 ): HubPoolPeer {
   return mockPeer({
     id,
@@ -84,6 +85,7 @@ function peerServing(
     lastCapabilities: capabilitiesWithModel(model, {
       inFlightRequests: options.inFlightRequests,
       ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
+      ...('maxPromptTokens' in options ? { maxPromptTokens: options.maxPromptTokens } : {}),
       // `unknown`, not `number`: the whole point of the peerPressure clamp is that this arrives as
       // free-form jsonb a paired peer controls, so the hostile cases have to be expressible here.
       ...('gpuPressure' in options ? { gpuPressure: options.gpuPressure as number } : {}),
@@ -2358,6 +2360,44 @@ describe('PoolProxyService', () => {
         // A metadata lookup is not a turn: no routing-log row, and no queue depth left behind.
         expect(routingLog.list()).toHaveLength(0);
         expect(loadService.get('peer-idle')).toBe(0);
+      });
+
+      // #1480 gave every node a prompt ceiling and made `rankCandidates` demote a node whose ceiling
+      // is under the request's estimate. A ceiling is a statement about how long a TURN a node will
+      // prefill, and this lookup is not a turn — the peer answers it from metadata already on disk,
+      // in under 0.3 s on every node measured, whatever the body says.
+      //
+      // Ollama's `/api/show` accepts `template` and `system` alongside the model name, so a caller
+      // that overrides either sends a body big enough to cross a ceiling. Measured against one, the
+      // node best placed to answer instantly would be walked past over a number describing work it
+      // is not being asked to do. `peer-careful` sits at MIN_POOL_MAX_PROMPT_TOKENS, the lowest
+      // ceiling a peer can advertise (anything lower is clamped to "no ceiling"), and the body below
+      // is over it — so this fails the moment any ceiling logic reaches this path.
+      it('exempts the lookup from the prompt ceiling, even when the show body is over it', async () => {
+        const withCatalog = serviceWithCatalog();
+        localHas('nomic-embed-text:latest');
+        // Idle, so the ranker puts it first; `peer-spare` is busier and carries no ceiling at all,
+        // which is what makes a demotion observable rather than an `overridden` no-op that moves nothing.
+        peersAre(
+          peerServing('peer-careful', 'qwen3.6:27b', { inFlightRequests: 0, maxPromptTokens: MIN_POOL_MAX_PROMPT_TOKENS }),
+          peerServing('peer-spare', 'qwen3.6:27b', { inFlightRequests: 2 }),
+        );
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async (url) =>
+          String(url).includes('tailxyz.ts.net')
+            ? new Response(JSON.stringify({ details: { parameter_size: '27B' } }), { status: 200 })
+            : new Response('model not found', { status: 404 }),
+        );
+        const res = createMockResponse();
+        // ~1.5k estimated tokens, comfortably over the 1024 ceiling above.
+        const system = 'x'.repeat(6_000);
+
+        await withCatalog.proxyLocalOnlyRequest('/api/show', 'POST', { model: AUTO_MODEL, system }, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(headersSetOn(res)[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe('peer-careful.tailxyz.ts.net');
+        // The spare was never needed: the ceiling did not push the lookup down the list.
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('peer-spare'))).toHaveLength(0);
       });
 
       it('gives the same 502 as before when every peer holding the model 404s, as a build without local/api/show does', async () => {
