@@ -27,8 +27,8 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={false} allowAutoThemes={false} />
       <div
-        className="flex h-full flex-1 flex-col overflow-y-auto px-2 no-scrollbar container mx-auto sm:px-4"
-        style={{ paddingTop: 'calc(var(--header-offset) + 0.5rem)' }}
+        className="flex h-full flex-1 flex-col overflow-y-auto px-2 container mx-auto sm:px-4"
+        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem' }}
       >
         <div className="rounded-lg border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
@@ -114,8 +114,8 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
       <main
         ref={mainRef}
-        className="relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto px-2 no-scrollbar container mx-auto sm:px-4"
-        style={{ paddingTop: 'calc(var(--header-offset) + 0.5rem)' }}
+        className="relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto px-2 container mx-auto sm:px-4"
+        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem' }}
       >
         <div className="mb-1 flex shrink-0 flex-col gap-2 empty:hidden">
           {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}

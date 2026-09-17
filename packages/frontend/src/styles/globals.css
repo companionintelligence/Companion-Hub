@@ -63,6 +63,42 @@ html.ci-mobile {
   html {
     scroll-padding-top: calc(var(--header-offset) + 0.5rem);
   }
+
+  /*
+   * The tokens package styles scrollbars twice: the standard scrollbar-width /
+   * scrollbar-color, and ::-webkit-scrollbar rules (--accent thumb on a --muted
+   * track). Chromium and current WebKit let the standard properties win, which
+   * draws a thin native scrollbar: with arrow buttons in Chromium, and as a GTK
+   * overlay scrollbar in the Linux desktop app. Where the webkit pseudo-elements
+   * exist, reset the standard properties so the tokens' styling applies; Firefox
+   * keeps the standard ones and has no buttons.
+   */
+  @supports selector(::-webkit-scrollbar) {
+    * {
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
+  }
+
+  *::-webkit-scrollbar-button {
+    display: none;
+  }
+
+  /* Pointer anywhere on the scrollbar strip (see lib/scrollbar-hover.ts): show a
+     faded thumb so it can be found; hovering the thumb itself goes full --primary. */
+  [data-scrollbar-hover] {
+    /* WebKit only restyles a custom scrollbar when the element's own style changes;
+       without a declaration here the thumb keeps its old colour in the desktop app. */
+    --scrollbar-hover: 1;
+  }
+
+  [data-scrollbar-hover]::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--primary) 40%, var(--accent));
+  }
+
+  [data-scrollbar-hover]::-webkit-scrollbar-thumb:hover {
+    background: var(--primary);
+  }
 }
 
 @layer utilities {

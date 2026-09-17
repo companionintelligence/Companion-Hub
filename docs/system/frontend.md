@@ -23,7 +23,7 @@ packages/frontend/
 
 ## Dashboard scroll
 
-Authenticated pages never scroll the window. The dashboard layout's page wrapper is `flex-1 min-h-0`, so a page gets exactly the height below the header and banners. Keep the `min-h-0`: without it the wrapper grows to fit its content, every page's own scroller stops scrolling, and `<main>` (which hides its scrollbar) scrolls everything instead, including the store sidebar.
+Authenticated pages never scroll the window. `<main>` starts below the fixed header (a margin, not padding, so the header never covers its scrollbar), and its page wrapper is `flex-1 min-h-0`, so a page gets exactly the height below the header and banners. Keep the `min-h-0`: without it the wrapper grows to fit its content, every page's own scroller stops scrolling, and `<main>` scrolls everything instead, including the store sidebar.
 
 - A page that has its own scroller (the store pane, Home, Settings, the custom app pages) marks it `data-page-scroller="<name>"` and makes it `relative`. Without `relative`, absolutely positioned descendants such as Radix's hidden form inputs are placed against `<main>`, overflow it, and make it scroll as well.
 - A page without its own scroller (app details under `/apps`, Resource Monitor) scrolls `<main>`.
@@ -35,6 +35,8 @@ Authenticated pages never scroll the window. The dashboard layout's page wrapper
 - A same-URL REPLACE (pages syncing their query) leaves the scroll alone.
 
 Offsets are in memory, so a reload starts at the top.
+
+Scrollbars use the tokens package's `::-webkit-scrollbar` styling: an `--accent` thumb on a `--muted` track, with no arrow buttons. `src/styles/globals.css` resets the tokens' `scrollbar-width` / `scrollbar-color` where the webkit pseudo-elements exist. Otherwise Chromium draws a thin native scrollbar with arrows, and WebKitGTK (the Linux desktop app) draws a GTK overlay scrollbar. `src/lib/scrollbar-hover.ts` marks the scroller whose scrollbar is under the pointer (`data-scrollbar-hover`), so the thumb shows faded while the pointer is anywhere on the track. The same rule sets a custom property on the element, because WebKit only repaints a custom scrollbar when the element's own style changes.
 
 ## Marketplace compatibility disclosure
 

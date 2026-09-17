@@ -76,3 +76,16 @@ describe('DashboardLayout page wrapper', () => {
     expect(screen.getByRole('heading', { name: 'Page' }).parentElement).toHaveAttribute('data-page-key', '/store');
   });
 });
+
+describe('DashboardLayout <main>', () => {
+  it('shows its scrollbar and starts below the fixed header, so nothing covers the scrollbar', () => {
+    renderAt('/apps/ci-marketplace/immich');
+
+    // Pages without their own pane (app details under /apps, Resource Monitor)
+    // scroll <main>. With the header offset as padding, the header sat over the
+    // top of the scrollbar and hid the thumb at the top of the page.
+    const main = screen.getByRole('main');
+    expect(main).not.toHaveClass('no-scrollbar');
+    expect(main).toHaveStyle({ marginTop: 'var(--header-offset)' });
+  });
+});
