@@ -5,6 +5,14 @@ mod commands;
 mod discovery;
 pub mod docker_engine;
 mod error_reporting;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+mod gtk_resize_edges;
 pub mod hub_env;
 pub mod hub_manager;
 mod hub_names;
@@ -613,6 +621,22 @@ pub fn run() {
                         let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
                     }
                 }
+            }
+
+            // An undecorated GTK window has no resize borders, and the webview covering it
+            // takes the pointer events that would show tao's resize cursors. Show them
+            // along the edges from the webview instead.
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
+            {
+                let _ = window.with_webview(|webview| {
+                    gtk_resize_edges::install(&webview.inner());
+                });
             }
 
             // Linux (and every other target that reads tauri.linux.conf.json) creates the
