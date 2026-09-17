@@ -108,10 +108,19 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     struct StartGuard;
     impl Drop for StartGuard {
         fn drop(&mut self) {
+            START_RECREATE_PENDING.store(false, Ordering::SeqCst);
             START_IN_PROGRESS.store(false, Ordering::SeqCst);
         }
     }
     let _guard = StartGuard;
+
+    // Startup progress compares container exit times against this, and re-decides whether
+    // image downloads count toward the percentage.
+    START_BEGAN_AT_MS.store(
+        u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0),
+        Ordering::SeqCst,
+    );
+    START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
 
     // Clear sticky failure only once this call owns the start lock — UI can show Starting.
     clear_start_failed(data_dir);
@@ -277,6 +286,7 @@ fn start_hub_inner(
     let hash_path = data_dir.join(".config-hash");
     let saved_hash = std::fs::read_to_string(&hash_path).ok();
     let should_refresh_stack = env_changed || saved_hash.as_deref() != Some(config_hash.as_str());
+    START_RECREATE_PENDING.store(should_refresh_stack, Ordering::SeqCst);
     if should_refresh_stack {
         let _ = append_desktop_log_for(
             data_dir,
@@ -452,6 +462,7 @@ fn start_hub_inner(
                 format!("docker compose up -d succeeded. {}", combined_output)
             };
             let _ = append_desktop_log_for(data_dir, "hub.start", &compose_message);
+            START_RECREATE_PENDING.store(false, Ordering::SeqCst);
             // Persist after compose up (even if health check fails later) so retries
             // and subsequent launches do not repeatedly pull/recreate unchanged stacks.
             persist_config_hash(data_dir, compose_path, env_path);
@@ -721,6 +732,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     if !stack_dev_mode_enabled() {
         mark_user_stopped(&data_dir);
     }
+    START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
 
     // If Docker is not available there are no containers to tear down.
     // Return success immediately rather than letting `docker compose down`
