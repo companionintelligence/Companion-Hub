@@ -94,6 +94,48 @@ describe('RestoreAppsPage', () => {
     expect(screen.getByText('nextcloud')).toBeInTheDocument();
   });
 
+  /*
+   * The Hub restores on its own after pairing, so the restore is often done before this page opens.
+   * Moving straight on skipped the step that marks this person's onboarding done.
+   */
+  it('finishes a restore the Hub already ran, then continues to the dashboard', async () => {
+    getRehydrateStatus.mockResolvedValue(sdkOk({ completed: true, restoreIntent: true }));
+    executeRehydrate.mockResolvedValue(
+      sdkOk({
+        success: true,
+        message: 'Rehydration already completed for this registration epoch',
+        alreadyCompleted: true,
+        plan: { portalAppCount: 0, items: [] },
+        queued: ['wordpress:ci-marketplace'],
+        started: [],
+        skipped: [],
+      }),
+    );
+    const toast = (await import('react-hot-toast')).default;
+
+    await act(async () => {
+      render(<RestoreAppsPage />);
+    });
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
+    expect(executeRehydrate).toHaveBeenCalledWith({ body: { source: 'restore' } });
+    expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBeNull();
+    // A finished restore's plan is only for show; an empty one says nothing about the account.
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('still continues to the dashboard when finishing an already-run restore fails', async () => {
+    getRehydrateStatus.mockResolvedValue(sdkOk({ completed: true, restoreIntent: true }));
+    executeRehydrate.mockRejectedValue(new Error('offline'));
+
+    await act(async () => {
+      render(<RestoreAppsPage />);
+    });
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/home', { replace: true }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('redirects home when drift choice is not restore', async () => {
     sessionStorage.setItem('ci-hub-registration-drift-choice', 'fresh');
     getRehydrateStatus.mockResolvedValue(sdkOk({ completed: false, restoreIntent: false }));

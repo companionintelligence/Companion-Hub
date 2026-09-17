@@ -26,6 +26,7 @@ import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
 import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
+import { QUEUE_UNAVAILABLE_CODE } from '../queue/queue.constants';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppOperationRegistry, type CancellabilityTier, type OperationCommand } from './app-operation-registry';
 import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
@@ -864,6 +865,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
+    this.refuseWhileQueueUnavailable(appUrn, 'start');
     await this.appRepository.updateAppById(app.id, { status: 'starting' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'starting' });
 
@@ -924,7 +926,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorDetail,
             settingsPath,
             failureOutcome: {
-              status: 'stopped',
+              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
               event: 'start_error',
               notifyEvent: 'start_error',
               failurePhase: 'start',
@@ -1514,6 +1516,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return { requestId: crypto.randomUUID() };
     }
 
+    this.refuseWhileQueueUnavailable(appUrn, 'stop');
     await this.appRepository.updateAppById(app.id, { status: 'stopping' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopping' });
 
@@ -1562,7 +1565,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorDetail,
             settingsPath,
             failureOutcome: {
-              status: 'running',
+              status: this.statusAfterFailedCommand(errorCode, app.status, 'running'),
               event: 'stop_error',
               notifyEvent: 'stop_error',
               failurePhase: 'stop',
@@ -1654,6 +1657,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
+    this.refuseWhileQueueUnavailable(appUrn, 'restart');
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
 
@@ -1690,7 +1694,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             errorDetail,
             settingsPath,
             failureOutcome: {
-              status: 'stopped',
+              status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
               event: 'restart_error',
               notifyEvent: 'restart_error',
               failurePhase: 'restart',
@@ -1781,7 +1785,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorDetail,
       settingsPath,
       failureOutcome: {
-        status: 'stopped',
+        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
         event: 'start_error',
         notifyEvent: 'start_error',
         failurePhase: 'start',
@@ -1851,7 +1855,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       errorDetail,
       settingsPath,
       failureOutcome: {
-        status: 'stopped',
+        status: this.statusAfterFailedCommand(errorCode, app.status, 'stopped'),
         event: 'restart_error',
         notifyEvent: 'restart_error',
         failurePhase: 'restart',
@@ -2674,7 +2678,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             return;
           }
           this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
-          return this.restartApp({ appUrn, actor: { kind: 'system', reason: 'inference-env-refresh' } });
+          // Awaited so a refused restart (the queue is down) is logged here for this app instead of rejecting restartAiApps as a whole.
+          return await this.restartApp({ appUrn, actor: { kind: 'system', reason: 'inference-env-refresh' } });
         } catch (e) {
           this.logger.error(`Failed to restart AI app ${app.id}`, e);
         }
@@ -2693,6 +2698,42 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
   private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string): void {
     this.errorReportingService?.reportAppFailure({ appUrn, phase, message, errorCode });
+  }
+
+  /**
+   * Refuse a start, stop, or restart before recording anything for it while the
+   * queue cannot take the command. On core-4 (2026-09-17) a restart sent with
+   * RabbitMQ down returned 201, the publish failed at once, and the app was
+   * marked `stopped` although no docker action ran and both containers kept
+   * running. A 503 tells the caller the command never started.
+   */
+  private refuseWhileQueueUnavailable(appUrn: AppUrn, command: 'start' | 'stop' | 'restart'): void {
+    const reason = this.appEventsQueue.unavailableReason();
+    if (reason === undefined) {
+      return;
+    }
+
+    this.logger.warn(`Refusing to ${command} ${appUrn}: ${reason}`);
+    throw new TranslatableError('APP_ERROR_QUEUE_UNAVAILABLE', { command }, HttpStatus.SERVICE_UNAVAILABLE);
+  }
+
+  /**
+   * The status a failed start, stop, or restart settles on. A command the queue
+   * never took ran no docker action, so the app is still in the status it had
+   * before; any other failure keeps the status that failure implies. The readiness
+   * gate cannot catch every such failure: a connection flagged ready whose
+   * channels are dead (core-14, 2026-09-17) fails the publish with no channel opened.
+   *
+   * Only `running` and `stopped` are restored. A transitional status belongs to the
+   * operation this command just replaced in the registry, whose completion is now
+   * dropped as superseded, so restoring `backing_up` (a backup resuming its app) or
+   * `restarting` (a public-route repair) would leave a spinner nothing settles. The
+   * status sync skips transitional rows for its grace period, and it runs on the
+   * queue that just failed.
+   */
+  private statusAfterFailedCommand(errorCode: string | undefined, statusBefore: AppStatus, statusOnFailure: AppStatus): AppStatus {
+    const settled = statusBefore === 'running' || statusBefore === 'stopped';
+    return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
   }
 
   private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {

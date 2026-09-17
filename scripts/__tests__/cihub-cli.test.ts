@@ -43,6 +43,7 @@ import {
   upsertEnvVar,
 } from '../cihub-cli';
 import { setTailscalePersistedStateProbeForTests, tailscaledStateLooksLoggedIn } from '../lib/cli-compose-env';
+import { parsePromptCeilingArg } from '../lib/cli-pool';
 
 /**
  * Pool HTTP is stubbed at the `hub-pool-cli` boundary so these tests exercise the parts that live in
@@ -55,6 +56,7 @@ const poolApi = {
   setPoolEnabledSetting: vi.fn(),
   setPoolPeerEnabled: vi.fn(),
   unpairPoolPeer: vi.fn(),
+  setPoolMaxPromptTokens: vi.fn(),
 };
 let poolApiKey: string | undefined = 'device-key';
 
@@ -65,6 +67,7 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
   setPoolEnabledSetting: (...args: unknown[]) => poolApi.setPoolEnabledSetting(...args),
   setPoolPeerEnabled: (...args: unknown[]) => poolApi.setPoolPeerEnabled(...args),
   unpairPoolPeer: (...args: unknown[]) => poolApi.unpairPoolPeer(...args),
+  setPoolMaxPromptTokens: (...args: unknown[]) => poolApi.setPoolMaxPromptTokens(...args),
 }));
 
 vi.mock('../public-web-cli', async (importOriginal) => ({
@@ -1163,6 +1166,11 @@ describe('parsePoolArgs', () => {
     expect(parsePoolArgs(['unpin', 'dev'])).toMatchObject({ subcommand: 'unpin', target: undefined, env: 'dev' });
   });
 
+  it('takes the ceiling value where a peer reference would go, so the env after it still parses', () => {
+    expect(parsePoolArgs(['ceiling', '16000', 'dev', '--yes'])).toMatchObject({ subcommand: 'ceiling', target: '16000', env: 'dev', yes: true });
+    expect(parsePoolArgs(['ceiling', 'clear'])).toMatchObject({ subcommand: 'ceiling', target: 'clear', env: 'local' });
+  });
+
   it('accepts --limit in both forms', () => {
     expect(parsePoolArgs(['log', '--limit', '25']).limit).toBe(25);
     expect(parsePoolArgs(['log', '--limit=25']).limit).toBe(25);
@@ -1184,6 +1192,30 @@ describe('parsePoolArgs', () => {
     exitSpy.mockRestore();
     consoleSpy.mockRestore();
     logSpy.mockRestore();
+  });
+});
+
+describe('parsePromptCeilingArg', () => {
+  it('reads a whole number of tokens within the Hub’s bounds, and `clear` as no ceiling', () => {
+    expect(parsePromptCeilingArg('16000')).toBe(16_000);
+    expect(parsePromptCeilingArg(' 1024 ')).toBe(1024);
+    expect(parsePromptCeilingArg('1048576')).toBe(1_048_576);
+    expect(parsePromptCeilingArg('clear')).toBeNull();
+    expect(parsePromptCeilingArg('CLEAR')).toBeNull();
+  });
+
+  it.each([
+    ['16k'],
+    ['16,000'],
+    ['16000.5'],
+    ['-16000'],
+    ['16'],
+    ['1023'],
+    ['1048577'],
+    [''],
+    [undefined],
+  ])('refuses %s here, before it can become a 400 or a ceiling nobody meant', (raw) => {
+    expect(parsePromptCeilingArg(raw)).toBeUndefined();
   });
 });
 
@@ -1309,6 +1341,80 @@ describe('runPoolCommand', () => {
       runPoolDoctorSection.mockReset().mockResolvedValue(section({ issueCount: 3, failureCount: 0 }));
       await runPoolCommand(['doctor']);
       expect(process.exitCode).toBeUndefined();
+    });
+  });
+
+  describe('pool ceiling', () => {
+    const settingsAfter = (poolMaxPromptTokens: number | null) => ({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+      poolMaxPromptTokens,
+    });
+    const statusWith = (localNode: Record<string, unknown>) => ({ localNode: { nodeFqdn: null, ...localNode } });
+
+    beforeEach(() => {
+      poolApi.setPoolMaxPromptTokens.mockReset();
+    });
+
+    it('PATCHes the ceiling and reports the one now in force', async () => {
+      poolApi.setPoolMaxPromptTokens.mockResolvedValue(settingsAfter(16_000));
+      poolApi.fetchPoolStatus.mockResolvedValue(statusWith({ maxPromptTokens: 16_000, maxPromptTokensSetBy: 'setting' }));
+
+      await runPoolCommand(['ceiling', '16000', '--yes']);
+
+      expect(poolApi.setPoolMaxPromptTokens).toHaveBeenCalledWith('.env.local', 16_000);
+      const text = boxText();
+      expect(text).toContain('Prompt ceiling set');
+      // The one misreading that matters: that a long prompt with nowhere else to go now fails.
+      expect(text).toContain('It is a preference, not a limit');
+    });
+
+    it('clears it with `clear`, sending null rather than omitting the field', async () => {
+      poolApi.setPoolMaxPromptTokens.mockResolvedValue(settingsAfter(null));
+      poolApi.fetchPoolStatus.mockResolvedValue(statusWith({ maxPromptTokens: null, maxPromptTokensSetBy: null }));
+
+      await runPoolCommand(['ceiling', 'clear', '--yes']);
+
+      expect(poolApi.setPoolMaxPromptTokens).toHaveBeenCalledWith('.env.local', null);
+      expect(boxText()).toContain('Prompt ceiling cleared');
+    });
+
+    it('does not report success when the .env override is what routing actually uses', async () => {
+      poolApi.setPoolMaxPromptTokens.mockResolvedValue(settingsAfter(16_000));
+      poolApi.fetchPoolStatus.mockResolvedValue(statusWith({ maxPromptTokens: 8_000, maxPromptTokensSetBy: 'env' }));
+
+      await runPoolCommand(['ceiling', '16000', '--yes']);
+
+      const text = boxText();
+      expect(text).toContain('override in force');
+      expect(text).toContain('HUB_POOL_MAX_PROMPT_TOKENS=8000');
+      expect(text).not.toContain('Prompt ceiling set');
+    });
+
+    it('says a Hub too old to store the ceiling changed nothing, instead of trusting its 200', async () => {
+      // An older Hub's PATCH schema strips the unknown field and answers with its settings as they were.
+      const { poolMaxPromptTokens: _dropped, ...olderSettings } = settingsAfter(null);
+      poolApi.setPoolMaxPromptTokens.mockResolvedValue(olderSettings);
+      poolApi.fetchPoolStatus.mockResolvedValue(statusWith({}));
+
+      await runPoolCommand(['ceiling', '16000', '--yes']);
+
+      expect(boxText()).toContain('predates prompt ceilings');
+    });
+
+    it('refuses a value the Hub would reject, before sending anything', async () => {
+      await expect(runPoolCommand(['ceiling', '16k', '--yes'])).rejects.toThrow('exit');
+
+      expect(poolApi.setPoolMaxPromptTokens).not.toHaveBeenCalled();
+    });
+
+    it('refuses without --yes on a non-interactive terminal, like every other pool state change', async () => {
+      await expect(runPoolCommand(['ceiling', '16000'])).rejects.toThrow('exit');
+
+      expect(poolApi.setPoolMaxPromptTokens).not.toHaveBeenCalled();
     });
   });
 

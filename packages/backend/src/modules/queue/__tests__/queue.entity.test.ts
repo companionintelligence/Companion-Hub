@@ -1,10 +1,11 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
-import type { Connection, RPCClient } from 'rabbitmq-client';
+import { AMQPError, type Connection, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
 import { appEventResultSchema } from '../entities/app-events';
 import { EventPublisher } from '../event.publisher';
+import { QUEUE_UNAVAILABLE_CODE } from '../queue.constants';
 import { Queue } from '../queue.entity';
 
 describe('Queue', () => {
@@ -49,9 +50,83 @@ describe('Queue', () => {
     expect(result).toEqual({
       success: false,
       message: "Queue 'app-events-queue' is unavailable while RabbitMQ is degraded. Last error: socket closed",
+      errorCode: QUEUE_UNAVAILABLE_CODE,
     });
     expect(rpcClient.send).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith("Queue 'app-events-queue' is unavailable while RabbitMQ is degraded. Last error: socket closed");
+  });
+
+  it('names why a publish would be refused, so a caller can refuse before recording anything', () => {
+    const logger = mock<LoggerService>();
+    let ready = false;
+    const queue = new Queue(
+      mock<Connection>(),
+      mock<RPCClient>(),
+      mock<EventPublisher>(),
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+      () => ready,
+      () => ({ status: 'degraded', ready, attempts: 3, lastError: 'getaddrinfo EAI_AGAIN ci-os-hub-queue' }),
+    );
+
+    expect(queue.unavailableReason()).toBe(
+      "Queue 'app-events-queue' is unavailable while RabbitMQ is degraded. Last error: getaddrinfo EAI_AGAIN ci-os-hub-queue",
+    );
+
+    ready = true;
+    expect(queue.unavailableReason()).toBeUndefined();
+  });
+
+  // core-14 (2026-09-17): the factory reported ready while its connection was
+  // closing, so the gate let the publish through and every channel open failed.
+  // No frame was written, so the caller must be able to tell nothing ran.
+  it('marks a publish that could not open a channel as never dispatched', async () => {
+    const logger = mock<LoggerService>();
+    const rpcClient = mock<RPCClient>();
+    const queue = new Queue(
+      mock<Connection>(),
+      rpcClient,
+      mock<EventPublisher>(),
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+
+    rpcClient.send.mockRejectedValue(new Error('channel creation failed; connection is closing') as never);
+
+    const result = await queue.publish({ requestId: 'req-1' });
+
+    expect(result).toEqual({ success: false, message: 'channel creation failed; connection is closing', errorCode: QUEUE_UNAVAILABLE_CODE });
+  });
+
+  it('does not mark an RPC timeout as never dispatched, because the command may still be running', async () => {
+    const logger = mock<LoggerService>();
+    const rpcClient = mock<RPCClient>();
+    const queue = new Queue(
+      mock<Connection>(),
+      rpcClient,
+      mock<EventPublisher>(),
+      'app-events-queue',
+      1,
+      z.object({ requestId: z.string() }),
+      z.object({ success: z.boolean(), message: z.string() }),
+      logger,
+    );
+    // The library marks this constructor internal; it is the error RPCClient.send raises.
+    const RealAMQPError = AMQPError as unknown as new (code: string, message: string) => AMQPError;
+    const timeout = new RealAMQPError('RPC_TIMEOUT', 'RPC response timed out');
+
+    rpcClient.send.mockRejectedValue(timeout as never);
+
+    const result = await queue.publish({ requestId: 'req-1' });
+
+    expect(result).toEqual({ success: false, message: 'RPC response timed out' });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('The queue timed out'));
   });
 
   it('publishes through RPC when the queue connection is ready', async () => {

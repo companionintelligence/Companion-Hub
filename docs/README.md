@@ -40,6 +40,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`security/hub-portal-trust.md`](security/hub-portal-trust.md) | Hub ↔ Portal trust; marketplace needs a paired device key |
 | [`telemetry.md`](telemetry.md) | What Hub reports to Sentry, and the switches that stop it |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
+| [`hub-stack-self-update.md`](hub-stack-self-update.md) | What the Hub self-updater moves and refuses, and how to turn off auto-update on a node |
 | [`fleet-setup.md`](fleet-setup.md) | End-to-end setup: account, devices, operators, tailnet, and pooling — the order to do them in |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |

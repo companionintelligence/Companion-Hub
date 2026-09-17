@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -226,6 +226,99 @@ export function getHubStateDirs(input?: { cwd?: string; homeDir?: string; platfo
   ];
 }
 
+/**
+ * The desktop's tunnel folder: `tunnel` beside the `companion-hub` data folder that
+ * {@link getHubStateDirs} lists (compose mounts `${ROOT_FOLDER_HOST}/../tunnel`).
+ */
+export function getDesktopTunnelDir(input?: { homeDir?: string; platform?: NodeJS.Platform }): string {
+  const homeDir = input?.homeDir ?? homedir();
+  const platform = input?.platform ?? process.platform;
+  const pathLib = platform === 'win32' ? path.win32 : path.posix;
+  const dataHome =
+    platform === 'win32'
+      ? process.env.APPDATA || pathLib.join(homeDir, 'AppData', 'Roaming')
+      : process.env.XDG_DATA_HOME || pathLib.join(homeDir, '.local', 'share');
+  return pathLib.join(dataHome, 'tunnel');
+}
+
+/**
+ * True when `content` is a cloudflared tunnel token: base64 of a JSON object holding the account
+ * tag (a), tunnel id (t) and tunnel secret (s). Missing base64 padding is accepted.
+ */
+export function isCloudflaredTunnelToken(content: string): boolean {
+  const encoded = content.replace(/\s/g, '');
+  // Buffer.from skips characters that are not base64, so reject them before decoding.
+  if (!encoded || encoded.length % 4 === 1 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    return false;
+  }
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && ['a', 't', 's'].every((key) => key in parsed);
+  } catch {
+    return false;
+  }
+}
+
+const TUNNEL_TOKEN_MAX_BYTES = 4096;
+
+function lstatOrNull(targetPath: string) {
+  try {
+    return lstatSync(targetPath, { throwIfNoEntry: false }) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isEmptyRealDir(targetPath: string): boolean {
+  const stat = lstatOrNull(targetPath);
+  if (!stat?.isDirectory()) {
+    return false;
+  }
+  try {
+    return readdirSync(targetPath).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function readRegularFile(targetPath: string, maxBytes = Number.POSITIVE_INFINITY): string | null {
+  const stat = lstatOrNull(targetPath);
+  if (!stat?.isFile() || stat.size > maxBytes) {
+    return null;
+  }
+  try {
+    return readFileSync(targetPath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hub files in a tunnel folder beside a data folder. `tunnel` is a generic name another program
+ * could also use, so this applies the package uninstallers' rules: the token only when it is a
+ * cloudflared token, and the markers only when they carry a tunnelId. Symlinked files are skipped.
+ */
+function hubFilesInTunnelDir(tunnelDir: string, pathLib: typeof path.posix): string[] {
+  const files: string[] = [];
+  const tokenPath = pathLib.join(tunnelDir, 'token');
+  const token = readRegularFile(tokenPath, TUNNEL_TOKEN_MAX_BYTES);
+  if (token !== null && isCloudflaredTunnelToken(token)) {
+    files.push(tokenPath);
+  }
+  for (const marker of ['registration.json', 'leftover.json']) {
+    const markerPath = pathLib.join(tunnelDir, marker);
+    if (readRegularFile(markerPath)?.includes('"tunnelId"')) {
+      files.push(markerPath);
+    }
+  }
+  const clearedMarker = pathLib.join(tunnelDir, '.user-cleared-token');
+  const clearedStat = lstatOrNull(clearedMarker);
+  if (clearedStat && !clearedStat.isDirectory()) {
+    files.push(clearedMarker);
+  }
+  return files;
+}
+
 function isSafeDeletionTarget(targetPath: string, cwd: string, homeDir: string, platform: NodeJS.Platform): boolean {
   return isWithinPath(targetPath, homeDir, platform) || (isWithinPath(cwd, homeDir, platform) && isWithinPath(targetPath, cwd, platform));
 }
@@ -438,21 +531,43 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   const directTargets: CleanupDirTarget[] = [
     { path: pathLib.join(cwd, '.internal'), label: '.internal' },
     { path: pathLib.join(cwd, 'tunnel', 'token'), label: 'tunnel/token' },
+    // The backend's markers beside the token; a leftover registration.json would let a later token start the tunnel.
+    { path: pathLib.join(cwd, 'tunnel', 'registration.json'), label: 'tunnel/registration.json' },
+    { path: pathLib.join(cwd, 'tunnel', 'leftover.json'), label: 'tunnel/leftover.json' },
+    { path: pathLib.join(cwd, 'tunnel', '.user-cleared-token'), label: 'tunnel/.user-cleared-token' },
     { path: pathLib.join(cwd, 'tunnel', 'certs'), label: 'tunnel/certs' },
     ...stateDirs,
   ];
 
+  const removeOptions = {
+    dryRun,
+    cwd,
+    homeDir,
+    platform,
+    logger,
+    exists,
+    removeDir: removeDirImpl,
+    summary,
+  };
+
   for (const target of directTargets) {
-    removeDirectory(target, {
-      dryRun,
-      cwd,
-      homeDir,
-      platform,
-      logger,
-      exists,
-      removeDir: removeDirImpl,
-      summary,
-    });
+    removeDirectory(target, removeOptions);
+  }
+
+  // The desktop data folder removed above keeps its tunnel token beside it, not inside it, so a
+  // reinstall would otherwise reconnect the old tunnel before pairing.
+  const desktopTunnelDir = getDesktopTunnelDir({ homeDir, platform });
+  // Never reach through a symlinked folder: paths below it would resolve somewhere else.
+  if (lstatOrNull(desktopTunnelDir)?.isDirectory()) {
+    for (const filePath of hubFilesInTunnelDir(desktopTunnelDir, pathLib)) {
+      removeDirectory({ path: filePath, label: 'desktop tunnel file' }, removeOptions);
+    }
+    // The backend creates certs/ empty; the folder itself goes only once nothing else is left in it.
+    for (const dirPath of [pathLib.join(desktopTunnelDir, 'certs'), desktopTunnelDir]) {
+      if (!dryRun && isEmptyRealDir(dirPath)) {
+        removeDirectory({ path: dirPath, label: 'empty desktop tunnel dir' }, removeOptions);
+      }
+    }
   }
 
   logger.info('Cleanup complete');

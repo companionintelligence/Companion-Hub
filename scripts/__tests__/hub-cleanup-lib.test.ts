@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
+  getDesktopTunnelDir,
   getHubStateDirs,
+  isCloudflaredTunnelToken,
   isRelatedVolume,
   isWithinPath,
   managedAppProjectsFromLabelLines,
@@ -410,5 +415,178 @@ describe('hub-cleanup-lib', () => {
         process.env.XDG_CACHE_HOME = prevCacheHome;
       }
     }
+  });
+});
+
+/** base64 of {"a": account tag, "t": tunnel id, "s": secret}, the format cloudflared reads; padded so tests can strip the padding. */
+const CLOUDFLARED_TOKEN = (() => {
+  for (let secretBytes = 32; secretBytes < 40; secretBytes++) {
+    const payload = {
+      a: '0123456789abcdef0123456789abcdef',
+      t: '6ff42ae2-765d-4adf-8112-31c55c1551ef',
+      s: Buffer.alloc(secretBytes, 7).toString('base64'),
+    };
+    const token = Buffer.from(JSON.stringify(payload)).toString('base64');
+    if (token.endsWith('=')) return token;
+  }
+  throw new Error('could not build a padded token');
+})();
+
+describe('isCloudflaredTunnelToken', () => {
+  it('accepts a cloudflared token, with or without base64 padding and surrounding whitespace', () => {
+    expect(CLOUDFLARED_TOKEN.endsWith('=')).toBe(true);
+    expect(isCloudflaredTunnelToken(CLOUDFLARED_TOKEN)).toBe(true);
+    expect(isCloudflaredTunnelToken(`${CLOUDFLARED_TOKEN.replace(/=+$/, '')}\r\n`)).toBe(true);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['plain text', 'hello world'],
+    ['base64 of JSON without the token keys', Buffer.from('{"id":"x","name":"y"}').toString('base64')],
+    ['base64 of a JSON array', Buffer.from('["a","t","s"]').toString('base64')],
+    ['a token with characters that are not base64', `${CLOUDFLARED_TOKEN}!`],
+  ])('rejects %s', (_label, content) => {
+    expect(isCloudflaredTunnelToken(content)).toBe(false);
+  });
+});
+
+describe('getDesktopTunnelDir', () => {
+  it('is the tunnel folder beside the desktop data folder', () => {
+    const saved = { XDG_DATA_HOME: process.env.XDG_DATA_HOME, APPDATA: process.env.APPDATA };
+    try {
+      process.env.XDG_DATA_HOME = '/home/dev/.local/share';
+      process.env.APPDATA = 'C:\\Users\\dev\\AppData\\Roaming';
+      expect(getDesktopTunnelDir({ homeDir: '/home/dev', platform: 'linux' })).toBe('/home/dev/.local/share/tunnel');
+      expect(getDesktopTunnelDir({ homeDir: 'C:\\Users\\dev', platform: 'win32' })).toBe('C:\\Users\\dev\\AppData\\Roaming\\tunnel');
+      delete process.env.XDG_DATA_HOME;
+      expect(getDesktopTunnelDir({ homeDir: '/home/dev', platform: 'linux' })).toBe('/home/dev/.local/share/tunnel');
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('runHubCleanup tunnel files', () => {
+  const tempRoots: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tempRoots.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function tempDir(prefix: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    tempRoots.push(dir);
+    return dir;
+  }
+
+  const listDir = (dir: string) => (fs.existsSync(dir) ? fs.readdirSync(dir).sort() : null);
+
+  type TunnelFiles = { token?: string; registration?: string; extraFiles?: string[]; certsFiles?: string[] };
+
+  /** A tunnel folder the way a paired Hub leaves it, with per-test overrides. */
+  function writeTunnelDir(tunnel: string, files: TunnelFiles = {}) {
+    fs.mkdirSync(path.join(tunnel, 'certs'), { recursive: true });
+    fs.writeFileSync(path.join(tunnel, 'token'), files.token ?? CLOUDFLARED_TOKEN);
+    fs.writeFileSync(
+      path.join(tunnel, 'registration.json'),
+      files.registration ?? '{"tunnelId":"6ff42ae2","writtenAt":"2026-09-17T00:00:00.000Z"}\n',
+    );
+    fs.writeFileSync(path.join(tunnel, 'leftover.json'), '{"tunnelId":null,"foundAt":"2026-09-17T00:00:00.000Z"}\n');
+    fs.writeFileSync(path.join(tunnel, '.user-cleared-token'), '1');
+    for (const name of files.certsFiles ?? []) fs.writeFileSync(path.join(tunnel, 'certs', name), 'PEM');
+    for (const name of files.extraFiles ?? []) fs.writeFileSync(path.join(tunnel, name), 'not the Hub');
+  }
+
+  /** A home holding a repo checkout and the desktop's data folder, each with its tunnel folder. */
+  function makeHome(desktopTunnel: TunnelFiles = {}) {
+    const home = tempDir('ci-hub-cleanup-home-');
+    const share = path.join(home, '.local', 'share');
+    fs.mkdirSync(path.join(share, 'companion-hub', 'state'), { recursive: true });
+    fs.mkdirSync(path.join(share, 'other-app'), { recursive: true });
+    fs.writeFileSync(path.join(share, 'other-app', 'data'), 'keep');
+    writeTunnelDir(path.join(share, 'tunnel'), desktopTunnel);
+    const repo = path.join(home, 'ci-hub');
+    writeTunnelDir(path.join(repo, 'tunnel'), { token: 'dev-token', extraFiles: ['README.md'] });
+    return { home, share, repo, desktopTunnel: path.join(share, 'tunnel'), repoTunnel: path.join(repo, 'tunnel') };
+  }
+
+  function cleanup(home: string, repo: string, dryRun = false) {
+    const saved = {
+      XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
+    };
+    process.env.XDG_DATA_HOME = path.join(home, '.local', 'share');
+    process.env.XDG_CONFIG_HOME = path.join(home, '.config');
+    process.env.XDG_CACHE_HOME = path.join(home, '.cache');
+    try {
+      return runHubCleanup({
+        cwd: repo,
+        homeDir: home,
+        platform: 'linux',
+        dryRun,
+        // Nothing reaches a shell or Docker, and nothing outside the temp home is deleted.
+        execCommand: () => ({ ok: true, stdout: '' }),
+        removeDir: (target) => {
+          if (!isWithinPath(target, home, 'linux')) throw new Error(`refusing to remove ${target}`);
+          fs.rmSync(target, { recursive: true, force: true });
+        },
+        logger: { info: () => {}, warn: () => {}, error: () => {} },
+      });
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  it('removes the token and the backend markers from the repo tunnel folder', () => {
+    const { home, repo, repoTunnel } = makeHome();
+    const summary = cleanup(home, repo);
+    expect(summary.failedDirs).toBe(0);
+    expect(listDir(repoTunnel)).toEqual(['README.md']);
+  });
+
+  it('removes the Hub files beside the desktop data folder, then the empty folder', () => {
+    const { home, share, repo, desktopTunnel } = makeHome();
+    const summary = cleanup(home, repo);
+    expect(summary.failedDirs).toBe(0);
+    expect(fs.existsSync(path.join(share, 'companion-hub'))).toBe(false);
+    expect(fs.existsSync(desktopTunnel)).toBe(false);
+    expect(listDir(path.join(share, 'other-app'))).toEqual(['data']);
+  });
+
+  it('keeps a desktop tunnel folder whose files are not the Hub files', () => {
+    const { home, repo, desktopTunnel } = makeHome({
+      token: 'hello world',
+      registration: '{"id":1}',
+      extraFiles: ['notes.txt'],
+      certsFiles: ['custom-ca.pem'],
+    });
+    cleanup(home, repo);
+    expect(listDir(desktopTunnel)).toEqual(['certs', 'notes.txt', 'registration.json', 'token']);
+    expect(listDir(path.join(desktopTunnel, 'certs'))).toEqual(['custom-ca.pem']);
+  });
+
+  it('does not follow a symlinked desktop tunnel folder', () => {
+    const { home, repo, desktopTunnel } = makeHome();
+    fs.rmSync(desktopTunnel, { recursive: true });
+    const target = path.join(tempDir('ci-hub-cleanup-elsewhere-'), 'tunnel');
+    writeTunnelDir(target);
+    fs.symlinkSync(target, desktopTunnel);
+    cleanup(home, repo);
+    expect(listDir(target)).toEqual(['.user-cleared-token', 'certs', 'leftover.json', 'registration.json', 'token']);
+  });
+
+  it('leaves the desktop tunnel files in place on a dry run', () => {
+    const { home, repo, desktopTunnel } = makeHome();
+    cleanup(home, repo, true);
+    expect(listDir(desktopTunnel)).toEqual(['.user-cleared-token', 'certs', 'leftover.json', 'registration.json', 'token']);
   });
 });
