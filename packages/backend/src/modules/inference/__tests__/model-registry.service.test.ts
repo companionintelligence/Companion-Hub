@@ -238,12 +238,13 @@ describe('ModelRegistryService', () => {
           .getRecommendedModelsForHardware('high', profile({ vendor: 'amd', unifiedMemory: true, vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }))
           .filter((m) => m.modality === 'llm');
 
-        // Discrete VRAM: no per-token bandwidth penalty, so the high-intelligence dense 27B is the default.
-        expect(topLlm(discrete)?.id).toBe('qwen3-6-27b');
+        // Discrete VRAM: no per-token bandwidth penalty, so the high-intelligence dense 27B is the default
+        // (Qwen 3.8 27B since the 2026-09-16 Intelligence Index v4.3 refresh; it was Qwen 3.6 27B before).
+        expect(topLlm(discrete)?.id).toBe('qwen3-8-27b');
 
-        // Shared-memory APU: that dense 27B "fits" the budget but is bandwidth-bound, so it is excluded…
+        // Shared-memory APU: the dense 27Bs "fit" the budget but are bandwidth-bound, so they are excluded…
         expect(apu.length).toBeGreaterThan(0);
-        expect(apu.some((m) => m.id === 'qwen3-6-27b')).toBe(false);
+        expect(apu.some((m) => m.id === 'qwen3-8-27b' || m.id === 'qwen3-6-27b')).toBe(false);
         // …and every pick is within the shared-memory active-param cap (MoE like qwen3:30b-a3b qualify).
         for (const m of apu) {
           expect(activeOf(m)).toBeLessThanOrEqual(14);
@@ -257,7 +258,7 @@ describe('ModelRegistryService', () => {
           'high',
           profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', vramMb: 128 * GB, ramMb: 128 * GB, tier: 'high' }),
         );
-        expect(topLlm(apple)?.id).toBe('qwen3-6-27b');
+        expect(topLlm(apple)?.id).toBe('qwen3-8-27b');
       });
 
       it('never lowers the picked model intelligence as the budget grows', () => {

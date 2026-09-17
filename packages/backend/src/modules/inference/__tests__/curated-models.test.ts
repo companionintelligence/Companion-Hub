@@ -11,12 +11,12 @@ describe('curated-models (TOON catalog)', () => {
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
   it('decodes the full catalog (100 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + 8 MTPLX LLMs + 11 mlx-dspark LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(100);
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(104);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(72);
     expect(llms.filter((m) => m.backend === 'mtplx').length).toBe(8);
     expect(llms.filter((m) => m.backend === 'dspark').length).toBe(11);
-    expect(llms.length).toBe(195);
+    expect(llms.length).toBe(199);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -181,12 +181,42 @@ describe('curated-models (TOON catalog)', () => {
   it('carries Artificial Analysis metadata for leaderboard models', () => {
     const llama = byId.get('llama3-3-70b');
     expect(llama?.metadata?.creator).toBe('Meta');
-    expect(llama?.metadata?.intelligenceIndex).toBe(9);
-    expect(llama?.metadata?.perf?.tokensPerSec).toBe(85.1);
+    // Artificial Analysis Intelligence Index v4.3, pulled 2026-09-16 (see the catalog header).
+    expect(llama?.metadata?.intelligenceIndex).toBe(7.7);
+    expect(llama?.metadata?.perf?.tokensPerSec).toBe(86.2);
 
     const gemma = byId.get('gemma4-31b');
     expect(gemma?.metadata?.creator).toBe('Google');
     expect(gemma?.metadata?.capabilities?.vision).toBe(true);
+  });
+
+  it('lists the official MTP builds as separate rows that inherit their base row', () => {
+    // Same q4_K_M weights plus the trained multi-token-prediction head: Ollama's llama-server drafts
+    // from it and rejection-samples, so output is identical and the leaderboard columns are inherited.
+    // Separate rows on purpose (the user sees which build they run), so the ids must NOT share the
+    // quant-suffix shape the recommender collapses.
+    const pairs: Array<[string, string, string]> = [
+      ['qwen3-6-27b-mtp', 'qwen3-6-27b', 'qwen3.6:27b-mtp-q4_K_M'],
+      ['qwen3-6-35b-mtp', 'qwen3-6-35b', 'qwen3.6:35b-a3b-mtp-q4_K_M'],
+      ['qwen3-8-27b-mtp', 'qwen3-8-27b', 'qwen3.8:27b-mtp-q4_K_M'],
+      ['gemma4-26b-mtp', 'gemma4-26b', 'gemma4:26b-a4b-it-mtp-q4_K_M'],
+    ];
+    for (const [mtpId, baseId, tag] of pairs) {
+      const mtp = byId.get(mtpId);
+      const base = byId.get(baseId);
+      expect(mtp, mtpId).toBeDefined();
+      expect(base, baseId).toBeDefined();
+      expect(mtp?.backendModelId).toBe(tag);
+      expect(mtp?.backend).toBe('ollama');
+      expect(mtp?.displayName).toContain('(MTP)');
+      expect(mtp?.parameterScale).toBe(base?.parameterScale);
+      expect(mtp?.activeParameterScale).toBe(base?.activeParameterScale);
+      expect(mtp?.metadata?.intelligenceIndex).toBe(base?.metadata?.intelligenceIndex);
+      expect(mtp?.metadata?.capabilities).toEqual(base?.metadata?.capabilities);
+      expect(mtp?.runtime.contextWindow).toBe(base?.runtime.contextWindow);
+      // The MTP tag is its own download and a little larger; the size column must be the tag's, not the base's.
+      expect(mtp?.requirements.diskMb).toBeGreaterThanOrEqual(base?.requirements.diskMb ?? Number.POSITIVE_INFINITY);
+    }
   });
 
   it('sets creator + capabilities on every LLM, even those off the leaderboard', () => {

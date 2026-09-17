@@ -60,7 +60,7 @@ import type {
 // Verified via a real browser render of the library page and its /tags subpage (not this session's
 // WebFetch summarizer, per the 2026-07-27 fabrication lesson above) — 8k+ downloads, "updated 3 hours
 // ago", single `27b` size at 18GB / 256K context with vision+tools+thinking flags. No Artificial Analysis
-// leaderboard entry exists yet for a model this new, so `intel`/`agentic`/perf columns are left blank.
+// leaderboard entry exists yet for a model this new, so `intel`/perf columns are left blank.
 //
 // 2026-08-24: added the VLLM_MLX_LLM_TOON table below (6 rows) for vLLM-Metal — Apple Silicon Macs
 // now have a real vLLM path via the MLX compute backend (github.com/vllm-project/vllm-metal), and
@@ -102,6 +102,52 @@ import type {
 // (moondream's context is 2048) long superseded by the gemma3 and qwen3-vl rows. All four live on one
 // node — the fleet's scratch box — which is what an ad-hoc pull looks like, not a fleet standard.
 //
+// 2026-09-16: two changes, both mechanical and both re-derivable.
+//
+// (a) `intel`/`tps`/`ttft`/`e2e` re-pulled for every Ollama row from the Artificial Analysis open-weights
+// leaderboard as it stood on 2026-09-16 — Intelligence Index **v4.3**, which is a different scale from
+// the numbers this table carried before (v4.3 rebased hard: qwen3-6-27b 37.1 → 21.9, gpt-oss-120b 24 →
+// 12.3, glm-5-2 51 → 34). The old values were left over from at least two earlier index versions, and a
+// mixed-scale column is worse than a blank one, because `compareLlmCandidates` ranks on `intel` across
+// rows. So the whole column moved together; do not patch single rows from a later leaderboard without
+// re-pulling all of them. Source: the model records embedded in any artificialanalysis.ai/models/<slug>
+// page (the leaderboard table page only renders a subset of columns) — fields `intelligenceIndex`,
+// `timescaleData.medianOutputSpeed`, `timescaleData.medianTimeToFirstChunk`,
+// `endToEndResponseTime.total`. Mapping rule: the AA entry whose reasoning mode matches the row's
+// `reason` flag, and AA's own canonical slug where a model has effort variants (`qwen3-8-27b` = xhigh,
+// `gpt-oss-120b` = high, `glm-5-2` = max). Values AA itself marks estimated (`intelligenceIndexIsEstimated`,
+// shown with `*` on the site) are included — they are AA's numbers, not ours; 51 of the 76 refreshed rows
+// are in that state, mostly deprecated-on-AA models. Judgment calls in the mapping, recorded so they can be
+// overturned: `deepseek-r1-8b` → AA "DeepSeek R1 0528 Qwen3 8B" (Ollama re-pointed that tag in May 2025);
+// `mistral-small-24b` → "Mistral Small 3"; `mistral-large-123b` → "Mistral Large 2 (Nov '24)";
+// `devstral-24b` → "Devstral Small (Jul '25)". Left blank because AA has no entry (or only an ambiguous
+// one): nemotron3-33b, deepseek-r1-7b, deepseek-coder-v2-*, mistral-nemo-12b, glm4-9b, laguna-*,
+// ornith-*, gemma4-26b-think, medgemma1-5-thinking, phi4-reasoning-14b, command-r-35b (AA lists only the
+// Mar '24 build; Ollama's tag was refreshed in Aug '24), olmo-3-32b (Think vs 3.1 Instruct), codestral-22b,
+// deepcoder-*, qwen2-5-coder-1-5b/3b/14b. The `agentic` column (the old AA
+// "Agentic Index", added 2026-05-30) was DROPPED the same day: v4.3 publishes no such composite any more
+// (its records carry tau2/tau-banking/terminal-bench components, and no single one covers both old and
+// new models), the values were a never-refreshed May snapshot, and nothing ranked on them.
+//
+// (b) Four `(MTP)` rows — the official ollama.com multi-token-prediction builds of models already in this
+// table: `qwen3.6:27b-mtp-q4_K_M`, `qwen3.6:35b-a3b-mtp-q4_K_M`, `qwen3.8:27b-mtp-q4_K_M`,
+// `gemma4:26b-a4b-it-mtp-q4_K_M`. These are the SAME q4_K_M weights plus the model's trained MTP head
+// (`nextn_predict_layers = 1`), which Ollama's llama-server uses for self-speculative decoding
+// (`--spec-type draft-mtp`); rejection sampling keeps the output distribution identical, so the
+// leaderboard columns are inherited from the base row on purpose — unlike the MTPLX rows further down,
+// which are third-party re-quantized checkpoints and stay blank. They are separate rows (not a hidden
+// substitution) so the user sees exactly which build they are running; the recommender's quant-suffix
+// collapse does not fold `-mtp` ids, so base and MTP can both surface. Measured 2026-09-16 on an RX 7900
+// XTX (ROCm, Ollama 0.34.1, single stream): qwen3.6:27b decode 36 → 47 tok/s, qwen3.8:27b 36 → 47 tok/s
+// on JSON image descriptions and 36 → 44 on prose chat (draft depth 3; the qwen3.8 tag's own default of 4
+// measured slower on this card, 43/38). The two MoE rows were NOT measured — an already-fast 3B-active
+// model has less to gain and the fixed draft cost is a larger share of its step. Needs Ollama ≥ 0.30.8
+// (`OLLAMA_SPEC_MIN_VERSION` in eval/driver-conformance.ts); an older build loads the tag and silently
+// runs at base speed. The variant is 0.4 GB larger on disk and allocates rollback checkpoints at runtime,
+// so a card where the base only just fits can be pushed into partial offload — the `gb` column is the
+// ollama.com figure for the MTP tag, not the base. The two Qwen 27B tags were verified by an actual
+// `ollama pull` + benchmark; the 35B and Gemma tags only via the library page.
+//
 // Columns:
 //   id              catalog id (`${family}-${size}`)
 //   backendModelId  the exact ollama pull tag (`family:size`)
@@ -113,7 +159,6 @@ import type {
 //   ctxK            context window in thousands of tokens (blank → default 128K)
 //   creator         model creator / lab
 //   intel           Artificial Analysis Intelligence Index (blank when not on the leaderboard)
-//   agentic         Artificial Analysis agentic / tool-calling index (blank when not on the leaderboard)
 //   reason          1 = reasoning model
 //   vision          1 = accepts image input
 //   tools           1 = supports tool / function calling
@@ -130,107 +175,111 @@ import type {
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[100|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
-  gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|9|7.4|1|1|1|1|||
-  gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|12|8.7|1|1|1|1|||
-  gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|26|28.9|1|1|1|0|78|1.59|8
-  gemma4-31b|gemma4:31b|Gemma 4 31B|general|31|20|medium|256|Google|29|39.4|1|1|1|0|17|1.38|30.7
-  qwen3-8-27b|qwen3.8:27b|Qwen 3.8 27B|reasoning|27|18|medium|256|Alibaba|||1|1|1|0|||
-  qwen3-6-27b|qwen3.6:27b|Qwen 3.6 27B|coding|27|17|medium|262|Alibaba|37.1|60.9|1|1|1|0|56|3.66|12.8
-  qwen3-6-35b|qwen3.6:35b|Qwen 3.6 35B|coding|35|22.6|medium|262|Alibaba|31.5|52.5|1|1|1|0|158.2|2.22|5.4
-  qwen3-5-0-8b|qwen3.5:0.8b|Qwen 3.5 0.8B|reasoning|0.8|1|cpu-only|262|Alibaba|9.9|21.7|1|1|1|0|74|0.45|7.2
-  qwen3-5-2b|qwen3.5:2b|Qwen 3.5 2B|reasoning|2|2.7|cpu-only|262|Alibaba|14.7|27.2|1|1|1|0|247|0.42|2.4
-  qwen3-5-4b|qwen3.5:4b|Qwen 3.5 4B|reasoning|4|3.4|cpu-only|262|Alibaba|20|36.3|1|1|1|0|198|0.76|3
-  qwen3-5-9b|qwen3.5:9b|Qwen 3.5 9B|reasoning|9|6.6|low|262|Alibaba|21|41.1|1|1|1|0|74|1.57|
-  qwen3-5-27b|qwen3.5:27b|Qwen 3.5 27B|reasoning|27|17|medium|262|Alibaba|34||1|1|1|0|||
-  qwen3-5-35b|qwen3.5:35b|Qwen 3.5 35B|reasoning|35|24|medium|262|Alibaba|29|48|1|1|1|0|117.8|2.13|5.4
-  qwen3-5-122b|qwen3.5:122b|Qwen 3.5 122B|reasoning|122|81|high|262|Alibaba|32|49.5|1|1|1|0|133.2|2.32|5.6
-  nemotron3-33b|nemotron3:33b|Nemotron 3 33B|reasoning|33|28|medium||NVIDIA|||1|1|1|1|||
-  nemotron-3-nano-4b|nemotron-3-nano:4b|Nemotron 3 Nano 4B|reasoning|4|2.8|cpu-only|262|NVIDIA|9|9.8|1|0|1|0|||
-  nemotron-3-nano-30b|nemotron-3-nano:30b|Nemotron 3 Nano 30B|reasoning|30|24|medium|1000|NVIDIA|14|8.5|1|0|1|0|167.3|1.44|6.4
-  nemotron-3-super-120b|nemotron-3-super:120b|Nemotron 3 Super 120B|reasoning|120|87|high|256|NVIDIA|25|40.2|1|0|1|0|181|1.65|15.6
-  gpt-oss-20b|gpt-oss:20b|GPT-OSS 20B|general|20|14|medium|131|OpenAI|15|27.6|1|0|1|0|194.2|0.82|11.2
-  gpt-oss-120b|gpt-oss:120b|GPT-OSS 120B|general|120|65|high|131|OpenAI|24|37.9|1|0|1|0|285.7|0.86|8.6
-  deepseek-r1-1-5b|deepseek-r1:1.5b|DeepSeek R1 1.5B|reasoning|1.5|1.1|cpu-only||DeepSeek|4||1|0|1|0|||
-  deepseek-r1-7b|deepseek-r1:7b|DeepSeek R1 7B|reasoning|7|4.7|low||DeepSeek|||1|0|1|0|||
-  deepseek-r1-8b|deepseek-r1:8b|DeepSeek R1 8B|reasoning|8|5.2|low||DeepSeek|10||1|0|1|0|||
-  deepseek-r1-14b|deepseek-r1:14b|DeepSeek R1 14B|reasoning|14|9|low||DeepSeek|10||1|0|1|0|||
-  deepseek-r1-32b|deepseek-r1:32b|DeepSeek R1 32B|reasoning|32|20|medium||DeepSeek|11||1|0|1|0|||
-  deepseek-r1-70b|deepseek-r1:70b|DeepSeek R1 70B|reasoning|70|43|high||DeepSeek|10||1|0|1|0|||
-  deepseek-r1-671b|deepseek-r1:671b|DeepSeek R1 671B|reasoning|671|404|high|160|DeepSeek|20||1|0|1|0|||
-  deepseek-coder-v2-16b|deepseek-coder-v2:16b|DeepSeek Coder V2 16B|coding|16|8.9|medium|160|DeepSeek|||0|0|0|0|||
-  deepseek-coder-v2-236b|deepseek-coder-v2:236b|DeepSeek Coder V2 236B|coding|236|133|high|4|DeepSeek|||0|0|0|0|||
-  qwen3-0-6b|qwen3:0.6b|Qwen 3 0.6B|general|0.6|0.5|cpu-only|40|Alibaba|||1|0|1|0|||
-  qwen3-1-7b|qwen3:1.7b|Qwen 3 1.7B|general|1.7|1.4|cpu-only|40|Alibaba|||1|0|1|0|||
-  qwen3-4b|qwen3:4b|Qwen 3 4B|general|4|2.5|cpu-only|256|Alibaba|||1|0|1|0|||
-  qwen3-8b|qwen3:8b|Qwen 3 8B|general|8|5.2|low|40|Alibaba|||1|0|1|0|||
-  qwen3-14b|qwen3:14b|Qwen 3 14B|general|14|9.3|low|40|Alibaba|||1|0|1|0|||
-  qwen3-30b|qwen3:30b|Qwen 3 30B|general|30|19|medium|256|Alibaba|||1|0|1|0|||
-  qwen3-32b|qwen3:32b|Qwen 3 32B|general|32|20|medium|40|Alibaba|||1|0|1|0|||
-  qwen3-235b|qwen3:235b|Qwen 3 235B|general|235|142|high|256|Alibaba|||1|0|1|0|||
-  qwq-32b|qwq:32b|QwQ 32B|reasoning|32|20|medium|40|Alibaba|13.4||1|0|1|0|||
-  gemma3-270m|gemma3:270m|Gemma 3 270M|general|0.27|0.3|cpu-only|32|Google|2.4||0|0|0|0|||
-  gemma3-1b|gemma3:1b|Gemma 3 1B|general|1|0.8|cpu-only|32|Google|1||0|0|0|0|||
-  gemma3-4b|gemma3:4b|Gemma 3 4B|general|4|3.3|cpu-only||Google|1.1||0|1|0|0|||
-  gemma3-12b|gemma3:12b|Gemma 3 12B|general|12|8.1|low||Google|||0|1|0|0|||
-  gemma3-27b|gemma3:27b|Gemma 3 27B|general|27|17|medium||Google|||0|1|0|0|||
-  gemma3n-e4b|gemma3n:e4b|Gemma 3n E4B|general|7|7.5|low|32|Google|||0|0|0|0|||
-  mistral-7b|mistral:7b|Mistral 7B|general|7|4.4|low|32|Mistral|||0|0|1|0|||
-  mistral-nemo-12b|mistral-nemo:12b|Mistral Nemo 12B|general|12|7.1|low||Mistral|||0|0|1|0|||
-  mistral-small-22b|mistral-small:22b|Mistral Small 22B|general|22|13|medium||Mistral|||0|0|1|0|||
-  mistral-small-24b|mistral-small:24b|Mistral Small 24B|general|24|14|medium|32|Mistral|||0|0|1|0|||
-  mistral-large-123b|mistral-large:123b|Mistral Large 123B|general|123|73|high||Mistral|||0|0|1|0|||
-  mixtral-8x7b|mixtral:8x7b|Mixtral 8X7B|general|47|26|high|32|Mistral|||0|0|1|0|||
-  mixtral-8x22b|mixtral:8x22b|Mixtral 8X22B|general|141|80|high|64|Mistral|||0|0|1|0|||
-  llama3-2-1b|llama3.2:1b|Llama 3.2 1B|general|1|1.3|cpu-only||Meta|||0|0|1|0|||
-  llama3-2-3b|llama3.2:3b|Llama 3.2 3B|general|3|2|cpu-only||Meta|||0|0|1|0|||
-  llama3-1-8b|llama3.1:8b|Llama 3.1 8B|general|8|4.9|low||Meta|||0|0|1|0|||
-  llama3-1-70b|llama3.1:70b|Llama 3.1 70B|general|70|43|high||Meta|||0|0|1|0|||
-  llama3-1-405b|llama3.1:405b|Llama 3.1 405B|general|405|243|high|128|Meta|9||0|0|1|0|||
-  llama3-3-70b|llama3.3:70b|Llama 3.3 70B|general|70|43|high|128|Meta|9||0|0|1|0|85.1|1.65|7.8
-  llama4-16x17b|llama4:16x17b|Llama 4 16X17B|general|109|67|high|10000|Meta|10||0|1|1|0|95.9|0.76|5.6
-  llama4-128x17b|llama4:128x17b|Llama 4 128X17B|general|400|245|high|1000|Meta|14||0|1|1|0|105.3|0.92|5.5
-  glm4-9b|glm4:9b|GLM-4 9B|general|9|5.5|low||Z AI|||0|0|1|0|||
-  minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 230B|general|230|56|high|205|MiniMax|28||1|0|1|0|||
-  glm-5-2|hf.co/unsloth/GLM-5.2-GGUF:UD-Q4_K_XL|GLM 5.2|reasoning|754|467|high|1000|Z AI|51||1|0|1|0|||
-  laguna-xs-2-1|laguna-xs-2.1:latest|Laguna XS 2.1|coding|33|20|medium|256|Poolside|||1|0|1|0|||
-  laguna-s-2-1|laguna-s-2.1:latest|Laguna S 2.1|coding|118|96|high|256|Poolside|||1|0|1|0|||
-  ornith-9b|ornith:9b|Ornith 9B|coding|9|5.6|low|256|Deep Reinforce|||1|0|1|0|||
-  ornith-35b|ornith:35b|Ornith 35B|coding|35|21|medium|256|Deep Reinforce|||1|0|1|0|||
-  lfm2-5-8b|lfm2.5:8b|LFM 2.5 8B|general|8|5.2|cpu-only|125|Liquid AI|8||0|0|1|0|||
-  north-mini-code-1-0|north-mini-code-1.0:latest|North Mini Code 1.0|coding|30|19|medium|488|Cohere|27.6|21.7|1|0|1|0|||
-  inkling|hf.co/unsloth/inkling-GGUF:UD-Q4_K_XL|Inkling|general|975|587|high|1000|Thinking Machines|41||1|1|1|1|||
-  gemma4-26b-think|bjoernb/gemma4-26b-think:latest|Gemma 4 26B Think|reasoning|26|18|medium|256|Google (community)|||1|1|1|0|||
-  medgemma1-5-thinking|jordimurgo/medgemma1.5-thinking:q4_K_M|MedGemma 1.5 Thinking|general|4.3|3.3|cpu-only|128|Google (community)|||1|1|0|0|||
-  muse-glimmer-30b|muse-glimmer:30b|Muse Glimmer|general|30|18|medium|128|Meta|35||1|1|1|0|101|0.83|25.63
-  phi4-14b|phi4:14b|Phi-4 14B|general|14|9.1|low|16|Microsoft|||0|0|1|0|||
-  phi4-mini-3-8b|phi4-mini:3.8b|Phi-4 Mini 3.8B|general|3.8|2.5|cpu-only|128|Microsoft|||0|0|1|0|||
-  phi4-reasoning-14b|phi4-reasoning:14b|Phi-4 Reasoning 14B|reasoning|14|11|low|32|Microsoft|||1|0|1|0|||
-  ministral-3-3b|ministral-3:3b|Ministral 3 3B|general|3|3|cpu-only|256|Mistral|||0|1|1|0|||
-  ministral-3-8b|ministral-3:8b|Ministral 3 8B|general|8|6|low|256|Mistral|||0|1|1|0|||
-  ministral-3-14b|ministral-3:14b|Ministral 3 14B|general|14|9.1|low|256|Mistral|||0|1|1|0|||
-  command-r-35b|command-r:35b|Command R 35B|general|35|19|medium|128|Cohere|||0|0|1|0|||
-  command-a-111b|command-a:111b|Command A 111B|general|111|67|high||Cohere|||0|0|1|0|||
-  olmo-3-7b|olmo-3:7b|OLMo 3 7B|general|7|4.5|low|64|Allen Institute|||0|0|1|0|||
-  olmo-3-32b|olmo-3:32b|OLMo 3 32B|general|32|19|medium|64|Allen Institute|||0|0|1|0|||
-  glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|200|Z AI|||1|0|1|0|||
-  nemotron-3-5-lightning-30b|nemotron-3.5-lightning:30b|Nemotron 3.5 Lightning|general|30|25|medium|1000|NVIDIA|24||0|0|1|0|293|1.04|
-  deepseek-v4-flash-0731-284b|frob/deepseek-v4-flash-0731:284b-a13b-ud-q4_k_xl|DeepSeek V4 Flash 0731|reasoning|284|155|high|1000|DeepSeek|52||1|0|1|0|128|1.43|20.95
-  ornith-1-5-9b|ornith-1.5:9b|Ornith 1.5 9B|coding|9|6.6|low|256|Deep Reinforce|||0|1|0|0|||
-  ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce|||0|1|0|0|||
-  ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce|||0|1|0|0|||
-  qwen3-coder-30b|qwen3-coder:30b|Qwen 3 Coder 30B|coding|30|18.6|medium|262|Alibaba|||0|0|1|0|||
-  qwen3-vl-32b|qwen3-vl:32b|Qwen 3 VL 32B|general|33|20.9|medium|262|Alibaba|||1|1|1|0|||
-  qwen3-coder-480b|qwen3-coder:480b|Qwen 3 Coder 480B|coding|480|290.1|high|262|Alibaba|||0|0|1|0|||
-  qwen2-5-coder-1-5b|qwen2.5-coder:1.5b|Qwen 2.5 Coder 1.5B|coding|1.5|1|cpu-only|32|Alibaba|||0|0|1|0|||
-  qwen2-5-coder-3b|qwen2.5-coder:3b|Qwen 2.5 Coder 3B|coding|3|1.9|cpu-only|32|Alibaba|||0|0|1|0|||
-  qwen2-5-coder-7b|qwen2.5-coder:7b|Qwen 2.5 Coder 7B|coding|7|4.7|low|32|Alibaba|||0|0|1|0|||
-  qwen2-5-coder-14b|qwen2.5-coder:14b|Qwen 2.5 Coder 14B|coding|14|9|low|32|Alibaba|||0|0|1|0|||
-  qwen2-5-coder-32b|qwen2.5-coder:32b|Qwen 2.5 Coder 32B|coding|32|19.9|medium|32|Alibaba|||0|0|1|0|||
-  devstral-24b|devstral:24b|Devstral 24B|coding|24|14.3|medium|128|Mistral|||0|0|1|0|||
-  codestral-22b|codestral:22b|Codestral 22B|coding|22|12.6|medium|32|Mistral|||0|0|0|0|||
-  deepcoder-1-5b|deepcoder:1.5b|DeepCoder 1.5B|coding|1.5|1.1|cpu-only|64|Agentica|||1|0|0|0|||
-  deepcoder-14b|deepcoder:14b|DeepCoder 14B|coding|14|9|low|64|Agentica|||1|0|0|0|||
+llms[104|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e}:
+  gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|7.8|1|1|1|1|||
+  gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|8.9|1|1|1|1|43.5|0.83|58.3
+  gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|16.7|1|1|1|0|||
+  gemma4-26b-mtp|gemma4:26b-a4b-it-mtp-q4_K_M|Gemma 4 26B (MTP)|general|26|19|medium|256|Google|16.7|1|1|1|0|||
+  gemma4-31b|gemma4:31b|Gemma 4 31B|general|31|20|medium|256|Google|15.4|1|1|1|0|35.1|1.02|64.8
+  qwen3-8-27b|qwen3.8:27b|Qwen 3.8 27B|reasoning|27|18|medium|256|Alibaba|33.9|1|1|1|0|43.7|4.06|61.3
+  qwen3-8-27b-mtp|qwen3.8:27b-mtp-q4_K_M|Qwen 3.8 27B (MTP)|reasoning|27|18|medium|256|Alibaba|33.9|1|1|1|0|43.7|4.06|61.3
+  qwen3-6-27b|qwen3.6:27b|Qwen 3.6 27B|coding|27|17|medium|262|Alibaba|21.9|1|1|1|0|56.9|3.61|112.2
+  qwen3-6-27b-mtp|qwen3.6:27b-mtp-q4_K_M|Qwen 3.6 27B (MTP)|coding|27|18|medium|262|Alibaba|21.9|1|1|1|0|56.9|3.61|112.2
+  qwen3-6-35b|qwen3.6:35b|Qwen 3.6 35B|coding|35|22.6|medium|262|Alibaba|18.8|1|1|1|0|121.9|2.07|50.4
+  qwen3-6-35b-mtp|qwen3.6:35b-a3b-mtp-q4_K_M|Qwen 3.6 35B (MTP)|coding|35|23|medium|262|Alibaba|18.8|1|1|1|0|121.9|2.07|50.4
+  qwen3-5-0-8b|qwen3.5:0.8b|Qwen 3.5 0.8B|reasoning|0.8|1|cpu-only|262|Alibaba|6.1|1|1|1|0|||
+  qwen3-5-2b|qwen3.5:2b|Qwen 3.5 2B|reasoning|2|2.7|cpu-only|262|Alibaba|6.9|1|1|1|0|||
+  qwen3-5-4b|qwen3.5:4b|Qwen 3.5 4B|reasoning|4|3.4|cpu-only|262|Alibaba|13.1|1|1|1|0|16.9|0.74|148.2
+  qwen3-5-9b|qwen3.5:9b|Qwen 3.5 9B|reasoning|9|6.6|low|262|Alibaba|13.7|1|1|1|0|76.4|1.66|34.4
+  qwen3-5-27b|qwen3.5:27b|Qwen 3.5 27B|reasoning|27|17|medium|262|Alibaba|22.9|1|1|1|0|75.5|5.74|38.8
+  qwen3-5-35b|qwen3.5:35b|Qwen 3.5 35B|reasoning|35|24|medium|262|Alibaba|19.3|1|1|1|0|145.4|2.1|19.3
+  qwen3-5-122b|qwen3.5:122b|Qwen 3.5 122B|reasoning|122|81|high|262|Alibaba|16.2|1|1|1|0|128.5|2.38|21.8
+  nemotron3-33b|nemotron3:33b|Nemotron 3 33B|reasoning|33|28|medium||NVIDIA||1|1|1|1|||
+  nemotron-3-nano-4b|nemotron-3-nano:4b|Nemotron 3 Nano 4B|reasoning|4|2.8|cpu-only|262|NVIDIA|7.4|1|0|1|0|||
+  nemotron-3-nano-30b|nemotron-3-nano:30b|Nemotron 3 Nano 30B|reasoning|30|24|medium|1000|NVIDIA|8.9|1|0|1|0|128.2|1.52|21
+  nemotron-3-super-120b|nemotron-3-super:120b|Nemotron 3 Super 120B|reasoning|120|87|high|256|NVIDIA|13.6|1|0|1|0|161.7|2.5|18
+  gpt-oss-20b|gpt-oss:20b|GPT-OSS 20B|general|20|14|medium|131|OpenAI|9|1|0|1|0|210.8|0.76|12.6
+  gpt-oss-120b|gpt-oss:120b|GPT-OSS 120B|general|120|65|high|131|OpenAI|12.3|1|0|1|0|194.1|0.84|13.7
+  deepseek-r1-1-5b|deepseek-r1:1.5b|DeepSeek R1 1.5B|reasoning|1.5|1.1|cpu-only||DeepSeek|5.5|1|0|1|0|||
+  deepseek-r1-7b|deepseek-r1:7b|DeepSeek R1 7B|reasoning|7|4.7|low||DeepSeek||1|0|1|0|||
+  deepseek-r1-8b|deepseek-r1:8b|DeepSeek R1 8B|reasoning|8|5.2|low||DeepSeek|8.1|1|0|1|0|||
+  deepseek-r1-14b|deepseek-r1:14b|DeepSeek R1 14B|reasoning|14|9|low||DeepSeek|7.8|1|0|1|0|||
+  deepseek-r1-32b|deepseek-r1:32b|DeepSeek R1 32B|reasoning|32|20|medium||DeepSeek|8.4|1|0|1|0|||
+  deepseek-r1-70b|deepseek-r1:70b|DeepSeek R1 70B|reasoning|70|43|high||DeepSeek|7.9|1|0|1|0|25.5|0.98|99.2
+  deepseek-r1-671b|deepseek-r1:671b|DeepSeek R1 671B|reasoning|671|404|high|160|DeepSeek|13.1|1|0|1|0|||
+  deepseek-coder-v2-16b|deepseek-coder-v2:16b|DeepSeek Coder V2 16B|coding|16|8.9|medium|160|DeepSeek||0|0|0|0|||
+  deepseek-coder-v2-236b|deepseek-coder-v2:236b|DeepSeek Coder V2 236B|coding|236|133|high|4|DeepSeek||0|0|0|0|||
+  qwen3-0-6b|qwen3:0.6b|Qwen 3 0.6B|general|0.6|0.5|cpu-only|40|Alibaba|4.8|1|0|1|0|||
+  qwen3-1-7b|qwen3:1.7b|Qwen 3 1.7B|general|1.7|1.4|cpu-only|40|Alibaba|5.2|1|0|1|0|||
+  qwen3-4b|qwen3:4b|Qwen 3 4B|general|4|2.5|cpu-only|256|Alibaba|7.2|1|0|1|0|||
+  qwen3-8b|qwen3:8b|Qwen 3 8B|general|8|5.2|low|40|Alibaba|5.2|1|0|1|0|38.2|3.8|69.3
+  qwen3-14b|qwen3:14b|Qwen 3 14B|general|14|9.3|low|40|Alibaba|6.4|1|0|1|0|62.7|2.7|42.6
+  qwen3-30b|qwen3:30b|Qwen 3 30B|general|30|19|medium|256|Alibaba|7.6|1|0|1|0|106.3|2.17|25.7
+  qwen3-32b|qwen3:32b|Qwen 3 32B|general|32|20|medium|40|Alibaba|7.2|1|0|1|0|105.9|2.51|26.1
+  qwen3-235b|qwen3:235b|Qwen 3 235B|general|235|142|high|256|Alibaba|9.5|1|0|1|0|61|2.7|43.7
+  qwq-32b|qwq:32b|QwQ 32B|reasoning|32|20|medium|40|Alibaba|9.5|1|0|1|0|||
+  gemma3-270m|gemma3:270m|Gemma 3 270M|general|0.27|0.3|cpu-only|32|Google|5.1|0|0|0|0|||
+  gemma3-1b|gemma3:1b|Gemma 3 1B|general|1|0.8|cpu-only|32|Google|4.8|0|0|0|0|||
+  gemma3-4b|gemma3:4b|Gemma 3 4B|general|4|3.3|cpu-only||Google|4.8|0|1|0|0|||
+  gemma3-12b|gemma3:12b|Gemma 3 12B|general|12|8.1|low||Google|3.8|0|1|0|0|||
+  gemma3-27b|gemma3:27b|Gemma 3 27B|general|27|17|medium||Google|4.9|0|1|0|0|||
+  gemma3n-e4b|gemma3n:e4b|Gemma 3n E4B|general|7|7.5|low|32|Google|4.8|0|0|0|0|||
+  mistral-7b|mistral:7b|Mistral 7B|general|7|4.4|low|32|Mistral|5|0|0|1|0|90.4|0.76|6.3
+  mistral-nemo-12b|mistral-nemo:12b|Mistral Nemo 12B|general|12|7.1|low||Mistral||0|0|1|0|||
+  mistral-small-22b|mistral-small:22b|Mistral Small 22B|general|22|13|medium||Mistral|5.8|0|0|1|0|161.2|0.8|3.9
+  mistral-small-24b|mistral-small:24b|Mistral Small 24B|general|24|14|medium|32|Mistral|6.7|0|0|1|0|157.3|0.8|4
+  mistral-large-123b|mistral-large:123b|Mistral Large 123B|general|123|73|high||Mistral|7.6|0|0|1|0|||
+  mixtral-8x7b|mixtral:8x7b|Mixtral 8X7B|general|47|26|high|32|Mistral|5.1|0|0|1|0|||
+  mixtral-8x22b|mixtral:8x22b|Mixtral 8X22B|general|141|80|high|64|Mistral|5.7|0|0|1|0|||
+  llama3-2-1b|llama3.2:1b|Llama 3.2 1B|general|1|1.3|cpu-only||Meta|4.8|0|0|1|0|||
+  llama3-2-3b|llama3.2:3b|Llama 3.2 3B|general|3|2|cpu-only||Meta|5.7|0|0|1|0|||
+  llama3-1-8b|llama3.1:8b|Llama 3.1 8B|general|8|4.9|low||Meta|6.9|0|0|1|0|140.7|0.83|4.4
+  llama3-1-70b|llama3.1:70b|Llama 3.1 70B|general|70|43|high||Meta|6.6|0|0|1|0|70|1.5|8.7
+  llama3-1-405b|llama3.1:405b|Llama 3.1 405B|general|405|243|high|128|Meta|7.3|0|0|1|0|||
+  llama3-3-70b|llama3.3:70b|Llama 3.3 70B|general|70|43|high|128|Meta|7.7|0|0|1|0|86.2|1.65|7.4
+  llama4-16x17b|llama4:16x17b|Llama 4 16X17B|general|109|67|high|10000|Meta|6.5|0|1|1|0|104.4|0.85|5.6
+  llama4-128x17b|llama4:128x17b|Llama 4 128X17B|general|400|245|high|1000|Meta|9.3|0|1|1|0|106|0.87|5.6
+  glm4-9b|glm4:9b|GLM-4 9B|general|9|5.5|low||Z AI||0|0|1|0|||
+  minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 230B|general|230|56|high|205|MiniMax|18.6|1|0|1|0|92.8|1.75|28.7
+  glm-5-2|hf.co/unsloth/GLM-5.2-GGUF:UD-Q4_K_XL|GLM 5.2|reasoning|754|467|high|1000|Z AI|34|1|0|1|0|68.9|8.38|44.7
+  laguna-xs-2-1|laguna-xs-2.1:latest|Laguna XS 2.1|coding|33|20|medium|256|Poolside||1|0|1|0|||
+  laguna-s-2-1|laguna-s-2.1:latest|Laguna S 2.1|coding|118|96|high|256|Poolside||1|0|1|0|||
+  ornith-9b|ornith:9b|Ornith 9B|coding|9|5.6|low|256|Deep Reinforce||1|0|1|0|||
+  ornith-35b|ornith:35b|Ornith 35B|coding|35|21|medium|256|Deep Reinforce||1|0|1|0|||
+  lfm2-5-8b|lfm2.5:8b|LFM 2.5 8B|general|8|5.2|cpu-only|125|Liquid AI|7.2|0|0|1|0|||
+  north-mini-code-1-0|north-mini-code-1.0:latest|North Mini Code 1.0|coding|30|19|medium|488|Cohere|9.9|1|0|1|0|78.6|0.39|32.2
+  inkling|hf.co/unsloth/inkling-GGUF:UD-Q4_K_XL|Inkling|general|975|587|high|1000|Thinking Machines|25.5|1|1|1|1|83.8|2.8|32.6
+  gemma4-26b-think|bjoernb/gemma4-26b-think:latest|Gemma 4 26B Think|reasoning|26|18|medium|256|Google (community)||1|1|1|0|||
+  medgemma1-5-thinking|jordimurgo/medgemma1.5-thinking:q4_K_M|MedGemma 1.5 Thinking|general|4.3|3.3|cpu-only|128|Google (community)||1|1|0|0|||
+  muse-glimmer-30b|muse-glimmer:30b|Muse Glimmer|general|30|18|medium|128|Meta|18.1|1|1|1|0|98.5|1.03|26.4
+  phi4-14b|phi4:14b|Phi-4 14B|general|14|9.1|low|16|Microsoft|5.9|0|0|1|0|40.9|2.51|14.7
+  phi4-mini-3-8b|phi4-mini:3.8b|Phi-4 Mini 3.8B|general|3.8|2.5|cpu-only|128|Microsoft|6.3|0|0|1|0|45.6|0.89|11.8
+  phi4-reasoning-14b|phi4-reasoning:14b|Phi-4 Reasoning 14B|reasoning|14|11|low|32|Microsoft||1|0|1|0|||
+  ministral-3-3b|ministral-3:3b|Ministral 3 3B|general|3|3|cpu-only|256|Mistral|4.8|0|1|1|0|214.8|0.64|3
+  ministral-3-8b|ministral-3:8b|Ministral 3 8B|general|8|6|low|256|Mistral|5.5|0|1|1|0|90.9|0.75|6.2
+  ministral-3-14b|ministral-3:14b|Ministral 3 14B|general|14|9.1|low|256|Mistral|6|0|1|1|0|81.7|0.9|7
+  command-r-35b|command-r:35b|Command R 35B|general|35|19|medium|128|Cohere||0|0|1|0|||
+  command-a-111b|command-a:111b|Command A 111B|general|111|67|high||Cohere|7|0|0|1|0|51.3|1.76|11.5
+  olmo-3-7b|olmo-3:7b|OLMo 3 7B|general|7|4.5|low|64|Allen Institute|5.2|0|0|1|0|||
+  olmo-3-32b|olmo-3:32b|OLMo 3 32B|general|32|19|medium|64|Allen Institute||0|0|1|0|||
+  glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|200|Z AI|14.9|1|0|1|0|72.4|1.59|36.1
+  nemotron-3-5-lightning-30b|nemotron-3.5-lightning:30b|Nemotron 3.5 Lightning|general|30|25|medium|1000|NVIDIA|13.6|0|0|1|0|289.5|0.59|9.2
+  deepseek-v4-flash-0731-284b|frob/deepseek-v4-flash-0731:284b-a13b-ud-q4_k_xl|DeepSeek V4 Flash 0731|reasoning|284|155|high|1000|DeepSeek|34.5|1|0|1|0|217.7|1.57|13.1
+  ornith-1-5-9b|ornith-1.5:9b|Ornith 1.5 9B|coding|9|6.6|low|256|Deep Reinforce||0|1|0|0|||
+  ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce||0|1|0|0|||
+  ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce||0|1|0|0|||
+  qwen3-coder-30b|qwen3-coder:30b|Qwen 3 Coder 30B|coding|30|18.6|medium|262|Alibaba|9.6|0|0|1|0|93.2|2.64|8
+  qwen3-vl-32b|qwen3-vl:32b|Qwen 3 VL 32B|general|33|20.9|medium|262|Alibaba|11.9|1|1|1|0|89.5|2.62|30.6
+  qwen3-coder-480b|qwen3-coder:480b|Qwen 3 Coder 480B|coding|480|290.1|high|262|Alibaba|11.9|0|0|1|0|51.7|3.04|12.7
+  qwen2-5-coder-1-5b|qwen2.5-coder:1.5b|Qwen 2.5 Coder 1.5B|coding|1.5|1|cpu-only|32|Alibaba||0|0|1|0|||
+  qwen2-5-coder-3b|qwen2.5-coder:3b|Qwen 2.5 Coder 3B|coding|3|1.9|cpu-only|32|Alibaba||0|0|1|0|||
+  qwen2-5-coder-7b|qwen2.5-coder:7b|Qwen 2.5 Coder 7B|coding|7|4.7|low|32|Alibaba|5.8|0|0|1|0|||
+  qwen2-5-coder-14b|qwen2.5-coder:14b|Qwen 2.5 Coder 14B|coding|14|9|low|32|Alibaba||0|0|1|0|||
+  qwen2-5-coder-32b|qwen2.5-coder:32b|Qwen 2.5 Coder 32B|coding|32|19.9|medium|32|Alibaba|6.7|0|0|1|0|||
+  devstral-24b|devstral:24b|Devstral 24B|coding|24|14.3|medium|128|Mistral|7.6|0|0|1|0|||
+  codestral-22b|codestral:22b|Codestral 22B|coding|22|12.6|medium|32|Mistral||0|0|0|0|||
+  deepcoder-1-5b|deepcoder:1.5b|DeepCoder 1.5B|coding|1.5|1.1|cpu-only|64|Agentica||1|0|0|0|||
+  deepcoder-14b|deepcoder:14b|DeepCoder 14B|coding|14|9|low|64|Agentica||1|0|0|0|||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
@@ -325,7 +374,9 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'north-mini-code-1-0': 3, // North Mini Code 1.0 — 30B-A3B MoE (Cohere)
   inkling: 41, // Inkling — 975B-A41B sparse MoE (Thinking Machines)
   'gemma4-26b': 3.8, // Gemma 4 26B — 25.2B-A3.8B MoE (confirmed 2026-07-27 re-audit; was missing before)
+  'gemma4-26b-mtp': 3.8, // Gemma 4 26B (MTP) — same 25.2B-A3.8B MoE weights as gemma4-26b, plus the trained MTP head
   'qwen3-6-35b': 3, // Qwen 3.6 35B — 36B-A3B MoE (confirmed 2026-07-27 re-audit; was missing before)
+  'qwen3-6-35b-mtp': 3, // Qwen 3.6 35B (MTP) — same 36B-A3B MoE weights as qwen3-6-35b, plus the trained MTP head
   'gemma4-26b-think': 3.8, // Gemma 4 26B Think — 25.2B-A3.8B MoE, community thinking-mode variant
   'qwen3-coder-30b-lemonade': 3, // Qwen3-Coder-30B-A3B (Lemonade) — same 30B-A3B MoE arch as qwen3-30b above
   'qwen3-coder-30b-vllm': 3, // Qwen3-Coder-30B-A3B (vLLM) — same 30B-A3B MoE arch
@@ -410,7 +461,6 @@ function buildLlmModel(
   const tools = flag(row.tools);
   const contextWindowK = numOrUndef(row.ctxK);
   const intelligenceIndex = numOrUndef(row.intel);
-  const toolCallingIndex = numOrUndef(row.agentic);
   const tokensPerSec = numOrUndef(row.tps);
   const firstChunkSeconds = numOrUndef(row.ttft);
   const totalResponseSeconds = numOrUndef(row.e2e);
@@ -473,7 +523,6 @@ function buildLlmModel(
     metadata: {
       ...(row.creator ? { creator: row.creator } : {}),
       ...(intelligenceIndex === undefined ? {} : { intelligenceIndex }),
-      ...(toolCallingIndex === undefined ? {} : { toolCallingIndex }),
       capabilities: { reasoning, vision, tools, audio },
       ...(perf ? { perf } : {}),
     },
@@ -491,16 +540,16 @@ const generatedLlms: CuratedModel[] = decodeToonTable(CATALOG_TOON, 'llms').map(
 // matters in this file). `backendModelId` is the exact registry key Lemonade's `/v1/pull` and
 // `/v1/models` expect. reason/vision/tools flags are taken directly from that file's own `labels`
 // array per model rather than assumed from the base model family, since Lemonade's serving harness
-// (not Ollama's) is what determines what's actually supported through this backend. No intel/agentic/
+// (not Ollama's) is what determines what's actually supported through this backend. No intel/
 // perf figures are included — Artificial Analysis has not benchmarked these specific quantized
 // checkpoints under Lemonade. All five are `recipe: "llamacpp"` in that file, so — like Ollama's own
 // llama.cpp-based serving — they run across nvidia/amd/apple/cpu, not only AMD Ryzen AI NPU hardware.
 const LEMONADE_LLM_TOON = `
-llms[4|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
-  llama3-2-3b-lemonade|Llama-3.2-3B-Instruct-GGUF|Llama 3.2 3B (Lemonade)|general|3|2.06|cpu-only||Meta|||0|0|0|0|||
-  qwen3-8b-lemonade|Qwen3-8B-GGUF|Qwen 3 8B (Lemonade)|reasoning|8|5.25|low||Alibaba|||1|0|0|0|||
-  gemma4-12b-lemonade|Gemma-4-12B-it-GGUF|Gemma 4 12B (Lemonade)|general|12|7.29|low||Google|||0|1|1|0|||
-  qwen3-coder-30b-lemonade|Qwen3-Coder-30B-A3B-Instruct-GGUF|Qwen 3 Coder 30B (Lemonade)|coding|30|18.6|medium||Alibaba|||0|0|1|0|||
+llms[4|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e}:
+  llama3-2-3b-lemonade|Llama-3.2-3B-Instruct-GGUF|Llama 3.2 3B (Lemonade)|general|3|2.06|cpu-only||Meta||0|0|0|0|||
+  qwen3-8b-lemonade|Qwen3-8B-GGUF|Qwen 3 8B (Lemonade)|reasoning|8|5.25|low||Alibaba||1|0|0|0|||
+  gemma4-12b-lemonade|Gemma-4-12B-it-GGUF|Gemma 4 12B (Lemonade)|general|12|7.29|low||Google||0|1|1|0|||
+  qwen3-coder-30b-lemonade|Qwen3-Coder-30B-A3B-Instruct-GGUF|Qwen 3 Coder 30B (Lemonade)|coding|30|18.6|medium||Alibaba||0|0|1|0|||
 `;
 
 const lemonadeLlms: CuratedModel[] = decodeToonTable(LEMONADE_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'lemonade'));
@@ -515,19 +564,19 @@ const lemonadeLlms: CuratedModel[] = decodeToonTable(LEMONADE_LLM_TOON, 'llms').
 // an HF token the Hub doesn't manage, and no rows sourced from this session's own web research.
 // Sizes are the actual serving footprint: bf16 safetensors (≈2 bytes/param) for most rows; the two
 // GPT-OSS rows ship natively MXFP4-quantized so their on-disk/VRAM size is far below 2 bytes/param.
-// intel/agentic/perf columns are left blank rather than copied from the Ollama rows — AA benchmarks
+// intel/perf columns are left blank rather than copied from the Ollama rows — AA benchmarks
 // specific serving setups, and none of these bf16/MXFP4 checkpoints were re-verified under vLLM.
 // The extra trailing `quant` column names the served precision (see buildLlmModel).
 const VLLM_LLM_TOON = `
-llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
-  qwen3-4b-instruct-vllm|Qwen/Qwen3-4B-Instruct-2507|Qwen 3 4B Instruct (vLLM)|general|4|8.1|low|262|Alibaba|||0|0|1|0||||bf16
-  qwen3-8b-vllm|Qwen/Qwen3-8B|Qwen 3 8B (vLLM)|general|8|16.4|medium|32|Alibaba|||1|0|1|0||||bf16
-  qwen3-14b-vllm|Qwen/Qwen3-14B|Qwen 3 14B (vLLM)|general|15|29.6|high|32|Alibaba|||1|0|1|0||||bf16
-  qwen3-32b-vllm|Qwen/Qwen3-32B|Qwen 3 32B (vLLM)|general|33|65.6|high|32|Alibaba|||1|0|1|0||||bf16
-  qwen3-coder-30b-vllm|Qwen/Qwen3-Coder-30B-A3B-Instruct|Qwen 3 Coder 30B (vLLM)|coding|30|61|high|262|Alibaba|||0|0|1|0||||bf16
-  gpt-oss-20b-vllm|openai/gpt-oss-20b|GPT-OSS 20B (vLLM)|general|20|13.8|medium|131|OpenAI|||1|0|1|0||||mxfp4
-  gpt-oss-120b-vllm|openai/gpt-oss-120b|GPT-OSS 120B (vLLM)|general|120|65|high|131|OpenAI|||1|0|1|0||||mxfp4
-  phi-4-vllm|microsoft/phi-4|Phi-4 (vLLM)|general|15|29.4|high|16|Microsoft|||0|0|0|0||||bf16
+llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-4b-instruct-vllm|Qwen/Qwen3-4B-Instruct-2507|Qwen 3 4B Instruct (vLLM)|general|4|8.1|low|262|Alibaba||0|0|1|0||||bf16
+  qwen3-8b-vllm|Qwen/Qwen3-8B|Qwen 3 8B (vLLM)|general|8|16.4|medium|32|Alibaba||1|0|1|0||||bf16
+  qwen3-14b-vllm|Qwen/Qwen3-14B|Qwen 3 14B (vLLM)|general|15|29.6|high|32|Alibaba||1|0|1|0||||bf16
+  qwen3-32b-vllm|Qwen/Qwen3-32B|Qwen 3 32B (vLLM)|general|33|65.6|high|32|Alibaba||1|0|1|0||||bf16
+  qwen3-coder-30b-vllm|Qwen/Qwen3-Coder-30B-A3B-Instruct|Qwen 3 Coder 30B (vLLM)|coding|30|61|high|262|Alibaba||0|0|1|0||||bf16
+  gpt-oss-20b-vllm|openai/gpt-oss-20b|GPT-OSS 20B (vLLM)|general|20|13.8|medium|131|OpenAI||1|0|1|0||||mxfp4
+  gpt-oss-120b-vllm|openai/gpt-oss-120b|GPT-OSS 120B (vLLM)|general|120|65|high|131|OpenAI||1|0|1|0||||mxfp4
+  phi-4-vllm|microsoft/phi-4|Phi-4 (vLLM)|general|15|29.4|high|16|Microsoft||0|0|0|0||||bf16
 `;
 
 const vllmLlms: CuratedModel[] = decodeToonTable(VLLM_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'vllm'));
@@ -548,7 +597,7 @@ const vllmLlms: CuratedModel[] = decodeToonTable(VLLM_LLM_TOON, 'llms').map((row
 // bytes/1e9) — the same real-artifact-size discipline the Ollama table above applies to ollama.com.
 // `params`/`ctxK`/purpose/capability flags are reused from the matching Ollama-backend row for the
 // same base model (architecture and context length don't change with the serving engine or
-// quantization format) rather than re-derived. intel/agentic/perf columns are left blank for the same
+// quantization format) rather than re-derived. intel/perf columns are left blank for the same
 // reason the CUDA vLLM table leaves them blank: none of these MLX-quantized checkpoints have been
 // benchmarked by Artificial Analysis under vLLM-Metal specifically.
 //
@@ -572,71 +621,71 @@ const vllmLlms: CuratedModel[] = decodeToonTable(VLLM_LLM_TOON, 'llms').map((row
 // below are reused from the matching Ollama-backend row as before; MoE active-params are added to
 // MOE_ACTIVE_PARAMS_B below where the HF repo name itself states an `-A#B` active-expert size.
 const VLLM_MLX_LLM_TOON = `
-llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
-  llama3-2-3b-mlx|mlx-community/Llama-3.2-3B-Instruct-4bit|Llama 3.2 3B (MLX)|general|3|1.8|low||Meta|||0|0|1|0||||mlx-4bit
-  qwen3-8b-mlx|mlx-community/Qwen3-8B-4bit|Qwen 3 8B (MLX)|general|8|4.6|low|40|Alibaba|||1|0|1|0||||mlx-4bit
-  gpt-oss-20b-mlx|mlx-community/gpt-oss-20b-MXFP4-Q8|GPT-OSS 20B (MLX)|general|20|12.1|medium|131|OpenAI|||1|0|1|0||||mxfp4
-  qwen3-8-27b-mlx|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (MLX)|reasoning|27|16.1|medium|256|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-30b-a3b-mlx|mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit|Qwen 3 30B A3B (MLX)|general|30|17.2|medium|256|Alibaba|||1|0|1|0||||mlx-4bit
-  llama3-3-70b-mlx|mlx-community/Llama-3.3-70B-Instruct-4bit|Llama 3.3 70B (MLX)|general|70|39.7|high|128|Meta|||0|0|1|0||||mlx-4bit
-  gemma4-e4b-mlx|mlx-community/gemma-4-e4b-it-4bit|Gemma 4 E4B (MLX)|general|4|5.2|cpu-only|128|Google|||1|1|1|1||||mlx-4bit
-  gemma4-26b-mlx|mlx-community/gemma-4-26b-a4b-it-4bit|Gemma 4 26B (MLX)|general|26|15.4|medium|256|Google|||1|1|1|0||||mlx-4bit
-  gemma4-31b-mlx|mlx-community/gemma-4-31b-it-4bit|Gemma 4 31B (MLX)|general|31|18.4|medium|256|Google|||1|1|1|0||||mlx-4bit
-  muse-glimmer-mlx|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer (MLX)|general|30|19.4|medium|128|Meta|||1|1|1|0||||mlx-4bit
-  qwen3-6-27b-mlx|mlx-community/Qwen3.6-27B-4bit|Qwen 3.6 27B (MLX)|coding|27|16.1|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-6-35b-mlx|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B (MLX)|coding|35|20.4|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-5-0-8b-mlx|mlx-community/Qwen3.5-0.8B-MLX-4bit|Qwen 3.5 0.8B (MLX)|reasoning|0.8|0.7|cpu-only|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-5-2b-mlx|mlx-community/Qwen3.5-2B-MLX-4bit|Qwen 3.5 2B (MLX)|reasoning|2|1.7|cpu-only|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-5-4b-mlx|mlx-community/Qwen3.5-4B-MLX-4bit|Qwen 3.5 4B (MLX)|reasoning|4|3.1|cpu-only|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-5-9b-mlx|mlx-community/Qwen3.5-9B-MLX-4bit|Qwen 3.5 9B (MLX)|reasoning|9|6.0|low|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-5-27b-mlx|mlx-community/Qwen3.5-27B-4bit|Qwen 3.5 27B (MLX)|reasoning|27|16.1|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-5-35b-mlx|mlx-community/Qwen3.5-35B-A3B-4bit|Qwen 3.5 35B A3B (MLX)|reasoning|35|20.4|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
-  qwen3-5-122b-mlx|mlx-community/Qwen3.5-122B-A10B-4bit|Qwen 3.5 122B A10B (MLX)|reasoning|122|69.6|high|262|Alibaba|||1|1|1|0||||mlx-4bit
-  nemotron-3-nano-4b-mlx|mlx-community/NVIDIA-Nemotron-3-Nano-4B-4bit|Nemotron 3 Nano 4B (MLX)|reasoning|4|2.3|cpu-only|262|NVIDIA|||1|0|1|0||||mlx-4bit
-  nemotron-3-nano-30b-mlx|mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit|Nemotron 3 Nano 30B (MLX)|reasoning|30|17.8|medium|1000|NVIDIA|||1|0|1|0||||mlx-4bit
-  nemotron-3-super-120b-mlx|mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-4bit|Nemotron 3 Super 120B (MLX)|reasoning|120|68.0|high|256|NVIDIA|||1|0|1|0||||mlx-4bit
-  gpt-oss-120b-mlx|mlx-community/gpt-oss-120b-MXFP4-Q8|GPT-OSS 120B (MLX)|general|120|63.4|high|131|OpenAI|||1|0|1|0||||mxfp4
-  deepseek-r1-1-5b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit|DeepSeek R1 1.5B (MLX)|reasoning|1.5|1.0|cpu-only||DeepSeek|||1|0|1|0||||mlx-4bit
-  deepseek-r1-7b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit|DeepSeek R1 7B (MLX)|reasoning|7|4.3|low||DeepSeek|||1|0|1|0||||mlx-4bit
-  deepseek-r1-8b-mlx|mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit|DeepSeek R1 8B (MLX)|reasoning|8|4.5|low||DeepSeek|||1|0|1|0||||mlx-4bit
-  deepseek-r1-14b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit|DeepSeek R1 14B (MLX)|reasoning|14|8.3|low||DeepSeek|||1|0|1|0||||mlx-4bit
-  deepseek-r1-32b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit|DeepSeek R1 32B (MLX)|reasoning|32|18.4|medium||DeepSeek|||1|0|1|0||||mlx-4bit
-  deepseek-r1-70b-mlx|mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit|DeepSeek R1 70B (MLX)|reasoning|70|39.7|high||DeepSeek|||1|0|1|0||||mlx-4bit
-  deepseek-r1-671b-mlx|mlx-community/DeepSeek-R1-4bit|DeepSeek R1 671B (MLX)|reasoning|671|419.5|high|160|DeepSeek|||1|0|1|0||||mlx-4bit
-  deepseek-coder-v2-16b-mlx|mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit|DeepSeek Coder V2 16B (MLX)|coding|16|8.8|medium|160|DeepSeek|||0|0|0|0||||mlx-4bit
-  qwen3-1-7b-mlx|mlx-community/Qwen3-1.7B-4bit|Qwen 3 1.7B (MLX)|general|1.7|1.0|cpu-only|40|Alibaba|||1|0|1|0||||mlx-4bit
-  qwen3-4b-mlx|mlx-community/Qwen3-4B-4bit|Qwen 3 4B (MLX)|general|4|2.3|cpu-only|256|Alibaba|||1|0|1|0||||mlx-4bit
-  qwen3-14b-mlx|mlx-community/Qwen3-14B-4bit|Qwen 3 14B (MLX)|general|14|8.3|low|40|Alibaba|||1|0|1|0||||mlx-4bit
-  qwen3-32b-mlx|mlx-community/Qwen3-32B-4bit|Qwen 3 32B (MLX)|general|32|18.4|medium|40|Alibaba|||1|0|1|0||||mlx-4bit
-  qwen3-235b-mlx|mlx-community/Qwen3-235B-A22B-4bit|Qwen 3 235B A22B (MLX)|general|235|132.3|high|256|Alibaba|||1|0|1|0||||mlx-4bit
-  qwq-32b-mlx|mlx-community/QwQ-32B-4bit|QwQ 32B (MLX)|reasoning|32|18.4|medium|40|Alibaba|||1|0|1|0||||mlx-4bit
-  gemma3-270m-mlx|mlx-community/gemma-3-270m-it-4bit|Gemma 3 270M (MLX)|general|0.27|0.2|cpu-only|32|Google|||0|0|0|0||||mlx-4bit
-  mistral-7b-mlx|mlx-community/Mistral-7B-Instruct-v0.3-4bit|Mistral 7B (MLX)|general|7|4.1|low|32|Mistral|||0|0|1|0||||mlx-4bit
-  mistral-nemo-12b-mlx|mlx-community/Mistral-Nemo-Instruct-2407-4bit|Mistral Nemo 12B (MLX)|general|12|6.9|low||Mistral|||0|0|1|0||||mlx-4bit
-  mistral-small-24b-mlx|mlx-community/Mistral-Small-24B-Instruct-2501-4bit|Mistral Small 24B (MLX)|general|24|13.3|medium|32|Mistral|||0|0|1|0||||mlx-4bit
-  mistral-large-123b-mlx|mlx-community/Mistral-Large-Instruct-2407-4bit|Mistral Large 123B (MLX)|general|123|69.0|high||Mistral|||0|0|1|0||||mlx-4bit
-  mixtral-8x7b-mlx|mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit|Mixtral 8X7B (MLX)|general|47|26.3|high|32|Mistral|||0|0|1|0||||mlx-4bit
-  mixtral-8x22b-mlx|mlx-community/Mixtral-8x22B-4bit|Mixtral 8X22B (MLX)|general|141|79.4|high|64|Mistral|||0|0|1|0||||mlx-4bit
-  llama3-2-1b-mlx|mlx-community/Llama-3.2-1B-Instruct-4bit|Llama 3.2 1B (MLX)|general|1|0.7|cpu-only||Meta|||0|0|1|0||||mlx-4bit
-  llama3-1-8b-mlx|mlx-community/Meta-Llama-3.1-8B-Instruct-4bit|Llama 3.1 8B (MLX)|general|8|4.5|low||Meta|||0|0|1|0||||mlx-4bit
-  llama3-1-70b-mlx|mlx-community/Meta-Llama-3.1-70B-Instruct-4bit|Llama 3.1 70B (MLX)|general|70|39.7|high||Meta|||0|0|1|0||||mlx-4bit
-  llama3-1-405b-mlx|mlx-community/Meta-Llama-3.1-405B-4bit|Llama 3.1 405B (MLX)|general|405|230.7|high|128|Meta|||0|0|1|0||||mlx-4bit
-  glm4-9b-mlx|mlx-community/glm-4-9b-chat-1m-4bit|GLM-4 9B (MLX)|general|9|5.4|low||Z AI|||0|0|1|0||||mlx-4bit
-  glm-5-2-mlx|mlx-community/GLM-5.2-4bit|GLM 5.2 (MLX)|reasoning|754|418.3|high|1000|Z AI|||1|0|1|0||||mlx-4bit
-  glm-4-7-flash-30b-mlx|mlx-community/GLM-4.7-Flash-4bit|GLM-4.7 Flash (MLX)|reasoning|30|16.9|medium|200|Z AI|||1|0|1|0||||mlx-4bit
-  nemotron-3-5-lightning-30b-mlx|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (MLX)|general|30|17.8|medium|1000|NVIDIA|||0|0|1|0||||mlx-4bit
-  deepseek-v4-flash-0731-mlx|mlx-community/DeepSeek-V4-Flash-0731-2.4bit-mixed|DeepSeek V4 Flash 0731 (MLX)|reasoning|284|92.8|high|1000|DeepSeek|||1|0|1|0||||mlx-2.4bit
-  ministral-3-3b-mlx|mlx-community/Ministral-3-3B-Instruct-2512-4bit|Ministral 3 3B (MLX)|general|3|2.8|cpu-only|256|Mistral|||0|1|1|0||||mlx-4bit
-  ministral-3-8b-mlx|mlx-community/Ministral-3-8B-Instruct-2512-4bit|Ministral 3 8B (MLX)|general|8|5.6|low|256|Mistral|||0|1|1|0||||mlx-4bit
-  ministral-3-14b-mlx|mlx-community/Ministral-3-14B-Instruct-2512-4bit|Ministral 3 14B (MLX)|general|14|8.5|low|256|Mistral|||0|1|1|0||||mlx-4bit
-  command-r-35b-mlx|mlx-community/c4ai-command-r-v01-4bit|Command R 35B (MLX)|general|35|22.7|medium|128|Cohere|||0|0|1|0||||mlx-4bit
-  north-mini-code-1-0-mlx|mlx-community/North-Mini-Code-1.0-4bit|North Mini Code 1.0 (MLX)|coding|30|18.5|medium|488|Cohere|||1|0|1|0||||mlx-4bit
-  olmo-3-7b-mlx|mlx-community/Olmo-3-7B-Instruct-4bit|OLMo 3 7B (MLX)|general|7|4.1|low|64|Allen Institute|||0|0|1|0||||mlx-4bit
-  olmo-3-32b-mlx|mlx-community/Olmo-3-1125-32B-8bit|OLMo 3 32B (MLX)|general|32|34.3|medium|64|Allen Institute|||0|0|1|0||||mlx-8bit
-  phi4-14b-mlx|mlx-community/phi-4-4bit|Phi-4 14B (MLX)|general|14|8.3|low|16|Microsoft|||0|0|1|0||||mlx-4bit
-  phi4-mini-3-8b-mlx|mlx-community/Phi-4-mini-instruct-4bit|Phi-4 Mini 3.8B (MLX)|general|3.8|2.2|cpu-only|128|Microsoft|||0|0|1|0||||mlx-4bit
-  phi4-reasoning-14b-mlx|mlx-community/Phi-4-reasoning-4bit|Phi-4 Reasoning 14B (MLX)|reasoning|14|8.3|low|32|Microsoft|||1|0|1|0||||mlx-4bit
-  minimax-m2-mlx|mlx-community/MiniMax-M2-4bit|MiniMax M2 (MLX)|general|230|128.7|high|205|MiniMax|||1|0|1|0||||mlx-4bit
+llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  llama3-2-3b-mlx|mlx-community/Llama-3.2-3B-Instruct-4bit|Llama 3.2 3B (MLX)|general|3|1.8|low||Meta||0|0|1|0||||mlx-4bit
+  qwen3-8b-mlx|mlx-community/Qwen3-8B-4bit|Qwen 3 8B (MLX)|general|8|4.6|low|40|Alibaba||1|0|1|0||||mlx-4bit
+  gpt-oss-20b-mlx|mlx-community/gpt-oss-20b-MXFP4-Q8|GPT-OSS 20B (MLX)|general|20|12.1|medium|131|OpenAI||1|0|1|0||||mxfp4
+  qwen3-8-27b-mlx|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (MLX)|reasoning|27|16.1|medium|256|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-30b-a3b-mlx|mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit|Qwen 3 30B A3B (MLX)|general|30|17.2|medium|256|Alibaba||1|0|1|0||||mlx-4bit
+  llama3-3-70b-mlx|mlx-community/Llama-3.3-70B-Instruct-4bit|Llama 3.3 70B (MLX)|general|70|39.7|high|128|Meta||0|0|1|0||||mlx-4bit
+  gemma4-e4b-mlx|mlx-community/gemma-4-e4b-it-4bit|Gemma 4 E4B (MLX)|general|4|5.2|cpu-only|128|Google||1|1|1|1||||mlx-4bit
+  gemma4-26b-mlx|mlx-community/gemma-4-26b-a4b-it-4bit|Gemma 4 26B (MLX)|general|26|15.4|medium|256|Google||1|1|1|0||||mlx-4bit
+  gemma4-31b-mlx|mlx-community/gemma-4-31b-it-4bit|Gemma 4 31B (MLX)|general|31|18.4|medium|256|Google||1|1|1|0||||mlx-4bit
+  muse-glimmer-mlx|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer (MLX)|general|30|19.4|medium|128|Meta||1|1|1|0||||mlx-4bit
+  qwen3-6-27b-mlx|mlx-community/Qwen3.6-27B-4bit|Qwen 3.6 27B (MLX)|coding|27|16.1|medium|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-6-35b-mlx|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B (MLX)|coding|35|20.4|medium|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-5-0-8b-mlx|mlx-community/Qwen3.5-0.8B-MLX-4bit|Qwen 3.5 0.8B (MLX)|reasoning|0.8|0.7|cpu-only|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-5-2b-mlx|mlx-community/Qwen3.5-2B-MLX-4bit|Qwen 3.5 2B (MLX)|reasoning|2|1.7|cpu-only|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-5-4b-mlx|mlx-community/Qwen3.5-4B-MLX-4bit|Qwen 3.5 4B (MLX)|reasoning|4|3.1|cpu-only|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-5-9b-mlx|mlx-community/Qwen3.5-9B-MLX-4bit|Qwen 3.5 9B (MLX)|reasoning|9|6.0|low|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-5-27b-mlx|mlx-community/Qwen3.5-27B-4bit|Qwen 3.5 27B (MLX)|reasoning|27|16.1|medium|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-5-35b-mlx|mlx-community/Qwen3.5-35B-A3B-4bit|Qwen 3.5 35B A3B (MLX)|reasoning|35|20.4|medium|262|Alibaba||1|1|1|0||||mlx-4bit
+  qwen3-5-122b-mlx|mlx-community/Qwen3.5-122B-A10B-4bit|Qwen 3.5 122B A10B (MLX)|reasoning|122|69.6|high|262|Alibaba||1|1|1|0||||mlx-4bit
+  nemotron-3-nano-4b-mlx|mlx-community/NVIDIA-Nemotron-3-Nano-4B-4bit|Nemotron 3 Nano 4B (MLX)|reasoning|4|2.3|cpu-only|262|NVIDIA||1|0|1|0||||mlx-4bit
+  nemotron-3-nano-30b-mlx|mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit|Nemotron 3 Nano 30B (MLX)|reasoning|30|17.8|medium|1000|NVIDIA||1|0|1|0||||mlx-4bit
+  nemotron-3-super-120b-mlx|mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-4bit|Nemotron 3 Super 120B (MLX)|reasoning|120|68.0|high|256|NVIDIA||1|0|1|0||||mlx-4bit
+  gpt-oss-120b-mlx|mlx-community/gpt-oss-120b-MXFP4-Q8|GPT-OSS 120B (MLX)|general|120|63.4|high|131|OpenAI||1|0|1|0||||mxfp4
+  deepseek-r1-1-5b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit|DeepSeek R1 1.5B (MLX)|reasoning|1.5|1.0|cpu-only||DeepSeek||1|0|1|0||||mlx-4bit
+  deepseek-r1-7b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit|DeepSeek R1 7B (MLX)|reasoning|7|4.3|low||DeepSeek||1|0|1|0||||mlx-4bit
+  deepseek-r1-8b-mlx|mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit|DeepSeek R1 8B (MLX)|reasoning|8|4.5|low||DeepSeek||1|0|1|0||||mlx-4bit
+  deepseek-r1-14b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit|DeepSeek R1 14B (MLX)|reasoning|14|8.3|low||DeepSeek||1|0|1|0||||mlx-4bit
+  deepseek-r1-32b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit|DeepSeek R1 32B (MLX)|reasoning|32|18.4|medium||DeepSeek||1|0|1|0||||mlx-4bit
+  deepseek-r1-70b-mlx|mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit|DeepSeek R1 70B (MLX)|reasoning|70|39.7|high||DeepSeek||1|0|1|0||||mlx-4bit
+  deepseek-r1-671b-mlx|mlx-community/DeepSeek-R1-4bit|DeepSeek R1 671B (MLX)|reasoning|671|419.5|high|160|DeepSeek||1|0|1|0||||mlx-4bit
+  deepseek-coder-v2-16b-mlx|mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit|DeepSeek Coder V2 16B (MLX)|coding|16|8.8|medium|160|DeepSeek||0|0|0|0||||mlx-4bit
+  qwen3-1-7b-mlx|mlx-community/Qwen3-1.7B-4bit|Qwen 3 1.7B (MLX)|general|1.7|1.0|cpu-only|40|Alibaba||1|0|1|0||||mlx-4bit
+  qwen3-4b-mlx|mlx-community/Qwen3-4B-4bit|Qwen 3 4B (MLX)|general|4|2.3|cpu-only|256|Alibaba||1|0|1|0||||mlx-4bit
+  qwen3-14b-mlx|mlx-community/Qwen3-14B-4bit|Qwen 3 14B (MLX)|general|14|8.3|low|40|Alibaba||1|0|1|0||||mlx-4bit
+  qwen3-32b-mlx|mlx-community/Qwen3-32B-4bit|Qwen 3 32B (MLX)|general|32|18.4|medium|40|Alibaba||1|0|1|0||||mlx-4bit
+  qwen3-235b-mlx|mlx-community/Qwen3-235B-A22B-4bit|Qwen 3 235B A22B (MLX)|general|235|132.3|high|256|Alibaba||1|0|1|0||||mlx-4bit
+  qwq-32b-mlx|mlx-community/QwQ-32B-4bit|QwQ 32B (MLX)|reasoning|32|18.4|medium|40|Alibaba||1|0|1|0||||mlx-4bit
+  gemma3-270m-mlx|mlx-community/gemma-3-270m-it-4bit|Gemma 3 270M (MLX)|general|0.27|0.2|cpu-only|32|Google||0|0|0|0||||mlx-4bit
+  mistral-7b-mlx|mlx-community/Mistral-7B-Instruct-v0.3-4bit|Mistral 7B (MLX)|general|7|4.1|low|32|Mistral||0|0|1|0||||mlx-4bit
+  mistral-nemo-12b-mlx|mlx-community/Mistral-Nemo-Instruct-2407-4bit|Mistral Nemo 12B (MLX)|general|12|6.9|low||Mistral||0|0|1|0||||mlx-4bit
+  mistral-small-24b-mlx|mlx-community/Mistral-Small-24B-Instruct-2501-4bit|Mistral Small 24B (MLX)|general|24|13.3|medium|32|Mistral||0|0|1|0||||mlx-4bit
+  mistral-large-123b-mlx|mlx-community/Mistral-Large-Instruct-2407-4bit|Mistral Large 123B (MLX)|general|123|69.0|high||Mistral||0|0|1|0||||mlx-4bit
+  mixtral-8x7b-mlx|mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit|Mixtral 8X7B (MLX)|general|47|26.3|high|32|Mistral||0|0|1|0||||mlx-4bit
+  mixtral-8x22b-mlx|mlx-community/Mixtral-8x22B-4bit|Mixtral 8X22B (MLX)|general|141|79.4|high|64|Mistral||0|0|1|0||||mlx-4bit
+  llama3-2-1b-mlx|mlx-community/Llama-3.2-1B-Instruct-4bit|Llama 3.2 1B (MLX)|general|1|0.7|cpu-only||Meta||0|0|1|0||||mlx-4bit
+  llama3-1-8b-mlx|mlx-community/Meta-Llama-3.1-8B-Instruct-4bit|Llama 3.1 8B (MLX)|general|8|4.5|low||Meta||0|0|1|0||||mlx-4bit
+  llama3-1-70b-mlx|mlx-community/Meta-Llama-3.1-70B-Instruct-4bit|Llama 3.1 70B (MLX)|general|70|39.7|high||Meta||0|0|1|0||||mlx-4bit
+  llama3-1-405b-mlx|mlx-community/Meta-Llama-3.1-405B-4bit|Llama 3.1 405B (MLX)|general|405|230.7|high|128|Meta||0|0|1|0||||mlx-4bit
+  glm4-9b-mlx|mlx-community/glm-4-9b-chat-1m-4bit|GLM-4 9B (MLX)|general|9|5.4|low||Z AI||0|0|1|0||||mlx-4bit
+  glm-5-2-mlx|mlx-community/GLM-5.2-4bit|GLM 5.2 (MLX)|reasoning|754|418.3|high|1000|Z AI||1|0|1|0||||mlx-4bit
+  glm-4-7-flash-30b-mlx|mlx-community/GLM-4.7-Flash-4bit|GLM-4.7 Flash (MLX)|reasoning|30|16.9|medium|200|Z AI||1|0|1|0||||mlx-4bit
+  nemotron-3-5-lightning-30b-mlx|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (MLX)|general|30|17.8|medium|1000|NVIDIA||0|0|1|0||||mlx-4bit
+  deepseek-v4-flash-0731-mlx|mlx-community/DeepSeek-V4-Flash-0731-2.4bit-mixed|DeepSeek V4 Flash 0731 (MLX)|reasoning|284|92.8|high|1000|DeepSeek||1|0|1|0||||mlx-2.4bit
+  ministral-3-3b-mlx|mlx-community/Ministral-3-3B-Instruct-2512-4bit|Ministral 3 3B (MLX)|general|3|2.8|cpu-only|256|Mistral||0|1|1|0||||mlx-4bit
+  ministral-3-8b-mlx|mlx-community/Ministral-3-8B-Instruct-2512-4bit|Ministral 3 8B (MLX)|general|8|5.6|low|256|Mistral||0|1|1|0||||mlx-4bit
+  ministral-3-14b-mlx|mlx-community/Ministral-3-14B-Instruct-2512-4bit|Ministral 3 14B (MLX)|general|14|8.5|low|256|Mistral||0|1|1|0||||mlx-4bit
+  command-r-35b-mlx|mlx-community/c4ai-command-r-v01-4bit|Command R 35B (MLX)|general|35|22.7|medium|128|Cohere||0|0|1|0||||mlx-4bit
+  north-mini-code-1-0-mlx|mlx-community/North-Mini-Code-1.0-4bit|North Mini Code 1.0 (MLX)|coding|30|18.5|medium|488|Cohere||1|0|1|0||||mlx-4bit
+  olmo-3-7b-mlx|mlx-community/Olmo-3-7B-Instruct-4bit|OLMo 3 7B (MLX)|general|7|4.1|low|64|Allen Institute||0|0|1|0||||mlx-4bit
+  olmo-3-32b-mlx|mlx-community/Olmo-3-1125-32B-8bit|OLMo 3 32B (MLX)|general|32|34.3|medium|64|Allen Institute||0|0|1|0||||mlx-8bit
+  phi4-14b-mlx|mlx-community/phi-4-4bit|Phi-4 14B (MLX)|general|14|8.3|low|16|Microsoft||0|0|1|0||||mlx-4bit
+  phi4-mini-3-8b-mlx|mlx-community/Phi-4-mini-instruct-4bit|Phi-4 Mini 3.8B (MLX)|general|3.8|2.2|cpu-only|128|Microsoft||0|0|1|0||||mlx-4bit
+  phi4-reasoning-14b-mlx|mlx-community/Phi-4-reasoning-4bit|Phi-4 Reasoning 14B (MLX)|reasoning|14|8.3|low|32|Microsoft||1|0|1|0||||mlx-4bit
+  minimax-m2-mlx|mlx-community/MiniMax-M2-4bit|MiniMax M2 (MLX)|general|230|128.7|high|205|MiniMax||1|0|1|0||||mlx-4bit
 `;
 
 const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) =>
@@ -669,7 +718,7 @@ const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').m
 //
 // `params`/`ctxK`/purpose/capability flags are reused from the matching Ollama-backend row for the
 // same base model, as the other per-backend tables above do. `gpuVendors` is overridden to `['apple']`
-// (see buildLlmModel) — Apple Silicon only, no viable path on any other vendor. intel/agentic/perf
+// (see buildLlmModel) — Apple Silicon only, no viable path on any other vendor. intel/perf
 // columns are left blank for the same reason the other per-backend tables leave them blank: none of
 // these MTP-adapted checkpoints have been independently benchmarked by Artificial Analysis.
 //
@@ -687,15 +736,15 @@ const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').m
 // unrelated product line from the same publisher — out of scope for this catalog on quality/safety
 // grounds regardless of MTP status.
 const MTPLX_LLM_TOON = `
-llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
-  qwen3-8-27b-mtplx-speed|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed|Qwen 3.8 27B MTPLX Optimized Speed|reasoning|27|20.7|medium|256|Alibaba|||1|1|1|0||||mtplx-dynamic
-  qwen3-8-27b-mtplx-quality|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality|Qwen 3.8 27B MTPLX Optimized Quality|reasoning|27|30.0|high|256|Alibaba|||1|1|1|0||||mtplx-dynamic
-  qwen3-8-27b-mtplx-bare|Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed|Qwen 3.8 27B MTPLX Bare Speed|reasoning|27|16.3|medium|256|Alibaba|||1|1|1|0||||mtplx-dynamic
-  qwen3-6-27b-mtplx-v2|Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2|Qwen 3.6 27B MTPLX Optimized Speed V2|coding|27|19.9|medium|262|Alibaba|||1|1|1|0||||mtplx-dynamic
-  qwen3-6-35b-mtplx-speed|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed|Qwen 3.6 35B A3B MTPLX Optimized Speed|coding|35|21.0|medium|262|Alibaba|||1|1|1|0||||mtplx-dynamic
-  qwen3-6-35b-mtplx-balance|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance|Qwen 3.6 35B A3B MTPLX Optimized Balance|coding|35|29.7|high|262|Alibaba|||1|1|1|0||||mtplx-dynamic
-  qwen3-5-4b-mtplx-speed|Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed|Qwen 3.5 4B MTPLX Optimized Speed|reasoning|4|2.5|cpu-only|262|Alibaba|||1|1|1|0||||mtplx-dynamic
-  qwen3-5-9b-mtplx-speed|Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed|Qwen 3.5 9B MTPLX Optimized Speed|reasoning|9|8.7|low|262|Alibaba|||1|1|1|0||||mtplx-dynamic
+llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-8-27b-mtplx-speed|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed|Qwen 3.8 27B MTPLX Optimized Speed|reasoning|27|20.7|medium|256|Alibaba||1|1|1|0||||mtplx-dynamic
+  qwen3-8-27b-mtplx-quality|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality|Qwen 3.8 27B MTPLX Optimized Quality|reasoning|27|30.0|high|256|Alibaba||1|1|1|0||||mtplx-dynamic
+  qwen3-8-27b-mtplx-bare|Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed|Qwen 3.8 27B MTPLX Bare Speed|reasoning|27|16.3|medium|256|Alibaba||1|1|1|0||||mtplx-dynamic
+  qwen3-6-27b-mtplx-v2|Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2|Qwen 3.6 27B MTPLX Optimized Speed V2|coding|27|19.9|medium|262|Alibaba||1|1|1|0||||mtplx-dynamic
+  qwen3-6-35b-mtplx-speed|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed|Qwen 3.6 35B A3B MTPLX Optimized Speed|coding|35|21.0|medium|262|Alibaba||1|1|1|0||||mtplx-dynamic
+  qwen3-6-35b-mtplx-balance|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance|Qwen 3.6 35B A3B MTPLX Optimized Balance|coding|35|29.7|high|262|Alibaba||1|1|1|0||||mtplx-dynamic
+  qwen3-5-4b-mtplx-speed|Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed|Qwen 3.5 4B MTPLX Optimized Speed|reasoning|4|2.5|cpu-only|262|Alibaba||1|1|1|0||||mtplx-dynamic
+  qwen3-5-9b-mtplx-speed|Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed|Qwen 3.5 9B MTPLX Optimized Speed|reasoning|9|8.7|low|262|Alibaba||1|1|1|0||||mtplx-dynamic
 `;
 
 const mtplxLlms: CuratedModel[] = decodeToonTable(MTPLX_LLM_TOON, 'llms').map((row) =>
@@ -739,7 +788,7 @@ const mtplxLlms: CuratedModel[] = decodeToonTable(MTPLX_LLM_TOON, 'llms').map((r
 //            own column instead of being folded into `gb`.
 // `params`/`ctxK`/purpose/capability flags are reused from the matching existing catalog row for
 // the same base model rather than re-derived — architecture and context length don't change with
-// the serving engine. intel/agentic/perf are left blank for the same reason the vLLM tables leave
+// the serving engine. intel/perf are left blank for the same reason the vLLM tables leave
 // them blank: none of these pairs are on the Artificial Analysis leaderboard.
 //
 // The project's README quotes 2.6–4.06× speedups on an M4 Pro. Those are author-reported, measured
@@ -752,18 +801,18 @@ const mtplxLlms: CuratedModel[] = decodeToonTable(MTPLX_LLM_TOON, 'llms').map((r
 // capability flags would have to be sourced fresh, and this file's header is explicit that
 // unverified field-level metadata is how fabricated rows got in last time.
 const DSPARK_LLM_TOON = `
-llms[11|]{id,backendModelId,name,purpose,params,gb,ramGb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
-  qwen3-4b-dspark|mlx-community/Qwen3-4B-8bit|Qwen 3 4B (mlx-dspark)|general|4|7.05|8.0|low|256|Alibaba|||1|0|1|0||||mlx-8bit+dspark
-  qwen3-8b-dspark|mlx-community/Qwen3-8B-8bit|Qwen 3 8B (mlx-dspark)|general|8|13.44|11.0|medium|40|Alibaba|||1|0|1|0||||mlx-8bit+dspark
-  ornith-9b-dspark|mlx-community/Ornith-1.0-9B-8bit|Ornith 1.0 9B (mlx-dspark)|coding|9|17.00|13.0|medium|256|Deep Reinforce|||1|0|1|0||||mlx-8bit+dspark
-  gemma4-12b-dspark|mlx-community/gemma-4-12B-it-8bit|Gemma 4 12B (mlx-dspark)|general|12|19.57|15.0|medium|128|Google|||1|1|1|0||||mlx-8bit+dspark
-  qwen3-8-27b-dspark|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (mlx-dspark)|reasoning|27|19.89|18.0|medium|256|Alibaba|||1|1|1|0||||mlx-4bit+dflash2
-  qwen3-14b-dspark|mlx-community/Qwen3-14B-8bit|Qwen 3 14B (mlx-dspark)|general|14|22.52|19.0|medium|40|Alibaba|||1|0|1|0||||mlx-8bit+dspark
-  nemotron-3-5-lightning-30b-dspark|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (mlx-dspark)|general|30|19.70|20.0|medium|1000|NVIDIA|||0|0|1|0||||mlx-4bit+dspark
-  qwen3-6-35b-dspark|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B A3B (mlx-dspark)|coding|35|23.46|23.0|medium|262|Alibaba|||1|1|1|0||||mlx-4bit+dspark
-  muse-glimmer-30b-dspark|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer 30B (mlx-dspark)|general|30|24.72|26.0|high|128|Meta|||1|1|1|0||||mlx-4bit+dspark
-  qwen3-8-27b-8bit-dspark|mlx-community/Qwen3.8-27B-8bit|Qwen 3.8 27B 8-bit (mlx-dspark)|reasoning|27|33.34|29.0|high|256|Alibaba|||1|1|1|0||||mlx-8bit+dflash2
-  qwen3-6-27b-dspark|mlx-community/Qwen3.6-27B-8bit|Qwen 3.6 27B (mlx-dspark)|coding|27|38.30|32.0|high|262|Alibaba|||1|1|1|0||||mlx-8bit+dspark
+llms[11|]{id,backendModelId,name,purpose,params,gb,ramGb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-4b-dspark|mlx-community/Qwen3-4B-8bit|Qwen 3 4B (mlx-dspark)|general|4|7.05|8.0|low|256|Alibaba||1|0|1|0||||mlx-8bit+dspark
+  qwen3-8b-dspark|mlx-community/Qwen3-8B-8bit|Qwen 3 8B (mlx-dspark)|general|8|13.44|11.0|medium|40|Alibaba||1|0|1|0||||mlx-8bit+dspark
+  ornith-9b-dspark|mlx-community/Ornith-1.0-9B-8bit|Ornith 1.0 9B (mlx-dspark)|coding|9|17.00|13.0|medium|256|Deep Reinforce||1|0|1|0||||mlx-8bit+dspark
+  gemma4-12b-dspark|mlx-community/gemma-4-12B-it-8bit|Gemma 4 12B (mlx-dspark)|general|12|19.57|15.0|medium|128|Google||1|1|1|0||||mlx-8bit+dspark
+  qwen3-8-27b-dspark|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (mlx-dspark)|reasoning|27|19.89|18.0|medium|256|Alibaba||1|1|1|0||||mlx-4bit+dflash2
+  qwen3-14b-dspark|mlx-community/Qwen3-14B-8bit|Qwen 3 14B (mlx-dspark)|general|14|22.52|19.0|medium|40|Alibaba||1|0|1|0||||mlx-8bit+dspark
+  nemotron-3-5-lightning-30b-dspark|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (mlx-dspark)|general|30|19.70|20.0|medium|1000|NVIDIA||0|0|1|0||||mlx-4bit+dspark
+  qwen3-6-35b-dspark|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B A3B (mlx-dspark)|coding|35|23.46|23.0|medium|262|Alibaba||1|1|1|0||||mlx-4bit+dspark
+  muse-glimmer-30b-dspark|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer 30B (mlx-dspark)|general|30|24.72|26.0|high|128|Meta||1|1|1|0||||mlx-4bit+dspark
+  qwen3-8-27b-8bit-dspark|mlx-community/Qwen3.8-27B-8bit|Qwen 3.8 27B 8-bit (mlx-dspark)|reasoning|27|33.34|29.0|high|256|Alibaba||1|1|1|0||||mlx-8bit+dflash2
+  qwen3-6-27b-dspark|mlx-community/Qwen3.6-27B-8bit|Qwen 3.6 27B (mlx-dspark)|coding|27|38.30|32.0|high|262|Alibaba||1|1|1|0||||mlx-8bit+dspark
 `;
 
 // `gpuVendors: ['apple']` is the whole gating story (enforced in ModelRegistryService): mlx-dspark
