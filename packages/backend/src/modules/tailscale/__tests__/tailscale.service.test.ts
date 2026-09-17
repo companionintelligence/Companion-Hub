@@ -12,7 +12,8 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 import { access } from 'node:fs/promises';
-import { TailscaleService } from '../tailscale.service';
+import { isServePermissionDenied, servePermissionRemedy, TailscaleService } from '../tailscale.service';
+import { CORE_6_SERVE_STATUS, CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR, HUB_SERVE_COMMAND, SERVE_CONFIG_DENIED_STDERR } from './serve-captures';
 
 const runningStatusJson = JSON.stringify({
   Version: '1.82.0',
@@ -601,20 +602,8 @@ describe('TailscaleService', () => {
     );
   });
 
-  it('getServeStatus parses direct-port and service entries', async () => {
-    const serveStatusJson = JSON.stringify({
-      Web: {
-        'hub-tailscale-1.example.ts.net:3001': {
-          '/': { Proxy: 'http://172.18.0.10:3001' },
-        },
-      },
-      Services: {
-        'svc:bitboard': {
-          Dest: 'http://172.18.0.11:3711',
-        },
-      },
-    });
-
+  /** Answers `serve status --json` from the sidecar with `stdout`; anything else is unexpected. */
+  function mockSidecarServeStatus(stdout: string) {
     execFileMock.mockImplementation(
       (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
         if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
@@ -622,12 +611,47 @@ describe('TailscaleService', () => {
           return;
         }
         if (cmd === 'docker' && args.includes('serve') && args.includes('status') && args.includes('--json')) {
-          process.nextTick(() => cb(null, serveStatusJson, ''));
+          process.nextTick(() => cb(null, stdout, ''));
           return;
         }
         process.nextTick(() => cb(new Error('unexpected'), '', ''));
       },
     );
+  }
+
+  it('getServeStatus reads the proxy target under Handlers, where tailscale actually prints it', async () => {
+    // The fixture this replaced put `/` directly under the listener. Real output nests it under
+    // `Handlers`, so the parser reported mount `Handlers` with no target and the sync re-ran
+    // `tailscale serve` on every appliance every five minutes.
+    mockSidecarServeStatus(CORE_6_SERVE_STATUS);
+
+    await expect(service.getServeStatus()).resolves.toEqual({
+      entries: [
+        {
+          service: '443',
+          proto: 'https',
+          mountPoint: '/',
+          dest: 'http://localhost:5002',
+          listenPort: 443,
+          host: 'core-6.capybara-ulmer.ts.net',
+        },
+      ],
+    });
+  });
+
+  it('getServeStatus keeps a listener per node name so a stale pre-rename listener is not mistaken for the current one', async () => {
+    mockSidecarServeStatus(CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR);
+
+    const { entries } = await service.getServeStatus();
+
+    expect(entries.map((entry) => [entry.host, entry.listenPort, entry.mountPoint, entry.dest])).toEqual([
+      ['bench-1.capybara-ulmer.ts.net', 443, '/', 'http://localhost:5002'],
+      ['core-17.capybara-ulmer.ts.net', 443, '/', 'http://localhost:5002'],
+    ]);
+  });
+
+  it('getServeStatus still lists Tailscale Services so the sync can clear them', async () => {
+    mockSidecarServeStatus(JSON.stringify({ Services: { 'svc:bitboard': { Dest: 'http://172.18.0.11:3711' } } }));
 
     await expect(service.getServeStatus()).resolves.toEqual({
       entries: [
@@ -638,14 +662,36 @@ describe('TailscaleService', () => {
           dest: 'http://172.18.0.11:3711',
           rawServiceName: 'svc:bitboard',
         },
-        {
-          service: '3001',
-          proto: 'https',
-          mountPoint: '/',
-          dest: 'http://172.18.0.10:3001',
-          listenPort: 3001,
-        },
       ],
+    });
+  });
+
+  describe('isServePermissionDenied', () => {
+    it('recognises the operator refusal tailscale printed on beta-ms-a2, whether it arrives in the message or in stderr', () => {
+      // Node puts stderr into `message` for execFile failures; the service also attaches it as
+      // `stderr`, so either path must be enough.
+      expect(isServePermissionDenied(new Error(`Command failed: ${HUB_SERVE_COMMAND}\n${SERVE_CONFIG_DENIED_STDERR}`))).toBe(true);
+      expect(isServePermissionDenied(Object.assign(new Error(`Command failed: ${HUB_SERVE_COMMAND}`), { stderr: SERVE_CONFIG_DENIED_STDERR }))).toBe(
+        true,
+      );
+    });
+
+    it('does not claim a tailnet without HTTPS or a failed exec is a permission problem', () => {
+      // Those failures have their own handling (the enable-Serve toast, the per-pass error log);
+      // folding them into the once-only operator warning would hide them.
+      expect(isServePermissionDenied(new Error('Serve is not enabled on your tailnet.'))).toBe(false);
+      expect(isServePermissionDenied(new Error('Tailscale CLI unavailable (no host socket and no sidecar)'))).toBe(false);
+      expect(isServePermissionDenied('serve config denied')).toBe(false);
+    });
+  });
+
+  describe('servePermissionRemedy', () => {
+    it("names the Hub's uid rather than $USER, which resolves to the container's account", () => {
+      expect(servePermissionRemedy(1000)).toBe('sudo tailscale set --operator="$(id -nu 1000)" (the Hub runs as uid 1000)');
+    });
+
+    it('falls back to a placeholder where the platform has no uid', () => {
+      expect(servePermissionRemedy(null)).toContain('sudo tailscale set --operator=<user>');
     });
   });
 });

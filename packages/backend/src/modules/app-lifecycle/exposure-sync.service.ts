@@ -31,8 +31,9 @@ import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
-import { TailscaleService } from '../tailscale/tailscale.service';
+import { isServePermissionDenied, servePermissionRemedy, TailscaleService, type TailscaleServeEntry } from '../tailscale/tailscale.service';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
 import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 import { customDomainAuditLine } from './custom-domain-audit';
 
@@ -85,6 +86,22 @@ function indexByFirst<T>(entries: readonly T[], key: (entry: T) => string): Map<
 }
 
 /**
+ * Whether Tailscale Serve already answers `port` under this node's current name with the wanted
+ * target.
+ *
+ * The name is part of the match because a tailnet rename leaves the old listener in place and
+ * gives the new name none. core-17 (formerly bench-1) kept only `bench-1.<tailnet>:443`, so every
+ * peer's HTTPS to `core-17.<tailnet>` failed its TLS handshake while a port-and-target check read
+ * the Hub as published. With no DNS name in the status there is nothing to compare, so the port
+ * and target decide rather than republishing on every pass.
+ */
+function isServedUnderCurrentName(entries: readonly TailscaleServeEntry[], port: number, upstreamUrl: string, selfHost: string | null): boolean {
+  return entries.some(
+    (entry) => entry.listenPort === port && entry.mountPoint === '/' && entry.dest === upstreamUrl && (selfHost === null || entry.host === selfHost),
+  );
+}
+
+/**
  * Converts Companion Portal's per-app failure details into an operator-facing
  * explanation.
  *
@@ -133,6 +150,9 @@ export class ExposureSyncService {
 
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
+  /** Set once the operator refusal has been logged; cleared by the next publish that succeeds. */
+  private servePermissionDeniedReported = false;
+  private privateVpnDisabledReported = false;
 
   private readonly lastCustomDomainRestartAt = new Map<AppUrn, number>();
   /**
@@ -253,6 +273,21 @@ export class ExposureSyncService {
    * returns without changing the last configuration.
    */
   private async triggerTailscaleSync() {
+    /*
+     * `PRIVATE_VPN_USER_DISABLED=true` is the operator's opt-out, and core-17, beta-ms-a2, and
+     * beta-nas set it, yet this pass still ran `tailscale serve` on each of them every five
+     * minutes. Opting out leaves Serve exactly as it is rather than tearing it down: all three
+     * still hold a 443 listener that pool peers reach through `https://<node>/`, and Serve
+     * config does not record whether the Hub or an operator created a listener.
+     */
+    if (!isPrivateVpnEnabled()) {
+      if (!this.privateVpnDisabledReported) {
+        this.privateVpnDisabledReported = true;
+        this.logger.info('[Tailscale] Private VPN is turned off for this Hub (PRIVATE_VPN_USER_DISABLED=true); leaving Tailscale Serve unchanged');
+      }
+      return;
+    }
+
     try {
       const tailscaleService = this.moduleRef.get(TailscaleService, { strict: false });
       if (!tailscaleService) return;
@@ -332,24 +367,39 @@ export class ExposureSyncService {
         upstreamUrl: await tailscaleService.getHubServeUpstream(),
       });
 
-      const currentlyServedByPort = new Map(
-        serveStatus.entries.filter((entry) => entry.listenPort).map((entry) => [entry.listenPort as number, entry]),
-      );
+      const selfHost = status.nodeFqdn?.toLowerCase() ?? null;
 
       for (const desired of desiredPorts.values()) {
-        const currentEntry = currentlyServedByPort.get(desired.port);
-        if (!currentEntry || currentEntry.dest !== desired.upstreamUrl || currentEntry.mountPoint !== '/') {
-          await tailscaleService
-            .serveApp({
-              appName: desired.appName,
-              httpsPort: desired.port,
-              upstreamUrl: desired.upstreamUrl,
-            })
-            .catch((e) =>
-              desired.appUrn
-                ? this.surfaceTailscaleServeFailure(desired.appUrn, e)
-                : this.logger.error(`[Tailscale] Failed to publish the Hub on the Private VPN: ${e instanceof Error ? e.message : String(e)}`),
-            );
+        if (isServedUnderCurrentName(serveStatus.entries, desired.port, desired.upstreamUrl, selfHost)) {
+          continue;
+        }
+
+        const onPort = serveStatus.entries.filter((entry) => entry.listenPort === desired.port);
+        const staleHost = selfHost && !onPort.some((entry) => entry.host === selfHost) ? onPort.find((entry) => entry.host)?.host : undefined;
+        if (staleHost) {
+          this.logger.info(
+            `[Tailscale] :${desired.port} is served for ${staleHost} but this node is now ${selfHost}; publishing ${desired.appName} under the current name`,
+          );
+        }
+
+        try {
+          await tailscaleService.serveApp({
+            appName: desired.appName,
+            httpsPort: desired.port,
+            upstreamUrl: desired.upstreamUrl,
+          });
+          this.servePermissionDeniedReported = false;
+        } catch (e) {
+          if (isServePermissionDenied(e)) {
+            this.reportServePermissionDenied(e);
+            // Every other write in this pass, the cleanup below included, meets the same refusal.
+            return;
+          }
+          if (desired.appUrn) {
+            this.surfaceTailscaleServeFailure(desired.appUrn, e);
+          } else {
+            this.logger.error(`[Tailscale] Failed to publish the Hub on the Private VPN: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       }
 
@@ -405,6 +455,28 @@ export class ExposureSyncService {
         target.appUrn,
       );
     }
+  }
+
+  /**
+   * Logs tailscaled's operator refusal once, then at debug level until a publish succeeds.
+   *
+   * The refusal is a host setting the Hub cannot change, so retrying on the five-minute poll only
+   * repeated the same four-line CLI error all day on beta-ms-a2, beta-nas, and core-17. That error
+   * also suggests `--operator=$USER`, which names the wrong account when read from inside the
+   * container, so this line names the Hub's uid instead.
+   */
+  private reportServePermissionDenied(error: unknown): void {
+    if (this.servePermissionDeniedReported) {
+      this.logger.debug(`[Tailscale] Tailscale Serve config still denied: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    this.servePermissionDeniedReported = true;
+    this.logger.warn(
+      "[Tailscale] tailscaled denied the Hub's Private VPN publish (serve config denied) because the Hub is neither root nor this host's Tailscale operator. " +
+        `Run ${servePermissionRemedy()} once on the host; the next sync then publishes the Hub and its Private VPN apps. ` +
+        'To keep the Hub from publishing itself instead, set PRIVATE_VPN_USER_DISABLED=true in its .env. ' +
+        'Further denials log at debug level until a publish succeeds.',
+    );
   }
 
   /**
