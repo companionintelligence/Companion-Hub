@@ -22,7 +22,8 @@ import { DeviceRegistrationRepository } from '../registration/device-registratio
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver, type StandardizedAiEnv } from '../inference/inference-env-resolver';
-import { applyCloudProviderEnv } from '../inference/cloud-provider-env';
+import { applyCloudProviderEnv, cloudProviderManagedKeys } from '../inference/cloud-provider-env';
+import { INFERENCE_ERROR_ENV_KEY } from '../inference/app-model-handout';
 import { ApiKeyService } from '../api-keys/api-key.service';
 import type { ApiKeyScope } from '../api-keys/api-key.scopes';
 import { isOfficialStoreApp } from './official-store.predicate';
@@ -85,6 +86,27 @@ const HUB_INFERENCE_RESOLVED: Record<string, keyof StandardizedAiEnv> = {
   ollama_embed_host: 'CI_OLLAMA_EMBED_HOST',
   num_ctx: 'CI_LLM_NUM_CTX',
 };
+
+/** What {@link AppHelpers.buildInferenceEnv} produces for one app. */
+export interface InferenceEnvEntries {
+  /** Env entries a regeneration would write now. */
+  entries: Map<string, string>;
+  /** Every env key the inference block owns, including ones left unset this time. */
+  ownedKeys: string[];
+  /** The resolved values the entries were mapped from. */
+  aiEnv: StandardizedAiEnv;
+}
+
+/** Whether the manifest opts into inference values through `hub_integration.inference`. */
+export function hasInferenceMapping(config: Pick<AppInfo, 'hub_integration'>): boolean {
+  const mapping = config.hub_integration?.inference;
+  return Boolean(mapping && Object.keys(mapping).length > 0);
+}
+
+/** An app the Hub hands inference config to: categorized `ai`, or declaring an inference mapping. */
+export function isAiAppInfo(config: Pick<AppInfo, 'hub_integration' | 'categories'>): boolean {
+  return Boolean(config.categories?.includes('ai')) || hasInferenceMapping(config);
+}
 
 /** Copies resolved Hub inference values into the app's declared variables. */
 export function applyHubInferenceEnv(options: {
@@ -205,6 +227,42 @@ export class AppHelpers {
 
       return null;
     }
+  }
+
+  /**
+   * The inference-derived entries `generateEnvFile` writes into an AI app's `app.env`, plus every
+   * key those entries own whether or not a value is set this time.
+   *
+   * The one place this is computed, so the staleness check (`InferenceEnvStalenessService`) compares
+   * an app's file against exactly what a regeneration would write rather than against a copy of the
+   * mapping rules that could drift.
+   */
+  async buildInferenceEnv(appName: string, config: Pick<AppInfo, 'hub_integration' | 'categories'>): Promise<InferenceEnvEntries> {
+    const entries = new Map<string, string>();
+    // The app slug selects its requirement row — Hermes' 64K floor and tool calling — so this path
+    // matches the credentials.env endpoint and never emits a model the app would refuse at startup.
+    const aiEnv = await this.inferenceEnv.resolve({ appSlug: appName, minContextLength: appMinContextLength(appName) });
+    if (hasInferenceMapping(config)) {
+      applyHubInferenceEnv({ hubIntegration: config.hub_integration, aiEnv, envMap: entries });
+    }
+    applyCloudProviderEnv(entries, aiEnv.cloudProviderEnv);
+    if (aiEnv.CI_INFERENCE_ERROR) {
+      entries.set(INFERENCE_ERROR_ENV_KEY, aiEnv.CI_INFERENCE_ERROR);
+    }
+
+    const providerSwitch = config.hub_integration?.inference_provider;
+    if (providerSwitch) {
+      const usesOpenAiCompatible = (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
+      entries.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
+    }
+
+    const ownedKeys = new Set<string>([
+      INFERENCE_ERROR_ENV_KEY,
+      ...cloudProviderManagedKeys(),
+      ...Object.values(config.hub_integration?.inference ?? {}),
+    ]);
+    if (providerSwitch) ownedKeys.add(providerSwitch.env);
+    return { entries, ownedKeys: [...ownedKeys].filter((key): key is string => typeof key === 'string' && key.length > 0), aiEnv };
   }
 
   /**
@@ -712,28 +770,11 @@ export class AppHelpers {
     // Apps declare required inference values through `hub_integration.inference`.
     // The Hub maps resolved values to the declared environment variable names.
     // Apps without this field receive no inference variables.
-    const inferenceMapping = config.hub_integration?.inference;
-    const hasInferenceMapping = Boolean(inferenceMapping && Object.keys(inferenceMapping).length > 0);
-    const isAiApp = Boolean(config.categories?.includes('ai')) || hasInferenceMapping;
-    if (isAiApp) {
+    if (isAiAppInfo(config)) {
       try {
-        // Apply the app's context floor, such as Hermes' 64K minimum, so this path
-        // matches the credentials.env endpoint and never emits a sub-minimum
-        // `num_ctx` that would make the app abort during startup.
-        const aiEnv = await this.inferenceEnv.resolve({ minContextLength: appMinContextLength(appName) });
-        if (hasInferenceMapping) {
-          applyHubInferenceEnv({
-            hubIntegration: config.hub_integration,
-            aiEnv,
-            envMap,
-          });
-        }
-        applyCloudProviderEnv(envMap, aiEnv.cloudProviderEnv);
-
-        const providerSwitch = config.hub_integration?.inference_provider;
-        if (providerSwitch) {
-          const usesOpenAiCompatible = (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
-          envMap.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
+        const inference = await this.buildInferenceEnv(appName, config);
+        for (const [key, value] of inference.entries) {
+          envMap.set(key, value);
         }
       } catch (err) {
         this.logger.warn(`[AppHelpers] Failed to resolve inference env for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);

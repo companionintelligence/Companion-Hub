@@ -25,6 +25,8 @@ import { AppOperationRegistry } from './app-operation-registry';
 import { AppStatusSyncService } from './app-status-sync.service';
 import { PortalModule } from '@/core/portal/portal.module';
 import { LifecycleJobService } from './lifecycle-job.service';
+import { InferenceModule } from '../inference/inference.module';
+import { AiAppInferenceRefreshService } from './ai-app-inference-refresh.service';
 
 @Module({
   imports: [
@@ -44,6 +46,8 @@ import { LifecycleJobService } from './lifecycle-job.service';
     NetworkModule,
     ApiKeyModule,
     PortalModule,
+    // forwardRef for the same reason AppsModule uses one: Inference -> HubPool -> Inference.
+    forwardRef(() => InferenceModule),
   ],
   providers: [
     HubAccessService,
@@ -55,6 +59,7 @@ import { LifecycleJobService } from './lifecycle-job.service';
     AppStatusSyncService,
     AppRehydrationService,
     LifecycleJobService,
+    AiAppInferenceRefreshService,
   ],
   controllers: [AppLifecycleController],
   exports: [
@@ -65,6 +70,7 @@ import { LifecycleJobService } from './lifecycle-job.service';
     AppStatusSyncService,
     AppRehydrationService,
     LifecycleJobService,
+    AiAppInferenceRefreshService,
   ],
 })
 export class AppLifecycleModule {}

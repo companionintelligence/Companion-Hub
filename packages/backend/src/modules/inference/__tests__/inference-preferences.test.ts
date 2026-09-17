@@ -7,6 +7,12 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 vi.mock('../../app-lifecycle/app-lifecycle.service', () => ({
   AppLifecycleService: class AppLifecycleService {},
 }));
+// The controller reaches the refresh service lazily; the stub class is the token the test module provides.
+vi.mock('../../app-lifecycle/ai-app-inference-refresh.service', () => ({
+  AiAppInferenceRefreshService: class AiAppInferenceRefreshService {},
+}));
+
+import { AiAppInferenceRefreshService } from '../../app-lifecycle/ai-app-inference-refresh.service';
 
 import { InferenceController } from '../inference.controller';
 import { InferenceRouterService } from '../inference-router.service';
@@ -36,11 +42,16 @@ describe('InferenceController — preferences', () => {
   let controller: InferenceController;
   let configService: MockProxy<ConfigurationService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
+  let inferenceRefresh: { requestRefresh: ReturnType<typeof vi.fn> };
+  let appCredentials: MockProxy<AppCredentialsService>;
 
   beforeEach(async () => {
+    inferenceRefresh = { requestRefresh: vi.fn() };
+    appCredentials = mock<AppCredentialsService>();
     const moduleRef = await Test.createTestingModule({
       controllers: [InferenceController],
       providers: [
+        { provide: AiAppInferenceRefreshService, useValue: inferenceRefresh },
         { provide: InferenceRouterService, useValue: mock<InferenceRouterService>() },
         { provide: HardwareInspectorService, useValue: mock<HardwareInspectorService>() },
         { provide: MemoryManagerService, useValue: mock<MemoryManagerService>() },
@@ -49,7 +60,7 @@ describe('InferenceController — preferences', () => {
         { provide: CloudFallbackService, useValue: mock<CloudFallbackService>() },
         { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
         { provide: RocmInstallerService, useValue: mock<RocmInstallerService>() },
-        { provide: AppCredentialsService, useValue: mock<AppCredentialsService>() },
+        { provide: AppCredentialsService, useValue: appCredentials },
         { provide: HostMetricsService, useValue: mock<HostMetricsService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
@@ -138,6 +149,22 @@ describe('InferenceController — preferences', () => {
       preferredEmbeddingModel: null,
       preferredVisionModel: null,
     });
+  }, 30_000);
+
+  it('hands a preference change to the same refresh PATCH /api/user-settings uses, instead of restarting every AI app itself', async () => {
+    // This route restarted every AI app, Companion Memory included, while the user-settings route
+    // restarted none. Both now land in AiAppInferenceRefreshService, which restarts only stale apps.
+    configService.setInferencePreferences.mockResolvedValue({
+      preferredBackend: 'ollama',
+      preferredModel: 'qwen3-coder-30b',
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
+
+    await controller.updatePreferences({ backend: 'ollama', model: 'qwen3-coder-30b' });
+    await vi.waitFor(() => expect(inferenceRefresh.requestRefresh).toHaveBeenCalledWith('inference preferences changed'));
+
+    expect(appCredentials.invalidateCache).toHaveBeenCalled();
   }, 30_000);
 
   it('passes the preferred chat, embedding, and vision models through when provided', async () => {

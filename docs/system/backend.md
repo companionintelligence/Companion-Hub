@@ -256,18 +256,53 @@ RAM and did not restart AI apps.
 On save the Hub:
 
 1. Persists every provider (a masked `••••` POST keeps the stored key).
-2. Debounces `restartAiApps()` (1.5s) so four provider POSTs + a preferences PATCH recreate
-   OpenClaw / Hermes once.
+2. Requests an AI app refresh, which `AiAppInferenceRefreshService` debounces (1.5 s) so four
+   provider POSTs + a preferences PATCH produce one sweep. See
+   [App inference handout](#app-inference-handout).
 3. Injects **all** enabled providers additively. Local Ollama/vLLM stays `CI_LLM_*` /
    `OPENAI_API_*` / `CI_INFERENCE_BACKEND`. Cloud keys are `CI_CLOUD_<PROVIDER>_*` plus
    conventional aliases (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`). Cloud becomes
-   the primary `CI_LLM_*` only when the local backend is down.
+   the primary `CI_LLM_*` only when neither the local backend nor a connected pool peer can serve
+   chat.
 4. OpenClaw's entrypoint writes each Hub-managed provider into `openclaw.json`
    (`models.providers.openai|anthropic|google|github-copilot`). Schema-safe fields
    only — do not write `hubManaged` (unknown keys quarantine the whole file).
 
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
+
+## App inference handout
+
+Installed apps get inference config two ways, and both choose the model through the same rules:
+`InferenceEnvResolver` writes it into `app.env` when the app is generated, and
+`AppCredentialsService` serves it over `GET /api/inference/apps/:slug/credentials.env` (alias
+`bootstrap.env`), which CI-OpenClaw and CI-Hermes fetch at container start.
+
+- **Requirements.** `app-inference-requirements.ts` is the per-app table: `hermes-agent` needs tool
+  calling and a 64000-token window, `openclaw` needs tool calling. A catalog model that fails them is
+  never handed out. If nothing suitable is available the app gets no model and an explicit
+  `CI_INFERENCE_ERROR` instead. The credentials endpoint still answers 200 in that case, because both
+  bootstrap scripts `curl --fail` and keep their stale `.env` on any error. The model, `num_ctx` and
+  error keys are always listed in `X-Hub-Managed-Keys` so a stale value is stripped.
+- **Pool-aware choice.** With a connected peer the app talks to the pool proxy, so the model comes
+  from `selectPoolChatModel` over the pool inventory (`InferenceEndpointService.poolInventory`): the
+  operator's preferred model when a node serves it and it qualifies, else the best served model that
+  qualifies (the recommender's ranking), else a served model the catalog has no row for. A model only
+  a peer serves gets `num_ctx` 32768 (raised to the app's floor) rather than a value sized from this
+  node's memory. The peer filter mirrors `PoolProxyService.usablePeers`; change both together.
+- **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
+  never pulls a model a pool node already serves, nor one the app's requirements rule out.
+  `previewCredentials` resolves the same answer with no pull, cache, or handout record.
+- **Staleness.** `GET /api/apps/:urn/inference-env` compares what an app holds with what it would be
+  handed now: `app.env` against `AppHelpers.buildInferenceEnv`, and, for an app with no inference
+  mapping (OpenClaw), its last fetched handout against `previewCredentials`. It reports `stale`, the
+  differing key names (never values), and `routedThroughPool` / `chatModel` on both sides.
+- **Refresh.** `AiAppInferenceRefreshService` is the one path that restarts AI apps for inference
+  changes. `PATCH /api/inference/preferences`, `POST /api/inference/cloud-providers`, and
+  `PATCH /api/user-settings` (when the body carries an inference or pool-switch key) all request a
+  sweep, and a watcher requests one when pool membership holds a new value for two health polls. A
+  sweep restarts only stale apps. An automatic sweep also skips an app whose regeneration would
+  remove its endpoint. The Hub-upgrade sync still restarts every AI app unconditionally.
 
 ## Family Hub auth and Memory connect
 
