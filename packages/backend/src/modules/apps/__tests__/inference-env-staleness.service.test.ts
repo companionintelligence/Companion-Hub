@@ -8,6 +8,7 @@ import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { AppCredentialsService, type AppCredentialsConfig } from '@/modules/inference/app-credentials.service';
+import { handoutRecord } from '@/modules/inference/app-handout-record';
 import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
@@ -180,6 +181,15 @@ describe('InferenceEnvStalenessService', () => {
       expect(result).toMatchObject({ stale: true, wouldRemoveEndpoint: true });
     });
 
+    it('flags a regeneration that would leave the app with no chat model, so no automatic restart does it', async () => {
+      // The endpoint survives, but Ollama is still starting and lists nothing, so no model is emitted.
+      inferenceEnv.resolve.mockResolvedValue({ CI_LLM_BASE_URL: `${DIRECT_URL}/v1`, CI_LLM_API_KEY: 'ollama', OLLAMA_HOST: DIRECT_URL });
+
+      const result = await service.check(hermesUrn);
+
+      expect(result).toMatchObject({ stale: true, wouldRemoveEndpoint: false, wouldRemoveChatModel: true });
+    });
+
     it('surfaces the explicit error the app would be handed in place of a model', async () => {
       inferenceEnv.resolve.mockResolvedValue({
         CI_LLM_BASE_URL: `${POOL_URL}/v1`,
@@ -207,7 +217,7 @@ describe('InferenceEnvStalenessService', () => {
     });
 
     it('compares the handout openclaw last fetched with the one it would get now, by key name only', async () => {
-      appCredentials.lastHandout.mockReturnValue({ config: handout({}), servedAt: '2026-09-17T09:00:00.000Z' });
+      appCredentials.lastHandout.mockResolvedValue(handoutRecord(handout({}), '2026-09-17T09:00:00.000Z'));
       appCredentials.previewCredentials.mockResolvedValue(
         handout({
           endpointUrl: `${POOL_URL}/v1`,
@@ -231,22 +241,63 @@ describe('InferenceEnvStalenessService', () => {
     });
 
     it('treats an app with no recorded handout as stale, because the Hub cannot vouch for it', async () => {
-      appCredentials.lastHandout.mockReturnValue(null);
+      appCredentials.lastHandout.mockResolvedValue(null);
       appCredentials.previewCredentials.mockResolvedValue(handout({}));
 
       const result = await service.check(openclawUrn);
 
       expect(result.stale).toBe(true);
       expect(result.generated).toBeNull();
-      expect(result.reasons[0]).toContain('has fetched no bootstrap.env since this Hub started');
+      expect(result.reasons[0]).toContain('has never fetched bootstrap.env from this Hub');
     });
 
     it('reports current when the recorded handout matches', async () => {
-      appCredentials.lastHandout.mockReturnValue({ config: handout({}), servedAt: '2026-09-17T09:00:00.000Z' });
+      appCredentials.lastHandout.mockResolvedValue(handoutRecord(handout({}), '2026-09-17T09:00:00.000Z'));
       appCredentials.previewCredentials.mockResolvedValue(handout({}));
 
       expect((await service.check(openclawUrn)).stale).toBe(false);
     });
+  });
+
+  it("does not call an operator's own form value stale when the Hub has no value for that key", async () => {
+    // claude-code's listing asks for ANTHROPIC_API_KEY, which is also a Hub cloud-provider alias. With
+    // no Anthropic provider configured the Hub writes nothing there, and regeneration keeps the form value.
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({
+      id: 'claude-code',
+      categories: ['ai'],
+      form_fields: [{ type: 'password', label: 'Anthropic API key', env_variable: 'ANTHROPIC_API_KEY', required: true }],
+    } as unknown as AppInfo);
+    appFilesManager.getAppEnv.mockResolvedValue({
+      path: '/app-data/claude-code/app.env',
+      content: envFile({ ANTHROPIC_API_KEY: 'sk-ant-operator' }),
+    });
+    inferenceEnv.resolve.mockResolvedValue({ CI_LLM_BASE_URL: `${DIRECT_URL}/v1` });
+
+    const result = await service.check(createAppUrn('claude-code', 'ci-marketplace'));
+
+    expect(result).toMatchObject({ aiApp: true, stale: false, differences: [] });
+  });
+
+  it('still compares a form-declared key once the Hub does write a value for it', async () => {
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({
+      id: 'claude-code',
+      categories: ['ai'],
+      form_fields: [{ type: 'password', label: 'Anthropic API key', env_variable: 'ANTHROPIC_API_KEY', required: true }],
+    } as unknown as AppInfo);
+    appFilesManager.getAppEnv.mockResolvedValue({
+      path: '/app-data/claude-code/app.env',
+      content: envFile({ ANTHROPIC_API_KEY: 'sk-ant-operator' }),
+    });
+    inferenceEnv.resolve.mockResolvedValue({
+      CI_LLM_BASE_URL: `${DIRECT_URL}/v1`,
+      cloudProviderEnv: { CI_CLOUD_ANTHROPIC_API_KEY: 'sk-ant-hub', ANTHROPIC_API_KEY: 'sk-ant-hub' },
+    });
+
+    const result = await service.check(createAppUrn('claude-code', 'ci-marketplace'));
+
+    expect(result.stale).toBe(true);
+    expect(result.differences).toEqual(['ANTHROPIC_API_KEY', 'CI_CLOUD_ANTHROPIC_API_KEY']);
+    expect(JSON.stringify(result)).not.toContain('sk-ant');
   });
 
   it('answers aiApp=false, and resolves nothing, for an app the Hub hands no inference config', async () => {

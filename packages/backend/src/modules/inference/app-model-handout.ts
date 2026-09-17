@@ -151,6 +151,13 @@ export function selectPoolChatModel(input: {
   // catalog-id aliases a peer's inventory carries next to engine ids for tracked models.
   const nonLlmIds = new Set(input.catalog.filter((m) => m.modality !== 'llm').flatMap((m) => [m.backendModelId, m.id]));
   for (const entry of inventory.backends) {
+    // Only a host-served engine's own models. An operator runs `vllm serve <model>` on purpose, and
+    // the local handout paths have always trusted that list. An Ollama inventory is every tag ever
+    // pulled onto the node: embedders the name filter below misses (`bge-m3`), vision models, and
+    // sub-1B chat models with no tool support. Handing one of those to an agent because the catalog
+    // has no row to rule it out is the core-4 failure again with a different name, and neither local
+    // path ever emitted an uncatalogued Ollama tag.
+    if (entry.backend === 'ollama') continue;
     for (const engineId of entry.models) {
       const known = [...knownEngineIds].some((id) => sameModelId(id, engineId));
       const nonLlm = [...nonLlmIds].some((id) => sameModelId(id, engineId)) || /embed/i.test(engineId);
@@ -246,6 +253,13 @@ export function decideModelPrePull(input: {
   installedLocally: boolean;
   /** Pool nodes that serve `model`, or [] when the app is not routed through the pool. */
   poolServedBy: string[];
+  /**
+   * The chat model the pool is already handing this app, when it is routed through the pool and one
+   * qualifies. Null otherwise.
+   */
+  poolHandout?: string | null;
+  /** `model` is the operator's preferred model, not a substitute the recommender picked for this hardware. */
+  operatorPreferred?: boolean;
   requirements?: AppInferenceRequirements;
 }): PrePullDecision | null {
   const { kind, model } = input;
@@ -258,6 +272,12 @@ export function decideModelPrePull(input: {
   if (input.installedLocally) return decide(false, 'already installed on this node');
   if (input.poolServedBy.length > 0) {
     return decide(false, `already served by pool node(s) ${input.poolServedBy.join(', ')}`);
+  }
+  // The recommender's pick for this node's hardware is a substitute nobody asked for, and the app
+  // already has a working model from the pool. Downloading it would be the same unrequested
+  // multi-gigabyte side effect of a GET, one step removed. The operator's own choice still pulls.
+  if (kind === 'chat' && input.poolHandout && !input.operatorPreferred) {
+    return decide(false, `the pool already serves this app ${input.poolHandout}, and ${model.backendModelId} is not the preferred model`);
   }
   if (input.requirements) {
     const check = checkModelRequirements(model, input.requirements);

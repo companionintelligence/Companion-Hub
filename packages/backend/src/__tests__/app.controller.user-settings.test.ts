@@ -34,6 +34,16 @@ describe('PATCH /api/user-settings — inference preferences', () => {
     expect(refresh.requestRefresh).toHaveBeenCalledWith('settings changed: hubPoolEnabled');
   });
 
+  it('leaves AI apps alone when the General settings form resubmits the inference values it was loaded with', async () => {
+    // That form is loaded from userSettings and posts every value back, so a time-zone save carries inferenceModel.
+    configuration.get.mockReturnValue({ inferenceModel: 'qwen3-coder-30b', hubPoolEnabled: true } as never);
+
+    await controller.updateUserSettings({ inferenceModel: 'qwen3-coder-30b', hubPoolEnabled: true, timeZone: 'Europe/Berlin' } as never);
+
+    expect(configuration.setUserSettings).toHaveBeenCalled();
+    expect(refresh.requestRefresh).not.toHaveBeenCalled();
+  });
+
   it('leaves AI apps alone for a write that touches no inference setting', async () => {
     await controller.updateUserSettings({ themeColor: 'blue', allowAutoThemes: false } as never);
 

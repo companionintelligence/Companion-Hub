@@ -6,6 +6,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import { AppCredentialsService, type AppCredentialsConfig } from '../inference/app-credentials.service';
+import { differingHandoutKeys } from '../inference/app-handout-record';
 import { INFERENCE_ERROR_ENV_KEY } from '../inference/app-model-handout';
 import { isPoolProxyUrl } from '../inference/inference-endpoint.service';
 import { AppFilesManager } from './app-files-manager';
@@ -44,6 +45,13 @@ export interface InferenceEnvStaleness {
    * restart would strip a working-when-it-recovers config down to nothing.
    */
   wouldRemoveEndpoint: boolean;
+  /**
+   * True when the app holds a chat model and regenerating now would leave it with none — the local
+   * backend is still starting, or the peer that served its model has gone. An automatic refresh must
+   * not act on that either: restarting an agent mid-turn into a model-less config is worse than
+   * leaving it on a model that may be back within a health poll. An operator's change still does.
+   */
+  wouldRemoveChatModel: boolean;
   checkedAt: string;
 }
 
@@ -83,6 +91,7 @@ export class InferenceEnvStalenessService {
         generated: null,
         current: null,
         wouldRemoveEndpoint: false,
+        wouldRemoveChatModel: false,
         checkedAt,
       };
     }
@@ -99,9 +108,20 @@ export class InferenceEnvStalenessService {
       this.readBaseEnv(),
     ]);
     const onDisk = this.envUtils.envStringToMap(content);
+    // `generateEnvFile` writes form fields before the inference block, so a key the resolution leaves
+    // unset keeps whatever the operator typed into the app's form. That value is not the Hub's to
+    // compare. 26 of the marketplace's AI listings (counted 2026-09-17) declare a form field under a
+    // key the inference block owns: claude-code and the openshell-* images ask for ANTHROPIC_API_KEY,
+    // which is also a cloud-provider alias. Compared against the Hub's empty value, an operator's own
+    // key read as stale on every check, and those apps restarted on every pool membership change.
+    const formKeys = new Set((info.form_fields ?? []).map((field) => field.env_variable));
     for (const key of inference.ownedKeys) {
+      const resolved = inference.entries.get(key);
+      if (resolved === undefined && formKeys.has(key)) {
+        continue;
+      }
       // A key the resolution leaves unset is written from the Hub's own `.env`, when that has it.
-      const expected = inference.entries.get(key) ?? baseEnv.get(key) ?? null;
+      const expected = resolved ?? baseEnv.get(key) ?? null;
       if ((onDisk.get(key) ?? null) !== expected) {
         differences.add(key);
       }
@@ -129,19 +149,16 @@ export class InferenceEnvStalenessService {
     // the authoritative copy; only an app with no mapping (openclaw) is judged on its handout.
     if (this.appCredentials.isSupported(appName) && !hasInferenceMapping(info)) {
       basis.push('bootstrap-handout');
-      const preview = await this.appCredentials.previewCredentials(appName);
-      const handout = this.appCredentials.lastHandout(appName);
+      const [preview, handout] = await Promise.all([this.appCredentials.previewCredentials(appName), this.appCredentials.lastHandout(appName)]);
       current = viewOfHandout(preview);
       if (handout) {
-        generated = viewOfHandout(handout.config);
-        for (const key of new Set([...preview.managedKeys, ...handout.config.managedKeys])) {
-          if ((handout.config.env[key] ?? null) !== (preview.env[key] ?? null)) {
-            differences.add(key);
-          }
+        generated = viewOfHandout(handout);
+        for (const key of differingHandoutKeys(handout, preview)) {
+          differences.add(key);
         }
-        wouldRemoveEndpoint = wouldRemoveEndpoint || Boolean(handout.config.endpointUrl && !preview.endpointUrl);
+        wouldRemoveEndpoint = wouldRemoveEndpoint || Boolean(handout.endpointUrl && !preview.endpointUrl);
       } else {
-        reasons.push(`${appName} has fetched no bootstrap.env since this Hub started, so the Hub cannot vouch for what it holds`);
+        reasons.push(`${appName} has never fetched bootstrap.env from this Hub, so the Hub cannot vouch for what it holds`);
       }
     }
 
@@ -168,6 +185,7 @@ export class InferenceEnvStalenessService {
       generated,
       current,
       wouldRemoveEndpoint,
+      wouldRemoveChatModel: Boolean(generated?.chatModel && current && !current.chatModel),
       checkedAt,
     };
   }
@@ -184,6 +202,6 @@ export class InferenceEnvStalenessService {
   }
 }
 
-function viewOfHandout(config: AppCredentialsConfig): InferenceEnvView {
-  return { routedThroughPool: config.routedThroughPool, chatModel: config.chatModelId, error: config.chatModelError };
+function viewOfHandout(handout: Pick<AppCredentialsConfig, 'routedThroughPool' | 'chatModelId' | 'chatModelError'>): InferenceEnvView {
+  return { routedThroughPool: handout.routedThroughPool, chatModel: handout.chatModelId, error: handout.chatModelError };
 }

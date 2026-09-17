@@ -30,10 +30,23 @@ export const INFERENCE_ENV_SETTING_KEYS = [
   'hubPoolOutboundEnabled',
 ] as const;
 
-/** The inference-relevant keys a settings write carries. */
-export function inferenceEnvSettingsIn(body: object | null | undefined): string[] {
+/**
+ * The inference-relevant keys a settings write actually changes.
+ *
+ * Carrying a key is not changing it. The General settings form submits every value it was loaded
+ * with, and it is loaded from `userSettings`, which holds `inferenceModel`, `inferenceBackend` and
+ * the pool switches too. Keyed on presence alone, saving a new time zone would sweep every AI app.
+ */
+export function changedInferenceEnvSettings(before: object | null | undefined, body: object | null | undefined): string[] {
   if (!body) return [];
-  return INFERENCE_ENV_SETTING_KEYS.filter((key) => Object.hasOwn(body, key));
+  const previous = (before ?? {}) as Record<string, unknown>;
+  const next = body as Record<string, unknown>;
+  return INFERENCE_ENV_SETTING_KEYS.filter((key) => Object.hasOwn(next, key) && !sameSettingValue(previous[key], next[key]));
+}
+
+/** Structural equality for settings.json values; an absent key and an explicit null are the same setting. */
+function sameSettingValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
 /**
@@ -51,6 +64,20 @@ export const REFRESH_DEBOUNCE_MS = 1_500;
  * change at the default cadence, which is also how long a new peer's inventory takes to arrive.
  */
 export const MEMBERSHIP_SETTLE_POLLS = 2;
+
+/**
+ * How long after this service restarts an app it may not restart that app again on its own.
+ *
+ * The settle window stops a single bad read, not a peer that flaps. A peer drops to `unreachable`
+ * after three failed 30 s probes and comes back on one success, so a wedged node (core-4's
+ * JWT_SECRET wedge, 2026-09-14) can move membership every few minutes for hours, and each move
+ * that holds two polls would restart every pooled agent on every node that pairs with it. An
+ * OpenClaw turn of 47k tokens takes about 300 s to its first byte on the fleet, so an agent
+ * restarted more often than that never finishes a turn. Inside the cooldown a stale app is left
+ * running and checked again when it ends, so the last membership still reaches it. An operator's
+ * own change is not held back.
+ */
+export const AUTOMATIC_RESTART_COOLDOWN_MS = 10 * 60_000;
 
 interface PendingReason {
   reason: string;
@@ -83,6 +110,10 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
   private pending: PendingReason[] = [];
   private sweep: Promise<AiAppRefreshDecision[]> | null = null;
   private sweepAgain = false;
+  /** When this service last restarted each app, for {@link AUTOMATIC_RESTART_COOLDOWN_MS}. */
+  private lastRestartAt = new Map<AppUrn, number>();
+  private recheckTimer: NodeJS.Timeout | null = null;
+  private recheckAt = 0;
 
   private watchTimer: NodeJS.Timeout | null = null;
   private stopped = false;
@@ -105,11 +136,12 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
 
   onModuleDestroy(): void {
     this.stopped = true;
-    for (const timer of [this.watchTimer, this.debounceTimer]) {
+    for (const timer of [this.watchTimer, this.debounceTimer, this.recheckTimer]) {
       if (timer) clearTimeout(timer);
     }
     this.watchTimer = null;
     this.debounceTimer = null;
+    this.recheckTimer = null;
   }
 
   /**
@@ -162,6 +194,9 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
       shouldRestart: async (appUrn) => {
         const decision = await this.decide(appUrn, automatic);
         decisions.push(decision);
+        if (decision.restart) {
+          this.lastRestartAt.set(appUrn, Date.now());
+        }
         this.logger.info(
           `[InferenceRefresh] ${appUrn}: ${decision.restart ? 'restarting' : 'leaving running'} — ${decision.why} (trigger: ${trigger})`,
         );
@@ -180,10 +215,23 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
       if (!result.stale) {
         return { appUrn, restart: false, why: 'its inference config is already current' };
       }
-      if (automatic && result.wouldRemoveEndpoint) {
-        return { appUrn, restart: false, why: `stale (${result.reasons.join('; ')}), but regenerating now would remove its inference endpoint` };
+      if (automatic && (result.wouldRemoveEndpoint || result.wouldRemoveChatModel)) {
+        const loses = result.wouldRemoveEndpoint ? 'its inference endpoint' : 'its chat model';
+        return { appUrn, restart: false, why: `stale (${result.reasons.join('; ')}), but regenerating now would remove ${loses}` };
       }
-      return { appUrn, restart: true, why: result.reasons.join('; ') || 'stale' };
+      const why = result.reasons.join('; ') || 'stale';
+      const last = this.lastRestartAt.get(appUrn);
+      const waitMs = automatic && last !== undefined ? last + AUTOMATIC_RESTART_COOLDOWN_MS - Date.now() : 0;
+      if (waitMs > 0) {
+        this.scheduleRecheck(waitMs);
+        const ago = Math.round((Date.now() - (last ?? 0)) / 1000);
+        return {
+          appUrn,
+          restart: false,
+          why: `stale (${why}), but restarted for inference ${ago} s ago; checking again in ${Math.ceil(waitMs / 1000)} s`,
+        };
+      }
+      return { appUrn, restart: true, why };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // An operator changed a setting and expects apps to pick it up, which is what a restart did
@@ -192,6 +240,25 @@ export class AiAppInferenceRefreshService implements OnModuleInit, OnModuleDestr
         ? { appUrn, restart: false, why: `staleness check failed (${message}); not restarting automatically` }
         : { appUrn, restart: true, why: `staleness check failed (${message}); restarting because a setting changed` };
     }
+  }
+
+  /** One automatic sweep once the earliest pending cooldown ends; a later request never delays an earlier one. */
+  private scheduleRecheck(delayMs: number): void {
+    const at = Date.now() + delayMs;
+    if (this.recheckTimer && this.recheckAt <= at) {
+      return;
+    }
+    if (this.recheckTimer) {
+      clearTimeout(this.recheckTimer);
+    }
+    this.recheckAt = at;
+    this.recheckTimer = setTimeout(() => {
+      this.recheckTimer = null;
+      if (!this.stopped) {
+        this.requestRefresh('restart cooldown ended for an app with a stale inference config', { automatic: true });
+      }
+    }, delayMs);
+    this.recheckTimer.unref?.();
   }
 
   /** One membership observation. Public so tests can drive the watcher without timers. */

@@ -37,6 +37,12 @@ describe('app inference requirements', () => {
     expect(appInferenceRequirements('ci-memory')).toEqual({});
   });
 
+  it('applies the same requirements under the first-party app names the fleet installs', () => {
+    // core-4 runs ci-hermes and ci-openclaw; their app.env is generated under those names, not the bootstrap slugs.
+    expect(appInferenceRequirements('ci-hermes')).toEqual(appInferenceRequirements('hermes-agent'));
+    expect(appInferenceRequirements('ci-openclaw')).toEqual(appInferenceRequirements('openclaw'));
+  });
+
   it('cannot be tricked into returning an Object.prototype member for a hostile slug', () => {
     for (const slug of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
       expect(appInferenceRequirements(slug)).toEqual({});
@@ -142,6 +148,16 @@ describe('selectPoolChatModel', () => {
     expect(select({ inventory })).toMatchObject({ engineId: null, source: 'none' });
   });
 
+  it('does not hand an agent an uncatalogued Ollama tag, since the catalog cannot vouch for its tools', () => {
+    // An Ollama inventory is everything ever pulled: bge-m3 is an embedder the name filter misses,
+    // and qwen2.5:0.5b has no row to say it lacks the tool support openclaw needs.
+    const inventory: PoolInventory = { backends: [{ node: 'core-6', local: false, backend: 'ollama', models: ['bge-m3:latest', 'qwen2.5:0.5b'] }] };
+
+    expect(select({ inventory })).toMatchObject({ engineId: null, source: 'none' });
+    // The operator naming one explicitly is still their call.
+    expect(select({ inventory, preferredId: 'qwen2.5:0.5b' })).toMatchObject({ engineId: 'qwen2.5:0.5b', source: 'preferred' });
+  });
+
   it('matches the implicit :latest tag the way the proxy does', () => {
     const inventory: PoolInventory = { backends: [{ node: 'core-6', local: false, backend: 'ollama', models: ['qwen3-coder:30b'] }] };
     expect(nodesServing(inventory, 'qwen3-coder:30b', 'ollama')).toEqual(['core-6']);
@@ -192,6 +208,16 @@ describe('decideModelPrePull', () => {
       pull: false,
       reason: "does not meet the app's requirements (no tool calling)",
     });
+  });
+
+  it('does not pull a hardware substitute for an app the pool already serves, but does pull the preferred model', () => {
+    expect(decideModelPrePull({ ...base, poolHandout: 'qwen3.6:27b' })).toMatchObject({
+      pull: false,
+      reason: 'the pool already serves this app qwen3.6:27b, and qwen3-coder:30b is not the preferred model',
+    });
+    expect(decideModelPrePull({ ...base, poolHandout: 'qwen3.6:27b', operatorPreferred: true })).toMatchObject({ pull: true });
+    // Embeddings go through the same proxy, and nothing else serves this one, so it is still pulled.
+    expect(decideModelPrePull({ ...base, kind: 'embeddings', poolHandout: 'qwen3.6:27b' })).toMatchObject({ pull: true });
   });
 
   it('pulls only when nothing serves the model, the local Ollama is ready, and chat is not on cloud', () => {

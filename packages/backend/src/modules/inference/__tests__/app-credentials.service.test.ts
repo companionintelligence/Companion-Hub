@@ -1,6 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AppCredentialsService } from '../app-credentials.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
@@ -21,6 +21,8 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { cloudProviderManagedKeys } from '../cloud-provider-env';
+import { differingHandoutKeys, HANDOUT_RECORDS_PATH, type RecordedHandout } from '../app-handout-record';
+import fs from 'node:fs';
 
 const OLLAMA_BASE_URL = 'http://ci-hub-ollama:11434';
 const OLLAMA_OPENAI_URL = `${OLLAMA_BASE_URL}/v1`;
@@ -147,6 +149,7 @@ describe('AppCredentialsService', () => {
   let luceboxBackend: MockProxy<LuceboxBackend>;
   let configurationService: MockProxy<ConfigurationService>;
   let hubPoolPeerService: MockProxy<HubPoolPeerService>;
+  let testingModule: TestingModule;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -200,7 +203,7 @@ describe('AppCredentialsService', () => {
     cloudFallback.getEnabledProviders.mockReturnValue([]);
     cloudFallback.toAppEnv.mockReturnValue({});
 
-    const module: TestingModule = await Test.createTestingModule({
+    testingModule = await Test.createTestingModule({
       providers: [
         AppCredentialsService,
         { provide: LoggerService, useValue: logger },
@@ -224,7 +227,12 @@ describe('AppCredentialsService', () => {
       ],
     }).compile();
 
-    service = module.get<AppCredentialsService>(AppCredentialsService);
+    service = testingModule.get<AppCredentialsService>(AppCredentialsService);
+  });
+
+  afterEach(async () => {
+    // Drain handout-record writes so one test's file cannot land after the next test resets the volume.
+    await service.onApplicationShutdown();
   });
 
   describe('getCredentials — local (direct Ollama) path', () => {
@@ -774,6 +782,26 @@ describe('AppCredentialsService', () => {
       expect(config.chatModelId).toBe('qwen3-coder:30b');
     });
 
+    it("does not pull this node's hardware recommendation for an app the pool already serves when no model was chosen", async () => {
+      const qwen36 = makeCapableLlm('qwen3-6-27b', 'qwen3.6:27b', { tools: true, contextWindow: 262144, intelligenceIndex: 9 });
+      modelRegistry.getCatalog.mockReturnValue([gemma1b, qwenCoder, qwen36]);
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3.6:27b', 'nomic-embed-text:latest'])]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.chatModelId).toBe('qwen3.6:27b');
+      expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'qwen3-coder-30b', pull: false });
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
+    });
+
     it('still pulls when neither this node nor any pool node serves the recommended model', async () => {
       hubPoolPeerService.listConnectedPeers.mockResolvedValue([]);
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
@@ -795,7 +823,7 @@ describe('AppCredentialsService', () => {
       // The same default setup makes getCredentials pre-pull hermes4-70b (see the pre-pull suite).
       expect(preview.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: true });
       expect(modelPuller.startPull).not.toHaveBeenCalled();
-      expect(service.lastHandout('openclaw')).toBeNull();
+      expect(await service.lastHandout('openclaw')).toBeNull();
 
       await service.getCredentials('openclaw');
       expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
@@ -803,11 +831,40 @@ describe('AppCredentialsService', () => {
 
     it('records what each app was actually served, including cache hits', async () => {
       const served = await service.getCredentials('openclaw');
-      expect(service.lastHandout('openclaw')?.config).toBe(served);
+      const first = await service.lastHandout('openclaw');
+      expect(first).toMatchObject({ chatModelId: served.chatModelId, routedThroughPool: false, endpointUrl: served.endpointUrl });
 
       await service.getCredentials('openclaw');
-      expect(service.lastHandout('openclaw')?.config).toBe(served);
-      expect(service.lastHandout('hermes-agent')).toBeNull();
+      expect((await service.lastHandout('openclaw'))?.envDigests).toEqual(first?.envDigests);
+      expect(await service.lastHandout('hermes-agent')).toBeNull();
+    });
+
+    it('still knows what an app holds after the Hub restarts, without writing its keys to disk', async () => {
+      // App containers keep running through a Hub restart and fetch bootstrap.env only when they
+      // start. A record lost with the process made every such app read as stale, and the next
+      // refresh restarted it for nothing.
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-secret' });
+      const served = await service.getCredentials('openclaw');
+      await service.onApplicationShutdown();
+
+      const restarted = new AppCredentialsService(
+        logger,
+        hardwareInspector,
+        modelRegistry,
+        modelPuller,
+        cloudFallback,
+        ollamaBackend,
+        configurationService,
+        testingModule.get(InferenceEndpointService),
+      );
+      const record = await restarted.lastHandout('openclaw');
+
+      expect(record).toMatchObject({ chatModelId: served.chatModelId, endpointUrl: served.endpointUrl });
+      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual([]);
+      expect(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')).not.toContain('sk-operator-secret');
+
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
+      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
     });
   });
 
@@ -935,9 +992,9 @@ describe('AppCredentialsService', () => {
       expect(config.endpointReady).toBe(false);
     });
 
-    it('exposes managedKeys covering env keys plus the always-managed model, num_ctx and error keys', async () => {
-      // Default setup has no loaded model, so none of the three is emitted — but each must still be
-      // declared managed so header consumers drop a stale value.
+    it('exposes managedKeys covering env keys plus the always-managed num_ctx and error keys', async () => {
+      // Default setup has no loaded model, so neither is emitted — but each must still be declared
+      // managed so header consumers drop a stale value.
       const config = await service.getCredentials('hermes-agent');
       expect(config.env.HERMES_NUM_CTX).toBeUndefined();
       expect(config.env.HERMES_DEFAULT_MODEL).toBeUndefined();
@@ -945,10 +1002,34 @@ describe('AppCredentialsService', () => {
       for (const k of Object.keys(config.env)) {
         expect(config.managedKeys).toContain(k);
       }
-      const expected = [
-        ...new Set([...Object.keys(config.env), 'HERMES_DEFAULT_MODEL', 'HERMES_NUM_CTX', 'CI_INFERENCE_ERROR', ...cloudProviderManagedKeys()]),
-      ];
+      const expected = [...new Set([...Object.keys(config.env), 'HERMES_NUM_CTX', 'CI_INFERENCE_ERROR', ...cloudProviderManagedKeys()])];
       expect(config.managedKeys.sort()).toEqual(expected.sort());
+    });
+
+    it("leaves an app's last model in place when the container starts before Ollama is up", async () => {
+      // Declaring DEFAULT_MODEL managed here would make bootstrap-from-hub.sh strip a model that works
+      // as soon as Ollama finishes starting, and the app would run with none until its next restart.
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.managedKeys).not.toContain('DEFAULT_MODEL');
+      expect(config.managedKeys).toEqual(expect.arrayContaining(['CI_LLM_NUM_CTX', 'CI_INFERENCE_ERROR']));
+    });
+
+    it('strips the stale model once a running backend has judged every installed model unsuitable', async () => {
+      const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32000 });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([gemma1b]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.chatModelError).toContain('gemma3:1b (no tool calling)');
+      expect(config.managedKeys).toContain('DEFAULT_MODEL');
     });
 
     it('always defaults apiVersion to 1', async () => {

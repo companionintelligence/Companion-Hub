@@ -15,8 +15,9 @@ import { InferenceEnvStalenessService } from '@/modules/apps/inference-env-stale
 import { AppCredentialsService } from '@/modules/inference/app-credentials.service';
 import { InferenceEndpointService } from '@/modules/inference/inference-endpoint.service';
 import {
+  AUTOMATIC_RESTART_COOLDOWN_MS,
   AiAppInferenceRefreshService,
-  inferenceEnvSettingsIn,
+  changedInferenceEnvSettings,
   MEMBERSHIP_SETTLE_POLLS,
   REFRESH_DEBOUNCE_MS,
 } from '../ai-app-inference-refresh.service';
@@ -35,6 +36,7 @@ const staleness = (appUrn: AppUrn, overrides: Partial<InferenceEnvStaleness>): I
   generated: null,
   current: null,
   wouldRemoveEndpoint: false,
+  wouldRemoveChatModel: false,
   checkedAt: '2026-09-17T10:00:00.000Z',
   ...overrides,
 });
@@ -123,6 +125,46 @@ describe('AiAppInferenceRefreshService', () => {
       expect(restarted).toEqual([HERMES]);
     });
 
+    it('does not restart automatically into a config with no chat model, but does when an operator asked', async () => {
+      // A peer that served the only model an agent can use drops for two polls: restarting the agent
+      // mid-turn to hand it nothing is worse than leaving it on a model that may be back next poll.
+      results.set(OPENCLAW, staleness(OPENCLAW, { stale: true, wouldRemoveChatModel: true, reasons: ['chat model: qwen3-coder:30b -> none'] }));
+
+      service.requestRefresh('pool membership changed', { automatic: true });
+      const decisions = await service.flush();
+      expect(restarted).toEqual([]);
+      expect(decisions.find((d) => d.appUrn === OPENCLAW)?.why).toContain('would remove its chat model');
+
+      service.requestRefresh('inference preferences changed');
+      await service.flush();
+      expect(restarted).toEqual([OPENCLAW]);
+    });
+
+    it('does not restart an app again automatically while a flapping peer keeps moving membership, and catches up when the cooldown ends', async () => {
+      vi.useFakeTimers();
+      results.set(OPENCLAW, staleness(OPENCLAW, { stale: true, reasons: ['routing: direct -> pool'] }));
+
+      service.requestRefresh('pool membership changed: core-6 connected', { automatic: true });
+      await service.flush();
+      expect(restarted).toEqual([OPENCLAW]);
+
+      // core-6 drops and returns four minutes later; OpenClaw is mid-turn on a 300 s prefill.
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      service.requestRefresh('pool membership changed: core-6 unreachable', { automatic: true });
+      const held = await service.flush();
+      expect(restarted).toEqual([OPENCLAW]);
+      expect(held.find((d) => d.appUrn === OPENCLAW)?.why).toContain('checking again in 360 s');
+
+      // An operator's change is never held back.
+      service.requestRefresh('inference preferences changed');
+      await service.flush();
+      expect(restarted).toEqual([OPENCLAW, OPENCLAW]);
+
+      // Still stale when the cooldown from that restart ends: the recheck picks it up without another event.
+      await vi.advanceTimersByTimeAsync(AUTOMATIC_RESTART_COOLDOWN_MS + REFRESH_DEBOUNCE_MS);
+      expect(restarted).toEqual([OPENCLAW, OPENCLAW, OPENCLAW]);
+    });
+
     it('restarts on a failed staleness check only when an operator changed a setting', async () => {
       results.set(HERMES, new Error('app.env unreadable'));
 
@@ -188,13 +230,26 @@ describe('AiAppInferenceRefreshService', () => {
     });
   });
 
-  describe('inferenceEnvSettingsIn', () => {
-    it('names the inference and pool-routing keys a settings write carries, and nothing else', () => {
-      expect(inferenceEnvSettingsIn({ inferenceModel: 'qwen3-coder-30b', themeColor: 'blue', hubPoolEnabled: false })).toEqual([
+  describe('changedInferenceEnvSettings', () => {
+    it('names the inference and pool-routing keys a settings write changes, and nothing else', () => {
+      expect(changedInferenceEnvSettings({}, { inferenceModel: 'qwen3-coder-30b', themeColor: 'blue', hubPoolEnabled: false })).toEqual([
         'inferenceModel',
         'hubPoolEnabled',
       ]);
-      expect(inferenceEnvSettingsIn({ themeColor: 'blue', hubPoolLocalAffinity: 1 })).toEqual([]);
+      expect(changedInferenceEnvSettings({}, { themeColor: 'blue', hubPoolLocalAffinity: 1 })).toEqual([]);
+    });
+
+    it('ignores inference keys a write carries with the values they already had', () => {
+      // The General settings form submits everything it was loaded with, inference keys included.
+      const stored = {
+        inferenceModel: 'qwen3-coder-30b',
+        inferenceCloudProviders: [{ provider: 'openai', apiKey: 'sk-x', enabled: true }],
+        hubPoolEnabled: true,
+      };
+
+      expect(changedInferenceEnvSettings(stored, { ...structuredClone(stored), timeZone: 'Europe/Berlin' })).toEqual([]);
+      expect(changedInferenceEnvSettings({}, { inferenceVllmUrl: null })).toEqual([]);
+      expect(changedInferenceEnvSettings(stored, { ...stored, inferenceCloudProviders: [] })).toEqual(['inferenceCloudProviders']);
     });
   });
 });

@@ -850,6 +850,23 @@ describe('AppHelpers', () => {
       expect(inferenceEnv.resolve).toHaveBeenCalledWith({ appSlug: 'hermes-agent', minContextLength: 64_000 });
     });
 
+    it('applies the same 64K floor to ci-hermes, the first-party listing the fleet actually installs', async () => {
+      // core-4 runs `ci-hermes`, not `hermes-agent`. A floor keyed only by the bootstrap slug left
+      // its app.env with HERMES_NUM_CTX=32000, which Hermes refuses at startup.
+      const ciHermesUrn = createAppUrn('ci-hermes', 'ci-marketplace');
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        id: 'ci-hermes',
+        urn: ciHermesUrn,
+        hub_integration: { inference: { num_ctx: 'HERMES_NUM_CTX' } },
+      } as unknown as AppInfo);
+      inferenceEnv.resolve.mockResolvedValue({ CI_LLM_NUM_CTX: '64000' });
+
+      await appHelpers.generateEnvFile(ciHermesUrn, {});
+
+      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ appSlug: 'ci-hermes', minContextLength: 64_000 });
+    });
+
     it('writes CI_INFERENCE_ERROR into app.env when the resolver has no model the app can use', async () => {
       const envMap = new Map<string, string>();
       envUtils.envStringToMap.mockReturnValue(envMap);

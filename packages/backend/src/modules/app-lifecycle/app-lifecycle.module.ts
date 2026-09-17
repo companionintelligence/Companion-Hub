@@ -27,6 +27,7 @@ import { PortalModule } from '@/core/portal/portal.module';
 import { LifecycleJobService } from './lifecycle-job.service';
 import { InferenceModule } from '../inference/inference.module';
 import { AiAppInferenceRefreshService } from './ai-app-inference-refresh.service';
+import { INFERENCE_ENV_REFRESHER } from '@/common/helpers/inference-env-refresh';
 
 @Module({
   imports: [
@@ -60,6 +61,8 @@ import { AiAppInferenceRefreshService } from './ai-app-inference-refresh.service
     AppRehydrationService,
     LifecycleJobService,
     AiAppInferenceRefreshService,
+    // Resolved lazily by the pool settings route; see INFERENCE_ENV_REFRESHER.
+    { provide: INFERENCE_ENV_REFRESHER, useExisting: AiAppInferenceRefreshService },
   ],
   controllers: [AppLifecycleController],
   exports: [
@@ -71,6 +74,7 @@ import { AiAppInferenceRefreshService } from './ai-app-inference-refresh.service
     AppRehydrationService,
     LifecycleJobService,
     AiAppInferenceRefreshService,
+    INFERENCE_ENV_REFRESHER,
   ],
 })
 export class AppLifecycleModule {}

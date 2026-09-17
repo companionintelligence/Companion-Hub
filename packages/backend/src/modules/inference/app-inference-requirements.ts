@@ -21,9 +21,21 @@ export interface AppInferenceRequirements {
   toolCalling?: boolean;
 }
 
+const HERMES_REQUIREMENTS: AppInferenceRequirements = Object.freeze({ minContextLength: 64_000, toolCalling: true });
+const OPENCLAW_REQUIREMENTS: AppInferenceRequirements = Object.freeze({ toolCalling: true });
+
+/**
+ * Keyed by both names each agent goes by. `hermes-agent` and `openclaw` are the bootstrap slugs the
+ * containers fetch `bootstrap.env` as, and the marketplace listings of the upstream images.
+ * `ci-hermes` and `ci-openclaw` are the first-party listings, and they are what core-4 actually runs
+ * (`docker ps`, 2026-09-17). Their `app.env` is generated under that installed name, so a table
+ * keyed only by slug left the fleet's own agents with no requirements on that path.
+ */
 const APP_INFERENCE_REQUIREMENTS: Record<string, AppInferenceRequirements> = {
-  'hermes-agent': { minContextLength: 64_000, toolCalling: true },
-  openclaw: { toolCalling: true },
+  'hermes-agent': HERMES_REQUIREMENTS,
+  'ci-hermes': HERMES_REQUIREMENTS,
+  openclaw: OPENCLAW_REQUIREMENTS,
+  'ci-openclaw': OPENCLAW_REQUIREMENTS,
 };
 
 const NO_REQUIREMENTS: AppInferenceRequirements = Object.freeze({});

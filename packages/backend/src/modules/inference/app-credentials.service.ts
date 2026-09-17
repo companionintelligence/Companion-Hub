@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -21,6 +21,7 @@ import {
   selectPoolChatModel,
   type PrePullDecision,
 } from './app-model-handout';
+import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -82,11 +83,7 @@ interface CacheEntry {
   expiresAt: number;
 }
 
-/** The last handout an app actually received from this Hub, for the staleness check. */
-export interface RecordedHandout {
-  config: AppCredentialsConfig;
-  servedAt: string;
-}
+export type { RecordedHandout } from './app-handout-record';
 
 /**
  * Distributes inference connection info ("credentials") to sibling apps so they
@@ -115,14 +112,13 @@ interface LocalChatSelection {
 }
 
 @Injectable()
-export class AppCredentialsService {
+export class AppCredentialsService implements OnApplicationShutdown {
   /** In-memory credentials cache keyed by `${slug}:${apiVersion}`. */
   private cache = new Map<string, CacheEntry>();
-  /**
-   * What each app was last actually served. In memory only: after a Hub restart there is no record,
-   * and the staleness check reads that as "cannot vouch for what the app holds" rather than as fresh.
-   */
+  /** What each app was last actually served, mirrored to disk; see {@link RecordedHandout}. */
   private handouts = new Map<AppSlug, RecordedHandout>();
+  private handoutsLoaded: Promise<void> | null = null;
+  private handoutWrites: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly logger: LoggerService,
@@ -170,7 +166,7 @@ export class AppCredentialsService {
     const now = Date.now();
     if (cached && cached.expiresAt > now) {
       this.logger.info(`[AppCredentials] cache hit slug=${slug} v=${apiVersion} ttl=${Math.round((cached.expiresAt - now) / 1000)}s`);
-      this.handouts.set(slug, { config: cached.config, servedAt: new Date(now).toISOString() });
+      this.recordHandout(slug, cached.config, now);
       return cached.config;
     }
 
@@ -185,7 +181,7 @@ export class AppCredentialsService {
     }
 
     this.cache.set(cacheKey, { config, expiresAt: now + CACHE_TTL_MS });
-    this.handouts.set(slug, { config, servedAt: new Date(now).toISOString() });
+    this.recordHandout(slug, config, now);
     return config;
   }
 
@@ -201,9 +197,45 @@ export class AppCredentialsService {
     return this.resolveCredentials(slug, apiVersion);
   }
 
-  /** The handout `slug` last received from this Hub process, or null when it has fetched none since the Hub started. */
-  lastHandout(slug: string): RecordedHandout | null {
-    return this.isSupported(slug) ? (this.handouts.get(slug) ?? null) : null;
+  /** The handout `slug` last received from this Hub, including before its last restart, or null when there is no record. */
+  async lastHandout(slug: string): Promise<RecordedHandout | null> {
+    if (!this.isSupported(slug)) {
+      return null;
+    }
+    await this.loadPersistedHandouts();
+    return this.handouts.get(slug) ?? null;
+  }
+
+  /** Let a pending record reach the disk, so an app that fetched just before shutdown is not read as stale after it. */
+  async onApplicationShutdown(): Promise<void> {
+    await this.handoutWrites;
+  }
+
+  private recordHandout(slug: AppSlug, config: AppCredentialsConfig, now: number): void {
+    this.handouts.set(slug, handoutRecord(config, new Date(now).toISOString()));
+    // Chained so writes land in order, and loaded first so the first fetch after a restart does not
+    // overwrite the other app's persisted record with a file holding only its own.
+    this.handoutWrites = this.handoutWrites
+      .then(async () => {
+        await this.loadPersistedHandouts();
+        await writeHandoutRecords(Object.fromEntries(this.handouts));
+      })
+      .catch((err) => {
+        this.logger.warn(`[AppCredentials] could not persist the ${slug} handout record: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  }
+
+  private loadPersistedHandouts(): Promise<void> {
+    this.handoutsLoaded ??= readHandoutRecords().then((records) => {
+      for (const slug of SUPPORTED_APP_SLUGS) {
+        const record = records[slug];
+        // A record this process already made is newer than anything on disk.
+        if (record && !this.handouts.has(slug)) {
+          this.handouts.set(slug, record);
+        }
+      }
+    });
+    return this.handoutsLoaded;
   }
 
   private async resolveCredentials(slug: AppSlug, apiVersion: ApiVersion): Promise<AppCredentialsConfig> {
@@ -383,11 +415,25 @@ export class AppCredentialsService {
       env[keys.numCtx] = String(numCtx);
     }
 
-    // Always declare the model, num_ctx and error keys as Hub-managed — even when we don't emit a
-    // value — so the X-Hub-Managed-Keys header tells the bootstrap scripts to strip a stale one.
-    // Without the model key here, withholding an unsuitable model would leave the previous run's
-    // DEFAULT_MODEL=gemma3:1b in the app's .env, which is the value this handout exists to replace.
-    const managedKeys = [...new Set([...Object.keys(env), ...cloudProviderManagedKeys(), keys.model, keys.numCtx, INFERENCE_ERROR_ENV_KEY])];
+    // Declare num_ctx and the error key as Hub-managed even when no value is emitted, so the
+    // X-Hub-Managed-Keys header tells the bootstrap scripts to strip a stale one.
+    //
+    // The model key is declared only when this answer is authoritative: a model was chosen, or an
+    // unsuitable one was refused while this node's own backend was up to be judged. Withholding
+    // gemma3:1b must strip the previous run's DEFAULT_MODEL=gemma3:1b, which is the value this
+    // handout exists to replace. But a container that starts while Ollama is still coming up gets
+    // an empty inventory, and declaring the key then would erase a model that works a minute later
+    // and leave the app with none until its next restart.
+    const modelAnswerIsAuthoritative = chatModelId !== null || (chatModelError !== null && endpointReady);
+    const managedKeys = [
+      ...new Set([
+        ...Object.keys(env),
+        ...cloudProviderManagedKeys(),
+        ...(modelAnswerIsAuthoritative ? [keys.model] : []),
+        keys.numCtx,
+        INFERENCE_ERROR_ENV_KEY,
+      ]),
+    ];
 
     const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, ollamaHealth.modelsLoaded, 'ollama') : false;
     const prePull = [
@@ -399,6 +445,8 @@ export class AppCredentialsService {
         cloudPrimary: provider === 'cloud',
         installedLocally: recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false,
         poolServedBy: poolRouting && recommendedLlm ? nodesServing(poolRouting.inventory, recommendedLlm.backendModelId, recommendedLlm.backend) : [],
+        poolHandout: routedThroughPool ? (poolChoice?.engineId ?? null) : null,
+        operatorPreferred: Boolean(recommendedLlm && preferredModelId && recommendedLlm.id === preferredModelId),
         requirements,
       }),
       decideModelPrePull({

@@ -278,31 +278,45 @@ Installed apps get inference config two ways, and both choose the model through 
 `AppCredentialsService` serves it over `GET /api/inference/apps/:slug/credentials.env` (alias
 `bootstrap.env`), which CI-OpenClaw and CI-Hermes fetch at container start.
 
-- **Requirements.** `app-inference-requirements.ts` is the per-app table: `hermes-agent` needs tool
-  calling and a 64000-token window, `openclaw` needs tool calling. A catalog model that fails them is
-  never handed out. If nothing suitable is available the app gets no model and an explicit
-  `CI_INFERENCE_ERROR` instead. The credentials endpoint still answers 200 in that case, because both
-  bootstrap scripts `curl --fail` and keep their stale `.env` on any error. The model, `num_ctx` and
-  error keys are always listed in `X-Hub-Managed-Keys` so a stale value is stripped.
+- **Requirements.** `app-inference-requirements.ts` is the per-app table: Hermes needs tool calling
+  and a 64000-token window, and OpenClaw needs tool calling. Each is keyed under its bootstrap slug
+  (`hermes-agent`, `openclaw`) and its first-party app name (`ci-hermes`, `ci-openclaw`), because
+  `app.env` is generated under the installed name. A catalog model that fails them is never handed
+  out. If nothing suitable is available the app gets no model and an explicit `CI_INFERENCE_ERROR`
+  instead. The credentials endpoint still answers 200 in that case, because both bootstrap scripts
+  `curl --fail` and keep their stale `.env` on any error. `num_ctx` and the error key are always
+  listed in `X-Hub-Managed-Keys` so a stale value is stripped. The model key is listed only when the
+  answer is authoritative: a model was chosen, or unsuitable ones were refused while this node's
+  backend was up. A container that starts before Ollama is ready keeps its last model.
 - **Pool-aware choice.** With a connected peer the app talks to the pool proxy, so the model comes
-  from `selectPoolChatModel` over the pool inventory (`InferenceEndpointService.poolInventory`): the
-  operator's preferred model when a node serves it and it qualifies, else the best served model that
-  qualifies (the recommender's ranking), else a served model the catalog has no row for. A model only
-  a peer serves gets `num_ctx` 32768 (raised to the app's floor) rather than a value sized from this
-  node's memory. The peer filter mirrors `PoolProxyService.usablePeers`; change both together.
+  from `selectPoolChatModel` over the pool inventory (`InferenceEndpointService.poolInventory`). The
+  order is the operator's preferred model when a node serves it and it qualifies, then the best served
+  catalog model that qualifies (the recommender's ranking), then a model a host-served engine (vLLM,
+  Lemonade, MTPLX, mlx-dspark, Lucebox) lists that the catalog has no row for. An uncatalogued Ollama
+  tag is never handed out unless the operator named it, because an Ollama inventory holds every tag
+  ever pulled. A model only a peer serves gets `num_ctx` 32768 (raised to the app's floor) rather than
+  a value sized from this node's memory. The peer filter mirrors `PoolProxyService.usablePeers`;
+  change both together.
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
-  never pulls a model a pool node already serves, nor one the app's requirements rule out.
-  `previewCredentials` resolves the same answer with no pull, cache, or handout record.
+  never pulls a model a pool node already serves, nor one the app's requirements rule out. When the
+  pool already serves the app a suitable model, it pulls only the operator's preferred model, never
+  this node's hardware recommendation in its place. `previewCredentials` resolves the same answer with
+  no pull, cache, or handout record.
 - **Staleness.** `GET /api/apps/:urn/inference-env` compares what an app holds with what it would be
   handed now: `app.env` against `AppHelpers.buildInferenceEnv`, and, for an app with no inference
   mapping (OpenClaw), its last fetched handout against `previewCredentials`. It reports `stale`, the
-  differing key names (never values), and `routedThroughPool` / `chatModel` on both sides.
+  differing key names (never values), and `routedThroughPool` / `chatModel` on both sides. A key the
+  Hub leaves unset and the app's form declares is the operator's value, not compared. The last
+  handout per app is kept in `state/inference-handouts.json` as SHA-256 digests of its values, so
+  apps that keep running through a Hub restart are not read as stale.
 - **Refresh.** `AiAppInferenceRefreshService` is the one path that restarts AI apps for inference
-  changes. `PATCH /api/inference/preferences`, `POST /api/inference/cloud-providers`, and
-  `PATCH /api/user-settings` (when the body carries an inference or pool-switch key) all request a
-  sweep, and a watcher requests one when pool membership holds a new value for two health polls. A
+  changes. `PATCH /api/inference/preferences`, `POST /api/inference/cloud-providers`,
+  `PATCH /api/user-settings` (when a write changes an inference or pool-switch value), and
+  `PATCH /api/inference/pool/settings` (when the master or outbound switch moves) all request a
+  sweep. A watcher also requests one when pool membership holds a new value for two health polls. A
   sweep restarts only stale apps. An automatic sweep also skips an app whose regeneration would
-  remove its endpoint. The Hub-upgrade sync still restarts every AI app unconditionally.
+  remove its endpoint or its chat model, and restarts an app at most once per 10 minutes, checking
+  again when that window ends. The Hub-upgrade sync still restarts every AI app unconditionally.
 
 ## Family Hub auth and Memory connect
 
