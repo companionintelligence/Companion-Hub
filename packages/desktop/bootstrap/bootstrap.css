@@ -1,11 +1,12 @@
 /*
  * Desktop bootstrap splash — the first half of the Hub's startup screen.
  *
- * The second half is StartupScreen in components/hub-status/hub-status.tsx,
- * which takes over the moment the Hub API answers. This page is built to be
- * indistinguishable from it: same shell (logo, "CI Hub", centred max-w-2xl
- * card), same heading and copy, same progress bar, same per-service rows. The
- * handover mid-startup should look like nothing happened.
+ * The second half is StartupScreen (and the stopped / couldn't-start screens
+ * beside it) in components/hub-status/hub-status.tsx, which takes over the
+ * moment the Hub API answers. This page is built to be indistinguishable from
+ * it: same shell (logo, "CI Hub", centred max-w-2xl card), same heading and
+ * copy, same progress bar, same status panel. The handover mid-startup should
+ * look like nothing happened.
  *
  * It cannot import the frontend's Tailwind build or reach Google Fonts (see the
  * CSP in tauri.conf.json: `font-src 'self' data:`), so the design system is
@@ -16,8 +17,8 @@
  *     to be here (#3ec9e0 cyan, #8aa8b5 muted) was in no token file at all.
  *   - Radii are the Hub's own overrides from frontend/src/styles/globals.css
  *     (4 / 6 / 9px), not the tokens default.
- *   - .card mirrors SetupCard, .btn mirrors Button.tsx, and .service-row is the
- *     row StartupScreen renders per container.
+ *   - .card mirrors SetupCard, .btn mirrors Button.tsx, and .panel is the status
+ *     panel StartupScreen renders: facts, one row per container, counts.
  *
  * Manrope is vendored next to this file (assets/manrope-latin-var.woff2, from
  * @companionintelligence/fonts) because the app's Google Fonts <link> is
@@ -54,6 +55,11 @@
 
   /* muted at low alpha — the `bg-muted/30` inner surface of the startup screen */
   --panel: rgba(7, 48, 56, 0.45);
+  /* primary and destructive at low alpha — the row that is stuck or failed */
+  --row-attention: rgba(197, 232, 220, 0.06);
+  --row-failure: rgba(239, 112, 112, 0.08);
+  --outline-border: rgba(197, 232, 220, 0.3);
+  --link-underline: rgba(163, 186, 191, 0.45);
   --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.24), 0 6px 18px -8px rgba(0, 0, 0, 0.32);
   --background-lift:
     radial-gradient(1200px circle at 50% -20%, rgba(200, 230, 217, 0.08), transparent 55%),
@@ -64,6 +70,7 @@
   --radius-lg: 9px;
 
   --font-sans: "Manrope", system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --font-letter-spacing: 0.2pt;
   --font-word-spacing: 0.4pt;
 
@@ -98,6 +105,10 @@
     --warning: #855500;
 
     --panel: rgba(232, 242, 236, 0.55);
+    --row-attention: rgba(10, 99, 88, 0.06);
+    --row-failure: rgba(238, 53, 51, 0.07);
+    --outline-border: rgba(10, 99, 88, 0.3);
+    --link-underline: rgba(58, 82, 75, 0.45);
     --shadow-md: 0 1px 3px rgba(4, 22, 32, 0.05), 0 6px 18px -6px rgba(10, 99, 88, 0.07);
     --background-lift:
       radial-gradient(1200px circle at 50% -20%, rgba(232, 242, 236, 0.65), transparent 52%),
@@ -111,7 +122,7 @@
 
 /*
  * Doubled on purpose: the UA's `[hidden]` rule is (0,0,1), so the class rules
- * below — `.actions { display: grid }`, `.services { ... }` — would out-specify
+ * below — `.actions { display: flex }`, `.panel { ... }` — would out-specify
  * it and a hidden element would still paint. (0,2,0) settles it without
  * reaching for !important.
  */
@@ -220,13 +231,15 @@ body {
 
 /* ── Shell (mirrors SetupPageShell) ────────────────────────────────────── */
 
+/* Exactly the area under the titlebar, so the whole height is usable. */
 main {
+  position: fixed;
+  inset: var(--titlebar-height, 0px) 0 0 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   overflow-y: auto;
-  height: calc(100vh - var(--titlebar-height, 0px));
-  padding: calc(var(--titlebar-height, 0px) + 2rem) 1rem 2rem;
+  padding: 2rem 1rem;
 }
 
 .shell {
@@ -277,8 +290,7 @@ h1 {
 .stack {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 1.5rem;
+  gap: 1.25rem;
   width: 100%;
 }
 
@@ -287,7 +299,8 @@ h1 {
   text-align: center;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  align-items: center;
+  gap: 0.375rem;
 }
 
 h2 {
@@ -297,26 +310,13 @@ h2 {
   margin: 0;
 }
 
-#status {
+.line {
   margin: 0;
+  max-width: 33rem;
   font-size: 0.875rem;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--muted-foreground);
-}
-
-#status.warn {
-  color: var(--warning);
-}
-
-#status.error {
-  color: var(--destructive);
-}
-
-.note {
-  margin: 0;
-  font-size: 0.75rem;
-  line-height: 1.5;
-  color: var(--muted-foreground);
+  text-wrap: balance;
 }
 
 /* ── Progress (mirrors StartupScreen) ──────────────────────────────────── */
@@ -325,7 +325,7 @@ h2 {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
+  gap: 0.5rem;
 }
 
 .bar {
@@ -353,78 +353,236 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
-.counts {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  font-size: 0.75rem;
-  color: var(--muted-foreground);
-}
+/* ── Status panel: facts, one row per container, counts ────────────────── */
 
-/* ── Service rows ──────────────────────────────────────────────────────── */
-
-.services {
+.panel {
   width: 100%;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--panel);
-  padding: 0 1rem;
+  overflow: hidden;
 }
 
-.service-row {
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 0.375rem;
+  margin: 0;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.75rem;
+}
+
+.fact {
+  display: flex;
+  gap: 0.375rem;
+  margin-right: 1.5rem;
+}
+
+.fact dt {
+  color: var(--muted-foreground);
+}
+
+.fact dd {
+  margin: 0;
+  color: var(--foreground);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.fact dd.tone-warn {
+  color: var(--warning);
+}
+
+.fact dd.tone-bad {
+  color: var(--destructive);
+}
+
+.row {
+  padding: 0.5rem 1rem;
+}
+
+.row + .row {
+  border-top: 1px solid var(--border);
+}
+
+.row-attn {
+  background: var(--row-attention);
+}
+
+.row-fail {
+  background: var(--row-failure);
+}
+
+.row-main {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.375rem 0;
-  border-top: 1px solid var(--border);
 }
 
-.service-row:first-child {
-  border-top: 0;
-}
-
-.service-name {
+.row-name {
   display: flex;
   align-items: center;
   gap: 0.625rem;
   min-width: 0;
-}
-
-.service-icon {
   font-size: 0.875rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-.service-label {
-  font-size: 0.875rem;
+  line-height: 1.5;
   color: var(--foreground);
+}
+
+.row-name > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.service-state {
+.state {
+  flex-shrink: 0;
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
 }
 
-.pulse {
-  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+/* Docker's own words, so they stay verbatim and monospaced. */
+.row-detail,
+.panel-error {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Four lines at most, so a long compose error cannot push the actions off screen; Copy error has the rest. */
+.row-detail {
+  max-height: 6.4em;
+  overflow-y: auto;
+  margin: 0.375rem 0 0.125rem 1.175rem;
+}
+
+.panel-error {
+  max-height: calc(6.4em + 1.25rem);
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--row-failure);
+}
+
+.rows-note {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+}
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 0.375rem;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.count {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-right: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.count-n {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.count-zero {
+  opacity: 0.55;
+}
+
+/*
+ * One mark per state, drawn rather than typed: ●◌○✕ are not in Manrope, and the
+ * fallback glyphs rendered at different sizes on every platform. Empty ring =
+ * waiting, ring with a dot = starting, solid dot = ready.
+ */
+.mark {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+}
+
+.mark-ready {
+  background: var(--success);
+}
+
+.mark-starting {
+  color: var(--warning);
+}
+
+.mark-starting svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.mark-starting .mark-pulse {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.mark-waiting {
+  border: 1.5px solid var(--muted-foreground);
+}
+
+.mark-not-started {
+  border: 1.5px dashed var(--muted-foreground);
+}
+
+.mark-stopped {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: var(--muted-foreground);
+}
+
+.mark-failed {
+  border-radius: 0;
+}
+
+.mark-failed::before,
+.mark-failed::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 4px;
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--destructive);
+  transform: rotate(45deg);
+}
+
+.mark-failed::after {
+  transform: rotate(-45deg);
 }
 
 @keyframes pulse {
   50% {
-    opacity: 0.5;
+    opacity: 0.35;
   }
 }
 
-.initialising {
+.initialising,
+.waiting {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
   font-size: 0.875rem;
   color: var(--muted-foreground);
@@ -445,7 +603,7 @@ h2 {
 
 @media (prefers-reduced-motion: reduce) {
   .spinner,
-  .pulse {
+  .mark-starting .mark-pulse {
     animation: none;
   }
 
@@ -474,9 +632,11 @@ h2 {
 
 .actions {
   width: 100%;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
 }
 
 .btn {
@@ -485,7 +645,8 @@ h2 {
   justify-content: center;
   white-space: nowrap;
   height: 2.5rem;
-  padding: 0 1rem;
+  min-width: 9.75rem;
+  padding: 0 1.25rem;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
   font: inherit;
@@ -503,8 +664,9 @@ h2 {
   box-shadow: 0 0 0 1px var(--primary);
 }
 
-.btn-wide {
-  grid-column: span 2;
+.btn:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .btn-primary {
@@ -514,13 +676,13 @@ h2 {
   box-shadow: var(--shadow-md);
 }
 
-.btn-primary:hover {
+.btn-primary:hover:not(:disabled) {
   filter: brightness(0.94);
 }
 
 .btn-outline {
-  background: var(--background);
-  border-color: var(--input);
+  background: transparent;
+  border-color: var(--outline-border);
   color: var(--foreground);
 }
 
@@ -529,90 +691,171 @@ h2 {
   color: var(--accent-foreground);
 }
 
+.link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.6rem;
+  padding: 0 0.6rem;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--muted-foreground);
+  text-decoration: underline;
+  text-decoration-color: var(--link-underline);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.link:hover {
+  color: var(--foreground);
+}
+
+.link:focus-visible,
+.command-copy:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Sits just under Start Hub, closer than the stack's gap. */
+.aside {
+  margin: -0.75rem 0 0;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+.command {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  max-width: 26rem;
+  margin: 0 auto;
+  padding: 0.3rem 0.3rem 0.3rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+}
+
+.command code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--foreground);
+  overflow-wrap: anywhere;
+}
+
+.command-copy {
+  flex-shrink: 0;
+  height: 2.1rem;
+  padding: 0 0.8rem;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* ── Short windows ────────────────────────────────────────────────────────
  * Overrides last, so they read as overrides.
  *
- * `expanded` = the recovery state, where the health panel and six buttons join
- * the progress view. That is far taller than startup alone, and the window is
- * 800px tall by default and can be dragged to 600 (tauri.conf.json), so in that
- * state on a short window the frame tightens, the service list scrolls in place
- * and the logo gives way rather than let Retry fall below the fold. While the
- * Hub is simply starting, the logo stays at every window size.
+ * The window is 800px tall by default and can be dragged to 600
+ * (tauri.conf.json), and desktop text scaling shrinks the CSS height further.
+ * Every screen fits the default height with the full brand; below that the
+ * frame tightens in steps and the brand finally sits on one line, so the
+ * actions never fall below the fold and the status panel never scrolls on its
+ * own.
  */
 
-@media (max-height: 860px) {
-  .expanded main {
-    padding: calc(var(--titlebar-height, 0px) + 1rem) 1rem 1rem;
+@media (max-height: 820px) {
+  main {
+    padding-top: 1.25rem;
+    padding-bottom: 1.25rem;
   }
+}
 
-  .expanded .brand,
-  .expanded .note {
-    display: none;
-  }
-
-  .expanded .shell {
+/* A maximized window at 130% text scaling lands here (about 744px of CSS height). */
+@media (max-height: 760px) {
+  .shell {
     gap: 1rem;
   }
 
-  .expanded .stack {
+  .logo {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 0.5rem;
+  }
+
+  h1 {
+    font-size: 1.25rem;
+  }
+
+  .card {
+    padding: 1.5rem 2rem;
+  }
+
+  .stack {
     gap: 1rem;
-  }
-
-  .expanded .card {
-    padding: 1.25rem;
-  }
-
-  .expanded .services {
-    max-height: 26vh;
-    overflow-y: auto;
   }
 }
 
 @media (max-height: 680px) {
-  .expanded h1 {
-    font-size: 1.25rem;
-  }
-
-  .expanded h2 {
-    font-size: 1.125rem;
-  }
-
-  .expanded .card {
+  main {
     padding: 1rem;
   }
 
-  .expanded .stack {
-    gap: 0.75rem;
+  .shell {
+    gap: 0.875rem;
   }
 
-  .expanded .services {
-    max-height: 16vh;
+  .brand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
   }
 
-  /* Three stacked read-out lines cost more than they are worth this short. */
-  .expanded .counts {
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 0.125rem 0.75rem;
+  .logo {
+    width: 30px;
+    height: 30px;
+    margin: 0;
   }
 
-  /* Retry keeps the full width; the five recovery actions pack into two rows. */
-  .expanded .actions {
-    grid-template-columns: repeat(3, 1fr);
+  h1 {
+    font-size: 1.125rem;
   }
 
-  .expanded .btn-wide {
-    grid-column: span 3;
+  .line {
+    max-width: 600px;
   }
 
-  /* Fills the last row rather than leaving two dead cells beside it. */
-  .expanded #open-logs {
-    grid-column: span 2;
+  .card {
+    padding: 1.3rem 1.4rem;
   }
 
-  .expanded .btn {
-    height: 2.25rem;
-    padding: 0 0.5rem;
-    font-size: 0.8125rem;
+  .stack {
+    gap: 0.875rem;
+  }
+
+  .row {
+    padding: 0.3rem 1rem;
+  }
+
+  .row-detail {
+    max-height: 4.8em;
+  }
+
+  .panel-error {
+    max-height: calc(4.8em + 1.25rem);
+  }
+
+  .facts,
+  .counts {
+    padding: 0.4rem 1rem;
   }
 }

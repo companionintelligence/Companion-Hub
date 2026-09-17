@@ -40,6 +40,10 @@ export function useAppIntentDeepLinks() {
       try {
         const { listen } = await import('@tauri-apps/api/event');
         unlisten = await listen<string>('deep-link-intent', (event) => {
+          // The shell stashes every intent as well as emitting it, and this page was listening, so
+          // empty the stash first: left there, the next page load ran the same intent again, and
+          // switching Hub is itself a page load.
+          void takePendingIntent();
           void run(parseIntentAction(event.payload));
         });
         // If we were torn down while registering, drop the dangling listener.

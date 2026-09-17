@@ -1,18 +1,29 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildInstallIntentPath,
   clearStashedInstallIntentForApp,
   DEFAULT_INSTALL_STORE_ID,
+  forgetInstallIntentForApp,
   peekStashedInstallIntent,
   shouldAutoOpenInstall,
   stashPendingInstallIntent,
   takeStashedInstallIntent,
 } from './deep-link-install';
 
+const core = vi.hoisted(() => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => core.invoke(...a) }));
+
+const win = window as unknown as Record<string, unknown>;
+
 describe('deep-link-install', () => {
   beforeEach(() => {
     sessionStorage.clear();
+    core.invoke.mockReset().mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    delete win.__TAURI_INTERNALS__;
   });
 
   it('stashes and consumes install intents once', () => {
@@ -105,5 +116,48 @@ describe('deep-link-install', () => {
   it('ignores an install flag that is not exactly 1', () => {
     expect(shouldAutoOpenInstall('immich', 'ci-marketplace', '?install=0')).toBe(false);
     expect(shouldAutoOpenInstall('immich', 'ci-marketplace', '?install=true')).toBe(false);
+  });
+
+  describe('forgetting a link the app page acted on', () => {
+    it('clears the stash and empties the copy the desktop shell parked', async () => {
+      // Left parked, the next page load took the link again and reopened the install dialog.
+      win.__TAURI_INTERNALS__ = {};
+      core.invoke.mockResolvedValueOnce({ appSlug: 'immich', storeId: 'ci-marketplace' });
+      stashPendingInstallIntent({ appSlug: 'immich', storeId: 'ci-marketplace' });
+
+      await forgetInstallIntentForApp('immich', 'ci-marketplace');
+
+      expect(core.invoke).toHaveBeenCalledWith('consume_pending_install_intent');
+      expect(peekStashedInstallIntent()).toBeNull();
+      expect(shouldAutoOpenInstall('immich', 'ci-marketplace', '')).toBe(false);
+    });
+
+    it("keeps a parked link for another app, for that app's page", async () => {
+      win.__TAURI_INTERNALS__ = {};
+      core.invoke.mockResolvedValueOnce({ appSlug: 'plane', storeId: 'ci-marketplace' });
+      stashPendingInstallIntent({ appSlug: 'immich', storeId: 'ci-marketplace' });
+
+      await forgetInstallIntentForApp('immich', 'ci-marketplace');
+
+      expect(peekStashedInstallIntent()).toEqual({ appSlug: 'plane', storeId: 'ci-marketplace', deviceId: null });
+    });
+
+    it('treats the same app in another store as another link', async () => {
+      win.__TAURI_INTERNALS__ = {};
+      core.invoke.mockResolvedValueOnce({ appSlug: 'immich', storeId: 'other-store' });
+
+      await forgetInstallIntentForApp('immich', 'ci-marketplace');
+
+      expect(peekStashedInstallIntent()).toEqual({ appSlug: 'immich', storeId: 'other-store', deviceId: null });
+    });
+
+    it('only clears the stash in a plain browser, where nothing is parked', async () => {
+      stashPendingInstallIntent({ appSlug: 'immich', storeId: 'ci-marketplace' });
+
+      await forgetInstallIntentForApp('immich', 'ci-marketplace');
+
+      expect(peekStashedInstallIntent()).toBeNull();
+      expect(core.invoke).not.toHaveBeenCalled();
+    });
   });
 });

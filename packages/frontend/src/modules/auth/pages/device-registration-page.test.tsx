@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@/tests/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
 
@@ -58,6 +58,42 @@ vi.mock('@/lib/sentry', () => ({
 vi.mock('react-hot-toast', () => ({
   default: toast,
 }));
+
+/** The desktop shell's side of a `cihub://pair` link, as in main.rs: one parked code, plus listeners. */
+const shell = vi.hoisted(() => ({
+  parkedPairingCode: null as string | null,
+  pairListeners: [] as Array<(event: { payload: string }) => void>,
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: async (name: string, handler: (event: { payload: string }) => void) => {
+    if (name === 'deep-link-pair') {
+      shell.pairListeners.push(handler);
+    }
+    return () => {
+      shell.pairListeners = shell.pairListeners.filter((listener) => listener !== handler);
+    };
+  },
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: async (command: string) => {
+    if (command !== 'consume_pending_pairing_code') {
+      return null;
+    }
+    const code = shell.parkedPairingCode;
+    shell.parkedPairingCode = null;
+    return code;
+  },
+}));
+
+/** What queue_pairing_code does with a link: park the code, then emit it. */
+function openPairingLink(code: string) {
+  shell.parkedPairingCode = code;
+  for (const listener of [...shell.pairListeners]) {
+    listener({ payload: code });
+  }
+}
 
 function makeStatus(phase: RegistrationStatus['phase'], registered = false): RegistrationStatus {
   return {
@@ -305,6 +341,101 @@ describe('DeviceRegistrationPage', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', 'https://portal.example.com/home');
+    });
+  });
+
+  describe('pairing links from the desktop app', () => {
+    // Portal spends a code on its first use. A copy of the link left behind was submitted again the
+    // next time this screen opened in the same session, and failed with "no longer valid".
+    const win = window as unknown as Record<string, unknown>;
+    const STASH_KEY = 'ci-hub.pending-pairing-code';
+
+    beforeEach(() => {
+      win.__TAURI_INTERNALS__ = {};
+      shell.parkedPairingCode = null;
+      shell.pairListeners = [];
+    });
+
+    afterEach(() => {
+      delete win.__TAURI_INTERNALS__;
+    });
+
+    async function openScreenAgain() {
+      render(<DeviceRegistrationPage />);
+      expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
+      await flushAsyncWork();
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      });
+    }
+
+    it('submits a link opened on this screen once, and leaves no copy for the next visit', async () => {
+      const first = render(<DeviceRegistrationPage />);
+      await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
+
+      act(() => openPairingLink('ABC123'));
+
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123'));
+      await waitFor(() => expect(shell.parkedPairingCode).toBeNull());
+      expect(sessionStorage.getItem(STASH_KEY)).toBeNull();
+
+      first.unmount();
+      await openScreenAgain();
+      expect(pairWithCode).toHaveBeenCalledTimes(1);
+    });
+
+    it('submits a link delivered twice once, and keeps no copy of the second delivery', async () => {
+      const first = render(<DeviceRegistrationPage />);
+      await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
+
+      act(() => openPairingLink('ABC123'));
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123'));
+      // Linux and Windows hand the app every link twice.
+      act(() => openPairingLink('ABC123'));
+
+      await waitFor(() => expect(shell.parkedPairingCode).toBeNull());
+      await waitFor(() => expect(sessionStorage.getItem(STASH_KEY)).toBeNull());
+
+      first.unmount();
+      await openScreenAgain();
+      expect(pairWithCode).toHaveBeenCalledTimes(1);
+    });
+
+    it('submits a link that arrived before this screen opened once, and leaves no copy', async () => {
+      // The shell parked it, and the app-wide listener stashed it.
+      shell.parkedPairingCode = 'DEF456';
+      sessionStorage.setItem(STASH_KEY, 'DEF456');
+
+      const first = render(<DeviceRegistrationPage />);
+
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('DEF456'));
+      await waitFor(() => expect(sessionStorage.getItem(STASH_KEY)).toBeNull());
+      expect(shell.parkedPairingCode).toBeNull();
+
+      first.unmount();
+      await openScreenAgain();
+      expect(pairWithCode).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not resubmit a refused code, or repeat its error, on the next visit', async () => {
+      pairWithCode.mockResolvedValue({
+        ok: true,
+        status: 201,
+        data: { success: false, message: 'That pairing code is no longer valid. Ask for a new one.' },
+      });
+      const first = render(<DeviceRegistrationPage />);
+      await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
+
+      act(() => openPairingLink('GHI789'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('That pairing code is no longer valid. Ask for a new one.'));
+      // The code stays in the box, so Register can still retry it by hand.
+      expect(screen.getByLabelText('Enter Pairing Code:')).toHaveValue('GHI789');
+
+      first.unmount();
+      await openScreenAgain();
+      expect(pairWithCode).toHaveBeenCalledTimes(1);
+      expect(toast.error).toHaveBeenCalledTimes(1);
     });
   });
 });
