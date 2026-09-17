@@ -51,6 +51,28 @@ and Hub stores it as `ciHubApiKey`. Compose downloads and registry JWTs both req
 installs fail and tag lists come back empty, so the store looks slow rather than unauthorized. See
 [`security/hub-portal-trust.md`](security/hub-portal-trust.md).
 
+## One device ID per machine
+
+Portal knows a Hub only by its device ID. If you copy an env file from one node to another, the
+`DEVICE_ID` line comes with it, and Portal then sees two machines as one device. The second one to pair
+takes over the first one's registration or is refused. On 2026-09-17 beta-red and beta-nas carried
+the same `DEVICE_ID`, and it was neither machine's `/etc/machine-id`.
+
+The Hub refuses to pair with Portal (`cihub register`, the registration form, and the Portal link on
+the registration page) when `DEVICE_ID` has the shape of a machine ID and matches none of this host's
+identifiers. It also logs a warning at every start, and `cihub doctor` fails. To fix a node:
+
+1. Set `DEVICE_ID` to this machine's own ID in the env file the stack uses, for example
+   `sed -i "s/^DEVICE_ID=.*/DEVICE_ID=$(cat /etc/machine-id)/" .env.prod`.
+2. Recreate the Hub container so it reads the new value: `cihub up <env>`.
+3. Pair it as its own device: `cihub register --code <code>`. A Hub that was already registered under
+   the copied ID has to be paired again as a new device. If `cihub register` reports it as already
+   registered, reset its registration from **Settings** first.
+
+If you moved a Hub to new hardware on purpose and it must keep its Portal device, set
+`HUB_ALLOW_FOREIGN_DEVICE_ID=true` in the same env file instead. `cihub doctor` then reports the ID as
+kept from another machine and does not fail.
+
 ## Operators and accounts: three identity planes
 
 These are separate, and conflating them is the most common setup mistake. A person can hold all

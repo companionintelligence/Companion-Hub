@@ -537,6 +537,165 @@ describe('HubPoolPeerService', () => {
     });
   });
 
+  describe('a peer that refuses us: classification, backoff and the operator action', () => {
+    const STALE_UUID = 'aaaaaaaa-0000-4000-8000-000000000001';
+
+    function refresh(peer: HubPoolPeer): Promise<void> {
+      return (service as unknown as { refreshOnePeer: (p: HubPoolPeer) => Promise<void> }).refreshOnePeer(peer);
+    }
+
+    function poll(): Promise<void> {
+      return (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth();
+    }
+
+    function refusal(refusalHeader?: string): Response {
+      return new Response(JSON.stringify({ statusCode: 401, message: 'Invalid pool peer credentials' }), {
+        status: 401,
+        headers: refusalHeader ? { 'X-Hub-Pool-Refusal': refusalHeader } : {},
+      });
+    }
+
+    /** beta-max as its peers held it on 2026-09-16: connected, pinned, and about to be recreated. */
+    function stalePeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
+      return mockPeer({
+        id: 'beta-max',
+        nodeFqdn: 'beta-max.tailxyz.ts.net',
+        direction: 'outbound',
+        status: 'connected',
+        presentTokenEncrypted: 'ENC:token',
+        peerNodeUuid: STALE_UUID,
+        ...overrides,
+      });
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('reports a peer whose identity changed as identity_changed, with the exact re-pair commands', async () => {
+      const peer = stalePeer();
+      repo.listAll.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValue(refusal('identity-mismatch'));
+
+      await refresh(peer);
+      const [reported] = (await service.getPoolStatus()).peers;
+
+      expect(reported?.probeFailure).toMatchObject({ kind: 'identity_changed', httpStatus: 401, attempts: 1 });
+      expect(reported?.probeFailure?.action).toContain('cihub pool unpair beta-max.tailxyz.ts.net');
+      expect(reported?.probeFailure?.action).toContain('cihub pool approve self-hub.tailxyz.ts.net');
+      // The identity is never re-pinned from a refusal: the row keeps the UUID the operator approved.
+      expect(repo.update).not.toHaveBeenCalledWith(peer.id, expect.objectContaining({ peerNodeUuid: expect.anything() }));
+      expect(repo.update).not.toHaveBeenCalledWith(peer.id, expect.objectContaining({ peerPublicKey: expect.anything() }));
+    });
+
+    it('takes a changed identity out of routing on the first strike instead of waiting for three', async () => {
+      const peer = stalePeer({ consecutiveFailures: 0 });
+      vi.mocked(global.fetch).mockResolvedValue(refusal('identity-mismatch'));
+
+      await refresh(peer);
+
+      expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ consecutiveFailures: 1, status: 'unreachable' }));
+    });
+
+    it('keeps a bare 401 on the three-strike rule, since one can be a restart racing its identity load', async () => {
+      const peer = stalePeer({ consecutiveFailures: 0 });
+      vi.mocked(global.fetch).mockResolvedValue(refusal());
+
+      await refresh(peer);
+
+      expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ consecutiveFailures: 1, status: 'connected' }));
+    });
+
+    it('stops probing a peer that refuses us on every poll, which is what logged 3,169 failures', async () => {
+      vi.useFakeTimers({ now: new Date('2026-09-16T12:00:00Z') });
+      const peer = stalePeer({ status: 'unreachable', consecutiveFailures: 3 });
+      repo.listByStatuses.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValue(refusal('identity-mismatch'));
+
+      await poll();
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+
+      // The next regular poll, 30 s later: still inside the backoff, so nothing is sent.
+      vi.setSystemTime(new Date('2026-09-16T12:00:30Z'));
+      await poll();
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+
+      // Past the window, it is probed again, and the window after that is longer.
+      vi.setSystemTime(new Date('2026-09-16T12:01:01Z'));
+      await poll();
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      repo.listAll.mockResolvedValue([peer]);
+      const [reported] = (await service.getPoolStatus()).peers;
+      expect(reported?.probeFailure).toMatchObject({ attempts: 2, since: '2026-09-16T12:00:00.000Z', nextProbeAt: '2026-09-16T12:03:01.000Z' });
+    });
+
+    it('never backs off an unreachable peer, so a node that comes back rejoins on the next poll', async () => {
+      vi.useFakeTimers({ now: new Date('2026-09-16T12:00:00Z') });
+      const peer = stalePeer({ status: 'unreachable', consecutiveFailures: 3 });
+      repo.listByStatuses.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockRejectedValue(new TypeError('fetch failed'));
+
+      await poll();
+      vi.setSystemTime(new Date('2026-09-16T12:00:30Z'));
+      await poll();
+
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+      repo.listAll.mockResolvedValue([peer]);
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure).toMatchObject({ kind: 'unreachable', nextProbeAt: null, action: null });
+    });
+
+    it('clears the failure once the peer answers again, so status stops telling the operator to re-pair', async () => {
+      const peer = stalePeer();
+      repo.listAll.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValueOnce(refusal('identity-mismatch'));
+      await refresh(peer);
+
+      vi.mocked(global.fetch).mockResolvedValue(
+        new Response(JSON.stringify({ hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() }), { status: 200 }),
+      );
+      await refresh(peer);
+
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure).toBeNull();
+    });
+
+    it('starts a new run when the kind changes, so a peer that stops refusing is not left backed off', async () => {
+      const peer = stalePeer();
+      repo.listAll.mockResolvedValue([peer]);
+      vi.mocked(global.fetch).mockResolvedValueOnce(refusal('identity-mismatch'));
+      await refresh(peer);
+      vi.mocked(global.fetch).mockRejectedValueOnce(new TypeError('fetch failed'));
+      await refresh(peer);
+
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure).toMatchObject({ kind: 'unreachable', attempts: 1, nextProbeAt: null });
+    });
+
+    it('forgets the failure when the operator unpairs, so a re-pair under the same id starts clean', async () => {
+      const peer = stalePeer();
+      vi.mocked(global.fetch).mockResolvedValueOnce(refusal('identity-mismatch'));
+      await refresh(peer);
+      repo.findById.mockResolvedValue(peer);
+      vi.mocked(global.fetch).mockResolvedValue(refusal());
+
+      await service.removePeer(peer.id);
+      repo.listAll.mockResolvedValue([peer]);
+
+      expect((await service.getPoolStatus()).peers[0]?.probeFailure).toBeNull();
+    });
+
+    it('warns when a PIN pairing request is swallowed by the stale row it is meant to replace', async () => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      const peer = stalePeer({ nodeFqdn: 'peer-hub.tailxyz.ts.net' });
+      vi.mocked(global.fetch).mockResolvedValueOnce(refusal('identity-mismatch'));
+      await refresh(peer);
+      repo.findByNodeFqdn.mockResolvedValue(peer);
+
+      await service.receivePairingRequest('peer-hub.tailxyz.ts.net', undefined, 'a'.repeat(64));
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Run cihub pool unpair peer-hub.tailxyz.ts.net here first'));
+    });
+  });
+
   describe('removePeer', () => {
     it('deletes the row and tells the peer to drop its half of the pairing', async () => {
       const peer = mockPeer({ id: 'remove-me', status: 'connected', presentTokenEncrypted: 'ENC:their-token' });

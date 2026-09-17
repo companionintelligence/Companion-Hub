@@ -67,6 +67,15 @@ vi.mock('../bridge-diagnostics-cli.js', async (importOriginal) => ({
   runBridgeDoctorSection: mocks.runBridgeDoctorSection,
 }));
 
+// Mocked so a developer machine's own /etc/machine-id cannot decide these results either way.
+const deviceIdMocks = vi.hoisted(() => ({
+  runDeviceIdDoctorSection: vi.fn(() => ({ lines: ['Device ID            not set'], failureCount: 0 })),
+}));
+vi.mock('../lib/device-id-doctor.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/device-id-doctor.js')>()),
+  runDeviceIdDoctorSection: deviceIdMocks.runDeviceIdDoctorSection,
+}));
+
 // Mocked, not merely stubbed by the absence of a key: unmocked it would read this developer's real
 // settings.json and dial a real Hub on 127.0.0.1:5002.
 vi.mock('../lib/hub-claim.js', async (importOriginal) => ({
@@ -173,6 +182,17 @@ describe('doctorHub exit code', () => {
     mocks.runNetworkDoctorSection.mockResolvedValue({ lines: ['Hub pool overlaps        1 conflict(s)'], issueCount: 1, failureCount: 1 });
     await doctorHub('prod');
     expect(process.exitCode).toBe(1);
+  });
+
+  it('fails on a DEVICE_ID copied from another machine, reading the env file doctor was pointed at', async () => {
+    // beta-red and beta-nas: one DEVICE_ID, two machines, and a clean doctor on both.
+    deviceIdMocks.runDeviceIdDoctorSection.mockReturnValueOnce({ lines: ['Device ID            copied from another machine'], failureCount: 1 });
+
+    await doctorHub('prod');
+
+    expect(deviceIdMocks.runDeviceIdDoctorSection).toHaveBeenCalledWith(envFile);
+    expect(process.exitCode).toBe(1);
+    expect(stripAnsi(log.mock.calls.flat().join('\n'))).toContain('copied from another machine');
   });
 });
 

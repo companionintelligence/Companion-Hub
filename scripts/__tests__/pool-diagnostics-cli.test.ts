@@ -39,6 +39,7 @@ const {
   checkEnvFoundation,
   checkHubHealth,
   checkNonStreamingHeadroom,
+  checkPeerIdentities,
   checkPoolCommandParity,
   checkPoolProtocol,
   checkRepoVersusImage,
@@ -1742,6 +1743,89 @@ describe('rendering', () => {
 
 // ─── whole run ───────────────────────────────────────────────────────────────
 
+// ─── F1 ──────────────────────────────────────────────────────────────────────
+
+describe('F1 peers accept this node', () => {
+  // Placeholder tailnet names only — docs/README.md tip-scrub policy.
+  const RECREATED = 'hub-b.example-tailnet.ts.net';
+  const failure = (kind: 'identity_changed' | 'unauthorized' | 'unreachable') => ({
+    kind,
+    httpStatus: kind === 'unreachable' ? null : 401,
+    detail: 'capabilities probe returned 401',
+    since: '2026-09-16T10:00:00.000Z',
+    lastAttemptAt: '2026-09-17T14:00:00.000Z',
+    attempts: 120,
+    nextProbeAt: kind === 'unreachable' ? null : '2026-09-17T14:15:00.000Z',
+    action:
+      kind === 'unreachable'
+        ? null
+        : `Re-pair: (1) here: cihub pool unpair ${RECREATED}; (2) on ${RECREATED}: cihub pool pairing-pin; (3) here: cihub pool pair ${RECREATED} --pin <digits>`,
+  });
+
+  it('fails when a peer now answers as a different identity, and prints the re-pair steps', () => {
+    // Every peer of beta-max passed every other check in this doctor while it did this for 28 hours.
+    const check = checkPeerIdentities([{ nodeFqdn: RECREATED, status: 'unreachable', probeFailure: failure('identity_changed') }], null);
+
+    expect(check.verdict).toBe('fail');
+    expect(check.detail).toContain(RECREATED);
+    expect(text(formatPoolCheckLines([check]))).toContain(`cihub pool unpair ${RECREATED}`);
+    // Read-only: the doctor names the commands in notes but never offers one as a fix to run here.
+    expect(check.commands).toBeUndefined();
+  });
+
+  it('warns rather than fails on a bare 401, which can be clock skew', () => {
+    expect(checkPeerIdentities([{ nodeFqdn: RECREATED, status: 'connected', probeFailure: failure('unauthorized') }], null).verdict).toBe('warn');
+  });
+
+  it('passes a pool whose peers are merely unreachable or healthy, since neither needs a re-pair', () => {
+    const check = checkPeerIdentities(
+      [
+        { nodeFqdn: RECREATED, status: 'unreachable', probeFailure: failure('unreachable') },
+        { nodeFqdn: 'hub-c.example-tailnet.ts.net', status: 'connected', probeFailure: null },
+      ],
+      null,
+    );
+
+    expect(check).toMatchObject({ verdict: 'ok', detail: '2 paired peer(s), none refusing this node' });
+  });
+
+  it('says it cannot tell on a Hub that predates the classification, instead of a false pass', () => {
+    expect(checkPeerIdentities([{ nodeFqdn: RECREATED, status: 'unreachable' }], null).verdict).toBe('unknown');
+  });
+
+  it('passes a Hub with no paired peers, and does not count a pending request as one', () => {
+    expect(checkPeerIdentities([], null)).toMatchObject({ verdict: 'ok', detail: 'no paired peers' });
+    expect(checkPeerIdentities([{ nodeFqdn: RECREATED, status: 'pending' }], null)).toMatchObject({ verdict: 'ok' });
+  });
+
+  it('reads the Hub’s own verdict through pool status and fails the run on a changed identity', async () => {
+    readHubApiKey.mockReturnValue('cihub_super_secret_device_key');
+    const fetchMock = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/api/inference/pool/status')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ peers: [{ nodeFqdn: RECREATED, status: 'unreachable', probeFailure: failure('identity_changed') }] }),
+        };
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ isCiHub: true, poolProtocol: 2 }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+
+    const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
+    const f1 = text(section.lines)
+      .split('\n')
+      .find((line) => line.includes('F1'));
+
+    expect(f1).toContain('different Hub Pool identity');
+    expect(section.failureCount).toBeGreaterThanOrEqual(1);
+    // The operator key reached the authenticated route and never the report.
+    expect(text(section.lines)).not.toContain('cihub_super_secret_device_key');
+    vi.unstubAllGlobals();
+  });
+});
+
 describe('runPoolDoctorSection', () => {
   it('produces a full report on a machine with no Docker, no Tailscale and no Hub', async () => {
     // Nothing answers: fetch rejects, tailscale is missing, no container, no env file.
@@ -1753,15 +1837,15 @@ describe('runPoolDoctorSection', () => {
     const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
     const rendered = text(section.lines);
 
-    for (const id of ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4', 'C1', 'C2', 'D1', 'D2', 'D3']) expect(rendered).toContain(id);
+    for (const id of ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4', 'C1', 'C2', 'D1', 'D2', 'D3', 'F1']) expect(rendered).toContain(id);
     expect(rendered).toContain('Hub Pool preflight');
 
     // Structure, in RENDER ORDER — the loop above is a substring check over the joined text, so it
     // is order-agnostic and duplicate-blind. Renaming section C's header to `B` (headers A,B,B,D,E,
     // no C at all) and reversing section B's checks both passed 825 tests.
     const lines = rendered.split('\n');
-    const headers = lines.filter((line) => /^[A-E] {2}\w/.test(line.trim())).map((line) => line.trim()[0]);
-    expect(headers).toEqual(['A', 'B', 'C', 'D', 'E']);
+    const headers = lines.filter((line) => /^[A-F] {2}\w/.test(line.trim())).map((line) => line.trim()[0]);
+    expect(headers).toEqual(['A', 'B', 'C', 'D', 'E', 'F']);
     expect(lines.filter((line) => /^ {2}[A-Z]\d /.test(line)).map((line) => line.trim().split(' ')[0])).toEqual([
       'A1',
       'A2',
@@ -1776,6 +1860,7 @@ describe('runPoolDoctorSection', () => {
       'D1',
       'D2',
       'D3',
+      'F1',
     ]);
     // A reported reason ("Error: fetch failed") is the point; a stack trace is the failure mode.
     // Asserted on frame TEXT, not on indentation: sanitizeForBox collapses every whitespace run
@@ -2282,7 +2367,7 @@ describe('runPoolDoctorSection', () => {
 
     await runPoolDoctorSection('.env.prod', { env: 'prod', onSectionDone: (line, elapsedMs) => progress.push([line, elapsedMs]) });
 
-    expect(progress.map(([line]) => line.trim()[0])).toEqual(['A', 'B', 'C', 'D', 'E']);
+    expect(progress.map(([line]) => line.trim()[0])).toEqual(['A', 'B', 'C', 'D', 'E', 'F']);
     // The elapsed clock is what the caller gates printing on, so it has to be real and monotonic.
     const elapsed = progress.map(([, ms]) => ms);
     expect(elapsed).toEqual([...elapsed].sort((a, b) => a - b));

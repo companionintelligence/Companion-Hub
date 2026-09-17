@@ -506,6 +506,7 @@ authentication modes are listed — there is no `pool pins` subcommand to keep i
 | `Pins` | Each pin with its target resolved, and whether it can apply right now |
 | `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
 | `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
+| `Peers refusing this Hub` | Only when a peer answers but refuses this Hub: **identity changed** (its database was recreated) or **credentials refused**, since when, when it is next probed, and the exact re-pair commands. See [A peer whose identity changed](./hub-pool.md#a-peer-whose-identity-changed) |
 
 The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
 bearer token takes **both** directions of that pairing down. The upgrade runs on a health poll by
@@ -634,6 +635,7 @@ Tailscale and no Hub. That machine is the one being set up.
 | **D2** | Do the backend URLs resolve, and resolve fast? | An unresolvable compose service name fails **instantly under curl** but blocks ~5 s in `getaddrinfo`, which is what the Hub actually uses. Two of those is the whole D1 budget. Probed with `dns.lookup` from inside the Hub container where one is running — the only vantage that tells a compose-internal name from a broken one. The URLs themselves are read from the container's environment, which is where compose sets them — with no container to read, an empty list is reported as *could not determine*, never as a pass |
 | **D3** | Non-streaming first-byte latency vs the 15 s peer connect timeout | A warm 27B model could not return **headers** in 15 s non-streaming while the identical streaming request answered in ~1 s. Measured against a model an engine is actually holding (`loaded`/`pinned`, text modality) — a model on disk would time its cold load, and an embedding model would answer 400 — and asks for a few hundred tokens, because the defect is buffering the whole completion and one token has nothing to buffer. Opt-in behind `--check-latency`; otherwise reported as skipped with the reason |
 | **E1** | Can the Hub container reach the host's inference backends? | The existing bridge section, reused unchanged: `ufw` silently blocked container→host Ollama on a node with 8 models and the Hub reported an empty inventory with no error |
+| **F1** | Does every paired peer still accept this node as the Hub it paired with? | beta-max's database volume was recreated, which gave it a new pool identity. Every peer answered each poll with a 401 for 28 hours, showed only `unreachable`, and passed every check above. Reads the Hub's own classification from `GET /api/inference/pool/status`: a changed identity fails, a bare 401 warns, and the notes carry the re-pair commands. It never probes or unpairs a peer itself |
 
 Section **B** is written to one rule: an unprovable claim is not made. Where the evidence supports only
 "the repo has commits the image cannot contain", that is what it prints; where it supports nothing, it says
@@ -1156,6 +1158,10 @@ cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
 ```
 
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
+
+`doctor` also fails on a `DEVICE_ID` copied from another machine: a machine-ID-shaped value in the env
+file that is not this host's `/etc/machine-id`. The Hub refuses to pair with Portal under such an ID.
+See [One device ID per machine](./fleet-setup.md#one-device-id-per-machine) for the fix.
 
 ---
 

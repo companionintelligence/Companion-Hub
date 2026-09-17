@@ -10,6 +10,7 @@ import {
   formatPairingPinLines,
   formatPairingPinStateLines,
   formatPeerAuthModeLines,
+  formatPeerRefusalLines,
   formatPoolDiscoverLines,
   formatPoolPeerTable,
   formatPoolPeersLines,
@@ -594,6 +595,57 @@ describe('hub-pool-cli peer auth mode', () => {
     const text = formatPeerAuthModeLines([peer({ authMode: undefined })], false).join('\n');
 
     expect(text).toContain('legacy bearer token');
+  });
+});
+
+describe('hub-pool-cli peers refusing this Hub', () => {
+  const identityChanged = {
+    kind: 'identity_changed' as const,
+    httpStatus: 401,
+    detail: 'capabilities probe returned 401 (identity-mismatch)',
+    since: '2026-09-16T10:00:00.000Z',
+    lastAttemptAt: '2026-09-17T14:00:00.000Z',
+    attempts: 120,
+    nextProbeAt: '2026-09-17T14:15:00.000Z',
+    action: `${PEER_A} is now a different Hub Pool identity than the one paired here, so its Hub database was probably recreated. This Hub will not trust the new key by itself. Re-pair: (1) here: cihub pool unpair ${PEER_A}; (2) on ${PEER_A}: cihub pool pairing-pin; (3) here: cihub pool pair ${PEER_A} --pin <digits>; (4) on ${PEER_A}: cihub pool approve hub-a.example-tailnet.ts.net, after comparing the key fingerprint with this Hub's cihub pool status.`,
+  };
+
+  it('says the identity changed, since when, and prints every re-pair command whole', () => {
+    const text = formatPoolStatusLines(
+      status({ peers: [peer({ status: 'unreachable', consecutiveFailures: 3169, probeFailure: identityChanged })] }),
+    ).join('\n');
+
+    expect(text).toContain(`✗ ${PEER_A}  identity changed (HTTP 401) · 120 probe(s) since 2026-09-16 10:00:00Z · next probe 2026-09-17 14:15:00Z`);
+    for (const command of [`cihub pool unpair ${PEER_A}`, 'cihub pool pairing-pin', `cihub pool pair ${PEER_A} --pin <digits>`]) {
+      // Wrapped on word boundaries, so a command may span a line break but never loses a word.
+      expect(text.replace(/\n\s+/g, ' ')).toContain(command);
+    }
+  });
+
+  it('replaces the runaway strike count in the table, which read as a network fault on beta-max', () => {
+    const [, , row] = formatPoolPeerTable([peer({ status: 'unreachable', consecutiveFailures: 3169, probeFailure: identityChanged })]);
+
+    expect(row).toContain('identity changed');
+    expect(row).not.toContain('3169/3');
+  });
+
+  it('wraps the action so no line in the box runs past the terminal', () => {
+    const lines = formatPeerRefusalLines([peer({ probeFailure: identityChanged })]);
+
+    expect(lines.slice(3).every((line) => line.length <= 100)).toBe(true);
+  });
+
+  it('lists nothing for an unreachable peer, a healthy one, or a Hub predating the field', () => {
+    const unreachable = { ...identityChanged, kind: 'unreachable' as const, httpStatus: null, nextProbeAt: null, action: null };
+
+    expect(formatPeerRefusalLines([peer({ probeFailure: unreachable }), peer({ probeFailure: null }), peer()])).toEqual([]);
+    expect(formatPoolStatusLines(status()).join('\n')).not.toContain('refusing');
+  });
+
+  it('calls a bare 401 refused credentials, not a changed identity', () => {
+    const unauthorized = { ...identityChanged, kind: 'unauthorized' as const, action: 'check the far side' };
+
+    expect(formatPeerRefusalLines([peer({ probeFailure: unauthorized })]).join('\n')).toContain('credentials refused (HTTP 401)');
   });
 });
 

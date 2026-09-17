@@ -114,17 +114,24 @@ export class RegistrationController {
     const callbackNonce = this.registrationService.mintCallbackNonce();
     const callbackUrl = `${protocol}://${host}/device-registration?state=${encodeURIComponent(callbackNonce)}`;
 
+    // A DEVICE_ID copied from another machine gets no registration link: following it would bind that
+    // other Hub's device ID in Portal, which `pairDevice` refuses for the same reason.
+    const hostBinding = this.registrationService.getDeviceIdHostBinding();
+
     // Use Companion Portal's `/device/register` entry route for authentication
     // and Add Device. Treat blank configuration like a missing value.
-    const registrationUrl = ciCloudUrl?.trim()
-      ? `${ciCloudUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
-      : null;
+    const registrationUrl =
+      ciCloudUrl?.trim() && hostBinding.status !== 'foreign'
+        ? `${ciCloudUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
+        : null;
 
     return {
       device_id: deviceId,
       registration_url: registrationUrl,
       callback_url: callbackUrl,
       ci_cloud_url: ciCloudUrl || null, // Expose the configured Portal origin for diagnostics.
+      // Status and message only. The host's own machine ID is never put on this unauthenticated route.
+      device_id_host: { status: hostBinding.status, message: hostBinding.status === 'foreign' ? hostBinding.message : null },
     };
   }
 

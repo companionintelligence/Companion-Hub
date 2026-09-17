@@ -371,13 +371,16 @@ function headerLookup(init: RequestInit | undefined): (name: string) => string |
   return (name: string) => lower.get(name.toLowerCase());
 }
 
-/** Nest exceptions become the HTTP status the calling Hub would actually see. */
-function toResponse(handler: () => Promise<unknown>): Promise<Response> {
+/**
+ * Nest exceptions become the HTTP status the calling Hub would actually see, carrying any headers the
+ * guard set on the response before it threw (the global exception filter keeps those too).
+ */
+function toResponse(handler: () => Promise<unknown>, responseHeaders: Headers = new Headers()): Promise<Response> {
   return handler().then(
     (body) => new Response(JSON.stringify(body ?? {}), { status: 200, headers: { 'content-type': 'application/json' } }),
     (error: unknown) => {
       const status = error instanceof HttpException ? error.getStatus() : 500;
-      return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), { status });
+      return new Response(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }), { status, headers: responseHeaders });
     },
   );
 }
@@ -424,8 +427,10 @@ function installFetchRouter(nodes: Node[], options: { offline?: Set<string>; add
     }
 
     // Everything below is peer-facing, so the real guard decides whether the caller gets in at all.
+    const responseHeaders = new Headers();
+    const response = { setHeader: (name: string, value: string) => responseHeaders.set(name, value) };
     return toResponse(async () => {
-      await node.guard.canActivate({ switchToHttp: () => ({ getRequest: () => request }) } as never);
+      await node.guard.canActivate({ switchToHttp: () => ({ getRequest: () => request, getResponse: () => response }) } as never);
       switch (path) {
         case '/pair/confirm':
           return node.controller.handlePairingConfirm(request, body as never);
@@ -440,7 +445,7 @@ function installFetchRouter(nodes: Node[], options: { offline?: Set<string>; add
         default:
           throw new TypeError(`fetch failed: no route for ${path}`);
       }
-    });
+    }, responseHeaders);
   }) as typeof fetch;
 }
 
@@ -884,6 +889,89 @@ describe('Hub Pool across two nodes', () => {
 
       expect(response.status).toBe(401);
       expect(await core.service.getPresentToken(core.repo.only())).not.toBe(revoked);
+    });
+  });
+
+  describe('a peer whose Hub database was recreated', () => {
+    /**
+     * beta-max on 2026-09-16: a compose project-name fix created a fresh `ci_hub_pgdata`, so the same
+     * machine, under the same name, came back with a new pool UUID and key and no peer rows. Modelled
+     * as a new node at beta's name: that is exactly what core's probes reach.
+     */
+    function recreateBetaDatabase(): void {
+      beta = buildNode(BETA_FQDN, [SHARED_MODEL, BETA_ONLY_MODEL]);
+      installFetchRouter([core, beta], { offline, addresses });
+    }
+
+    /** Pair, then run ticks until both sides sign and have retired their bearer tokens, as a long-lived fleet pair has. */
+    async function pairAndSettleOnSignatures(): Promise<void> {
+      await pairNodes();
+      for (let round = 0; round < 3; round += 1) {
+        await core.poll();
+        await beta.poll();
+      }
+      expect(core.repo.only()).toMatchObject({ status: 'connected', presentTokenEncrypted: null });
+    }
+
+    async function coreStatusOfBeta() {
+      return (await core.service.getPoolStatus()).peers.find((peer) => peer.nodeFqdn === BETA_FQDN);
+    }
+
+    it('says the identity changed and how to re-pair, instead of an endless unexplained 401', async () => {
+      await pairAndSettleOnSignatures();
+      const pinnedBefore = core.repo.only().peerNodeUuid;
+      recreateBetaDatabase();
+
+      await core.poll();
+
+      const reported = await coreStatusOfBeta();
+      expect(reported?.probeFailure).toMatchObject({ kind: 'identity_changed', httpStatus: 401 });
+      expect(reported?.probeFailure?.action).toContain(`cihub pool unpair ${BETA_FQDN}`);
+      expect(reported?.status).toBe('unreachable');
+      // Nothing about the new identity was trusted: the row still pins what the operator approved.
+      expect(core.repo.only().peerNodeUuid).toBe(pinnedBefore);
+    });
+
+    it('backs off instead of probing the recreated node on every poll', async () => {
+      await pairAndSettleOnSignatures();
+      recreateBetaDatabase();
+      await core.poll();
+      const probesAfterFirst = vi.mocked(global.fetch).mock.calls.length;
+
+      await core.poll();
+      await core.poll();
+
+      expect(vi.mocked(global.fetch).mock.calls.length).toBe(probesAfterFirst);
+    });
+
+    it('re-pairs cleanly by following the reported steps, and ends connected to the new identity', async () => {
+      await pairAndSettleOnSignatures();
+      recreateBetaDatabase();
+      await core.poll();
+
+      // (1) unpair here, (2) PIN on beta, (3) pair here with it, (4) approve on beta.
+      await core.service.removePeer(core.repo.only().id);
+      const { pin } = beta.service.mintPairingPin();
+      await core.service.initiatePairing(BETA_FQDN, undefined, pin);
+      await beta.service.approvePairing(beta.repo.only().id);
+      await core.poll();
+
+      const reported = await coreStatusOfBeta();
+      expect(reported).toMatchObject({ status: 'connected', probeFailure: null });
+      expect(core.repo.only().peerNodeUuid).toBe((await beta.identity.get())?.nodeUuid);
+    });
+
+    it('calls a bearer-era pairing that the recreated node no longer knows unauthorized, and still says what to check', async () => {
+      // Straight after pairing core still presents its bearer token, which carries no recipient, so
+      // the recreated node can only say "unknown peer". That is a different, weaker verdict.
+      await pairNodes();
+      recreateBetaDatabase();
+
+      await core.poll();
+
+      const reported = await coreStatusOfBeta();
+      expect(reported?.probeFailure).toMatchObject({ kind: 'unauthorized', httpStatus: 401 });
+      expect(reported?.probeFailure?.action).toContain(`cihub pool status on ${BETA_FQDN}`);
     });
   });
 

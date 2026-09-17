@@ -41,7 +41,14 @@ import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
 import { HubPoolPairingPinService, type PinAttemptSource } from './hub-pool-pairing-pin.service';
-import { buildSignedPoolHeaders, MIN_PAIR_BY_ADDRESS_PROTOCOL, POOL_PEER_HEADER, publicKeyFingerprint } from './hub-pool-peer-auth';
+import {
+  buildSignedPoolHeaders,
+  MIN_PAIR_BY_ADDRESS_PROTOCOL,
+  POOL_PEER_HEADER,
+  POOL_REFUSAL_HEADER,
+  publicKeyFingerprint,
+} from './hub-pool-peer-auth';
+import { classifyProbeFailure, PoolProbeHttpError, type PoolPeerProbeFailure, probeBackoffMs, probeFailureAction } from './hub-pool-probe-failure';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import {
   resolveStatusPins,
@@ -136,6 +143,14 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   private ownInventoryInFlight: Promise<OwnInventory> | null = null;
   private containerSampler: PoolContainerSampler | null = null;
   private containerSamplerWarned = false;
+  /**
+   * Each failing peer's current run of probe failures, keyed by row id.
+   *
+   * In memory on purpose. The only consumers are this process's poll and its `/pool/status`, and a
+   * restart costs one probe to rebuild it. Persisting it would need a migration for a value whose
+   * whole meaning is "what the last few probes saw".
+   */
+  private readonly probeFailures = new Map<string, PoolPeerProbeFailure>();
 
   constructor(
     private readonly logger: LoggerService,
@@ -485,6 +500,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // screens when confirming a pairing, and the full key is only ever needed in-process.
       peers: peers.map((peer) => ({
         ...toPublicPeer(peer),
+        // Why a peer is failing, not only that it is. `unreachable` alone sent operators looking for a
+        // network fault on a node that answered every probe, just not as the Hub they had paired.
+        probeFailure: this.probeFailures.get(peer.id) ?? null,
         inFlightRequests: this.loadService.get(peer.id),
         authMode: this.authModeOf(peer),
         peerKeyFingerprint: publicKeyFingerprint(peer.peerPublicKey),
@@ -798,6 +816,14 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
     const existing = await this.repo.findByNodeFqdn(fromNodeFqdn);
     if (existing) {
+      if (this.probeFailures.get(existing.id)?.kind === 'identity_changed') {
+        // The half-followed re-pair: the far side minted a fresh pairing, but the stale row here still
+        // holds the name. Without this line the request vanishes into the debug log and the far side
+        // waits on a pending row that never gets an answer.
+        this.logger.warn(
+          `[HubPool] ignoring a pairing request from ${fromNodeFqdn}: this Hub still holds the stale pairing for its previous identity. Run cihub pool unpair ${fromNodeFqdn} here first.`,
+        );
+      }
       this.logger.debug(`[HubPool] ignoring duplicate pairing request from ${fromNodeFqdn} (already have a ${existing.status} row)`);
       // A verified PIN gets the same answer here as it would on a fresh request, deliberately. It
       // is what the caller is entitled to either way, and answering differently would have made
@@ -1077,6 +1103,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   async removePeer(id: string): Promise<void> {
     const row = await this.repo.findById(id);
     await this.repo.delete(id);
+    this.probeFailures.delete(id);
     if (!row) {
       return;
     }
@@ -1099,6 +1126,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   /** Inbound `POST /inference/pool/pair/unpair` — the peer removed us, so drop our side too. */
   async handleRemoteUnpair(guardedRow: HubPoolPeer): Promise<void> {
     await this.repo.delete(guardedRow.id);
+    this.probeFailures.delete(guardedRow.id);
   }
 
   /**
@@ -1526,7 +1554,21 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     // peerless Hub — nearly all of them — should pay nothing at all for a signal that only exists to
     // be compared against a peer's.
     this.pressureService.setPoolActive(peers.some((peer) => peer.status === 'connected'));
-    await Promise.all(peers.map((peer) => this.refreshOnePeer(peer)));
+    // Rows deleted by any path (unpair, rotation, a hand-edited table) take their failure run with them.
+    const polled = new Set(peers.map((peer) => peer.id));
+    for (const id of this.probeFailures.keys()) {
+      if (!polled.has(id)) {
+        this.probeFailures.delete(id);
+      }
+    }
+    const now = Date.now();
+    await Promise.all(peers.filter((peer) => !this.probeBackedOff(peer.id, now)).map((peer) => this.refreshOnePeer(peer)));
+  }
+
+  /** Whether a peer that refused us is still inside its backoff window. See `probeBackoffMs`. */
+  private probeBackedOff(peerId: string, now: number): boolean {
+    const nextProbeAt = this.probeFailures.get(peerId)?.nextProbeAt;
+    return nextProbeAt !== null && nextProbeAt !== undefined && Date.parse(nextProbeAt) > now;
   }
 
   private async refreshOnePeer(peer: HubPoolPeer): Promise<void> {
@@ -1540,7 +1582,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         signal: AbortSignal.timeout(CAPABILITIES_PROBE_TIMEOUT_MS),
       });
       if (!response.ok) {
-        throw new Error(`capabilities probe returned ${response.status}`);
+        throw new PoolProbeHttpError(response.status, response.headers.get(POOL_REFUSAL_HEADER));
       }
       const capabilities = (await response.json()) as PoolPeerCapabilities;
       const refreshed = await this.repo.update(current.id, {
@@ -1551,6 +1593,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         lastSeenAt: new Date().toISOString(),
         lastCapabilities: capabilities as unknown as Record<string, unknown>,
       });
+      this.probeFailures.delete(current.id);
       // Both of these are deliberately SEPARATE writes, after the health write has already
       // committed. `peer_node_uuid` carries a partial UNIQUE index (migration 0059), so pinning one
       // can raise a 23505 when the same physical node is somehow paired twice. Folding that into
@@ -1562,13 +1605,43 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       await this.upgradeToSignedIfPossible(settled, capabilities);
     } catch (error) {
       const failures = peer.consecutiveFailures + 1;
+      const failure = await this.recordProbeFailure(peer, error);
       this.logger.warn(
-        `[HubPool] capabilities probe for ${peer.nodeFqdn} failed (${failures}/${UNREACHABLE_THRESHOLD}): ${error instanceof Error ? error.message : String(error)}`,
+        `[HubPool] capabilities probe for ${peer.nodeFqdn} failed (${failures}/${UNREACHABLE_THRESHOLD}): ${failure.detail}${
+          failure.action ? ` — ${failure.action} Next probe after ${failure.nextProbeAt}.` : ''
+        }`,
       );
       await this.repo.update(peer.id, {
         consecutiveFailures: failures,
-        status: failures >= UNREACHABLE_THRESHOLD ? 'unreachable' : peer.status,
+        // A changed identity is a definite answer, not a flaky network, so it leaves routing on the
+        // first strike. The other two kinds keep the three-strike rule, since a single 401 can be a
+        // restart racing its own identity load.
+        status: failures >= UNREACHABLE_THRESHOLD || failure.kind === 'identity_changed' ? 'unreachable' : peer.status,
       });
     }
+  }
+
+  /**
+   * Classify a failed probe and extend that peer's run of failures, scheduling its next probe.
+   *
+   * A kind change starts a new run, because the backoff and the operator's instructions belong to the
+   * kind. A peer that stops refusing us and merely times out is back on the normal cadence at once.
+   */
+  private async recordProbeFailure(peer: HubPoolPeer, error: unknown): Promise<PoolPeerProbeFailure> {
+    const classified = classifyProbeFailure(error);
+    const previous = this.probeFailures.get(peer.id);
+    const now = new Date();
+    const attempts = previous?.kind === classified.kind ? previous.attempts + 1 : 1;
+    const backoffMs = probeBackoffMs(classified.kind, attempts, this.healthPollIntervalMs());
+    const failure: PoolPeerProbeFailure = {
+      ...classified,
+      since: previous?.kind === classified.kind ? previous.since : now.toISOString(),
+      lastAttemptAt: now.toISOString(),
+      attempts,
+      nextProbeAt: backoffMs > 0 ? new Date(now.getTime() + backoffMs).toISOString() : null,
+      action: probeFailureAction(classified.kind, peer.nodeFqdn, await this.selfNodeFqdn()),
+    };
+    this.probeFailures.set(peer.id, failure);
+    return failure;
   }
 }

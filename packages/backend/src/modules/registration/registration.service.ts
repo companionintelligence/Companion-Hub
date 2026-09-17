@@ -38,6 +38,7 @@ import {
 import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
 import { buildCheckInPayload } from './check-in-payload';
 import { resolveDeviceId } from './device-id.resolver';
+import { ALLOW_FOREIGN_DEVICE_ID_ENV, checkDeviceIdHostBinding, type DeviceIdHostBinding } from './device-id-host-check';
 import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
 
@@ -165,6 +166,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async runDeferredBootstrap() {
+    // Loud at every boot, registered or not: a copied DEVICE_ID harms the OTHER Hub at pairing time,
+    // and a Hub already paired under it gives no other sign that it shares an identity.
+    const binding = this.getDeviceIdHostBinding();
+    if (binding.status === 'foreign') {
+      this.logger.warn(`Device ID: ${binding.message}`);
+    }
+
     // Restore the tunnel token before checking registration. `isRegistered()`
     // requires both a database row and the on-disk token.
     const tunnelRecovered = await this.recoverTunnelTokenFromDb();
@@ -1100,6 +1108,30 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     });
   }
 
+  private deviceIdHostBinding?: DeviceIdHostBinding;
+
+  /**
+   * Whether `DEVICE_ID` was generated on this machine. Memoized like {@link getDeviceId}: the
+   * environment and the host's machine ID cannot change under a running process.
+   */
+  public getDeviceIdHostBinding(): DeviceIdHostBinding {
+    this.deviceIdHostBinding ??= checkDeviceIdHostBinding({
+      envDeviceId: process.env.DEVICE_ID,
+      allowForeign: process.env[ALLOW_FOREIGN_DEVICE_ID_ENV],
+    });
+    return this.deviceIdHostBinding;
+  }
+
+  /** The refusal message when this Hub must not pair under its `DEVICE_ID`, or `null` when it may. */
+  private foreignDeviceIdRefusal(): string | null {
+    const binding = this.getDeviceIdHostBinding();
+    if (binding.status !== 'foreign') {
+      return null;
+    }
+    this.logger.warn(`Refusing to pair with Portal. ${binding.message}`);
+    return binding.message;
+  }
+
   private hasTunnelToken(): boolean {
     const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
@@ -1479,6 +1511,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return { success: false, message: 'CI Cloud URL not configured.' };
     }
 
+    // Before Portal is called: once Portal binds the code to a copied device ID, the damage is to the
+    // other Hub's registration, and nothing on this side can undo it.
+    const foreignDeviceId = this.foreignDeviceIdRefusal();
+    if (foreignDeviceId) {
+      return { success: false, message: foreignDeviceId };
+    }
+
     const deviceId = await this.getDeviceId();
     if (!deviceId) {
       return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
@@ -1628,6 +1667,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       // Prefer an explicit device ID and otherwise use the hardware-derived value.
       const deviceId = customDeviceId?.trim() || (await this.getDeviceId());
+      // Only the environment's ID is judged. An ID the operator typed into the form is their decision.
+      const foreignDeviceId = customDeviceId?.trim() ? null : this.foreignDeviceIdRefusal();
+      if (foreignDeviceId) {
+        return { success: false, message: foreignDeviceId };
+      }
       const description = customDescription?.trim() || `CI OS Hub Device - ${deviceId}`;
 
       this.logger.info(`Starting device registration: device_id=${deviceId}, organization_id=${organizationId}, organization_name=${sanitizedName}`);
