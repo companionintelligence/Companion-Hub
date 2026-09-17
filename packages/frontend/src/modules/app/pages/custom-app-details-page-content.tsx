@@ -74,7 +74,7 @@ export const CustomAppDetailsPageContent = ({ appId, info, app, metadata }: Prop
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="custom-app">
       <AppRuntimeDegradedBanner runtimeHealth={runtimeHealth.data} />
       <Card data-testid="app-details">
         <CardHeader className="flex flex-col md:flex-row border-0">
