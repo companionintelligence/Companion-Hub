@@ -73,6 +73,13 @@ vi.mock('react-hot-toast', () => ({
   default: { error: vi.fn(), success: vi.fn() },
 }));
 
+// The Companion Memory card lazy-loads lottie-react, and lottie-web reaches for a canvas 2D context
+// at import time, which jsdom doesn't provide. The failed import is cached, so once the first render
+// hits it every later render in this file throws and comes up empty.
+vi.mock('lottie-react', () => ({
+  default: () => null,
+}));
+
 // Onboarding pins inference to Ollama, so catalog fixtures use the Ollama backend.
 const highTierProfile: HardwareProfileResponse = {
   hardware: {

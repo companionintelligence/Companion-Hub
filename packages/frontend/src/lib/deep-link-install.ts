@@ -78,6 +78,22 @@ export async function resolvePendingInstallIntent(): Promise<InstallIntent | nul
   return (await takePendingInstallIntentFromDesktop()) ?? takeStashedInstallIntent();
 }
 
+/**
+ * Forget the link that asked to install this app, wherever it left a copy, once the app's page has
+ * acted on it.
+ *
+ * The desktop shell parks every install link as well as emitting it, and nothing else empties that
+ * slot. A copy left there sent the next page load back to this app with the install dialog open.
+ */
+export async function forgetInstallIntentForApp(appSlug: string, storeId: string): Promise<void> {
+  clearStashedInstallIntentForApp(appSlug, storeId);
+  const parked = await takePendingInstallIntentFromDesktop();
+  if (parked && (parked.appSlug !== appSlug || parked.storeId !== storeId)) {
+    // A link for another app arrived meanwhile: keep it for that app's page.
+    stashPendingInstallIntent(parked);
+  }
+}
+
 export function buildInstallIntentPath(intent: InstallIntent): string {
   return `/store/${encodeURIComponent(intent.storeId)}/${encodeURIComponent(intent.appSlug)}?install=1`;
 }
