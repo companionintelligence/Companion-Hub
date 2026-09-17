@@ -8,8 +8,9 @@ export type ProvisioningPhase = (typeof PROVISIONING_PHASES)[number];
  * `cloud_validation_failed` is the transient one: Portal could not be asked, or answered with
  * something that is not a verdict (5xx, a proxy page, a refused request body), three times running.
  *
- * `portal_rejected` is the definitive one: Portal answered, and it does not accept this Hub's device
- * key. On the 2026-09-17 fleet it was the true state of five Hubs that had sat under
+ * `portal_rejected` is the definitive one: Portal has gone on refusing this Hub's device key for ten
+ * minutes. One refusal is not enough, since Portal answers a database error with the same 401. On
+ * the 2026-09-17 fleet it was the true state of five Hubs that had sat under
  * `cloud_validation_failed` for up to a week, retrying a key that no retry could revive. Pairing
  * again is the only way out, so it is one of the reasons that reopens pairing.
  */

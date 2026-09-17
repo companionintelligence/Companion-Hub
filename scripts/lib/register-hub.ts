@@ -165,10 +165,16 @@ export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshRe
   return data;
 }
 
-export async function submitPairingCode(apiBase: string, pairingCode: string): Promise<PairResponse> {
+/**
+ * `deviceKey` is the host-local device key from `state/settings.json`, when this machine has one.
+ * A first pairing needs no credential, but the Hub re-pairs an already registered Hub (a key Portal
+ * rejects, a lost tunnel token) only for an authenticated caller, and this is how `cihub register`
+ * on the Hub itself is one.
+ */
+export async function submitPairingCode(apiBase: string, pairingCode: string, deviceKey?: string): Promise<PairResponse> {
   const res = await fetch(`${apiBase}/api/registration/pair`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(deviceKey ? { Authorization: `Bearer ${deviceKey}` } : {}) },
     body: JSON.stringify({ pairing_code: normalizePairingCode(pairingCode) }),
     signal: AbortSignal.timeout(30_000),
   });

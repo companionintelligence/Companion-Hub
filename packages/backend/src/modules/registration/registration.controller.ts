@@ -410,7 +410,7 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Pair device using a pairing code — atomic registration in one step' })
   @ApiResponse({ status: 200, description: 'Device paired and registered successfully' })
   @ApiResponse({ status: 400, description: 'Invalid pairing code or pairing failed' })
-  async pairDevice(@Body() body: PairDeviceDto) {
+  async pairDevice(@Body() body: PairDeviceDto, @Req() req?: Request) {
     const pairingCode = body.pairing_code?.trim().toUpperCase();
 
     this.logger.info(`Received local pairing request: codeLength=${pairingCode?.length ?? 0} validShape=${pairingCode?.length === 6}`);
@@ -419,7 +419,10 @@ export class RegistrationController {
       return { success: false, message: 'A valid 6-character pairing code is required.' };
     }
 
-    const result = await this.registrationService.pairDevice(pairingCode);
+    // No guard: first pairing has nobody to authenticate. `AuthMiddleware` names the principal
+    // when there is one (a session, the host-local device key, or the CLI token, including on an
+    // unclaimed Hub), and the service requires one before it re-pairs a registered Hub.
+    const result = await this.registrationService.pairDevice(pairingCode, { callerAuthenticated: Boolean(req?.hubPrincipal) });
     return result;
   }
 

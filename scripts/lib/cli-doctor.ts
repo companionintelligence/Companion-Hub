@@ -145,7 +145,17 @@ export function describeRegistrationPhase(
     lines.push(`Portal check-in      ${cliOk(`accepted (HTTP ${checkIn.httpStatus})`)}  ${dim(describeAge(checkIn.at, now))}`);
   } else {
     const outcome = checkIn.httpStatus === null ? 'no response' : `HTTP ${checkIn.httpStatus}${checkIn.code ? ` ${checkIn.code}` : ''}`;
-    const detail = [checkIn.error, describeAge(checkIn.at, now)].filter(Boolean).join(', ');
+    // The Hub waits ten minutes before it believes a rejection, because Portal answers a database
+    // error with the same 401. Until then the phase says nothing about it, so the line has to.
+    const unconfirmedRejection =
+      !reasons.includes('portal_rejected') && (checkIn.httpStatus === 401 || checkIn.httpStatus === 403 || checkIn.code === 'DEVICE_NOT_ACTIVE');
+    const detail = [
+      checkIn.error,
+      describeAge(checkIn.at, now),
+      unconfirmedRejection ? 'Portal refuses the device key; if that lasts 10 min, pair again' : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
     lines.push(`Portal check-in      ${failureCount > 0 ? cliFail(outcome) : cliWarn(outcome)}  ${dim(detail)}`);
     issueCount = 1;
   }

@@ -39,7 +39,7 @@ Reading `GET /api/registration/status` is therefore not a passive observation. I
 | Line | Fails doctor when |
 | --- | --- |
 | `Registration` | The Hub is `degraded` for a reason only pairing clears: `portal_rejected` or `tunnel_token_missing` |
-| `Portal check-in` | Never on its own. It shows the HTTP status, Portal's code and error, and how long ago the check-in ran |
+| `Portal check-in` | Never on its own. It shows the HTTP status, Portal's code and error, and how long ago the check-in ran. If Portal refused the device key but the Hub hasn't confirmed the rejection yet, the line says so |
 
 `cloud_validation_failed` and `tunnel_unreachable` are notes, because both can clear without anyone acting.
 
@@ -50,15 +50,23 @@ The rules follow what CI-Portal implements in `deviceAuthMiddleware.ts` and `Che
 | Portal answer | Cause | Hub response |
 | --- | --- | --- |
 | `2xx` | Portal accepts the key | Clears `degraded`, if set |
-| `401` with a JSON body | No live device holds the key: the device was removed, an owner or admin re-registered it (status `inactive`), or a later pairing rotated the key | `degraded` with `portal_rejected` on the first answer |
-| `403` with a JSON `error` | The key belongs to a different `device_id` than the one this Hub resolved | `degraded` with `portal_rejected` |
-| `400` with code `DEVICE_NOT_ACTIVE` | The device row disappeared after authentication | `degraded` with `portal_rejected` |
+| `401` with a JSON body | No live device holds the key: the device was removed, an owner or admin re-registered it (status `inactive`), or a later pairing rotated the key. Portal also sends this answer when it can't read its device table | A rejection. See below |
+| `403` with a JSON `error` | The key belongs to a different `device_id` than the one this Hub resolved | A rejection |
+| `400` with code `DEVICE_NOT_ACTIVE` | The device row disappeared after authentication, or Portal couldn't read it | A rejection |
 | `400` with any other body | Portal refused a field in the check-in body | Transient failure, logged as a schema mismatch |
 | Anything else, a non-JSON `401` or `403`, or no response | Portal is unavailable, rate limiting, or something in front of it answered | Transient failure. Three in a row set `cloud_validation_failed` |
 
+A rejection sets `degraded` with `portal_rejected` only when Portal is still rejecting the key 10 minutes after the first rejection, with no accepted check-in in between. Until then, each rejection counts as a transient failure, and `lastCheckIn` shows it. The wait exists because CI-Portal's `deviceAuthMiddleware` answers `401 Invalid Device Key` both when no device holds the key and when `DeviceService.findByApiKey` fails to read the database. Without the wait, a short Portal database outage would tell the owner of every Hub that checked in during it to pair again. A removal doesn't clear on its own: the five fleet Hubs described below had been rejected for between one day and a week. At the fleet's 15-minute check-in interval, the second rejected check-in confirms the rejection.
+
 The Hub never deletes its registration because of a check-in. The tunnel token authenticates `cloudflared` on its own, and local apps do not need Portal, so deleting the registration would turn an owner's action in Portal, or a Portal incident, into an outage. A later transient failure doesn't replace `portal_rejected` with `cloud_validation_failed`.
 
-A Hub in `portal_rejected` or `tunnel_token_missing` accepts a new pairing without a reset, through `POST /api/registration/pair` (used by `cihub register`) and through the registration callback.
+### Pairing a registered Hub again
+
+A Hub in `portal_rejected` or `tunnel_token_missing` accepts a new pairing without a reset. So does a Hub whose key Portal is rejecting but whose rejection isn't confirmed yet. Updating a Hub restarts it, which restarts the 10-minute wait, so the remedy below would otherwise be refused right after the update.
+
+`POST /api/registration/pair` needs no authentication for a Hub that is not registered, because a Hub being set up has nobody to sign in as. To pair a registered Hub again, the caller must be authenticated, the same as for `POST /api/registration/reset`. A Hub session, the host-local device key, and the CLI token all count, and so does a key on a Hub with no operator yet. `cihub register` sends the device key from `state/settings.json`. Without this check, anyone who can reach the Hub could pair it into their own organization, because the Hub sends its own device key to Portal as proof of possession.
+
+The registration callback accepts a pairing for `portal_rejected` and `tunnel_token_missing` only. It carries its own one-time nonce instead of a session.
 
 Earlier builds read these answers differently. They deleted the local registration and tunnel token on any `400`, including a schema refusal, and treated a `401` as transient. A Hub on such a build whose key Portal rejects reports `cloud_validation_failed` after three check-ins and refuses to pair with `Device is already registered.`
 
@@ -91,7 +99,7 @@ For each affected Hub:
 
 1. In Portal, as an owner or admin of the Hub's organization, get a pairing code. If the device no longer appears, add it again. If it appears as inactive, re-register it.
 1. Update the Hub to a build that includes this change. Otherwise the Hub refuses to pair while it is registered.
-1. On the Hub, run `cihub register --code <code>`.
+1. On the Hub, run `cihub register --code <code>`. It sends the Hub's device key from `state/settings.json`, which authenticates the pairing of an already registered Hub.
 1. Run `cihub doctor`. `Registration` shows a ready phase and `Portal check-in` shows `accepted`.
 
 Pairing sends the Hub's current device key as proof of possession. Portal accepts a pairing without that proof only when the device row is `inactive` or absent. If Portal answers `DEVICE_PROOF_REQUIRED`, the row is live under a different key, so re-register the device in Portal and use the new code.
@@ -104,9 +112,11 @@ The web UI does not offer pairing for `portal_rejected` yet. Its pairing form an
 
 `MarketplaceEntitlementService` gates marketplace app lifecycle operations on Portal's `GET /api/entitlements/check`. It is a UX cache, not a commerce control. See [Hub ↔ Portal trust](security/hub-portal-trust.md#hub-cache-722--1212).
 
-Restart uses the same policy as Start. Restart runs `docker compose down` and then `up --force-recreate`, so an ungated restart brought back an app that Start refused. The check runs before `down`, so a refused restart leaves a running app running.
+A restart that a person or an MCP key asks for uses the same policy as Start. Restart runs `docker compose down` and then `up --force-recreate`, so an ungated restart brought back an app that Start refused. `AppLifecycleService.restartApp` checks the policy before the app's status changes to `restarting`. A refused restart returns the error to the caller and leaves the app and its status as they were. If the check ran in the queued command instead, the failure would mark the app `stopped` while its containers kept running.
 
-| Portal answer | Install and update | Start and restart |
+The Hub's own restarts skip the check. Each of them updates an app that is already running: a credential rotation, a saved config, an inference or custom-domain change, or a Memory key rotation. If Portal refused one of these, the app would keep running with credentials the Hub had already revoked. **Restart all** restarts only running apps, so it can't bring back an app that Start refused.
+
+| Portal answer | Install and update | Start, and a restart a person or key asks for |
 | --- | --- | --- |
 | Entitled, free, or unknown app | Allowed | Allowed |
 | `402` | Refused | Refused |

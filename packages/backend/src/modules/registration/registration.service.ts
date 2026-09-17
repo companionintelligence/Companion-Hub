@@ -50,6 +50,19 @@ const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 
+/**
+ * How long Portal must go on rejecting the device key before the Hub reports `portal_rejected`.
+ *
+ * One rejection is not a verdict. CI-Portal's `deviceAuthMiddleware` answers the same
+ * `401 { code: 'UNAUTHORIZED' }` when `DeviceService.findByApiKey` fails (`!result.ok`, a D1 read
+ * error) as when no device holds the key, so a Portal database blip would otherwise mark every Hub
+ * that checked in during it `portal_rejected`, tell every owner to pair again, and reopen pairing
+ * fleet-wide. A removal does not heal: on 2026-09-17 the five affected Hubs had been rejected for
+ * between one day and a week. Ten minutes is a policy choice, not a measurement: longer than a
+ * blip, and on the fleet's 15-minute check-in cadence it confirms on the second rejected check-in.
+ */
+export const PORTAL_REJECTION_CONFIRM_MS = 10 * 60 * 1000;
+
 function describeRegistrationError(error: unknown): string {
   if (error instanceof Error) {
     return scrubString(error.stack || error.message);
@@ -107,6 +120,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private phaseRefreshInFlight: Promise<void> | null = null;
   /** What the last check-in came back with; read by `GET /registration/phase` without sending one. */
   private lastCheckIn: RegistrationCheckIn | null = null;
+  /** When Portal first rejected the key in the current run of rejections; cleared by an accepted check-in. */
+  private portalRejectedSince: number | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -627,20 +642,39 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       if (verdict.kind === 'rejected') {
         /*
-         * Degrade at once, and keep everything. Portal's verdict is about the device key, not
-         * about the tunnel: cloudflared authenticates with its own token and goes on serving
-         * until Cloudflare drops the tunnel, and local apps never needed Portal. Deleting the
-         * registration here, as the old 400 path did, turns an owner's action in Portal (or a
-         * Portal incident) into a public outage on every Hub that notices it, and pairing again
-         * does not need the old registration gone: `requiresPortalRePairing` reopens pairing
-         * for this reason.
+         * Keep everything. Portal's verdict is about the device key, not about the tunnel:
+         * cloudflared authenticates with its own token and goes on serving until Cloudflare drops
+         * the tunnel, and local apps never needed Portal. Deleting the registration here, as the
+         * old 400 path did, turns an owner's action in Portal (or a Portal incident) into a public
+         * outage on every Hub that notices it, and pairing again does not need the old
+         * registration gone: `requiresPortalRePairing` reopens pairing for this reason.
+         *
+         * And do not believe the first one. Portal sends this same 401 when it cannot read its
+         * device table, so a rejection only becomes `portal_rejected` once Portal has kept it up
+         * for `PORTAL_REJECTION_CONFIRM_MS`; until then it counts like any other failure.
          */
-        this.consecutiveValidationFailures = 0;
+        const now = Date.now();
+        this.portalRejectedSince ??= now;
+        const rejectedForMs = now - this.portalRejectedSince;
+        const described = `${verdict.error}${verdict.code ? `, ${verdict.code}` : ''}`;
+
+        if (rejectedForMs >= PORTAL_REJECTION_CONFIRM_MS) {
+          this.consecutiveValidationFailures = 0;
+          this.logger.warn(
+            `Registration validation: CI Portal has rejected this Hub's device key for ${Math.round(rejectedForMs / 60_000)} min (${described}). ` +
+              'Pair this Hub again (cihub register --code <code>); its tunnel and local registration are kept.',
+          );
+          await this.setPhase('degraded', ['portal_rejected']);
+          return;
+        }
+
+        this.consecutiveValidationFailures++;
         this.logger.warn(
-          `Registration validation: CI Portal rejected this Hub's device key (${verdict.error}${verdict.code ? `, ${verdict.code}` : ''}). ` +
-            'Pair this Hub again (cihub register --code <code>); its tunnel and local registration are kept.',
+          `Registration validation: CI Portal rejected this Hub's device key (${described}); Portal answers the same way when it ` +
+            `cannot read its device table, so this is not acted on until it persists for ${PORTAL_REJECTION_CONFIRM_MS / 60_000} min ` +
+            `(failure ${this.consecutiveValidationFailures}/3)`,
         );
-        await this.setPhase('degraded', ['portal_rejected']);
+        await this.degradeAfterRepeatedFailures();
         return;
       }
 
@@ -662,6 +696,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       this.consecutiveValidationFailures = 0;
+      this.portalRejectedSince = null;
       this.reconcileOperatorMembershipsAfterCheckIn();
 
       // A successful check-in restores a registration degraded by remote failures.
@@ -798,6 +833,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
+    this.portalRejectedSince = null;
 
     // Stop validation before removing its registration state.
     if (this.periodicValidationInterval) {
@@ -1303,6 +1339,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     organizationId: string,
     activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string; domain?: string },
   ): Promise<void> {
+    // Read before any phase change below. A re-pair is a registered Hub that pairing is meant to
+    // fix: degraded for a reason only pairing clears, or with a key Portal is rejecting right now
+    // (`pairDevice` admits an authenticated caller before the rejection is confirmed).
+    const rePairing =
+      isOperational(this._currentPhase) && (requiresPortalRePairing(this._currentPhase, this._degradedReasons) || this.portalRejectedSince !== null);
+
     // Update an existing row in place so provisioning retries remain idempotent.
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
     if (existingOrg) {
@@ -1345,16 +1387,19 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // must also clear the degraded reason that asked for it: `degraded` counts as
       // operational, so without this the Hub went on reporting `portal_rejected`
       // with a fresh key on disk until the next check-in happened to pass.
-      if (!isOperational(this._currentPhase) || requiresPortalRePairing(this._currentPhase, this._degradedReasons)) {
+      if (!isOperational(this._currentPhase) || rePairing) {
         this.consecutiveValidationFailures = 0;
+        this.portalRejectedSince = null;
         await this.setPhase('locally_ready', [], organizationId);
       }
       return;
     }
 
-    // Read before `provisioning` overwrites the phase: only a re-pair of a Hub that
-    // needed one may replace the registration it already holds.
-    const replacesRegistration = requiresPortalRePairing(this._currentPhase, this._degradedReasons);
+    // Only a re-pair of a Hub that needed one may replace the registration it already holds.
+    const replacesRegistration = rePairing;
+    if (replacesRegistration) {
+      this.portalRejectedSince = null;
+    }
 
     // Provisioning begins only after the device reaches the paired phase.
     await this.setPhase('provisioning', [], organizationId);
@@ -1557,7 +1602,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Send the code and device ID to Companion Portal, persist the returned state,
    * and mark the device as registered.
    */
-  public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
+  public async pairDevice(
+    pairingCode: string,
+    options: { callerAuthenticated?: boolean } = {},
+  ): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
@@ -1574,9 +1622,33 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // `portal_rejected` Hub had no way back except a reset that deletes its tunnel
     // token, and the frontend's `tunnel_token_missing` pairing form dead-ended on
     // "Device is already registered."
-    const alreadyRegistered = await this.isRegisteredAndServing();
-    if (alreadyRegistered) {
+    const serving = await this.isRegisteredAndServing();
+
+    /*
+     * `POST /registration/pair` is unauthenticated, because a Hub being set up has nobody to log
+     * in as. A registered Hub does, and re-pairing one replaces its organization, device key and
+     * tunnel with whatever the pairing code names. Letting through anyone who can reach this port
+     * (the LAN, or the public hostname while the old tunnel still serves) would let them move the
+     * Hub into an organization of their choosing, and this Hub attaches its own device key to the
+     * request as proof of possession, so Portal would accept it. Before this route admitted
+     * degraded Hubs it refused every registered one, so asking for the caller `reset` requires
+     * costs nobody a working path: a Hub session, or the host-local device key or CLI token that
+     * `cihub register` sends.
+     *
+     * That caller may also re-pair a Hub whose key Portal is rejecting right now but has not yet
+     * rejected for `PORTAL_REJECTION_CONFIRM_MS`. Otherwise an owner who updates a Hub and runs
+     * `cihub register --code` straight away, the remedy in `docs/portal-check-in.md`, is refused for
+     * ten minutes after every restart, because the confirmation window restarts with the process.
+     */
+    if (serving && !(options.callerAuthenticated && this.portalRejectedSince !== null)) {
       return { success: false, message: 'Device is already registered.' };
+    }
+
+    if (isOperational(this._currentPhase) && !options.callerAuthenticated) {
+      return {
+        success: false,
+        message: 'This Hub is already registered. Sign in to pair it again, or run `cihub register --code <code>` on the Hub itself.',
+      };
     }
 
     try {

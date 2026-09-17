@@ -323,6 +323,24 @@ describe('doctorHub registration check', () => {
     expect(stripAnsi(result.lines.join('\n'))).toContain('timeout of 5000ms exceeded, 60s ago');
   });
 
+  it('names a rejected key the Hub is still confirming, since the phase does not show it yet', () => {
+    // The Hub waits ten minutes before it believes a 401, because Portal answers a D1 read error the
+    // same way; an operator running doctor straight after an update would otherwise see only a note.
+    const result = describeRegistrationPhase(
+      {
+        phase: 'degraded',
+        registered: true,
+        degradedReasons: ['cloud_validation_failed'],
+        lastCheckIn: { at: '2026-09-17T09:29:00.000Z', httpStatus: 401, code: 'UNAUTHORIZED', error: 'HTTP 401: Invalid Device Key' },
+        consecutiveCheckInFailures: 1,
+      },
+      now,
+    );
+
+    expect(result.failureCount).toBe(0);
+    expect(stripAnsi(result.lines.join('\n'))).toContain('Portal refuses the device key; if that lasts 10 min, pair again');
+  });
+
   it('reports an accepted check-in and how long ago it was', () => {
     const result = describeRegistrationPhase(
       {

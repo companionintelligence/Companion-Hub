@@ -1650,6 +1650,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
     }
 
+    /*
+     * A restart a person or a key asks for shares Start's entitlement policy: restart is `down`
+     * then `up --force-recreate`, so ungated it brought back an app Start had refused. Checked here,
+     * before the status flips to `restarting`, because a refusal that reaches the queue settles as
+     * `restart_error` with status `stopped` while the containers go on running.
+     *
+     * The Hub's own restarts are not gated. Every one of them re-provisions an app that is already
+     * running (a credential rotation, a saved config, an inference or custom-domain change), and
+     * `HubAccessService` says what a refused one costs: the app stays up "with revoked credentials".
+     * `restartAllApps` restarts only running apps, so its per-app `sweep` cannot revive a refused one.
+     */
+    if (params.actor.kind !== 'system') {
+      await this.moduleRef.get(MarketplaceEntitlementService, { strict: false })?.assertForStart(appUrn);
+    }
+
     await this.appRepository.updateAppById(app.id, { status: 'restarting' });
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restarting' });
 

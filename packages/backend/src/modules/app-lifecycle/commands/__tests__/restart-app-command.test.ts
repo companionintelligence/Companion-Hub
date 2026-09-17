@@ -167,23 +167,18 @@ describe('RestartAppCommand — pull policy', () => {
     expect(dockerService.composeApp).not.toHaveBeenCalled();
   });
 
-  // Restart is `down` then `up --force-recreate`. Ungated, an app Start refused for a lapsed
-  // entitlement came straight back through Restart.
-  it('checks the same entitlement policy as Start', async () => {
-    await command.execute(appUrn, {});
-
-    expect(entitlements.assertForStart).toHaveBeenCalledWith(appUrn);
-  });
-
-  it('leaves a running app running when the entitlement refuses the restart', async () => {
+  // The queued restart also carries the Hub's own restarts: a credential rotation, a saved config, an
+  // inference change. Refused here, on a cached 402, a rotation strands the app on the credentials
+  // it just revoked, and the failure settles the app as `stopped` while its containers keep running.
+  // A person's restart is gated before it is queued, in `AppLifecycleService.restartApp`.
+  it('re-provisions the app even when Start would refuse it, because a Hub restart must land', async () => {
     entitlements.assertForStart.mockRejectedValue(
       new TranslatableError('APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED', {}, HttpStatus.PAYMENT_REQUIRED),
     );
 
     const result = await command.execute(appUrn, {});
 
-    expect(result.success).toBe(false);
-    // Refused before `down`: stopping first and then refusing `up` would turn a refusal into an outage.
-    expect(dockerService.composeApp).not.toHaveBeenCalled();
+    expect(result.success).toBe(true);
+    expect(composeArgs.some((args) => args.startsWith('up'))).toBe(true);
   });
 });
