@@ -29,11 +29,14 @@ const DESKTOP_PORTAL_EXCHANGE_TOAST_ID = 'desktop-portal-exchange';
 export function useDesktopPortalAuth() {
   const { setUserContext, isLoggedIn } = useUserContext();
   const { t } = useTranslation();
+  // Read on every render: a phone that picks its Hub on /connect moves from cloud connect to Hub
+  // sign-in without a reload, and has to start listening then.
+  const authFlow = readHubAuthFlow();
   const processedDesktopPortalTokens = useRef(new Set<string>());
   const processedDesktopPortalErrors = useRef(new Set<string>());
-  // Read through a ref so the listener effect subscribes once per mount. While it depended on these,
-  // every user-context update re-ran it: another presence heartbeat, another listener, and another
-  // pass over the saved token.
+  // Read through a ref so the listener effect re-subscribes only when the auth flow changes. While it
+  // depended on these, every user-context update re-ran it: another presence heartbeat, another
+  // listener, and another pass over the saved token.
   const latest = useRef({ setUserContext, isLoggedIn, t });
   useEffect(() => {
     latest.current = { setUserContext, isLoggedIn, t };
@@ -100,10 +103,12 @@ export function useDesktopPortalAuth() {
       }
 
       const res = await apiFetch(exchangePath, { credentials: client.getConfig().credentials ?? 'include' });
-      if (res.status >= 400 && res.status < 500) {
-        // Used, expired or unknown. The token can never succeed, so forget it: left saved, it was
-        // retried and refused, with a toast, on every page load. Only a link just opened by someone
-        // not signed in gets told: anyone else was handed a stale copy and has nothing to redo.
+      if (res.status === 400) {
+        // The Hub's refusal for a used, expired or unknown token. It can never succeed, so forget it:
+        // left saved, it was retried and refused, with a toast, on every page load. Only a link just
+        // opened by someone not signed in gets told: anyone else was handed a stale copy and has
+        // nothing to redo. Any other status (a proxy's 403/404/429, a 5xx) says nothing about the
+        // token and is handled as a failed attempt below.
         rememberUsedDesktopPortalToken(token);
         clearPersistedDesktopPortalToken();
         if (!recovered && !latest.current.isLoggedIn) {
@@ -142,7 +147,7 @@ export function useDesktopPortalAuth() {
   useEffect(() => {
     // Hub Portal SSO handoff (cihub://auth?token=…) — desktop-hub-sso and
     // mobile-hub-sso only. Cloud-connect PKCE (cihub://auth/callback) is oidc.ts.
-    const policy = hubAuthFlowPolicy(readHubAuthFlow());
+    const policy = hubAuthFlowPolicy(authFlow);
     if (!getTauriInvoke() || !policy.listenDeepLinkAuth) {
       return;
     }
@@ -208,5 +213,5 @@ export function useDesktopPortalAuth() {
       }
       void unlisten?.();
     };
-  }, [completeDesktopPortalLogin]);
+  }, [authFlow, completeDesktopPortalLogin]);
 }

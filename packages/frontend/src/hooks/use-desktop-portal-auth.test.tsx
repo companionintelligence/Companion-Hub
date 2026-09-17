@@ -166,6 +166,25 @@ describe('useDesktopPortalAuth — wiring', () => {
     await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
   });
 
+  it('starts listening when a phone picks its Hub without a reload, and stops when it forgets it', async () => {
+    runtime.isTauriDesktopApp.mockReturnValue(false);
+    runtime.isMobileClient.mockReturnValue(true);
+    runtime.getHubBaseUrlSync.mockReturnValue(null);
+
+    const { rerender } = renderHook(() => useDesktopPortalAuth());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(ev.listen).not.toHaveBeenCalled();
+
+    // /connect sets the Hub and navigates in place; the next render sees Hub sign-in.
+    runtime.getHubBaseUrlSync.mockReturnValue('https://hub.example.com');
+    rerender();
+    await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
+
+    runtime.getHubBaseUrlSync.mockReturnValue(null);
+    rerender();
+    await waitFor(() => expect(ev.unlisten).toHaveBeenCalled());
+  });
+
   it('does not listen for Hub token handoff during iOS/Android cloud-connect PKCE', async () => {
     runtime.isTauriDesktopApp.mockReturnValue(false);
     runtime.isMobileClient.mockReturnValue(true);
@@ -305,6 +324,21 @@ describe('useDesktopPortalAuth — the same link arriving more than once', () =>
     renderHook(() => useDesktopPortalAuth());
 
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('COMMON_AN_ERROR_OCCURRED', { id: 'desktop-portal-exchange' }));
+    expect(dl.clearPersistedDesktopPortalToken).toHaveBeenCalled();
+  });
+
+  it('treats a non-400 refusal as a failed attempt, not a dead token', async () => {
+    api.apiFetch.mockImplementation(async (path: string) =>
+      String(path).includes('desktop-exchange')
+        ? { ok: false, status: 429, json: async () => ({}) }
+        : { ok: true, status: 200, json: async () => ({}) },
+    );
+    dl.takePendingDesktopPortalAuth.mockResolvedValue({ token: 'tok-throttled' });
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('COMMON_AN_ERROR_OCCURRED', { id: 'desktop-portal-exchange' }));
+    expect(dl.used.has('tok-throttled')).toBe(false);
     expect(dl.clearPersistedDesktopPortalToken).toHaveBeenCalled();
   });
 
