@@ -19,6 +19,7 @@ import {
   bearerUpgradeGraceMs,
   CAPABILITIES_FRESHNESS_POLLS,
   clampContainerRollup,
+  clampPromptCeiling,
   describeHubPoolDisabled,
   effectivePeerPressureBand,
   isCapabilitiesSnapshotFresh,
@@ -26,6 +27,7 @@ import {
   POOL_CONTAINER_SAMPLER,
   resolveHubPoolDirections,
   resolveHubPoolEnabled,
+  resolvePoolMaxPromptTokens,
   type HubPoolDirectionalState,
   type HubPoolEnabledState,
   type HubPoolInboundRefusal,
@@ -480,6 +482,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // `getPoolStatus`'s "cheap enough for the UI to poll" promise, and the whole status card
         // usable, without ever putting a probe or a keygen on this path.
         identity,
+        ...this.localPromptCeilingStatus(),
       },
       // `peerKeyFingerprint`, never the key: the fingerprint is what an operator compares across two
       // screens when confirming a pairing, and the full key is only ever needed in-process.
@@ -495,6 +498,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // Clamped and freshness-gated, never the raw jsonb, for the reason directly above: this is
         // a remote machine's self-report about itself. `null` reads as "not reported", never as 0.
         containers: this.peerContainers(peer),
+        // Through the same clamp the ranker reads it with, so a value routing ignores shows as none.
+        maxPromptTokens: clampPromptCeiling((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxPromptTokens),
       })),
       peerCounts: {
         total: peers.length,
@@ -510,6 +515,12 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       pins: resolveStatusPins(this.configuration.getHubPoolPreferences().poolPins, peers, localNode.backends),
       pairingPin: this.pairingPins.state(),
     };
+  }
+
+  /** This node's effective prompt ceiling and its source, for `/pool/status`. Resolved per call, like every pool setting. */
+  private localPromptCeilingStatus(): Pick<PoolStatusLocalNode, 'maxPromptTokens' | 'maxPromptTokensSetBy'> {
+    const ceiling = resolvePoolMaxPromptTokens(this.configuration.getHubPoolPreferences().poolMaxPromptTokens);
+    return { maxPromptTokens: ceiling.maxPromptTokens, maxPromptTokensSetBy: ceiling.setBy };
   }
 
   /**
@@ -1129,6 +1140,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const gpuPressure = this.pressureService.band();
     const gpuPressureSource = this.pressureService.source();
     const containers = this.ownContainerRollup();
+    const promptCeiling = resolvePoolMaxPromptTokens(this.configuration.getHubPoolPreferences().poolMaxPromptTokens).maxPromptTokens;
     return {
       hardwareTier: inventory.hardwareTier,
       backends: acceptingWork ? inventory.backends : [],
@@ -1160,6 +1172,12 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // above records going wrong. Nothing to report (opted out, no sample yet, sampling failing)
       // omits the key entirely; it never becomes `{ running: 0 }`, which is a claim we cannot make.
       ...(containers === null ? {} : { containers }),
+      // Omitted, never `null`, when there is no ceiling: absence is what every older build sends and
+      // what a peer reads as "serve anything", so the two must not diverge. Advertised whether or not
+      // this node is accepting work — it is a standing preference, and a peer's status card should
+      // not see it flicker with the inbound switch. Read per call, so a PATCH reaches peers on their
+      // next poll rather than after a restart.
+      ...(promptCeiling === null ? {} : { maxPromptTokens: promptCeiling }),
       updatedAt: new Date().toISOString(),
     };
   }
