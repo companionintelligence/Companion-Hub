@@ -35,7 +35,12 @@ import {
   collectStaleHubDeviceIds,
   type RegistrationStateDrift,
 } from './registration-state-drift';
-import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
+import {
+  clearRegistrationRecoveryArtifacts,
+  clearRehydrationState,
+  writePairingAppCheck,
+  writeRestoreIntent,
+} from '../app-lifecycle/registration-recovery-state';
 import { buildCheckInPayload } from './check-in-payload';
 import { resolveDeviceId } from './device-id.resolver';
 import { ModuleRef } from '@nestjs/core';
@@ -995,6 +1000,23 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     return isOperational(this._currentPhase);
   }
 
+  /**
+   * Holds app sync until `PairingAppRestoreService` has compared the apps Companion Portal lists for this
+   * device with the ones installed here, and restored what is missing.
+   *
+   * Written before anything of the new registration is, so no sync can slip out first. Pairing back onto
+   * an existing device otherwise synced this Hub's current app list, empty after a reinstall, and the
+   * Portal released every app the device had. A failure to write is logged and pairing goes on: the
+   * Portal has already issued this pairing's device key, and abandoning it here would lose that key.
+   */
+  private async holdAppSyncForPairingCheck(): Promise<void> {
+    try {
+      await writePairingAppCheck();
+    } catch (error) {
+      this.logger.error(`Could not hold app sync for the post-pairing apps check: ${describeRegistrationError(error)}`);
+    }
+  }
+
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
   public async markRestoreIntent(): Promise<{ success: boolean; message: string }> {
     await this.refreshPhaseFromSources();
@@ -1684,6 +1706,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // during infrastructure setup. A separate preflight would require a
       // Portal validation endpoint.
 
+      await this.holdAppSyncForPairingCheck();
+
       // Enter `paired` before infrastructure setup. The `paired` and
       // `provisioning` phases remain in memory until a database row exists. If the
       // process stops during setup, it starts as `unregistered` and can retry.
@@ -1745,6 +1769,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           message: 'Device ID mismatch. Registration failed.',
         };
       }
+
+      await this.holdAppSyncForPairingCheck();
 
       // Persist the optional device API key for authenticated Portal requests.
       if (data.apiKey) {

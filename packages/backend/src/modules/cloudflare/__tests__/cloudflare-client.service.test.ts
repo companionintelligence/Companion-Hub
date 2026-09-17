@@ -415,6 +415,41 @@ describe('CloudflareClientService', () => {
     });
   });
 
+  describe('getDeviceApplications', () => {
+    const app = { id: 'app_1', name: 'wordpress', slug: 'wordpress', port: 80, publicDomain: null };
+
+    it("returns the device's apps, authenticated as the device", async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { applications: [app] } });
+
+      await expect(service.getDeviceApplications()).resolves.toEqual([app]);
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('devices/applications', {
+        headers: { Authorization: 'Bearer api-key', 'x-device-key': 'api-key' },
+      });
+    });
+
+    it('returns an empty list when the Portal says the device has no apps', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { applications: [] } });
+
+      await expect(service.getDeviceApplications()).resolves.toEqual([]);
+    });
+
+    /*
+     * Not `[]`: an empty list is an answer, and a restore that read one as "the device has no apps"
+     * finished with nothing installed, after which the next sync released every app on the device.
+     */
+    it('throws when the Portal cannot be asked', async () => {
+      mockAxiosInstance.get.mockRejectedValue(new Error('Request failed with status code 503'));
+
+      await expect(service.getDeviceApplications()).rejects.toThrow('503');
+    });
+
+    it('throws when the answer carries no applications list', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { error: 'nope' } });
+
+      await expect(service.getDeviceApplications()).rejects.toThrow('no applications list');
+    });
+  });
+
   describe('fetchOrganizationCustomDomains', () => {
     const listing = (overrides: Record<string, unknown> = {}) => ({
       id: 'cd_1',

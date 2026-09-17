@@ -400,19 +400,31 @@ export class CloudflareClientService {
     }
   }
 
-  /** Fetch user-installed applications recorded in CI Portal for this device. */
+  /**
+   * Fetch user-installed applications recorded in CI Portal for this device.
+   *
+   * Throws when the Portal gives no answer — unreachable, an error status, or a payload without an
+   * `applications` list. This used to read as an empty list, and an empty list is an answer: a restore
+   * that got it installed nothing, recorded itself as done, and let the next sync release every app the
+   * Portal still had for the device.
+   */
   async getDeviceApplications(): Promise<PortalDeviceApplication[]> {
+    let applications: unknown;
     try {
       const response = await this.client.get<{ applications?: PortalDeviceApplication[] }>('devices/applications', this.getRequestConfig());
-      return Array.isArray(response.data?.applications) ? response.data.applications : [];
+      applications = response.data?.applications;
     } catch (error) {
-      if (error instanceof Error) {
-        this.logger.error(`Failed to fetch Portal device applications: ${error.message}`);
-      } else {
-        this.logger.error(`Failed to fetch Portal device applications: ${String(error)}`);
-      }
-      return [];
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`Failed to fetch Portal device applications: ${message}`);
+      throw new Error(`Could not read this device's apps from CI Portal: ${message}`);
     }
+
+    if (!Array.isArray(applications)) {
+      this.logger.error('Failed to fetch Portal device applications: the response carried no applications list');
+      throw new Error("Could not read this device's apps from CI Portal: the response carried no applications list");
+    }
+
+    return applications as PortalDeviceApplication[];
   }
 
   /**

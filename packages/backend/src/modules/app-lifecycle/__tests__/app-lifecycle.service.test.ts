@@ -3530,6 +3530,40 @@ describe('AppLifecycleService', () => {
   });
 
   describe('triggerCloudflareSync during device restore', () => {
+    /*
+     * The Portal releases every app on the device that a sync leaves out, and a Hub reinstalled and paired
+     * back onto its device has none of them installed: its first sync released them all.
+     */
+    describe('after a pairing', () => {
+      beforeEach(() => {
+        vi.spyOn(registrationRecoveryState, 'hasRestoreIntent').mockResolvedValue(false);
+        appsRepository.getApps.mockResolvedValue([]);
+        cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] } as never);
+        registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+          id: 'org-id',
+          tunnelId: 'tunnel-id',
+          slug: 'myorg',
+          hubSubdomain: 'hub-myorg',
+        } as any);
+      });
+
+      it('skips sync while the pairing waits for its apps check, restore intent or not', async () => {
+        vi.spyOn(registrationRecoveryState, 'hasPairingAppCheck').mockResolvedValue(true);
+
+        await service.triggerCloudflareSync();
+
+        expect(cloudflareClientService.syncState).not.toHaveBeenCalled();
+      });
+
+      it('syncs once the apps check is done', async () => {
+        vi.spyOn(registrationRecoveryState, 'hasPairingAppCheck').mockResolvedValue(false);
+
+        await service.triggerCloudflareSync();
+
+        expect(cloudflareClientService.syncState).toHaveBeenCalled();
+      });
+    });
+
     it('skips sync while restore intent is active and rehydration is incomplete', async () => {
       vi.spyOn(registrationRecoveryState, 'hasRestoreIntent').mockResolvedValue(true);
       vi.spyOn(registrationRecoveryState, 'readRehydrationState').mockResolvedValue(null);
