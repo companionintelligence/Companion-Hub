@@ -1160,8 +1160,9 @@ cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
 
 `doctor` also fails on a `DEVICE_ID` copied from another machine: a machine-ID-shaped value in the env
-file that is not this host's `/etc/machine-id`. The Hub refuses to pair with Portal under such an ID.
-See [One device ID per machine](./fleet-setup.md#one-device-id-per-machine) for the fix.
+file that is not this host's `/etc/machine-id`. The Hub refuses to pair with Portal under such an ID,
+and `register` stops before it asks for a pairing code. The fix differs for a Hub that is already
+registered under the ID. See [One device ID per machine](./fleet-setup.md#one-device-id-per-machine).
 
 ---
 

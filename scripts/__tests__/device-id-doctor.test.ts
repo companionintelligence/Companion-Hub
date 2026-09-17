@@ -35,6 +35,14 @@ describe('cihub doctor device ID line', () => {
     expect(text).not.toContain(BETA_RED_MACHINE_ID);
   });
 
+  it('offers a Hub already registered under the ID the keep option, not only a re-registration', () => {
+    // core-14 was registered under a unique ID from no hardware of its own. Changing it breaks the Portal key.
+    const text = stripAnsi(runDeviceIdDoctorSection(envFile('registered.env', `DEVICE_ID=${COPIED_DEVICE_ID}\n`), betaRedHost).lines.join('\n'));
+
+    expect(text).toMatch(/not registered yet: set DEVICE_ID/);
+    expect(text).toMatch(/registered under it and no other Hub has it, or moved hardware: keep it with HUB_ALLOW_FOREIGN_DEVICE_ID=true/);
+  });
+
   it('passes once DEVICE_ID is set to this host’s machine ID', () => {
     const section = runDeviceIdDoctorSection(envFile('fixed.env', `DEVICE_ID=${BETA_RED_MACHINE_ID}\n`), betaRedHost);
 

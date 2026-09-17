@@ -23,6 +23,16 @@ import { normalizeDeviceIdCandidate } from './device-id.resolver';
  * Inside the Hub container, `/etc/machine-id` is the host's file: every compose file bind-mounts it
  * read-only, and the Alpine image ships none of its own. Without the mount the file is missing, and
  * the check reports `not_checkable` rather than guessing.
+ *
+ * The one engine where the mount lies is a Docker VM. Docker Desktop resolves a bind mount of a path
+ * it does not share from the host inside its own VM, so the container reads the VM's machine ID: 32
+ * hex digits that belong to no machine anyone configured. Measured on 2026-09-17 on Docker Desktop
+ * for Mac, where `-v /etc/machine-id:/etc/machine-id:ro` handed an Alpine container a machine ID the
+ * Mac does not even have, on kernel `7.0.12-linuxkit`. The Linux desktop app on Docker Desktop writes
+ * the real host's machine ID as `DEVICE_ID`, so the two never match. It also rewrites `.env` on every
+ * launch, which drops `HUB_ALLOW_FOREIGN_DEVICE_ID`, so that Hub could never register at all. A
+ * LinuxKit or WSL kernel therefore means "not checkable". The fleet's native engines report
+ * `7.0.0-31-generic`, so the case this check exists for still gets judged.
  */
 
 /** Set to `true` to keep a machine-ID-shaped `DEVICE_ID` from another machine, as a deliberate hardware move. */
@@ -33,6 +43,11 @@ const MACHINE_ID_FILES = ['/etc/machine-id', '/var/lib/dbus/machine-id'] as cons
 const DMI_ID_FILES = ['/sys/class/dmi/id/product_uuid', '/sys/class/dmi/id/product_serial', '/sys/class/dmi/id/board_serial'] as const;
 
 const MACHINE_ID_SHAPE = /^[0-9a-f]{32}$/i;
+
+/** Read through the same injected reader as the identifiers, so a test host is a VM only when it says so. */
+const KERNEL_RELEASE_FILE = '/proc/sys/kernel/osrelease';
+/** Docker Desktop's LinuxKit VM, and a WSL 2 distro. In both, a bind-mounted `/etc/machine-id` may be the VM's own. */
+const VM_KERNEL_RELEASE = /linuxkit|microsoft/i;
 
 export type DeviceIdHostBinding =
   /** No `DEVICE_ID` in the environment. The Hub derives one from this machine, so there is nothing to compare. */
@@ -46,7 +61,10 @@ export type DeviceIdHostBinding =
 export interface DeviceIdHostCheckInput {
   envDeviceId: string | undefined;
   allowForeign?: string | undefined;
-  /** Returns a file's contents, or `null` when it cannot be read. Injected so both the Hub and the host-side CLI can run this. */
+  /**
+   * Returns a file's contents, or `null` when it cannot be read. Injected so both the Hub and the host-side CLI can run this.
+   * Also answers `/proc/sys/kernel/osrelease`, which tells a Docker VM apart from a native engine.
+   */
   readFile?: (path: string) => string | null;
 }
 
@@ -63,13 +81,22 @@ function comparable(value: string): string {
   return value.trim().toLowerCase().replace(/-/g, '');
 }
 
-/** The operator remedy, stated once so the Hub's refusal, its log and `cihub doctor` cannot drift apart. */
+/**
+ * The operator remedy, stated once so the Hub's refusal, its log and `cihub doctor` cannot drift apart.
+ *
+ * It gives two remedies, chosen by whether the Hub is registered, because the one fix that is right
+ * for a new Hub is wrong for a registered one. A fleet check on 2026-09-17 found five nodes with a
+ * machine-ID-shaped `DEVICE_ID` from no hardware of their own. beta-red and beta-nas shared one, and
+ * core-14 was already registered under its own unique one. Portal binds a Hub's key to its device ID, so
+ * telling core-14 to change the ID would have broken a working registration to fix a duplicate it
+ * did not have.
+ */
 export function foreignDeviceIdMessage(deviceId: string): string {
   return (
-    `DEVICE_ID=${deviceId} was not generated on this machine: it is not this host's /etc/machine-id or DMI identity. ` +
-    "An env file copied from another Hub carries that Hub's device ID, and Portal treats two Hubs with one device ID as one device, so pairing this Hub would take over the other Hub's registration or be refused. " +
-    "Fix: in this Hub's env file set DEVICE_ID to the output of `cat /etc/machine-id`, recreate the Hub container, then pair this Hub again with `cihub register --code <code>`. " +
-    `If this Hub was deliberately moved to new hardware and must keep its Portal device, set ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true instead.`
+    `DEVICE_ID=${deviceId} was not generated on this machine: it is not this host's /etc/machine-id or DMI identity, so it most likely came with an env file copied from another Hub. ` +
+    "Portal knows a Hub only by its device ID, so two Hubs with one ID are one device, and whichever pairs second takes over the other one's registration or is refused. " +
+    'If this Hub is not registered yet, set DEVICE_ID in its env file to the output of `cat /etc/machine-id`, recreate the Hub container, then run `cihub register --code <code>`. ' +
+    `If it is already registered under this ID and no other Hub uses the same ID, or it was moved to new hardware on purpose, set ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true instead, because changing a registered Hub's DEVICE_ID means registering it again as a new device.`
   );
 }
 
@@ -94,6 +121,10 @@ export function checkDeviceIdHostBinding(input: DeviceIdHostCheckInput): DeviceI
   const wanted = comparable(deviceId);
   if ([...machineIds, ...dmiIds].some((hostId) => comparable(hostId) === wanted)) {
     return { status: 'matches_host', deviceId };
+  }
+  // Only a mismatch needs the engine's word that these files are the machine's. See the module comment.
+  if (VM_KERNEL_RELEASE.test(read(KERNEL_RELEASE_FILE) ?? '')) {
+    return { status: 'not_checkable', deviceId, reason: "this Hub runs in a Docker VM, whose /etc/machine-id is the VM's, not this machine's" };
   }
 
   if (input.allowForeign?.trim().toLowerCase() === 'true') {

@@ -694,6 +694,39 @@ describe('HubPoolPeerService', () => {
 
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Run cihub pool unpair peer-hub.tailxyz.ts.net here first'));
     });
+
+    it('warns about a PIN pairing request from a new identity at a paired name even after a restart forgot the probe verdict', async () => {
+      // The recreated node is the one following the re-pair steps from its side. No probe has failed
+      // in this process yet, but the PIN proves the claimed UUID, and it is not the pinned one.
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      repo.findByNodeFqdn.mockResolvedValue(stalePeer({ nodeFqdn: 'peer-hub.tailxyz.ts.net' }));
+      const { pin } = pairingPins.mint();
+
+      await service.receivePairingRequest('peer-hub.tailxyz.ts.net', undefined, 'a'.repeat(64), {
+        pin,
+        fromNodeUuid: 'bbbbbbbb-0000-4000-8000-000000000002',
+      });
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Run cihub pool unpair peer-hub.tailxyz.ts.net here first'));
+    });
+
+    it('does not claim a stale pairing for an unauthenticated request or the identity already pinned', async () => {
+      const logger = mock<LoggerService>();
+      (service as unknown as { logger: LoggerService }).logger = logger;
+      repo.findByNodeFqdn.mockResolvedValue(stalePeer({ nodeFqdn: 'peer-hub.tailxyz.ts.net' }));
+
+      // Without a PIN the claimed UUID is anyone's to write, so it proves nothing.
+      await service.receivePairingRequest('peer-hub.tailxyz.ts.net', undefined, 'a'.repeat(64), {
+        fromNodeUuid: 'bbbbbbbb-0000-4000-8000-000000000002',
+      });
+      await service.receivePairingRequest('peer-hub.tailxyz.ts.net', undefined, 'a'.repeat(64), {
+        pin: pairingPins.mint().pin,
+        fromNodeUuid: STALE_UUID,
+      });
+
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('stale pairing'));
+    });
   });
 
   describe('removePeer', () => {

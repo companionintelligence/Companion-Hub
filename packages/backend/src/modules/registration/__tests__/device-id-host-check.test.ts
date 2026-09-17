@@ -53,6 +53,27 @@ describe('checkDeviceIdHostBinding', () => {
     expect(checkDeviceIdHostBinding({ envDeviceId: deviceId, readFile: betaRed }).status).toBe('not_checkable');
   });
 
+  it.each([
+    ['Docker Desktop', '7.0.12-linuxkit'],
+    ['a WSL 2 distro', '6.6.87.2-microsoft-standard-WSL2'],
+  ])('does not refuse a Linux desktop Hub on %s, whose container reads the VM’s machine ID through the bind mount', (_label, kernel) => {
+    // Measured on Docker Desktop: `-v /etc/machine-id:/etc/machine-id:ro` handed the container the VM's own
+    // 32-digit ID. The desktop app writes the real host's machine ID as DEVICE_ID and rewrites `.env` on
+    // every launch, dropping the override, so a refusal here would leave that Hub unable to register.
+    const dockerVm = host({ '/etc/machine-id': `${BETA_RED_MACHINE_ID}\n`, '/proc/sys/kernel/osrelease': `${kernel}\n` });
+
+    expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, readFile: dockerVm })).toMatchObject({
+      status: 'not_checkable',
+      reason: expect.stringContaining('Docker VM'),
+    });
+  });
+
+  it('still refuses the copied ID on a native engine, which is what beta-red and beta-nas run', () => {
+    const nativeEngine = host({ '/etc/machine-id': BETA_RED_MACHINE_ID, '/proc/sys/kernel/osrelease': '7.0.0-31-generic\n' });
+
+    expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, readFile: nativeEngine }).status).toBe('foreign');
+  });
+
   it('does not guess when the machine ID is unreadable, as in a container started without the bind mount', () => {
     expect(checkDeviceIdHostBinding({ envDeviceId: COPIED_DEVICE_ID, readFile: host({}) })).toMatchObject({ status: 'not_checkable' });
   });
@@ -85,5 +106,15 @@ describe('foreignDeviceIdMessage', () => {
     expect(message).toContain('cihub register --code <code>');
     expect(message).toContain(`${ALLOW_FOREIGN_DEVICE_ID_ENV}=true`);
     expect(message).not.toContain(BETA_RED_MACHINE_ID);
+  });
+
+  it('does not send a Hub already registered under the ID to change it, which would break its Portal key', () => {
+    // core-14 on 2026-09-17: registered, with a machine-ID-shaped DEVICE_ID that no other node carried.
+    const message = foreignDeviceIdMessage(COPIED_DEVICE_ID);
+    const changeIt = message.indexOf('cat /etc/machine-id');
+    const keepIt = message.indexOf(`${ALLOW_FOREIGN_DEVICE_ID_ENV}=true`);
+
+    expect(message.slice(0, changeIt)).toContain('not registered yet');
+    expect(message.slice(changeIt, keepIt)).toContain('already registered under this ID');
   });
 });

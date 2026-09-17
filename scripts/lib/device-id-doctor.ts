@@ -27,8 +27,9 @@ export function describeDeviceIdBinding(binding: DeviceIdHostBinding, envFileNam
       return {
         lines: [
           `${LABEL}${cliFail('copied from another machine')}  ${dim(`DEVICE_ID=${binding.deviceId} in ${envFileName} is not this host's machine ID`)}`,
-          `${' '.repeat(LABEL.length)}${dim(`set DEVICE_ID to \`cat /etc/machine-id\`, recreate the Hub, then ${BASE_COMMAND} register --code <code>`)}`,
-          `${' '.repeat(LABEL.length)}${dim(`(a deliberate move to new hardware keeps it with ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true)`)}`,
+          `${' '.repeat(LABEL.length)}${dim(`not registered yet: set DEVICE_ID to \`cat /etc/machine-id\`, recreate the Hub, then ${BASE_COMMAND} register --code <code>`)}`,
+          // A registered Hub is bound to this ID in Portal. Changing it is a re-registration, so it gets the keep option.
+          `${' '.repeat(LABEL.length)}${dim(`registered under it and no other Hub has it, or moved hardware: keep it with ${ALLOW_FOREIGN_DEVICE_ID_ENV}=true`)}`,
         ],
         failureCount: 1,
       };

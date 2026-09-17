@@ -816,7 +816,12 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
     const existing = await this.repo.findByNodeFqdn(fromNodeFqdn);
     if (existing) {
-      if (this.probeFailures.get(existing.id)?.kind === 'identity_changed') {
+      // A claim that came with a verified PIN is authenticated, so a UUID other than the one pinned here
+      // proves the name now belongs to a new identity on its own. The probe verdict is only in memory,
+      // and a restart forgets it until the next failed probe.
+      const pinnedAnotherIdentity =
+        claim.pin !== undefined && Boolean(claim.fromNodeUuid && existing.peerNodeUuid) && claim.fromNodeUuid !== existing.peerNodeUuid;
+      if (pinnedAnotherIdentity || this.probeFailures.get(existing.id)?.kind === 'identity_changed') {
         // The half-followed re-pair: the far side minted a fresh pairing, but the stale row here still
         // holds the name. Without this line the request vanishes into the debug log and the far side
         // waits on a pending row that never gets an answer.
