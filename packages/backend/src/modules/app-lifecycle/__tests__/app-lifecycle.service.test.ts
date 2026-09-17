@@ -8,6 +8,9 @@ import { AppInstallValidator } from '../app-install-validator.service';
 import { ExposureSyncService } from '../exposure-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppEventsQueue } from '@/modules/queue/entities/app-events';
+import { QUEUE_UNAVAILABLE_CODE } from '@/modules/queue/queue.constants';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { HttpStatus } from '@nestjs/common';
 import { AppLifecycleCommandFactory } from '../app-lifecycle-command.factory';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -5374,6 +5377,144 @@ describe('AppLifecycleService', () => {
       await service.restartAiApps();
 
       expect(restartSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('start, stop and restart while the queue cannot take the command', () => {
+    const appUrn = createAppUrn('ci-hermes', 'ci-marketplace');
+    const unavailable = "Queue 'app-events-queue' is unavailable while RabbitMQ is degraded. Last error: getaddrinfo EAI_AGAIN ci-os-hub-queue";
+    const flushMicrotasks = () => new Promise<void>((r) => setTimeout(r, 0));
+    const givenApp = (status: string) => appsRepository.getAppByUrn.mockResolvedValue({ id: 7, name: 'ci-hermes', status, config: {} } as any);
+    const run = (command: 'start' | 'stop' | 'restart') =>
+      ({
+        start: () => service.startApp({ actor: TEST_ACTOR, appUrn }),
+        stop: () => service.stopApp({ actor: TEST_ACTOR, appUrn }),
+        restart: () => service.restartApp({ actor: TEST_ACTOR, appUrn }),
+      })[command]();
+
+    // core-4 (2026-09-17): a restart sent with RabbitMQ down returned 201, the publish
+    // failed at once, and the app was marked stopped while both containers kept running.
+    it.each(['start', 'stop', 'restart'] as const)('refuses to %s with a 503 before recording any status for it', async (command) => {
+      givenApp('running');
+      appEventsQueue.unavailableReason.mockReturnValue(unavailable);
+
+      const refusal = await run(command).catch((error: unknown) => error);
+
+      expect(refusal).toBeInstanceOf(TranslatableError);
+      expect((refusal as TranslatableError).getStatus()).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+      expect((refusal as TranslatableError).getResponse()).toEqual({ message: 'APP_ERROR_QUEUE_UNAVAILABLE', intlParams: { command } });
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      expect(sseService.emit).not.toHaveBeenCalled();
+    });
+
+    // core-14 (2026-09-17): the queue reported ready while its connection was closing,
+    // so the gate let the command through and the publish failed with no channel opened.
+    it.each([
+      { command: 'start', statusBefore: 'running', statusOnFailure: 'stopped', event: 'start_error' },
+      { command: 'stop', statusBefore: 'stopped', statusOnFailure: 'running', event: 'stop_error' },
+      { command: 'restart', statusBefore: 'running', statusOnFailure: 'stopped', event: 'restart_error' },
+    ] as const)('a $command the queue never took settles back on $statusBefore instead of $statusOnFailure', async ({
+      command,
+      statusBefore,
+      event,
+    }) => {
+      givenApp(statusBefore);
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'channel creation failed; connection is closing',
+        errorCode: QUEUE_UNAVAILABLE_CODE,
+      } as any);
+
+      await run(command);
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: statusBefore });
+      expect(sseService.emit).toHaveBeenLastCalledWith(
+        'app',
+        expect.objectContaining({ event, appStatus: statusBefore, errorCode: QUEUE_UNAVAILABLE_CODE }),
+      );
+    });
+
+    // A backup resumes its app with a start while the row says `backing_up`, and the
+    // public-route repair restarts apps that are still `starting`. The new command
+    // replaces that operation in the registry, so its completion is dropped as
+    // superseded and nothing would ever move the row off a restored spinner.
+    it.each([
+      { command: 'start', statusBefore: 'backing_up', inFlight: 'backup' },
+      { command: 'restart', statusBefore: 'starting', inFlight: 'start' },
+    ] as const)('a $command the queue never took does not put back $statusBefore, which the $inFlight it replaced can no longer settle', async ({
+      command,
+      statusBefore,
+      inFlight,
+    }) => {
+      givenApp(statusBefore);
+      operationRegistry.register(appUrn, { requestId: 'req-in-flight', command: inFlight, tier: 'safe' });
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'channel creation failed; connection is closing',
+        errorCode: QUEUE_UNAVAILABLE_CODE,
+      } as any);
+
+      await run(command);
+      await flushMicrotasks();
+
+      expect(operationRegistry.claimCompletion(appUrn, 'req-in-flight')).toBe(false);
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    it.each([
+      { waitFor: 'startAppAndWait', event: 'start_error' },
+      { waitFor: 'restartAppAndWait', event: 'restart_error' },
+    ] as const)('$waitFor reports failure but leaves a running app running when the queue never took the command', async ({ waitFor, event }) => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'channel creation failed; connection is closing',
+        errorCode: QUEUE_UNAVAILABLE_CODE,
+      } as any);
+
+      await expect(service[waitFor]({ appUrn })).resolves.toBe(false);
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'running' });
+      expect(sseService.emit).toHaveBeenLastCalledWith('app', expect.objectContaining({ event, appStatus: 'running' }));
+    });
+
+    it('a command that ran and failed still settles on the status the failure implies', async () => {
+      givenApp('running');
+      appEventsQueue.publish.mockResolvedValue({ success: false, message: 'compose up failed' } as any);
+
+      await service.restartApp({ actor: TEST_ACTOR, appUrn });
+      await flushMicrotasks();
+
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    // core-4 (2026-09-17): the Hub booted at 08:42:36 before RabbitMQ answered, and the boot-time
+    // start of ci-memory, ci-openclaw, and ci-import-tools failed with "unavailable while RabbitMQ
+    // is connecting". All three were marked stopped while running until the status sync put them
+    // back at 08:50:00.
+    it('the boot-time start of running apps leaves them running while the queue is still connecting', async () => {
+      appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+      givenApp('running');
+      appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
+
+      await service.restartRunningApps();
+
+      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledWith('Failed to start app 7', expect.any(TranslatableError)));
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('refreshing inference apps logs a refused restart for that app instead of rejecting the whole refresh', async () => {
+      appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+      marketplaceService.getAppInfoFromAppStore.mockResolvedValue({ categories: ['ai'] } as any);
+      givenApp('running');
+      appEventsQueue.unavailableReason.mockReturnValue(unavailable);
+
+      await expect(service.restartAiApps()).resolves.toBeUndefined();
+
+      expect(logger.error).toHaveBeenCalledWith('Failed to restart AI app 7', expect.any(TranslatableError));
     });
   });
 });
