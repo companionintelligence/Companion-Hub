@@ -25,14 +25,18 @@ packages/frontend/
 
 Authenticated pages never scroll the window. `<main>` starts below the fixed header (a margin, not padding, so the header never covers its scrollbar), and its page wrapper is `flex-1 min-h-0`, so a page gets exactly the height below the header and banners. Keep the `min-h-0`: without it the wrapper grows to fit its content, every page's own scroller stops scrolling, and `<main>` scrolls everything instead, including the store sidebar.
 
-- A page that has its own scroller (the store pane, Home, Settings, the custom app pages) marks it `data-page-scroller="<name>"` and makes it `relative`. Without `relative`, absolutely positioned descendants such as Radix's hidden form inputs are placed against `<main>`, overflow it, and make it scroll as well.
+Page scrollbars sit at the window's right edge, as in Portal, while content stays in a centred column. `<main>` spans the window and its `dashboard-column` utility (`src/styles/globals.css`) pads the content into the column that `container mx-auto px-2 sm:px-4` used to make. `--page-gutter` is the distance from the window edge to that column.
+
+- A page that has its own scroller (the store pane, Home, Settings, the custom app pages, port expose) marks it `data-page-scroller="<name>"` and makes it `relative`. Without `relative`, absolutely positioned descendants such as Radix's hidden form inputs are placed against `<main>`, overflow it, and make it scroll as well.
+- The same scroller takes `page-scroller-edge-<n>`, which stretches it over the gutter to the window edge and pads its content back into the column; `<n>` is its own end padding in spacing units. No element between it and `<main>` may clip overflow (`overflow-hidden` and the like): the scrollbar would be laid out at the window edge but not drawn. `src/components/layouts/dashboard/page-scrollers.test.ts` checks both.
 - A page without its own scroller (app details under `/apps`, Resource Monitor) scrolls `<main>`.
+- The store sidebar's category list scrolls on its own, with a visible scrollbar, when the window is too short for it.
 
 `usePageScrollRestoration` (`src/lib/hooks/use-page-scroll-restoration.ts`) handles `<main>` and the marked scrollers of the page on screen. The page wrapper carries `data-page-key`, and the hook ignores a page that is still animating out. React Router's `<ScrollRestoration />` only tracks the window, and `<main>` and the store pane outlive their child routes.
 
 - A PUSH or REPLACE that changes the path or query opens at the top.
 - Back/forward returns each scroller to where that entry left it, retrying briefly while the page is still loading.
-- A same-URL REPLACE (pages syncing their query) leaves the scroll alone.
+- A same-URL REPLACE (pages syncing their query) leaves the scroll alone, and the entry keeps its saved offsets under its new key.
 
 Offsets are in memory, so a reload starts at the top.
 

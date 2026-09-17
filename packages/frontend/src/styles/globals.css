@@ -101,6 +101,45 @@ html.ci-mobile {
   }
 }
 
+/*
+ * The dashboard's page column. <main> spans the window so page scrollbars sit at
+ * its right edge, and pads its content into the column that
+ * `container mx-auto px-2 sm:px-4` used to make it: the container's width at each
+ * breakpoint, plus that padding. The widths are in rem like the container's, so
+ * they follow the 17px root font size while the breakpoints stay at 16px rems.
+ * --page-gutter is the distance from the window edge to the column.
+ */
+@utility dashboard-column {
+  --page-gutter: 0.5rem;
+  padding-inline: var(--page-gutter);
+
+  @variant sm {
+    --page-gutter: calc(max(0px, (100vw - 40rem) / 2) + 1rem);
+  }
+  @variant md {
+    --page-gutter: calc(max(0px, (100vw - 48rem) / 2) + 1rem);
+  }
+  @variant lg {
+    --page-gutter: calc(max(0px, (100vw - 64rem) / 2) + 1rem);
+  }
+  @variant xl {
+    --page-gutter: calc(max(0px, (100vw - 80rem) / 2) + 1rem);
+  }
+  @variant 2xl {
+    --page-gutter: calc(max(0px, (100vw - 96rem) / 2) + 1rem);
+  }
+}
+
+/*
+ * A page that scrolls in its own pane: stretch the pane over the gutter to the
+ * window's right edge so its scrollbar sits there, and pad the content back into
+ * the column. The value is the pane's own end padding, in spacing units.
+ */
+@utility page-scroller-edge-* {
+  margin-inline-end: calc(var(--page-gutter, 0px) * -1);
+  padding-inline-end: calc(var(--page-gutter, 0px) + var(--spacing) * --value(integer));
+}
+
 @layer utilities {
   /* Keep content clear of the notch / status bar / home indicator on mobile. */
   .safe-area-inset {

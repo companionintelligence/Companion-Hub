@@ -59,7 +59,7 @@ export default () => {
   };
 
   return (
-    <div className="relative h-full overflow-y-auto" data-page-scroller="custom-app-create">
+    <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="custom-app-create">
       <Card>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

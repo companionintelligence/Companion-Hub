@@ -196,7 +196,7 @@ export default function PortExposeCreatePage() {
   };
 
   return (
-    <div className="relative h-full overflow-y-auto" data-page-scroller="port-expose">
+    <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="port-expose">
       <div className="mx-auto max-w-3xl pb-8">
         <Card>
           <CardHeader>

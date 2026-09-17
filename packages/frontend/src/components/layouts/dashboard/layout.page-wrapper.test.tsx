@@ -88,4 +88,15 @@ describe('DashboardLayout <main>', () => {
     expect(main).not.toHaveClass('no-scrollbar');
     expect(main).toHaveStyle({ marginTop: 'var(--header-offset)' });
   });
+
+  it('spans the window and pads its content into the page column, so scrollbars sit at the window edge', () => {
+    renderAt('/apps/ci-marketplace/immich');
+
+    // As a centred `container`, <main> was only as wide as the content column,
+    // so its scrollbar (and every pane's inside it) sat short of the window edge.
+    const main = screen.getByRole('main');
+    expect(main).toHaveClass('dashboard-column');
+    expect(main).not.toHaveClass('container');
+    expect(main).not.toHaveClass('mx-auto');
+  });
 });

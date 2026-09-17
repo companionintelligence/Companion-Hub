@@ -59,7 +59,7 @@ export const AppStoreSidebar = () => {
       <div className="p-4 border-b">
         <AppStoreSearchInput value={localSearch} onChange={onSearch} />
       </div>
-      <div className="flex-1 overflow-y-auto py-4 px-2 no-scrollbar">
+      <div className="flex-1 overflow-y-auto overscroll-contain py-4 px-2">
         <div className="space-y-1">
           {/* All Apps */}
           <Button
