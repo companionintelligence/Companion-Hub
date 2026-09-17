@@ -104,6 +104,22 @@ describe('useAppIntentDeepLinks', () => {
     await waitFor(() => expect(nav.navigate).toHaveBeenCalledWith('/settings'));
   });
 
+  it('empties the copy the Rust shell stashed for a live intent, without running it twice', async () => {
+    // The shell stashes every intent as well as emitting it. Left stashed, the next page load ran the
+    // intent again: back to Settings, or a second Hub switch and reload.
+    ai.takePendingIntent.mockResolvedValueOnce(null).mockResolvedValue({ kind: 'settings' });
+    ai.resolveIntentNavigation.mockResolvedValue({ path: '/settings', reload: false });
+    renderHook(() => useAppIntentDeepLinks());
+    await waitFor(() => expect(ev.handler).toBeTruthy());
+
+    ev.handler?.({ payload: 'settings' });
+
+    await waitFor(() => expect(ai.takePendingIntent).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(nav.navigate).toHaveBeenCalledWith('/settings'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(nav.navigate).toHaveBeenCalledTimes(1);
+  });
+
   it('hard-reloads (not SPA-navigates) when the Hub connection changed', async () => {
     // Re-pointing at a different Hub must re-init the API client, so the
     // resolver asks for a full document load.
