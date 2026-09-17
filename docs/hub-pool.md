@@ -21,6 +21,7 @@ This complements, and does not replace, the existing single-node model recommend
 - **`TAILSCALE_OAUTH_CLIENT_ID`** / **`TAILSCALE_OAUTH_CLIENT_SECRET`**: **optional.** An OAuth client from the Tailscale admin console with the `devices:core:read` scope, set on whichever Hub(s) should be able to enumerate the *whole tailnet* at once. It is one of three candidate directories and the only one that needs a credential: a tailnet-connected Hub already names the peers its own Tailscale daemon can see, and a registered Hub already names the Hubs on your CI account. It is no longer required to find a peer — `cihub pool probe <address>` (below) adds one by address with no credential at all — and it was never required for pairing or for serving traffic. Keep it when a pool spans several networks, which is where enumerating the tailnet earns its keep and where an address on one LAN tells you nothing about a node on another.
 - **`HUB_POOL_USER_DISABLED=true`**: explicit opt-out. Forces this Hub to behave as if it had no connected peers (routing reverts to direct/local resolution), makes it stop answering peer capability probes so paired Hubs naturally mark it unreachable, and makes it refuse new inbound pairing requests. Existing pairings are preserved: paired Hubs keep polling an unreachable peer, so within one poll of the flag being removed the pairing is back to `connected` on its own.
 - **`HUB_POOL_OUTBOUND_DISABLED=true`** / **`HUB_POOL_INBOUND_DISABLED=true`**: the same kind of operator-of-the-box override for one direction only. Each overrides its persisted setting below and is reported separately by `GET /inference/pool/status`. Like the master flag, neither is projected into `.env` by `generateSystemEnvFile`.
+- **`HUB_POOL_MAX_PROMPT_TOKENS=<tokens>`**: this node's [prompt ceiling](#prompt-ceilings), overriding the persisted `poolMaxPromptTokens`. A value outside 1024–1048576, or not a whole number, is ignored rather than guessed at. `GET /inference/pool/status` reports `localNode.maxPromptTokensSetBy: "env"` while it is in force. Not projected into `.env` by `generateSystemEnvFile`.
 
 ## Operator settings
 
@@ -37,6 +38,7 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 | `poolRequireSignedPeers` | `false` | — | Refuse the legacy bearer-token path outright, on the inbound guard **and** the outbound client. **Default false on purpose:** setting it while any peer has not finished the bearer→signed upgrade takes both directions of that pairing down. Flip it only once every peer reports `authMode: signed` — `cihub pool status` names the ones that do not, and says when the switch has become safe. |
 | `poolShareContainerStats` | `true` | — | Publish this node's aggregate container counts and resource totals to paired peers — counts and totals only, never a container name. **Default on**, so an upgraded Hub starts reporting to the peers its operator already approved; off omits the key entirely, which reads on the far side as "not reported" and never as an idle machine. See [Container counts](#container-counts-what-the-rest-of-the-fleet-is-running). |
 | `poolPressureWeight` | `0` | 0–3 | How heavily the 0–3 GPU-pressure band counts in ranking. `0` (the default) removes it from the comparator entirely, so ranking is byte-identical to the build before pressure existed; `1` is `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but whose GPU is busy. See [GPU pressure](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). |
+| `poolMaxPromptTokens` | `null` | 1024–1048576, or `null` | The largest estimated prompt this node should serve for the pool while another node can take it. `null` (the default) is no ceiling. `HUB_POOL_MAX_PROMPT_TOKENS` in the environment overrides it. See [Prompt ceilings](#prompt-ceilings). |
 
 ## Manual routing pins
 
@@ -53,6 +55,43 @@ Scopes: one pin per exact model id, plus one pool-wide default. A model pin wins
 **A hard `require` mode was designed and cut.** With a default-scope `require` pin at a peer, every app still discovers *this* node's model list from the local-only listing routes and would then get an unfailoverable 502 for every model the peer lacks — embeddings included, since the embedding host points at the same pool URL. It also turns a peer outage into a first-byte-budget hang per request for the whole 90 s–15 min window before the unreachable threshold trips, while the pin still reads as healthy. Nothing anyone asked for needed it.
 
 `GET /api/inference/pool/status` reports every pin with its target resolved to a node name and `targetAvailable` computed from the same predicates routing uses — which is the only place a pin that has quietly stopped applying is visible. `POST /api/inference/pool/pins` upserts one (the key is `(scope, model)`, not an id); `DELETE /api/inference/pool/pins?scope=model&model=<id>` removes it, addressed by query because model ids contain `/` and `:`.
+
+## Prompt ceilings
+
+A per-node preference about prompt size: `cihub pool ceiling 16000` on a node, or
+`PATCH /api/inference/pool/settings {"poolMaxPromptTokens": 16000}`. It exists for nodes that serve a
+model on CPU, where prefill slows as the context grows. Measured on the fleet, 2026-09-17, on a node
+serving `qwen3-coder:30b` on CPU: a 40 KB (~10.6k-token) streamed turn prefilled at ~123 tok/s and
+answered in 103 s, while a 184 KB (~46k-token) turn produced no first byte inside its 922 s budget and
+was cancelled. A GPU node served the same 184 KB turn in 268 s. Pins cannot express this: they are
+`prefer`-only and do not look at the request.
+
+**The estimate** is `bytes / 4` of the payload the proxy forwards — the same figure the first-byte
+budget is sized from, so a request is never judged small for the ceiling and large for the deadline.
+
+**Where it applies.** A node advertises its ceiling in `GET /capabilities` as `maxPromptTokens`, and
+omits the key when it has none, which is also what every older build sends. The node an app called —
+the entry node — ranks its candidates as usual. It then moves this node's own candidates behind the
+rest if its ceiling is below the estimate, and does the same for any peer whose advertised ceiling is.
+Both groups keep the ranker's order, and [pins](#manual-routing-pins) reorder within each group, so a
+pin at an over-ceiling node cannot move a long prompt back to the front. Only chat and completion
+routes are judged (`/v1/chat/completions`, `/v1/completions`, `/api/chat`, and `/api/generate`).
+Embeddings are not: a batch is many short inputs, so its size says nothing about the prefill a
+ceiling is for.
+
+**A ceiling never refuses work.** An over-ceiling node stays at the end of the failover order, so it
+still serves the request when every node under its ceiling fails. When every candidate is over its
+ceiling, nothing is moved at all. A slow answer beats a 502. The serving node does not check the
+ceiling on inbound work for the same reason: only the entry node knows whether there was anywhere else
+to send it. A peer on an older build does not read `maxPromptTokens` at all and routes as before.
+
+**Seeing it.** `GET /api/inference/pool/status` reports `localNode.maxPromptTokens` (effective, env
+override applied) with `localNode.maxPromptTokensSetBy` (`env`, `setting` or `null`), and
+`peers[].maxPromptTokens`. Each routing-log entry carries `promptCeiling`: `null` when no candidate had
+a ceiling, otherwise `{ estimatedTokens, excluded: [{ node, maxPromptTokens }], overridden }`, so "the
+ceiling skipped that node" can be told apart from "the ranker preferred another". `excluded` lists the
+nodes moved to the back. `overridden` is `true` when the request was placed on one of them anyway.
+`cihub pool log` marks the requests the ceiling changed.
 
 ## GPU pressure: a second load signal, AMD-only and off by default
 
@@ -182,7 +221,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
   | `X-Hub-Pool-Model` | The model the request was routed for |
 
   A request that failed over names the node that *answered*, not the one tried first. The headers are absent on a 502. `local` is deliberately not this node's own MagicDNS name: the proxy is origin-checked but unauthenticated, and `/identify` stopped disclosing the name to unauthenticated callers for the same reason — see [What `/identify` no longer says](#what-identify-no-longer-says-and-where-the-name-went-instead). Nothing else about the peer appears: never its node UUID, and never a container name. Any `x-hub-pool-*` header the upstream engine or peer returns is dropped, so the attribution is always this Hub's own statement. To check by hand: `curl -i` and read the headers, or `curl -sD - -o /dev/null` for headers only.
-- **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, and `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed). A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
+- **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed) — and `promptCeiling`, what [prompt ceilings](#prompt-ceilings) did to the decision, or `null`. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
 
 ## Peer identity: PIN pairing and signed requests
 

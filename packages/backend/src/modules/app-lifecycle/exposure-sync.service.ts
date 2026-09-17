@@ -33,7 +33,7 @@ import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { createAppUrn } from '@/common/helpers/app-helpers';
-import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
+import { hasPairingAppCheck, hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 import { customDomainAuditLine } from './custom-domain-audit';
 
 /** Options shared by every entry point into an exposure sync. */
@@ -451,6 +451,17 @@ export class ExposureSyncService {
   public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     this.cloudflareSyncDepth += 1;
     try {
+      /*
+       * ⚠ THE FIRST SYNC AFTER A PAIRING CAN RELEASE EVERY APP ON THE DEVICE. Companion Portal releases
+       * each app on the device that a sync leaves out, and a Hub reinstalled and paired back onto its
+       * device has none of them installed yet. `PairingAppRestoreService` lifts this hold once it has
+       * compared the Portal's list with this Hub's, and restored what was missing.
+       */
+      if (await hasPairingAppCheck()) {
+        this.logger.debug('[Cloudflare] Skipping sync until the apps Companion Portal lists for this device are checked after pairing');
+        return;
+      }
+
       if (await hasRestoreIntent()) {
         const rehydrationState = await readRehydrationState();
         if (!rehydrationState?.completedAt) {

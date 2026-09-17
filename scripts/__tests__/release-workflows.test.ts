@@ -73,6 +73,12 @@ describe('build-container.yml', () => {
     expect(buildContainer).toContain("enable=${{ steps.tags.outputs.version != '' }}");
   });
 
+  // The Hub self-updater identifies a release build by this label. Left to metadata-action it is the
+  // first tag, the channel, so the published 0.2.71 image reported `latest`.
+  it('stamps the release version, not the channel tag, as the OCI version label', () => {
+    expect(buildContainer).toContain('org.opencontainers.image.version=${{ steps.tags.outputs.version || steps.tags.outputs.channel_tag }}');
+  });
+
   it('never adds a v prefix to published tags', () => {
     // hub_env.rs strips the `v` when composing its pin, so a v-prefixed tag is unpullable.
     expect(buildContainer).not.toContain('prefix=v');

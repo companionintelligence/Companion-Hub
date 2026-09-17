@@ -117,6 +117,7 @@ type PersistedSettingsValues = {
   hubPoolRequireSignedPeers: boolean | undefined;
   hubPoolShareContainerStats: boolean | undefined;
   hubPoolPressureWeight: number | undefined;
+  hubPoolMaxPromptTokens: number | undefined;
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
   hubPoolPins: HubPoolPin[] | undefined;
@@ -146,6 +147,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolRequireSignedPeers: undefined,
   hubPoolShareContainerStats: undefined,
   hubPoolPressureWeight: undefined,
+  hubPoolMaxPromptTokens: undefined,
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
   hubPoolPins: undefined,
@@ -233,6 +235,7 @@ export class ConfigurationService {
       hubPoolRequireSignedPeers: settings.hubPoolRequireSignedPeers,
       hubPoolShareContainerStats: settings.hubPoolShareContainerStats,
       hubPoolPressureWeight: settings.hubPoolPressureWeight,
+      hubPoolMaxPromptTokens: settings.hubPoolMaxPromptTokens,
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
       hubPoolPins: settings.hubPoolPins,
@@ -332,6 +335,7 @@ export class ConfigurationService {
         hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
         hubPoolShareContainerStats: settingsValues.hubPoolShareContainerStats,
         hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
+        hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         hubPoolPins: settingsValues.hubPoolPins,
@@ -506,13 +510,21 @@ export class ConfigurationService {
       // one directly before it. See `HubPoolPreferences.poolShareContainerStats` for the trade.
       poolShareContainerStats: this.config.userSettings.hubPoolShareContainerStats ?? true,
       poolPressureWeight: this.config.userSettings.hubPoolPressureWeight ?? DEFAULT_POOL_PRESSURE_WEIGHT,
+      // `?? null`: no ceiling is the default, and a cleared ceiling is an absent key rather than a
+      // stored null — see `setHubPoolPreferences`.
+      poolMaxPromptTokens: this.config.userSettings.hubPoolMaxPromptTokens ?? null,
       // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
       // in-memory settings the next request will rank against.
       poolPins: [...(this.config.userSettings.hubPoolPins ?? [])],
     };
   }
 
-  /** Persist Hub Pool tuning. Every field is optional and `undefined` leaves it unchanged; there is no "clear" state because each has a real default. */
+  /**
+   * Persist Hub Pool tuning. Every field is optional and `undefined` leaves it unchanged. The prompt
+   * ceiling is the one field with a "clear" state, because its default is the absence of a value:
+   * `null` removes the key from settings.json rather than storing a null the boot parse would have to
+   * understand.
+   */
   public async setHubPoolPreferences(preferences: Partial<HubPoolPreferences>): Promise<HubPoolPreferences> {
     const settings: {
       hubPoolEnabled?: boolean;
@@ -523,6 +535,7 @@ export class ConfigurationService {
       hubPoolRequireSignedPeers?: boolean;
       hubPoolShareContainerStats?: boolean;
       hubPoolPressureWeight?: number;
+      hubPoolMaxPromptTokens?: number;
       hubPoolPins?: HubPoolPin[];
     } = {};
     if (preferences.poolEnabled !== undefined) {
@@ -548,6 +561,12 @@ export class ConfigurationService {
     }
     if (preferences.poolPressureWeight !== undefined) {
       settings.hubPoolPressureWeight = preferences.poolPressureWeight;
+    }
+    // An explicit `undefined` value, not a skipped key: `mergeSettingsToDisk` spreads it over the file
+    // and JSON drops it, which is how the ceiling is cleared, while the key's presence still counts as
+    // a change for the no-op guard below.
+    if (preferences.poolMaxPromptTokens !== undefined) {
+      settings.hubPoolMaxPromptTokens = preferences.poolMaxPromptTokens ?? undefined;
     }
     // The whole list, never a delta: pins have no per-row identity in settings.json, so the pin
     // service computes the next array and this persists it. `undefined` still means "leave alone",

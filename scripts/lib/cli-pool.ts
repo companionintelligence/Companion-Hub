@@ -19,6 +19,7 @@ import {
   formatPairingPinLines,
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
+  formatPromptCeilingResultLines,
   mintPairingPin,
   pairPoolPeer,
   probePoolAddress,
@@ -26,6 +27,7 @@ import {
   resolvePoolPeerTarget,
   runPoolDiscover,
   setPoolEnabledSetting,
+  setPoolMaxPromptTokens,
   setPoolPeerEnabled,
   setPoolPin,
   unpairPoolPeer,
@@ -65,6 +67,7 @@ export const POOL_SUBCOMMANDS = [
   'peer-disable',
   'pin',
   'unpin',
+  'ceiling',
   // Four places in this repo and two in docs/CLI.md already tell the operator to run
   // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
   'pairing-pin',
@@ -73,7 +76,18 @@ export const POOL_SUBCOMMANDS = [
 export type PoolSubcommand = (typeof POOL_SUBCOMMANDS)[number];
 
 /** Subcommands taking a peer reference before the optional [env], so the env parser never sees it. */
-const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['probe', 'pair', 'approve', 'reject', 'unpair', 'peer-enable', 'peer-disable', 'pin'];
+const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = [
+  'probe',
+  'pair',
+  'approve',
+  'reject',
+  'unpair',
+  'peer-enable',
+  'peer-disable',
+  'pin',
+  // The token count (or `clear`) sits where a peer reference would, so `ceiling 16000 dev` reads the env.
+  'ceiling',
+];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
 
@@ -209,6 +223,26 @@ function parsePinnedModel(raw: string): string {
     usageAndExit('--model takes a model id as the engine reports it, e.g. llama3.2:3b (1-200 characters).');
   }
   return trimmed;
+}
+
+/** Matches `MIN_POOL_MAX_PROMPT_TOKENS` / `MAX_POOL_MAX_PROMPT_TOKENS` on the backend, so a bad value fails here rather than as a 400. */
+const MIN_PROMPT_CEILING = 1024;
+const MAX_PROMPT_CEILING = 1_048_576;
+
+/**
+ * `clear` → `null`; a plain integer within the backend's bounds → that number; anything else →
+ * `undefined`, which the caller turns into a usage error.
+ *
+ * Digits only, deliberately: `16k` reads naturally but means 16000 to one operator and 16384 to the
+ * next, and a ceiling is exactly the number an operator will later compare against a routing-log
+ * estimate. The floor catches the other likely typo, a dropped `000`.
+ */
+export function parsePromptCeilingArg(raw: string | undefined): number | null | undefined {
+  const value = raw?.trim() ?? '';
+  if (value.toLowerCase() === 'clear') return null;
+  if (!/^\d+$/.test(value)) return undefined;
+  const tokens = Number(value);
+  return tokens >= MIN_PROMPT_CEILING && tokens <= MAX_PROMPT_CEILING ? tokens : undefined;
 }
 
 /** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
@@ -428,6 +462,11 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'pin' || parsed.subcommand === 'unpin') {
       await runPoolPinCommand(ctx, parsed);
+      return;
+    }
+
+    if (parsed.subcommand === 'ceiling') {
+      await runPoolCeilingCommand(ctx, parsed);
       return;
     }
 
@@ -685,6 +724,39 @@ async function runPoolPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     ],
     'green',
   );
+}
+
+/**
+ * `cihub pool ceiling <tokens>|clear` — the largest estimated prompt this node should serve for the
+ * pool while another node can take it.
+ *
+ * Confirmed like a pin and for the same reason: a state change, never a destructive one, because a
+ * ceiling only ever moves work and a request with nowhere else to go is still served here. Status is
+ * read AFTER the write, so the box reports the ceiling in force rather than the one requested: under
+ * `HUB_POOL_MAX_PROMPT_TOKENS` the PATCH succeeds and changes nothing. A Hub too old to store the
+ * field answers 200 too, and is told apart by the key missing from the settings it returns.
+ */
+async function runPoolCeilingCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const requested = parsePromptCeilingArg(parsed.target);
+  if (requested === undefined) {
+    usageAndExit(
+      `Usage: ${BASE_COMMAND} pool ceiling <tokens>|clear [env] [--yes] — tokens is a whole number from ${MIN_PROMPT_CEILING} to ${MAX_PROMPT_CEILING}, e.g. 16000`,
+    );
+  }
+
+  const describe = requested === null ? 'Clear the prompt ceiling' : `Set the prompt ceiling to ~${requested} tokens`;
+  const confirmed = await confirmDestructiveAction(`${describe} on this node`, parsed.yes, `${describe} on this node? [y/N]: `, 'a state change');
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left the prompt ceiling untouched.'], 'yellow');
+    return;
+  }
+
+  const settings = await setPoolMaxPromptTokens(envFile, requested);
+  // Best-effort: without status the box cannot see an .env override, but the write itself succeeded.
+  const status = await fetchPoolStatus(envFile).catch(() => null);
+  const result = formatPromptCeilingResultLines(requested, settings, status);
+  printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
 }
 
 async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
