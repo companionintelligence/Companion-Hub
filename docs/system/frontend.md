@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-09 (family Hub login: live Portal hint, account switcher, logout clears remembered email)
+> **Last updated:** 2026-09-17 (startup, stopped and couldn't-start screens match the desktop bootstrap page)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -39,6 +39,9 @@ Key behaviors agents must preserve:
 - `sessionStorage` steady-state across reloads
 - User-initiated reload uses `revalidate()` instead of `window.location.reload()`
 - Optional sidecars (Tailscale, cloudflared) must not block `all_ready` or regress UI to startup screen
+- The starting, "hasn't finished starting", stopped and couldn't-start screens are one `StartupScreen` card that must look and read the same as the desktop bootstrap page (`packages/desktop/bootstrap/`), because the app hands over from that page mid-startup. Change both together. `docs/system/desktop.md` describes the data both read from `get_startup_progress_command`.
+- The Hub container can be newer or older than the desktop shell, so `readStartupProgress` treats fields an older shell leaves out as false, null, or (for Docker) available.
+- Restart Hub needs `restart_hub_command` on the desktop IPC allowlist (`packages/desktop/src-tauri/permissions/allow-desktop-ipc.toml`). On an older shell without it, the screen starts the Hub instead.
 
 Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 
