@@ -67,33 +67,59 @@ export function tunnelTokenPath(envFileName: string): string {
   return path.resolve(rootFolderHost, '..', 'tunnel', 'token');
 }
 
-/** Legacy nested path kept for installs that predate the sibling bind. */
-function legacyTunnelTokenPath(envFileName: string): string {
-  const rootFolderHost = resolveRootFolderHost(envFileName);
-  return path.join(rootFolderHost, 'tunnel', 'token');
+/**
+ * Non-secret marker the Hub backend writes into its tunnel dir whenever it holds a Portal
+ * registration, and deletes on every registration reset.
+ */
+export const TUNNEL_REGISTRATION_MARKER = 'registration.json';
+
+/** Tunnel dirs for a Hub data dir: canonical sibling `../tunnel` first, then the legacy nested `tunnel`. */
+function tunnelDirsForDataDir(dataDir: string): string[] {
+  return [path.resolve(dataDir, '..', 'tunnel'), path.join(dataDir, 'tunnel')];
 }
 
 function isNonEmptyTokenFile(tokenPath: string): boolean {
   try {
-    return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
+    const stats = statSync(tokenPath);
+    return stats.isFile() && stats.size > 0;
   } catch {
     return false;
   }
 }
 
-/**
- * True when a tunnel token exists at the sibling compose path or the legacy nested path.
- * Desktop profile gating must match this so stack updates keep the `cloudflare` profile.
- */
-export function hasCloudflareTunnelToken(envFileName: string): boolean {
-  return isNonEmptyTokenFile(tunnelTokenPath(envFileName)) || isNonEmptyTokenFile(legacyTunnelTokenPath(envFileName));
+function isRegularFile(filePath: string): boolean {
+  try {
+    return statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
 }
 
-/** Same rules as {@link hasCloudflareTunnelToken}, but for an absolute Hub data dir (appliance). */
+/** True when a non-empty tunnel token exists at the sibling compose path or the legacy nested path. */
 export function hasCloudflareTunnelTokenAtDataDir(dataDir: string): boolean {
-  const sibling = path.resolve(dataDir, '..', 'tunnel', 'token');
-  const legacy = path.join(dataDir, 'tunnel', 'token');
-  return isNonEmptyTokenFile(sibling) || isNonEmptyTokenFile(legacy);
+  return tunnelDirsForDataDir(dataDir).some((dir) => isNonEmptyTokenFile(path.join(dir, 'token')));
+}
+
+/** Same rules as {@link hasCloudflareTunnelTokenAtDataDir}, resolving the data dir from an env file. */
+export function hasCloudflareTunnelToken(envFileName: string): boolean {
+  return hasCloudflareTunnelTokenAtDataDir(resolveRootFolderHost(envFileName));
+}
+
+/**
+ * True when the tunnel token belongs to a registered Hub: one tunnel dir (sibling first, then
+ * legacy nested) holds both a non-empty `token` and `registration.json`. A token without the
+ * marker is left over from an uninstalled or reset Hub and must not start `cloudflared`.
+ * Must match `registered_tunnel_present_for_data_dir` in the desktop app.
+ */
+export function hasRegisteredCloudflareTunnelAtDataDir(dataDir: string): boolean {
+  return tunnelDirsForDataDir(dataDir).some(
+    (dir) => isNonEmptyTokenFile(path.join(dir, 'token')) && isRegularFile(path.join(dir, TUNNEL_REGISTRATION_MARKER)),
+  );
+}
+
+/** Same rules as {@link hasRegisteredCloudflareTunnelAtDataDir}, resolving the data dir from an env file. */
+export function hasRegisteredCloudflareTunnel(envFileName: string): boolean {
+  return hasRegisteredCloudflareTunnelAtDataDir(resolveRootFolderHost(envFileName));
 }
 
 function hasTailscaleAuthKey(vars: Record<string, string>): boolean {
@@ -150,6 +176,17 @@ function privateVpnShouldRun(vars: Record<string, string>): boolean {
   return hasTailscaleAuthKey(vars) || hasTailscalePersistedState();
 }
 
+/**
+ * The `cloudflare` profile follows registration, like `private-vpn` follows its credentials: added
+ * for a registered Hub, dropped otherwise — including when the env file or shell still names it
+ * from a launch before an uninstall or reset. A registered Hub whose backend has not written the
+ * marker yet keeps its tunnel: the backend starts `cloudflared` itself with `--profile cloudflare`.
+ */
+function applyCloudflareProfile(profiles: Set<string>, envFileName: string): void {
+  if (hasRegisteredCloudflareTunnel(envFileName)) profiles.add('cloudflare');
+  else profiles.delete('cloudflare');
+}
+
 export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   const vars = parseEnvFile(envFileName);
   const hasEnvFile = Object.keys(vars).length > 0;
@@ -164,7 +201,7 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
     if (hasTailscaleAuthKey(process.env as Record<string, string>) || hasTailscalePersistedState()) {
       set.add('private-vpn');
     }
-    if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
+    applyCloudflareProfile(set, envFileName);
     return [...set].join(',');
   }
   const vpnOn = privateVpnShouldRun(vars);
@@ -180,7 +217,7 @@ export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
   ]);
   if (vpnOn) set.add('private-vpn');
   else set.delete('private-vpn');
-  if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
+  applyCloudflareProfile(set, envFileName);
   return [...set].join(',');
 }
 
@@ -190,8 +227,11 @@ export function buildEnvOverrides(envFileName: string) {
   const resolvedHubVersion = (process.env.CI_HUB_VERSION || fileVars.CI_HUB_VERSION || packageVersion()).trim();
   const overrides: Record<string, string | undefined> = {
     ENV_FILE: envFileName,
+    // Always set, even when empty: Compose falls back to `COMPOSE_PROFILES` from `--env-file` when
+    // the process env leaves it unset, which would revive a `cloudflare` or `private-vpn` profile
+    // the merge above dropped (an env file written while the Hub was still registered).
+    COMPOSE_PROFILES: composeProfiles,
   };
-  if (composeProfiles) overrides.COMPOSE_PROFILES = composeProfiles;
   if (resolvedHubVersion) overrides.CI_HUB_VERSION = resolvedHubVersion;
 
   // Identity comes from init:host / the env file (e.g. UID 0 on Docker Desktop). Never
