@@ -537,6 +537,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /**
+   * Marks the saved registration's token as registered and forgets any earlier
+   * leftover tunnel. A stale `leftover.json` would otherwise offer "Reconnect
+   * this Hub" again the next time this registration is reset.
+   */
+  private async markRegistrationSaved(tunnelId: string | null | undefined): Promise<void> {
+    await this.markTunnelRegistered(tunnelId);
+    try {
+      await removeTunnelLeftoverMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the leftover tunnel marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
   private async readTunnelToken(): Promise<string | null> {
     try {
       return (await fs.promises.readFile(tunnelTokenPath(), 'utf-8')).trim() || null;
@@ -1402,7 +1416,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (Object.keys(updates).length > 0) {
         await this.deviceRegistrationRepository.updateDeviceRegistration(organizationId, updates);
       }
-      await this.markTunnelRegistered(updates.tunnelId ?? existingOrg.tunnelId);
+      await this.markRegistrationSaved(updates.tunnelId ?? existingOrg.tunnelId);
 
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         await this.cloudflareClientService.initializeTunnel(organizationId, {
@@ -1522,7 +1536,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnelToken: tunnelToken,
         provisioningPhase: 'locally_ready',
       });
-      await this.markTunnelRegistered(tunnelId);
+      await this.markRegistrationSaved(tunnelId);
 
       // The persisted organization makes the Hub locally operational.
       await this.setPhase('locally_ready', [], organizationId);

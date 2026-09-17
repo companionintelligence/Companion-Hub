@@ -1394,6 +1394,46 @@ describe('RegistrationService', () => {
       expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-new');
     });
 
+    it('removes leftover.json when a registration is saved, so a later reset does not offer to reconnect a stale tunnel', async () => {
+      const leftover = JSON.stringify({ tunnelId: 'tunnel-previous-hub', foundAt: '2026-09-01T00:00:00.000Z' });
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        domain: 'example.com',
+        userSettings: { domain: 'example.com' },
+      } as any);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      configService.setDomain.mockResolvedValue(undefined);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 'tunnel-new', token: 'token-new' });
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      const activation = { organization_name: 'Org', tunnel_id: 'tunnel-new', tunnel_token: 'token-new', subdomain: 'hub-org', slug: 'org' };
+
+      // A new registration row.
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, leftover);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.createDeviceRegistration.mockResolvedValue({} as any);
+      await (service as any).setupOrganizationInfrastructure('org-1', activation);
+      expect(deviceRegistrationRepository.createDeviceRegistration).toHaveBeenCalled();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+
+      // An existing registration row.
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, leftover);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(registeredRow as any);
+      await (service as any).setupOrganizationInfrastructure('org-1', activation);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+
+      // Reset from Settings: the registration page shows no stale tunnel.
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+      await service.resetRegistration();
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 401 } as any);
+
+      const drift = await service.getStateDrift();
+      expect(drift.hasStaleTunnelToken).toBe(false);
+      expect(drift.signals.map((signal) => signal.reason)).not.toContain('stale_tunnel_token');
+    });
+
     it('stops the connector and removes the token and registration.json on reset, keeping the device key', async () => {
       vol.writeFileSync(TOKEN_PATH, 'registered-token');
       vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-registered', writtenAt: '2026-09-01T00:00:00.000Z' }));
