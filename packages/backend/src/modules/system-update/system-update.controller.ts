@@ -1,6 +1,7 @@
 import { BadRequestException, Controller, Get, Post, UseGuards, Body, NotFoundException } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { HUB_VERSION_TAG_MESSAGE, isHubVersionTag, SystemUpdateService } from './system-update.service';
+import { HUB_VERSION_TAG_MESSAGE, isHubVersionTag } from './hub-deployment';
+import { SystemUpdateService } from './system-update.service';
 
 @Controller('system/update')
 export class SystemUpdateController {

@@ -52,13 +52,15 @@ The rules follow what CI-Portal implements in `deviceAuthMiddleware.ts` and `Che
 | `2xx` | Portal accepts the key | Clears `degraded`, if set |
 | `401` with a JSON body | No live device holds the key: the device was removed, an owner or admin re-registered it (status `inactive`), or a later pairing rotated the key. Portal also sends this answer when it can't read its device table | A rejection. See below |
 | `403` with a JSON `error` | The key belongs to a different `device_id` than the one this Hub resolved | A rejection |
-| `400` with code `DEVICE_NOT_ACTIVE` | The device row disappeared after authentication, or Portal couldn't read it | A rejection |
+| `400` with code `DEVICE_NOT_ACTIVE` | The device row disappeared after authentication, or Portal couldn't read it | A rejection, and the only one that clears the registration. See below |
 | `400` with any other body | Portal refused a field in the check-in body | Transient failure, logged as a schema mismatch |
 | Anything else, a non-JSON `401` or `403`, or no response | Portal is unavailable, rate limiting, or something in front of it answered | Transient failure. Three in a row set `cloud_validation_failed` |
 
+`DEVICE_NOT_ACTIVE` is the exception to the wait below. It is coded, it names the device rather than the key, and it is what a person removing this Hub from their account in Portal produces, so the Hub clears its local registration at once and the Settings removal watch reports `removed`. Every other rejection waits.
+
 A rejection sets `degraded` with `portal_rejected` only when Portal is still rejecting the key 10 minutes after the first rejection, with no accepted check-in in between. Until then, each rejection counts as a transient failure, and `lastCheckIn` shows it. The wait exists because CI-Portal's `deviceAuthMiddleware` answers `401 Invalid Device Key` both when no device holds the key and when `DeviceService.findByApiKey` fails to read the database. Without the wait, a short Portal database outage would tell the owner of every Hub that checked in during it to pair again. A removal doesn't clear on its own: the five fleet Hubs described below had been rejected for between one day and a week. At the fleet's 15-minute check-in interval, the second rejected check-in confirms the rejection.
 
-The Hub never deletes its registration because of a check-in. The tunnel token authenticates `cloudflared` on its own, and local apps do not need Portal, so deleting the registration would turn an owner's action in Portal, or a Portal incident, into an outage. A later transient failure doesn't replace `portal_rejected` with `cloud_validation_failed`.
+Apart from `DEVICE_NOT_ACTIVE`, a check-in never deletes the registration. The tunnel token authenticates `cloudflared` on its own, and local apps do not need Portal, so deleting the registration over a refused key, or over a body Portal refused, would turn a Portal incident into an outage. A later transient failure doesn't replace `portal_rejected` with `cloud_validation_failed`.
 
 ### Pairing a registered Hub again
 

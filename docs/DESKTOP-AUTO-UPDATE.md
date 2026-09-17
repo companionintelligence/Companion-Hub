@@ -34,7 +34,7 @@ separate dev feed so dev desktop builds can update without touching production.
 | Settings UI (desktop) | `perform_desktop_update_command` Tauri command |
 | Settings UI (any browser) | backend `POST /api/system/update` — Hub probes `host.docker.internal:17400/health`, then `POST /update` with the listener token. The tab never talks to `127.0.0.1:17400`. If the listener is down, Hub updates the stack only and Settings tells the operator to start Companion Hub on the host. |
 | CLI | `companion-hub update` (`--check` for exit-code-only: 1 = update available) |
-| Hub Docker stack (separate from app binary) | backend `SystemUpdateService` daily timer, gated by the Settings auto-update toggle |
+| Hub Docker stack (separate from app binary) | backend `SystemUpdateService` daily timer, gated by the Settings auto-update toggle; only a release-pinned node moves (see [`hub-stack-self-update.md`](hub-stack-self-update.md)) |
 
 The desktop **app binary** is never updated without a user action; the **stack
 images** auto-update daily when the toggle is on.

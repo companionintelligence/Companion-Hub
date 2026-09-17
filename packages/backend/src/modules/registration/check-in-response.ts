@@ -14,6 +14,59 @@ export type CheckInVerdict =
   | { kind: 'accepted'; code: null; error: null }
   | { kind: 'rejected' | 'refused_body' | 'failed'; code: string | null; error: string };
 
+/**
+ * The one coded answer the Hub acts on by clearing its own registration: Portal says this device row
+ * is gone or inactive, which is what a person removing the Hub from their account in Portal produces
+ * and what the Settings removal watch is waiting for. Every other 400 is a schema refusal (the Hub
+ * sent a field Portal does not accept), and resetting over that would unpair a healthy Hub.
+ */
+export const DEVICE_NOT_ACTIVE_CODE = 'DEVICE_NOT_ACTIVE';
+
+/** What one check-in told the Hub. */
+export type CheckInOutcome =
+  /** The Portal accepted the check-in. */
+  | 'active'
+  /** The Portal said the device was removed or deactivated, and the Hub cleared its registration. */
+  | 'removed'
+  /** The Portal refused the device key (a `rejected` verdict that is not `DEVICE_NOT_ACTIVE`). Nothing was reset. */
+  | 'key_refused'
+  /** The Portal was unreachable or answered with any other failure. */
+  | 'failed'
+  /**
+   * Nothing to act on: no check-in was sent (the Hub is not registered, has no tunnel token, or has
+   * no Portal configured), or its answer was about a registration this Hub no longer has.
+   */
+  | 'skipped';
+
+/** The registration a check-in was sent for: the device key on the request, and which registration held it. */
+export type CheckInRegistration = {
+  deviceKey: string | null;
+  /** Changes whenever this Hub's registration row is cleared or written. */
+  registrationGeneration: number;
+};
+
+/**
+ * True when the registration a check-in was sent for is still this Hub's registration.
+ *
+ * A check-in can take seconds. If the Hub is reset and paired again meanwhile, the Portal's answer
+ * is about the old key: its `DEVICE_NOT_ACTIVE` says nothing about the new registration, and acting
+ * on it would clear the registration that was just made.
+ */
+export function isCheckInForCurrentRegistration(sentFor: CheckInRegistration, current: CheckInRegistration): boolean {
+  return sentFor.deviceKey === current.deviceKey && sentFor.registrationGeneration === current.registrationGeneration;
+}
+
+/** True only for the Portal's coded "this device is no longer active" answer. */
+export function isDeviceNotActiveResponse(response: { status: number; data?: unknown }): boolean {
+  if (response.status !== 400) {
+    return false;
+  }
+
+  const body = response.data;
+
+  return typeof body === 'object' && body !== null && (body as { code?: unknown }).code === DEVICE_NOT_ACTIVE_CODE;
+}
+
 const MAX_ERROR_LENGTH = 200;
 
 /**
@@ -35,6 +88,11 @@ const MAX_ERROR_LENGTH = 200;
  * refusal, was the one that wiped a healthy Hub's tunnel token; CI-Portal's own `CheckIn.ts` warns
  * that a vocabulary mismatch there "makes every healthy Hub in the fleet unpair itself".
  *
+ * `rejected` covers the key refusals and `DEVICE_NOT_ACTIVE` alike: both are Portal answering about
+ * this device rather than failing to answer. They differ in what the Hub does about it, not in how
+ * they are read, so the caller separates them with `isDeviceNotActiveResponse` — that coded answer
+ * is the only one that clears the registration.
+ *
  * A 401 or 403 counts only when the body is a JSON object, which is how Portal's `respond()`
  * answers. A page from Cloudflare or a captive proxy arrives as a string, and it says nothing
  * about this device.
@@ -53,7 +111,7 @@ export function classifyCheckInResponse(status: number, body: unknown): CheckInV
   }
 
   if (status === 400) {
-    return { kind: code === 'DEVICE_NOT_ACTIVE' ? 'rejected' : 'refused_body', code, error };
+    return { kind: code === DEVICE_NOT_ACTIVE_CODE ? 'rejected' : 'refused_body', code, error };
   }
 
   return { kind: 'failed', code, error };

@@ -127,6 +127,12 @@ jobs:
           tags: |
             type=raw,value=${{ steps.tags.outputs.channel_tag }}
             type=raw,value=${{ steps.tags.outputs.version }},enable=${{ steps.tags.outputs.version != '' }}
+          # metadata-action stamps the FIRST tag above as the version label, so the published 0.2.71
+          # image says `org.opencontainers.image.version=latest`. The Hub's self-updater reads this
+          # label to learn which release it runs (CI_HUB_VERSION in the env file was wrong on 10 of
+          # 16 fleet Hubs), so a release build must carry its version here.
+          labels: |
+            org.opencontainers.image.version=${{ steps.tags.outputs.version || steps.tags.outputs.channel_tag }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4

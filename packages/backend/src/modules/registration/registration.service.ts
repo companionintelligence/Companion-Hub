@@ -11,7 +11,6 @@ import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosH
 import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { type TunnelHealth, TunnelHealthService } from '../cloudflare/tunnel-health.service';
-import { PortalClientService } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -32,15 +31,28 @@ import {
   parseDegradedReasons,
   sameDegradedReasons,
 } from './registration-state';
-import { type CheckInVerdict, classifyCheckInResponse, describeCheckInTransportError } from './check-in-response';
 import {
   buildStateDriftResult,
   clearRegistrationKeysFromAppData,
   collectStaleHubDeviceIds,
   type RegistrationStateDrift,
 } from './registration-state-drift';
-import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
+import {
+  clearRegistrationRecoveryArtifacts,
+  clearRehydrationState,
+  writePairingAppCheck,
+  writeRestoreIntent,
+} from '../app-lifecycle/registration-recovery-state';
 import { buildCheckInPayload } from './check-in-payload';
+import {
+  type CheckInOutcome,
+  type CheckInRegistration,
+  type CheckInVerdict,
+  classifyCheckInResponse,
+  describeCheckInTransportError,
+  isCheckInForCurrentRegistration,
+  isDeviceNotActiveResponse,
+} from './check-in-response';
 import { resolveDeviceId } from './device-id.resolver';
 import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
@@ -62,6 +74,18 @@ const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
  * blip, and on the fleet's 15-minute check-in cadence it confirms on the second rejected check-in.
  */
 export const PORTAL_REJECTION_CONFIRM_MS = 10 * 60 * 1000;
+
+/**
+ * What one removal-watch check tells the Settings page.
+ *
+ * - `removed`: the Hub is no longer registered, because the Portal answered `DEVICE_NOT_ACTIVE` and
+ *   the Hub reset, or because it was already unregistered.
+ * - `still_registered`: the Portal still accepts this device.
+ * - `key_refused`: the Portal refuses the device key. Nothing was reset, and watching longer will
+ *   not change that.
+ * - `not_checked`: the Portal could not be asked or did not give a usable answer. Keep watching.
+ */
+export type RemovalWatchResult = 'removed' | 'still_registered' | 'key_refused' | 'not_checked';
 
 function describeRegistrationError(error: unknown): string {
   if (error instanceof Error) {
@@ -115,7 +139,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private periodicValidationInterval: NodeJS.Timeout | null = null;
   private consecutiveValidationFailures = 0;
   private lastCloudValidationAt = 0;
-  private cloudValidationInFlight: Promise<void> | null = null;
+  private cloudValidationInFlight: Promise<CheckInOutcome> | null = null;
+  private lastCheckInOutcome: CheckInOutcome | null = null;
+  /**
+   * Changes whenever the registration row is cleared or written, so a check-in that was sent for an
+   * earlier registration is not acted on. See `isCheckInForCurrentRegistration`.
+   */
+  private registrationGeneration = 0;
   private phaseReadCachedAt = 0;
   private phaseRefreshInFlight: Promise<void> | null = null;
   /** What the last check-in came back with; read by `GET /registration/phase` without sending one. */
@@ -127,7 +157,6 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
     @Inject(forwardRef(() => CloudflareClientService)) private readonly cloudflareClientService: CloudflareClientService,
-    @Inject(forwardRef(() => PortalClientService)) private readonly portalClient: PortalClientService,
     @Inject(forwardRef(() => TraefikConfigService)) private readonly traefikConfigService: TraefikConfigService,
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     readonly _repoQueue: RepoEventsQueue,
@@ -401,31 +430,74 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Portal unavailability does not fail the status request.
    */
   private async maybeValidateWithCloud(): Promise<void> {
+    this.startThrottledCloudValidation();
+
+    // Return the last known phase immediately so Portal and tunnel probes never
+    // block status handlers.
+  }
+
+  /**
+   * Starts the shared check-in unless one ran in the last 30 seconds.
+   *
+   * Returns the check-in in flight (a new one or one another caller started), or `null` when the
+   * throttle or the phase means no check-in is sent now.
+   */
+  private startThrottledCloudValidation(): Promise<CheckInOutcome> | null {
     if (!isOperational(this._currentPhase)) {
-      return;
+      return null;
     }
 
     const { ciCloudUrl } = this.config.getConfig();
     if (!ciCloudUrl) {
-      return;
+      return null;
+    }
+
+    if (this.cloudValidationInFlight) {
+      return this.cloudValidationInFlight;
     }
 
     const now = Date.now();
     if (this.lastCloudValidationAt > 0 && now - this.lastCloudValidationAt < CLOUD_VALIDATION_THROTTLE_MS) {
-      return;
+      return null;
     }
 
-    if (!this.cloudValidationInFlight) {
-      this.cloudValidationInFlight = this.validateRegistrationWithCloud()
-        .catch((e) => this.logger.error('Registration validation check failed', e))
-        .finally(() => {
-          this.lastCloudValidationAt = Date.now();
-          this.cloudValidationInFlight = null;
-        });
+    this.cloudValidationInFlight = this.validateRegistrationWithCloud()
+      .catch((e): CheckInOutcome => {
+        this.logger.error('Registration validation check failed', e);
+        return 'failed';
+      })
+      .finally(() => {
+        this.lastCloudValidationAt = Date.now();
+        this.cloudValidationInFlight = null;
+      });
+
+    return this.cloudValidationInFlight;
+  }
+
+  /**
+   * One check for the Settings page while it waits for the person to delete this Hub in the Portal.
+   *
+   * The page calls this about every 15 seconds. It shares the status poll's 30-second throttle and
+   * in-flight request, so it never adds Portal traffic beyond one check-in per 30 seconds; a call
+   * the throttle skips reports what the last check-in said. Removal itself happens inside the
+   * check-in, which resets the Hub only on the Portal's `DEVICE_NOT_ACTIVE` answer.
+   */
+  public async checkForRemoval(): Promise<RemovalWatchResult> {
+    const inFlight = this.startThrottledCloudValidation();
+    const outcome = inFlight ? await inFlight : this.lastCheckInOutcome;
+
+    if (!isOperational(this._currentPhase)) {
+      return 'removed';
     }
 
-    // Return the last known phase immediately so Portal and tunnel probes never
-    // block status handlers.
+    switch (outcome) {
+      case 'active':
+        return 'still_registered';
+      case 'key_refused':
+        return 'key_refused';
+      default:
+        return 'not_checked';
+    }
   }
 
   /**
@@ -590,20 +662,28 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Three consecutive remote failures trigger `degraded`, allowing transient
    * network errors to recover without changing the phase.
    */
-  private async validateRegistrationWithCloud(): Promise<void> {
-    if (!isOperational(this._currentPhase)) return;
+  private async validateRegistrationWithCloud(): Promise<CheckInOutcome> {
+    const outcome = await this.checkInWithCloud();
+    this.lastCheckInOutcome = outcome;
+    return outcome;
+  }
+
+  private async checkInWithCloud(): Promise<CheckInOutcome> {
+    if (!isOperational(this._currentPhase)) return 'skipped';
 
     if (!this.hasTunnelToken()) {
       this.logger.warn('Registration validation: tunnel token missing — transitioning to degraded');
       await this.setPhase('degraded', ['tunnel_token_missing']);
-      return;
+      return 'skipped';
     }
 
     // Refresh the in-memory token so `getTunnelToken()` matches durable state.
     await this.ensureCloudflareClientHasTunnelToken();
 
     const { ciCloudUrl, ciHubApiKey, version } = this.config.getConfig();
-    if (!ciCloudUrl) return;
+    if (!ciCloudUrl) return 'skipped';
+
+    const sentFor = this.currentCheckInRegistration();
 
     try {
       const deviceId = await this.getDeviceId();
@@ -616,8 +696,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       // Confirm that Companion Portal still considers the device active. The
       // check-in endpoint authenticates with the registered device's
-      // `x-device-key`. `classifyCheckInResponse` says which answers are verdicts;
-      // everything else counts toward the transient-failure threshold.
+      // `x-device-key`. `classifyCheckInResponse` says which answers are verdicts:
+      // only a 400 coded `DEVICE_NOT_ACTIVE` clears the registration, a refused key
+      // degrades the Hub once Portal keeps refusing it, and everything else —
+      // including an uncoded 400 — counts toward the transient-failure threshold.
       const response = await axios.post(
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
         buildCheckInPayload({
@@ -639,6 +721,27 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       const verdict = classifyCheckInResponse(response.status, response.data);
       this.recordCheckIn(response.status, verdict);
+
+      if (isDeviceNotActiveResponse(response)) {
+        // The answer is about the key this check-in sent. If the Hub was reset or paired again while
+        // it was in flight, that key is no longer this Hub's, and resetting would clear the new registration.
+        if (!isCheckInForCurrentRegistration(sentFor, this.currentCheckInRegistration())) {
+          this.logger.warn(
+            'Registration validation: ignoring DEVICE_NOT_ACTIVE for a registration this Hub replaced while the check-in was in flight',
+          );
+          return 'skipped';
+        }
+
+        // The Portal deleted or deactivated this device (someone removed it there). This coded answer
+        // is the only one that clears the registration, and the Settings removal watch is waiting for
+        // it. A refused key, below, is not it: that one keeps the registration and the tunnel.
+        this.consecutiveValidationFailures = 0;
+        this.logger.warn(
+          'Registration validation: device is no longer active in CI Portal (DEVICE_NOT_ACTIVE) — clearing local registration for re-pairing',
+        );
+        await this.resetRegistration({ reason: 'portal_rejected' });
+        return 'removed';
+      }
 
       if (verdict.kind === 'rejected') {
         /*
@@ -665,7 +768,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
               'Pair this Hub again (cihub register --code <code>); its tunnel and local registration are kept.',
           );
           await this.setPhase('degraded', ['portal_rejected']);
-          return;
+          return 'key_refused';
         }
 
         this.consecutiveValidationFailures++;
@@ -675,11 +778,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
             `(failure ${this.consecutiveValidationFailures}/3)`,
         );
         await this.degradeAfterRepeatedFailures();
-        return;
+        return 'key_refused';
       }
 
       if (verdict.kind !== 'accepted') {
-        // Count remote failures, including 5xx responses, toward the three-attempt threshold.
+        // Count remote failures, including 5xx responses and a 400 without the
+        // `DEVICE_NOT_ACTIVE` code (a schema refusal), toward the three-attempt threshold.
         this.consecutiveValidationFailures++;
         if (verdict.kind === 'refused_body') {
           this.logger.error(
@@ -692,7 +796,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           );
         }
         await this.degradeAfterRepeatedFailures();
-        return;
+        return 'failed';
       }
 
       this.consecutiveValidationFailures = 0;
@@ -713,12 +817,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           this.logger.debug(`Registration validation: public hostname probe failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
+
+      return 'active';
     } catch (e) {
       // Count network and timeout errors toward the transient-failure threshold.
       this.consecutiveValidationFailures++;
       this.recordCheckIn(null, { code: null, error: describeCheckInTransportError(e) });
       this.logger.error(`Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3)`, e);
       await this.degradeAfterRepeatedFailures();
+      return 'failed';
     }
   }
 
@@ -808,28 +915,29 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /** The device key a check-in sends now, and which registration holds it. */
+  private currentCheckInRegistration(): CheckInRegistration {
+    return { deviceKey: this.config.getConfig().ciHubApiKey ?? null, registrationGeneration: this.registrationGeneration };
+  }
+
   /**
    * Resets device registration so the appliance can pair again.
    *
    * The reset clears in-memory state, database rows, the tunnel token, and the
-   * resolved environment.
+   * resolved environment. It never changes the Portal: the device stays in the
+   * person's account until an owner or admin deletes it there.
    */
-  public async resetRegistration(options?: { reason?: 'manual'; deregisterFromPortal?: boolean }): Promise<void> {
-    // Only a person resets a registration. A check-in Portal rejects degrades the
-    // Hub instead; see `validateRegistrationWithCloud`.
-    this.logger.info('Resetting device registration...');
-
-    if (options?.deregisterFromPortal) {
-      try {
-        const deviceId = await this.getDeviceId();
-        await this.portalClient.postDeviceDeregister(deviceId);
-        this.logger.info('Requested Portal deregistration for paired reset');
-      } catch (error) {
-        this.logger.warn(
-          `Portal deregistration failed during reset (continuing local reset): ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
+  public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected' }): Promise<void> {
+    // A person resets a registration, or Portal's coded `DEVICE_NOT_ACTIVE` does. A check-in Portal
+    // merely rejects degrades the Hub instead; see `validateRegistrationWithCloud`.
+    const reason = options?.reason ?? 'manual';
+    if (reason === 'portal_rejected') {
+      this.logger.info('Clearing local device registration after CI Portal reported the device inactive');
+    } else {
+      this.logger.info('Resetting device registration...');
     }
+
+    this.registrationGeneration++;
 
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
@@ -1096,6 +1204,23 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     return isOperational(this._currentPhase);
   }
 
+  /**
+   * Holds app sync until `PairingAppRestoreService` has compared the apps Companion Portal lists for this
+   * device with the ones installed here, and restored what is missing.
+   *
+   * Written before anything of the new registration is, so no sync can slip out first. Pairing back onto
+   * an existing device otherwise synced this Hub's current app list, empty after a reinstall, and the
+   * Portal released every app the device had. A failure to write is logged and pairing goes on: the
+   * Portal has already issued this pairing's device key, and abandoning it here would lose that key.
+   */
+  private async holdAppSyncForPairingCheck(): Promise<void> {
+    try {
+      await writePairingAppCheck();
+    } catch (error) {
+      this.logger.error(`Could not hold app sync for the post-pairing apps check: ${describeRegistrationError(error)}`);
+    }
+  }
+
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
   public async markRestoreIntent(): Promise<{ success: boolean; message: string }> {
     await this.refreshPhaseFromSources();
@@ -1145,7 +1270,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * a device API key is usually absent. The check-in endpoint authenticates the
    * key, not the hardware, so `false` means "no live device holds this key" and
    * says nothing about whether Portal still lists the hardware. A stale but
-   * still valid key answers `true`. Anything that is not a verdict is `null`.
+   * still valid key answers `true`. Anything that is not a verdict — an uncoded
+   * 400 Portal refused the body with, a 5xx, a proxy page — is `null`.
    */
   private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
     try {
@@ -1167,6 +1293,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (verdict.kind === 'accepted') {
         return true;
       }
+      // `rejected` covers `DEVICE_NOT_ACTIVE` and a key Portal refuses; both mean no live device
+      // holds this key. A body Portal refused (`refused_body`) is not a verdict, and falls through.
       if (verdict.kind === 'rejected') {
         return false;
       }
@@ -1344,6 +1472,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // (`pairDevice` admits an authenticated caller before the rejection is confirmed).
     const rePairing =
       isOperational(this._currentPhase) && (requiresPortalRePairing(this._currentPhase, this._degradedReasons) || this.portalRejectedSince !== null);
+
+    // A new registration from here on: a check-in still in flight for the old key must not act on
+    // Portal's answer about it. See `isCheckInForCurrentRegistration`.
+    this.registrationGeneration++;
 
     // Update an existing row in place so provisioning retries remain idempotent.
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
@@ -1845,6 +1977,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // during infrastructure setup. A separate preflight would require a
       // Portal validation endpoint.
 
+      await this.holdAppSyncForPairingCheck();
+
       // Enter `paired` before infrastructure setup. The `paired` and
       // `provisioning` phases remain in memory until a database row exists. If the
       // process stops during setup, it starts as `unregistered` and can retry.
@@ -1906,6 +2040,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           message: 'Device ID mismatch. Registration failed.',
         };
       }
+
+      await this.holdAppSyncForPairingCheck();
 
       // Persist the optional device API key for authenticated Portal requests.
       if (data.apiKey) {

@@ -42,8 +42,8 @@ export default () => {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex flex-col flex-1 overflow-hidden">
-        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col h-full overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex h-full min-h-0 flex-1 flex-col">
           <div className="mx-auto flex w-full max-w-5xl justify-center">
             {/* One scrolling strip, not six tabs plus a "More" dropdown.
                 The dropdown was three separate defects: the active tab lost its indicator
@@ -63,7 +63,11 @@ export default () => {
               <TabsTrigger value="logs">{t('COMMON_LOGS')}</TabsTrigger>
             </TabsList>
           </div>
-          <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
+          <div
+            className={cn('page-scroller-edge-3 relative min-h-0 flex-1 py-3 pl-3', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')}
+            data-testid="settings-scroll-container"
+            data-page-scroller="settings"
+          >
             <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
               <TabsContent value="settings">
                 {currentTab === 'settings' && (
