@@ -196,132 +196,134 @@ export default function PortExposeCreatePage() {
   };
 
   return (
-    <div className="mx-auto h-full max-w-3xl overflow-y-auto pb-8">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('PORT_EXPOSE_TITLE')}</CardTitle>
-          <p className="text-sm text-muted-foreground">{t('PORT_EXPOSE_DESCRIPTION')}</p>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <Input
-              label={
-                <>
-                  {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
-                </>
-              }
-              {...register('name')}
-              error={errors.name?.message}
-              placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
-              disabled={createPortExpose.isPending}
-            />
-            <p className="text-xs text-muted-foreground -mt-2">
-              {t('CUSTOM_APP_NAME_HELP')}
-              {watchName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
-            </p>
+    <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="port-expose">
+      <div className="mx-auto max-w-3xl pb-8">
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('PORT_EXPOSE_TITLE')}</CardTitle>
+            <p className="text-sm text-muted-foreground">{t('PORT_EXPOSE_DESCRIPTION')}</p>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+              <Input
+                label={
+                  <>
+                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
+                  </>
+                }
+                {...register('name')}
+                error={errors.name?.message}
+                placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
+                disabled={createPortExpose.isPending}
+              />
+              <p className="text-xs text-muted-foreground -mt-2">
+                {t('CUSTOM_APP_NAME_HELP')}
+                {watchName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
+              </p>
 
-            <Input
-              label={
-                <>
-                  {t('COMMON_PORT')} <span className="text-destructive">*</span>
-                </>
-              }
-              type="number"
-              min={1024}
-              max={65535}
-              {...register('port')}
-              error={errors.port?.message}
-              placeholder={t('PORT_EXPOSE_PORT_PLACEHOLDER')}
-              disabled={createPortExpose.isPending}
-            />
-            <p className="text-xs text-muted-foreground -mt-2">{t('PORT_EXPOSE_PORT_HELP')}</p>
+              <Input
+                label={
+                  <>
+                    {t('COMMON_PORT')} <span className="text-destructive">*</span>
+                  </>
+                }
+                type="number"
+                min={1024}
+                max={65535}
+                {...register('port')}
+                error={errors.port?.message}
+                placeholder={t('PORT_EXPOSE_PORT_PLACEHOLDER')}
+                disabled={createPortExpose.isPending}
+              />
+              <p className="text-xs text-muted-foreground -mt-2">{t('PORT_EXPOSE_PORT_HELP')}</p>
 
-            <div>
-              <span className="block text-sm font-medium mb-1">{t('APP_INSTALL_FORM_EXPOSURE_MODE')}</span>
-              <Controller
-                control={control}
-                name="exposureMode"
-                render={({ field: { onChange, value } }) => (
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                    {(
-                      [
-                        { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
-                        {
-                          key: 'tailscale',
-                          label: t('COMMON_PRIVATE_VPN'),
-                          available: tailscaleAvailable,
-                          tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
-                        },
-                        {
-                          key: 'cloudflare',
-                          label: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE'),
-                          available: cloudflareAvailable,
-                          tooltip: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE_UNAVAILABLE'),
-                        },
-                      ] as const
-                    ).map((option) => {
-                      const isDisabled = createPortExpose.isPending || !option.available;
-                      return (
-                        <div key={option.key} className="relative">
-                          <button
-                            type="button"
-                            disabled={isDisabled}
-                            data-tooltip-id={`port-expose-exposure-${option.key}`}
-                            data-tooltip-content={option.available ? undefined : option.tooltip}
-                            onClick={() => option.available && onChange(option.key)}
-                            className={clsx(
-                              'w-full rounded-md border px-3 py-2 text-sm font-medium transition-colors',
-                              value === option.key
-                                ? 'border-primary bg-primary text-primary-foreground'
-                                : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
-                              isDisabled && 'opacity-50 cursor-not-allowed hover:bg-white dark:hover:bg-gray-800',
-                            )}
-                          >
-                            {option.label}
-                          </button>
-                          {!option.available && <Tooltip id={`port-expose-exposure-${option.key}`} className="tooltip" />}
-                        </div>
-                      );
-                    })}
-                  </div>
+              <div>
+                <span className="block text-sm font-medium mb-1">{t('APP_INSTALL_FORM_EXPOSURE_MODE')}</span>
+                <Controller
+                  control={control}
+                  name="exposureMode"
+                  render={({ field: { onChange, value } }) => (
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      {(
+                        [
+                          { key: 'local', label: t('APP_INSTALL_FORM_EXPOSURE_LOCAL'), available: true, tooltip: '' },
+                          {
+                            key: 'tailscale',
+                            label: t('COMMON_PRIVATE_VPN'),
+                            available: tailscaleAvailable,
+                            tooltip: t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_UNAVAILABLE'),
+                          },
+                          {
+                            key: 'cloudflare',
+                            label: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE'),
+                            available: cloudflareAvailable,
+                            tooltip: t('APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE_UNAVAILABLE'),
+                          },
+                        ] as const
+                      ).map((option) => {
+                        const isDisabled = createPortExpose.isPending || !option.available;
+                        return (
+                          <div key={option.key} className="relative">
+                            <button
+                              type="button"
+                              disabled={isDisabled}
+                              data-tooltip-id={`port-expose-exposure-${option.key}`}
+                              data-tooltip-content={option.available ? undefined : option.tooltip}
+                              onClick={() => option.available && onChange(option.key)}
+                              className={clsx(
+                                'w-full rounded-md border px-3 py-2 text-sm font-medium transition-colors',
+                                value === option.key
+                                  ? 'border-primary bg-primary text-primary-foreground'
+                                  : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
+                                isDisabled && 'opacity-50 cursor-not-allowed hover:bg-white dark:hover:bg-gray-800',
+                              )}
+                            >
+                              {option.label}
+                            </button>
+                            {!option.available && <Tooltip id={`port-expose-exposure-${option.key}`} className="tooltip" />}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                />
+                {!tailscaleAvailable && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    <Link to="/settings?tab=network" className="text-primary underline-offset-2 hover:underline">
+                      {t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK')}
+                    </Link>
+                  </p>
                 )}
-              />
-              {!tailscaleAvailable && (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  <Link to="/settings?tab=network" className="text-primary underline-offset-2 hover:underline">
-                    {t('APP_INSTALL_FORM_EXPOSURE_TAILSCALE_SETUP_LINK')}
-                  </Link>
-                </p>
-              )}
-            </div>
+              </div>
 
-            {watchExposureMode === 'cloudflare' ? (
-              <CloudflareSubdomainField
-                control={control}
-                availableDomains={availableDomains}
-                watchPublicDomain={watchPublicDomain}
-                domain={domain}
-                cloudflareSuffix={cloudflareSuffix}
-                register={register}
-                loading={createPortExpose.isPending}
-                localSubdomainError={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
-                placeholder={defaultAppSubdomain}
-                isCheckingDns={isCheckingDns}
-                t={t}
-              />
-            ) : null}
+              {watchExposureMode === 'cloudflare' ? (
+                <CloudflareSubdomainField
+                  control={control}
+                  availableDomains={availableDomains}
+                  watchPublicDomain={watchPublicDomain}
+                  domain={domain}
+                  cloudflareSuffix={cloudflareSuffix}
+                  register={register}
+                  loading={createPortExpose.isPending}
+                  localSubdomainError={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
+                  placeholder={defaultAppSubdomain}
+                  isCheckingDns={isCheckingDns}
+                  t={t}
+                />
+              ) : null}
 
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button type="submit" loading={createPortExpose.isPending}>
-                {t('PORT_EXPOSE_SUBMIT')}
-              </Button>
-              <Button type="button" variant="outline" onClick={() => navigate('/store')} disabled={createPortExpose.isPending}>
-                {t('COMMON_CANCEL')}
-              </Button>
-            </div>
-          </form>
-        </CardContent>
-      </Card>
+              <div className="flex flex-wrap gap-2 pt-2">
+                <Button type="submit" loading={createPortExpose.isPending}>
+                  {t('PORT_EXPOSE_SUBMIT')}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => navigate('/store')} disabled={createPortExpose.isPending}>
+                  {t('COMMON_CANCEL')}
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
