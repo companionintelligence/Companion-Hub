@@ -70,10 +70,12 @@ interface TailscaleServeWebServerConfig {
  * Whether tailscaled refused a `tailscale serve` write because the caller is neither root nor the
  * host's Tailscale operator.
  *
- * In host mode the Hub runs as the host account's uid (1000 on the fleet appliances) through the
- * mounted tailscaled socket, so an appliance that never ran `tailscale set --operator` answers
- * every publish with `sending serve config: Access denied: serve config denied`. Retrying cannot
- * succeed until someone on the host grants the operator role.
+ * In host mode the Hub talks to the mounted tailscaled socket as its own uid: root on beta-1,
+ * beta-glass and fzzy, but the host's `ci` account on most appliances (uid 1000, or 1001 on
+ * core-2, core-3 and core-6). tailscaled accepts Serve writes only from root or the host's
+ * operator, so a host that never ran `tailscale set --operator` answers every publish with
+ * `sending serve config: Access denied: serve config denied`. Retrying cannot succeed until
+ * someone on the host grants the operator role.
  */
 export function isServePermissionDenied(error: unknown): boolean {
   if (!(error instanceof Error)) {
@@ -89,13 +91,15 @@ export function isServePermissionDenied(error: unknown): boolean {
  *
  * The container's passwd file does not name the host account (uid 1000 is `ci` on the host but
  * may be `node` in the image), and `--operator` takes a host username. `id -nu <uid>` resolves it
- * where the command runs, so the command can be pasted as-is.
+ * where the command runs, so the command can be pasted as-is. The `&&` matters: where the uid has
+ * no host account, a bare `--operator="$(id -nu <uid>)"` still runs with an empty name and clears
+ * whichever operator the host already had.
  */
 export function servePermissionRemedy(uid: number | null = process.getuid?.() ?? null): string {
   if (uid === null) {
     return 'sudo tailscale set --operator=<user>, where <user> is the host account that runs the Hub';
   }
-  return `sudo tailscale set --operator="$(id -nu ${uid})" (the Hub runs as uid ${uid})`;
+  return `u="$(id -nu ${uid})" && sudo tailscale set --operator="$u" (the Hub runs as uid ${uid})`;
 }
 
 interface ExecError extends Error {
@@ -711,6 +715,8 @@ export class TailscaleService {
       await this.execTailscale(['serve', `--https=${httpsPort}`, 'off']);
       this.logger.log(`Tailscale Serve removed from :${httpsPort}`);
     } catch (error) {
+      // The operator refusal goes back to the sync, which reports it once instead of every pass.
+      if (isServePermissionDenied(error)) throw error;
       this.logger.warn(`Failed to remove Tailscale serve for :${httpsPort}: ${error}`);
     }
   }
@@ -720,6 +726,7 @@ export class TailscaleService {
       await this.execTailscale(['serve', 'clear', serviceName]);
       this.logger.log(`Tailscale Service removed: ${serviceName}`);
     } catch (error) {
+      if (isServePermissionDenied(error)) throw error;
       this.logger.warn(`Failed to remove Tailscale Service ${serviceName}: ${error}`);
     }
   }

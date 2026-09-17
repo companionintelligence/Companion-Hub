@@ -12,6 +12,8 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 import { access } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isServePermissionDenied, servePermissionRemedy, TailscaleService } from '../tailscale.service';
 import { CORE_6_SERVE_STATUS, CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR, HUB_SERVE_COMMAND, SERVE_CONFIG_DENIED_STDERR } from './serve-captures';
 
@@ -686,9 +688,49 @@ describe('TailscaleService', () => {
   });
 
   describe('servePermissionRemedy', () => {
-    it("names the Hub's uid rather than $USER, which resolves to the container's account", () => {
-      expect(servePermissionRemedy(1000)).toBe('sudo tailscale set --operator="$(id -nu 1000)" (the Hub runs as uid 1000)');
+    /** The pasteable part of the remedy, without the trailing note about the uid. */
+    const commandFor = (uid: number) => servePermissionRemedy(uid).replace(/ \(the Hub runs as uid \d+\)$/, '');
+
+    /** Runs `command` in a real shell with a `sudo` that records its arguments instead of escalating. */
+    async function runWithRecordingSudo(command: string): Promise<{ sudoCalls: string[]; exitedCleanly: boolean }> {
+      // The backend test setup swaps `node:fs` for an in-memory volume, and this file mocks
+      // `child_process`; the shell and its `sudo` stub need the real ones.
+      const { execFileSync } = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+      const { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
+      const dir = mkdtempSync(join(tmpdir(), 'operator-remedy-'));
+      try {
+        const log = join(dir, 'sudo.log');
+        writeFileSync(join(dir, 'sudo'), `#!/bin/sh\necho "$@" >> "${log}"\n`);
+        chmodSync(join(dir, 'sudo'), 0o755);
+        let exitedCleanly = true;
+        try {
+          execFileSync('sh', ['-c', command], { env: { PATH: `${dir}:/usr/bin:/bin` }, stdio: 'pipe' });
+        } catch {
+          exitedCleanly = false;
+        }
+        const sudoCalls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : [];
+        return { sudoCalls, exitedCleanly };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it("names the Hub's uid rather than $USER, which expands to whoever pastes it", () => {
+      expect(servePermissionRemedy(1000)).toContain('id -nu 1000');
+      expect(servePermissionRemedy(1000)).toContain('(the Hub runs as uid 1000)');
+      expect(servePermissionRemedy(1000)).not.toContain('$USER');
     });
+
+    it.skipIf(process.platform === 'win32')('sets the operator to the host account that owns the uid when pasted into a shell', async () => {
+      await expect(runWithRecordingSudo(commandFor(0))).resolves.toEqual({ sudoCalls: ['tailscale set --operator=root'], exitedCleanly: true });
+    });
+
+    it.skipIf(process.platform === 'win32')(
+      'runs nothing for a uid with no host account, where an empty --operator= would clear the operator the host already has',
+      async () => {
+        await expect(runWithRecordingSudo(commandFor(2_147_483_000))).resolves.toEqual({ sudoCalls: [], exitedCleanly: false });
+      },
+    );
 
     it('falls back to a placeholder where the platform has no uid', () => {
       expect(servePermissionRemedy(null)).toContain('sudo tailscale set --operator=<user>');

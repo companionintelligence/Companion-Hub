@@ -77,14 +77,19 @@ above are published.
 
 With a host Tailscale client, the Hub writes Serve config through the host's
 `tailscaled`, which accepts writes only from root or the host's Tailscale
-operator. If the Hub runs as an ordinary account (uid 1000 on the appliances),
-run `sudo tailscale set --operator="$(id -nu 1000)"` once on the host. Until
-then, the Hub logs one warning with that command and skips publishing.
+operator. If the Hub runs as an ordinary account, the Hub logs one warning with
+the command that makes that account the operator, and skips publishing until you
+run it on the host. The account differs between hosts (uid 1000 on most
+appliances, 1001 on some), so use the command from the warning, or find the
+account with `ps -o user= -p "$(docker inspect -f '{{.State.Pid}}' ci-hub)"` and
+run `sudo tailscale set --operator=<account>`.
 
 The Hub checks that the entry answers for the device's current name. If you
 rename the device in the Tailscale admin console, the next exposure sync (every
 five minutes) publishes the Hub under the new name. The old name's entry stays in
-the Serve config, but nothing resolves that name any more.
+the Serve config, but nothing resolves that name any more. If
+`PRIVATE_VPN_USER_DISABLED=true` is set, the Hub does not republish itself; it
+logs one warning with the `tailscale serve` command to run instead.
 
 > **Subnet routes caveat:** the sidecar advertises `172.18.0.0/16` (the Hub's
 > Docker bridge) as a fallback path. Linux clients do not accept subnet routes
@@ -141,8 +146,8 @@ This workflow is ideal for remote maintenance, operator access, and private demo
 | **Logs still mention `headscale:8080` after upgrading** | Reconnect Tailscale once so the device state is rewritten against `controlplane.tailscale.com`. If you override `HUB_TAILSCALE_EXTRA_ARGS`, keep an explicit `--login-server=https://controlplane.tailscale.com` unless you intentionally run your own control plane. |
 | **App URL works locally but not via Tailscale** | Confirm the Hub and client are on the same tailnet, approve the HTTPS/Serve consent link shown by Hub if needed, then re-save the app with **Tailscale** exposure mode. |
 | **Logs say `serve config denied`** | The Hub uses the host Tailscale client and is neither root nor the host's Tailscale operator. Run the `sudo tailscale set --operator=…` command from the warning once on the host; the next sync publishes the Hub. |
-| **Peers fail TLS to the Hub after a device rename** | Wait for the next exposure sync, which runs every five minutes. If peers still fail after that, check the Hub logs for `serve config denied`. |
-| **Need to turn Tailscale off temporarily** | Set `PRIVATE_VPN_USER_DISABLED=true` in the hub `.env` and restart the stack. The Hub then stops publishing to Tailscale Serve but leaves existing entries in place, because other Hubs may reach it through them. To remove the Hub's entry, run `sudo tailscale serve --https=443 off` on the host. |
+| **Peers fail TLS to the Hub after a device rename** | Wait for the next exposure sync, which runs every five minutes. If peers still fail after that, check the Hub logs for `serve config denied`, or, if `PRIVATE_VPN_USER_DISABLED=true` is set, for `Tailscale Serve has no :443 entry` and run the command it names. |
+| **Need to turn Tailscale off temporarily** | Set `PRIVATE_VPN_USER_DISABLED=true` in the hub `.env` and restart the stack. The Hub then stops publishing to Tailscale Serve but leaves existing entries in place, because other Hubs may reach it through them. It also stops repairing its own entry after a device rename or a `tailscale serve reset`, and only logs a warning, so pool peers lose this Hub until someone publishes it by hand. To remove the Hub's entry, run `sudo tailscale serve --https=443 off` on the host. |
 
 ## Example operator checklist
 

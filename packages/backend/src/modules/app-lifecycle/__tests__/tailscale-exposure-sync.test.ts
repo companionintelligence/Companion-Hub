@@ -72,7 +72,13 @@ class FakeHostTailscaled {
       const port = rest.find((arg) => arg.startsWith('--https='))?.slice('--https='.length);
       const listener = `${this.selfDnsName}:${port}`;
       if (rest.at(-1) === 'off') {
-        delete this.config.Web?.[listener];
+        // Like the CLI, `off` only looks under the node's current name.
+        if (!this.config.Web?.[listener]) {
+          throw Object.assign(new Error(`Command failed: /usr/bin/tailscale ${args.join(' ')}\nerror: handler does not exist`), {
+            stderr: 'error: handler does not exist\n',
+          });
+        }
+        delete this.config.Web[listener];
       } else {
         this.config.TCP = { ...this.config.TCP, [String(port)]: { HTTPS: true } };
         this.config.Web = { ...this.config.Web, [listener]: { Handlers: { '/': { Proxy: rest.at(-1) } } } };
@@ -158,19 +164,45 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     expect(tailscaled.writes).toEqual([HUB_PUBLISH]);
   });
 
-  it('leaves Tailscale Serve alone when PRIVATE_VPN_USER_DISABLED=true (core-17, beta-ms-a2, beta-nas)', async () => {
+  it('leaves Tailscale Serve alone when PRIVATE_VPN_USER_DISABLED=true and the Hub is already published (beta-max, core-6, beta-ms-a2)', async () => {
     process.env.PRIVATE_VPN_USER_DISABLED = 'true';
-    // Without the opt-out this state gets a publish, as the rename test shows.
-    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
+    const tailscaled = new FakeHostTailscaled('core-6.capybara-ulmer.ts.net', CORE_6_SERVE_STATUS);
     const sync = buildSync(tailscaled);
 
     await sync.syncTailscaleExposurePublic();
     await sync.syncTailscaleExposurePublic();
 
-    expect(tailscaled.calls).toEqual([]);
-    expect(tailscaled.serveConfig()).toEqual(JSON.parse(CORE_17_SERVE_STATUS_BEFORE_REPAIR));
+    expect(tailscaled.writes).toEqual([]);
+    expect(tailscaled.serveConfig()).toEqual(JSON.parse(CORE_6_SERVE_STATUS));
     expect(logger.info).toHaveBeenCalledTimes(1);
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('PRIVATE_VPN_USER_DISABLED=true'));
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('does not republish a renamed node that opted out, but says once why its peers fail TLS (core-17, core-14)', async () => {
+    process.env.PRIVATE_VPN_USER_DISABLED = 'true';
+    // Without the opt-out this state gets a publish, as the rename test shows. core-17 and core-14
+    // were both renamed and both opted out, so the Hub cannot repair either; it can only say so.
+    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
+    const sync = buildSync(tailscaled);
+
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+
+    expect(tailscaled.writes).toEqual([]);
+    expect(tailscaled.serveConfig()).toEqual(JSON.parse(CORE_17_SERVE_STATUS_BEFORE_REPAIR));
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('only bench-1.capybara-ulmer.ts.net'));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('sudo tailscale serve --bg --yes --https=443 http://localhost:5002'));
+
+    // The operator publishes by hand, as on core-17; a later loss of the entry must warn again.
+    tailscaled.run(HUB_PUBLISH);
+    await sync.syncTailscaleExposurePublic();
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    tailscaled.reset();
+    await sync.syncTailscaleExposurePublic();
+    expect(logger.warn).toHaveBeenCalledTimes(2);
   });
 
   it('logs the operator refusal once with the command that fixes it, instead of the CLI error every five minutes', async () => {
@@ -213,5 +245,52 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     await sync.syncTailscaleExposurePublic();
 
     expect(logger.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a refused leftover-listener removal once when the Hub itself is already published', async () => {
+    // The Hub entry needs no write, so the only write in the pass is the cleanup; before, that
+    // refusal was logged by the cleanup on every pass even though the publish path went quiet.
+    const config = JSON.parse(CORE_6_SERVE_STATUS) as ServeConfig;
+    config.Web = { ...config.Web, 'core-6.capybara-ulmer.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
+    const tailscaled = new FakeHostTailscaled('core-6.capybara-ulmer.ts.net', JSON.stringify(config));
+    tailscaled.deniesServeWrites = true;
+    const sync = buildSync(tailscaled);
+
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+
+    const unserve3001 = ['serve', '--https=3001', 'off'];
+    expect(tailscaled.writes).toEqual([unserve3001, unserve3001, unserve3001]);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('tailscale set --operator='));
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('logs a rename once while tailscaled keeps refusing the republish (core-17 before its operator was set)', async () => {
+    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', CORE_17_SERVE_STATUS_BEFORE_REPAIR);
+    tailscaled.deniesServeWrites = true;
+    const sync = buildSync(tailscaled);
+
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+
+    expect(tailscaled.writes).toEqual([HUB_PUBLISH, HUB_PUBLISH, HUB_PUBLISH]);
+    expect(logger.info.mock.calls.filter(([line]) => String(line).includes('served for bench-1'))).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a listener under the pre-rename name alone, which tailscale serve off cannot reach', async () => {
+    const config = JSON.parse(CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR) as ServeConfig;
+    config.Web = { ...config.Web, 'bench-1.capybara-ulmer.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
+    const tailscaled = new FakeHostTailscaled('core-17.capybara-ulmer.ts.net', JSON.stringify(config));
+    const sync = buildSync(tailscaled);
+
+    await sync.syncTailscaleExposurePublic();
+    await sync.syncTailscaleExposurePublic();
+
+    // Trying would fail with `handler does not exist` on every pass and change nothing.
+    expect(tailscaled.writes).toEqual([]);
   });
 });
