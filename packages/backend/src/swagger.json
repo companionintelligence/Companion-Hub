@@ -4269,6 +4269,20 @@
         ]
       }
     },
+    "/api/inference/pool/local/api/show": {
+      "post": {
+        "operationId": "localOllamaShow",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
     "/api/inference/pool/local/v1/models": {
       "get": {
         "operationId": "localOpenAiModels",

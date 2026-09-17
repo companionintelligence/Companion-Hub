@@ -489,6 +489,8 @@ export class HubPoolController {
 
   // Ollama natives with no `model` to route on (or, for /api/show, nothing worth routing): served
   // by this node's own engine so an app pointed at OLLAMA_HOST doesn't get a 404 from the proxy.
+  // /api/show falls back to a peer that holds the model when no local engine does — see
+  // `PoolProxyService.describeFromPeer`.
   @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Get('api/ps')
   async proxyOllamaPs(@Res() res: Response) {
@@ -558,6 +560,14 @@ export class HubPoolController {
   @Post('local/api/embed')
   async localOllamaEmbed(@Req() req: Request, @Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.forwardLocal(req, '/api/embed', 'POST', body, res);
+  }
+
+  // A model-metadata lookup, not a turn: the sender calls it only once none of its own engines could
+  // describe the model — in practice, one its `auto` resolved to that only this node holds.
+  @UseGuards(PoolPeerGuard)
+  @Post('local/api/show')
+  async localOllamaShow(@Req() req: Request, @Body() body: Record<string, unknown>, @Res() res: Response) {
+    await this.forwardLocal(req, '/api/show', 'POST', body, res);
   }
 
   @UseGuards(PoolPeerGuard)

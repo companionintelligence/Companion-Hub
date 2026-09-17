@@ -6,7 +6,6 @@ import type { Response } from 'express';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
-import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
@@ -25,6 +24,7 @@ import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service
 import { HubPoolRoutingLogService, type PoolRoutingOutcome, type PoolRoutingPin, type PoolRoutingUsage } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import { injectUsageOptIn, tapResponseUsageWhileStreaming } from './response-usage-tap';
+import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -354,14 +354,58 @@ export function describePinForLog(pin: HubPoolPin | null): PoolRoutingPin | null
  * has always accepted it (`InferenceRouterService.resolveAutoModel`); the pool matches engine
  * inventories verbatim and so answered it with `No pool node currently has model "auto"` — the
  * moment a single peer connected, every app on `auto` lost inference. OpenClaw's primary is
- * `ci-hub/auto`, which is how it surfaced.
+ * `ci-hub/auto`, which is how it surfaced. What it resolves to on a pooled route is decided in
+ * `pool-auto-model.ts`.
  */
 export const AUTO_MODEL = 'auto';
 
-/** What an `auto` request is told when this Hub has nothing to stand it in for. */
+/** What an `auto` request is told when nothing in the pool can stand in for it. */
 export function describeUnresolvableAuto(): string {
-  return `No default model is available to stand in for "${AUTO_MODEL}": pin or load an LLM on this Hub, or ask for a model by name.`;
+  return (
+    `No chat model on this Hub or its connected peers can stand in for "${AUTO_MODEL}": ` +
+    'load a chat model on any pool node, or ask for a model by name.'
+  );
 }
+
+/**
+ * The reason an upstream request is aborted when the app that asked for it has gone.
+ *
+ * Without it the engine never learns: the upstream `fetch` carried only the proxy's own deadline, so
+ * a client that hung up while its turn was still prefilling left the engine prefilling it for nobody.
+ * A 47k-token OpenClaw turn is ~300 s of prefill on this fleet's GPU nodes and an engine serves one
+ * sequence at a time, so one abandoned turn held the node for five minutes while the retry queued
+ * behind it. A streamed body already cancelled on its own once flowing (the pipeline tears down its
+ * source); the gap was everything before response headers, on both ends of a pool hop.
+ */
+const CLIENT_CLOSED_MESSAGE = 'The client closed the connection before the pool response finished';
+
+/**
+ * An `AbortSignal` that fires when `res`'s connection closes before the response was finished.
+ * Keyed on `writableFinished`, because a response that completed normally closes too. Attach it
+ * before the first `await` of a handler, so a client that leaves while candidates are still being
+ * ranked is not missed.
+ */
+function abortWhenClientCloses(res: Response): AbortSignal {
+  const controller = new AbortController();
+  const onClose = () => {
+    if (!res.writableFinished) controller.abort(new Error(CLIENT_CLOSED_MESSAGE));
+  };
+  if (res.destroyed) {
+    onClose();
+  } else {
+    // `once`, and never removed: every response closes exactly once, finished or not, so the
+    // listener is gone by the time the response is, and after a normal finish it is a no-op.
+    res.once('close', onClose);
+  }
+  return controller.signal;
+}
+
+/**
+ * Paths that answer ABOUT a model without running it. Their status is no evidence either way about
+ * whether the model serves, so it must not feed the serving record: a 200 from `/api/show` would
+ * otherwise clear the strikes of a model that fails every generation.
+ */
+const MODEL_METADATA_PATHS = new Set(['/api/show']);
 
 export function describeNoCandidates(model: string, pin: HubPoolPin | null): string {
   const base = `No pool node currently has model "${model}" available.`;
@@ -412,33 +456,78 @@ export class PoolProxyService {
     private readonly routingLog: HubPoolRoutingLogService,
     private readonly pressureService: HubPoolPressureService,
     // Appended last, and optional: every pool test file constructs this service positionally, and
-    // the `auto` resolution below is the only thing that needs the local model registry.
-    @Optional() @Inject(forwardRef(() => InferenceRouterService)) private readonly router?: InferenceRouterService,
+    // the `auto` resolution below is the only thing that reads the catalog. Without it `auto` still
+    // resolves, on model names alone.
     @Optional() @Inject(forwardRef(() => ModelRegistryService)) private readonly modelRegistry?: ModelRegistryService,
   ) {}
 
   /**
-   * `auto` → the engine id of this Hub's default LLM; any other model unchanged.
+   * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
    *
-   * Same answer the peerless path gives (`resolveAutoModel`: the pinned LLM, else a loaded one,
-   * else the first model a healthy backend reports), then mapped from catalog id to the id the
-   * engine inventory actually lists — `qwen3-6-27b` is what the registry pins, `qwen3.6:27b` is
-   * what every node's `modelsLoaded` says, and candidate matching reads the latter verbatim.
-   * Resolved on THIS node deliberately: "auto" means this operator's default, and a peer that
-   * also has that model is then a legitimate candidate for it like any other.
+   * Resolved against every node that could take the request — this one and each usable peer, by the
+   * same predicates candidate ranking applies — and ordered by `chooseAutoModel`: the operator's
+   * Settings → Inference model first, then tool-capable, non-tiny, highest-scoring. See
+   * `pool-auto-model.ts` for the fleet evidence behind that order. It no longer goes through
+   * `InferenceRouterService.resolveAutoModel`, which only ever saw this node, and which, wherever
+   * the operator had set nothing, took the registry's pinned or loaded model and then the first one
+   * the engine listed — beta-ms-a2's newest pull, `deepseek-r1:8b`.
    */
   async resolveModelAlias(model: string): Promise<string | undefined> {
     if (model !== AUTO_MODEL) {
       return model;
     }
-    if (!this.router) {
-      return undefined;
+    const [local, peers] = await Promise.all([this.localServableInventory(), this.usablePeers()]);
+    const inventories: NodeModelInventory[] = [local, ...peers.map((peer) => this.peerServableInventory(peer))];
+    const choice = chooseAutoModel(collectPoolModelOffers(inventories), {
+      preferred: this.preferredChatModel(),
+      catalog: this.modelRegistry?.getCatalog() ?? [],
+    });
+    if (choice) {
+      this.logger.debug(`[PoolProxy] "${AUTO_MODEL}" resolved to "${choice.model}" (${choice.reason})`);
     }
-    const resolved = await this.router.resolveAutoModel();
-    if (!resolved) {
-      return undefined;
+    return choice?.model;
+  }
+
+  /** Settings → Inference, as an engine id. A catalog id maps through its row, an engine id stands as itself. */
+  private preferredChatModel(): AutoModelPreference | null {
+    const preferredId = this.configuration.getInferencePreferences()?.preferredModel;
+    if (!preferredId) {
+      return null;
     }
-    return this.modelRegistry?.getTrackedModel(resolved)?.backendModelId ?? resolved;
+    const curated = this.modelRegistry?.getCuratedModel(preferredId);
+    return curated ? { engineId: curated.backendModelId, backend: curated.backend } : { engineId: preferredId };
+  }
+
+  /**
+   * This node's models as {@link localCandidates} would offer them: healthy, running backends only,
+   * minus anything a backend has withheld. The two must agree, or `auto` could resolve to a model
+   * that then has no local candidate.
+   */
+  private async localServableInventory(): Promise<NodeModelInventory> {
+    const backends = await Promise.all(
+      this.backends.entries().map(async ([type, backend]) => {
+        try {
+          const health = await backend.healthCheck();
+          if (!health.running || !health.healthy) return null;
+          return { type, models: health.modelsLoaded.filter((id) => !inventoryListsModel(health.unservableModels, id)) };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return { local: true, backends: backends.filter((entry): entry is NonNullable<typeof entry> => entry !== null) };
+  }
+
+  /** A peer's models as {@link peerCandidates} would offer them: a snapshot that exists, a peer accepting work, healthy backends. */
+  private peerServableInventory(peer: HubPoolPeer): NodeModelInventory {
+    const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
+    if (!capabilities || capabilities.acceptingWork === false) {
+      return { local: false, backends: [] };
+    }
+    return {
+      local: false,
+      backends: capabilities.backends.filter((backend) => backend.healthy).map((backend) => ({ type: backend.type, models: backend.modelsLoaded })),
+    };
   }
 
   /** Read per request, not cached: a settings PATCH must change routing on the next request, not on the next restart. */
@@ -529,6 +618,7 @@ export class PoolProxyService {
   async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
     const { path, method, res } = params;
     const startedAt = Date.now();
+    const clientClosed = abortWhenClientCloses(res);
     const model = await this.resolveModelAlias(params.model);
     if (!model) {
       this.routingLog.record({
@@ -616,7 +706,7 @@ export class PoolProxyService {
       }
       this.loadService.acquire(key);
       try {
-        const upstream = await this.forward(candidate, path, method, body, model);
+        const upstream = await this.forward(candidate, path, method, body, model, clientClosed);
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status);
@@ -644,6 +734,12 @@ export class PoolProxyService {
         await this.streamResponse(upstream, res, (usage) => this.routingLog.attachUsage(row, usage));
         return;
       } catch (error) {
+        if (clientClosed.aborted) {
+          // Not a candidate failure, and never a reason to try the next one: nobody is left to read
+          // the answer, and placing the turn again would cost a second engine the same prefill.
+          this.noteClientClosed(row, committed, index, startedAt, nodeLabel);
+          return;
+        }
         lastError = error;
         failedOverFrom.push(nodeLabel);
         this.logger.warn(
@@ -675,6 +771,36 @@ export class PoolProxyService {
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
     this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
+  }
+
+  /**
+   * Close out a routed request whose client left. Before headers the row is still pending and is
+   * settled as failed with no status — nothing was served — and it is logged, because a client giving
+   * up on a turn that had not started answering is the one symptom of a queue too slow for its callers.
+   * After headers the row already says served, which it was, and a stopped generation is routine.
+   */
+  private noteClientClosed(
+    row: ReturnType<HubPoolRoutingLogService['open']>,
+    committed: boolean,
+    index: number,
+    startedAt: number,
+    nodeLabel: string,
+  ): void {
+    if (committed) {
+      this.logger.debug(`[PoolProxy] client closed a streaming response from ${nodeLabel}; upstream request aborted`);
+      return;
+    }
+    const waitedMs = Date.now() - startedAt;
+    this.routingLog.settle(row, {
+      node: null,
+      peerId: null,
+      backend: null,
+      attempt: index + 1,
+      outcome: 'failed',
+      status: null,
+      durationMs: waitedMs,
+    });
+    this.logger.log(`[PoolProxy] client closed the request after ${waitedMs}ms while ${nodeLabel} had not answered; upstream request aborted`);
   }
 
   /**
@@ -773,12 +899,15 @@ export class PoolProxyService {
     // exactly as its own apps' does, and a node busy serving the pool must not report itself idle
     // to the very peers deciding whether to send it more.
     const startedAt = Date.now();
+    // The sending node aborting its own fetch closes this response, and this is the node whose engine
+    // is doing the prefill — so the close has to be carried one hop further, to the engine.
+    const senderClosed = abortWhenClientCloses(res);
     this.loadService.acquire(LOCAL_CANDIDATE_KEY);
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
     let recorded = false;
     try {
-      const upstream = await this.callBackend(backend, path, method, body);
+      const upstream = await this.callBackend(backend, path, method, body, senderClosed);
       // Logged from the receiving side too, so an operator can answer "which of my peers is
       // spending my GPU time" — the sender's own log only covers what it sent.
       this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt);
@@ -786,11 +915,17 @@ export class PoolProxyService {
       // A peer's forward is the only evidence an inbound-only node ever gets that one of its own
       // models cannot run: nothing here goes through `proxyRequest`, so without this the node
       // earns no strikes, withholds nothing, and keeps advertising the dead model to its peers.
-      this.noteLocalServingOutcome(backend, model, upstream.status);
+      this.noteLocalServingOutcome(backend, MODEL_METADATA_PATHS.has(path) ? undefined : model, upstream.status);
       await this.pipeResponse(upstream, res);
     } catch (error) {
       if (!recorded) {
         this.recordInbound(backend, path, fromPeerFqdn, null, startedAt);
+      }
+      if (senderClosed.aborted) {
+        // Nobody to answer: rethrowing would only have Nest log a routine hang-up as a server error
+        // and try to write a 500 to a closed socket.
+        this.logger.debug(`[PoolProxy] ${fromPeerFqdn ?? 'a peer'} closed its forward of ${path}; local engine request aborted`);
+        return;
       }
       throw error;
     } finally {
@@ -859,10 +994,12 @@ export class PoolProxyService {
    * Cross-node merging of the listing endpoints is a known gap; see docs/hub-pool.md.
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
+    const clientClosed = abortWhenClientCloses(res);
     // Ollama's `/api/show` names the model in `name` (older clients) or `model`, and an app whose
     // chat model is the `auto` alias asks about `auto` here before its first chat — OpenClaw's
     // provider does exactly that, and read the engine's 404 as "model not found" without ever
-    // sending the chat. The alias means this node's default, so it resolves here the same way.
+    // sending the chat. It resolves here exactly as the chat will, so the model described is the
+    // model that runs; when that model lives only on a peer, the peer describes it (below).
     const resolvedBody = await this.resolveLocalOnlyAlias(body);
     if (resolvedBody === null) {
       this.respondUncommitted(res, 502, { error: describeUnresolvableAuto() });
@@ -871,7 +1008,7 @@ export class PoolProxyService {
     let committed = false;
     for (const type of INFERENCE_BACKEND_TYPES) {
       try {
-        const upstream = await this.callBackend(type, path, method, resolvedBody);
+        const upstream = await this.callBackend(type, path, method, resolvedBody, clientClosed);
         if (!upstream.ok) {
           this.logger.debug(`[PoolProxy] ${path} via local ${type} answered ${upstream.status}; trying the next backend`);
           continue;
@@ -882,11 +1019,14 @@ export class PoolProxyService {
         return;
       } catch (error) {
         this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
-        if (committed) {
+        if (committed || clientClosed.aborted) {
           res.destroy();
           return;
         }
       }
+    }
+    if (MODEL_METADATA_PATHS.has(path) && (await this.describeFromPeer(path, resolvedBody, res, clientClosed))) {
+      return;
     }
     // `/api/version` and `/api/tags` are how an Ollama-native caller (e.g. ci-hermes with
     // CI_HERMES_OLLAMA_NATIVE=1) decides whether this proxy speaks Ollama's native protocol at
@@ -902,6 +1042,56 @@ export class PoolProxyService {
       );
     }
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
+  }
+
+  /**
+   * Answer a model-metadata request (`/api/show`) from a peer that holds the model, once no local
+   * backend could. `true` when a response was committed.
+   *
+   * Needed because `auto` now resolves pool-wide: on a node with no local copy of the chosen model
+   * the local engines can only 404, and OpenClaw reads that 404 as "model not found" and never sends
+   * the chat that would have been served. Not routed through {@link proxyRequest}, deliberately —
+   * a metadata lookup is not a turn, and it must not open a routing-log row, count as queue depth,
+   * or feed the model's serving record. A peer on a build without `local/api/show` answers 404,
+   * which moves on to the next peer and, with none left, to the same 502 as before.
+   */
+  private async describeFromPeer(path: string, body: unknown, res: Response, clientClosed: AbortSignal): Promise<boolean> {
+    const model = isRecord(body)
+      ? [body.model, body.name].find((value): value is string => typeof value === 'string' && value.length > 0)
+      : undefined;
+    if (!model) {
+      return false;
+    }
+    const { candidates } = await this.rankCandidates(model);
+    for (const candidate of candidates) {
+      if (clientClosed.aborted) {
+        break;
+      }
+      if (candidate.peerId === null) {
+        continue;
+      }
+      let committed = false;
+      try {
+        const upstream = await this.forward(candidate, path, 'POST', body, model, clientClosed);
+        if (!upstream.ok) {
+          this.logger.debug(`[PoolProxy] ${path} for "${model}" via ${candidate.nodeFqdn} answered ${upstream.status}; trying the next peer`);
+          continue;
+        }
+        this.commitResponse(upstream, res, servedByHeaders(candidate, model));
+        committed = true;
+        await this.streamResponse(upstream, res);
+        return true;
+      } catch (error) {
+        this.logger.debug(
+          `[PoolProxy] ${path} for "${model}" via ${candidate.nodeFqdn} failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (committed) {
+          res.destroy();
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /** `null` when the body asks for `auto` and nothing can stand in for it; otherwise the body to forward. */
@@ -1042,7 +1232,13 @@ export class PoolProxyService {
     });
   }
 
-  private async callBackend(backend: InferenceBackendType, path: string, method: string, body: unknown): Promise<globalThis.Response> {
+  private async callBackend(
+    backend: InferenceBackendType,
+    path: string,
+    method: string,
+    body: unknown,
+    clientClosed?: AbortSignal,
+  ): Promise<globalThis.Response> {
     const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
@@ -1056,12 +1252,20 @@ export class PoolProxyService {
       },
       isStreamingRequest(body),
       payload?.length ?? 0,
+      clientClosed,
     );
   }
 
-  private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown, model: string): Promise<globalThis.Response> {
+  private async forward(
+    candidate: PoolCandidate,
+    path: string,
+    method: string,
+    body: unknown,
+    model: string,
+    clientClosed?: AbortSignal,
+  ): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
-      return this.callBackend(candidate.backend, path, method, body);
+      return this.callBackend(candidate.backend, path, method, body, clientClosed);
     }
 
     const peer = await this.peerService.getPeerById(candidate.peerId);
@@ -1094,6 +1298,7 @@ export class PoolProxyService {
       },
       isStreamingRequest(body),
       peerPayload?.length ?? 0,
+      clientClosed,
     );
   }
 
@@ -1104,8 +1309,18 @@ export class PoolProxyService {
    * the timer is cleared before the body flows — a long generation is never cut off mid-stream.
    * Non-streamed: headers arrive only when the completion is finished, so the wait we are timing IS
    * the generation, and the budget has to be sized for one. See COMPLETION_TIMEOUT_MS.
+   *
+   * `clientClosed` is combined with the deadline rather than checked around it, because the signal
+   * given to `fetch` also governs the response body: after headers the deadline timer is cleared, but
+   * a client that leaves mid-stream still aborts the upstream connection. See CLIENT_CLOSED_MESSAGE.
    */
-  private async fetchWithConnectTimeout(url: string, init: RequestInit, streaming = false, bodyBytes = 0): Promise<globalThis.Response> {
+  private async fetchWithConnectTimeout(
+    url: string,
+    init: RequestInit,
+    streaming = false,
+    bodyBytes = 0,
+    clientClosed?: AbortSignal,
+  ): Promise<globalThis.Response> {
     const controller = new AbortController();
     // A streamed request's first byte waits on the prompt being read, so its budget grows with the
     // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
@@ -1117,7 +1332,8 @@ export class PoolProxyService {
     try {
       const dispatcher = poolFetchDispatcher();
       // `dispatcher` is a Node fetch extension, not part of the DOM RequestInit type.
-      const response = await fetch(url, { ...init, signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) } as RequestInit);
+      const signal = clientClosed ? AbortSignal.any([controller.signal, clientClosed]) : controller.signal;
+      const response = await fetch(url, { ...init, signal, ...(dispatcher ? { dispatcher } : {}) } as RequestInit);
       return response;
     } finally {
       clearTimeout(timer);

@@ -33,8 +33,8 @@ import {
   describeUnresolvableAuto,
   servedByHeaders,
 } from '../hub-pool-proxy.service';
-import type { InferenceRouterService } from '@/modules/inference/inference-router.service';
-import type { ModelRegistryService } from '@/modules/inference/model-registry.service';
+import { ModelRegistryService } from '@/modules/inference/model-registry.service';
+import type { LoggerService } from '@/core/logger/logger.service';
 import type { PoolPeerCapabilities } from '../hub-pool.types';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
@@ -1198,6 +1198,26 @@ describe('PoolProxyService', () => {
       expect(ollama.noteServingSuccess).toHaveBeenCalledWith(MODEL);
     });
 
+    // A peer now asks this node to describe a model its `auto` resolved to (`local/api/show`). The
+    // engine answers that from the manifest without loading anything, so a 200 proves nothing about
+    // serving — and counting it would clear the strikes of the model that fails every generation.
+    it('does not let a peer-forwarded /api/show clear a withheld model', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ details: {} }), { status: 200 }));
+
+      await service.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/api/show',
+        'POST',
+        { model: MODEL },
+        createMockResponse(),
+        'peer.example.ts.net',
+        MODEL,
+      );
+
+      expect(ollama.noteServingSuccess).not.toHaveBeenCalled();
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+    });
+
     it('still forwards when the peer sends no model header', async () => {
       vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
 
@@ -1441,6 +1461,8 @@ describe('PoolProxyService', () => {
     it('records a peer forward once even when the client dies mid-stream', async () => {
       vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
+      // Resolves rather than rejects: the peer that sent the work is gone, so there is nobody to
+      // answer, and a rethrow would only have Nest log a routine hang-up as a server error.
       await expect(
         service.forwardToLocalBackendAndRespond(
           'ollama',
@@ -1450,7 +1472,7 @@ describe('PoolProxyService', () => {
           createMockResponse({ writeFails: true }),
           'peer-hub.tailxyz.ts.net',
         ),
-      ).rejects.toThrow();
+      ).resolves.toBeUndefined();
 
       // The backend answered; a stream that then dies is the same routing decision, not a second one.
       expect(routingLog.list()).toHaveLength(1);
@@ -1724,40 +1746,6 @@ describe('PoolProxyService', () => {
       warnSpy.mockRestore();
     });
 
-    // OpenClaw's Ollama provider asks `/api/show` about its chat model before the first chat, and on
-    // `auto` read the engine's 404 as "model not found" — the chat was never sent (beta-max, 2026-09-15).
-    it('resolves the auto alias in an /api/show body, under either field name Ollama accepts', async () => {
-      const router = mock<InferenceRouterService>();
-      const modelRegistry = mock<ModelRegistryService>();
-      router.resolveAutoModel.mockResolvedValue('qwen3-6-27b');
-      modelRegistry.getTrackedModel.mockReturnValue({
-        catalogId: 'qwen3-6-27b',
-        backendModelId: 'qwen3.6:27b',
-        backend: 'ollama',
-        state: 'pinned',
-      } as never);
-      const withRegistry = new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
-        peerService,
-        tailscaleService,
-        loadService,
-        configuration,
-        routingLog,
-        pressureService,
-        router,
-        modelRegistry,
-      );
-      const fetchMock = vi.mocked(global.fetch);
-      fetchMock.mockResolvedValue(new Response(JSON.stringify({ details: {} }), { status: 200 }));
-
-      const res = createMockResponse();
-      await withRegistry.proxyLocalOnlyRequest('/api/show', 'POST', { name: AUTO_MODEL, model: AUTO_MODEL, verbose: true }, res);
-
-      const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-      expect(JSON.parse(init.body as string)).toEqual({ name: 'qwen3.6:27b', model: 'qwen3.6:27b', verbose: true });
-      expect(res.status).toHaveBeenCalledWith(200);
-    });
-
     it('answers an unresolvable auto on /api/show with the actionable 502 and calls no engine', async () => {
       const res = createMockResponse();
       await service.proxyLocalOnlyRequest('/api/show', 'POST', { name: AUTO_MODEL }, res);
@@ -1858,19 +1846,14 @@ describe('PoolProxyService', () => {
   // The alias apps send for "this Hub's default LLM". The local router always resolved it; the
   // pool matched inventories verbatim and answered 502 — so the first connected peer took every
   // app on `auto` (OpenClaw's primary is `ci-hub/auto`) off inference. beta-max, 2026-09-15.
+  //
+  // Then it resolved on the entry node only: the probe of all 16 fleet Hubs at dac546bcf found core-4
+  // on `gemma3:1b`, beta-ms-a2 on `deepseek-r1:8b` (the newest pull, with `qwen3.6:27b` on the same
+  // disk), and a node with no local LLM answering 502 while its peers held a dozen.
   describe('the auto alias', () => {
-    const ENGINE_ID = 'qwen3.6:27b';
-    const CATALOG_ID = 'qwen3-6-27b';
-    let router: MockProxy<InferenceRouterService>;
-    let modelRegistry: MockProxy<ModelRegistryService>;
-
-    function serviceWithRegistry(): PoolProxyService {
-      router = mock<InferenceRouterService>();
-      modelRegistry = mock<ModelRegistryService>();
-      router.resolveAutoModel.mockResolvedValue(CATALOG_ID);
-      modelRegistry.getTrackedModel.mockImplementation((id) =>
-        id === CATALOG_ID ? ({ catalogId: CATALOG_ID, backendModelId: ENGINE_ID, backend: 'ollama', state: 'pinned' } as never) : undefined,
-      );
+    // The real registry over the real catalog: the ranking reads the catalog's tool flags, sizes and
+    // scores, and a mocked catalog would only prove the test's own fixture.
+    function serviceWithCatalog(): PoolProxyService {
       return new PoolProxyService(
         new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
         peerService,
@@ -1879,44 +1862,41 @@ describe('PoolProxyService', () => {
         configuration,
         routingLog,
         pressureService,
-        router,
-        modelRegistry,
+        new ModelRegistryService(mock<LoggerService>()),
       );
     }
 
-    it('resolves auto to the default LLM engine id and leaves a named model alone', async () => {
-      const withRegistry = serviceWithRegistry();
+    function localHas(...models: string[]): void {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: models });
+    }
 
-      expect(await withRegistry.resolveModelAlias(AUTO_MODEL)).toBe(ENGINE_ID);
-      expect(await withRegistry.resolveModelAlias('gemma3:1b')).toBe('gemma3:1b');
-      expect(router.resolveAutoModel).toHaveBeenCalledTimes(1);
-    });
-
-    it('falls back to the resolved id itself when the registry does not track it', async () => {
-      const withRegistry = serviceWithRegistry();
-      // `resolveAutoModel` can also answer with the first model a healthy backend reports — already an engine id.
-      router.resolveAutoModel.mockResolvedValue('gemma3:1b');
-
-      expect(await withRegistry.resolveModelAlias(AUTO_MODEL)).toBe('gemma3:1b');
-    });
-
-    it('routes an auto request as the resolved model, rewrites the body, and ranks peers that hold it', async () => {
-      const withRegistry = serviceWithRegistry();
-      // Local is busier than the peer by more than the affinity, so the peer wins — the alias must
-      // not pin the request to this node just because this node is where it was resolved.
-      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [ENGINE_ID] });
-      const peer = peerServing('peer-idle', ENGINE_ID, { inFlightRequests: 0 });
-      peerService.listConnectedPeers.mockResolvedValue([peer]);
-      peerService.getPeerById.mockResolvedValue(peer);
+    function peersAre(...peers: HubPoolPeer[]): void {
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
       peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
-      loadService.acquire(LOCAL_CANDIDATE_KEY);
-      loadService.acquire(LOCAL_CANDIDATE_KEY);
-      loadService.acquire(LOCAL_CANDIDATE_KEY);
+    }
+
+    function preferModel(preferredModel: string): void {
+      configuration.getInferencePreferences.mockReturnValue({ preferredModel } as ReturnType<ConfigurationService['getInferencePreferences']>);
+    }
+
+    it('leaves a named model alone without sweeping the pool for it', async () => {
+      const withCatalog = serviceWithCatalog();
+
+      expect(await withCatalog.resolveModelAlias('gemma3:1b')).toBe('gemma3:1b');
+      expect(ollama.healthCheck).not.toHaveBeenCalled();
+      expect(peerService.listConnectedPeers).not.toHaveBeenCalled();
+    });
+
+    it('serves auto from a peer when this node has no chat model of its own, instead of the 502 it used to give', async () => {
+      const withCatalog = serviceWithCatalog();
+      localHas('nomic-embed-text:latest');
+      peersAre(peerServing('peer-idle', 'qwen3.6:27b', { inFlightRequests: 0 }));
       const fetchMock = vi.mocked(global.fetch);
       fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
       const res = createMockResponse();
 
-      await withRegistry.proxyRequest({
+      await withCatalog.proxyRequest({
         path: '/api/chat',
         method: 'POST',
         body: { model: AUTO_MODEL, messages: [{ role: 'user', content: 'hi' }] },
@@ -1929,17 +1909,52 @@ describe('PoolProxyService', () => {
       const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
       expect(url).toContain('peer-idle');
       // The engine never sees the literal word.
-      expect(JSON.parse(String(init.body))).toEqual({ model: ENGINE_ID, messages: [{ role: 'user', content: 'hi' }] });
-      expect((init.headers as Record<string, string>)[POOL_MODEL_HEADER]).toBe(ENGINE_ID);
-      expect(routingLog.list()[0]).toMatchObject({ model: ENGINE_ID, node: 'peer-idle.tailxyz.ts.net', outcome: 'served' });
+      expect(JSON.parse(String(init.body))).toEqual({ model: 'qwen3.6:27b', messages: [{ role: 'user', content: 'hi' }] });
+      expect((init.headers as Record<string, string>)[POOL_MODEL_HEADER]).toBe('qwen3.6:27b');
+      expect(routingLog.list()[0]).toMatchObject({ model: 'qwen3.6:27b', node: 'peer-idle.tailxyz.ts.net', outcome: 'served' });
     });
 
-    it('answers an unresolvable auto with the actionable 502, not "no node has model auto"', async () => {
-      const withRegistry = serviceWithRegistry();
-      router.resolveAutoModel.mockResolvedValue(undefined);
+    it('passes over a tool-less model and a tiny one on this node for a capable model on a peer', async () => {
+      const withCatalog = serviceWithCatalog();
+      // core-4's own disk, read 2026-09-17, where `auto` ran `gemma3:1b` — a model with no tool calling.
+      localHas('qwen3-coder:30b', 'nomic-embed-text:cpu', 'gemma3:1b-cpu', 'gemma3:1b', 'nomic-embed-text:latest');
+      peersAre(peerServing('peer-idle', 'gemma4:e2b', { inFlightRequests: 0 }));
+
+      expect(await withCatalog.resolveModelAlias(AUTO_MODEL)).toBe('qwen3-coder:30b');
+
+      // And with the capable model on the peer instead, the pool still finds it.
+      localHas('nomic-embed-text:cpu', 'gemma3:1b-cpu', 'gemma3:1b', 'gemma4:e2b', 'nomic-embed-text:latest');
+      peersAre(peerServing('peer-idle', 'qwen3-coder:30b', { inFlightRequests: 0 }));
+
+      expect(await withCatalog.resolveModelAlias(AUTO_MODEL)).toBe('qwen3-coder:30b');
+    });
+
+    it("stands auto in with the operator's Settings → Inference model over a better-ranked one, even when only a peer has it", async () => {
+      const withCatalog = serviceWithCatalog();
+      localHas('qwen3.6:27b');
+      peersAre(peerServing('peer-idle', 'gemma4:e2b', { inFlightRequests: 0 }));
+      // A catalog id, as Settings stores it; the inventories list the engine id.
+      preferModel('gemma4-e2b');
+
+      expect(await withCatalog.resolveModelAlias(AUTO_MODEL)).toBe('gemma4:e2b');
+    });
+
+    it('ranks instead when the preferred model is nowhere in the pool', async () => {
+      const withCatalog = serviceWithCatalog();
+      localHas('gemma3:1b', 'qwen3.6:27b');
+      preferModel('qwen3-8-27b');
+
+      expect(await withCatalog.resolveModelAlias(AUTO_MODEL)).toBe('qwen3.6:27b');
+    });
+
+    it('never stands auto in with an embedding model — not when it is all the pool has, not when it is the preference', async () => {
+      const withCatalog = serviceWithCatalog();
+      localHas('nomic-embed-text:latest');
+      peersAre(peerServing('peer-idle', 'mxbai-embed-large:latest', { inFlightRequests: 0 }));
+      preferModel('nomic-embed-text');
       const res = createMockResponse();
 
-      await withRegistry.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: AUTO_MODEL }, model: AUTO_MODEL, res });
+      await withCatalog.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: AUTO_MODEL }, model: AUTO_MODEL, res });
 
       expect(res.status).toHaveBeenCalledWith(502);
       expect(res.json).toHaveBeenCalledWith({ error: describeUnresolvableAuto() });
@@ -1947,13 +1962,147 @@ describe('PoolProxyService', () => {
       expect(routingLog.list()[0]).toMatchObject({ model: AUTO_MODEL, outcome: 'failed', candidates: 0 });
     });
 
-    it('without a router (the positional test shape) auto is simply unresolvable', async () => {
+    it('only counts models candidate ranking would route to: not a withheld local model, a peer refusing work, or a peer backend that is down', async () => {
+      const withCatalog = serviceWithCatalog();
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['qwen3.6:27b', 'gemma3:1b'],
+        unservableModels: ['qwen3.6:27b'],
+      });
+      const refusing = peerServing('peer-refusing', 'qwen3-coder:30b', { inFlightRequests: 0 });
+      (refusing.lastCapabilities as unknown as PoolPeerCapabilities).acceptingWork = false;
+      const engineDown = peerServing('peer-engine-down', 'gpt-oss:20b', { inFlightRequests: 0 });
+      for (const backend of (engineDown.lastCapabilities as unknown as PoolPeerCapabilities).backends) backend.healthy = false;
+      peersAre(refusing, engineDown);
+
+      // Anything else would resolve `auto` to a model that then has no candidate at all.
+      expect(await withCatalog.resolveModelAlias(AUTO_MODEL)).toBe('gemma3:1b');
+    });
+
+    it('still resolves on model names alone without the registry (the positional test shape)', async () => {
+      localHas('nomic-embed-text:latest', 'qwen2.5:0.5b', 'my-custom:latest');
+
+      // No catalog: the embedding is recognised by name, and the 0.5 B tag ranks below a model of unknown size.
+      expect(await service.resolveModelAlias(AUTO_MODEL)).toBe('my-custom:latest');
+    });
+
+    it('answers an unresolvable auto with the actionable 502, not "no node has model auto"', async () => {
+      const withCatalog = serviceWithCatalog();
       const res = createMockResponse();
 
-      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: AUTO_MODEL }, model: AUTO_MODEL, res });
+      await withCatalog.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: AUTO_MODEL }, model: AUTO_MODEL, res });
 
       expect(res.status).toHaveBeenCalledWith(502);
       expect(res.json).toHaveBeenCalledWith({ error: describeUnresolvableAuto() });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    // OpenClaw's Ollama provider asks `/api/show` about its chat model before the first chat, and
+    // reads a 404 as "model not found" — the chat is never sent (beta-max, 2026-09-15).
+    describe('on /api/show', () => {
+      it('resolves auto to the model the chat will run, under either field name Ollama accepts', async () => {
+        const withCatalog = serviceWithCatalog();
+        localHas('gemma3:1b', 'qwen3.6:27b');
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValue(new Response(JSON.stringify({ details: {} }), { status: 200 }));
+        const res = createMockResponse();
+
+        await withCatalog.proxyLocalOnlyRequest('/api/show', 'POST', { name: AUTO_MODEL, model: AUTO_MODEL, verbose: true }, res);
+
+        const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe('http://local-ollama:11434/api/show');
+        expect(JSON.parse(init.body as string)).toEqual({ name: 'qwen3.6:27b', model: 'qwen3.6:27b', verbose: true });
+        expect(res.status).toHaveBeenCalledWith(200);
+      });
+
+      it('asks the peer holding the resolved model to describe it when no local engine can', async () => {
+        const withCatalog = serviceWithCatalog();
+        localHas('nomic-embed-text:latest');
+        peersAre(peerServing('peer-idle', 'qwen3.6:27b', { inFlightRequests: 0 }));
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async (url) =>
+          String(url).includes('peer-idle')
+            ? new Response(JSON.stringify({ details: { parameter_size: '27B' } }), { status: 200 })
+            : new Response('model not found', { status: 404 }),
+        );
+        const res = createMockResponse();
+
+        await withCatalog.proxyLocalOnlyRequest('/api/show', 'POST', { model: AUTO_MODEL }, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        const peerCall = fetchMock.mock.calls.find(([url]) => String(url).includes('peer-idle')) as [string, RequestInit];
+        expect(peerCall[0]).toBe('https://peer-idle.tailxyz.ts.net/api/inference/pool/local/api/show');
+        expect(JSON.parse(peerCall[1].body as string)).toEqual({ model: 'qwen3.6:27b' });
+        expect(headersSetOn(res)[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe('peer-idle.tailxyz.ts.net');
+        // A metadata lookup is not a turn: no routing-log row, and no queue depth left behind.
+        expect(routingLog.list()).toHaveLength(0);
+        expect(loadService.get('peer-idle')).toBe(0);
+      });
+
+      it('gives the same 502 as before when every peer holding the model 404s, as a build without local/api/show does', async () => {
+        const withCatalog = serviceWithCatalog();
+        localHas('nomic-embed-text:latest');
+        peersAre(peerServing('peer-old', 'qwen3.6:27b', { inFlightRequests: 0 }));
+        vi.mocked(global.fetch).mockResolvedValue(new Response('Cannot POST /api/inference/pool/local/api/show', { status: 404 }));
+        const res = createMockResponse();
+
+        await withCatalog.proxyLocalOnlyRequest('/api/show', 'POST', { model: AUTO_MODEL }, res);
+
+        expect(res.status).toHaveBeenCalledWith(502);
+        expect(res.json).toHaveBeenCalledWith({ error: 'No local backend able to serve /api/show' });
+      });
+    });
+  });
+
+  // The socket-level half of these lives in hub-pool-proxy-client-abort.test.ts; these cover the
+  // routing decisions around a hang-up, which a real socket cannot make deterministic.
+  describe('a client that hangs up', () => {
+    const MODEL = 'llama3.2:3b';
+
+    /** Behaves like real `fetch` about aborts: rejects with the signal's reason, before or while waiting. */
+    function fetchThatWaitsForever(signals: AbortSignal[]): void {
+      vi.mocked(global.fetch).mockImplementation((_url, init) => {
+        const signal = init?.signal as AbortSignal;
+        signals.push(signal);
+        if (signal.aborted) return Promise.reject(signal.reason);
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+      });
+    }
+
+    it('aborts a peer forward still waiting for headers, and places the turn on no other candidate', async () => {
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 0 }), peerServing('peer-b', MODEL, { inFlightRequests: 0 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      res.destroy();
+      await inFlight;
+
+      expect(signals[0]?.aborted).toBe(true);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', status: null, failedOverFrom: [] });
+      expect(loadService.get('peer-a')).toBe(0);
+    });
+
+    it('sends the upstream an already-aborted request when the client left while candidates were still being ranked', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      vllm.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+      res.destroy();
+
+      await service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      // Real `fetch` rejects an aborted signal before a byte leaves; and with two candidates, one attempt.
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(true);
     });
   });
 });

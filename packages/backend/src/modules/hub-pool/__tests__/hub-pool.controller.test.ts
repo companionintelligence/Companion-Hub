@@ -353,6 +353,29 @@ describe('HubPoolController', () => {
       );
     });
 
+    // A sender whose `auto` resolved to a model only this node holds asks this node to describe it;
+    // without the route, OpenClaw on that sender reads the 404 as "model not found" and sends no chat.
+    it('describes a model for a peer through the same guarded forward as a chat', async () => {
+      const res = mockResponse();
+      const peer = { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' };
+
+      await controller.localOllamaShow(
+        peerRequest(peer, { 'x-hub-pool-backend': 'ollama', 'x-hub-pool-model': 'qwen3.6:27b' }),
+        { model: 'qwen3.6:27b' },
+        res,
+      );
+
+      expect(proxyService.forwardToLocalBackendAndRespond).toHaveBeenCalledWith(
+        'ollama',
+        '/api/show',
+        'POST',
+        { model: 'qwen3.6:27b' },
+        res,
+        'hub-b.example-tailnet.ts.net',
+        'qwen3.6:27b',
+      );
+    });
+
     it('refuses a pending peer with 403 without touching a backend', async () => {
       const res = mockResponse();
 
