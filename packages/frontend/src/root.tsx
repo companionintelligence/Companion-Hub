@@ -28,6 +28,7 @@ import {
 } from '@/lib/mobile-connection';
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
+import { installScrollbarHover } from '@/lib/scrollbar-hover';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
@@ -496,6 +497,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (isMobileClient()) setMobileUi(true);
   }, []);
+
+  useEffect(() => installScrollbarHover(), []);
 
   useEffect(() => {
     installMobileLoadWatchdog();

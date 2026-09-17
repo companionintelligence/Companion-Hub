@@ -14,7 +14,8 @@ import { AppLifecycleService } from './app-lifecycle.service';
  * `PATCH /api/user-settings` restarted none, so the same preference change had a different effect
  * depending on which screen saved it. Both now call {@link AiAppInferenceRefreshService.requestRefresh}.
  * The two pool switches are here because they change routing and the pool's inventory; the other
- * pool knobs (affinity, pressure weight, pins) only reorder candidates per request.
+ * pool knobs (affinity, pressure weight, pins, and the per-node prompt ceiling added by #1480) only
+ * reorder candidates per request, so they change nothing an app holds in its env.
  */
 export const INFERENCE_ENV_SETTING_KEYS = [
   'inferenceBackend',

@@ -29,3 +29,12 @@ export const HUB_QUEUE_ARGUMENTS: Record<string, number | string> = {
   // failure) instead of dropping messages or letting the queue grow.
   'x-overflow': 'reject-publish',
 };
+
+/**
+ * `errorCode` on a failed publish that never reached a consumer: the readiness
+ * gate refused it, or no channel could be opened to send it. The caller knows
+ * no command ran, so it must not record the outcome of one. On core-4
+ * (2026-09-17) a refused restart marked an app `stopped` while both of its
+ * containers kept running.
+ */
+export const QUEUE_UNAVAILABLE_CODE = 'queue_unavailable';

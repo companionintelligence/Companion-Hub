@@ -4,12 +4,18 @@ import * as cron from 'node-cron';
 import type { ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type Consumer, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
-import { HUB_QUEUE_ARGUMENTS } from './queue.constants';
+import { HUB_QUEUE_ARGUMENTS, QUEUE_UNAVAILABLE_CODE } from './queue.constants';
 import type { EventPublisher } from './event.publisher';
 import type { QueueConnectionState } from './queue.factory';
 
 export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; message: string }>> {
   private static readonly TRANSIENT_QUEUE_ERROR = /channel creation failed; connection is closing|connection is closing|socket closed/i;
+  // Connection.acquire() raises both of these before the RPC client writes a
+  // frame, so that send never reached a consumer. RPCClient retries up to three
+  // times on its own; an earlier try could only have been delivered if it then
+  // lost its reply channel mid-command, which needs the connection to drop while
+  // the command runs.
+  private static readonly NOT_DISPATCHED_QUEUE_ERROR = /channel creation failed|channel aquisition timed out/i;
   private cronTasks: ScheduledTask[] = [];
   private consumerCallback?: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>;
   private activeConsumer?: Consumer;
@@ -116,7 +122,15 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
     }
   }
 
-  async publish(event: z.input<T>): Promise<{ success: boolean; message: string } | z.infer<R>> {
+  /**
+   * Why a publish would be refused right now, or undefined when the queue can take
+   * one. Lets a caller refuse a command before it records any state for it.
+   */
+  public unavailableReason(): string | undefined {
+    return this.isConnectionReady() ? undefined : this.unavailableResult().message;
+  }
+
+  async publish(event: z.input<T>): Promise<{ success: boolean; message: string; errorCode?: string } | z.infer<R>> {
     if (!this.isConnectionReady()) {
       const result = this.unavailableResult();
       this.logger.warn(result.message);
@@ -198,26 +212,26 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
     return err instanceof Error ? err.message : String(err);
   }
 
-  private toFailureResult(err: unknown): { success: false; message: string } {
+  private toFailureResult(err: unknown): { success: false; message: string; errorCode?: string } {
     if (err instanceof AMQPConnectionError) {
       this.logger.error('Connection to the queue was lost. Try restarting your instance before retrying.');
     }
 
-    if (err instanceof AMQPError) {
-      if (err.code === 'RPC_TIMEOUT') {
-        this.logger.error('The queue timed out while processing the request. Try restarting your instance before retrying.');
-      }
-      return { success: false, message: err.message };
+    if (err instanceof AMQPError && err.code === 'RPC_TIMEOUT') {
+      this.logger.error('The queue timed out while processing the request. Try restarting your instance before retrying.');
     }
 
-    return { success: false, message: this.getErrorMessage(err) };
+    const message = this.getErrorMessage(err);
+    return Queue.NOT_DISPATCHED_QUEUE_ERROR.test(message)
+      ? { success: false, message, errorCode: QUEUE_UNAVAILABLE_CODE }
+      : { success: false, message };
   }
 
-  private unavailableResult(): { success: false; message: string } {
+  private unavailableResult(): { success: false; message: string; errorCode: typeof QUEUE_UNAVAILABLE_CODE } {
     const { status, lastError } = this.getConnectionState();
     const message = `Queue '${this.queueName}' is unavailable while RabbitMQ is ${status}.${lastError ? ` Last error: ${lastError}` : ''}`;
 
-    return { success: false, message };
+    return { success: false, message, errorCode: QUEUE_UNAVAILABLE_CODE };
   }
 
   public stopAllCronTasks() {

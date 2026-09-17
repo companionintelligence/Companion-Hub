@@ -28,6 +28,8 @@ import { LifecycleJobService } from './lifecycle-job.service';
 import { InferenceModule } from '../inference/inference.module';
 import { AiAppInferenceRefreshService } from './ai-app-inference-refresh.service';
 import { INFERENCE_ENV_REFRESHER } from '@/common/helpers/inference-env-refresh';
+import { DeviceKeyRefreshService } from './device-key-refresh.service';
+import { PairingAppRestoreService } from './pairing-app-restore.service';
 
 @Module({
   imports: [
@@ -63,6 +65,8 @@ import { INFERENCE_ENV_REFRESHER } from '@/common/helpers/inference-env-refresh'
     AiAppInferenceRefreshService,
     // Resolved lazily by the pool settings route; see INFERENCE_ENV_REFRESHER.
     { provide: INFERENCE_ENV_REFRESHER, useExisting: AiAppInferenceRefreshService },
+    DeviceKeyRefreshService,
+    PairingAppRestoreService,
   ],
   controllers: [AppLifecycleController],
   exports: [
