@@ -11,6 +11,55 @@ list_home_dirs() {
   getent passwd | awk -F: '($3 == 0 || $3 >= 1000) && $6 ~ /^\// { print $6 }' | awk '!seen[$0]++'
 }
 
+# BEGIN hub tunnel folder cleanup (identical in every Linux uninstall script)
+# The desktop keeps its Cloudflare tunnel token in a folder named `tunnel` beside its
+# data folder (compose mounts ${ROOT_FOLDER_HOST}/../tunnel), not inside it, so removing
+# the data folder leaves the token behind and a reinstall reconnects the old tunnel
+# before it is paired. `tunnel` is a generic name another program could also use, so
+# only what the Hub writes there is removed, and the folder only once it is empty.
+
+# True when the file decodes as a cloudflared tunnel token: base64 of a JSON object
+# holding the account tag (a), tunnel id (t) and tunnel secret (s).
+is_cloudflared_tunnel_token() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  tunnel_size="$(wc -c <"$1" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$tunnel_size" ] && [ "$tunnel_size" -gt 0 ] && [ "$tunnel_size" -le 4096 ] || return 1
+  tunnel_encoded="$(tr -d '[:space:]' <"$1")"
+  case $((${#tunnel_encoded} % 4)) in
+    2) tunnel_encoded="$tunnel_encoded==" ;;
+    3) tunnel_encoded="$tunnel_encoded=" ;;
+  esac
+  tunnel_decoded="$(printf '%s' "$tunnel_encoded" | base64 -d 2>/dev/null | tr -d '[:space:][:cntrl:]')"
+  case "$tunnel_decoded" in '{'*'}') ;; *) return 1 ;; esac
+  for tunnel_key in a t s; do
+    case "$tunnel_decoded" in *"\"$tunnel_key\":"*) ;; *) return 1 ;; esac
+  done
+  return 0
+}
+
+cleanup_hub_tunnel_dir() {
+  tunnel_dir="$1"
+  # Runs as root over every home: never follow a symlinked folder.
+  [ -d "$tunnel_dir" ] && [ ! -L "$tunnel_dir" ] || return 0
+
+  if is_cloudflared_tunnel_token "$tunnel_dir/token"; then
+    rm -f "$tunnel_dir/token" >/dev/null 2>&1 || true
+  fi
+  # Marker files the backend writes beside the token: {"tunnelId": ..., "writtenAt"|"foundAt": ...}.
+  for tunnel_marker in registration.json leftover.json; do
+    if [ -f "$tunnel_dir/$tunnel_marker" ] && [ ! -L "$tunnel_dir/$tunnel_marker" ] &&
+      grep -q '"tunnelId"' "$tunnel_dir/$tunnel_marker" 2>/dev/null; then
+      rm -f "$tunnel_dir/$tunnel_marker" >/dev/null 2>&1 || true
+    fi
+  done
+  # Written by the desktop when the user clears the token from the tray.
+  [ -d "$tunnel_dir/.user-cleared-token" ] || rm -f "$tunnel_dir/.user-cleared-token" >/dev/null 2>&1 || true
+  # The backend creates certs/ empty; anything inside it belongs to something else.
+  rmdir "$tunnel_dir/certs" >/dev/null 2>&1 || true
+  rmdir "$tunnel_dir" >/dev/null 2>&1 || true
+}
+# END hub tunnel folder cleanup
+
 cleanup_user_home() {
   home_dir="$1"
   [ -d "$home_dir" ] || return 0
@@ -24,6 +73,8 @@ cleanup_user_home() {
     rm -rf "$xdg_config_home/$name" >/dev/null 2>&1 || true
     rm -rf "$xdg_cache_home/$name" >/dev/null 2>&1 || true
   done
+
+  cleanup_hub_tunnel_dir "$xdg_data_home/tunnel"
 }
 
 # Echo the unique image IDs used by a compose project: the images its containers

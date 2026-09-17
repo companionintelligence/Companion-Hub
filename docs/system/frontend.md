@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-17 (startup, stopped and couldn't-start screens match the desktop bootstrap page)
+> **Last updated:** 2026-09-17 (dashboard scroll: new pages open at the top, back/forward restore)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -20,6 +20,27 @@ packages/frontend/
   src/api-client/       Generated OpenAPI client + TanStack Query hooks
   routes/               React Router route definitions
 ```
+
+## Dashboard scroll
+
+Authenticated pages never scroll the window. `<main>` starts below the fixed header (a margin, not padding, so the header never covers its scrollbar), and its page wrapper is `flex-1 min-h-0`, so a page gets exactly the height below the header and banners. Keep the `min-h-0`: without it the wrapper grows to fit its content, every page's own scroller stops scrolling, and `<main>` scrolls everything instead, including the store sidebar.
+
+Page scrollbars sit at the window's right edge, as in Portal, while content stays in a centred column. `<main>` spans the window and its `dashboard-column` utility (`src/styles/globals.css`) pads the content into the column that `container mx-auto px-2 sm:px-4` used to make. `--page-gutter` is the distance from the window edge to that column.
+
+- A page that has its own scroller (the store pane, Home, Settings, the custom app pages, port expose) marks it `data-page-scroller="<name>"` and makes it `relative`. Without `relative`, absolutely positioned descendants such as Radix's hidden form inputs are placed against `<main>`, overflow it, and make it scroll as well.
+- The same scroller takes `page-scroller-edge-<n>`, which stretches it over the gutter to the window edge and pads its content back into the column; `<n>` is its own end padding in spacing units. No element between it and `<main>` may clip overflow (`overflow-hidden` and the like): the scrollbar would be laid out at the window edge but not drawn. `src/components/layouts/dashboard/page-scrollers.test.ts` checks both.
+- A page without its own scroller (app details under `/apps`, Resource Monitor) scrolls `<main>`.
+- The store sidebar's category list scrolls on its own, with a visible scrollbar, when the window is too short for it.
+
+`usePageScrollRestoration` (`src/lib/hooks/use-page-scroll-restoration.ts`) handles `<main>` and the marked scrollers of the page on screen. The page wrapper carries `data-page-key`, and the hook ignores a page that is still animating out. React Router's `<ScrollRestoration />` only tracks the window, and `<main>` and the store pane outlive their child routes.
+
+- A PUSH or REPLACE that changes the path or query opens at the top.
+- Back/forward returns each scroller to where that entry left it, retrying briefly while the page is still loading.
+- A same-URL REPLACE (pages syncing their query) leaves the scroll alone, and the entry keeps its saved offsets under its new key.
+
+Offsets are in memory, so a reload starts at the top.
+
+Scrollbars use the tokens package's `::-webkit-scrollbar` styling: an `--accent` thumb on a `--muted` track, with no arrow buttons. `src/styles/globals.css` resets the tokens' `scrollbar-width` / `scrollbar-color` where the webkit pseudo-elements exist. Otherwise Chromium draws a thin native scrollbar with arrows, and WebKitGTK (the Linux desktop app) draws a GTK overlay scrollbar. `src/lib/scrollbar-hover.ts` marks the scroller whose scrollbar is under the pointer (`data-scrollbar-hover`), so the thumb shows faded while the pointer is anywhere on the track. The same rule sets a custom property on the element, because WebKit only repaints a custom scrollbar when the element's own style changes.
 
 ## Marketplace compatibility disclosure
 

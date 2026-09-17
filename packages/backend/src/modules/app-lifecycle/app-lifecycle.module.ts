@@ -25,6 +25,8 @@ import { AppOperationRegistry } from './app-operation-registry';
 import { AppStatusSyncService } from './app-status-sync.service';
 import { PortalModule } from '@/core/portal/portal.module';
 import { LifecycleJobService } from './lifecycle-job.service';
+import { DeviceKeyRefreshService } from './device-key-refresh.service';
+import { PairingAppRestoreService } from './pairing-app-restore.service';
 
 @Module({
   imports: [
@@ -55,6 +57,8 @@ import { LifecycleJobService } from './lifecycle-job.service';
     AppStatusSyncService,
     AppRehydrationService,
     LifecycleJobService,
+    DeviceKeyRefreshService,
+    PairingAppRestoreService,
   ],
   controllers: [AppLifecycleController],
   exports: [

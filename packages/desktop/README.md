@@ -195,7 +195,7 @@ On Windows, both packaged installers run the same cleanup before removing the ap
 - **NSIS `-setup.exe`** — `src-tauri/windows/installer-hooks.nsh` (`NSIS_HOOK_PREUNINSTALL`, wired via `bundle.windows.nsis.installerHooks`), run before `$INSTDIR` is removed.
 - **WiX `.msi`** — `src-tauri/windows/cleanup-on-uninstall.wxs` (a custom action wired via `bundle.windows.wix.fragmentPaths` + `componentGroupRefs`), sequenced `Before="RemoveFiles"` and gated to real uninstalls via `(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)`.
 
-Either way, uninstalling the packaged build tears down Hub + marketplace-app Docker containers/volumes/images and deletes Hub state under `%APPDATA%`/`%LOCALAPPDATA%`. WinGet is covered transitively (its manifest installs one of these two).
+Either way, uninstalling the packaged build tears down Hub + marketplace-app Docker containers/volumes/images and deletes Hub state under `%APPDATA%`/`%LOCALAPPDATA%`, including the Hub's files in the `%APPDATA%\tunnel` folder beside the data folder (the Linux scripts do the same for `~/.local/share/tunnel`). The NSIS hook skips all of this when the uninstaller runs with `/UPDATE`. WinGet is covered transitively (its manifest installs one of these two).
 
 **Release builds** embed only the bootstrap splash from `packages/desktop/bootstrap/` — the full product UI is served by the Hub stack container at `http://127.0.0.1:<API_PORT>/` after startup. No frontend build is required to bundle the desktop app:
 

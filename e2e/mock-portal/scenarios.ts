@@ -71,6 +71,12 @@ const signUpWithEmail: RouteHandler = (_url, body) => {
  */
 const deviceCheckIn: RouteHandler = () => ({ body: { active: true, device_id: 'test-device' }, status: 200 });
 
+/**
+ * The apps the Portal has for this device. After pairing, the Hub holds app sync until it has read
+ * this list (`PairingAppRestoreService`); a mock device has none, so there is nothing to restore.
+ */
+const deviceApplications: RouteHandler = () => ({ body: { applications: [] }, status: 200 });
+
 /** Shared routes present in every scenario (health / registry / auth). */
 const baseRoutes: RouteMap = {
   'GET /v2/': () => ({ body: {}, status: 200 }),
@@ -78,6 +84,7 @@ const baseRoutes: RouteMap = {
   'POST /api/auth/sign-in/email': signInWithEmail,
   'POST /api/auth/sign-up/email': signUpWithEmail,
   'POST /api/devices/check-in': deviceCheckIn,
+  'GET /api/devices/applications': deviceApplications,
 };
 
 /** Registered (default) — everything works. */
