@@ -1,20 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { BadRequestException } from '@nestjs/common';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { BadRequestException, ConflictException, InternalServerErrorException } from '@nestjs/common';
 import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
-import {
-  buildStackUpdaterRunArgs,
-  forwardableEnvKeys,
-  isHubVersionTag,
-  resolveHostListenerBaseUrl,
-  shellQuote,
-  stackUpdaterContainerName,
-  SystemUpdateService,
-} from '../system-update.service';
+import { resolveHostListenerBaseUrl, SystemUpdateService } from '../system-update.service';
+import { ENV_RESTORE_VARIABLE } from '../stack-updater';
+import type { DockerContainerInspect } from '../hub-deployment';
+import { core14HybridCheckout, core4SourceCheckout, core6Appliance } from './fleet-hub-inspect.fixtures';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import axios from 'axios';
-
-/** The two files `detectHubContainer` looks for. */
-const isContainerMarker = (target: unknown) => /\/\.dockerenv$|\/run\/\.containerenv$/.test(String(target));
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
@@ -40,48 +33,113 @@ vi.mock('node:fs', () => ({
   },
 }));
 
+const RELEASE_PIN = `${HUB_STACK_IMAGE_REPO}:0.2.70`;
+const DEV_CHANNEL = `${HUB_STACK_IMAGE_REPO}:dev`;
+const PINNED_ENV = `JWT_SECRET=secret\nCI_HUB_IMAGE=${RELEASE_PIN}\nCI_HUB_VERSION=0.2.70\n`;
+
+type SpawnCall = [string, string[], { env: NodeJS.ProcessEnv }];
+
+/**
+ * The Docker CLI as the Hub container sees it: `inspect` answers with a recorded fleet container, every
+ * other command succeeds unless `failing` names it. What is under test is the service, not Docker.
+ */
+async function installDocker(container: DockerContainerInspect, options: { failing?: string; stderr?: string; repoTags?: string[] } = {}) {
+  const { spawn } = await import('node:child_process');
+  vi.mocked(spawn).mockImplementation(((_bin: string, args: string[]) => {
+    const failing = args[0] === options.failing;
+    const stdout =
+      args[0] === 'inspect'
+        ? JSON.stringify([container])
+        : args[0] === 'image'
+          ? JSON.stringify([{ RepoTags: options.repoTags ?? [container.Config?.Image] }])
+          : '';
+    return {
+      stdout: { on: vi.fn((_event: string, cb: (data: Buffer) => void) => stdout && cb(Buffer.from(stdout))) },
+      stderr: { on: vi.fn((_event: string, cb: (data: Buffer) => void) => failing && cb(Buffer.from(options.stderr ?? 'boom'))) },
+      on: vi.fn((event: string, cb: (...a: unknown[]) => void) => {
+        if (event === 'close') cb(failing ? 125 : 0);
+      }),
+      unref: vi.fn(),
+    };
+  }) as never);
+  return vi.mocked(spawn).mock.calls as unknown as SpawnCall[];
+}
+
+/** Inside the Hub container, with this env file at /data/.env and no desktop listener token. */
+function insideHubContainer(envContent: string) {
+  vi.mocked(fs.existsSync).mockImplementation((target) => {
+    const p = String(target);
+    return p === '/.dockerenv' || p === '/data/.env';
+  });
+  vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) => {
+    if (String(target) === '/data/.env') return envContent;
+    throw new Error(`unexpected read of ${String(target)}`);
+  }) as never);
+}
+
 describe('SystemUpdateService', () => {
   let service: SystemUpdateService;
-  let mockRegistryService: any;
-  let mockConfig: any;
-  let mockLogger: any;
+  let mockRegistryService: { getTagsSinceWithHubFallback: ReturnType<typeof vi.fn> };
+  let mockConfig: { getConfig: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn> };
+  let mockLogger: Record<'info' | 'debug' | 'error' | 'warn', ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fs.existsSync).mockReset().mockReturnValue(false);
+    vi.mocked(fs.readFileSync).mockReset();
     vi.mocked(axios.get).mockRejectedValue(new Error('listener down'));
     vi.mocked(axios.post).mockRejectedValue(new Error('listener down'));
-    mockLogger = {
-      info: vi.fn(),
-      debug: vi.fn(),
-      error: vi.fn(),
-      warn: vi.fn(),
-    };
+    mockLogger = { info: vi.fn(), debug: vi.fn(), error: vi.fn(), warn: vi.fn() };
+    // CI_HUB_VERSION as beta-red had it. Nothing below may read it.
     mockConfig = {
-      getConfig: vi.fn(() => ({ __prod__: false, version: '1.0.0' })),
+      getConfig: vi.fn(() => ({ __prod__: false, version: 'v0.2.22' })),
       get: vi.fn(() => ({ dataDir: '/data' })),
     };
-    mockRegistryService = {
-      getTagsSinceWithHubFallback: vi.fn(),
-    };
-    service = new SystemUpdateService(mockLogger as any, mockConfig as any, mockRegistryService as any);
+    mockRegistryService = { getTagsSinceWithHubFallback: vi.fn().mockResolvedValue([]) };
+    service = new SystemUpdateService(mockLogger as never, mockConfig as never, mockRegistryService as never);
+    vi.stubEnv('CI_HUB_VERSION', 'v0.2.22');
+    vi.stubEnv('DOCKER_CONFIG', '/data/.docker');
+    vi.stubEnv('ROOT_FOLDER_HOST', '/home/ci/.local/share/companion-hub');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   describe('checkForUpdates', () => {
-    it('should return update available when newer versions exist', async () => {
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['1.1.0']);
+    it('compares the running release pin, not CI_HUB_VERSION, against the registry', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.72-rc.1', '0.2.71']);
 
       const result = await service.checkForUpdates();
-      expect(result.updateAvailable).toBe(true);
-      expect(result.current).toBe('1.0.0');
-      expect(result.latest).toBe('1.1.0');
-      expect(mockRegistryService.getTagsSinceWithHubFallback).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, '1.0.0');
+
+      expect(mockRegistryService.getTagsSinceWithHubFallback).toHaveBeenCalledWith(HUB_STACK_REGISTRY_REPO, '0.2.70');
+      expect(result).toMatchObject({ current: '0.2.70', latest: '0.2.71', updateAvailable: true, updateBlockedReason: null });
+      expect(result.build).toMatchObject({ reference: RELEASE_PIN, version: '0.2.70', channel: 'pin' });
     });
 
-    it('should return no update when no newer versions', async () => {
-      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue([]);
+    // beta-red: CI_HUB_VERSION=v0.2.22 on a dev build newer than 0.2.71. The old check listed every
+    // release since 0.2.22 and offered to "update" it onto 0.2.71.
+    it('offers no update to a dev-channel node, whatever CI_HUB_VERSION says', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${DEV_CHANNEL}\nCI_HUB_VERSION=v0.2.22\n`);
+      await installDocker(core6Appliance(DEV_CHANNEL));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
 
       const result = await service.checkForUpdates();
+
       expect(result.updateAvailable).toBe(false);
+      expect(result.current).toBe('dev@dac546bcf');
+      expect(result.updateBlockedReason).toContain("floating 'dev' tag");
+      expect(mockRegistryService.getTagsSinceWithHubFallback).not.toHaveBeenCalled();
+    });
+
+    it('says the build is unknown outside a container instead of reporting CI_HUB_VERSION', async () => {
+      const result = await service.checkForUpdates();
+
+      expect(result).toMatchObject({ current: 'unknown', updateAvailable: false, build: null });
+      expect(result.updateBlockedReason).toContain('not running in a container');
     });
   });
 
@@ -96,176 +154,107 @@ describe('SystemUpdateService', () => {
   });
 
   describe('performUpdate', () => {
+    // core-2, core-4, core-6, core-17, beta-red and beta-max: the daily check rewrote CI_HUB_IMAGE=…:dev
+    // to …:0.2.71 and pulled each node off the channel its operator chose.
     it.each([
-      {
-        topology: 'canonical',
-        hubContainerName: 'ci-hub',
-        rabbitmqHost: 'ci-hub-queue',
-        expectedServices: ['ci-hub', 'ci-hub-queue'],
-      },
-      {
-        topology: 'legacy',
-        hubContainerName: '',
-        rabbitmqHost: 'ci-os-hub-queue',
-        expectedServices: ['ci-os-hub', 'ci-os-hub-queue'],
-      },
-    ])('should pull the pinned Hub image and recreate the $topology services', async ({ hubContainerName, rabbitmqHost, expectedServices }) => {
-      vi.useFakeTimers();
-      vi.stubEnv('ROOT_FOLDER_HOST', '/host/companion-hub');
-      vi.stubEnv('CI_HUB_IMAGE', `${HUB_STACK_IMAGE_REPO}:old`);
-      vi.stubEnv('HUB_CONTAINER_NAME', hubContainerName);
-      vi.stubEnv('RABBITMQ_HOST', rabbitmqHost);
-      // Not inside Docker: no /.dockerenv, so the recreate is spawned directly.
-      vi.mocked(fs.existsSync).mockImplementation((target) => !isContainerMarker(target));
-      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
-      vi.mocked(fs.mkdirSync).mockImplementation(() => undefined);
-      vi.mocked(fs.appendFileSync).mockImplementation(() => undefined);
-      vi.mocked(fs.openSync).mockReturnValue(3);
+      ['core-4', core4SourceCheckout()],
+      ['core-14', core14HybridCheckout()],
+      ['core-6', core6Appliance()],
+    ])('leaves %s on :dev: no env write, no pull, no recreate', async (_node, container) => {
+      insideHubContainer(`CI_HUB_IMAGE=${DEV_CHANNEL}\n`);
+      const calls = await installDocker(container);
 
-      const { spawn } = await import('node:child_process');
-      const mockProcess = {
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-        on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-          if (event === 'close') cb(0);
-          if (event === 'spawn') cb();
-        }),
-        unref: vi.fn(),
-      };
-      (spawn as any).mockReturnValue(mockProcess);
+      await expect(service.performUpdate('0.2.71')).rejects.toThrow(ConflictException);
 
-      const resultPromise = service.performUpdate('v1.1.0');
-      await vi.runAllTimersAsync();
-      const result = await resultPromise;
-
-      expect(result.success).toBe(true);
-      expect(result.stack).toBe('updating');
-      expect(result.host).toBe('unavailable');
-      expect(fs.writeFileSync).toHaveBeenCalled();
-      const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1] as string;
-      expect(written).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:1.1.0`);
-      expect(written).toContain('CI_HUB_VERSION=1.1.0');
-      expect(spawn).toHaveBeenCalledTimes(2);
-
-      const pullCall = (spawn as any).mock.calls[0];
-      expect(pullCall[0]).toBe('docker');
-      expect(pullCall[1]).toEqual(['pull', `${HUB_STACK_IMAGE_REPO}:1.1.0`]);
-      expect(pullCall[2].env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.1.0`);
-
-      const upCall = (spawn as any).mock.calls[1];
-      // The binary must be `docker` exactly once: a duplicated `docker` in argv
-      // makes the CLI reject `--env-file` and the restart never runs (the
-      // 0.2.44–0.2.46 stack-update regression).
-      expect(upCall[0]).toBe('docker');
-      expect(upCall[1][0]).toBe('compose');
-      expect(upCall[1]).not.toContain('docker');
-      expect(upCall[1]).toContain('up');
-      expect(upCall[1]).toContain('--pull');
-      expect(upCall[1]).toContain('always');
-      expect(upCall[1]).toContain('--force-recreate');
-      expect(upCall[1]).toContain('--no-deps');
-      expect(upCall[1]).toContain('--remove-orphans');
-      for (const service of expectedServices) {
-        expect(upCall[1]).toContain(service);
-      }
-      expect(upCall[1]).toContain('--project-directory');
-      expect(upCall[1]).toContain('/host/companion-hub');
-      expect(upCall[2].env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.1.0`);
-
-      vi.useRealTimers();
-      vi.unstubAllEnvs();
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+      expect(calls.map((call) => call[1][0])).toEqual(['inspect', 'image']);
+      expect(axios.post).not.toHaveBeenCalled();
     });
 
-    // The failure this guards against is on record on every appliance that ever auto-updated:
-    // `hub-stack-update.log` ends at `Container ci-hub  Recreate` and the Hub is down until an
-    // operator runs `up` by hand (fzzy 2026-09-11 and 2026-09-15, beta-max 2026-09-11). A compose
-    // client spawned inside the container it is recreating dies when compose stops that container.
-    it('runs the recreate from a separate updater container when the Hub itself is in Docker', async () => {
-      vi.useFakeTimers();
-      vi.stubEnv('ROOT_FOLDER_HOST', '/host/companion-hub');
-      vi.stubEnv('CI_HUB_IMAGE', `${HUB_STACK_IMAGE_REPO}:old`);
-      vi.stubEnv('HUB_CONTAINER_NAME', 'ci-hub');
-      vi.stubEnv('RABBITMQ_HOST', 'ci-hub-queue');
-      vi.stubEnv('DOCKER_CONFIG', '/data/.docker');
-      vi.mocked(fs.existsSync).mockImplementation(
-        (target) => isContainerMarker(target) || String(target).endsWith('.env') || String(target).endsWith('.yml'),
+    it('refuses outside a container before touching anything', async () => {
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
+
+      await expect(service.performUpdate('0.2.71')).rejects.toThrow(/not running in a container/);
+      expect(calls).toHaveLength(0);
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    // core-4: `--project-directory $ROOT_FOLDER_HOST` with ENV_FILE=.env made compose look for
+    // /home/ci/devel/CI-Hub/.internal/.env, after it had already recreated the queue.
+    it('recreates only the Hub service of a source checkout, from the files and env file compose used', async () => {
+      vi.stubEnv('ROOT_FOLDER_HOST', '/home/ci/devel/CI-Hub/.internal');
+      insideHubContainer(PINNED_ENV);
+      const calls = await installDocker(core4SourceCheckout(RELEASE_PIN));
+
+      const result = await service.performUpdate('v0.2.71');
+
+      expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'updating', host: 'unavailable' });
+      expect(calls.map((call) => call[1][0])).toEqual(['inspect', 'image', 'pull', 'rm', 'run']);
+      expect(calls[2]?.[1]).toEqual(['pull', `${HUB_STACK_IMAGE_REPO}:0.2.71`]);
+      expect(calls[3]?.[1]).toEqual(['rm', 'ci-os-hub-stack-updater']);
+
+      const written = vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1] as string;
+      expect(written).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.2.71`);
+      expect(written).toContain('CI_HUB_VERSION=0.2.71');
+      // The pull happened before the pin: a registry failure must leave the file as it was.
+      const pullOrder = vi.mocked(spawn).mock.invocationCallOrder[2];
+      expect(pullOrder).toBeDefined();
+      expect(vi.mocked(fs.writeFileSync).mock.invocationCallOrder[0]).toBeGreaterThan(pullOrder as number);
+
+      const [, runArgs, runOpts] = calls[4] as SpawnCall;
+      expect(runArgs.slice(0, 9)).toEqual([
+        'run',
+        '-d',
+        '--rm',
+        '--name',
+        'ci-os-hub-stack-updater',
+        '--network',
+        'none',
+        '--volumes-from',
+        'ci-os-hub',
+      ]);
+      expect(runArgs).toContain('type=bind,source=/home/ci/devel/CI-Hub,target=/home/ci/devel/CI-Hub,readonly');
+      // Only the restore payload rides in the helper's environment, and never as a value in argv.
+      expect(runArgs.filter((arg) => arg === '-e')).toHaveLength(1);
+      expect(runArgs[runArgs.indexOf('-e') + 1]).toBe(ENV_RESTORE_VARIABLE);
+      expect(Buffer.from(runOpts.env[ENV_RESTORE_VARIABLE] as string, 'base64').toString('utf8')).toBe(PINNED_ENV);
+      expect(runArgs.join(' ')).not.toContain('secret');
+
+      const script = runArgs.at(-1) as string;
+      expect(script).toContain("'ENV_FILE=/home/ci/devel/CI-Hub/.env.prod'");
+      expect(script).toContain("'COMPOSE_FILE_HOST=/home/ci/devel/CI-Hub/docker-compose.prod.yml'");
+      expect(script).toContain(
+        "'--project-name' 'ci-hub' '--project-directory' '/home/ci/devel/CI-Hub' '-f' '/home/ci/devel/CI-Hub/docker-compose.prod.yml' '--env-file' '/home/ci/devel/CI-Hub/.env.prod'",
       );
-      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
-
-      const { spawn } = await import('node:child_process');
-      const mockProcess = () => ({
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-        on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-          if (event === 'close') cb(0);
-          if (event === 'spawn') cb();
-        }),
-        unref: vi.fn(),
-      });
-      (spawn as any).mockImplementation(() => mockProcess());
-
-      const resultPromise = service.performUpdate('1.2.0');
-      await vi.runAllTimersAsync();
-      const result = await resultPromise;
-      expect(result.stack).toBe('updating');
-
-      // pull, rm (leftover helper), run — and never a bare `docker compose` from this process.
-      const calls = (spawn as any).mock.calls as [string, string[], { env: NodeJS.ProcessEnv; detached?: boolean }][];
-      expect(calls.map((call) => `${call[0]} ${call[1][0]}`)).toEqual(['docker pull', 'docker rm', 'docker run']);
-      expect(calls.some((call) => call[2]?.detached)).toBe(false);
-
-      const [, rmArgs] = calls[1];
-      expect(rmArgs).toEqual(['rm', 'ci-hub-stack-updater']);
-
-      const [, runArgs, runOpts] = calls[2];
-      expect(runArgs.slice(0, 5)).toEqual(['run', '-d', '--rm', '--name', 'ci-hub-stack-updater']);
-      expect(runArgs).toContain('--volumes-from');
-      expect(runArgs[runArgs.indexOf('--volumes-from') + 1]).toBe('ci-hub');
-      expect(runArgs[runArgs.indexOf('--network') + 1]).toBe('none');
-      // The helper is the image just pulled — present by construction, and it ships the docker CLI.
-      expect(runArgs[runArgs.indexOf('--entrypoint') + 2]).toBe(`${HUB_STACK_IMAGE_REPO}:1.2.0`);
-      // Values reach the helper through the CLI's environment, never argv.
-      expect(runArgs).toContain('-e');
-      expect(runArgs).not.toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:1.2.0`);
-      expect(runArgs.filter((arg) => arg === 'CI_HUB_IMAGE')).toHaveLength(1);
-      expect(runArgs.filter((arg) => arg === 'DOCKER_CONFIG')).toHaveLength(1);
-      expect(runOpts.env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.2.0`);
-
-      const script = runArgs[runArgs.length - 1];
-      expect(runArgs[runArgs.length - 2]).toBe('-c');
-      expect(script).toMatch(/^exec 'docker' 'compose' /);
-      for (const expected of ['--force-recreate', '--no-deps', '--remove-orphans', 'ci-hub', 'ci-hub-queue', '/host/companion-hub']) {
-        expect(script).toContain(`'${expected}'`);
-      }
-      expect(script).toMatch(/ >> '\/data\/logs\/hub-stack-update\.log' 2>&1$/);
-
-      vi.useRealTimers();
-      vi.unstubAllEnvs();
+      expect(script).toContain("up -d --no-deps --force-recreate --no-build 'ci-os-hub'");
+      expect(script).not.toContain('ci-os-hub-queue');
+      expect(script).not.toContain('--remove-orphans');
+      expect(script).not.toContain('.internal/.env');
+      // The env file sets no ROOT_FOLDER_HOST, so the value this container was created with is passed on.
+      expect(script).toContain("'ROOT_FOLDER_HOST=/home/ci/devel/CI-Hub/.internal'");
+      expect(script).toMatch(/^exec >> '\/data\/logs\/hub-stack-update\.log' 2>&1\nsleep 3\n/);
     });
 
-    it('records a helper that could not start instead of failing silently', async () => {
-      vi.useFakeTimers();
-      vi.stubEnv('HUB_CONTAINER_NAME', 'ci-hub');
-      vi.stubEnv('RABBITMQ_HOST', 'ci-hub-queue');
-      vi.mocked(fs.existsSync).mockImplementation((target) => isContainerMarker(target));
+    it('refuses a stack it cannot reproduce before pinning or pulling', async () => {
+      const container = core14HybridCheckout(RELEASE_PIN);
+      container.Config = {
+        ...container.Config,
+        Labels: { ...container.Config?.Labels, 'com.docker.compose.project.environment_file': '/home/ci/devel/CI-Hub/.env.dev' },
+      };
+      insideHubContainer(PINNED_ENV);
+      const calls = await installDocker(container);
 
-      const { spawn } = await import('node:child_process');
-      let runs = 0;
-      (spawn as any).mockImplementation((_bin: string, args: string[]) => {
-        const failing = args[0] === 'run' && ++runs === 1;
-        return {
-          stdout: { on: vi.fn() },
-          stderr: { on: vi.fn((_event: string, cb: (data: Buffer) => void) => failing && cb(Buffer.from('conflict: name in use'))) },
-          on: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-            if (event === 'close') cb(failing ? 125 : 0);
-          }),
-          unref: vi.fn(),
-        };
-      });
+      await expect(service.performUpdate('0.2.71')).rejects.toThrow(/--env-file \/home\/ci\/devel\/CI-Hub\/\.env\.dev/);
 
-      const resultPromise = service.performUpdate('1.2.0');
-      await vi.runAllTimersAsync();
-      await resultPromise;
+      expect(calls.map((call) => call[1][0])).toEqual(['inspect', 'image']);
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('puts the old pin back and fails the request when the helper cannot start', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN), { failing: 'run', stderr: 'conflict: name in use' });
+
+      await expect(service.performUpdate('0.2.71')).rejects.toThrow(InternalServerErrorException);
 
       expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining('ci-hub-stack-updater'), expect.any(Error));
       const appended = vi
@@ -274,9 +263,25 @@ describe('SystemUpdateService', () => {
         .join('');
       expect(appended).toContain('updater container failed to start');
       expect(appended).toContain('conflict: name in use');
+      expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toBe(PINNED_ENV);
+    });
 
-      vi.useRealTimers();
-      vi.unstubAllEnvs();
+    it('leaves the env file alone when the pull fails', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN), { failing: 'pull' });
+
+      await expect(service.performUpdate('0.2.71')).rejects.toThrow(/docker exited with code 125/);
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('updates to the newest release when no target is given', async () => {
+      insideHubContainer(PINNED_ENV);
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.73-rc.1', '0.2.72', '0.2.71']);
+
+      await service.performUpdate();
+
+      expect(calls[2]?.[1]).toEqual(['pull', `${HUB_STACK_IMAGE_REPO}:0.2.72`]);
     });
 
     it.each([
@@ -288,41 +293,51 @@ describe('SystemUpdateService', () => {
       '01.1.0',
       '',
     ])('refuses target version %j before it writes the env file or starts an update', async (targetVersion) => {
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
-      const { spawn } = await import('node:child_process');
+      insideHubContainer(PINNED_ENV);
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
 
       await expect(service.performUpdate(targetVersion)).rejects.toThrow(BadRequestException);
 
       expect(fs.writeFileSync).not.toHaveBeenCalled();
       expect(axios.get).not.toHaveBeenCalled();
       expect(axios.post).not.toHaveBeenCalled();
-      expect(spawn).not.toHaveBeenCalled();
+      expect(calls).toHaveLength(0);
     });
 
     it('skips compose recreate when the host listener accepts the update', async () => {
+      insideHubContainer(PINNED_ENV);
       vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue('listener-token\n');
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
       vi.mocked(axios.get).mockResolvedValue({ status: 200 });
       vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+      const calls = await installDocker(core6Appliance(RELEASE_PIN));
 
-      const { spawn } = await import('node:child_process');
-      const result = await service.performUpdate('1.1.0');
+      const result = await service.performUpdate('0.2.71');
 
-      expect(result).toEqual({
-        success: true,
-        message: 'Update initiated, hub will restart shortly',
-        stack: 'skipped',
-        host: 'started',
-      });
-      expect(spawn).not.toHaveBeenCalled();
+      expect(result).toEqual({ success: true, message: 'Update initiated, hub will restart shortly', stack: 'skipped', host: 'started' });
+      expect(calls.map((call) => call[1][0])).toEqual(['inspect', 'image']);
       expect(axios.post).toHaveBeenCalledWith(
         expect.stringMatching(/\/update$/),
         null,
-        expect.objectContaining({
-          headers: { Authorization: 'Bearer listener-token' },
-        }),
+        expect.objectContaining({ headers: { Authorization: 'Bearer listener-token' } }),
       );
+      expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:0.2.71`);
+    });
+
+    it('puts the pin back when the listener fails and the stack cannot be reproduced either', async () => {
+      const container = core6Appliance(RELEASE_PIN);
+      container.Config = { ...container.Config, Labels: { 'org.opencontainers.image.version': 'latest' } };
+      insideHubContainer(PINNED_ENV);
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? PINNED_ENV : 'listener-token\n') as never);
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      vi.mocked(axios.post).mockResolvedValue({ status: 500 });
+      await installDocker(container);
+
+      await expect(service.performUpdate('0.2.71')).rejects.toThrow(/no docker compose project or service label/);
+      expect(vi.mocked(fs.writeFileSync).mock.calls.at(-1)?.[1]).toBe(PINNED_ENV);
     });
 
     it('treats a probe timeout as an unavailable host listener', async () => {
@@ -335,24 +350,45 @@ describe('SystemUpdateService', () => {
     });
   });
 
-  describe('isHubVersionTag', () => {
-    it.each(['0.2.71', 'v0.2.71', 'V1.0.0', '0.2.72-rc.1', '1.0.0-beta.2'])('accepts %j', (tag) => {
-      expect(isHubVersionTag(tag)).toBe(true);
+  describe('scheduled auto-update', () => {
+    const runCheck = (s: SystemUpdateService) => (s as unknown as { autoUpdateCheck(): Promise<void> }).autoUpdateCheck();
+
+    it('does not update a node whose operator turned auto-update off', async () => {
+      insideHubContainer(PINNED_ENV);
+      vi.mocked(fs.existsSync).mockImplementation((target) => ['/.dockerenv', '/data/.env', '/data/state/settings.json'].includes(String(target)));
+      vi.mocked(fs.readFileSync).mockImplementation(((target: unknown) =>
+        String(target) === '/data/.env' ? PINNED_ENV : JSON.stringify({ autoUpdates: false })) as never);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      const perform = vi.spyOn(service, 'performUpdate');
+
+      await runCheck(service);
+
+      expect(perform).not.toHaveBeenCalled();
+      expect(mockLogger.info).toHaveBeenCalledWith(expect.stringContaining('autoUpdates is off for this node'));
     });
 
-    it.each([
-      '',
-      'latest',
-      'dev',
-      '0.2',
-      '01.2.3',
-      '0.2.71+ci.7',
-      '0.2.71-',
-      '0.2.71\n',
-      ' 0.2.71',
-      '0.2.71\nCI_HUB_CLOUD_URL_OVERRIDE=https://attacker.example',
-    ])('refuses %j', (tag) => {
-      expect(isHubVersionTag(tag)).toBe(false);
+    it('never runs an update on a dev-channel node, even with auto-update on', async () => {
+      insideHubContainer(`CI_HUB_IMAGE=${DEV_CHANNEL}\n`);
+      await installDocker(core6Appliance(DEV_CHANNEL));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      const perform = vi.spyOn(service, 'performUpdate');
+
+      await runCheck(service);
+
+      expect(perform).not.toHaveBeenCalled();
+      expect(fs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('advances a release pin when a newer release exists and auto-update is on', async () => {
+      insideHubContainer(PINNED_ENV);
+      await installDocker(core6Appliance(RELEASE_PIN));
+      mockRegistryService.getTagsSinceWithHubFallback.mockResolvedValue(['0.2.71']);
+      const perform = vi.spyOn(service, 'performUpdate').mockResolvedValue({ success: true, message: '', stack: 'updating', host: 'unavailable' });
+
+      await runCheck(service);
+
+      expect(perform).toHaveBeenCalledWith('0.2.71');
     });
   });
 
@@ -386,66 +422,6 @@ describe('SystemUpdateService', () => {
       vi.mocked(fs.existsSync).mockReturnValue(false);
 
       expect(service.getHostUpdateListenerToken()).toBeNull();
-    });
-  });
-
-  describe('stack updater container', () => {
-    it('names the helper after the Hub container, legacy topology included', () => {
-      expect(stackUpdaterContainerName({ HUB_CONTAINER_NAME: 'ci-hub' })).toBe('ci-hub-stack-updater');
-      expect(stackUpdaterContainerName({ RABBITMQ_HOST: 'ci-os-hub-queue' })).toBe('ci-os-hub-stack-updater');
-    });
-
-    it('forwards compose-relevant env and drops the process-local names', () => {
-      const keys = forwardableEnvKeys({
-        ROOT_FOLDER_HOST: '/host',
-        CI_HUB_IMAGE: 'img',
-        DOCKER_CONFIG: '/data/.docker',
-        JWT_SECRET: 's',
-        PATH: '/usr/bin',
-        HOME: '/root',
-        HOSTNAME: 'abc',
-        PWD: '/app',
-        'not a key': 'x',
-        UNSET: undefined,
-      });
-      expect(keys).toEqual(['CI_HUB_IMAGE', 'DOCKER_CONFIG', 'JWT_SECRET', 'ROOT_FOLDER_HOST']);
-    });
-
-    it('single-quotes for sh, including embedded quotes', () => {
-      expect(shellQuote('plain')).toBe("'plain'");
-      expect(shellQuote("it's")).toBe(`'it'\\''s'`);
-      expect(shellQuote('$HOME `x` "y"')).toBe(`'$HOME \`x\` "y"'`);
-    });
-
-    it('builds a detached, socket-only run that inherits the Hub mounts and appends to the update log', () => {
-      const args = buildStackUpdaterRunArgs({
-        helperName: 'ci-hub-stack-updater',
-        hubContainer: 'ci-hub',
-        image: 'ghcr.io/companionintelligence/ci-hub:1.2.0',
-        envKeys: ['CI_HUB_IMAGE', 'ROOT_FOLDER_HOST'],
-        composeArgs: ['compose', '--env-file', '/data/.env', 'up', '-d', "it's"],
-        logPath: '/data/logs/hub-stack-update.log',
-      });
-      expect(args).toEqual([
-        'run',
-        '-d',
-        '--rm',
-        '--name',
-        'ci-hub-stack-updater',
-        '--network',
-        'none',
-        '--volumes-from',
-        'ci-hub',
-        '-e',
-        'CI_HUB_IMAGE',
-        '-e',
-        'ROOT_FOLDER_HOST',
-        '--entrypoint',
-        'sh',
-        'ghcr.io/companionintelligence/ci-hub:1.2.0',
-        '-c',
-        `exec 'docker' 'compose' '--env-file' '/data/.env' 'up' '-d' 'it'\\''s' >> '/data/logs/hub-stack-update.log' 2>&1`,
-      ]);
     });
   });
 

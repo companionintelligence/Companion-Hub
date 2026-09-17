@@ -83,6 +83,10 @@ export const settingsSchema = z.object({
   defaultAppCpuLimit: optionalCpuLimitSchema,
   defaultAppMemoryLimit: optionalMemoryLimitSchema,
   autoAllocateAppResources: z.boolean().optional(),
+  // Written only by SystemUpdateService.setAutoUpdatesEnabled; declared here because every other
+  // settings write rebuilds the file from this schema and strips unknown keys. Undeclared, an operator
+  // who turned auto-update off got it back on the next inference or pool setting change.
+  autoUpdates: z.boolean().optional(),
   demoMode: z.boolean(),
   disablePasswordReset: z.boolean(),
   dnsIp: z.string().ipv4(),
@@ -272,8 +276,10 @@ const appContextSchema = z.object({
 // zone, or to the DEFAULT_POOL_* constant — rather than fail the parse and take down boot.
 // Rejecting them here means a bad value gets a 400 at the moment it is chosen instead of being
 // persisted and silently overridden on every subsequent boot.
+// `autoUpdates` has its own endpoint (POST /system/update/auto-updates); this body does not take it.
+const writableSettingsSchema = settingsSchema.omit({ autoUpdates: true });
 export class UserSettingsBody extends createZodDto(
-  settingsSchema.partial().extend({
+  writableSettingsSchema.partial().extend({
     timeZone: z
       .string()
       .trim()

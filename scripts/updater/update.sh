@@ -4,9 +4,13 @@ set -o nounset
 set -o pipefail
 
 VERSION="latest"
+# Explicit COMPOSE_FILE / COMPOSE_PROJECT win. Without them, the running Hub's own compose labels
+# decide (see "Compose identity" below), and these defaults are only the last resort.
+EXPLICIT_COMPOSE="${COMPOSE_FILE:-}${COMPOSE_PROJECT:-}"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT:-ci-hub}"
 HUB_CONTAINER="${HUB_CONTAINER_NAME:-ci-hub}"
+ENV_FILE_PATH=".env"
 HUB_PORT="${API_PORT:-5002}"
 HEALTH_TIMEOUT=120
 SKIP_BACKUP="${SKIP_BACKUP:-false}"
@@ -29,6 +33,56 @@ echo "============================================"
 echo "  Companion Hub Update — Version: ${VERSION}"
 echo "============================================"
 
+# ── Compose identity ───────────────────────────
+#
+# The layout this script used to assume (docker-compose.prod.yml, project ci-hub and .env, all in
+# the current directory) is wrong on source-checkout nodes: core-4 and core-14 run
+# docker-compose.prod.yml [+ docker-compose.dev-image.yml] with .env.prod, and core-4's service is
+# still ci-os-hub. The running container records how compose created it, so ask it. Labels written
+# by an in-container compose client name /data/... paths that do not exist here; those fall back.
+
+COMPOSE_ARGS=(--project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE")
+COMPOSE_FILES=("$COMPOSE_FILE")
+if [ -z "$EXPLICIT_COMPOSE" ]; then
+  FOUND_HUB=""
+  for name in ci-hub ci-os-hub; do
+    if [ "$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)" = "true" ]; then
+      FOUND_HUB="$name"
+      break
+    fi
+  done
+  if [ -n "$FOUND_HUB" ]; then
+    label() {
+      local value
+      value="$(docker inspect -f "{{index .Config.Labels \"$1\"}}" "$FOUND_HUB" 2>/dev/null || true)"
+      [ "$value" = "<no value>" ] && value=""
+      printf '%s' "$value"
+    }
+    LABEL_PROJECT="$(label com.docker.compose.project)"
+    LABEL_DIR="$(label com.docker.compose.project.working_dir)"
+    LABEL_ENV="$(label com.docker.compose.project.environment_file)"
+    IFS=',' read -r -a LABEL_FILES <<< "$(label com.docker.compose.project.config_files)"
+    USABLE="yes"
+    [ -n "$LABEL_PROJECT" ] && [ -d "$LABEL_DIR" ] && [ "${#LABEL_FILES[@]}" -gt 0 ] || USABLE=""
+    for file in ${LABEL_FILES[@]+"${LABEL_FILES[@]}"}; do [ -f "$file" ] || USABLE=""; done
+    if [ -n "$LABEL_ENV" ] && [[ "$LABEL_ENV" == *,* || ! -f "$LABEL_ENV" ]]; then USABLE=""; fi
+    if [ -n "$USABLE" ]; then
+      COMPOSE_PROJECT="$LABEL_PROJECT"
+      COMPOSE_FILES=("${LABEL_FILES[@]}")
+      COMPOSE_ARGS=(--project-name "$COMPOSE_PROJECT" --project-directory "$LABEL_DIR")
+      for file in "${LABEL_FILES[@]}"; do COMPOSE_ARGS+=(-f "$file"); done
+      if [ -n "$LABEL_ENV" ]; then
+        COMPOSE_ARGS+=(--env-file "$LABEL_ENV")
+        ENV_FILE_PATH="$LABEL_ENV"
+      fi
+      HUB_CONTAINER="$FOUND_HUB"
+      echo "Using the compose invocation that created ${FOUND_HUB}: ${COMPOSE_ARGS[*]}"
+    else
+      echo "WARNING: ${FOUND_HUB}'s compose labels do not name files on this host; using ${COMPOSE_FILE} in $(pwd)"
+    fi
+  fi
+fi
+
 # ── Pre-flight checks ──────────────────────────
 
 echo ""
@@ -36,14 +90,14 @@ echo "1. Pre-flight checks..."
 
 # Verify ROOT_FOLDER_HOST is set and absolute
 if [ -z "${ROOT_FOLDER_HOST:-}" ]; then
-  # Try to read from .env
-  if [ -f .env ]; then
-    ROOT_FOLDER_HOST=$(grep -E '^ROOT_FOLDER_HOST=' .env | cut -d= -f2- || true)
+  # Try to read from the env file compose uses
+  if [ -f "$ENV_FILE_PATH" ]; then
+    ROOT_FOLDER_HOST=$(grep -E '^ROOT_FOLDER_HOST=' "$ENV_FILE_PATH" | cut -d= -f2- || true)
   fi
 fi
 
 if [ -z "${ROOT_FOLDER_HOST:-}" ]; then
-  echo "ERROR: ROOT_FOLDER_HOST is not set. Set it in .env or export it."
+  echo "ERROR: ROOT_FOLDER_HOST is not set. Set it in ${ENV_FILE_PATH} or export it."
   echo "       Example: ROOT_FOLDER_HOST=/opt/companion-hub/data"
   exit 1
 fi
@@ -77,11 +131,13 @@ fi
 echo "   OK: Docker is running"
 
 # Verify compose file exists
-if [ ! -f "$COMPOSE_FILE" ]; then
-  echo "ERROR: Compose file not found: $COMPOSE_FILE"
-  exit 1
-fi
-echo "   OK: $COMPOSE_FILE"
+for file in "${COMPOSE_FILES[@]}"; do
+  if [ ! -f "$file" ]; then
+    echo "ERROR: Compose file not found: $file"
+    exit 1
+  fi
+  echo "   OK: $file"
+done
 
 # Check named volume exists (app data)
 if docker volume inspect ci_hub_app_data > /dev/null 2>&1; then
@@ -106,9 +162,9 @@ if [ "$SKIP_BACKUP" = "false" ]; then
       > "$BACKUP_DIR/database.sql" 2>/dev/null || echo "   WARNING: Database backup failed (non-fatal)"
   fi
 
-  # Backup .env
-  if [ -f .env ]; then
-    cp .env "$BACKUP_DIR/dot-env.backup"
+  # Backup the env file
+  if [ -f "$ENV_FILE_PATH" ]; then
+    cp "$ENV_FILE_PATH" "$BACKUP_DIR/dot-env.backup"
   fi
 
   echo "   Backup saved to: $BACKUP_DIR"
@@ -136,13 +192,13 @@ fi
 
 echo ""
 echo "4. Pulling new images..."
-docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" pull
+docker compose "${COMPOSE_ARGS[@]}" pull
 
 # ── Restart Hub ─────────────────────────────────
 
 echo ""
 echo "5. Restarting services..."
-docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d --remove-orphans
+docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans
 
 # ── Wait for health ─────────────────────────────
 
@@ -161,7 +217,7 @@ done
 
 if [ $ELAPSED -ge $HEALTH_TIMEOUT ]; then
   echo "   WARNING: Hub did not become healthy within ${HEALTH_TIMEOUT}s"
-  echo "   Check logs: docker compose -f $COMPOSE_FILE logs ci-hub --tail 50"
+  echo "   Check logs: docker logs ${HUB_CONTAINER} --tail 50"
   exit 1
 fi
 
