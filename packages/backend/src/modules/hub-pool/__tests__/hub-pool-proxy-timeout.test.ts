@@ -70,3 +70,52 @@ describe('describeAllCandidatesFailed recognises both deadlines', () => {
     expect(msg).not.toMatch(/deadline, not/i);
   });
 });
+
+describe('poolFetchDispatcher — undici must not cap the pool budgets at 300 s', () => {
+  // Node's fetch is undici, whose default Agent abandons a request whose headers take longer than
+  // 300 s, before any AbortController deadline set by the proxy. That silently capped the body-sized
+  // first-byte budget: a 922 s budget on a CPU-served 46k-token turn failed at 300.8 s as "fetch
+  // failed". These tests pin the three facts the fix rests on, without waiting five minutes.
+  it("finds Node's bundled Agent and builds a dispatcher from the same class", async () => {
+    const { poolFetchDispatcher, resetPoolFetchDispatcherForTests } = await import('../hub-pool-proxy.service');
+    resetPoolFetchDispatcherForTests();
+    const dispatcher = poolFetchDispatcher();
+    expect(dispatcher).not.toBeNull();
+    expect(typeof dispatcher?.dispatch).toBe('function');
+    const installed = (globalThis as unknown as Record<symbol, { constructor: unknown }>)[Symbol.for('undici.globalDispatcher.1')];
+    expect(dispatcher?.constructor).toBe(installed.constructor);
+    expect(poolFetchDispatcher()).toBe(dispatcher); // memoised: one connection pool for all forwards
+  });
+
+  it('that class honours headersTimeout — so passing 0 really removes the 300 s cap', async () => {
+    const { createServer } = await import('node:http');
+    const { poolFetchDispatcher } = await import('../hub-pool-proxy.service');
+    const server = createServer((_req, res) => setTimeout(() => res.writeHead(200).end('ok'), 1200));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    const url = `http://127.0.0.1:${port}/`;
+    try {
+      const dispatcher = poolFetchDispatcher();
+      expect(dispatcher).not.toBeNull();
+      const AgentClass = dispatcher?.constructor as new (o: { headersTimeout: number }) => object;
+      // A short header timer on the same class fails the slow server — proving the option is live,
+      // which is what makes `headersTimeout: 0` a real change rather than a no-op.
+      const short = fetch(url, { dispatcher: new AgentClass({ headersTimeout: 250 }) } as RequestInit);
+      await expect(short).rejects.toMatchObject({ cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } });
+      // The pool's dispatcher waits for the headers, however long the proxy's own budget allows.
+      const res = await fetch(url, { dispatcher: poolFetchDispatcher() } as RequestInit);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('ok');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('reports an undici header timeout as a deadline, not a dead node', async () => {
+    const { describeAllCandidatesFailed } = await import('../hub-pool-proxy.service');
+    const err = Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT', message: 'Headers Timeout Error' } });
+    const msg = describeAllCandidatesFailed('qwen3-coder:30b', 1, err);
+    expect(msg).toMatch(/deadline, not/i);
+    expect(msg).not.toMatch(/: fetch failed$/);
+  });
+});
