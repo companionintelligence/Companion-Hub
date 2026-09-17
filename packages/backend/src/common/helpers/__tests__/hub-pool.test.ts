@@ -6,8 +6,12 @@ import {
   MAX_PRESSURE_BAND,
   MIN_POOL_PRESSURE_WEIGHT,
   UNKNOWN_PRESSURE,
+  HUB_POOL_MAX_PROMPT_TOKENS_ENV_VAR,
+  MAX_POOL_MAX_PROMPT_TOKENS,
+  MIN_POOL_MAX_PROMPT_TOKENS,
   clampContainerRollup,
   clampPressureBand,
+  clampPromptCeiling,
   describeHubPoolDisabled,
   describeHubPoolInboundRefused,
   effectivePeerPressureBand,
@@ -18,6 +22,7 @@ import {
   sameModelId,
   resolveHubPoolDirections,
   resolveHubPoolEnabled,
+  resolvePoolMaxPromptTokens,
   type HubPoolDisabledBy,
 } from '../hub-pool';
 
@@ -443,5 +448,67 @@ describe('sameModelId / inventoryListsModel', () => {
     expect(inventoryListsModel(['gemma3:1b', 'nomic-embed-text:latest'], 'nomic-embed-text')).toBe(true);
     expect(inventoryListsModel(['gemma3:1b'], 'nomic-embed-text')).toBe(false);
     expect(inventoryListsModel(undefined, 'gemma3:1b')).toBe(false);
+  });
+});
+
+describe('prompt ceiling helpers', () => {
+  describe('clampPromptCeiling', () => {
+    it('believes an in-range integer, including both bounds', () => {
+      expect(clampPromptCeiling(16_000)).toBe(16_000);
+      expect(clampPromptCeiling(MIN_POOL_MAX_PROMPT_TOKENS)).toBe(MIN_POOL_MAX_PROMPT_TOKENS);
+      expect(clampPromptCeiling(MAX_POOL_MAX_PROMPT_TOKENS)).toBe(MAX_POOL_MAX_PROMPT_TOKENS);
+    });
+
+    it.each([
+      ['absent, which is every older build', undefined],
+      ['null', null],
+      ['zero', 0],
+      ['negative', -16_000],
+      ['below the floor', MIN_POOL_MAX_PROMPT_TOKENS - 1],
+      ['above the bound', MAX_POOL_MAX_PROMPT_TOKENS + 1],
+      ['fractional', 16_000.5],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['a numeric string', '16000'],
+      ['an object', { tokens: 16_000 }],
+    ])('reads %s as no ceiling, so a malformed advertisement can never exclude its node', (_label, raw) => {
+      expect(clampPromptCeiling(raw)).toBeNull();
+    });
+  });
+
+  describe('resolvePoolMaxPromptTokens', () => {
+    it('is no ceiling when neither the setting nor the env names one', () => {
+      expect(resolvePoolMaxPromptTokens(null, undefined)).toEqual({ maxPromptTokens: null, setBy: null });
+      expect(resolvePoolMaxPromptTokens(undefined, '')).toEqual({ maxPromptTokens: null, setBy: null });
+    });
+
+    it('applies the stored setting and says it came from there', () => {
+      expect(resolvePoolMaxPromptTokens(16_000, undefined)).toEqual({ maxPromptTokens: 16_000, setBy: 'setting' });
+    });
+
+    it('lets the env override win over the setting, and says so, like every other HUB_POOL_* override', () => {
+      expect(resolvePoolMaxPromptTokens(16_000, ' 8000 ')).toEqual({ maxPromptTokens: 8_000, setBy: 'env' });
+      expect(resolvePoolMaxPromptTokens(null, '8000')).toEqual({ maxPromptTokens: 8_000, setBy: 'env' });
+    });
+
+    it.each([
+      ['sixteen thousand'],
+      ['16k'],
+      ['0'],
+      ['-1'],
+      ['99999999'],
+    ])('ignores an unusable env value %s rather than excluding this node on a .env typo', (envValue) => {
+      expect(resolvePoolMaxPromptTokens(16_000, envValue)).toEqual({ maxPromptTokens: 16_000, setBy: 'setting' });
+      expect(resolvePoolMaxPromptTokens(null, envValue)).toEqual({ maxPromptTokens: null, setBy: null });
+    });
+
+    it('reads the real environment variable when no value is passed', () => {
+      vi.stubEnv(HUB_POOL_MAX_PROMPT_TOKENS_ENV_VAR, '12000');
+      try {
+        expect(resolvePoolMaxPromptTokens(null)).toEqual({ maxPromptTokens: 12_000, setBy: 'env' });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 });
