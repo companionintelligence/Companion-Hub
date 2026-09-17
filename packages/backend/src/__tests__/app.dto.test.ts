@@ -138,6 +138,22 @@ describe('parsePersistedSettings', () => {
     expect(settings).not.toHaveProperty('mcpApiKey');
   });
 
+  // Every settings write rebuilds settings.json from this parse. Before `autoUpdates` was declared, an
+  // operator who turned auto-update off got it back on the next inference or pool setting change.
+  it('keeps the auto-update switch through the parse every settings write rebuilds the file from', () => {
+    const { settings, invalidKeys } = parsePersistedSettings({ autoUpdates: false, inferenceModel: 'qwen3:8b', dnsIp: 'not-an-ip' });
+
+    expect(invalidKeys).toEqual(['dnsIp']);
+    expect(settings.autoUpdates).toBe(false);
+  });
+
+  it('leaves the auto-update switch to its own endpoint instead of the generic user settings body', () => {
+    const result = UserSettingsBody.schema.safeParse({ autoUpdates: false, themeColor: 'blue' });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).not.toHaveProperty('autoUpdates');
+  });
+
   it('reports a file whose top level is not an object rather than pretending it was empty', () => {
     for (const raw of [[], 'nonsense', 42, null]) {
       const result = parsePersistedSettings(raw);
