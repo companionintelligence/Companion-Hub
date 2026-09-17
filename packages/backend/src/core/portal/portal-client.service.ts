@@ -493,10 +493,6 @@ export class PortalClientService {
     return this.postJson('/devices/applications/registry', payload, { authenticated: true });
   }
 
-  async postDeviceDeregister(deviceId: string): Promise<unknown> {
-    return this.postJson('/devices/deregister', { device_id: deviceId }, { authenticated: true });
-  }
-
   /**
    * Verify an Ed25519-signed offline entitlement token with grace period support.
    *

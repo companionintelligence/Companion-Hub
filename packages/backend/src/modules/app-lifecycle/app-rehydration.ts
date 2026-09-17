@@ -22,8 +22,8 @@ export interface LocalAppDataEntry {
 
 export type RehydrationAction = 'install' | 'start' | 'skip_running' | 'skip_busy' | 'skip_unresolved';
 
-/** App statuses with an operation still under way. Rehydrate leaves these apps to it. */
-const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set([
+/** App statuses with an operation still under way. Rehydrate leaves these apps to it, and a restore after pairing waits for them. */
+export const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set([
   'installing',
   'uninstalling',
   'stopping',

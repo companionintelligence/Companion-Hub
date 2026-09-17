@@ -11,14 +11,24 @@ import { shouldShowCoreServerBanner } from '@/components/core-server-banner/core
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
 import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
 import { shouldSkipIosPageSlide } from '@/lib/ios-webview-guards';
+import { usePageScrollRestoration } from '@/lib/hooks/use-page-scroll-restoration';
+
+// Routes that use a layout with a persistent sidebar should share a single
+// animation key so the outer wrapper (sidebar + header) doesn't re-mount
+// and swipe during navigation within the same section.
+const getAnimationKey = (path: string) => {
+  if (path.startsWith('/store')) return '/store';
+  if (path.startsWith('/resource-monitor')) return '/resource-monitor';
+  return path;
+};
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={false} allowAutoThemes={false} />
       <div
-        className="flex h-full flex-1 flex-col overflow-y-auto px-2 no-scrollbar container mx-auto sm:px-4"
-        style={{ paddingTop: 'calc(var(--header-offset) + 0.5rem)' }}
+        className="dashboard-column flex h-full flex-1 flex-col overflow-y-auto"
+        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem' }}
       >
         <div className="rounded-lg border bg-card text-card-foreground shadow p-6">{children}</div>
       </div>
@@ -30,6 +40,9 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const { user, userSettings, isLoading: isAppLoading, loadFailed } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
+  const mainRef = useRef<HTMLElement>(null);
+  const pageKey = getAnimationKey(location.pathname);
+  usePageScrollRestoration(mainRef, pageKey);
   const { isLoggedIn } = useUserContext();
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
@@ -72,15 +85,6 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     return 1;
   };
 
-  // Routes that use a layout with a persistent sidebar should share a single
-  // animation key so the outer wrapper (sidebar + header) doesn't re-mount
-  // and swipe during navigation within the same section.
-  const getAnimationKey = (path: string) => {
-    if (path.startsWith('/store')) return '/store';
-    if (path.startsWith('/resource-monitor')) return '/resource-monitor';
-    return path;
-  };
-
   const currentDepth = getDepth(location.pathname);
   const prevDepth = getDepth(prevPathRef.current);
   let direction = 0;
@@ -109,21 +113,23 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
       <main
-        className="relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto px-2 no-scrollbar container mx-auto sm:px-4"
-        style={{ paddingTop: 'calc(var(--header-offset) + 0.5rem)' }}
+        ref={mainRef}
+        className="dashboard-column relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto"
+        style={{ marginTop: 'var(--header-offset)', paddingTop: '0.5rem' }}
       >
         <div className="mb-1 flex shrink-0 flex-col gap-2 empty:hidden">
           {showCoreServerBanner && <CoreServerBanner onDismiss={dismiss} />}
           <TunnelStatusBanner />
         </div>
         {shouldSkipIosPageSlide() ? (
-          <div className="w-full flex-1" data-testid="dashboard-page">
+          <div className="w-full min-h-0 flex-1" data-page-key={pageKey} data-testid="dashboard-page">
             {children}
           </div>
         ) : (
           <AnimatePresence mode="popLayout" custom={direction}>
             <motion.div
-              key={getAnimationKey(location.pathname)}
+              key={pageKey}
+              data-page-key={pageKey}
               custom={direction}
               variants={variants}
               initial="enter"
@@ -133,7 +139,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
                 x: { type: 'spring', stiffness: 300, damping: 30 },
                 opacity: { duration: 0.2 },
               }}
-              className="w-full flex-1"
+              className="w-full min-h-0 flex-1"
             >
               {children}
             </motion.div>

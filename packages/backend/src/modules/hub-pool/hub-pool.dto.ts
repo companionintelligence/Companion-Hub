@@ -2,9 +2,11 @@ import { createZodDto } from '@/common/zod-dto';
 import {
   MAX_POOL_HEALTH_POLL_SECONDS,
   MAX_POOL_LOCAL_AFFINITY,
+  MAX_POOL_MAX_PROMPT_TOKENS,
   MAX_POOL_PRESSURE_WEIGHT,
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
+  MIN_POOL_MAX_PROMPT_TOKENS,
   MIN_POOL_PRESSURE_WEIGHT,
   MAX_PINNED_MODEL_LENGTH,
   POOL_PIN_MODES,
@@ -179,6 +181,16 @@ const hubPoolPreferencesSchema = z.object({
    * `required`, which would make every PATCH have to send it. The default is applied in the service.
    */
   poolPressureWeight: z.number().int().min(MIN_POOL_PRESSURE_WEIGHT).max(MAX_POOL_PRESSURE_WEIGHT).optional(),
+  /**
+   * The largest estimated prompt, in tokens, this node should serve for the pool while another
+   * candidate can take it. `null` clears the ceiling; omitting the field leaves it as it is, like
+   * every other field here. `HUB_POOL_MAX_PROMPT_TOKENS` in the environment still overrides it.
+   *
+   * `.nullable()` because "no ceiling" is a value an operator sets, not a default to fall back to —
+   * there is no number that means it. The floor is `MIN_POOL_MAX_PROMPT_TOKENS`, which says why a
+   * tiny ceiling is refused rather than stored.
+   */
+  poolMaxPromptTokens: z.number().int().min(MIN_POOL_MAX_PROMPT_TOKENS).max(MAX_POOL_MAX_PROMPT_TOKENS).nullable().optional(),
 });
 export class UpdateHubPoolPreferencesBody extends createZodDto(hubPoolPreferencesSchema) {}
 
