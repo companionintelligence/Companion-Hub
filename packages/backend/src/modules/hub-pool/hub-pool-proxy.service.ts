@@ -91,6 +91,59 @@ export function firstByteBudgetMs(bodyBytes: number): number {
  */
 const COMPLETION_TIMEOUT_MS = Math.max(CONNECT_TIMEOUT_MS, Number(process.env.HUB_POOL_COMPLETION_TIMEOUT_MS) || 300_000);
 
+/**
+ * The dispatcher every pool forward is sent through: Node's OWN bundled undici `Agent`, with its
+ * header timer switched off so the budgets above are the only header deadlines.
+ *
+ * Without it, every budget in this file above five minutes was fiction. `fetch` in Node is undici,
+ * and undici's default Agent gives up waiting for response headers after 300 s (`headersTimeout`) —
+ * independently of, and before, any AbortController deadline set here. Measured on the fleet,
+ * 2026-09-17: a 184 KB streamed turn (~46k tokens) placed on fzzy, which serves qwen3-coder:30b on
+ * CPU at ~123 tok/s prefill, carried a body-sized budget of 922 s from `firstByteBudgetMs` and failed
+ * at 300.8 s with "fetch failed" (cause UND_ERR_HEADERS_TIMEOUT) — the incident #1463 exists to
+ * prevent, still happening one layer down, and reported as a transport failure rather than a
+ * deadline. The same turn on a GPU node passed in 268 s, under the cap, which is why it hid.
+ * `HUB_POOL_FIRST_BYTE_TIMEOUT_MS` and `HUB_POOL_COMPLETION_TIMEOUT_MS` above 300 s were silently
+ * capped the same way.
+ *
+ * Why the bundled class rather than the `undici` package: a userland undici's Agent is not
+ * guaranteed to interoperate with the fetch Node ships (different majors disagree on the dispatcher
+ * protocol), and adding it means a second HTTP stack in the image. Node's fetch installs its Agent as
+ * the global dispatcher under the well-known cross-version symbol `undici.globalDispatcher.1` the
+ * first time `fetch` is touched; its constructor is exactly the class `fetch` expects.
+ *
+ * `bodyTimeout` keeps undici's default: it is the idle gap between body chunks, which a healthy
+ * stream never approaches, and it is the only guard against an upstream that stalls mid-stream.
+ *
+ * Returns null — and forwards fall back to the default dispatcher, with the 300 s cap — when the
+ * global dispatcher is not a plain Agent (e.g. an operator installed a ProxyAgent), rather than
+ * replacing someone's proxy configuration with a direct connection.
+ */
+type PoolDispatcher = { dispatch: (...args: never[]) => unknown };
+let poolDispatcherMemo: PoolDispatcher | null | undefined;
+export function poolFetchDispatcher(): PoolDispatcher | null {
+  if (poolDispatcherMemo !== undefined) return poolDispatcherMemo;
+  poolDispatcherMemo = null;
+  try {
+    void globalThis.fetch; // loading Node's fetch installs its global dispatcher
+    const installed = (globalThis as unknown as Record<symbol, unknown>)[Symbol.for('undici.globalDispatcher.1')] as
+      | { constructor?: new (options: { headersTimeout: number }) => PoolDispatcher }
+      | undefined;
+    const AgentClass = installed?.constructor;
+    if (typeof AgentClass === 'function' && AgentClass.name === 'Agent') {
+      poolDispatcherMemo = new AgentClass({ headersTimeout: 0 });
+    }
+  } catch {
+    poolDispatcherMemo = null;
+  }
+  return poolDispatcherMemo;
+}
+
+/** Test seam: forget the memoised dispatcher. */
+export function resetPoolFetchDispatcherForTests(): void {
+  poolDispatcherMemo = undefined;
+}
+
 /** Does this body ask for a streamed response? Decides which of the two budgets applies. */
 export function isStreamingRequest(body: unknown): boolean {
   return !!(body && typeof body === 'object' && (body as { stream?: unknown }).stream === true);
@@ -132,7 +185,12 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
   // streamed request, and the completion budget on a non-streamed one. Matching only the first would
   // send every long-generation abort down the generic branch and print a raw abort message instead
   // of the sentence that tells an operator this is a deadline rather than a dead node.
-  const timedOut = /No (?:response headers|completion) within \d+ms/.test(message) || /abort/i.test(message);
+  // A header timeout from undici itself (UND_ERR_HEADERS_TIMEOUT) is a deadline too — it is what a
+  // forward hits if `poolFetchDispatcher` could not be installed, and it surfaces as "fetch failed"
+  // with the code only on `cause`.
+  const cause = lastError instanceof Error ? (lastError as Error & { cause?: { code?: unknown } }).cause : undefined;
+  const undiciHeaderTimeout = cause?.code === 'UND_ERR_HEADERS_TIMEOUT' || /UND_ERR_HEADERS_TIMEOUT|Headers Timeout Error/.test(message);
+  const timedOut = undiciHeaderTimeout || /No (?:response headers|completion) within \d+ms/.test(message) || /abort/i.test(message);
   const plural = candidates === 1 ? 'candidate' : 'candidates';
   if (timedOut) {
     return (
@@ -1057,7 +1115,9 @@ export class PoolProxyService {
       budget,
     );
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal });
+      const dispatcher = poolFetchDispatcher();
+      // `dispatcher` is a Node fetch extension, not part of the DOM RequestInit type.
+      const response = await fetch(url, { ...init, signal: controller.signal, ...(dispatcher ? { dispatcher } : {}) } as RequestInit);
       return response;
     } finally {
       clearTimeout(timer);
