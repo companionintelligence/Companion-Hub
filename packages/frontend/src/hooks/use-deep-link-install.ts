@@ -74,7 +74,8 @@ export function useDeepLinkInstall() {
             // The shell parks every link for a page that is not listening yet, as well as emitting it.
             // This page was listening and has opened the app, so empty that slot, or the next page load
             // takes the same link and opens the install dialog again. A link held during setup stays
-            // parked, so the page load that ends setup still opens it.
+            // parked, as before, until the next page load opens it: Portal sign-in ends with one, while
+            // password sign-in and onboarding navigate in-app.
             void takePendingInstallIntentFromDesktop();
           }
         });

@@ -173,8 +173,8 @@ describe('useDeepLinkInstall — mid-setup links are held, not dropped', () => {
     expect(nav.navigate).not.toHaveBeenCalled();
   });
 
-  it('leaves a link held during setup parked for the page load that ends setup', async () => {
-    // Signing in reloads the page; that load takes the parked link and opens the app.
+  it('leaves a link held during setup parked for the next page load', async () => {
+    // The next page load, such as the one that ends Portal sign-in, takes the parked link and opens the app.
     setPath('/login');
     renderHook(() => useDeepLinkInstall());
     await waitFor(() => expect(ev.handler).toBeTruthy());
