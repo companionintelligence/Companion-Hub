@@ -291,6 +291,24 @@ describe('QueueFactory', () => {
     expect(lateClose).toHaveBeenCalled();
   });
 
+  // Channel.close() waits for the broker's CloseOk. A broker that opens the channel
+  // and then stops answering held the probe, and with it the health endpoint and
+  // every reconnect attempt, until heartbeats noticed about two minutes later.
+  it('probeConnection answers once the channel opens, even if closing that channel never finishes', async () => {
+    const factory = new QueueFactory(logger, config);
+    const connection = connectionInstances[0];
+    await connection.emit('connection');
+
+    const neverClosing = vi.fn(() => new Promise<void>(() => undefined));
+    connection.acquire.mockResolvedValueOnce({ close: neverClosing });
+
+    const probe = factory.probeConnection();
+
+    expect(await settlesWithin(probe, 1_000)).toBe(true);
+    await expect(probe).resolves.toBe(true);
+    expect(neverClosing).toHaveBeenCalledTimes(1);
+  });
+
   it('watchdog forces a reconnect when the probe fails despite a ready flag', async () => {
     const factory = new QueueFactory(logger, config);
     const firstConnection = connectionInstances[0];

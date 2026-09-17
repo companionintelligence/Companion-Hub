@@ -2699,9 +2699,17 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * before; any other failure keeps the status that failure implies. The readiness
    * gate cannot catch every such failure: a connection flagged ready whose
    * channels are dead (core-14, 2026-09-17) fails the publish with no channel opened.
+   *
+   * Only `running` and `stopped` are restored. A transitional status belongs to the
+   * operation this command just replaced in the registry, whose completion is now
+   * dropped as superseded, so restoring `backing_up` (a backup resuming its app) or
+   * `restarting` (a public-route repair) would leave a spinner nothing settles. The
+   * status sync skips transitional rows for its grace period, and it runs on the
+   * queue that just failed.
    */
   private statusAfterFailedCommand(errorCode: string | undefined, statusBefore: AppStatus, statusOnFailure: AppStatus): AppStatus {
-    return errorCode === QUEUE_UNAVAILABLE_CODE ? statusBefore : statusOnFailure;
+    const settled = statusBefore === 'running' || statusBefore === 'stopped';
+    return errorCode === QUEUE_UNAVAILABLE_CODE && settled ? statusBefore : statusOnFailure;
   }
 
   private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {

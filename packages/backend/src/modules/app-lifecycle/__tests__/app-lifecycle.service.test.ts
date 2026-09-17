@@ -5402,6 +5402,33 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    // A backup resumes its app with a start while the row says `backing_up`, and the
+    // public-route repair restarts apps that are still `starting`. The new command
+    // replaces that operation in the registry, so its completion is dropped as
+    // superseded and nothing would ever move the row off a restored spinner.
+    it.each([
+      { command: 'start', statusBefore: 'backing_up', inFlight: 'backup' },
+      { command: 'restart', statusBefore: 'starting', inFlight: 'start' },
+    ] as const)('a $command the queue never took does not put back $statusBefore, which the $inFlight it replaced can no longer settle', async ({
+      command,
+      statusBefore,
+      inFlight,
+    }) => {
+      givenApp(statusBefore);
+      operationRegistry.register(appUrn, { requestId: 'req-in-flight', command: inFlight, tier: 'safe' });
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'channel creation failed; connection is closing',
+        errorCode: QUEUE_UNAVAILABLE_CODE,
+      } as any);
+
+      await run(command);
+      await flushMicrotasks();
+
+      expect(operationRegistry.claimCompletion(appUrn, 'req-in-flight')).toBe(false);
+      expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
     it.each([
       { waitFor: 'startAppAndWait', event: 'start_error' },
       { waitFor: 'restartAppAndWait', event: 'restart_error' },
@@ -5427,6 +5454,22 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expect(appsRepository.updateAppById).toHaveBeenLastCalledWith(7, { status: 'stopped' });
+    });
+
+    // core-4 (2026-09-17): the Hub booted at 08:42:36 before RabbitMQ answered, and the boot-time
+    // start of ci-memory, ci-openclaw, and ci-import-tools failed with "unavailable while RabbitMQ
+    // is connecting". All three were marked stopped while running until the status sync put them
+    // back at 08:50:00.
+    it('the boot-time start of running apps leaves them running while the queue is still connecting', async () => {
+      appsRepository.getApps.mockResolvedValue([{ id: 7, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running' }] as any);
+      givenApp('running');
+      appEventsQueue.unavailableReason.mockReturnValue("Queue 'app-events-queue' is unavailable while RabbitMQ is connecting.");
+
+      await service.restartRunningApps();
+
+      await vi.waitFor(() => expect(logger.error).toHaveBeenCalledWith('Failed to start app 7', expect.any(TranslatableError)));
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
     });
 
     it('refreshing inference apps logs a refused restart for that app instead of rejecting the whole refresh', async () => {
