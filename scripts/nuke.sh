@@ -24,8 +24,12 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_FOLDER="$(dirname "$SCRIPT_DIR")"
+# Without the helper there is no app teardown, so stop before deleting anything.
 # shellcheck source-path=SCRIPTDIR source=lib/managed-app-teardown.sh
-. "$SCRIPT_DIR/lib/managed-app-teardown.sh"
+. "$SCRIPT_DIR/lib/managed-app-teardown.sh" || {
+  echo "Cannot load $SCRIPT_DIR/lib/managed-app-teardown.sh; nothing was deleted." >&2
+  exit 1
+}
 
 echo "Nuking the system..."
 
@@ -33,7 +37,7 @@ echo "Nuking the system..."
 if [ "$KEEP_APPS" = "1" ]; then
   teardown_managed_apps keep
 else
-  teardown_managed_apps remove
+  teardown_managed_apps remove || exit 1
 fi
 
 # Remove containers

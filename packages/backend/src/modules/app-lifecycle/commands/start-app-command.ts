@@ -5,6 +5,7 @@ import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
+import type Dockerode from 'dockerode';
 import { AppLifecycleCommand } from './command';
 
 /**
@@ -18,6 +19,34 @@ export function startComposeCommand(options: { forcePull: boolean; onlyRecreateC
   return ['up', '--detach', options.onlyRecreateChanged ? '' : '--force-recreate', '--remove-orphans', options.forcePull ? '--pull always' : '']
     .filter(Boolean)
     .join(' ');
+}
+
+/**
+ * Removes this app's containers that Docker is restart-looping, and returns their names.
+ *
+ * A change-only `up` leaves a container alone when its definition is unchanged, including one
+ * stuck in `restarting`. The force-recreate boot this replaced gave such a container a fresh
+ * writable layer on every version change, which clears state that survives a restart, such as a
+ * stale pid or lock file after an unclean shutdown. core-2 had a ci-memory service in `restarting`
+ * on 2026-09-17. Removing the looping container before `up` keeps that recovery, and compose
+ * then creates it again from the same definition; its data lives in mounts and volumes, not the
+ * container. Exited containers need no such step because `prepareAppComposeDir` prunes them.
+ */
+export async function removeRestartingAppContainers(docker: Pick<Dockerode, 'listContainers' | 'getContainer'>, appUrn: AppUrn): Promise<string[]> {
+  const removed: string[] = [];
+  const seen = new Set<string>();
+  for (const label of [`ci-hub.appurn=${appUrn}`, `ci-os-hub.appurn=${appUrn}`]) {
+    const containers = (await docker.listContainers({ all: true, filters: { label: [label], status: ['restarting'] } })) ?? [];
+    for (const container of containers) {
+      if (seen.has(container.Id)) {
+        continue;
+      }
+      seen.add(container.Id);
+      await docker.getContainer(container.Id).remove({ force: true });
+      removed.push(container.Names?.[0]?.replace(/^\//, '') || container.Id);
+    }
+  }
+  return removed;
 }
 
 export class StartAppCommand extends AppLifecycleCommand {
@@ -57,6 +86,17 @@ export class StartAppCommand extends AppLifecycleCommand {
       if (!form.skipEnv) {
         logger.info(`Regenerating app.env file for app ${appUrn}`);
         await appHelpers.generateEnvFile(appUrn, form);
+      }
+
+      if (form.onlyRecreateChanged) {
+        const removed = await removeRestartingAppContainers(this.docker, appUrn).catch((error: unknown) => {
+          // Best effort: the change-only `up` below still runs, it just cannot clear a crash loop.
+          logger.warn(`Could not remove restart-looping containers for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+          return [] as string[];
+        });
+        if (removed.length > 0) {
+          logger.info(`Removed restart-looping containers for ${appUrn} so compose creates them fresh: ${removed.join(', ')}`);
+        }
       }
 
       const forcePull = !form.skipPull && config.force_pull;

@@ -15,8 +15,11 @@ ROOT_FOLDER="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")"/..)"
 # anything still running here would survive with its app-data deleted. (scripts/stop.sh, which
 # this used to call, no longer exists.)
 # shellcheck source-path=SCRIPTDIR source=lib/managed-app-teardown.sh
-. "${ROOT_FOLDER}/scripts/lib/managed-app-teardown.sh"
-teardown_managed_apps remove
+. "${ROOT_FOLDER}/scripts/lib/managed-app-teardown.sh" || {
+  echo "Cannot load ${ROOT_FOLDER}/scripts/lib/managed-app-teardown.sh; nothing was deleted." >&2
+  exit 1
+}
+teardown_managed_apps remove || exit 1
 remove_hub_stack_containers
 
 echo y | docker system prune

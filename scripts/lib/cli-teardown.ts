@@ -121,7 +121,7 @@ function removeDirectoryTarget(targetPath: string, label: string, removed: strin
  * app/data mounts, and the Cloudflare tunnel token. Guarded so we only ever delete a folder named
  * `companion-hub` inside the user's data/home directory.
  */
-function cleanApplianceHub(ctx: HubContext) {
+function cleanApplianceHub(ctx: HubContext, options: CleanHubOptions) {
   const dataDir = ctx.dataDir as string;
   const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
   const safe = path.basename(dataDir) === CANONICAL_DATA_DIR_NAME && pathIsWithin(homeDir, dataDir);
@@ -133,6 +133,9 @@ function cleanApplianceHub(ctx: HubContext) {
     );
     process.exit(2);
   }
+  if (!options.appsAlreadyRemoved) {
+    removeAppContainersBeforeDeletingData();
+  }
   if (existsSync(dataDir)) {
     rmSync(dataDir, { recursive: true, force: true });
     printMessageBox('Prod Hub data wiped', [`removed: ${dataDir}`], 'yellow');
@@ -141,16 +144,40 @@ function cleanApplianceHub(ctx: HubContext) {
   }
 }
 
-export function cleanHub(env: HubEnv) {
+type CleanHubOptions = {
+  /** `cihub reset` has already removed the apps, with their volumes, before `down`. */
+  appsAlreadyRemoved?: boolean;
+};
+
+/**
+ * `cihub clean` deletes the data directory every app bind-mounts, so the app containers go first,
+ * as in `cihub reset` (see removeManagedAppProjects). `cihub down` stops only the Hub's own
+ * project, so `cihub down && cihub clean` otherwise left apps running against deleted directories,
+ * which is what nuke.sh did to core-2 (2026-09-17).
+ *
+ * Named volumes stay. Clean removes files, and the Hub database volume, which still lists the
+ * apps, survives it too.
+ */
+function removeAppContainersBeforeDeletingData() {
+  const removedApps = removeManagedAppProjects((args) => runCapture('docker', args), { removeVolumes: false });
+  if (removedApps.length > 0) {
+    printMessageBox('Removed installed app containers', [...removedApps, dim('Their named volumes were kept.')], 'yellow');
+  }
+}
+
+export function cleanHub(env: HubEnv, options: CleanHubOptions = {}) {
   if (isApplianceMode()) {
     requireRepoOrApplianceContext('cihub clean', 'allow-missing');
-    cleanApplianceHub(resolveHubContext(env));
+    cleanApplianceHub(resolveHubContext(env), options);
     return;
   }
   requireRepoRoot('cihub clean');
   const envFileName = getEnvFileOrExit(env);
   const rootFolderHost = resolveRootFolderHost(envFileName);
   const tunnelDir = path.resolve(rootFolderHost, '..', 'tunnel');
+  if (!options.appsAlreadyRemoved) {
+    removeAppContainersBeforeDeletingData();
+  }
   const removed: string[] = [];
   const skipped: string[] = [];
   removeDirectoryTarget(rootFolderHost, 'root folder', removed, skipped);
@@ -185,7 +212,7 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
   downHub(env, { volumes: true });
   verifyHubVolumesRemoved();
   try {
-    cleanHub(env);
+    cleanHub(env, { appsAlreadyRemoved: true });
   } catch (error) {
     printMessageBox('Host cleanup reported an error', [String(error)], 'yellow');
   }

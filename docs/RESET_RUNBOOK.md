@@ -37,7 +37,9 @@ Use this when the Hub API is down, Docker state is corrupted, or you want the sa
 
 Step 1 assumes one Hub per Docker daemon, because the managed labels do not say which Hub installed an app.
 
-The legacy `scripts/nuke.sh` and `scripts/unsafe-cleanup.sh` also remove installed apps before they delete Hub state. To keep the apps, run `sudo scripts/nuke.sh --keep-apps`; the script lists them and what they still depend on.
+`cihub clean` removes installed app containers and their networks before it deletes the data directory, and keeps their named volumes. `cihub down` stops only the Hub's own project, so without this step `cihub down && cihub clean` left apps running against deleted bind mounts.
+
+The legacy `scripts/nuke.sh` and `scripts/unsafe-cleanup.sh` also remove installed apps before they delete Hub state. If Docker cannot list containers, they stop without deleting anything, because apps with a restart policy come back with the daemon. To keep the apps, run `sudo scripts/nuke.sh --keep-apps`; the script lists them and what they still depend on.
 
 ## Settings: Factory reset Hub
 

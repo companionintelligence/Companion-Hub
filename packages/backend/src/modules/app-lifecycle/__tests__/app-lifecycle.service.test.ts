@@ -1948,15 +1948,23 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'status_change', appStatus: 'starting' }));
     });
 
-    it('does not ask for change-only recreation on an ordinary start, which still force-recreates', async () => {
+    it('does not ask for change-only recreation on an ordinary start, even when the stored config carries the flag', async () => {
       const appUrn = 'test-app' as any;
-      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, name: 'test-app', status: 'stopped', config: {} } as any);
+      // appFormSchema passes unknown keys through, so an install or update form can store the flag.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        name: 'test-app',
+        status: 'stopped',
+        config: { onlyRecreateChanged: true, port: 8080 },
+      } as any);
       appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
 
       await service.startApp({ actor: TEST_ACTOR, appUrn });
 
       const published = appEventsQueue.publish.mock.calls.at(-1)?.[0] as { form: Record<string, unknown> };
       expect(published.form).not.toHaveProperty('onlyRecreateChanged');
+      // The rest of the stored config still reaches the start command.
+      expect(published.form).toMatchObject({ port: 8080 });
     });
 
     it('should throw if app not found', async () => {

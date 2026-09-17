@@ -15,11 +15,15 @@
 MANAGED_APP_TEARDOWN_HUB_PROJECTS="ci-hub ci-os-hub runcihub"
 
 # Prints the compose project of every Hub-managed app container, one per line, deduplicated.
+# Returns 1 when Docker cannot list containers, which is not the same as "no apps".
 managed_app_projects() {
-  {
-    docker ps -a --filter label=ci-hub.managed=true --format '{{.Label "com.docker.compose.project"}}'
-    docker ps -a --filter label=ci-os-hub.managed=true --format '{{.Label "com.docker.compose.project"}}'
-  } 2>/dev/null | while IFS= read -r project; do
+  local label listed="" output
+  for label in ci-hub.managed=true ci-os-hub.managed=true; do
+    output=$(docker ps -a --filter "label=$label" --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null) || return 1
+    listed+="$output"$'\n'
+  done
+  printf '%s' "$listed" | while IFS= read -r project; do
+    [ -n "$project" ] || continue
     case " $MANAGED_APP_TEARDOWN_HUB_PROJECTS " in
       *" $project "*) continue ;;
     esac
@@ -50,9 +54,19 @@ remove_compose_project() {
 # Usage: teardown_managed_apps remove|keep
 #   remove  deletes every Hub-managed app (containers, networks, named volumes)
 #   keep    leaves them running and prints what they still depend on
+# In remove mode it returns 1 when Docker cannot list containers. Callers must stop then: app
+# containers with a restart policy come back with the daemon, against the state deleted meanwhile.
 teardown_managed_apps() {
   local mode="$1" projects project
-  projects=$(managed_app_projects)
+  if ! projects=$(managed_app_projects); then
+    if [ "$mode" = "keep" ]; then
+      echo "WARNING: could not list Hub-managed apps (is Docker running?); keeping whatever exists." >&2
+      return 0
+    fi
+    echo "Cannot list Hub-managed apps (is Docker running?), so they cannot be removed first." >&2
+    echo "Nothing was deleted. Start Docker and run this again, or pass --keep-apps where supported." >&2
+    return 1
+  fi
   if [ -z "$projects" ]; then
     echo "No Hub-managed apps found."
     return 0

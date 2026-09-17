@@ -22,6 +22,10 @@ const FAKE_DOCKER = `#!/bin/bash
 internal=no; [ -d "$FAKE_ROOT/.internal" ] && internal=yes
 appdata=no; [ -d "$FAKE_ROOT/app-data" ] && appdata=yes
 echo "$* | internal=$internal app-data=$appdata" >> "$FAKE_DOCKER_LOG"
+if [ "$FAKE_DOCKER_DOWN" = "1" ]; then
+  echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
+  exit 1
+fi
 case "$*" in
   'ps -a --filter label=ci-hub.managed=true --format {{.Label "com.docker.compose.project"}}')
     # The Hub's own services carry the managed label too; they must not be treated as apps.
@@ -63,23 +67,33 @@ describe('legacy wipe scripts remove Hub-managed apps before the state they moun
     mkdirSync(path.join(root, '.internal', 'app-data', 'ci-marketplace', 'ci-memory'), { recursive: true });
     mkdirSync(path.join(root, 'app-data'), { recursive: true });
     writeFileSync(dockerLog, '');
+    // These scripts prune and remove real Docker state. Refuse to run them unless the scripts will
+    // resolve every command they wipe with to the fakes.
+    for (const tool of ['docker', 'id', 'sudo']) {
+      const resolved = spawnSync('bash', ['-c', `command -v ${tool}`], { encoding: 'utf8', env: scriptEnv() }).stdout.trim();
+      if (resolved !== path.join(bin, tool)) {
+        throw new Error(`${tool} resolves to ${resolved || 'nothing'}, not the fake in ${bin}; not running destructive scripts`);
+      }
+    }
   });
 
   afterEach(() => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const runScript = (script: string, args: string[] = [], options: { uid?: string; input?: string } = {}) =>
+  const scriptEnv = (options: { uid?: string; dockerDown?: boolean } = {}) => ({
+    ...process.env,
+    PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    FAKE_ROOT: root,
+    FAKE_DOCKER_LOG: dockerLog,
+    FAKE_UID: options.uid ?? '0',
+    FAKE_DOCKER_DOWN: options.dockerDown ? '1' : '0',
+  });
+  const runScript = (script: string, args: string[] = [], options: { uid?: string; input?: string; dockerDown?: boolean } = {}) =>
     spawnSync('bash', [path.join(root, 'scripts', script), ...args], {
       encoding: 'utf8',
       input: options.input,
-      env: {
-        ...process.env,
-        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-        FAKE_ROOT: root,
-        FAKE_DOCKER_LOG: dockerLog,
-        FAKE_UID: options.uid ?? '0',
-      },
+      env: scriptEnv(options),
     });
   const dockerCalls = () => readFileSync(dockerLog, 'utf8').split('\n').filter(Boolean);
   const indexOfCall = (prefix: string) => dockerCalls().findIndex((line) => line.startsWith(prefix));
@@ -127,6 +141,40 @@ describe('legacy wipe scripts remove Hub-managed apps before the state they moun
     expect(result.status).toBe(1);
     expect(dockerCalls()).toEqual([]);
     expect(existsSync(path.join(root, '.internal'))).toBe(true);
+  });
+
+  it('nuke.sh deletes nothing when Docker cannot list containers, because the apps would restart with the daemon', () => {
+    const result = runScript('nuke.sh', [], { dockerDown: true });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/Cannot list Hub-managed apps/);
+    expect(existsSync(path.join(root, '.internal'))).toBe(true);
+    expect(dockerCalls().some((line) => line.startsWith('rm ') || line.startsWith('volume rm'))).toBe(false);
+  });
+
+  it('nuke.sh --keep-apps still wipes when Docker cannot list containers, with a warning', () => {
+    const result = runScript('nuke.sh', ['--keep-apps'], { dockerDown: true });
+
+    expect(result.stderr).toMatch(/could not list Hub-managed apps/);
+    expect(existsSync(path.join(root, '.internal'))).toBe(false);
+  });
+
+  it('nuke.sh stops before deleting anything when its teardown helper is missing', () => {
+    rmSync(path.join(root, 'scripts', 'lib', 'managed-app-teardown.sh'));
+
+    const result = runScript('nuke.sh');
+
+    expect(result.status).toBe(1);
+    expect(dockerCalls()).toEqual([]);
+    expect(existsSync(path.join(root, '.internal'))).toBe(true);
+  });
+
+  it('unsafe-cleanup.sh prunes and deletes nothing when Docker cannot list containers', () => {
+    const result = runScript('unsafe-cleanup.sh', [], { input: 'y\n', dockerDown: true });
+
+    expect(result.status).toBe(1);
+    expect(dockerCalls().some((line) => line.startsWith('system prune'))).toBe(false);
+    expect(existsSync(path.join(root, 'app-data'))).toBe(true);
   });
 
   it('nuke.sh rejects an unknown option before touching anything', () => {

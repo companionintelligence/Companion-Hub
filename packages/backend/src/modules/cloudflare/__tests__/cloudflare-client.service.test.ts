@@ -4,6 +4,7 @@ import { APP_DIR, DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ModuleRef } from '@nestjs/core';
 import { DockerService } from '@/modules/docker/docker.service';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import axios from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -528,14 +529,32 @@ describe('CloudflareClientService', () => {
   });
 
   describe('ensureCloudflaredRunning', () => {
+    let dockerReadFacade: MockProxy<DockerReadFacade>;
+
     beforeEach(() => {
       vi.mocked(fsSync.existsSync).mockReturnValue(true);
       (service as any).tunnelToken = 'tok';
+      dockerReadFacade = mock<DockerReadFacade>();
+      moduleRef.get.mockImplementation(((token: unknown) => (token === DockerReadFacade ? dockerReadFacade : dockerService)) as any);
     });
 
-    it('asks compose to reconcile cloudflared even when a container already exists, without forcing a recreate', async () => {
-      // beta-max kept a crash-looping cloudflared from an older definition because boot only
-      // restarted what existed. Compose decides now; it leaves an unchanged container alone.
+    it('leaves a running cloudflared alone, so a Hub boot does not drop every public hostname', async () => {
+      // A dry-run of the boot's compose up inside the Hub (2026-09-17) would have recreated a
+      // healthy tunnel on 6 of 9 fleet nodes: the Hub's compose 2.40.0 and the host's 5.x hash the
+      // same cloudflared definition differently (e65e7ff… vs 53b859b… on beta-max and core-3).
+      dockerReadFacade.isContainerRunning.mockResolvedValue(true);
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(true);
+
+      expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
+      expect(dockerService.restartContainer).not.toHaveBeenCalled();
+    });
+
+    it('sends a crash-looping cloudflared through compose up rather than docker restart (beta-max 530)', async () => {
+      // beta-max: the container's token mount predated the compose file, it sat in `restarting`,
+      // and `docker restart` reported success on every boot. Compose replaces a stale definition.
+      dockerReadFacade.isContainerRunning.mockResolvedValue(false);
+
       await expect(service.ensureCloudflaredRunning()).resolves.toBe(true);
 
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
@@ -546,7 +565,9 @@ describe('CloudflareClientService', () => {
       expect(dockerService.restartContainer).not.toHaveBeenCalled();
     });
 
-    it('recreates cloudflared after the token was recovered, because it reads the token only at startup', async () => {
+    it('recreates a running cloudflared after the token was recovered, because it reads the token only at startup', async () => {
+      dockerReadFacade.isContainerRunning.mockResolvedValue(true);
+
       await expect(service.ensureCloudflaredRunning({ forceRestart: true })).resolves.toBe(true);
 
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', expect.objectContaining({ forceRecreate: true }));

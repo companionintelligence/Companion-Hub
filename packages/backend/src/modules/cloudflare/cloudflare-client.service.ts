@@ -2,6 +2,7 @@ import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, tunnelUserClearedM
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DockerReadFacade } from '../docker/docker-read.facade';
 import { DockerService } from '../docker/docker.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import type { AvailableCustomDomain, AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
@@ -719,11 +720,22 @@ export class CloudflareClientService {
    * check, restarting a registered Hub with an existing file would leave the
    * tunnel down. Local and E2E modes skip the container.
    *
-   * It goes through compose even when the container reports `running`. Compose leaves an
-   * unchanged container alone, so a healthy tunnel is not interrupted, but it replaces one
-   * created from an older definition. A "running" check cannot see that: on beta-max the
-   * container ran from a definition whose token mount no longer matched where the Hub writes the
-   * token, and a restart kept it crash-looping (see `DockerService.ensureContainerRunning`).
+   * A container whose status is `running` is left alone. Anything else (missing, exited, or
+   * `restarting` in a crash loop) goes through `compose up`, which replaces a container created
+   * from an older definition instead of restarting it. On beta-max (2026-09-17) cloudflared
+   * crash-looped because its token mount predated the current compose file, and the old
+   * `docker restart` here reported success every boot (see `DockerService.ensureContainerRunning`).
+   * A crash-looping cloudflared spends its backoff in `restarting`, not `running`, so it is not
+   * skipped.
+   *
+   * Healthy tunnels are skipped rather than reconciled because the Hub's compose and the host's
+   * disagree on the config hash. A `--dry-run` of this `up` inside the Hub (2026-09-17) would have
+   * recreated a healthy cloudflared on 6 of the 9 fleet nodes running one (core-2, core-3,
+   * core-7, ci, fzzy, beta-max), with the same image and the same token mount. Compose 2.40.0 in
+   * the Hub hashes the core-3/beta-max definition as e65e7ff…, and the host's 5.x compose hashes
+   * the same definition as 53b859b…. `cihub up` includes the `cloudflare` profile, so every
+   * roll would have recreated the tunnel twice, once per compose, and dropped every public app
+   * hostname twice. Definition changes to a running tunnel are the host tooling's job.
    *
    * `forceRestart` recreates the container after the token was recovered, because the
    * definition is unchanged and cloudflared reads the token only at startup.
@@ -739,6 +751,13 @@ export class CloudflareClientService {
       return false;
     }
     try {
+      const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
+      const alreadyRunning = dockerReadFacade ? await dockerReadFacade.isContainerRunning('cloudflared') : false;
+      if (alreadyRunning && !options.forceRestart) {
+        this.logger.debug('ensureCloudflaredRunning: cloudflared is running; leaving it alone');
+        return true;
+      }
+
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
       if (!dockerService) {
         this.logger.warn('ensureCloudflaredRunning: DockerService unavailable');

@@ -56,9 +56,9 @@ vi.mock('../lib/hub-context.js', () => ({
   envOverridesForContext: () => ({}),
 }));
 
-import { resetHub } from '../lib/cli-teardown';
+import { cleanHub, resetHub } from '../lib/cli-teardown';
 
-describe('cihub reset removes installed apps first', () => {
+describe('cihub reset and cihub clean remove installed apps first', () => {
   let home: string;
   const previousHome = process.env.HOME;
 
@@ -85,6 +85,18 @@ describe('cihub reset removes installed apps first', () => {
     expect(state.calls[appRemoval]).toBe('rm -f mem-api mem-db | dataDir=present');
     expect(state.calls).toContain('volume ls -q --filter label=com.docker.compose.project=ci-memory_ci-marketplace | dataDir=present');
     expect(composeDown).toBeGreaterThan(appRemoval);
+    expect(existsSync(state.dataDir)).toBe(false);
+    // The clean step inside reset does not sweep a second time.
+    expect(state.calls.filter((line) => line.startsWith('rm -f mem-api mem-db'))).toHaveLength(1);
+  });
+
+  it('cihub clean removes app containers while the data dir still exists, and keeps their volumes', () => {
+    // `cihub down` stops only the Hub project, so `cihub down && cihub clean` used to delete the
+    // bind sources of apps that were still running, the core-2 failure.
+    cleanHub('prod');
+
+    expect(state.calls).toContain('rm -f mem-api mem-db | dataDir=present');
+    expect(state.calls.some((line) => line.startsWith('volume '))).toBe(false);
     expect(existsSync(state.dataDir)).toBe(false);
   });
 });

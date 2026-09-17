@@ -137,22 +137,37 @@ app's compose file and `app.env`, then runs `docker compose up --detach --remove
 **without** `--force-recreate`. Compose recreates a service only when its resolved
 definition differs from the container's `com.docker.compose.config-hash` label. That
 definition covers the image, labels, mounts, networks, and environment, including
-`env_file` contents. Services whose definition did not change keep running, and stopped
-containers are pruned and created again. A start that you request from the dashboard
-still force-recreates.
+`env_file` contents. Services whose definition did not change keep running. Stopped
+containers are pruned and created again, so one-shot init services (ci-memory's
+`setup-secrets`, `migrate-database`, and others) still run on each such boot. Containers
+stuck in `restarting` are removed first and created again, which keeps the fresh
+container the forced recreate used to give a crash loop. A start that you request from
+the dashboard still force-recreates.
 
 Before this, every version change force-recreated every running app. On beta-max the
-boot on 0.2.71 recreated all ten ci-memory containers and OpenClaw. Compose does not see
-a changed bind-mounted file, but this path rewrites only the compose file and `app.env`.
+boot on 0.2.71 recreated all ten ci-memory containers and OpenClaw. A `--dry-run` of the
+new `up` with the Hub's own compose (2.40.0) on beta-max on 2026-09-17 recreated
+nothing: ci-memory's long-running services and OpenClaw stayed `Running`, and only the
+exited init services started. Compose does not see a changed
+bind-mounted file, but this path rewrites only the compose file and `app.env`.
 
 ### Tunnel sidecar (`cloudflared`)
 
-On boot, and after the tunnel token is recovered, the Hub runs
-`compose up --no-deps cloudflared` instead of `docker restart cloudflared`. Compose
-replaces a container created from an older definition, such as a token mount that has
-since moved, and leaves an unchanged one running. After a token recovery or a new
-registration the Hub adds `--force-recreate`, because cloudflared reads the token only at
+On boot the Hub leaves a `running` cloudflared alone. A missing, exited, or crash-looping
+(`restarting`) one gets `compose up --no-deps cloudflared` instead of
+`docker restart cloudflared`, so a container created from an older definition, such as a
+token mount that has since moved, is replaced rather than restarted into the same crash.
+After a token recovery or a new registration the Hub runs the same `up` with
+`--force-recreate`, whatever the state, because cloudflared reads the token only at
 startup.
+
+The Hub does not reconcile a running tunnel against the compose file, because the Hub's
+bundled compose (2.40.0) and a host's compose 5.x compute different config hashes for the
+same cloudflared definition (beta-max and core-3: `e65e7ff…` versus `53b859b…`). A
+`--dry-run` on 2026-09-17 showed the Hub would have recreated a healthy tunnel on 6 of the
+9 fleet nodes that run one. `cihub up` also starts the `cloudflare` profile, so each roll
+would have recreated the tunnel twice and dropped every public hostname twice. Definition
+changes to a running tunnel are applied by the host tooling (`cihub up`, the desktop app).
 
 The Hub uses the `docker compose` plugin, or the bundled `docker-compose` binary when the
 plugin is missing. The Hub image registers the plugin under
