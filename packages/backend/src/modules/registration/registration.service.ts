@@ -497,7 +497,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return;
     }
 
+    // `registration.json` without a registration is stale. Beside a token that
+    // comes back later, it would let the desktop app and CLI start that token's
+    // tunnel before this check runs again.
+    await this.unmarkTunnelRegistered();
+
     const token = await this.readTunnelToken();
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
     if (!token && !this.tunnelStopPending) {
       this.tunnelCheckPending = false;
       return;
@@ -536,6 +544,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       await writeTunnelRegistrationMarker(tunnelId ?? null);
     } catch (error) {
       this.logger.warn(`Could not write the tunnel registration marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
+  /** Removes `registration.json`, so the desktop app and CLI no longer start the tunnel from the token. */
+  private async unmarkTunnelRegistered(): Promise<void> {
+    try {
+      await removeTunnelRegistrationMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the tunnel registration marker: ${describeRegistrationError(error)}`);
     }
   }
 
@@ -896,11 +913,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       this.tunnelStopPending = true;
       this.tunnelCheckPending = true;
     }
-    try {
-      await removeTunnelRegistrationMarker();
-    } catch (error) {
-      this.logger.warn(`Could not remove the tunnel registration marker: ${describeRegistrationError(error)}`);
-    }
+    await this.unmarkTunnelRegistered();
 
     // Remove the resolved environment so the next startup regenerates it.
     const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');

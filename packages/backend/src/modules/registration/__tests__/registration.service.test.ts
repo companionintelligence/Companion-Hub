@@ -1224,6 +1224,7 @@ describe('RegistrationService', () => {
     it('stops the connector and sets a leftover token aside when an unregistered Hub boots with one', async () => {
       // The reported case: a reinstall kept the previous Hub's token and joined its tunnel before pairing.
       vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', writtenAt: '2026-09-01T00:00:00.000Z' }));
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
       vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
@@ -1259,6 +1260,34 @@ describe('RegistrationService', () => {
       expectConnectorNeverStarted();
       expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
       expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('removes a stale registration.json from an unregistered Hub with no token', async () => {
+      // A token restored beside it later would otherwise start that tunnel from the desktop app or CLI.
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', writtenAt: '2026-09-01T00:00:00.000Z' }));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('still sets a leftover token aside when registration.json cannot be removed, and logs why', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      // A directory in the marker's place makes the unlink fail.
+      vol.mkdirSync(path.join(REGISTRATION_MARKER_PATH, 'blocker'), { recursive: true });
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Could not remove the tunnel registration marker'));
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(readJson(LEFTOVER_MARKER_PATH).tunnelId).toBe('tunnel-previous-hub');
     });
 
     it('neither starts nor stops anything when the registration cannot be read, and retries on the next check', async () => {
@@ -1311,10 +1340,27 @@ describe('RegistrationService', () => {
       expect(cloudflareClientService.ensureCloudflaredRunning).toHaveBeenCalledOnce();
     });
 
-    it('does not touch a token written by a pairing that has not saved its registration yet', async () => {
+    it('does not touch the token or registration.json of a pairing in progress', async () => {
       vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-being-paired'));
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-being-paired', writtenAt: '2026-09-17T00:00:00.000Z' }));
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
       (service as any)._currentPhase = 'provisioning';
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(true);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(true);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('does not stop the connector of a pairing that starts while the token is being read', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'readTunnelToken').mockImplementation(async () => {
+        (service as any)._currentPhase = 'paired';
+        return cloudflaredToken('tunnel-previous-hub');
+      });
 
       await (service as any).syncTunnelWithRegistration();
 
@@ -1329,6 +1375,7 @@ describe('RegistrationService', () => {
       cloudflareClientService.stopTunnel.mockImplementation(async () => {
         // `docker rm` can take seconds. A pairing saves its token and registration in the meantime.
         vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-just-paired'));
+        vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-just-paired', writtenAt: '2026-09-17T00:00:00.000Z' }));
         (service as any)._currentPhase = 'locally_ready';
         return true;
       });
@@ -1336,6 +1383,7 @@ describe('RegistrationService', () => {
       await (service as any).syncTunnelWithRegistration();
 
       expect(vol.readFileSync(TOKEN_PATH, 'utf-8')).toBe(cloudflaredToken('tunnel-just-paired'));
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-just-paired');
       expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
     });
 
