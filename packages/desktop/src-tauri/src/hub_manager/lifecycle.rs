@@ -113,6 +113,14 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     }
     let _guard = StartGuard;
 
+    // Startup progress compares container exit times against this, and re-decides whether
+    // image downloads count toward the percentage.
+    START_BEGAN_AT_MS.store(
+        u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0),
+        Ordering::SeqCst,
+    );
+    START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
+
     // Clear sticky failure only once this call owns the start lock — UI can show Starting.
     clear_start_failed(data_dir);
 
@@ -721,6 +729,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     if !stack_dev_mode_enabled() {
         mark_user_stopped(&data_dir);
     }
+    START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
 
     // If Docker is not available there are no containers to tear down.
     // Return success immediately rather than letting `docker compose down`

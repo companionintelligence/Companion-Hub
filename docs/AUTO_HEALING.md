@@ -214,9 +214,14 @@ Auto-healing never fights the user:
 
 - A user who clicks **Stop Hub** writes a `.user-stopped` marker; the desktop
   reconciliation will not auto-restart the stack on the next launch until they
-  click **Start Hub** (which clears the marker).
+  click **Start Hub** (which clears the marker). The startup screen says so
+  when the app opens: "CI Hub is stopped", with when it was stopped and a
+  **Start Hub** button, instead of a startup timer.
 - `restart: unless-stopped` won't resurrect a container the user stopped
   on purpose.
+- After a failed start (`.start-failed` marker), the startup screen shows the
+  error on the service that failed and says the Hub won't retry on its own
+  until the user presses **Try again**.
 
 ---
 
