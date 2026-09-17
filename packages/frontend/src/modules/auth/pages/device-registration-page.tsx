@@ -25,7 +25,7 @@ import {
   REGISTRATION_PAIRING_CODE_HINT,
   REGISTRATION_PROVISIONING_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
-import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
+import { forgetPendingPairingCode, normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
 import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
 import { getStoredDriftChoice, storeDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
 import { RegistrationRestoreBanner, RegistrationStateDriftDialog } from '@/modules/auth/components/registration-state-drift-dialog';
@@ -519,7 +519,14 @@ export default function DeviceRegistrationPage() {
 
     void (async () => {
       const pendingCode = (pendingDeepLinkCode && normalizePairingCode(pendingDeepLinkCode)) ?? (await resolvePendingPairingCode());
-      if (cancelled || !pendingCode || deepLinkPairAttemptRef.current === pendingCode) {
+      if (cancelled || !pendingCode) {
+        return;
+      }
+
+      // Submitted once, here, so no copy of the link may stay behind, including one that arrives
+      // after the attempt: a leftover was submitted again the next time this screen opened.
+      void forgetPendingPairingCode(pendingCode);
+      if (deepLinkPairAttemptRef.current === pendingCode) {
         return;
       }
 
