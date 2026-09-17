@@ -13,6 +13,15 @@
 
 @import '@companionintelligence/tokens/globals.css';
 
+/*
+ * Short desktop windows. The window opens 800px tall and can be dragged down to 600px
+ * (tauri.conf.json); the Hub startup screens tighten their frame as it shrinks, at the same
+ * breakpoints as the desktop bootstrap page (packages/desktop/bootstrap/bootstrap.css).
+ * `compact-window` is declared last so its rules win where both apply.
+ */
+@custom-variant short-window (@media (max-height: 820px));
+@custom-variant compact-window (@media (max-height: 680px));
+
 @theme inline {
   /* Hub radius scale — sm/md/lg only; xl+ aliases map to lg for legacy classes */
   --radius-sm: 4px;
