@@ -63,7 +63,11 @@ export default () => {
               <TabsTrigger value="logs">{t('COMMON_LOGS')}</TabsTrigger>
             </TabsList>
           </div>
-          <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
+          <div
+            className={cn('relative p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')}
+            data-testid="settings-scroll-container"
+            data-page-scroller="settings"
+          >
             <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
               <TabsContent value="settings">
                 {currentTab === 'settings' && (

@@ -64,7 +64,7 @@ export default () => {
   const memoryUsed = systemData?.memoryUsed ?? (systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0);
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="relative h-full overflow-y-auto" data-page-scroller="home">
       <div className="flex flex-col gap-4 pt-2 pb-4 px-1">
         {/* System stats — stacked on mobile, three columns from sm */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

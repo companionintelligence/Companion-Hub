@@ -77,9 +77,12 @@ describe('AppStoreSidebar', () => {
     expect(screen.getByPlaceholderText('Search apps...')).toHaveValue('');
   });
 
-  it('keeps the desktop sidebar elevated and sticky while the store page scrolls', () => {
+  it('keeps the desktop sidebar elevated and sized to the store row, not the viewport', () => {
     const { container } = render(<AppStoreSidebar />);
 
-    expect(container.querySelector('aside')).toHaveClass('sticky', 'top-4', 'shadow-sm', 'shadow-slate-300/70', 'bg-card/90');
+    // The store pane scrolls beside the sidebar (AppStoreLayout), so the sidebar
+    // stays in place without being sticky; a viewport-based max height would
+    // overflow the row and cut off its bottom.
+    expect(container.querySelector('aside')).toHaveClass('max-h-[calc(100%-1.5rem)]', 'shadow-sm', 'shadow-slate-300/70', 'bg-card/90');
   });
 });

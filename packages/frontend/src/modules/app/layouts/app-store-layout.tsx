@@ -7,7 +7,10 @@ export default () => {
       <div className="flex flex-1 min-h-0 overflow-hidden">
         <AppStoreSidebar />
 
-        <div className="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-2 py-3 sm:px-4 sm:py-4 md:px-6">
+        <div
+          className="relative flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden px-2 py-3 sm:px-4 sm:py-4 md:px-6"
+          data-page-scroller="store"
+        >
           <Outlet />
         </div>
       </div>

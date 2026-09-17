@@ -23,7 +23,18 @@ packages/frontend/
 
 ## Dashboard scroll
 
-Authenticated pages scroll inside the dashboard layout's `<main>`, not the window, so React Router's `<ScrollRestoration />` never sees them, and `<main>` outlives its child routes. `usePageScrollRestoration` (`src/lib/hooks/use-page-scroll-restoration.ts`) owns that element's offset: a PUSH or REPLACE that changes the path or query opens at the top; back/forward returns to where that entry was left, retrying briefly while the page is still loading; a same-URL REPLACE (pages syncing their query) leaves it alone. Offsets are in memory, so a reload starts at the top. If you add another layout that scrolls an inner element across child routes, give it the same hook.
+Authenticated pages never scroll the window. The dashboard layout's page wrapper is `flex-1 min-h-0`, so a page gets exactly the height below the header and banners. Keep the `min-h-0`: without it the wrapper grows to fit its content, every page's own scroller stops scrolling, and `<main>` (which hides its scrollbar) scrolls everything instead, including the store sidebar.
+
+- A page that has its own scroller (the store pane, Home, Settings, the custom app pages) marks it `data-page-scroller="<name>"` and makes it `relative`. Without `relative`, absolutely positioned descendants such as Radix's hidden form inputs are placed against `<main>`, overflow it, and make it scroll as well.
+- A page without its own scroller (app details under `/apps`, Resource Monitor) scrolls `<main>`.
+
+`usePageScrollRestoration` (`src/lib/hooks/use-page-scroll-restoration.ts`) handles `<main>` and the marked scrollers of the page on screen. The page wrapper carries `data-page-key`, and the hook ignores a page that is still animating out. React Router's `<ScrollRestoration />` only tracks the window, and `<main>` and the store pane outlive their child routes.
+
+- A PUSH or REPLACE that changes the path or query opens at the top.
+- Back/forward returns each scroller to where that entry left it, retrying briefly while the page is still loading.
+- A same-URL REPLACE (pages syncing their query) leaves the scroll alone.
+
+Offsets are in memory, so a reload starts at the top.
 
 ## Marketplace compatibility disclosure
 

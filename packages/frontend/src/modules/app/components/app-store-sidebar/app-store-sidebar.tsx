@@ -55,7 +55,7 @@ export const AppStoreSidebar = () => {
   );
 
   return (
-    <aside className="sticky top-4 ml-6 mb-6 hidden max-h-[calc(100vh-2rem)] w-64 flex-shrink-0 self-start flex-col overflow-hidden rounded-lg border border-border/70 bg-card/90 shadow-sm shadow-slate-300/70 md:flex dark:border-white/10 dark:bg-muted/10 dark:shadow-none">
+    <aside className="ml-6 mb-6 hidden max-h-[calc(100%-1.5rem)] w-64 flex-shrink-0 self-start flex-col overflow-hidden rounded-lg border border-border/70 bg-card/90 shadow-sm shadow-slate-300/70 md:flex dark:border-white/10 dark:bg-muted/10 dark:shadow-none">
       <div className="p-4 border-b">
         <AppStoreSearchInput value={localSearch} onChange={onSearch} />
       </div>
