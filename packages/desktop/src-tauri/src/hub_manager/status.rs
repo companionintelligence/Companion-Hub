@@ -1,6 +1,8 @@
 //! Service state derivation, startup progress and hub status.
 
 use super::*;
+use chrono::{DateTime, Datelike, Utc};
+use std::collections::HashMap;
 
 fn list_local_images() -> std::collections::HashSet<String> {
     let output = docker_command()
@@ -30,41 +32,108 @@ fn required_startup_images() -> Vec<String> {
         "rabbitmq:4-alpine".to_string(),
         "traefik:v3.6.7".to_string(),
     ];
-    if private_vpn_enabled_from_map(&env) {
+    // The cached check: the uncached one starts a throwaway container to look for saved
+    // Tailscale state, and this runs on every startup-progress poll.
+    if is_private_vpn_enabled() {
         out.push("tailscale/tailscale:v1.82.5".to_string());
     }
     out
 }
 
-/// Query Docker for a list of container states in one `docker inspect` call.
-/// Returns a map of container_name → (state, health).
-fn inspect_containers(names: &[&str]) -> std::collections::HashMap<String, (String, String)> {
-    let mut map = std::collections::HashMap::new();
+/// One container's state as `docker inspect` reports it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ContainerInspect {
+    /// `created`, `running`, `restarting`, `exited`, `dead`, …
+    pub(crate) status: String,
+    /// Health-check status, or `none` when the container has no health check.
+    pub(crate) health: String,
+    pub(crate) exit_code: i64,
+    /// Docker's own error for the container, such as a port that is already allocated.
+    pub(crate) error: String,
+    pub(crate) started_at: Option<DateTime<Utc>>,
+    pub(crate) finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct InspectState {
+    status: String,
+    exit_code: i64,
+    error: String,
+    started_at: String,
+    finished_at: String,
+    health: Option<InspectHealth>,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct InspectHealth {
+    status: String,
+}
+
+/// Parse a Docker timestamp. Docker writes year 1 for "never", which becomes `None`.
+fn parse_docker_time(raw: &str) -> Option<DateTime<Utc>> {
+    let parsed = DateTime::parse_from_rfc3339(raw).ok()?.with_timezone(&Utc);
+    (parsed.year() > 1).then_some(parsed)
+}
+
+/// Parse one `name<TAB>{State as JSON}` line printed by [`inspect_containers`].
+pub(crate) fn parse_inspect_line(line: &str) -> Option<(String, ContainerInspect)> {
+    let (name, state_json) = line.trim().split_once('\t')?;
+    let state: InspectState = serde_json::from_str(state_json).ok()?;
+    let health = state
+        .health
+        .map(|health| health.status)
+        .filter(|status| !status.is_empty())
+        .unwrap_or_else(|| "none".to_string());
+    Some((
+        // Docker prefixes the name with "/" in inspect output
+        name.trim_start_matches('/').to_string(),
+        ContainerInspect {
+            status: state.status,
+            health,
+            exit_code: state.exit_code,
+            error: state.error.trim().to_string(),
+            started_at: parse_docker_time(&state.started_at),
+            finished_at: parse_docker_time(&state.finished_at),
+        },
+    ))
+}
+
+/// Query Docker for several containers' states in one `docker inspect` call.
+/// Containers that do not exist are simply absent from the map.
+fn inspect_containers(names: &[&str]) -> HashMap<String, ContainerInspect> {
     if names.is_empty() {
-        return map;
+        return HashMap::new();
     }
-    let format = "{{.Name}}:{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}";
     let output = docker_command()
         .arg("inspect")
         .arg("--format")
-        .arg(format)
+        .arg("{{.Name}}\t{{json .State}}")
         .args(names)
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
-    for line in output.lines() {
-        // Docker prefixes the name with "/" in inspect output
-        let line = line.trim().trim_start_matches('/');
-        let parts: Vec<&str> = line.splitn(3, ':').collect();
-        if parts.len() == 3 {
-            map.insert(
-                parts[0].to_string(),
-                (parts[1].to_string(), parts[2].to_string()),
-            );
-        }
+    output.lines().filter_map(parse_inspect_line).collect()
+}
+
+/// Look a service up by its container name, falling back to the legacy name.
+fn service_inspect<'a>(
+    containers: &'a HashMap<String, ContainerInspect>,
+    container: &str,
+) -> Option<&'a ContainerInspect> {
+    if let Some(found) = containers.get(container) {
+        return Some(found);
     }
-    map
+    let legacy = if container == HUB_CONTAINER {
+        LEGACY_HUB_CONTAINER
+    } else if container == HUB_QUEUE {
+        LEGACY_HUB_QUEUE
+    } else {
+        return None;
+    };
+    containers.get(legacy)
 }
 
 /// Derive a ServiceState from raw Docker state/health strings.
@@ -83,6 +152,126 @@ fn derive_service_state(state: &str, health: &str) -> ServiceState {
     }
 }
 
+/// What the desktop app knows about the Hub beyond the containers themselves.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CoreServiceContext {
+    /// A `start_hub` call is running right now.
+    pub(crate) start_in_progress: bool,
+    /// When that start began. Containers that exited before it are left over from the
+    /// last run and about to be replaced, not failures.
+    pub(crate) start_began_at: Option<DateTime<Utc>>,
+    /// The user stopped the Hub and has not started it since.
+    pub(crate) user_stopped: bool,
+    /// The last start failed and the user has not tried again.
+    pub(crate) start_failed: bool,
+    /// That start still recreates every container, so one running now is about to be
+    /// replaced. Without this, the database and queue read Ready and then drop back to
+    /// Starting when the final `compose up --force-recreate` replaces them.
+    pub(crate) recreate_pending: bool,
+}
+
+/// Derive a required service's state, plus what went wrong when it failed.
+///
+/// An exited container is only `Failed` when nothing explains it: the user stopping the
+/// Hub, a clean exit, or a leftover from before the start that is running now.
+pub(crate) fn derive_core_service_state(
+    container: Option<&ContainerInspect>,
+    ctx: &CoreServiceContext,
+) -> (ServiceState, Option<String>) {
+    let Some(container) = container else {
+        // Not created yet, or removed by `compose down`.
+        let state = if ctx.start_in_progress {
+            ServiceState::Pending
+        } else if ctx.user_stopped {
+            ServiceState::Stopped
+        } else if ctx.start_failed {
+            ServiceState::NotStarted
+        } else {
+            ServiceState::Pending
+        };
+        return (state, None);
+    };
+
+    let error = (!container.error.is_empty()).then(|| container.error.clone());
+    match container.status.as_str() {
+        "running" if ctx.start_in_progress && ctx.recreate_pending => {
+            (ServiceState::Starting, None)
+        }
+        "running" => (derive_service_state("running", &container.health), None),
+        "restarting" => (ServiceState::Starting, None),
+        "created" => {
+            if ctx.start_in_progress {
+                (ServiceState::Starting, None)
+            } else if error.is_some() {
+                (ServiceState::Failed, error)
+            } else if ctx.user_stopped {
+                (ServiceState::Stopped, None)
+            } else if ctx.start_failed {
+                (ServiceState::NotStarted, None)
+            } else {
+                (ServiceState::Starting, None)
+            }
+        }
+        "exited" | "dead" => {
+            let exited_during_start = ctx.start_in_progress
+                && matches!(
+                    (container.finished_at, ctx.start_began_at),
+                    (Some(finished), Some(began)) if finished >= began
+                );
+            if ctx.start_in_progress && !exited_during_start {
+                (ServiceState::Pending, None)
+            } else if ctx.user_stopped && !ctx.start_in_progress {
+                (ServiceState::Stopped, None)
+            } else if error.is_some() {
+                (ServiceState::Failed, error)
+            } else if container.exit_code == 0 && !exited_during_start {
+                (ServiceState::Stopped, None)
+            } else {
+                let detail = format!("Exited with code {}", container.exit_code);
+                (ServiceState::Failed, Some(detail))
+            }
+        }
+        _ => (ServiceState::Pending, None),
+    }
+}
+
+/// How long a service has been waiting on its health check, in seconds.
+pub(crate) fn starting_secs(
+    container: Option<&ContainerInspect>,
+    state: &ServiceState,
+    now: DateTime<Utc>,
+) -> Option<u64> {
+    if !matches!(state, ServiceState::Starting) {
+        return None;
+    }
+    let started_at = container?.started_at?;
+    u64::try_from((now - started_at).num_seconds()).ok()
+}
+
+/// The startup bar's percentage. When images had to be downloaded during this start,
+/// downloads count for half of it, so a first start does not sit at the services' floor
+/// for the whole download.
+pub(crate) fn startup_progress_pct(
+    services_pct: u8,
+    image_pull_pct: u8,
+    counting_downloads: bool,
+) -> u8 {
+    if counting_downloads {
+        (u16::from(services_pct) + u16::from(image_pull_pct)).div_ceil(2) as u8
+    } else {
+        services_pct
+    }
+}
+
+fn start_began_at() -> Option<DateTime<Utc>> {
+    match START_BEGAN_AT_MS.load(Ordering::SeqCst) {
+        0 => None,
+        ms => i64::try_from(ms)
+            .ok()
+            .and_then(DateTime::from_timestamp_millis),
+    }
+}
+
 /// Translate a service state to a progress score used by averaged startup progress.
 ///
 /// Pending means the container likely does not exist yet (pull/create still in progress),
@@ -94,6 +283,8 @@ fn service_state_score(state: &ServiceState) -> u8 {
         ServiceState::Ready => 100,
         ServiceState::Failed => 0,
         ServiceState::Unavailable => 0,
+        ServiceState::Stopped => 0,
+        ServiceState::NotStarted => 0,
     }
 }
 
@@ -208,6 +399,20 @@ fn probe_hub_api_live() -> bool {
 
 /// Return per-service startup progress for the frontend loading screen.
 pub fn get_startup_progress() -> StartupProgress {
+    let data_dir = get_hub_data_dir();
+    let start_in_progress = START_IN_PROGRESS.load(Ordering::SeqCst);
+    let user_stopped = is_user_stopped(&data_dir);
+    let start_error = read_start_failed(&data_dir);
+    let docker_access = check_docker_access();
+    let docker_available = matches!(docker_access.state, DockerAccessState::Available);
+    let ctx = CoreServiceContext {
+        start_in_progress,
+        start_began_at: start_began_at(),
+        user_stopped,
+        start_failed: start_error.is_some(),
+        recreate_pending: START_RECREATE_PENDING.load(Ordering::SeqCst),
+    };
+
     let vpn_on = is_private_vpn_enabled();
 
     // Core services in startup order. Optional ones are included for visibility but do not block
@@ -215,39 +420,50 @@ pub fn get_startup_progress() -> StartupProgress {
     // usable even if the sidecar is still reconnecting.
     let (core, optional) = startup_service_definitions(vpn_on);
 
-    let all_names: Vec<&str> = core
+    let mut inspect_names: Vec<&str> = core
         .iter()
         .chain(optional.iter())
         .map(|(n, _, _)| *n)
         .collect();
-    let mut inspect_names = all_names.clone();
     for extra in [LEGACY_HUB_CONTAINER, LEGACY_HUB_QUEUE] {
         if !inspect_names.contains(&extra) {
             inspect_names.push(extra);
         }
     }
-    let states = inspect_containers(&inspect_names);
+    let containers = if docker_available {
+        inspect_containers(&inspect_names)
+    } else {
+        HashMap::new()
+    };
+    let now = Utc::now();
 
     let mut services: Vec<ServiceStatus> = Vec::new();
     let mut ready_core: usize = 0;
     let mut core_score_sum: usize = 0;
 
     for (container, label, required) in core.iter().chain(optional.iter()) {
-        let (state_str, health_str) = service_inspect_state(&states, container);
-        let svc_state = if *required {
-            if state_str.is_empty() {
-                ServiceState::Pending
-            } else {
-                derive_service_state(state_str, health_str)
-            }
+        let inspect = service_inspect(&containers, container);
+        let (state, detail) = if *required {
+            derive_core_service_state(inspect, &ctx)
         } else {
-            derive_optional_service_state(state_str, health_str)
+            let (status, health) = inspect
+                .map(|found| (found.status.as_str(), found.health.as_str()))
+                .unwrap_or(("", ""));
+            (derive_optional_service_state(status, health), None)
         };
+        if *required {
+            core_score_sum += service_state_score(&state) as usize;
+            if let ServiceState::Ready = state {
+                ready_core += 1;
+            }
+        }
         services.push(ServiceStatus {
             label: label.to_string(),
             container: container.to_string(),
-            state: svc_state,
+            starting_secs: starting_secs(inspect, &state, now),
+            state,
             optional: !required,
+            detail,
         });
     }
 
@@ -261,27 +477,23 @@ pub fn get_startup_progress() -> StartupProgress {
             ServiceState::Unavailable
         },
         optional: true,
+        detail: None,
+        starting_secs: None,
     });
 
-    // Count ready core services and compute average core score for progress %.
-    for (i, (_, _, required)) in core.iter().chain(optional.iter()).enumerate() {
-        if *required {
-            core_score_sum += service_state_score(&services[i].state) as usize;
-            if let ServiceState::Ready = services[i].state {
-                ready_core += 1;
-            }
-        }
-    }
-
     let core_count = core.len();
-    let progress_pct = if core_count == 0 {
+    let services_pct = if core_count == 0 {
         0
     } else {
         (core_score_sum / core_count) as u8
     };
 
     let required_images = required_startup_images();
-    let local_images = list_local_images();
+    let local_images = if docker_available {
+        list_local_images()
+    } else {
+        HashSet::new()
+    };
     let image_total = required_images.len() as u8;
     let image_pulled = required_images
         .iter()
@@ -295,6 +507,21 @@ pub fn get_startup_progress() -> StartupProgress {
 
     let all_ready = ready_core == core_count;
 
+    // Downloads join the percentage once a poll during this start finds an image missing,
+    // and stay in it until the start finishes, so the bar never jumps back when the last
+    // image lands.
+    if start_in_progress && image_pulled < image_total {
+        START_IMAGE_DOWNLOADS_SEEN.store(true, Ordering::SeqCst);
+    }
+    let progress_pct = startup_progress_pct(
+        services_pct,
+        image_pull_pct,
+        START_IMAGE_DOWNLOADS_SEEN.load(Ordering::SeqCst),
+    );
+    if all_ready {
+        START_IMAGE_DOWNLOADS_SEEN.store(false, Ordering::SeqCst);
+    }
+
     StartupProgress {
         services,
         progress_pct,
@@ -302,6 +529,17 @@ pub fn get_startup_progress() -> StartupProgress {
         image_total,
         image_pull_pct,
         all_ready,
+        start_in_progress,
+        user_stopped,
+        user_stopped_at_ms: user_stopped
+            .then(|| user_stopped_at_ms(&data_dir))
+            .flatten(),
+        start_failed_at_ms: start_error
+            .as_ref()
+            .and_then(|_| start_failed_at_ms(&data_dir)),
+        start_error,
+        hub_api_live: docker_available && probe_hub_api_live(),
+        docker_access,
     }
 }
 

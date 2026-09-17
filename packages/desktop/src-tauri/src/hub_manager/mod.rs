@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -89,6 +89,17 @@ const MAX_START_RETRIES: u32 = 3;
 
 /// Global guard: true while a `start_hub` call is in progress.
 static START_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// When the current or most recent `start_hub` call began, in Unix milliseconds (0 = never).
+static START_BEGAN_AT_MS: AtomicU64 = AtomicU64::new(0);
+
+/// True once a startup-progress poll during the current start found an image still missing.
+/// Download progress then counts toward the startup percentage until the Hub is ready.
+static START_IMAGE_DOWNLOADS_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// True while the current start still has to run its final `compose up --force-recreate`.
+/// The database and queue it brings up first are replaced then, so they are not ready yet.
+static START_RECREATE_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
 static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> =
@@ -415,7 +426,7 @@ pub struct OllamaInstallResult {
 }
 
 /// A single service's startup state, reported to the frontend loading screen.
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceState {
     /// Container does not exist yet (pull / create pending).
@@ -424,10 +435,14 @@ pub enum ServiceState {
     Starting,
     /// Container is running and healthy (or has no health-check and is running).
     Ready,
-    /// Container exited or is in an error state.
+    /// Container exited or could not start, and nothing explains it.
     Failed,
     /// Optional service is not present or not running — does not block startup.
     Unavailable,
+    /// The user stopped the Hub, or the container exited cleanly.
+    Stopped,
+    /// The last start failed before this container was created or started.
+    NotStarted,
 }
 
 /// Per-service startup info returned to the frontend.
@@ -440,6 +455,10 @@ pub struct ServiceStatus {
     pub state: ServiceState,
     /// When true, this row is informational only and never blocks `all_ready`.
     pub optional: bool,
+    /// What went wrong, for `Failed`: Docker's error for the container, or its exit code.
+    pub detail: Option<String>,
+    /// For `Starting`: seconds since the container started, while it waits on its health check.
+    pub starting_secs: Option<u64>,
 }
 
 /// Aggregate startup progress across all core Hub services.
@@ -447,7 +466,8 @@ pub struct ServiceStatus {
 pub struct StartupProgress {
     /// Per-service breakdown.
     pub services: Vec<ServiceStatus>,
-    /// 0..=100 overall progress percentage (average of required service states).
+    /// 0..=100 overall progress percentage: the average of required service states, averaged
+    /// again with `image_pull_pct` when this start had images to download.
     pub progress_pct: u8,
     /// Number of required startup images that are present locally.
     pub image_pulled: u8,
@@ -457,6 +477,19 @@ pub struct StartupProgress {
     pub image_pull_pct: u8,
     /// True once every required core service is Ready (optional rows are ignored).
     pub all_ready: bool,
+    /// A `start_hub` call is running right now.
+    pub start_in_progress: bool,
+    /// The user stopped the Hub and has not started it since.
+    pub user_stopped: bool,
+    /// When the user stopped the Hub, in Unix milliseconds.
+    pub user_stopped_at_ms: Option<u64>,
+    /// Why the last start failed, while the failure is still sticky.
+    pub start_error: Option<String>,
+    /// When the last start failed, in Unix milliseconds.
+    pub start_failed_at_ms: Option<u64>,
+    pub docker_access: DockerAccessCheck,
+    /// The Hub API answers its liveness check.
+    pub hub_api_live: bool,
 }
 
 /// Get the Hub data directory (platform-specific)

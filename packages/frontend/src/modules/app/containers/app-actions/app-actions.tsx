@@ -49,7 +49,12 @@ import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpe
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
-import { clearStashedInstallIntentForApp, resolvePendingInstallIntent, shouldAutoOpenInstall } from '@/lib/deep-link-install';
+import {
+  clearStashedInstallIntentForApp,
+  forgetInstallIntentForApp,
+  resolvePendingInstallIntent,
+  shouldAutoOpenInstall,
+} from '@/lib/deep-link-install';
 import type { AppUrlAvailability, AppUrlProbeResult } from '../../helpers/use-app-url-availability';
 import { checkAvailability } from '@/api-client/sdk.gen';
 import { useAppContext } from '@/context/app-context';
@@ -264,16 +269,18 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
       return;
     }
 
+    // A link held during setup opens this dialog from the stash while the shell still has it parked;
+    // left there, it brought the user back here with the dialog open on the next page load.
     if (!archSupported) {
       autoInstallTriggeredRef.current = true;
       showWrongArchitectureToast();
-      clearStashedInstallIntentForApp(appSlug, storeId);
+      void forgetInstallIntentForApp(appSlug, storeId);
       return;
     }
 
     autoInstallTriggeredRef.current = true;
     installDisclosure.open();
-    clearStashedInstallIntentForApp(appSlug, storeId);
+    void forgetInstallIntentForApp(appSlug, storeId);
 
     if (searchParams.get('install') === '1') {
       const nextParams = new URLSearchParams(searchParams);

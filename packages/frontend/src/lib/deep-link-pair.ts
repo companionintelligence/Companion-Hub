@@ -42,3 +42,27 @@ export async function takePendingPairingCodeFromDesktop(): Promise<string | null
 export async function resolvePendingPairingCode(): Promise<string | null> {
   return (await takePendingPairingCodeFromDesktop()) ?? takeStashedPairingCode();
 }
+
+/**
+ * Forget a pairing code the registration screen has used, wherever its link left a copy.
+ *
+ * One link leaves several: the desktop shell parks it as well as emitting it, both listeners stash
+ * what they hear, and Linux and Windows deliver each link twice. A copy left behind was submitted
+ * again the next time registration opened in this session, and Portal refuses a code once used.
+ */
+export async function forgetPendingPairingCode(code: string): Promise<void> {
+  const normalized = normalizePairingCode(code);
+  if (!normalized) {
+    return;
+  }
+
+  if (normalizePairingCode(sessionStorage.getItem(PENDING_PAIRING_CODE_KEY) ?? '') === normalized) {
+    sessionStorage.removeItem(PENDING_PAIRING_CODE_KEY);
+  }
+
+  const parked = await takePendingPairingCodeFromDesktop();
+  if (parked && parked !== normalized) {
+    // A link with a different code arrived meanwhile: keep it for the next attempt.
+    stashPendingPairingCode(parked);
+  }
+}
