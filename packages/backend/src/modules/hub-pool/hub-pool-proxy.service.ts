@@ -22,7 +22,13 @@ import {
 } from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
-import { HubPoolRoutingLogService, type PoolRoutingOutcome, type PoolRoutingPin, type PoolRoutingUsage } from './hub-pool-routing-log.service';
+import {
+  HubPoolRoutingLogService,
+  type PoolRoutingOutcome,
+  type PoolRoutingPin,
+  type PoolRoutingRecordInput,
+  type PoolRoutingUsage,
+} from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import { injectUsageOptIn, tapResponseUsageWhileStreaming } from './response-usage-tap';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
@@ -90,6 +96,30 @@ export function firstByteBudgetMs(bodyBytes: number): number {
  * right number is a property of the operator's hardware, not of this file.
  */
 const COMPLETION_TIMEOUT_MS = Math.max(CONNECT_TIMEOUT_MS, Number(process.env.HUB_POOL_COMPLETION_TIMEOUT_MS) || 300_000);
+
+/**
+ * The header deadline a forward of this shape gets. One function for the timer in
+ * `fetchWithConnectTimeout` and for the routing log's `budgetMs`, so the number an operator reads
+ * next to a failed row is the number that ended it, not a re-derivation that could drift.
+ */
+export function requestBudgetMs(streaming: boolean, bodyLength: number): number {
+  return streaming ? firstByteBudgetMs(bodyLength) : Math.max(COMPLETION_TIMEOUT_MS, firstByteBudgetMs(bodyLength));
+}
+
+/**
+ * `stream`, `bodyBytes` and `budgetMs` for the routing log, from the body as it will be forwarded.
+ *
+ * This serialises the body once more than the forward itself does. Measured on a dev Mac: 0.9 ms for
+ * a 184 KB agent turn and 3.5 ms for a 1 MB embeddings batch, against requests that take seconds to
+ * minutes — cheaper than threading a pre-serialised payload through every forward signature. The
+ * budget reads the string length, exactly as the forward's timer does; `bodyBytes` is the UTF-8 size
+ * on the wire, and the two differ only for non-ASCII text.
+ */
+export function describeRequestShape(method: string, body: unknown): { stream: boolean; bodyBytes: number; budgetMs: number } {
+  const payload = method === 'GET' ? '' : (JSON.stringify(body) ?? '');
+  const stream = isStreamingRequest(body);
+  return { stream, bodyBytes: Buffer.byteLength(payload, 'utf8'), budgetMs: requestBudgetMs(stream, payload.length) };
+}
 
 /**
  * The dispatcher every pool forward is sent through: Node's OWN bundled undici `Agent`, with its
@@ -241,6 +271,25 @@ export const POOL_BACKEND_HEADER = 'X-Hub-Pool-Backend';
 /** Request → peer and response → caller: the model the request was routed for. */
 export const POOL_MODEL_HEADER = 'X-Hub-Pool-Model';
 /**
+ * Response → caller: the routing-log `id` of this request on the Hub that routed it — on a 502 as well
+ * as a served response, since a failed call is the one most worth looking up. Request → peer: the same
+ * id, so the peer's inbound row carries it and the two nodes' rows for one call join on equality.
+ * It names a log row the caller could already read with an operator credential, and nothing else.
+ */
+export const POOL_REQUEST_ID_HEADER = 'X-Hub-Pool-Request-Id';
+
+/**
+ * A peer-supplied request id, or `undefined` when there is none worth keeping.
+ *
+ * The sender is an authenticated peer, but the value still lands in a log that operators read and
+ * scripts parse, so it is held to the shape this Hub mints (a UUID) plus room for another build's
+ * choice: 1-64 characters of `[A-Za-z0-9._:-]`, starting alphanumeric. Anything else is dropped and
+ * the row gets a fresh id instead, rather than failing a forward over a label.
+ */
+export function normalizePoolRequestId(value: string | undefined): string | undefined {
+  return value !== undefined && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value) ? value : undefined;
+}
+/**
  * {@link POOL_SERVED_BY_HEADER}'s value when this node's own engine served the request. Shares the
  * routing log's key on purpose, and can never collide with a peer: `normalizePeerFqdn` admits only
  * names of two or more labels, so no peer row is ever the bare word `local`.
@@ -255,11 +304,12 @@ export const POOL_SERVED_LOCALLY = LOCAL_CANDIDATE_KEY;
 const POOL_HEADER_PREFIX = 'x-hub-pool-';
 
 /** The attribution headers for a response served by `candidate`. Pure, so the contract has its own test. */
-export function servedByHeaders(candidate: PoolCandidate, model: string): Record<string, string> {
+export function servedByHeaders(candidate: PoolCandidate, model: string, requestId?: string): Record<string, string> {
   return {
     [POOL_SERVED_BY_HEADER]: candidate.nodeFqdn ?? POOL_SERVED_LOCALLY,
     [POOL_BACKEND_HEADER]: candidate.backend,
     [POOL_MODEL_HEADER]: model,
+    ...(requestId ? { [POOL_REQUEST_ID_HEADER]: requestId } : {}),
   };
 }
 /** 4xx that means "this node can't serve you", never "your request is bad" — retryable on any candidate. */
@@ -531,7 +581,7 @@ export class PoolProxyService {
     const startedAt = Date.now();
     const model = await this.resolveModelAlias(params.model);
     if (!model) {
-      this.routingLog.record({
+      const failed = this.routingLog.record({
         at: new Date().toISOString(),
         direction: 'outbound',
         path,
@@ -548,6 +598,7 @@ export class PoolProxyService {
         durationMs: Date.now() - startedAt,
         usage: null,
       });
+      res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       res.status(502).json({ error: describeUnresolvableAuto() });
       return;
     }
@@ -564,7 +615,7 @@ export class PoolProxyService {
     const failedOverFrom: string[] = [];
 
     if (candidates.length === 0) {
-      this.routingLog.record({
+      const failed = this.routingLog.record({
         at: new Date().toISOString(),
         direction: 'outbound',
         path,
@@ -580,7 +631,9 @@ export class PoolProxyService {
         status: null,
         durationMs: Date.now() - startedAt,
         usage: null,
+        ...describeRequestShape(method, body),
       });
+      res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       res.status(502).json({ error: describeNoCandidates(model, pin) });
       return;
     }
@@ -604,6 +657,7 @@ export class PoolProxyService {
       attempt: 1,
       failedOverFrom,
       pin: describePinForLog(pin),
+      ...describeRequestShape(method, body),
     });
 
     let lastError: unknown;
@@ -612,11 +666,11 @@ export class PoolProxyService {
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
       if (index > 0) {
-        Object.assign(row, { node: nodeLabel, peerId: candidate.peerId, backend: candidate.backend, attempt: index + 1 });
+        this.routingLog.update(row, { node: nodeLabel, peerId: candidate.peerId, backend: candidate.backend, attempt: index + 1 });
       }
       this.loadService.acquire(key);
       try {
-        const upstream = await this.forward(candidate, path, method, body, model);
+        const upstream = await this.forward(candidate, path, method, body, model, row.id);
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status);
@@ -639,7 +693,7 @@ export class PoolProxyService {
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
-        this.commitResponse(upstream, res, servedByHeaders(candidate, model));
+        this.commitResponse(upstream, res, servedByHeaders(candidate, model, row.id));
         committed = true;
         await this.streamResponse(upstream, res, (usage) => this.routingLog.attachUsage(row, usage));
         return;
@@ -674,6 +728,9 @@ export class PoolProxyService {
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
+    if (!res.headersSent) {
+      res.setHeader(POOL_REQUEST_ID_HEADER, row.id);
+    }
     this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
   }
 
@@ -768,6 +825,8 @@ export class PoolProxyService {
     fromPeerFqdn?: string,
     /** Model the peer asked for, from `X-Hub-Pool-Model`. Optional: an older peer won't send it, and a missing model only costs us the strike, never the forward. */
     model?: string,
+    /** The sender's routing-log id, from `X-Hub-Pool-Request-Id`, already normalised. Optional for the same reason as `model`. */
+    requestId?: string,
   ): Promise<void> {
     // Counted like a locally-routed request: a peer's forwarded work occupies this node's engine
     // exactly as its own apps' does, and a node busy serving the pool must not report itself idle
@@ -777,11 +836,12 @@ export class PoolProxyService {
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
     let recorded = false;
+    const request = { id: requestId, ...describeRequestShape(method, body) };
     try {
       const upstream = await this.callBackend(backend, path, method, body);
       // Logged from the receiving side too, so an operator can answer "which of my peers is
       // spending my GPU time" — the sender's own log only covers what it sent.
-      this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt);
+      this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt, undefined, request);
       recorded = true;
       // A peer's forward is the only evidence an inbound-only node ever gets that one of its own
       // models cannot run: nothing here goes through `proxyRequest`, so without this the node
@@ -790,7 +850,7 @@ export class PoolProxyService {
       await this.pipeResponse(upstream, res);
     } catch (error) {
       if (!recorded) {
-        this.recordInbound(backend, path, fromPeerFqdn, null, startedAt);
+        this.recordInbound(backend, path, fromPeerFqdn, null, startedAt, undefined, request);
       }
       throw error;
     } finally {
@@ -812,10 +872,12 @@ export class PoolProxyService {
     path: string;
     fromPeerFqdn: string | undefined;
     status: number;
+    /** The sender's routing-log id, when it sent one — so a refusal joins to the sender's failover row too. */
+    requestId?: string;
   }): void {
     // 'failed' explicitly: nothing was served, and the status is a 4xx that the served-path rule
     // below would otherwise read as success.
-    this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed');
+    this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed', { id: params.requestId });
   }
 
   private recordInbound(
@@ -825,8 +887,10 @@ export class PoolProxyService {
     status: number | null,
     startedAt: number,
     outcome?: PoolRoutingOutcome,
+    request: Pick<PoolRoutingRecordInput, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'> = {},
   ): void {
     this.routingLog.record({
+      ...request,
       at: new Date().toISOString(),
       direction: 'inbound',
       path,
@@ -1059,7 +1123,14 @@ export class PoolProxyService {
     );
   }
 
-  private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown, model: string): Promise<globalThis.Response> {
+  private async forward(
+    candidate: PoolCandidate,
+    path: string,
+    method: string,
+    body: unknown,
+    model: string,
+    requestId?: string,
+  ): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
       return this.callBackend(candidate.backend, path, method, body);
     }
@@ -1088,6 +1159,9 @@ export class PoolProxyService {
           // Lets the receiver credit the outcome to the right model without parsing the body it
           // promises not to read. Same reason as the header above: the path alone doesn't carry it.
           [POOL_MODEL_HEADER]: model,
+          // So the peer's inbound row carries the id this Hub's outbound row has. Outside the signed
+          // material, like the two headers above: it labels a log row and authorises nothing.
+          ...(requestId ? { [POOL_REQUEST_ID_HEADER]: requestId } : {}),
           ...authHeaders,
         },
         body: peerPayload,
@@ -1109,7 +1183,7 @@ export class PoolProxyService {
     const controller = new AbortController();
     // A streamed request's first byte waits on the prompt being read, so its budget grows with the
     // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
-    const budget = streaming ? firstByteBudgetMs(bodyBytes) : Math.max(COMPLETION_TIMEOUT_MS, firstByteBudgetMs(bodyBytes));
+    const budget = requestBudgetMs(streaming, bodyBytes);
     const timer = setTimeout(
       () => controller.abort(new Error(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`)),
       budget,

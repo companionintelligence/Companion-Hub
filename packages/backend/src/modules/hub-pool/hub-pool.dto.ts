@@ -12,7 +12,7 @@ import {
   POOL_PIN_TARGET_KINDS,
   normalizePeerFqdn,
 } from '@/common/helpers/hub-pool';
-import { ROUTING_LOG_CAPACITY } from './hub-pool-routing-log.service';
+import { MAX_ROUTING_LOG_CAPACITY } from './hub-pool-routing-log.service';
 import { z } from 'zod';
 
 /**
@@ -188,7 +188,19 @@ const probePeerAddressSchema = z.object({
 export class ProbePeerAddressBody extends createZodDto(probePeerAddressSchema) {}
 
 const routingLogQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(ROUTING_LOG_CAPACITY).optional(),
+  /**
+   * Page size, newest first. Bounded by the largest ring `HUB_POOL_ROUTING_LOG_SIZE` can configure
+   * rather than by this process's ring: a limit above the ring is simply the whole ring, and a 400
+   * for asking about a setting the caller cannot see would break a runner that polls a mixed fleet.
+   */
+  limit: z.coerce.number().int().min(1).max(MAX_ROUTING_LOG_CAPACITY).optional(),
+  /**
+   * Only rows placed or changed at or after this instant — the `nextSince` a previous call returned.
+   * Validated as ISO 8601 with a zone, because `Date.parse` alone accepts forms like "Sep 17 2026"
+   * whose zone is whatever the Hub's is, and a cursor that shifts by the Hub's UTC offset silently
+   * skips hours of rows.
+   */
+  since: z.iso.datetime({ offset: true }).optional(),
 });
 export class RoutingLogQueryDto extends createZodDto(routingLogQuerySchema) {}
 

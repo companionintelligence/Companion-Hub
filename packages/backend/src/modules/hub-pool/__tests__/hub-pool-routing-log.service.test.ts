@@ -1,7 +1,13 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { HubPoolRoutingLogService, ROUTING_LOG_CAPACITY, type PoolRoutingRecord } from '../hub-pool-routing-log.service';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  HubPoolRoutingLogService,
+  MAX_ROUTING_LOG_CAPACITY,
+  ROUTING_LOG_CAPACITY,
+  resolveRoutingLogCapacity,
+  type PoolRoutingRecordInput,
+} from '../hub-pool-routing-log.service';
 
-function record(overrides: Partial<PoolRoutingRecord> = {}): PoolRoutingRecord {
+function record(overrides: Partial<PoolRoutingRecordInput> = {}): PoolRoutingRecordInput {
   return {
     at: new Date().toISOString(),
     direction: 'outbound',
@@ -13,6 +19,7 @@ function record(overrides: Partial<PoolRoutingRecord> = {}): PoolRoutingRecord {
     candidates: 1,
     attempt: 1,
     failedOverFrom: [],
+    pin: null,
     outcome: 'served',
     status: 200,
     durationMs: 12,
@@ -123,6 +130,138 @@ describe('HubPoolRoutingLogService', () => {
         status: 200,
         usage: { promptTokens: 120, completionTokens: 30, totalTokens: 150 },
       });
+    });
+  });
+
+  /**
+   * Fleet QA attributed an agent turn's calls to rows by time window on the entry Hub's clock, which
+   * cannot separate two concurrent calls for one model. The id is the join key instead, so it has to
+   * be unique per row and survive every mutation the proxy makes to a row it already handed out.
+   */
+  describe('request ids', () => {
+    it('mints a distinct id for every row', () => {
+      const ids = new Set(Array.from({ length: 50 }, () => service.record(record()).id));
+
+      expect(ids.size).toBe(50);
+    });
+
+    it('keeps the id a peer sent, so the inbound row joins the sender outbound row', () => {
+      const row = service.record(record({ direction: 'inbound', id: 'req-from-core' }));
+
+      expect(row.id).toBe('req-from-core');
+    });
+
+    it('keeps the same id through failover, settle and usage', () => {
+      const { outcome: _o, status: _s, durationMs: _d, usage: _u, ...placement } = record();
+      const row = service.open(placement);
+      const id = row.id;
+
+      service.update(row, { node: 'core-14.tail.ts.net', attempt: 2 });
+      service.settle(row, { outcome: 'served', status: 200, durationMs: 10 });
+      service.attachUsage(row, { promptTokens: 1, completionTokens: 1, totalTokens: 2 });
+
+      expect(service.list()[0]?.id).toBe(id);
+    });
+
+    it('defaults the request-shape fields to null where the caller had no body to describe', () => {
+      expect(service.record(record())).toMatchObject({ stream: null, bodyBytes: null, budgetMs: null });
+    });
+  });
+
+  /**
+   * The 200-row ring overflowed in a burst between two polls and nothing said so. A cursor on the time
+   * a row last changed lets a poller take only what is new — and see the settle of a row it last saw
+   * pending, which a cursor on placement time would never return.
+   */
+  describe('since cursor', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function openAt(iso: string, model: string) {
+      vi.setSystemTime(new Date(iso));
+      const { outcome: _o, status: _s, durationMs: _d, usage: _u, ...placement } = record({ model, at: iso });
+      return service.open(placement);
+    }
+
+    it('returns rows changed at or after the cursor, and the cursor to use next', () => {
+      vi.useFakeTimers();
+      const early = openAt('2026-09-17T10:00:00.000Z', 'early');
+      openAt('2026-09-17T10:00:05.000Z', 'late');
+
+      vi.setSystemTime(new Date('2026-09-17T10:04:00.000Z'));
+      service.settle(early, { outcome: 'served', status: 200, durationMs: 240_000 });
+
+      const page = service.query({ since: '2026-09-17T10:00:05.000Z' });
+
+      // Inclusive: `late` changed exactly at the cursor. `early` was placed before it but settled after.
+      expect(page.entries.map((entry) => entry.model)).toEqual(['late', 'early']);
+      expect(page.matched).toBe(2);
+      expect(page.nextSince).toBe('2026-09-17T10:04:00.000Z');
+    });
+
+    it('compares instants, so a cursor written with a zone offset selects the same rows', () => {
+      vi.useFakeTimers();
+      openAt('2026-09-17T10:00:00.000Z', 'before');
+      openAt('2026-09-17T10:30:00.000Z', 'after');
+
+      expect(service.query({ since: '2026-09-17T12:15:00+02:00' }).entries.map((entry) => entry.model)).toEqual(['after']);
+    });
+
+    it('applies limit after the cursor and reports how many matched', () => {
+      for (let i = 0; i < 5; i += 1) service.record(record({ model: `m${i}` }));
+
+      const page = service.query({ since: '2000-01-01T00:00:00Z', limit: 2 });
+
+      expect(page.entries.map((entry) => entry.model)).toEqual(['m4', 'm3']);
+      expect(page.matched).toBe(5);
+    });
+  });
+
+  describe('restart and eviction signals', () => {
+    it('gives each process its own bootId, so a poller can tell a restart from a quiet pool', () => {
+      const other = new HubPoolRoutingLogService();
+
+      expect(service.summary().bootId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(other.summary().bootId).not.toBe(service.summary().bootId);
+      expect(Date.parse(service.summary().startedAt)).not.toBeNaN();
+    });
+
+    it('counts rows recorded since boot beyond what the ring still holds, and dates the oldest survivor', () => {
+      for (let i = 0; i < ROUTING_LOG_CAPACITY + 7; i += 1) {
+        service.record(record({ model: `model-${i}`, at: new Date(Date.UTC(2026, 8, 17, 0, 0, i)).toISOString() }));
+      }
+
+      const summary = service.summary();
+      expect(summary.totalRecorded - summary.recorded).toBe(7);
+      expect(summary.oldestAt).toBe(new Date(Date.UTC(2026, 8, 17, 0, 0, 7)).toISOString());
+    });
+  });
+
+  describe('HUB_POOL_ROUTING_LOG_SIZE', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it.each([
+      ['unset', undefined, ROUTING_LOG_CAPACITY],
+      ['not a number', 'lots', ROUTING_LOG_CAPACITY],
+      ['below the default, which would stop the dashboard caveat from ever firing', '50', ROUTING_LOG_CAPACITY],
+      ['a fraction', '2500.9', 2500],
+      ['above the ceiling', '1000000', MAX_ROUTING_LOG_CAPACITY],
+    ])('resolves %s to a bounded ring', (_label, raw, expected) => {
+      expect(resolveRoutingLogCapacity(raw)).toBe(expected);
+    });
+
+    it('holds the configured ring, but still serves the default page to a caller that names no limit', () => {
+      vi.stubEnv('HUB_POOL_ROUTING_LOG_SIZE', '500');
+      const large = new HubPoolRoutingLogService();
+      for (let i = 0; i < 600; i += 1) large.record(record({ model: `m${i}` }));
+
+      expect(large.summary()).toMatchObject({ capacity: 500, recorded: 500 });
+      // The dashboard polls without a limit every 15 s; a raised ring must not raise that payload.
+      expect(large.list()).toHaveLength(ROUTING_LOG_CAPACITY);
+      expect(large.query({ limit: 500 }).entries).toHaveLength(500);
     });
   });
 });

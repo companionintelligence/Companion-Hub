@@ -107,6 +107,44 @@ describe('api-key create', () => {
     expect(insertSql()).toBeUndefined();
   });
 
+  /**
+   * The key fleet QA holds instead of the device key. What matters is that it is minted alone and
+   * read-only: one row that also carried 'mcp' would be the whole tool surface under a name that says
+   * "read", and 'write' in the listing would make a test key look like it can change things.
+   */
+  describe('qa:read keys', () => {
+    it('mints one with --scope in either flag form, stored as read', () => {
+      runApiKeyCommand(['create', '--name', 'fleet-qa', '--scope', 'qa:read']);
+      expect(insertSql()).toContain("ARRAY['qa:read']::text[]");
+      expect(insertSql()).toContain("'read'");
+      expect(insertSql()).not.toContain("'write'");
+
+      mockedSpawnSync.mockClear();
+      runApiKeyCommand(['create', '--name', 'fleet-qa', '--scope=qa:read']);
+      expect(insertSql()).toContain("ARRAY['qa:read']::text[]");
+    });
+
+    it('prints the routes the key opens, so whoever mints it sees its whole authority', () => {
+      runApiKeyCommand(['create', '--name', 'fleet-qa', '--scopes', 'qa:read']);
+
+      const printed = (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+      expect(printed).toContain('GET /api/inference/pool/routing-log');
+      expect(printed).toContain('Every other route answers 403.');
+    });
+
+    it('refuses to put it on the same key as another scope', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'fleet-qa', '--scopes', 'mcp,qa:read'])).toThrow('exit');
+      expect(errorText()).toContain("The 'qa:read' scope must be the only scope on its key");
+      expect(insertSql()).toBeUndefined();
+    });
+
+    it('refuses a capability wider than read, which the key could never use', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'fleet-qa', '--scope', 'qa:read', '--capability', 'full'])).toThrow('exit');
+      expect(errorText()).toContain('--capability full would do nothing');
+      expect(insertSql()).toBeUndefined();
+    });
+  });
+
   it('reads --name in either flag form, and still refuses one that is a forgotten flag value', () => {
     runApiKeyCommand(['create', '--name=laptop', '--capability=read']);
     expect(insertSql()).toContain("VALUES ('laptop'");

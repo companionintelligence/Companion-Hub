@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { Writable } from 'node:stream';
 import { HttpException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -28,7 +29,10 @@ import { HubPoolIdentityService } from '../hub-pool-identity.service';
 import { HubPoolPairingPinService } from '../hub-pool-pairing-pin.service';
 import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
-import { PoolProxyService } from '../hub-pool-proxy.service';
+import { POOL_REQUEST_ID_HEADER, POOL_SERVED_BY_HEADER, PoolProxyService } from '../hub-pool-proxy.service';
+import { HubPoolPinService } from '../hub-pool-pin.service';
+import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import type { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
 import { HubPoolController } from '../hub-pool.controller';
 import { PoolPeerGuard } from '../guards/pool-peer.guard';
@@ -1315,6 +1319,185 @@ describe('Hub Pool across two nodes', () => {
       const status = await beta.service.getPoolStatus();
 
       expect(status.peers[0]?.containers).toBeNull();
+    });
+  });
+
+  /**
+   * One id for one call, on both nodes. Fleet QA attributed an agent turn's calls to rows by time
+   * window on the entry Hub's clock, which cannot tell two concurrent calls for one model apart and
+   * cannot see the serving node's row at all. Driven through REAL proxies on both sides — core's
+   * ranking and forward, beta's guard, controller and inbound recording — with only the two engines
+   * faked, because the claim is about what crosses the wire: a single-node test would only prove that
+   * each side writes an id, not that they write the same one.
+   */
+  describe('request ids across the wire', () => {
+    const CORE_ENGINE = 'core-engine.test';
+    const BETA_ENGINE = 'beta-engine.test';
+
+    let coreLog: HubPoolRoutingLogService;
+    let betaLog: HubPoolRoutingLogService;
+    let coreProxy: PoolProxyService;
+    let betaController: HubPoolController;
+    /** Bodies beta's engine received, to prove the work really ran there. */
+    let betaEngineCalls: string[];
+
+    /** Ollama present and serving `models` at `host`; the other five engines absent. */
+    function registryServing(host: string, models: string[]): InferenceBackendRegistry {
+      const engine = (running: boolean) => {
+        const backend = mock<OllamaBackend>();
+        backend.healthCheck.mockResolvedValue({ running, healthy: running, modelsLoaded: running ? models : [] });
+        backend.getBaseUrl.mockReturnValue(`http://${host}`);
+        return backend as never;
+      };
+      return new InferenceBackendRegistry(engine(true), engine(false), engine(false), engine(false), engine(false), engine(false));
+    }
+
+    function realProxy(node: Node, registry: InferenceBackendRegistry, log: HubPoolRoutingLogService): PoolProxyService {
+      const pressure = mock<HubPoolPressureService>();
+      pressure.band.mockReturnValue(null);
+      return new PoolProxyService(registry, node.service, mock<TailscaleService>(), new HubPoolLoadService(), node.configuration, log, pressure);
+    }
+
+    /** The subset of an Express response the proxy writes to: status, headers, and a real stream for the body. */
+    function capturingResponse() {
+      const chunks: Buffer[] = [];
+      const headers: Record<string, string> = {};
+      let statusCode = 200;
+      const res = new Writable({
+        write(chunk, _encoding, callback) {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          callback();
+        },
+      }) as unknown as import('express').Response;
+      res.status = ((code: number) => {
+        statusCode = code;
+        return res;
+      }) as never;
+      res.setHeader = ((name: string, value: string) => {
+        headers[name.toLowerCase()] = String(value);
+        return res;
+      }) as never;
+      res.json = ((payload: unknown) => {
+        chunks.push(Buffer.from(JSON.stringify(payload)));
+        res.end();
+        return res;
+      }) as never;
+      return { res, headers, status: () => statusCode, body: () => Buffer.concat(chunks).toString() };
+    }
+
+    beforeEach(() => {
+      coreLog = new HubPoolRoutingLogService();
+      betaLog = new HubPoolRoutingLogService();
+      // Core has the shared model only, so a request for beta's model has exactly one candidate: beta.
+      coreProxy = realProxy(core, registryServing(CORE_ENGINE, [SHARED_MODEL]), coreLog);
+      const betaProxy = realProxy(beta, registryServing(BETA_ENGINE, [SHARED_MODEL, BETA_ONLY_MODEL]), betaLog);
+      betaController = new HubPoolController(
+        beta.service,
+        betaProxy,
+        mock<TailscaleService>(),
+        beta.configuration,
+        betaLog,
+        new HubPoolDiscoveryService(mock<LoggerService>(), beta.service),
+        mock<HubPoolPinService>(),
+      );
+      betaEngineCalls = [];
+
+      // Layered over the pairing router: beta's engine, and beta's `local/*` route through its real
+      // guard and the real-proxy controller above. Everything else goes to the router as before.
+      const router = global.fetch;
+      global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = new URL(String(input));
+        if (url.host === BETA_ENGINE) {
+          betaEngineCalls.push(String(init?.body ?? ''));
+          return new Response(JSON.stringify({ message: { role: 'assistant', content: 'ok' }, done: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.hostname === BETA_FQDN && url.pathname === '/api/inference/pool/local/api/chat') {
+          const request = {
+            header: headerLookup(init),
+            poolPeer: undefined,
+            method: (init?.method ?? 'GET').toUpperCase(),
+            originalUrl: url.pathname,
+            url: url.pathname,
+            path: url.pathname,
+            body: init?.body ? JSON.parse(init.body as string) : {},
+            ip: '100.64.0.9',
+          } as unknown as Request;
+          await beta.guard.canActivate({ switchToHttp: () => ({ getRequest: () => request }) } as never);
+          const captured = capturingResponse();
+          await betaController.localOllamaChat(request, request.body as Record<string, unknown>, captured.res);
+          return new Response(captured.body(), { status: captured.status(), headers: captured.headers });
+        }
+        return router(input, init);
+      }) as typeof fetch;
+    });
+
+    async function routeFromCore(content: string) {
+      const captured = capturingResponse();
+      await coreProxy.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: BETA_ONLY_MODEL, messages: [{ role: 'user', content }] },
+        model: BETA_ONLY_MODEL,
+        res: captured.res,
+      });
+      return captured;
+    }
+
+    it('puts the same id on core’s response, core’s outbound row and beta’s inbound row', async () => {
+      await pairNodes();
+      await core.poll();
+
+      const response = await routeFromCore('hello');
+
+      expect(response.status()).toBe(200);
+      expect(response.headers[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe(BETA_FQDN);
+      expect(betaEngineCalls).toHaveLength(1);
+      const id = response.headers[POOL_REQUEST_ID_HEADER.toLowerCase()];
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+
+      const outbound = coreLog.list()[0];
+      const inbound = betaLog.list()[0];
+      expect(outbound).toMatchObject({ id, direction: 'outbound', node: BETA_FQDN, outcome: 'served' });
+      expect(inbound).toMatchObject({ id, direction: 'inbound', node: CORE_FQDN, outcome: 'served' });
+      // Both sides describe the same body, so a budget read on one node means the same thing on the other.
+      expect(inbound?.bodyBytes).toBe(outbound?.bodyBytes);
+      expect(inbound).toMatchObject({ stream: false, budgetMs: outbound?.budgetMs });
+    });
+
+    it('tells two concurrent calls for the same model apart, which a time window could not', async () => {
+      await pairNodes();
+      await core.poll();
+
+      const [first, second] = await Promise.all([routeFromCore('one'), routeFromCore('two')]);
+
+      const responseIds = [first.headers['x-hub-pool-request-id'], second.headers['x-hub-pool-request-id']];
+      expect(new Set(responseIds).size).toBe(2);
+      expect(new Set(coreLog.list().map((row) => row.id))).toEqual(new Set(responseIds));
+      expect(new Set(betaLog.list().map((row) => row.id))).toEqual(new Set(responseIds));
+    });
+
+    /**
+     * The one-poll window `forwardLocal` documents: core still holds a snapshot saying beta serves,
+     * and beta has switched inbound off since. Beta's refusal row is the other half of core's failure,
+     * and the caller's 502 carries the id that finds both.
+     */
+    it('joins a refusal on beta to the failed row on core, and hands the caller that id on the 502', async () => {
+      await pairNodes();
+      await core.poll();
+      beta.setInboundEnabled(false);
+
+      const response = await routeFromCore('refused');
+
+      expect(response.status()).toBe(502);
+      const id = response.headers['x-hub-pool-request-id'];
+      expect(id).toBeTruthy();
+      expect(response.headers).not.toHaveProperty('x-hub-pool-served-by');
+      expect(coreLog.list()[0]).toMatchObject({ id, outcome: 'failed', failedOverFrom: [BETA_FQDN] });
+      expect(betaLog.list()[0]).toMatchObject({ id, direction: 'inbound', outcome: 'failed', status: 503 });
+      expect(betaEngineCalls).toHaveLength(0);
     });
   });
 });

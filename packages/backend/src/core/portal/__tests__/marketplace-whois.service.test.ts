@@ -384,6 +384,32 @@ describe('MarketplaceWhoIsService', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('whois_unrecognised_principal'));
   });
 
+  /**
+   * A `qa:read` key has no person behind it and is not exempt. It exists so a test can read an app's
+   * install status without holding operator authority, so `view` must pass without a grant lookup —
+   * and nothing else may, or the key would be an operator credential by another name.
+   */
+  describe('a qa:read key', () => {
+    const qaReadReq = (): Request => ({ hubPrincipal: 'qa-read' }) as Request;
+
+    it('may view an app without a WhoIs round trip', async () => {
+      await expect(service.assertSessionAction(qaReadReq(), APP_URN, 'view')).resolves.toBeUndefined();
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it.each(['install', 'configure', 'uninstall', 'restart'] as const)('is refused %s, like any unrecognised principal', async (action) => {
+      await expect(service.assertSessionAction(qaReadReq(), APP_URN, action)).rejects.toMatchObject({ status: 403 });
+    });
+
+    it('is never a lifecycle actor, so no lifecycle verb can run as it', () => {
+      expect(() => service.lifecycleActor(qaReadReq(), 'view')).toThrowError(TranslatableError);
+    });
+
+    it('sweeps nothing', async () => {
+      await expect(service.filterSessionByAction(qaReadReq(), [APP_URN], 'restart')).resolves.toEqual([]);
+    });
+  });
+
   it('refuses a sweep from a caller with no recognised principal', () => {
     // `updateAllApps` and friends act on every installed app, so the sweep gets the
     // same answer the named routes do rather than being read as exempt.
