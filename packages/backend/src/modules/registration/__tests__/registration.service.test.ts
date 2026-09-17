@@ -13,9 +13,14 @@ import { TailscaleService } from '../../tailscale/tailscale.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
+import { writePairingAppCheck } from '../../app-lifecycle/registration-recovery-state';
 
 vi.mock('systeminformation');
 vi.mock('axios');
+vi.mock('../../app-lifecycle/registration-recovery-state', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../app-lifecycle/registration-recovery-state')>()),
+  writePairingAppCheck: vi.fn(),
+}));
 
 describe('RegistrationService', () => {
   let service: RegistrationService;
@@ -746,6 +751,36 @@ describe('RegistrationService', () => {
     });
   });
 
+  describe('initiateRegistration', () => {
+    beforeEach(() => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', userSettings: {}, domain: 'example.com' } as any);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+    });
+
+    it('holds app sync for the apps check once the Portal has registered the device', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { tunnel_id: 't', tunnel_token: 'tok', subdomain: 'hub-org' } } as any);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.initiateRegistration('org-id', 'Org');
+
+      expect(result.success).toBe(true);
+      expect(writePairingAppCheck).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writePairingAppCheck).mock.invocationCallOrder[0]).toBeLessThan(setupSpy.mock.invocationCallOrder[0] ?? 0);
+      setupSpy.mockRestore();
+    });
+
+    it('does not hold app sync when the Portal refuses the registration', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 403, statusText: 'Forbidden', data: { error: 'nope' } } as any);
+
+      const result = await service.initiateRegistration('org-id', 'Org');
+
+      expect(result.success).toBe(false);
+      expect(writePairingAppCheck).not.toHaveBeenCalled();
+    });
+  });
+
   describe('completeRegistrationFromCallback', () => {
     beforeEach(() => {
       vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
@@ -823,6 +858,69 @@ describe('RegistrationService', () => {
       expect(result.domain).toBe('companionintelligence.com');
       expect(configService.setDomain).toHaveBeenCalledWith('companionintelligence.com');
       expect(setupSpy).toHaveBeenCalledWith('org-cb', expect.objectContaining({ domain: 'companionintelligence.com' }));
+      setupSpy.mockRestore();
+    });
+
+    /*
+     * Pairing back onto an existing device synced this Hub's current app list, empty after a reinstall,
+     * and the Portal released every app the device had. The check that holds that sync must be in place
+     * before anything of the new registration is.
+     */
+    it('holds app sync for the apps check before saving the new registration', async () => {
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      expect(writePairingAppCheck).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(writePairingAppCheck).mock.invocationCallOrder[0]).toBeLessThan(
+        configService.setUserSettings.mock.invocationCallOrder[0] ?? 0,
+      );
+      expect(vi.mocked(writePairingAppCheck).mock.invocationCallOrder[0]).toBeLessThan(setupSpy.mock.invocationCallOrder[0] ?? 0);
+      setupSpy.mockRestore();
+    });
+
+    it('does not hold app sync for a callback meant for another device', async () => {
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'another-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      expect(result.success).toBe(false);
+      expect(writePairingAppCheck).not.toHaveBeenCalled();
+    });
+
+    it('completes the pairing even when the hold cannot be written, keeping the device key the Portal issued', async () => {
+      vi.mocked(writePairingAppCheck).mockRejectedValueOnce(new Error('EACCES'));
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.completeRegistrationFromCallback({
+        deviceId: 'test-device',
+        organizationId: 'org-cb',
+        organizationName: 'Callback Org',
+        slug: 'cb-org',
+        subdomain: 'hub-cb-org',
+        tunnelId: 'tunnel-cb',
+        tunnelToken: 'token-cb',
+        apiKey: 'key-cb',
+      });
+
+      expect(result.success).toBe(true);
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-cb' });
       setupSpy.mockRestore();
     });
 
