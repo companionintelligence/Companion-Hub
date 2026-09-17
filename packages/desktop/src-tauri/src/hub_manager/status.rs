@@ -164,6 +164,10 @@ pub(crate) struct CoreServiceContext {
     pub(crate) user_stopped: bool,
     /// The last start failed and the user has not tried again.
     pub(crate) start_failed: bool,
+    /// That start still recreates every container, so one running now is about to be
+    /// replaced. Without this, the database and queue read Ready and then drop back to
+    /// Starting when the final `compose up --force-recreate` replaces them.
+    pub(crate) recreate_pending: bool,
 }
 
 /// Derive a required service's state, plus what went wrong when it failed.
@@ -190,6 +194,9 @@ pub(crate) fn derive_core_service_state(
 
     let error = (!container.error.is_empty()).then(|| container.error.clone());
     match container.status.as_str() {
+        "running" if ctx.start_in_progress && ctx.recreate_pending => {
+            (ServiceState::Starting, None)
+        }
         "running" => (derive_service_state("running", &container.health), None),
         "restarting" => (ServiceState::Starting, None),
         "created" => {
@@ -403,6 +410,7 @@ pub fn get_startup_progress() -> StartupProgress {
         start_began_at: start_began_at(),
         user_stopped,
         start_failed: start_error.is_some(),
+        recreate_pending: START_RECREATE_PENDING.load(Ordering::SeqCst),
     };
 
     let vpn_on = is_private_vpn_enabled();

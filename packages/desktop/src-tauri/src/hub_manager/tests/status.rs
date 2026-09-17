@@ -196,6 +196,51 @@ fn running_containers_follow_their_health_check() {
 }
 
 #[test]
+fn services_running_before_the_stack_recreate_stay_starting_until_it_runs() {
+    let mut healthy = container("running");
+    healthy.health = "healthy".to_string();
+    let recreating = CoreServiceContext {
+        start_in_progress: true,
+        recreate_pending: true,
+        ..Default::default()
+    };
+    let recreated = CoreServiceContext {
+        start_in_progress: true,
+        ..Default::default()
+    };
+    // Left over from a start that ended before its final compose up.
+    let not_starting = CoreServiceContext {
+        recreate_pending: true,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        derive_core_service_state(Some(&healthy), &recreating),
+        (ServiceState::Starting, None)
+    );
+    assert_eq!(
+        derive_core_service_state(Some(&healthy), &recreated),
+        (ServiceState::Ready, None)
+    );
+    assert_eq!(
+        derive_core_service_state(Some(&healthy), &not_starting),
+        (ServiceState::Ready, None)
+    );
+    // A crash during that start still shows as a failure.
+    let mut crashed = container("exited");
+    crashed.exit_code = 1;
+    crashed.finished_at = Some(at(30));
+    let recreating_since = CoreServiceContext {
+        start_began_at: Some(at(0)),
+        ..recreating
+    };
+    assert_eq!(
+        derive_core_service_state(Some(&crashed), &recreating_since).0,
+        ServiceState::Failed
+    );
+}
+
+#[test]
 fn starting_secs_counts_from_the_container_start_only_while_starting() {
     let mut waiting = container("running");
     waiting.started_at = Some(at(0));

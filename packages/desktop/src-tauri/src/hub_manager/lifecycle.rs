@@ -108,6 +108,7 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     struct StartGuard;
     impl Drop for StartGuard {
         fn drop(&mut self) {
+            START_RECREATE_PENDING.store(false, Ordering::SeqCst);
             START_IN_PROGRESS.store(false, Ordering::SeqCst);
         }
     }
@@ -285,6 +286,7 @@ fn start_hub_inner(
     let hash_path = data_dir.join(".config-hash");
     let saved_hash = std::fs::read_to_string(&hash_path).ok();
     let should_refresh_stack = env_changed || saved_hash.as_deref() != Some(config_hash.as_str());
+    START_RECREATE_PENDING.store(should_refresh_stack, Ordering::SeqCst);
     if should_refresh_stack {
         let _ = append_desktop_log_for(
             data_dir,
@@ -460,6 +462,7 @@ fn start_hub_inner(
                 format!("docker compose up -d succeeded. {}", combined_output)
             };
             let _ = append_desktop_log_for(data_dir, "hub.start", &compose_message);
+            START_RECREATE_PENDING.store(false, Ordering::SeqCst);
             // Persist after compose up (even if health check fails later) so retries
             // and subsequent launches do not repeatedly pull/recreate unchanged stacks.
             persist_config_hash(data_dir, compose_path, env_path);

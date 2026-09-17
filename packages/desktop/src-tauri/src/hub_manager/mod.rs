@@ -97,6 +97,10 @@ static START_BEGAN_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// Download progress then counts toward the startup percentage until the Hub is ready.
 static START_IMAGE_DOWNLOADS_SEEN: AtomicBool = AtomicBool::new(false);
 
+/// True while the current start still has to run its final `compose up --force-recreate`.
+/// The database and queue it brings up first are replaced then, so they are not ready yet.
+static START_RECREATE_PENDING: AtomicBool = AtomicBool::new(false);
+
 /// `(hub .env mtime, is_private_vpn)` — avoids parsing the env file on every hub status poll (~3s).
 static PRIVATE_VPN_ENV_CACHE: Mutex<Option<(Option<std::time::SystemTime>, bool)>> =
     Mutex::new(None);
