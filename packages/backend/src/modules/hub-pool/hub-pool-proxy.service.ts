@@ -384,11 +384,19 @@ const CLIENT_CLOSED_MESSAGE = 'The client closed the connection before the pool 
  * Keyed on `writableFinished`, because a response that completed normally closes too. Attach it
  * before the first `await` of a handler, so a client that leaves while candidates are still being
  * ranked is not missed.
+ *
+ * And keyed on `errored`, because a client leaving is not the only way `res` closes unfinished:
+ * when the ENGINE dies mid-stream, `pipeline` destroys `res` with the engine's error, which closes
+ * it too. Without that check the catch blocks read their own teardown as a hang-up — measured
+ * against a real socket, an engine that dropped its connection mid-generation was logged at debug as
+ * "client closed a streaming response", the candidate-failure warning never appeared, and the
+ * peer-facing forward swallowed the error instead of surfacing it. A client that disconnects leaves
+ * `errored` null: Node closes the response from the socket, not through `destroy(err)`.
  */
 function abortWhenClientCloses(res: Response): AbortSignal {
   const controller = new AbortController();
   const onClose = () => {
-    if (!res.writableFinished) controller.abort(new Error(CLIENT_CLOSED_MESSAGE));
+    if (!res.writableFinished && !res.errored) controller.abort(new Error(CLIENT_CLOSED_MESSAGE));
   };
   if (res.destroyed) {
     onClose();
@@ -406,6 +414,21 @@ function abortWhenClientCloses(res: Response): AbortSignal {
  * otherwise clear the strikes of a model that fails every generation.
  */
 const MODEL_METADATA_PATHS = new Set(['/api/show']);
+
+/**
+ * How long a peer gets to START answering a model-metadata lookup before {@link describeFromPeer}
+ * moves on to the next peer holding the model.
+ *
+ * Without its own deadline the lookup inherited the non-streamed request budget, which is sized for a
+ * whole completion (COMPLETION_TIMEOUT_MS, 300 s) — so one peer that accepts the connection and then
+ * stalls (a wedged model directory, as core-1's once was) held an app's `/api/show` for five minutes
+ * per such peer, and OpenClaw gives up on its model long before that. The engine itself is nowhere
+ * near that slow: `/api/show` answered in 0.001-0.27 s on core-1, core-7, beta-1, beta-ms-a2 and
+ * beta-3-glass (2026-09-17, `qwen3.8:27b` and `minimax-m2:230b`, verbose and not). Headers only: a
+ * verbose answer is up to 8 MB (`qwen3.8:27b`), which over a relayed tailnet path may legitimately
+ * take longer than this to arrive.
+ */
+const PEER_MODEL_METADATA_HEADERS_TIMEOUT_MS = 15_000;
 
 export function describeNoCandidates(model: string, pin: HubPoolPin | null): string {
   const base = `No pool node currently has model "${model}" available.`;
@@ -1072,7 +1095,7 @@ export class PoolProxyService {
       }
       let committed = false;
       try {
-        const upstream = await this.forward(candidate, path, 'POST', body, model, clientClosed);
+        const upstream = await this.forwardWithHeadersDeadline(candidate, path, body, model, clientClosed);
         if (!upstream.ok) {
           this.logger.debug(`[PoolProxy] ${path} for "${model}" via ${candidate.nodeFqdn} answered ${upstream.status}; trying the next peer`);
           continue;
@@ -1092,6 +1115,26 @@ export class PoolProxyService {
       }
     }
     return false;
+  }
+
+  /** {@link forward} for a metadata lookup: aborted if the peer has not sent headers within {@link PEER_MODEL_METADATA_HEADERS_TIMEOUT_MS}. */
+  private async forwardWithHeadersDeadline(
+    candidate: PoolCandidate,
+    path: string,
+    body: unknown,
+    model: string,
+    clientClosed: AbortSignal,
+  ): Promise<globalThis.Response> {
+    const headersDeadline = new AbortController();
+    const timer = setTimeout(
+      () => headersDeadline.abort(new Error(`No response headers within ${PEER_MODEL_METADATA_HEADERS_TIMEOUT_MS}ms`)),
+      PEER_MODEL_METADATA_HEADERS_TIMEOUT_MS,
+    );
+    try {
+      return await this.forward(candidate, path, 'POST', body, model, AbortSignal.any([clientClosed, headersDeadline.signal]));
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** `null` when the body asks for `auto` and nothing can stand in for it; otherwise the body to forward. */

@@ -16,7 +16,8 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { Logger } from '@nestjs/common';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
@@ -232,9 +233,12 @@ describe('client disconnects propagate to the engine', () => {
     // doing the prefill, and it hears nothing unless the inbound forward propagates the close too.
     engine = await startEngine(() => {});
     serveModelFrom(engine.url);
-    let settled!: Promise<void>;
+    let settled!: Promise<unknown>;
     await startFront(async (req, res) => {
-      settled = service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', req.body, res, 'sender.tailxyz.ts.net', MODEL).catch(() => {});
+      settled = service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', req.body, res, 'sender.tailxyz.ts.net', MODEL).then(
+        () => 'resolved',
+        (error: unknown) => error,
+      );
       await settled;
     });
 
@@ -243,8 +247,78 @@ describe('client disconnects propagate to the engine', () => {
     client.destroy();
 
     await closedWithin(engineRes, CLOSE_WITHIN_MS);
-    await settled;
+    // Quietly: nobody is left to answer, so a rethrow would only be Nest logging a routine hang-up as a 500.
+    expect(await settled).toBe('resolved');
     expect(loadService.localInFlight()).toBe(0);
+  });
+
+  describe('an engine that dies mid-stream is still an engine failure, not a hang-up', () => {
+    // `pipeline` destroys the response with the engine's error when its source fails, and that closes
+    // the response unfinished exactly as a leaving client does. Reading the two alike hid every engine
+    // crash mid-generation behind a debug line claiming the client had gone.
+
+    /** An engine that sends headers and one frame, then drops the connection — a crashed runner, an OOM kill. */
+    function engineThatDiesAfterOneFrame() {
+      return startEngine((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/x-ndjson' });
+        res.write(`${JSON.stringify({ model: MODEL, message: { content: 'tok' }, done: false })}\n`);
+        setTimeout(() => res.socket?.destroy(), 50);
+      });
+    }
+
+    /** Sends a streamed turn and resolves once the client's response has ended, however it ended. */
+    function streamUntilItEnds(): Promise<void> {
+      return new Promise((resolve) => {
+        const req = sendThroughFront({ model: MODEL, stream: true, messages: [] }, (res) => {
+          res.resume();
+          res.on('close', () => resolve());
+        });
+        req.on('close', () => resolve());
+      });
+    }
+
+    it('warns about the failed candidate instead of logging that the client closed', async () => {
+      const logged: string[] = [];
+      for (const level of ['warn', 'log', 'debug'] as const) {
+        const spy = vi.spyOn(Logger.prototype, level).mockImplementation((message: unknown) => {
+          logged.push(`${level}: ${String(message)}`);
+        });
+        cleanups.push(() => spy.mockRestore());
+      }
+      engine = await engineThatDiesAfterOneFrame();
+      serveModelFrom(engine.url);
+      let settled!: Promise<void>;
+      await startFront(async (req, res) => {
+        settled = service.proxyRequest({ path: '/api/chat', method: 'POST', body: req.body, model: MODEL, res });
+        await settled;
+      });
+
+      await streamUntilItEnds();
+      await settled;
+
+      expect(logged.some((line) => line.startsWith('warn:') && line.includes('candidate local (ollama) failed'))).toBe(true);
+      expect(logged.some((line) => line.includes('client closed'))).toBe(false);
+      // Committed, so still one attempt: the failure is reported, never re-placed.
+      expect(engine.requests).toHaveLength(1);
+    });
+
+    it('rejects on the serving side of a pool hop, so the failure is not swallowed as the sender leaving', async () => {
+      engine = await engineThatDiesAfterOneFrame();
+      serveModelFrom(engine.url);
+      let settled!: Promise<unknown>;
+      await startFront(async (req, res) => {
+        settled = service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', req.body, res, 'sender.tailxyz.ts.net', MODEL).then(
+          () => 'resolved',
+          (error: unknown) => error,
+        );
+        await settled;
+      });
+
+      await streamUntilItEnds();
+
+      expect(await settled).toBeInstanceOf(Error);
+      expect(loadService.localInFlight()).toBe(0);
+    });
   });
 
   it('leaves a request whose client stays connected alone', async () => {

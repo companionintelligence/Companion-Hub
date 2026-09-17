@@ -1461,8 +1461,9 @@ describe('PoolProxyService', () => {
     it('records a peer forward once even when the client dies mid-stream', async () => {
       vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
 
-      // Resolves rather than rejects: the peer that sent the work is gone, so there is nobody to
-      // answer, and a rethrow would only have Nest log a routine hang-up as a server error.
+      // Rejects: this mock fails the WRITE with an error, which is how a broken stream on our side
+      // looks, and that must still surface. A real hang-up closes the socket without one and resolves
+      // quietly; hub-pool-proxy-client-abort.test.ts pins both halves against real sockets.
       await expect(
         service.forwardToLocalBackendAndRespond(
           'ollama',
@@ -1472,7 +1473,7 @@ describe('PoolProxyService', () => {
           createMockResponse({ writeFails: true }),
           'peer-hub.tailxyz.ts.net',
         ),
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow();
 
       // The backend answered; a stream that then dies is the same routing decision, not a second one.
       expect(routingLog.list()).toHaveLength(1);
@@ -2051,6 +2052,41 @@ describe('PoolProxyService', () => {
 
         expect(res.status).toHaveBeenCalledWith(502);
         expect(res.json).toHaveBeenCalledWith({ error: 'No local backend able to serve /api/show' });
+      });
+
+      // The lookup used to inherit the completion budget (300 s) per peer. The engine answers /api/show
+      // in under 0.3 s on every node measured, so a peer that takes the connection and stalls is broken,
+      // and the app's lookup must move on long before OpenClaw gives up on its model.
+      it('moves past a peer that accepts the lookup and never answers, instead of holding the app for the completion budget', async () => {
+        vi.useFakeTimers();
+        try {
+          const withCatalog = serviceWithCatalog();
+          localHas('nomic-embed-text:latest');
+          peersAre(
+            peerServing('peer-stalled', 'qwen3.6:27b', { inFlightRequests: 0 }),
+            peerServing('peer-ok', 'qwen3.6:27b', { inFlightRequests: 0 }),
+          );
+          vi.mocked(global.fetch).mockImplementation((url, init) => {
+            if (String(url).includes('peer-ok')) {
+              return Promise.resolve(new Response(JSON.stringify({ details: {} }), { status: 200 }));
+            }
+            if (String(url).includes('peer-stalled')) {
+              const signal = init?.signal as AbortSignal;
+              return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason)));
+            }
+            return Promise.resolve(new Response('model not found', { status: 404 }));
+          });
+          const res = createMockResponse();
+
+          const lookup = withCatalog.proxyLocalOnlyRequest('/api/show', 'POST', { model: AUTO_MODEL }, res);
+          await vi.advanceTimersByTimeAsync(20_000);
+          await lookup;
+
+          expect(res.status).toHaveBeenCalledWith(200);
+          expect(headersSetOn(res)[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe('peer-ok.tailxyz.ts.net');
+        } finally {
+          vi.useRealTimers();
+        }
       });
     });
   });
