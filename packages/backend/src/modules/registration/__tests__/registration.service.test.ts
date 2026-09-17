@@ -837,11 +837,13 @@ describe('RegistrationService', () => {
     it('does not know when the key is refused, the refusal is not from WhoIs, or the Portal is unreachable', async () => {
       mockedAxios.post.mockResolvedValueOnce({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
       mockedAxios.post.mockResolvedValueOnce({ status: 403, data: '<html>Blocked</html>' } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: '<html>Sign in to this network</html>' } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { success: true } } as any);
       mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { success: false } } as any);
       mockedAxios.post.mockResolvedValueOnce({ status: 503, data: { error: 'WhoIs unavailable', code: 'UNAVAILABLE' } } as any);
       mockedAxios.post.mockRejectedValueOnce(Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true }));
 
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 7; i++) {
         await expect(probe()).resolves.toBeNull();
       }
     });

@@ -1106,9 +1106,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         },
       );
 
-      const code = response.data && typeof response.data === 'object' ? (response.data as { code?: unknown }).code : undefined;
+      const body = response.data && typeof response.data === 'object' ? (response.data as { code?: unknown; organizations?: unknown }) : undefined;
+      const code = body?.code;
+      // A 2xx counts only in WhoIs's own shape. A proxy, captive page or wrong
+      // host answering 200 has not authenticated the key.
       const passedDeviceAuth =
-        (response.status >= 200 && response.status < 300) ||
+        (response.status >= 200 && response.status < 300 && Array.isArray(body?.organizations)) ||
         (response.status === 403 && code === PORTAL_GRANT_DENIED_CODE) ||
         (response.status === 409 && code === 'ORGANIZATION_REQUIRED');
 
