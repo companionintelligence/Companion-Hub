@@ -1138,6 +1138,104 @@ describe('RegistrationService', () => {
       }
     });
 
+    describe('DEVICE_NOT_ACTIVE for a registration replaced while the check-in was in flight', () => {
+      const useDeviceKey = (key: string) =>
+        configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: key, userSettings: { domain: 'example.com' } } as any);
+
+      /** Sends a check-in with the current device key and holds the Portal's DEVICE_NOT_ACTIVE until `answer` is called. */
+      const startCheckIn = async () => {
+        await service.setPhase('paired');
+        await service.setPhase('provisioning');
+        await service.setPhase('locally_ready');
+        vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+        vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+        deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+
+        let resolveAnswer: (value: unknown) => void = () => {};
+        mockedAxios.post.mockReturnValueOnce(new Promise((resolve) => (resolveAnswer = resolve)) as any);
+        const outcome = (service as any).validateRegistrationWithCloud() as Promise<string>;
+        await vi.waitFor(() => expect(mockedAxios.post).toHaveBeenCalledTimes(1));
+
+        return {
+          outcome,
+          answer: () => resolveAnswer({ status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } }),
+        };
+      };
+
+      afterEach(() => {
+        service.onApplicationShutdown();
+      });
+
+      it('keeps a registration paired again with a new key', async () => {
+        const { outcome, answer } = await startCheckIn();
+
+        await service.resetRegistration();
+        useDeviceKey('new-api-key');
+        await service.setPhase('locally_ready');
+        deviceRegistrationRepository.deleteAll.mockClear();
+
+        answer();
+
+        await expect(outcome).resolves.toBe('skipped');
+        expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+        expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+      });
+
+      it('keeps the registration when only the device key changed', async () => {
+        const { outcome, answer } = await startCheckIn();
+
+        useDeviceKey('new-api-key');
+        answer();
+
+        await expect(outcome).resolves.toBe('skipped');
+        expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+        expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+      });
+
+      it('keeps a registration cleared and saved again with the same key', async () => {
+        const { outcome, answer } = await startCheckIn();
+
+        await service.resetRegistration();
+        await service.setPhase('locally_ready');
+        deviceRegistrationRepository.deleteAll.mockClear();
+
+        answer();
+
+        await expect(outcome).resolves.toBe('skipped');
+        expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+        expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+      });
+
+      it('keeps a registration written again over the existing row with the same key', async () => {
+        const { outcome, answer } = await startCheckIn();
+
+        deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({ id: 'org-1', hubSubdomain: 'hub-org' } as any);
+        await (service as any).setupOrganizationInfrastructure('org-1', {
+          organization_name: 'Org',
+          tunnel_id: 'tunnel-2',
+          tunnel_token: 'token-2',
+          slug: 'org',
+          subdomain: 'hub-org',
+        });
+
+        answer();
+
+        await expect(outcome).resolves.toBe('skipped');
+        expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+        expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+      });
+
+      it('still resets when the registration did not change', async () => {
+        const { outcome, answer } = await startCheckIn();
+
+        answer();
+
+        await expect(outcome).resolves.toBe('removed');
+        expect(service.getRegistrationStatus().phase).toBe('unregistered');
+        expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it('keeps the registration on a 400 without the DEVICE_NOT_ACTIVE code, and counts it as a failure', async () => {
       // A schema refusal: the Portal did not like a field this Hub sent. Unpairing over that would
       // take a healthy Hub offline, so it is treated like any other failed check-in.

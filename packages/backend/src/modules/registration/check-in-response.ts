@@ -18,8 +18,29 @@ export type CheckInOutcome =
   | 'key_refused'
   /** The Portal was unreachable or answered with any other failure. */
   | 'failed'
-  /** No check-in was sent: the Hub is not registered, has no tunnel token, or has no Portal configured. */
+  /**
+   * Nothing to act on: no check-in was sent (the Hub is not registered, has no tunnel token, or has
+   * no Portal configured), or its answer was about a registration this Hub no longer has.
+   */
   | 'skipped';
+
+/** The registration a check-in was sent for: the device key on the request, and which registration held it. */
+export type CheckInRegistration = {
+  deviceKey: string | null;
+  /** Changes whenever this Hub's registration row is cleared or written. */
+  registrationGeneration: number;
+};
+
+/**
+ * True when the registration a check-in was sent for is still this Hub's registration.
+ *
+ * A check-in can take seconds. If the Hub is reset and paired again meanwhile, the Portal's answer
+ * is about the old key: its `DEVICE_NOT_ACTIVE` says nothing about the new registration, and acting
+ * on it would clear the registration that was just made.
+ */
+export function isCheckInForCurrentRegistration(sentFor: CheckInRegistration, current: CheckInRegistration): boolean {
+  return sentFor.deviceKey === current.deviceKey && sentFor.registrationGeneration === current.registrationGeneration;
+}
 
 /** True only for the Portal's coded "this device is no longer active" answer. */
 export function isDeviceNotActiveResponse(response: { status: number; data?: unknown }): boolean {

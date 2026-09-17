@@ -36,7 +36,13 @@ import {
 } from './registration-state-drift';
 import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
 import { buildCheckInPayload } from './check-in-payload';
-import { type CheckInOutcome, isDeviceKeyRefusedStatus, isDeviceNotActiveResponse } from './check-in-response';
+import {
+  type CheckInOutcome,
+  type CheckInRegistration,
+  isCheckInForCurrentRegistration,
+  isDeviceKeyRefusedStatus,
+  isDeviceNotActiveResponse,
+} from './check-in-response';
 import { resolveDeviceId } from './device-id.resolver';
 import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
@@ -112,6 +118,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private lastCloudValidationAt = 0;
   private cloudValidationInFlight: Promise<CheckInOutcome> | null = null;
   private lastCheckInOutcome: CheckInOutcome | null = null;
+  /**
+   * Changes whenever the registration row is cleared or written, so a check-in that was sent for an
+   * earlier registration is not acted on. See `isCheckInForCurrentRegistration`.
+   */
+  private registrationGeneration = 0;
   private phaseReadCachedAt = 0;
   private phaseRefreshInFlight: Promise<void> | null = null;
 
@@ -617,6 +628,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     const { ciCloudUrl, ciHubApiKey, version } = this.config.getConfig();
     if (!ciCloudUrl) return 'skipped';
 
+    const sentFor = this.currentCheckInRegistration();
+
     try {
       const deviceId = await this.getDeviceId();
 
@@ -651,6 +664,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       );
 
       if (isDeviceNotActiveResponse(response)) {
+        // The answer is about the key this check-in sent. If the Hub was reset or paired again while
+        // it was in flight, that key is no longer this Hub's, and resetting would clear the new registration.
+        if (!isCheckInForCurrentRegistration(sentFor, this.currentCheckInRegistration())) {
+          this.logger.warn(
+            'Registration validation: ignoring DEVICE_NOT_ACTIVE for a registration this Hub replaced while the check-in was in flight',
+          );
+          return 'skipped';
+        }
+
         // The Portal deleted or deactivated this device (someone removed it there).
         this.consecutiveValidationFailures = 0;
         this.logger.warn(
@@ -774,6 +796,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /** The device key a check-in sends now, and which registration holds it. */
+  private currentCheckInRegistration(): CheckInRegistration {
+    return { deviceKey: this.config.getConfig().ciHubApiKey ?? null, registrationGeneration: this.registrationGeneration };
+  }
+
   /**
    * Resets device registration so the appliance can pair again.
    *
@@ -788,6 +815,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     } else {
       this.logger.info('Resetting device registration...');
     }
+
+    this.registrationGeneration++;
 
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
@@ -1294,6 +1323,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     organizationId: string,
     activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string; domain?: string },
   ): Promise<void> {
+    this.registrationGeneration++;
+
     // Update an existing row in place so provisioning retries remain idempotent.
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
     if (existingOrg) {
