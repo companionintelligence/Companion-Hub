@@ -24,6 +24,7 @@ vi.mock('@/lib/helpers/open-external', () => ({ openExternal: vi.fn() }));
 vi.mock('@/api-client/sdk.gen', () => ({
   disconnect: vi.fn(),
   resetRegistration: vi.fn(),
+  checkForRemoval: vi.fn(),
   startAuth: vi.fn(),
   pairPeer: vi.fn(),
   approvePeer: vi.fn(),
@@ -32,6 +33,10 @@ vi.mock('@/api-client/sdk.gen', () => ({
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   appContextQueryKey: () => ['ctx'],
+  getPortalConfigOptions: () => ({
+    queryKey: ['portal-config'],
+    queryFn: async () => ({ portalUrl: 'https://portal.example.com', deviceId: 'hw-123', registrationUrl: null, demoMode: false }),
+  }),
   getStatus2QueryKey: () => ['cf'],
   getStatus2Options: () => ({
     queryKey: ['cf'],
@@ -118,8 +123,19 @@ describe('NetworkSettingsContainer', () => {
     const trigger = await screen.findByTestId('reregister-device-btn');
     await userEvent.click(trigger);
 
-    await waitFor(() => expect(screen.getByText('SETTINGS_NETWORK_RESET_REGISTRATION_CONFIRM')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('SETTINGS_HUB_ACCOUNT_RESET_CONFIRM')).toBeTruthy());
     expect(screen.getByTestId('reregister-confirm-btn')).toBeTruthy();
+  });
+
+  it('keeps the account actions out of the tunnel card', async () => {
+    renderContainer();
+
+    const tunnelCard = await screen.findByTestId('cloudflare-tunnel-card');
+    const accountCard = screen.getByTestId('hub-account-card');
+
+    expect(tunnelCard.querySelector('[data-testid="reregister-device-btn"]')).toBeNull();
+    expect(accountCard.querySelector('[data-testid="reregister-device-btn"]')).toBeTruthy();
+    expect(accountCard.querySelector('[data-testid="remove-hub-from-account-btn"]')).toBeTruthy();
   });
 
   it('shows the opening toast only when the system opener actually reports success', async () => {
