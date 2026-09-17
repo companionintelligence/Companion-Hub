@@ -11,6 +11,7 @@ import { shouldShowCoreServerBanner } from '@/components/core-server-banner/core
 import { useCoreServerBanner } from '@/hooks/use-core-server-banner';
 import { TunnelStatusBanner } from '@/components/tunnel-status-banner/tunnel-status-banner';
 import { shouldSkipIosPageSlide } from '@/lib/ios-webview-guards';
+import { usePageScrollRestoration } from '@/lib/hooks/use-page-scroll-restoration';
 
 export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
   return (
@@ -30,6 +31,8 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
   const { user, userSettings, isLoading: isAppLoading, loadFailed } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
+  const mainRef = useRef<HTMLElement>(null);
+  usePageScrollRestoration(mainRef);
   const { isLoggedIn } = useUserContext();
   const { data: systemData } = useQuery({
     ...systemLoadOptions(),
@@ -109,6 +112,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     <div className="flex bg-background overflow-hidden w-screen flex-col" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <Header isLoggedIn={isLoggedIn} allowAutoThemes={userSettings.allowAutoThemes} />
       <main
+        ref={mainRef}
         className="relative flex h-full flex-1 flex-col overflow-x-hidden overflow-y-auto px-2 no-scrollbar container mx-auto sm:px-4"
         style={{ paddingTop: 'calc(var(--header-offset) + 0.5rem)' }}
       >

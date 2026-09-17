@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-17 (startup, stopped and couldn't-start screens match the desktop bootstrap page)
+> **Last updated:** 2026-09-17 (dashboard scroll: new pages open at the top, back/forward restore)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -20,6 +20,10 @@ packages/frontend/
   src/api-client/       Generated OpenAPI client + TanStack Query hooks
   routes/               React Router route definitions
 ```
+
+## Dashboard scroll
+
+Authenticated pages scroll inside the dashboard layout's `<main>`, not the window, so React Router's `<ScrollRestoration />` never sees them, and `<main>` outlives its child routes. `usePageScrollRestoration` (`src/lib/hooks/use-page-scroll-restoration.ts`) owns that element's offset: a PUSH or REPLACE that changes the path or query opens at the top; back/forward returns to where that entry was left, retrying briefly while the page is still loading; a same-URL REPLACE (pages syncing their query) leaves it alone. Offsets are in memory, so a reload starts at the top. If you add another layout that scrolls an inner element across child routes, give it the same hook.
 
 ## Marketplace compatibility disclosure
 
