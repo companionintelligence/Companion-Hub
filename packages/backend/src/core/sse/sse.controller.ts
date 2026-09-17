@@ -12,9 +12,7 @@ export class SSEController {
 
   @Sse('app')
   appEvents(): Observable<MessageEvent> {
-    const observable = this.sseService.getTopicObservable('app');
-
-    return observable;
+    return this.sseService.getAppEventsObservable();
   }
 
   @Sse('app-logs')

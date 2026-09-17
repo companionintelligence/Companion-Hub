@@ -289,6 +289,17 @@ const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encodi
  */
 const NATIVE_CAPABILITY_PROBE_PATHS = new Set(['/api/version', '/api/tags']);
 
+/** Requests that spend GPU time on a named model, and so get the Hub's residency arbitration first. */
+const GENERATION_PATHS = new Set([
+  '/v1/chat/completions',
+  '/v1/completions',
+  '/v1/embeddings',
+  '/api/chat',
+  '/api/generate',
+  '/api/embed',
+  '/api/embeddings',
+]);
+
 // ── Serving-node attribution ────────────────────────────────────────────────
 //
 // Which node ran a routed request used to be knowable only from the routing log — session-gated,
@@ -1266,6 +1277,18 @@ export class PoolProxyService {
 
   private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown, model: string): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
+      // The one place every app's inference crosses on this node, so the one place the Hub's
+      // residency arbitration can apply to all of them: keep a tracked model resident, or make
+      // room for it, before the engine sees the request. Read-only natives (`/api/tags`, `/api/ps`,
+      // `/api/show`) never reach here — they go through `proxyLocalOnlyRequest`.
+      if (GENERATION_PATHS.has(path) && this.router) {
+        await this.router.prepareTrackedModel(model).catch((error: unknown) => {
+          this.logger.debug(
+            `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return null;
+        });
+      }
       return this.callBackend(candidate.backend, path, method, body);
     }
 

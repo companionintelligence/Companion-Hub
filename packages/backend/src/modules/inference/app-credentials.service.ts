@@ -261,11 +261,15 @@ export class AppCredentialsService {
     // memory-based default (e.g. 262144 on unified-memory APUs).
     if (provider !== 'cloud' && availableLlm) {
       const minContextLength = appMinContextLength(slug);
+      // Same measured-first sizing as InferenceEnvResolver; see `model-geometry.util`.
+      const cost = backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(availableLlm.backendModelId)) ?? null) : null;
       const numCtx = recommendContextLength({
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
         modelFootprintMb: availableLlm.runtime.memoryFootprintMb,
         modelContextWindow: availableLlm.runtime.contextWindow,
         minContextLength,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        weightMb: cost?.weightMb ?? null,
       });
       env[keys.numCtx] = String(numCtx);
       // When an app declares a minimum the model cannot satisfy, the floor is
@@ -393,7 +397,7 @@ export class AppCredentialsService {
     if (isHostServedBackend(backendType)) {
       return isServedModelForCatalog(model, modelsLoaded);
     }
-    return isCatalogModelInstalled(model, modelsLoaded);
+    return isCatalogModelInstalled(model, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());
   }
 
   private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
@@ -406,7 +410,7 @@ export class AppCredentialsService {
     if (tracked && (tracked.state === 'pulled' || tracked.state === 'loaded' || tracked.state === 'pinned')) {
       return true;
     }
-    return isCatalogModelInstalled(curated, modelsLoaded);
+    return isCatalogModelInstalled(curated, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());
   }
 
   private maybeFirePrePull(catalogId: string): void {

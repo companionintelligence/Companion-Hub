@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, type ReactNode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from '@/lib/desktop-stack-session';
 import { SSEProvider } from './sse-provider';
 
 const { mockUseSSE, mockHandleAppSseEvent, mockToast, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
@@ -179,5 +180,63 @@ describe('SSEProvider', () => {
     // (single-quoted + `--` so a path with spaces/metacharacters can't misfire on paste).
     render(<MemoryRouter>{message()}</MemoryRouter>);
     expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
+  });
+
+  describe('hub_hello', () => {
+    const mountWithHandler = () => {
+      let onEvent: ((data: unknown) => void) | undefined;
+      mockUseSSE.mockImplementation((config: { onEvent: (data: unknown) => void }) => {
+        onEvent = config.onEvent;
+      });
+      const queryClient = new QueryClient();
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <SSEProvider>
+              <div>child</div>
+            </SSEProvider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      return { fire: (data: unknown) => act(() => onEvent?.(data)), invalidate };
+    };
+
+    beforeEach(() => {
+      sessionStorage.clear();
+    });
+
+    it('resolves a pending stack update when the Hub greets on a new version', () => {
+      markStackUpdatePending('0.2.71');
+      const outcomes: unknown[] = [];
+      const unsubscribe = subscribeStackUpdate((outcome) => outcomes.push(outcome));
+      const { fire, invalidate } = mountWithHandler();
+
+      fire({ event: 'hub_hello', version: '0.2.72' });
+
+      expect(isStackUpdatePending()).toBe(false);
+      expect(outcomes).toEqual([{ state: 'completed', version: '0.2.72' }]);
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      // The greeting is the Hub's, not an app's: it must never reach the app cache or a toast.
+      expect(mockHandleAppSseEvent).not.toHaveBeenCalled();
+      expect(mockToastSuccess).not.toHaveBeenCalled();
+      expect(mockToastError).not.toHaveBeenCalled();
+      unsubscribe();
+    });
+
+    it('keeps a fresh pending update waiting when the old container greets first', () => {
+      markStackUpdatePending('0.2.71');
+      const { fire, invalidate } = mountWithHandler();
+      fire({ event: 'hub_hello', version: '0.2.71' });
+      expect(isStackUpdatePending()).toBe(true);
+      expect(invalidate).not.toHaveBeenCalled();
+    });
+
+    it('is inert when nothing is pending', () => {
+      const { fire, invalidate } = mountWithHandler();
+      fire({ event: 'hub_hello', version: '0.2.72' });
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(mockHandleAppSseEvent).not.toHaveBeenCalled();
+    });
   });
 });

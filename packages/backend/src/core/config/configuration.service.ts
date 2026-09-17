@@ -121,6 +121,7 @@ type PersistedSettingsValues = {
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
   hubPoolPins: HubPoolPin[] | undefined;
+  hubPoolRouteAppsAlways: boolean | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -151,6 +152,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
   hubPoolPins: undefined,
+  hubPoolRouteAppsAlways: undefined,
 };
 
 @Injectable()
@@ -239,6 +241,7 @@ export class ConfigurationService {
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
       hubPoolPins: settings.hubPoolPins,
+      hubPoolRouteAppsAlways: settings.hubPoolRouteAppsAlways,
     };
   }
 
@@ -339,6 +342,7 @@ export class ConfigurationService {
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         hubPoolPins: settingsValues.hubPoolPins,
+        hubPoolRouteAppsAlways: settingsValues.hubPoolRouteAppsAlways,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -516,6 +520,8 @@ export class ConfigurationService {
       // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
       // in-memory settings the next request will rank against.
       poolPins: [...(this.config.userSettings.hubPoolPins ?? [])],
+      // `?? true`: opt-OUT. See `HubPoolPreferences.poolRouteAppsAlways` for the measurement behind it.
+      poolRouteAppsAlways: this.config.userSettings.hubPoolRouteAppsAlways ?? true,
     };
   }
 
@@ -537,6 +543,7 @@ export class ConfigurationService {
       hubPoolPressureWeight?: number;
       hubPoolMaxPromptTokens?: number;
       hubPoolPins?: HubPoolPin[];
+      hubPoolRouteAppsAlways?: boolean;
     } = {};
     if (preferences.poolEnabled !== undefined) {
       settings.hubPoolEnabled = preferences.poolEnabled;
@@ -573,6 +580,9 @@ export class ConfigurationService {
     // which is what keeps every other pool PATCH from wiping an operator's pins.
     if (preferences.poolPins !== undefined) {
       settings.hubPoolPins = preferences.poolPins;
+    }
+    if (preferences.poolRouteAppsAlways !== undefined) {
+      settings.hubPoolRouteAppsAlways = preferences.poolRouteAppsAlways;
     }
     // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
     // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.

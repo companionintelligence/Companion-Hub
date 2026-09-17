@@ -131,7 +131,25 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // No pins until an operator sets one, so the ranker alone decides — which is the whole
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],
+      // Opt-OUT: every app is handed this Hub's proxy, peers or not, so one place sees all the
+      // node's inference. See `HubPoolPreferences.poolRouteAppsAlways`.
+      poolRouteAppsAlways: true,
     });
+  });
+
+  it('keeps a persisted opt-out from routing apps through the proxy', () => {
+    const svc = makePoolService();
+    svc.config.userSettings = { hubPoolRouteAppsAlways: false };
+
+    expect(svc.getHubPoolPreferences()).toMatchObject({ poolRouteAppsAlways: false });
+  });
+
+  it('persists the app-routing switch and reports it back', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolRouteAppsAlways: false });
+
+    expect(svc.mergeSettingsToDisk).toHaveBeenCalledWith(expect.objectContaining({ hubPoolRouteAppsAlways: false }));
   });
 
   it('keeps a persisted container-sharing opt-out', () => {

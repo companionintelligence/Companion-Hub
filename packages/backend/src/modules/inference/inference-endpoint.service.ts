@@ -1,6 +1,7 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { hubContainerName } from '@/common/constants';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
@@ -56,6 +57,7 @@ export class InferenceEndpointService {
     // forwardRef: InferenceModule and HubPoolModule import each other.
     @Inject(forwardRef(() => HubPoolPeerService))
     private readonly hubPoolPeerService: HubPoolPeerService,
+    private readonly config: ConfigurationService,
   ) {}
 
   /**
@@ -126,7 +128,12 @@ export class InferenceEndpointService {
    * the appliance?), not caller authentication.
    */
   async routeThroughPool<T extends PoolRoutableEndpoints>(endpoints: T, context: string): Promise<T> {
-    if (!(await this.hasConnectedPeers(context))) {
+    // Two reasons to hand an app the proxy instead of the engine, checked cheapest first. The
+    // preference is the default-on one (see `HubPoolPreferences.poolRouteAppsAlways`); the peer
+    // check is what an operator who turned it off still gets, unchanged from before.
+    const always = this.routeAppsAlways();
+    const peers = always ? false : await this.hasConnectedPeers(context);
+    if (!always && !peers) {
       return endpoints;
     }
 
@@ -136,8 +143,25 @@ export class InferenceEndpointService {
     if (routed.ollamaHost) routed.ollamaHost = poolBaseUrl;
     if (routed.ollamaEmbedHost) routed.ollamaEmbedHost = poolBaseUrl;
 
-    this.logger.info(`[${context}] connected pool peer(s) present; routing app inference through the pool proxy at ${poolBaseUrl}`);
+    this.logger.info(
+      always
+        ? `[${context}] routing app inference through this Hub's proxy at ${poolBaseUrl} (poolRouteAppsAlways)`
+        : `[${context}] connected pool peer(s) present; routing app inference through the pool proxy at ${poolBaseUrl}`,
+    );
     return routed;
+  }
+
+  /**
+   * The persisted switch, read per call so a PATCH takes effect on the next env generation. A
+   * configuration that cannot answer (a partial mock, a settings file mid-migration) means the
+   * default, which is on.
+   */
+  private routeAppsAlways(): boolean {
+    try {
+      return this.config.getHubPoolPreferences()?.poolRouteAppsAlways ?? true;
+    } catch {
+      return true;
+    }
   }
 
   /**

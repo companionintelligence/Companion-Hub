@@ -1,4 +1,7 @@
+import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { useSSE } from '@/lib/hooks/use-sse';
+import { applyHubHello } from '@/lib/hub-hello';
+import { usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
 import { handleAppSseEvent, type AppSsePayload } from '@/modules/app/helpers/app-sse-cache';
 import { extractAppUrn } from '@/utils/app-helpers';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -49,6 +52,22 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
     onEvent: (data) => {
       const payload = data as AppSsePayload;
       const { event, appUrn, error, errorCode, settingsPath, warningCode, warningDetail } = payload;
+
+      // The Hub's own greeting, first on every (re)connect. After a stack update this is
+      // the new container announcing itself — the moment the Settings panel is waiting for.
+      // In dev the bundle is Vite's and the version never matches the API's, so a same-origin
+      // reload is a production-only concern.
+      if (event === 'hub_hello') {
+        applyHubHello(
+          payload.version,
+          { bundleVersion: import.meta.env.CI_HUB_VERSION, sameOriginBundle: usesSameOriginHubApi() && !import.meta.env.DEV },
+          {
+            invalidateVersion: () => void queryClient.invalidateQueries({ queryKey: appContextQueryKey() }),
+            reload: () => window.location.reload(),
+          },
+        );
+        return;
+      }
 
       if (error) {
         console.error(error);

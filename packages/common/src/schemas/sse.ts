@@ -79,10 +79,24 @@ const appScopedEventSchema = z.object({
   warningDetail: z.string().optional(),
 });
 
+/**
+ * First message on every `app` stream: the running Hub introduces itself.
+ *
+ * A stack update recreates the Hub container, so the browser's EventSource drops and
+ * reconnects on its own; the reconnect that succeeds is the new Hub answering. Carrying
+ * the version in that first message lets the client tell "the update landed" from "the
+ * old container is still up", and lets a tab whose bundle predates the Hub reload once —
+ * with no polling on either side.
+ */
+const hubHelloEventSchema = z.object({
+  event: z.literal('hub_hello'),
+  version: z.string(),
+});
+
 export const sseSchema = z.union([
   z.object({
     topic: z.literal('app'),
-    data: z.union([installQueueEventSchema, appScopedEventSchema]),
+    data: z.union([hubHelloEventSchema, installQueueEventSchema, appScopedEventSchema]),
   }),
   z.object({
     topic: z.literal('app-logs'),

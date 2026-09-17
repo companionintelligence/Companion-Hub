@@ -498,6 +498,20 @@ export interface HubPoolPreferences {
    * routing is byte-identical to a build without pinning — see {@link resolvePinFor}.
    */
   poolPins: HubPoolPin[];
+  /**
+   * Hand every app this Hub's own proxy (`/api/inference/pool`) as its inference endpoint even
+   * when no peer is paired, instead of the backend's direct URL.
+   *
+   * DEFAULT TRUE. With the direct URL, each app talks to the engine on its own and none of them
+   * can see the others: measured 2026-09-17, one app's hourly heartbeat asked for a second model
+   * at a 64k window and evicted the 27B every other app was using, three to six reloads per tick.
+   * Through the proxy every request crosses one place that knows what is resident, what the card
+   * holds, and what the operator pinned — {@link InferenceRouterService.prepareTrackedModel} — and
+   * a single-node Hub degrades to exactly the direct call (`proxyLocalOnlyRequest` tries this
+   * node's own engines in order). Off restores the pre-proxy behaviour: direct URL unless a peer
+   * is connected. Takes effect the next time an app's environment is generated.
+   */
+  poolRouteAppsAlways: boolean;
 }
 
 /**

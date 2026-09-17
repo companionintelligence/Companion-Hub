@@ -6882,6 +6882,9 @@
                 "minimum": 1024,
                 "maximum": 1048576
               },
+              "hubPoolRouteAppsAlways": {
+                "type": "boolean"
+              },
               "inferenceSupervisionMode": {
                 "type": "string",
                 "enum": [
@@ -7383,6 +7386,9 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 1048576
+          },
+          "hubPoolRouteAppsAlways": {
+            "type": "boolean"
           },
           "inferenceSupervisionMode": {
             "type": "string",
@@ -12648,6 +12654,9 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 1048576
+          },
+          "poolRouteAppsAlways": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false

@@ -236,11 +236,17 @@ export class InferenceEnvResolver {
     // Hardware-aware context window for the chat model, so apps don't inherit
     // Ollama's oversized memory-based default (e.g. 262144 on unified-memory APUs).
     if (chatCurated) {
+      // Ask the engine what a token of context costs THIS model before falling back to the
+      // fixed ladder — see `model-geometry.util`. Only Ollama can be asked; the other backends
+      // keep the heuristic.
+      const cost = backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatCurated.backendModelId)) ?? null) : null;
       const numCtx = recommendContextLength({
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
         modelFootprintMb: chatCurated.runtime.memoryFootprintMb,
         modelContextWindow: chatCurated.runtime.contextWindow,
         minContextLength: options?.minContextLength,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        weightMb: cost?.weightMb ?? null,
       });
       env.CI_LLM_NUM_CTX = String(numCtx);
     }
@@ -277,6 +283,6 @@ export class InferenceEnvResolver {
     if (model.backend === 'vllm' || model.backend === 'mtplx' || model.backend === 'dspark' || model.backend === 'lucebox') {
       return trackedPulled || isServedModelForCatalog(model, modelsLoaded);
     }
-    return isCatalogModelInstalled(model, modelsLoaded, trackedPulled);
+    return isCatalogModelInstalled(model, modelsLoaded, trackedPulled, this.modelRegistry.getCatalogBackendModelIds());
   }
 }

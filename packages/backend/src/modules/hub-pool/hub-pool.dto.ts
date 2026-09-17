@@ -191,6 +191,12 @@ const hubPoolPreferencesSchema = z.object({
    * tiny ceiling is refused rather than stored.
    */
   poolMaxPromptTokens: z.number().int().min(MIN_POOL_MAX_PROMPT_TOKENS).max(MAX_POOL_MAX_PROMPT_TOKENS).nullable().optional(),
+  /**
+   * Point every app at this Hub's proxy even with no peer paired, so one place sees all inference
+   * on the node and can keep the resident model resident. On by default; off returns apps to the
+   * engine's direct URL unless a peer is connected. Applies when an app's env is next generated.
+   */
+  poolRouteAppsAlways: z.boolean().optional(),
 });
 export class UpdateHubPoolPreferencesBody extends createZodDto(hubPoolPreferencesSchema) {}
 

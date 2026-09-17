@@ -141,6 +141,16 @@ export class ModelRegistryService implements OnModuleInit {
     return CURATED_MODELS;
   }
 
+  /**
+   * Every backend id in the catalog, for the longest-match rule in
+   * `model-availability.util` (`isOllamaTagForCatalogModel`). Callers that test a single
+   * curated model against Ollama's tag list pass this so a tag naming a more specific
+   * row (`qwen3.8:27b-mtp-q4_K_M`) is not also credited to the shorter one (`qwen3.8:27b`).
+   */
+  getCatalogBackendModelIds(): string[] {
+    return CURATED_MODELS.map((model) => model.backendModelId);
+  }
+
   /** Filter catalog by hardware tier. Platform-specific filtering is applied by getModelsForHardware. */
   getModelsForTier(tier: HardwareTier): CuratedModel[] {
     const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;

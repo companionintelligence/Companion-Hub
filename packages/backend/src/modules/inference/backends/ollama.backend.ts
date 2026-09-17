@@ -7,6 +7,7 @@ import axios from 'axios';
 // so need the same host GIDs. See that module for the full rationale.
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { QUARANTINE_STRIKES, ServingQuarantine } from './serving-quarantine';
+import { type ContextCost, estimateContextCost, parseModelGeometry } from '../model-geometry.util';
 
 /** Candidate Ollama URLs ordered by likelihood inside a Docker container. */
 const OLLAMA_FALLBACK_URLS = [
@@ -42,6 +43,14 @@ export class OllamaBackend implements InferenceBackend {
    * so the answer is accumulated from the requests that ran anyway. See {@link ServingQuarantine}.
    */
   private readonly quarantine = new ServingQuarantine();
+
+  /**
+   * `/api/show` + `/api/tags` describe files on disk and change only on a pull, so one read per
+   * model per few minutes is plenty. Keyed by the exact tag asked for.
+   */
+  private readonly geometryCache = new Map<string, { at: number; cost: ContextCost | null }>();
+
+  private static readonly GEOMETRY_TTL_MS = 5 * 60 * 1000;
 
   constructor(private readonly logger: LoggerService) {
     // OLLAMA_URL is injected by docker-compose as http://host.docker.internal:11434 (the Hub
@@ -202,6 +211,47 @@ export class OllamaBackend implements InferenceBackend {
       return;
     }
     this.logger.debug(`[Ollama] Model ${modelId} failed to serve (${reason}); strike ${decision.strikes} of ${QUARANTINE_STRIKES}`);
+  }
+
+  /**
+   * What one token of context costs this model on this engine, for the context ladder — from
+   * `/api/show`'s attention geometry, tightened by `/api/ps` when the model happens to be loaded.
+   * Null when the engine cannot describe the model (not pulled, unreachable, no geometry); the
+   * ladder then keeps its fixed heuristic. Never throws.
+   */
+  async contextCostForModel(modelId: string): Promise<ContextCost | null> {
+    const cached = this.geometryCache.get(modelId);
+    if (cached && Date.now() - cached.at < OllamaBackend.GEOMETRY_TTL_MS) {
+      return cached.cost;
+    }
+    let cost: ContextCost | null = null;
+    try {
+      const url = await this.resolveUrl();
+      const [show, tags, resident] = await Promise.all([
+        axios.post(`${url}/api/show`, { model: modelId }, { timeout: 10000 }),
+        this.listModels(),
+        this.listResident(),
+      ]);
+      const geometry = parseModelGeometry(show.data?.model_info as Record<string, unknown> | undefined);
+      const sameTag = (id: string) => id === modelId || id === `${modelId}:latest` || `${id}:latest` === modelId;
+      const onDisk = tags.find((m) => sameTag(m.id));
+      const loaded = resident.models?.find((m) => sameTag(m.id));
+      const sighting =
+        loaded && loaded.contextLength != null && loaded.engineGpuBytes != null
+          ? { contextLength: loaded.contextLength, vramBytes: loaded.engineGpuBytes }
+          : null;
+      cost = estimateContextCost({ geometry, weightBytes: onDisk?.size ?? null, sighting });
+      if (cost) {
+        this.logger.debug(
+          `[Ollama] ${modelId}: ${cost.kvMbPerToken.toFixed(4)} MB per token of context (${cost.source}` +
+            `${cost.weightMb == null ? '' : `, weights ${Math.round(cost.weightMb)} MB`})`,
+        );
+      }
+    } catch (err) {
+      this.logger.debug(`[Ollama] Could not describe ${modelId} for context sizing: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.geometryCache.set(modelId, { at: Date.now(), cost });
+    return cost;
   }
 
   async listModels(): Promise<BackendModelInfo[]> {

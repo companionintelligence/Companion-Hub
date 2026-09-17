@@ -9,6 +9,46 @@ describe('recommendContextLength', () => {
     expect(small).toBeLessThan(big);
   });
 
+  describe('measured path (per-token KV cost from the engine)', () => {
+    // RX 7900 XTX, 24,560 MB VRAM; qwen3.8:27b: catalog footprint 20,275 MB (18 GB × 1.1),
+    // weights 16,920 MB, 17 full-attention layers × 4 KV heads × 512 × 2 B ≈ 0.0664 MB/token.
+    const card = 24_560;
+    const qwen = { modelFootprintMb: 20_275, weightMb: 16_920, kvMbPerToken: (17 * 4 * 512 * 2) / 1024 ** 2, modelContextWindow: 262_144 };
+
+    it('sizes a hybrid-attention 27B to 32k on a 24 GB card, where the fixed ladder said 16k', () => {
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen })).toBe(32768);
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen, kvMbPerToken: null })).toBe(16384);
+    });
+
+    it('lets a small model with cheap KV reach the 64k cap, and never above it unprompted', () => {
+      // gemma4:e4b: 24 layers × 2 KV heads × 1024 × 2 B ≈ 0.094 MB/token, 10.8 GB footprint.
+      const gemma = { modelFootprintMb: 10_814, weightMb: 9_163, kvMbPerToken: (24 * 2 * 1024 * 2) / 1024 ** 2, modelContextWindow: 131_072 };
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...gemma })).toBe(65536);
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: 200_000, ...gemma })).toBe(65536);
+    });
+
+    it('charges the larger of the catalog footprint and weights-plus-overhead before any context', () => {
+      // A stale catalog row says 1 GB for a model whose file is 22.5 GB: the weights term must keep
+      // the budget honest (22,500 + 768 + 1,024 leaves 268 MB, below even 4k × 0.066 MB → floor), where the catalog
+      // figure alone would have handed out 64k.
+      const stale = { ...qwen, modelFootprintMb: 1_000, weightMb: 22_500 };
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...stale })).toBe(4096);
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...stale, weightMb: null })).toBe(65536);
+    });
+
+    it('drops to the floor when even 4k of context does not fit, and still honours an app floor and the model window', () => {
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: 21_500, ...qwen })).toBe(4096);
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: 21_500, ...qwen, minContextLength: 16_000 })).toBe(16000);
+      expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen, modelContextWindow: 8_192 })).toBe(8192);
+    });
+
+    it('treats a non-positive or non-finite cost as unmeasured', () => {
+      for (const kvMbPerToken of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        expect(recommendContextLength({ effectiveInferenceMemoryMb: card, ...qwen, kvMbPerToken })).toBe(16384);
+      }
+    });
+  });
+
   it('never exceeds the model context window', () => {
     const ctx = recommendContextLength({ effectiveInferenceMemoryMb: 131072, modelFootprintMb: 0, modelContextWindow: 8192 });
     expect(ctx).toBe(8192);

@@ -8,9 +8,18 @@
  * sensible default scaled to the memory left after the model's weights, capped
  * by the model's own maximum context window.
  *
- * The ladder is a heuristic (per-token KV cost is model-specific and not modeled
- * here) and is intentionally conservative; it mirrors the ladder used by CI-OS's
- * host-side `recommend_ollama_context_length`.
+ * Two ways to size it:
+ *
+ * - **Measured**, when the caller passes `kvMbPerToken` (from `model-geometry.util`, i.e. from
+ *   Ollama's `/api/show` and `/api/ps`): the largest power-of-two window whose KV cache fits in
+ *   what is left after the weights, a fixed runner overhead and a safety margin. This is
+ *   model-specific — a hybrid-attention 27B costs a fifth per token of a dense one.
+ * - **Ladder**, otherwise: a fixed 2/4/8/16 GB → 8k/16k/32k/64k heuristic that assumes dense-70B
+ *   KV arithmetic. Intentionally conservative; it mirrors the ladder used by CI-OS's host-side
+ *   `recommend_ollama_context_length`, and it is what non-Ollama backends still get.
+ *
+ * Neither path exceeds 64k on its own: above that, `minContextLength` (an app's declared floor)
+ * is the only thing that raises the answer, and the model window always caps it.
  */
 export interface ContextLengthInput {
   /** Memory usable for inference, in MB (HardwareProfile.effectiveInferenceMemoryMb). */
@@ -28,10 +37,40 @@ export interface ContextLengthInput {
    * floor simply cannot satisfy it, and the app is expected to surface that.
    */
   minContextLength?: number;
+  /**
+   * Measured per-token KV cost in MB (see `estimateContextCost`). When present and positive, the
+   * measured path replaces the ladder. Null/absent keeps the ladder.
+   */
+  kvMbPerToken?: number | null;
+  /**
+   * The weights' size in MB when known (from `/api/tags`). The measured path charges
+   * `max(modelFootprintMb, weightMb + MEASURED_FIXED_OVERHEAD_MB)` before any context, so a catalog
+   * footprint that already includes headroom is never undercut by a smaller measured base.
+   */
+  weightMb?: number | null;
 }
 
 const FALLBACK_CONTEXT = 8192;
 const FLOOR_CONTEXT = 4096;
+/** Highest window either path chooses unprompted; an app floor may still raise it. */
+const MAX_UNPROMPTED_CONTEXT = 65536;
+/** What a runner holds above weights + KV; mirrors `model-geometry.util`. */
+const MEASURED_FIXED_OVERHEAD_MB = 768;
+/**
+ * Kept free on the measured path for what neither the weights nor the KV cache account for: a
+ * vision encoder's compute buffers, llama.cpp scratch, a second small model. Measured 2026-09-17:
+ * a 27B at 32k reported 16.2 GiB by `/api/ps` while the card showed 22.5 GiB in use.
+ */
+const MEASURED_SAFETY_MARGIN_MB = 1024;
+
+/** Powers of two from the cap down to the floor: the candidates the measured path walks. */
+function measuredCandidates(cap: number): number[] {
+  const out: number[] = [];
+  for (let window = MAX_UNPROMPTED_CONTEXT; window >= FLOOR_CONTEXT; window /= 2) {
+    if (window <= cap) out.push(window);
+  }
+  return out;
+}
 
 /** Returns a hardware-appropriate num_ctx in tokens, never exceeding the model's window. */
 export function recommendContextLength(input: ContextLengthInput): number {
@@ -48,6 +87,15 @@ export function recommendContextLength(input: ContextLengthInput): number {
 
   if (!Number.isFinite(effectiveInferenceMemoryMb) || effectiveInferenceMemoryMb <= 0) {
     return Math.min(Math.max(FALLBACK_CONTEXT, floor), cap);
+  }
+
+  const { kvMbPerToken, weightMb } = input;
+  if (typeof kvMbPerToken === 'number' && Number.isFinite(kvMbPerToken) && kvMbPerToken > 0) {
+    const measuredBase = typeof weightMb === 'number' && weightMb > 0 ? weightMb + MEASURED_FIXED_OVERHEAD_MB : 0;
+    const baseMb = Math.max(0, modelFootprintMb || 0, measuredBase);
+    const budgetMb = effectiveInferenceMemoryMb - baseMb - MEASURED_SAFETY_MARGIN_MB;
+    const fit = measuredCandidates(cap).find((window) => window * kvMbPerToken <= budgetMb) ?? FLOOR_CONTEXT;
+    return Math.min(Math.max(fit, floor), cap);
   }
 
   const freeForContextMb = effectiveInferenceMemoryMb - Math.max(0, modelFootprintMb || 0);
