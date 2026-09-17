@@ -119,6 +119,7 @@ export function RegistrationStateDriftDialog({
       <DialogContent
         size="lg"
         className="gap-0 overflow-hidden p-0 sm:max-w-2xl"
+        showCloseButton={false}
         onPointerDownOutside={(event) => event.preventDefault()}
         onEscapeKeyDown={(event) => event.preventDefault()}
       >

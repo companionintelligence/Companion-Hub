@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@/tests/test-utils';
+import { act, fireEvent, render, screen, waitFor, within } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
@@ -257,6 +257,24 @@ describe('DeviceRegistrationPage', () => {
     expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
     expect(screen.getByTestId('drift-setup-new')).toBeInTheDocument();
     expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
+  });
+
+  it('offers no close button on Reconnect this Hub, which only a choice can close', async () => {
+    fetchRegistrationStateDrift.mockResolvedValue({
+      detected: true,
+      hardwareDeviceId: 'device-123',
+      localRegistered: false,
+      portalDeviceActive: null,
+      staleAppEnvDeviceIds: [],
+      hasStaleTunnelToken: true,
+      signals: [{ reason: 'stale_tunnel_token' }],
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Close' })).not.toBeInTheDocument();
   });
 
   describe('when the Portal refuses the pairing', () => {
