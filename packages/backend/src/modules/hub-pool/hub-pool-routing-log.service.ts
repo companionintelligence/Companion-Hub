@@ -58,6 +58,13 @@ export interface PoolRoutingRecord {
    * the node that chooses, and a peer's forward is never re-routed.
    */
   promptCeiling: PoolRoutingPromptCeiling | null;
+  /**
+   * What measured prefill rates did to this decision, or `null` when no candidate had a measurement
+   * that applies to a prompt this size — which is every request on a fleet nothing has been timed on.
+   * The ceiling's twin for the automatic case: it answers "why did the long turn skip fzzy" with the
+   * numbers. Always `null` on `inbound` rows, for the same reason.
+   */
+  throughput: PoolRoutingThroughput | null;
   outcome: PoolRoutingOutcome;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
@@ -108,6 +115,35 @@ export interface PoolRoutingPromptCeiling {
 export interface PoolRoutingCeilingExclusion {
   node: string;
   maxPromptTokens: number;
+}
+
+/** The throughput half of a routing decision. Rates, sizes and node names only. */
+export interface PoolRoutingThroughput {
+  /** bytes / 4 of the forwarded payload, as for the ceiling and the budget. */
+  estimatedTokens: number;
+  /** The deadline this request was placed under: the header wait if streamed, the whole completion otherwise. */
+  budgetMs: number;
+  /** Every candidate with applicable evidence, in ranked order. Unmeasured candidates are absent: they kept their place. */
+  estimates: PoolRoutingThroughputEstimate[];
+  /**
+   * `true` when the request was placed on a `slow` candidate anyway: every candidate was predicted to
+   * miss the budget, or every one that was not failed first.
+   */
+  overridden: boolean;
+}
+
+export interface PoolRoutingThroughputEstimate {
+  node: string;
+  backend: InferenceBackendType;
+  /** Estimated prompt tokens per second, from the slowest live evidence for a prompt this size or smaller. */
+  tokensPerSec: number;
+  predictedMs: number;
+  /** `observed`: this Hub timed it. `advertised`: the node reported it. The slower of the two is used. */
+  source: 'observed' | 'advertised';
+  /** The evidence is a request that ran out of its deadline, so `predictedMs` is a lower bound. */
+  deadline: boolean;
+  /** Predicted to miss `budgetMs`, so moved behind every candidate that was not. */
+  slow: boolean;
 }
 
 export interface PoolRoutingSummary {

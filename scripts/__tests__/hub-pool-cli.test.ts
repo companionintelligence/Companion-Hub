@@ -656,6 +656,112 @@ describe('hub-pool-cli prompt ceiling', () => {
   });
 });
 
+describe('hub-pool-cli throughput', () => {
+  const FZZY = 'hub-d.example-tailnet.ts.net';
+  const deadlineAt46k = { fromTokens: 32_768, promptTokens: 46_000, tokensPerSec: 49.8, deadline: true, ageMs: 60_000 };
+
+  function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
+    return {
+      at: '2026-09-17T10:00:01.000Z',
+      direction: 'outbound',
+      path: '/v1/chat/completions',
+      model: 'qwen3-coder:30b',
+      node: PEER_A,
+      peerId: 'peer-1',
+      backend: 'ollama',
+      candidates: 2,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'served',
+      status: 200,
+      durationMs: 268_000,
+      ...overrides,
+    };
+  }
+
+  function logOf(entries: PoolRoutingLogResponse['entries']): string {
+    const summary = { recorded: entries.length, capacity: 200, served: entries.length, failed: 0, failovers: 0, lastAt: '2026-09-17T10:00:01.000Z' };
+    return formatPoolRoutingLogLines({ summary, entries }).join('\n');
+  }
+
+  const slowFzzy = {
+    node: FZZY,
+    backend: 'ollama',
+    tokensPerSec: 49.8,
+    predictedMs: 921_000,
+    source: 'observed' as const,
+    deadline: true,
+    slow: true,
+  };
+
+  it('marks a routing-log row a measurement changed, with the rate, the prediction and the deadline', () => {
+    const text = logOf([routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [slowFzzy], overridden: false } })]);
+
+    expect(text).toContain(`~46031-token prompt moved ${FZZY} (~49.8 tok/s, ≥921 s) behind nodes expected to answer within 921 s`);
+  });
+
+  it('says so when the prompt was placed on a node expected to miss anyway', () => {
+    const text = logOf([
+      routingEntry({ node: FZZY, throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [slowFzzy], overridden: true } }),
+    ]);
+
+    expect(text).toContain(`placed anyway though ${FZZY} (~49.8 tok/s, ≥921 s) is expected to miss the 921 s deadline`);
+    expect(text).not.toContain('moved');
+  });
+
+  it('adds nothing to a row no measurement changed, or from a Hub predating throughput', () => {
+    const fast = { ...slowFzzy, tokensPerSec: 496, predictedMs: 93_000, deadline: false, slow: false };
+    const text = logOf([
+      routingEntry({ throughput: { estimatedTokens: 46_031, budgetMs: 921_000, estimates: [fast], overridden: false } }),
+      routingEntry({ throughput: null }),
+      routingEntry(),
+    ]);
+
+    expect(text).not.toContain('token prompt');
+  });
+
+  it('lists measured speed per node in status — this node, and each peer as timed here and as reported', () => {
+    const base = status({
+      peers: [
+        peer({
+          nodeFqdn: FZZY,
+          throughput: {
+            observed: [{ model: 'qwen3-coder:30b', backend: 'ollama', prefill: [deadlineAt46k], decode: null }],
+            advertised: [
+              {
+                model: 'qwen3-coder:30b',
+                backend: 'ollama',
+                prefill: [{ fromTokens: 8_192, promptTokens: 10_600, tokensPerSec: 123, deadline: false, ageMs: 0 }],
+                decode: { tokensPerSec: 12, ageMs: 0 },
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    const text = formatPoolStatusLines({
+      ...base,
+      localNode: {
+        ...base.localNode,
+        throughput: [{ model: 'qwen3.6:27b', backend: 'ollama', prefill: [], decode: { tokensPerSec: 11, ageMs: 0 } }],
+      },
+    }).join('\n');
+
+    expect(text).toContain('Measured speed');
+    expect(text).toMatch(/this node\s+qwen3\.6:27b \(ollama\) output ~11 tok\/s/);
+    expect(text).toContain('qwen3-coder:30b (ollama) prompt ≥32k ≤49.8 tok/s (missed deadline)  — timed here');
+    expect(text).toContain('qwen3-coder:30b (ollama) prompt ≥8k ~123 tok/s · output ~12 tok/s  — reported');
+  });
+
+  it('leaves the status of an unmeasured fleet exactly as it was', () => {
+    const base = status({ peers: [peer()] });
+    const empty = status({ peers: [peer({ throughput: { observed: [], advertised: [] } })] });
+
+    expect(formatPoolStatusLines({ ...empty, localNode: { ...empty.localNode, throughput: [] } })).toEqual(formatPoolStatusLines(base));
+    expect(formatPoolStatusLines(base).join('\n')).not.toContain('Measured speed');
+  });
+});
+
 describe('hub-pool-cli pairing PIN', () => {
   beforeEach(() => {
     hubApiFetch.mockReset();

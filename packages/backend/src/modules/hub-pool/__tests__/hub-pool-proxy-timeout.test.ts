@@ -117,3 +117,37 @@ describe('poolFetchDispatcher — undici must not cap the pool budgets at 300 s'
     expect(msg).not.toMatch(/: fetch failed$/);
   });
 });
+
+describe('a missed deadline is recognisable as one', () => {
+  // Throughput placement records a missed deadline as evidence, so the proxy has to be able to tell
+  // its own budget running out from a refused connection. That rests on `fetch` rejecting with the
+  // abort REASON the proxy passed, not a generic AbortError — pinned here against Node's real fetch.
+  it("rejects fetch with the proxy's own deadline error, which isForwardDeadline recognises", async () => {
+    const { createServer } = await import('node:http');
+    const { PoolForwardDeadlineError, isForwardDeadline } = await import('../hub-pool-proxy.service');
+    const server = createServer((_req, res) => setTimeout(() => res.writeHead(200).end('late'), 1_000));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      const controller = new AbortController();
+      const reason = new PoolForwardDeadlineError('No response headers within 50ms', 50);
+      setTimeout(() => controller.abort(reason), 50);
+
+      const error = await fetch(`http://127.0.0.1:${port}/`, { signal: controller.signal }).catch((caught: unknown) => caught);
+
+      expect(error).toBe(reason);
+      expect(isForwardDeadline(error)).toBe(true);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it('recognises undici’s own header timeout, and nothing else', async () => {
+    const { isForwardDeadline } = await import('../hub-pool-proxy.service');
+    expect(isForwardDeadline(Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } }))).toBe(true);
+    expect(isForwardDeadline(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } }))).toBe(false);
+    // A message that merely looks like the deadline is not one: the 502 text is for people, not for this.
+    expect(isForwardDeadline(new Error('No response headers within 920000ms'))).toBe(false);
+  });
+});
