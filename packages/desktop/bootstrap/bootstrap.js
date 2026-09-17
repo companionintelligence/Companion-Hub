@@ -388,10 +388,20 @@
     return node;
   }
 
+  /**
+   * One SVG, so the dot stays centred in the ring. Drawn as a bordered box with an inset
+   * dot, each box was rounded to device pixels separately, and with desktop text scaling
+   * the dot sat off centre.
+   */
+  const STARTING_MARK =
+    '<svg viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="4.25" fill="none" stroke="currentColor" stroke-width="1.5" /><circle class="mark-pulse" cx="5" cy="5" r="1.5" fill="currentColor" /></svg>';
+
   function mark(state) {
+    const kind = STATE_MARK[state] ?? 'waiting';
     const node = document.createElement('span');
-    node.className = `mark mark-${STATE_MARK[state] ?? 'waiting'}`;
+    node.className = `mark mark-${kind}`;
     node.setAttribute('aria-hidden', 'true');
+    if (kind === 'starting') node.innerHTML = STARTING_MARK;
     return node;
   }
 

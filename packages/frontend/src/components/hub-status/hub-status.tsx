@@ -727,10 +727,13 @@ function StatusMark({ state }: { state: ServiceState }) {
     case 'ready':
       return <span aria-hidden="true" className="size-[10px] shrink-0 rounded-full bg-success" />;
     case 'starting':
+      // One SVG, so the dot stays centred in the ring. As a bordered span with an inset
+      // dot, each box was rounded to device pixels separately and the dot drifted.
       return (
-        <span aria-hidden="true" className="relative size-[10px] shrink-0 rounded-full border-[1.5px] border-warning">
-          <span className="absolute inset-[2px] animate-pulse rounded-full bg-warning motion-reduce:animate-none" />
-        </span>
+        <svg aria-hidden="true" viewBox="0 0 10 10" fill="none" className="size-[10px] shrink-0 text-warning">
+          <circle cx="5" cy="5" r="4.25" stroke="currentColor" strokeWidth="1.5" />
+          <circle cx="5" cy="5" r="1.5" fill="currentColor" className="animate-pulse motion-reduce:animate-none" />
+        </svg>
       );
     case 'failed':
       return (
