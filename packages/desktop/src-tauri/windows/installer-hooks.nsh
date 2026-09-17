@@ -13,10 +13,17 @@
 ; Runs in NSIS_HOOK_PREUNINSTALL — *before* Tauri deletes $INSTDIR — so the bundled
 ; script is still present on disk when we call it. Best-effort and non-interactive:
 ; failures never block the uninstall. See distribution/scripts/uninstall-cleanup.ps1.
+;
+; Tauri's NSIS template inserts this hook at the top of `Section Uninstall`, before any
+; update-mode check: an uninstaller launched with /UPDATE (un.onInit turns that flag into
+; $UpdateMode, which the template only uses to keep shortcuts, the autostart entry and app
+; data) would still run it. The cleanup purges the database volumes, app data and the
+; tunnel token, so skip it entirely in update mode.
 
 !macro NSIS_HOOK_PREUNINSTALL
   Push $0
   Push $1
+  StrCmp $UpdateMode "1" ci_hub_skip_cleanup 0
   DetailPrint "Companion Hub: running uninstall cleanup (Docker resources + app data)..."
   ; Tauri resource bundling can place the script nested (resources\) or flat, so check
   ; both layouts — mirrors the dual-path lookup in hub_manager.rs — and run whichever

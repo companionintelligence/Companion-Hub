@@ -151,7 +151,7 @@ Both Windows packaged installers run the bundled cleanup script before removing 
 - **NSIS `-setup.exe`** — `packages/desktop/src-tauri/windows/installer-hooks.nsh` defines an `NSIS_HOOK_PREUNINSTALL` macro (wired through `bundle.windows.nsis.installerHooks`) that runs the script before `$INSTDIR` is removed.
 - **WiX `.msi`** — `packages/desktop/src-tauri/windows/cleanup-on-uninstall.wxs` adds a custom action (wired through `bundle.windows.wix.fragmentPaths` + `componentGroupRefs`) sequenced `Before="RemoveFiles"` and conditioned on `(REMOVE="ALL") AND (NOT UPGRADINGPRODUCTCODE)`.
 
-Unlike Scoop, both only run on a real uninstall — in-place updates reuse the install (NSIS) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI), so they perform the **full purge** (volumes and images included) only on a genuine removal. WinGet inherits whichever of the two its manifest installs.
+Unlike Scoop, both only run on a real uninstall — in-place updates reuse the install (NSIS, and the hook also skips cleanup when the uninstaller is launched with `/UPDATE`) or set `UPGRADINGPRODUCTCODE` during the major-upgrade removal pass (MSI), so they perform the **full purge** (volumes and images included) only on a genuine removal. WinGet inherits whichever of the two its manifest installs. Running a newer interactive `-setup.exe` and keeping its default "Uninstall before installing" choice is a genuine removal and purges too.
 
 **Uninstall is a full purge, not a `remove`.** Cleanup deletes Hub-related state in user
 config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdata`,
@@ -159,6 +159,18 @@ config/cache/data directories **and the Hub Docker data volumes** (`ci_hub_pgdat
 intentional ([#566](https://github.com/companionintelligence/CI-Hub/issues/566)); there is
 no `remove`-vs-`purge` distinction and no confirmation prompt. Users must back up before
 uninstalling.
+
+**The Cloudflare tunnel token is removed too.** The desktop keeps it in a folder named
+`tunnel` *beside* its data folder (`~/.local/share/tunnel`, `%APPDATA%\tunnel`,
+`~/Library/Application Support/tunnel`; compose mounts `${ROOT_FOLDER_HOST}/../tunnel`), so
+deleting the named Hub folders alone left it behind and a reinstall reconnected the old
+tunnel before pairing. Because `tunnel` is a generic name, the Linux and Windows cleanups
+delete `token` only when it decodes as a cloudflared tunnel token, `registration.json` /
+`leftover.json` only when they carry a `tunnelId`, and `.user-cleared-token`; they remove
+`certs/` and the folder itself only when empty, never follow a symlinked folder, and leave
+every other file alone. The Homebrew cask's `zap` trashes those same files by name and
+removes the folder only when empty. Plain `brew uninstall` (without `--zap`) and dragging
+the app to the Trash run no cleanup at all.
 
 **Installed marketplace apps are torn down too** ([#745](https://github.com/companionintelligence/CI-Hub/issues/745)).
 Each app Hub installs runs as its own Compose project (`<app>_<store>`) rather than as part
