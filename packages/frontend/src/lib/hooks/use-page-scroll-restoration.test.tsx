@@ -165,6 +165,17 @@ describe('usePageScrollRestoration', () => {
     expect(scroller.scrollTop).toBe(900);
   });
 
+  it('returns to an offset scrolled before a same-URL replace on back', async () => {
+    const { router, scroller } = setup();
+    scrollTo(scroller, 900);
+    // The store page re-syncs its URL, which gives the entry a new key.
+    await act(() => router.navigate('/store?category=all', { replace: true }));
+    await act(() => router.navigate('/store/app-1'));
+
+    await act(() => router.navigate(-1));
+    expect(scroller.scrollTop).toBe(900);
+  });
+
   it('returns to the list offset on back and to the app offset on forward', async () => {
     const { router, scroller } = setup();
     scrollTo(scroller, 900);

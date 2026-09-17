@@ -65,7 +65,8 @@ function scrollerName(layout: HTMLElement, target: EventTarget | null, pageKey: 
  * - PUSH / REPLACE to a different path or query: scroll them to the top.
  * - POP (back / forward): return each to where that history entry left it.
  * - REPLACE to the same path and query (pages syncing their URL): leave the
- *   scroll alone, including a restore that is still in progress.
+ *   scroll alone, including a restore that is still in progress, and keep the
+ *   offsets saved for the entry under its new key.
  *
  * Offsets live in memory only, so a reload starts at the top.
  */
@@ -110,7 +111,13 @@ export const usePageScrollRestoration = (scrollerRef: RefObject<HTMLElement | nu
     const samePage = from.pathname === location.pathname && from.search === location.search;
 
     if (navigationType !== 'POP') {
-      if (samePage) return;
+      if (samePage) {
+        // The same page under a new key: bring the offsets saved so far along,
+        // or back would land at the top.
+        const saved = offsets.current.get(from.key);
+        if (saved) offsets.current.set(location.key, new Map(saved));
+        return;
+      }
       pending.current?.cancel();
       for (const scroller of currentScrollers(layout, pageKey).values()) scroller.scrollTop = 0;
       return;
