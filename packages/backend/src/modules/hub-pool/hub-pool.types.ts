@@ -74,6 +74,16 @@ export interface PoolPeerCapabilities {
    * loaded machine as an idle one at that moment.
    */
   containers?: PoolContainerRollup;
+  /**
+   * The answering node's prompt ceiling: the largest estimated prompt, in tokens, it wants to serve
+   * while the caller has somewhere else to send it. A caller moves this node to the back of the
+   * failover walk for a prompt whose estimate exceeds it — see `applyPromptCeiling`.
+   *
+   * ABSENT means no ceiling, and that is the only encoding of it: a node with none omits the key, and
+   * so does every build predating the field, which is exactly the "serve anything" both of them mean.
+   * Read through `clampPromptCeiling`, never raw — a value this build cannot believe is no ceiling.
+   */
+  maxPromptTokens?: number;
   updatedAt: string;
 }
 
@@ -348,6 +358,13 @@ export interface PoolStatusPeer extends PublicHubPoolPeer {
    * old, value rejected — and a renderer must say "not reported" for all of them. Never 0.
    */
   containers?: PoolContainerRollup | null;
+  /**
+   * The ceiling this node's routing believes the peer advertised, or `null` for none — clamped the
+   * way the ranker reads it, so the number shown is the number that excludes the peer. Deliberately
+   * NOT freshness-gated, unlike the two fields above: it is policy rather than a measurement, and the
+   * ranker applies it for as long as it still trusts the same snapshot's inventory.
+   */
+  maxPromptTokens?: number | null;
 }
 
 export interface PoolStatusLocalNode {
@@ -368,6 +385,10 @@ export interface PoolStatusLocalNode {
   gpuPressureSource?: PoolPressureSource | null;
   /** Reserved for backend supervision: what the observer has seen, per backend. Observe-only. */
   supervision?: BackendSupervisionSummary[];
+  /** This node's EFFECTIVE prompt ceiling (env override applied), or `null` for none. What peers are told, and what local routing applies. */
+  maxPromptTokens?: number | null;
+  /** Which source set {@link maxPromptTokens}: `'env'` is `HUB_POOL_MAX_PROMPT_TOKENS`, which a settings PATCH cannot change. */
+  maxPromptTokensSetBy?: 'env' | 'setting' | null;
 }
 
 /**

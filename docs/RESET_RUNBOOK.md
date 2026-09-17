@@ -46,24 +46,29 @@ Use this when the Hub API is down, Docker state is corrupted, or you want the sa
 
 Best when the Hub is healthy but auth/setup is stuck after a partial reset.
 
-## Settings: Re-register Device
+## Settings: Remove this Hub from my account
 
-**Settings → Network → Re-register Device**
+**Settings → Network → This Hub in your account → Remove from account**
+
+- Opens CI Portal at `/home?remove_device=<device id>`, where an owner or admin confirms deleting the device
+- Deleting the device in CI Portal removes its web addresses and apps from the account
+- While the page stays open, the Hub checks in about every 30 seconds for up to 15 minutes. When CI Portal answers `DEVICE_NOT_ACTIVE`, the Hub resets and opens the pairing screen
+- If the page closes first, the hourly check-in resets the Hub the same way
+
+The Hub cannot remove itself from CI Portal. Its device key is also held by first-party apps, so CI Portal accepts removal only from a signed-in owner or admin.
+
+## Settings: Reset this Hub only
+
+**Settings → Network → This Hub in your account → Reset this Hub only**
 
 - Clears `device_registration`, tunnel token, and resolved env
 - **Does not** delete the operator account
+- **Does not** change CI Portal: the device, its web addresses, and its apps stay in the account
 - Use when you only need to pair again with CI Portal, not wipe local users/apps
 
-### Paired reset (Hub + Portal)
+The API is `POST /api/registration/reset`. It accepts only a person signed in to the Hub; the Portal device key, the CLI JWT, and app or MCP keys get 403.
 
-When the device is still registered in CI Portal but Hub local pairing is broken (or you need a clean re-pair without wiping apps/users):
-
-1. **Settings → Network → Re-register Device** — clears Hub-side pairing artifacts only
-2. Complete device registration again at `/device-registration`
-
-The API is `POST /api/registration/reset`. For a full Portal deregister during factory reset flows, the backend supports `deregisterFromPortal: true` on the registration reset path used by operator tooling — local Settings re-register does **not** remove the Portal device record automatically.
-
-If you need the device removed from Portal as well, delete it from **Account Management** in CI Portal, or use operator/CLI reset tooling that passes `deregisterFromPortal`.
+To pair again, complete device registration at `/device-registration`.
 
 ## Desktop tray: Clear Tunnel Token
 
@@ -94,4 +99,4 @@ Expected: `isConfigured: false`, `isLoggedIn: false`, user count `0`.
 
 ## CI Portal note
 
-Local factory reset / CLI reset clears **Hub-side** registration artifacts. The device record in CI Portal may still exist until you re-pair or remove it from Account Management. Portal-side re-register behaviour is handled in the separate `ci-portal` repository.
+Local factory reset / CLI reset clears **Hub-side** registration artifacts. The device record in CI Portal stays until you re-pair, or an owner or admin deletes it in CI Portal (see [Remove this Hub from my account](#settings-remove-this-hub-from-my-account)). Portal-side re-register behaviour is handled in the separate `ci-portal` repository.

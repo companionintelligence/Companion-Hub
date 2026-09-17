@@ -89,6 +89,11 @@ export interface PoolPeerRow {
   authMode?: PoolPeerAuthMode;
   /** A short hash of the peer's pinned public key, for an operator comparing two screens. Never the key. */
   peerKeyFingerprint?: string | null;
+  /**
+   * Present on `/status` rows only: the prompt ceiling the peer advertised, as this Hub's routing reads
+   * it. `null` is no ceiling; absent is a Hub predating ceilings. Both mean the peer serves any prompt.
+   */
+  maxPromptTokens?: number | null;
 }
 
 export interface PoolRoutingSummary {
@@ -130,6 +135,8 @@ export interface PoolStatusResponse {
     /** Optional so this CLI keeps parsing a Hub predating signed peers, where the key is simply absent. */
     poolRequireSignedPeers?: boolean;
     poolPressureWeight?: number;
+    /** The STORED ceiling. Absent on a Hub predating ceilings, which is how `pool ceiling` detects one. */
+    poolMaxPromptTokens?: number | null;
   };
   tailscaleAdminApiConfigured: boolean;
   localNode: {
@@ -142,6 +149,10 @@ export interface PoolStatusResponse {
     capabilitiesError: string | null;
     /** This node's UUID and key fingerprint. Optional: absent on a Hub predating pinned identities. */
     identity?: PoolIdentitySummary;
+    /** The EFFECTIVE ceiling (env override applied), or `null` for none. Absent on a Hub predating ceilings. */
+    maxPromptTokens?: number | null;
+    /** `'env'` when `HUB_POOL_MAX_PROMPT_TOKENS` set it, which no settings write can change. */
+    maxPromptTokensSetBy?: 'env' | 'setting' | null;
   };
   peers: PoolPeerRow[];
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
@@ -196,6 +207,17 @@ export interface PoolRoutingRecord {
   durationMs: number;
   /** Which operator pin shaped this decision, if any. Absent on a Hub predating pinning. */
   pin?: { scope: PoolPinScope; mode: 'prefer'; targetKind: PoolPinTargetKind } | null;
+  /** What the prompt ceilings did to this decision, or `null` when no candidate had one. Absent on a Hub predating ceilings. */
+  promptCeiling?: PoolRoutingPromptCeiling | null;
+}
+
+/** Mirrors `PoolRoutingPromptCeiling` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingPromptCeiling {
+  /** bytes / 4 of the forwarded payload — the same estimate the Hub sizes its first-byte budget from. */
+  estimatedTokens: number;
+  excluded: { node: string; maxPromptTokens: number }[];
+  /** Placed on an over-ceiling node anyway: every candidate was over its ceiling, or every one under a ceiling failed first. */
+  overridden: boolean;
 }
 
 export interface PoolRoutingLogResponse {
@@ -380,6 +402,18 @@ export async function setPoolEnabledSetting(
   return hubApiFetch(envFileName, '/inference/pool/settings', {
     method: 'PATCH',
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/**
+ * Set this node's prompt ceiling, or clear it with `null`. A PATCH of the one field, like the kill
+ * switches above, so nothing else in the stored settings is rewritten.
+ */
+export async function setPoolMaxPromptTokens(envFileName: string, maxPromptTokens: number | null): Promise<PoolStatusResponse['settings']> {
+  return hubApiFetch(envFileName, '/inference/pool/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ poolMaxPromptTokens: maxPromptTokens }),
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
 }
@@ -615,6 +649,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   }
 
   lines.push(...formatPairingPinStateLines(status.pairingPin));
+  lines.push(...formatLocalPromptCeilingLines(status.localNode));
 
   // An unreachable backend and a node with no models both show an empty inventory; only this says which.
   if (status.localNode.capabilitiesError) {
@@ -624,6 +659,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   lines.push(...formatPoolPinLines(status.pins));
 
   lines.push('', 'Peers', ...formatPoolPeerTable(status.peers).map((line) => `  ${line}`));
+  lines.push(...formatPeerPromptCeilingLines(status.peers));
 
   if (status.peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
     lines.push('', PENDING_INBOUND_HINT);
@@ -633,6 +669,30 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   lines.push(...formatPeerRefusalLines(status.peers));
 
   return lines;
+}
+
+/**
+ * This node's prompt ceiling, under "This node" in `pool status`. Nothing at all when there is none,
+ * so the status of a node that never set one — or a Hub predating ceilings — reads exactly as before.
+ */
+export function formatLocalPromptCeilingLines(localNode: PoolStatusResponse['localNode']): string[] {
+  if (typeof localNode.maxPromptTokens !== 'number') return [];
+  const source =
+    localNode.maxPromptTokensSetBy === 'env'
+      ? '  — HUB_POOL_MAX_PROMPT_TOKENS in .env, which `pool ceiling` cannot change'
+      : '  — clear with: cihub pool ceiling clear';
+  return [`  Ceiling    prompts over ~${localNode.maxPromptTokens} tokens go to another node when one can serve them${source}`];
+}
+
+/** The peers advertising a ceiling, since the peer table has no column for it. Nothing when none does. */
+export function formatPeerPromptCeilingLines(peers: PoolPeerRow[]): string[] {
+  const limited = peers.filter((peer) => typeof peer.maxPromptTokens === 'number');
+  if (limited.length === 0) return [];
+  return [
+    '',
+    'Prompt ceilings (a longer prompt skips that node while another can serve it)',
+    ...limited.map((peer) => `  ${cell(peer.nodeFqdn, PEER_WIDTHS[1])} ~${peer.maxPromptTokens} tokens`),
+  ];
 }
 
 /**
@@ -752,6 +812,64 @@ export function formatPoolPinLines(pins: PoolStatusPin[] | undefined): string[] 
     '  normally, so a pin can never take inference down. Remove one with: cihub pool unpin',
   );
   return lines;
+}
+
+/**
+ * The box `cihub pool ceiling` prints once the PATCH has answered.
+ *
+ * `settings` is what the Hub stored, and `status` is read after the write, so the box can tell the
+ * two ways the command changes nothing in effect: a Hub predating ceilings (its PATCH schema strips
+ * the unknown field and answers 200 with no `poolMaxPromptTokens` in it), and an `.env` override that
+ * wins over whatever was stored.
+ */
+export function formatPromptCeilingResultLines(
+  requested: number | null,
+  settings: PoolStatusResponse['settings'],
+  status: PoolStatusResponse | null,
+): { title: string; lines: string[]; tone: 'green' | 'yellow' | 'red' } {
+  if (!('poolMaxPromptTokens' in settings)) {
+    return {
+      title: 'Prompt ceiling not supported',
+      tone: 'red',
+      lines: [
+        `${FAIL} This Hub's build predates prompt ceilings, so nothing was stored and routing is unchanged.`,
+        'Update it first: cihub pool update',
+      ],
+    };
+  }
+  const effective = status?.localNode.maxPromptTokens;
+  if (status?.localNode.maxPromptTokensSetBy === 'env' && effective !== requested) {
+    return {
+      title: 'Prompt ceiling saved (override in force)',
+      tone: 'yellow',
+      lines: [
+        `Stored  ${requested === null ? 'no ceiling' : `~${requested} tokens`}`,
+        '',
+        `${FAIL} HUB_POOL_MAX_PROMPT_TOKENS=${effective} in this Hub's environment wins over the stored value,`,
+        'so this changed nothing in effect. Remove that line, then restart the Hub.',
+      ],
+    };
+  }
+  if (requested === null) {
+    return {
+      title: 'Prompt ceiling cleared',
+      tone: 'yellow',
+      lines: ['This node serves pooled prompts of any size again, from the next request and the next peer poll.'],
+    };
+  }
+  return {
+    title: 'Prompt ceiling set',
+    tone: 'green',
+    lines: [
+      `Prompts estimated over ~${requested} tokens (about ${Math.round((requested * 4) / 1000)} KB of request) now go to another node.`,
+      '',
+      "This Hub's own apps skip it from the next request; peers learn it on their next health poll.",
+      'It is a preference, not a limit: when no other node can serve a request, this one still does,',
+      'and the routing log marks that request as placed over the ceiling.',
+      '',
+      'See the decisions: cihub pool log',
+    ],
+  };
 }
 
 // --- discovery ---
@@ -908,6 +1026,17 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // tell a pin from the ranker having decided the same thing.
     if (entry.pin) {
       lines.push(`  ↳ pinned (${entry.pin.scope === 'model' ? 'this model' : 'all models'} → ${entry.pin.targetKind})`);
+    }
+    // Only when the ceiling changed something: an operator reading why fzzy got nothing needs this
+    // line, and a note on every request that merely stayed under a ceiling would bury it.
+    const ceiling = entry.promptCeiling;
+    if (ceiling && ceiling.excluded.length > 0) {
+      const nodes = ceiling.excluded.map((excluded) => `${sanitizeForBox(excluded.node)} (ceiling ${excluded.maxPromptTokens})`).join(', ');
+      lines.push(
+        ceiling.overridden
+          ? `  ↳ ~${ceiling.estimatedTokens}-token prompt placed anyway over the ceiling of ${nodes}: no node under its ceiling could serve it`
+          : `  ↳ ~${ceiling.estimatedTokens}-token prompt skipped ${nodes}`,
+      );
     }
     // The chain, not a count: which nodes refused is the whole point of reading this log.
     if (entry.failedOverFrom.length > 0) {

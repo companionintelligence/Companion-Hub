@@ -85,7 +85,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
   }
 
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="page-scroller-edge-0 relative h-full overflow-y-auto" data-page-scroller="custom-app-edit">
       <Card>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

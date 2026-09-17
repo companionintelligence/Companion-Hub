@@ -7,6 +7,7 @@ import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
 import { assertSafeOutboundHttpsUrl } from '@/common/helpers/ssrf-url';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 
 interface RegisterDeviceDto {
@@ -43,15 +44,38 @@ export class RegistrationController {
     private readonly logger: LoggerService,
   ) {}
 
+  /**
+   * Clears this Hub's registration locally. The Portal keeps the device: removing it from the
+   * account is done in the Portal, by an owner or admin, and this Hub learns of it on check-in.
+   *
+   * A signed-in person only. The Portal device key is refused because first-party Memory holds it,
+   * and the CLI JWT and app keys because none of them is a person deciding to unpair this Hub.
+   */
   @Post('reset')
-  @UseGuards(AuthGuard, DemoModeGuard)
+  @UseGuards(AuthGuard, HubSessionGuard, DemoModeGuard)
   @ApiOperation({ summary: 'Reset device registration to allow re-pairing' })
   @ApiResponse({ status: 200, description: 'Registration reset successfully' })
-  async resetRegistration(@Body() body?: { deregisterFromPortal?: boolean }) {
-    await this.registrationService.resetRegistration({
-      deregisterFromPortal: body?.deregisterFromPortal === true,
-    });
+  @ApiResponse({ status: 403, description: 'Only a person signed in to this Hub may reset its registration' })
+  async resetRegistration() {
+    await this.registrationService.resetRegistration();
     return { success: true, message: 'Registration reset. You can now re-pair this device.' };
+  }
+
+  /**
+   * One check while Settings waits for the person to delete this Hub in the Portal. Shares the
+   * check-in throttle with the status route, and resets the Hub only when the Portal answers
+   * `DEVICE_NOT_ACTIVE`.
+   */
+  @Post('removal-check')
+  @UseGuards(AuthGuard, HubSessionGuard, DemoModeGuard)
+  @ApiOperation({ summary: 'Check whether this Hub was removed from its account in the Portal' })
+  @ApiResponse({
+    status: 200,
+    description: 'Returns { result: "removed" | "still_registered" | "key_refused" | "not_checked" }',
+  })
+  @ApiResponse({ status: 403, description: 'Only a person signed in to this Hub may run the removal check' })
+  async checkForRemoval() {
+    return { result: await this.registrationService.checkForRemoval() };
   }
 
   @Get('status')

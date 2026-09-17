@@ -77,6 +77,7 @@ describe('HubPoolPeerService', () => {
       poolRequireSignedPeers: false,
       poolShareContainerStats: true,
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
+      poolMaxPromptTokens: null,
       ...overrides,
     });
   }
@@ -1098,6 +1099,120 @@ describe('HubPoolPeerService', () => {
         // routing (or an operator) would not believe must not reach the card at all, and it must
         // never be replaced with a plausible-looking zero.
         expect(status.peers[0]?.containers).toBeNull();
+      });
+    });
+  });
+
+  describe('prompt ceiling on the wire and in the status payload', () => {
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'cpu-only',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+        models: [],
+        memoryBudget: { totalVramMb: 0, totalRamMb: 65536, systemReservedRamMb: 8192, dockerOverheadMb: 2048, availableForModelsMb: 20480 },
+      } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([] as never);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    describe('getOwnCapabilities', () => {
+      it('advertises the ceiling so the entry node can route a long prompt elsewhere', async () => {
+        setPoolPreferences({ poolMaxPromptTokens: 16_000 });
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.maxPromptTokens).toBe(16_000);
+      });
+
+      it('OMITS the key when there is no ceiling, which is exactly what an older build sends', async () => {
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities).not.toHaveProperty('maxPromptTokens');
+      });
+
+      it('advertises the env override rather than the stored setting', async () => {
+        setPoolPreferences({ poolMaxPromptTokens: 32_000 });
+        vi.stubEnv('HUB_POOL_MAX_PROMPT_TOKENS', '16000');
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.maxPromptTokens).toBe(16_000);
+      });
+
+      it('keeps advertising it while refusing inbound work, so a peer card does not see it flicker', async () => {
+        setPoolPreferences({ poolMaxPromptTokens: 16_000 });
+
+        const capabilities = await service.getOwnCapabilities(false);
+
+        expect(capabilities.acceptingWork).toBe(false);
+        expect(capabilities.maxPromptTokens).toBe(16_000);
+      });
+
+      it('picks up a settings change on the next poll, not the next restart', async () => {
+        const before = await service.getOwnCapabilities();
+        setPoolPreferences({ poolMaxPromptTokens: 16_000 });
+        const after = await service.getOwnCapabilities();
+
+        expect(before).not.toHaveProperty('maxPromptTokens');
+        expect(after.maxPromptTokens).toBe(16_000);
+        // The inventory is cached; the ceiling is not part of what that cache may pin.
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('getPoolStatus', () => {
+      function peerWith(id: string, capabilities: Record<string, unknown>): HubPoolPeer {
+        return mockPeer({ id, status: 'connected', lastCapabilities: capabilities as unknown as Record<string, unknown> });
+      }
+      const baseCapabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
+
+      it("shows this node's effective ceiling and that the setting put it there", async () => {
+        repo.listAll.mockResolvedValue([]);
+        setPoolPreferences({ poolMaxPromptTokens: 16_000 });
+
+        const status = await service.getPoolStatus();
+
+        expect(status.localNode).toMatchObject({ maxPromptTokens: 16_000, maxPromptTokensSetBy: 'setting' });
+        // `settings` stays the stored value, which is what a form renders.
+        expect(status.settings.poolMaxPromptTokens).toBe(16_000);
+      });
+
+      it('says when the .env sets the ceiling, so a PATCH that changes nothing is explained', async () => {
+        repo.listAll.mockResolvedValue([]);
+        vi.stubEnv('HUB_POOL_MAX_PROMPT_TOKENS', '8000');
+
+        const status = await service.getPoolStatus();
+
+        expect(status.localNode).toMatchObject({ maxPromptTokens: 8_000, maxPromptTokensSetBy: 'env' });
+        expect(status.settings.poolMaxPromptTokens).toBeNull();
+      });
+
+      it('reports no ceiling as null, not as an absent field', async () => {
+        repo.listAll.mockResolvedValue([]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.localNode.maxPromptTokens).toBeNull();
+        expect(status.localNode.maxPromptTokensSetBy).toBeNull();
+      });
+
+      it("shows each peer's advertised ceiling as routing reads it: set, absent (older build), or unbelievable", async () => {
+        repo.listAll.mockResolvedValue([
+          peerWith('fzzy', { ...baseCapabilities, maxPromptTokens: 16_000 }),
+          peerWith('old-build', baseCapabilities),
+          peerWith('garbled', { ...baseCapabilities, maxPromptTokens: 'sixteen thousand' }),
+        ]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers.map((peer) => [peer.id, peer.maxPromptTokens])).toEqual([
+          ['fzzy', 16_000],
+          ['old-build', null],
+          ['garbled', null],
+        ]);
       });
     });
   });

@@ -35,6 +35,97 @@ function Remove-IfExists {
     }
 }
 
+# BEGIN hub tunnel folder cleanup
+# The desktop keeps its Cloudflare tunnel token in a folder named `tunnel` beside its data
+# folder (%APPDATA%\tunnel next to %APPDATA%\companion-hub; compose mounts
+# ${ROOT_FOLDER_HOST}/../tunnel), not inside it, so removing the data folder leaves the
+# token behind and a reinstall reconnects the old tunnel before it is paired. `tunnel` is a
+# generic name another program could also use, so only what the Hub writes there is
+# removed, and the folder only once it is empty. Mirrors the Linux uninstall scripts.
+
+# True when the file decodes as a cloudflared tunnel token: base64 of a JSON object holding
+# the account tag (a), tunnel id (t) and tunnel secret (s).
+function Test-CloudflaredTunnelToken {
+    param([string]$TokenPath)
+    try {
+        $item = Get-Item -LiteralPath $TokenPath -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+        if ($item.Length -eq 0 -or $item.Length -gt 4096) { return $false }
+        $encoded = [IO.File]::ReadAllText($item.FullName) -replace '\s', ''
+        switch ($encoded.Length % 4) {
+            2 { $encoded += '==' }
+            3 { $encoded += '=' }
+        }
+        $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+        $parsed = $json | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $parsed) { return $false }
+        $names = @($parsed.PSObject.Properties | ForEach-Object { $_.Name })
+        foreach ($key in @('a', 't', 's')) {
+            if ($names -cnotcontains $key) { return $false }
+        }
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Remove-HubTunnelFiles {
+    param([string]$TunnelDir)
+    try {
+        $dir = Get-Item -LiteralPath $TunnelDir -Force -ErrorAction Stop
+    }
+    catch {
+        return
+    }
+    # Runs over every profile: never follow a junction or symlinked folder.
+    if (-not $dir.PSIsContainer -or ($dir.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return }
+
+    $toRemove = @()
+    $tokenPath = Join-Path $dir.FullName 'token'
+    if (Test-CloudflaredTunnelToken $tokenPath) { $toRemove += $tokenPath }
+
+    # Marker files the backend writes beside the token: {"tunnelId": ..., "writtenAt"|"foundAt": ...}.
+    foreach ($marker in @('registration.json', 'leftover.json')) {
+        $markerPath = Join-Path $dir.FullName $marker
+        try {
+            $markerItem = Get-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+            if (-not $markerItem.PSIsContainer -and -not ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                ([IO.File]::ReadAllText($markerItem.FullName) -match '"tunnelId"')) {
+                $toRemove += $markerPath
+            }
+        }
+        catch { }
+    }
+
+    # Written by the desktop when the user clears the token from the tray.
+    $clearedMarker = Join-Path $dir.FullName '.user-cleared-token'
+    if (Test-Path -LiteralPath $clearedMarker -PathType Leaf -ErrorAction SilentlyContinue) { $toRemove += $clearedMarker }
+
+    foreach ($path in $toRemove) {
+        try {
+            Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+            Write-CleanupLog 'INFO' "Removed $path"
+        }
+        catch {
+            Write-CleanupLog 'WARN' "Failed to remove $path"
+        }
+    }
+
+    # The backend creates certs\ empty; anything inside it belongs to something else.
+    foreach ($emptyDir in @((Join-Path $dir.FullName 'certs'), $dir.FullName)) {
+        try {
+            $candidate = Get-Item -LiteralPath $emptyDir -Force -ErrorAction Stop
+            if (-not $candidate.PSIsContainer -or ($candidate.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+            if (@(Get-ChildItem -LiteralPath $emptyDir -Force -ErrorAction Stop).Count -gt 0) { continue }
+            Remove-Item -LiteralPath $emptyDir -Force -ErrorAction Stop
+            Write-CleanupLog 'INFO' "Removed $emptyDir"
+        }
+        catch { }
+    }
+}
+# END hub tunnel folder cleanup
+
 function Get-ContainerNamesByFilter {
     param([string]$Filter)
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
@@ -164,6 +255,8 @@ foreach ($name in $stateNames) {
     Remove-IfExists (Join-Path $appData $name)
     Remove-IfExists (Join-Path $localAppData $name)
 }
+# The desktop's data folder is %APPDATA%\companion-hub, so its tunnel folder is %APPDATA%\tunnel.
+Remove-HubTunnelFiles (Join-Path $appData 'tunnel')
 
 # All user profiles — parity with the Debian postrm, which cleans every user's home
 # (root + uid>=1000), not just the one running the uninstall. Profile paths come from
@@ -188,6 +281,7 @@ foreach ($profilePath in $profilePaths) {
         Remove-IfExists (Join-Path $profilePath "AppData\Roaming\$name")
         Remove-IfExists (Join-Path $profilePath "AppData\Local\$name")
     }
+    Remove-HubTunnelFiles (Join-Path $profilePath 'AppData\Roaming\tunnel')
 }
 
 $registryPath = 'HKLM:\SOFTWARE\Classes\cihub'

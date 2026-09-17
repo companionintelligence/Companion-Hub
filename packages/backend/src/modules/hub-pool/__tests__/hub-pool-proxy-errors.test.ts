@@ -26,6 +26,24 @@ describe('describeAllCandidatesFailed', () => {
     expect(msg).toMatch(/deadline, not proof/i);
   });
 
+  it('states the budget that APPLIED, not the fixed settings — a prompt-sized 922 s wait is not "300000ms"', () => {
+    // Measured on fzzy, 2026-09-17: a 184 KB agent turn was cancelled at exactly 922.0 s (its
+    // body-sized budget), and the message said "300000ms for headers on a streamed request".
+    const msg = describeAllCandidatesFailed('qwen3-coder:30b', 1, new Error('No response headers within 922000ms'));
+    expect(msg).toContain('922000ms');
+    expect(msg).toContain('HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC');
+    expect(msg).not.toContain('300000ms for headers on a streamed request');
+    expect(msg).toMatch(/deadline, not proof/i);
+  });
+
+  it('names the completion budget for a non-streamed request, and the undici cap when that is what cut it', () => {
+    expect(describeAllCandidatesFailed('m', 2, new Error('No completion within 450000ms'))).toMatch(
+      /450000ms for a whole non-streamed completion.*HUB_POOL_COMPLETION_TIMEOUT_MS/,
+    );
+    const undici = Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_HEADERS_TIMEOUT' } });
+    expect(describeAllCandidatesFailed('m', 1, undici)).toMatch(/undici headersTimeout/);
+  });
+
   it('treats an abort as the same deadline, since that is how the timeout surfaces', () => {
     // The proxy aborts the request via AbortController, so the error a caller sees is an abort
     // rather than the timer's own message. Both are the budget expiring.

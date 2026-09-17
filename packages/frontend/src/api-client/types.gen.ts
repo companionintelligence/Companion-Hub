@@ -2321,9 +2321,37 @@ export type ResetRegistrationData = {
     url: '/api/registration/reset';
 };
 
+export type ResetRegistrationErrors = {
+    /**
+     * Only a person signed in to this Hub may reset its registration
+     */
+    403: unknown;
+};
+
 export type ResetRegistrationResponses = {
     /**
      * Registration reset successfully
+     */
+    200: unknown;
+};
+
+export type CheckForRemovalData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/removal-check';
+};
+
+export type CheckForRemovalErrors = {
+    /**
+     * Only a person signed in to this Hub may run the removal check
+     */
+    403: unknown;
+};
+
+export type CheckForRemovalResponses = {
+    /**
+     * Returns { result: "removed" | "still_registered" | "key_refused" | "not_checked" }
      */
     200: unknown;
 };
