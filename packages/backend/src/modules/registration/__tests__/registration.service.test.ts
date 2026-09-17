@@ -13,9 +13,24 @@ import { TailscaleService } from '../../tailscale/tailscale.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
+import path from 'node:path';
+import { vol } from 'memfs';
+import { TUNNEL_DIR } from '@/common/constants';
 
 vi.mock('systeminformation');
 vi.mock('axios');
+
+const TOKEN_PATH = path.join(TUNNEL_DIR, 'token');
+const REGISTRATION_MARKER_PATH = path.join(TUNNEL_DIR, 'registration.json');
+const LEFTOVER_MARKER_PATH = path.join(TUNNEL_DIR, 'leftover.json');
+
+function cloudflaredToken(tunnelId: string): string {
+  return Buffer.from(JSON.stringify({ a: 'account-tag', t: tunnelId, s: 'tunnel-secret' })).toString('base64');
+}
+
+function readJson(filePath: string): Record<string, unknown> {
+  return JSON.parse(vol.readFileSync(filePath, 'utf-8') as string);
+}
 
 describe('RegistrationService', () => {
   let service: RegistrationService;
@@ -1172,6 +1187,287 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(status.phase).toBe('locally_ready');
       expect(status.degradedReasons).toEqual([]);
+    });
+  });
+
+  describe('tunnel follows the registration', () => {
+    const registeredRow = {
+      id: 'org-1',
+      name: 'Org',
+      slug: 'org',
+      hubSubdomain: 'hub-org',
+      tunnelId: 'tunnel-registered',
+      tunnelToken: 'registered-token',
+      provisioningPhase: 'locally_ready',
+      degradedReasons: '[]',
+    };
+
+    beforeEach(() => {
+      vol.mkdirSync(TUNNEL_DIR, { recursive: true });
+      cloudflareClientService.stopTunnel.mockResolvedValue(true);
+      cloudflareClientService.loadTunnelTokenFromDisk.mockResolvedValue(true);
+      cloudflareClientService.ensureCloudflaredRunning.mockResolvedValue(true);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      service.onApplicationShutdown();
+    });
+
+    const expectConnectorNeverStarted = () => {
+      expect(cloudflareClientService.ensureCloudflaredRunning).not.toHaveBeenCalled();
+      expect(cloudflareClientService.initializeTunnel).not.toHaveBeenCalled();
+      expect(cloudflareClientService.loadTunnelTokenFromDisk).not.toHaveBeenCalled();
+    };
+
+    it('stops the connector and sets a leftover token aside when an unregistered Hub boots with one', async () => {
+      // The reported case: a reinstall kept the previous Hub's token and joined its tunnel before pairing.
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(readJson(LEFTOVER_MARKER_PATH)).toEqual({ tunnelId: 'tunnel-previous-hub', foundAt: expect.any(String) });
+      expect(Number.isNaN(Date.parse(readJson(LEFTOVER_MARKER_PATH).foundAt as string))).toBe(false);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+
+    it('records a leftover token it cannot decode with no tunnel ID', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'opaque-token');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expect(readJson(LEFTOVER_MARKER_PATH).tunnelId).toBeNull();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+    });
+
+    it('leaves an unregistered Hub with no token alone', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('neither starts nor stops anything when the registration cannot be read, and retries on the next check', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-unknown'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValue(new Error('database starting up'));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockRejectedValue(new Error('database starting up'));
+      const pollSpy = vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(true);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expect(pollSpy).toHaveBeenCalledOnce();
+
+      // The database answers on the next registration check: still no registration.
+      pollSpy.mockRestore();
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'checkRegistrationWithCloud').mockResolvedValue(false);
+
+      await (service as any).pollRegistration();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(readJson(LEFTOVER_MARKER_PATH).tunnelId).toBe('tunnel-unknown');
+    });
+
+    it('starts the tunnel of a registered Hub whose boot-time read failed at its next validation', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValueOnce(new Error('database starting up'));
+      await (service as any).syncTunnelWithRegistration();
+      expect(cloudflareClientService.ensureCloudflaredRunning).not.toHaveBeenCalled();
+
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      (service as any)._currentPhase = 'locally_ready';
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(cloudflareClientService.ensureCloudflaredRunning).toHaveBeenCalledOnce();
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-registered');
+
+      // Once the check has run, validation does not repeat it.
+      await (service as any).validateRegistrationWithCloud();
+      expect(cloudflareClientService.ensureCloudflaredRunning).toHaveBeenCalledOnce();
+    });
+
+    it('does not touch a token written by a pairing that has not saved its registration yet', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-being-paired'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      (service as any)._currentPhase = 'provisioning';
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(true);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('writes registration.json for an existing registered Hub and starts its connector as before', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      vi.spyOn(service as any, 'validateRegistrationWithCloud').mockResolvedValue(undefined);
+      vi.spyOn(service as any, 'startPeriodicValidation').mockReturnValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expect(readJson(REGISTRATION_MARKER_PATH)).toEqual({ tunnelId: 'tunnel-registered', writtenAt: expect.any(String) });
+      expect(cloudflareClientService.loadTunnelTokenFromDisk).toHaveBeenCalledWith('tunnel-registered');
+      expect(cloudflareClientService.ensureCloudflaredRunning).toHaveBeenCalledWith({ forceRestart: false });
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.readFileSync(TOKEN_PATH, 'utf-8')).toBe('registered-token');
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+    });
+
+    it('writes registration.json once a pairing saves its registration', async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      configService.setDomain.mockResolvedValue(undefined);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.createDeviceRegistration.mockResolvedValue({} as any);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 'tunnel-pair', token: 'token-pair' });
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          organization_name: 'Paired Org',
+          slug: 'paired-org',
+          subdomain: 'hub-paired-org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          api_key: 'key-pair',
+          domain: 'example.com',
+        },
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(true);
+      await vi.waitFor(() => expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(true));
+      expect(deviceRegistrationRepository.createDeviceRegistration).toHaveBeenCalled();
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-pair');
+    });
+
+    it('writes registration.json when a registration callback lands on an existing row', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({ ...registeredRow, tunnelId: 'tunnel-old' } as any);
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'example.com' } as any);
+
+      await (service as any).setupOrganizationInfrastructure('org-1', {
+        organization_name: 'Org',
+        tunnel_id: 'tunnel-new',
+        tunnel_token: 'token-new',
+        subdomain: 'hub-org',
+        slug: 'org',
+      });
+
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-new');
+    });
+
+    it('stops the connector and removes the token and registration.json on reset, keeping the device key', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-registered', writtenAt: '2026-09-01T00:00:00.000Z' }));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await service.resetRegistration();
+
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expect(configService.setUserSettings).not.toHaveBeenCalled();
+    });
+
+    it('stops the connector when the Portal rejects the check-in', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, '{}');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+      (service as any)._currentPhase = 'publicly_ready';
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+    });
+
+    it('retries stopping the connector on the next check when a reset could not stop it', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      cloudflareClientService.stopTunnel.mockResolvedValueOnce(false);
+      vi.spyOn(service as any, 'checkRegistrationWithCloud').mockResolvedValue(false);
+
+      await service.resetRegistration();
+      // The registration check that the reset starts retries the stop.
+      await vi.waitFor(() => expect((service as any).checkInterval).not.toBeNull());
+      service.onApplicationShutdown();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledTimes(2);
+
+      // Stopped on the retry, so later checks leave the connector alone.
+      await (service as any).pollRegistration();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledTimes(2);
+    });
+
+    it('removes leftover.json on Start fresh', async () => {
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', foundAt: '2026-09-01T00:00:00.000Z' }));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      const result = await service.prepareFreshSetup();
+
+      expect(result.success).toBe(true);
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('reports a stale tunnel token from leftover.json after the token itself is gone', async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 401 } as any);
+
+      const before = await service.getStateDrift();
+      expect(before.signals.map((signal) => signal.reason)).not.toContain('stale_tunnel_token');
+
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', foundAt: '2026-09-01T00:00:00.000Z' }));
+
+      const after = await service.getStateDrift();
+      expect(after.detected).toBe(true);
+      expect(after.hasStaleTunnelToken).toBe(true);
+      expect(after.signals.map((signal) => signal.reason)).toContain('stale_tunnel_token');
     });
   });
 });

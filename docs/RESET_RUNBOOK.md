@@ -50,7 +50,7 @@ Best when the Hub is healthy but auth/setup is stuck after a partial reset.
 
 **Settings → Network → Re-register Device**
 
-- Clears `device_registration`, tunnel token, and resolved env
+- Clears `device_registration`, tunnel token, `tunnel/registration.json`, and resolved env, and stops `cloudflared`
 - **Does not** delete the operator account
 - Use when you only need to pair again with CI Portal, not wipe local users/apps
 

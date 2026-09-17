@@ -711,12 +711,45 @@ export class CloudflareClientService {
   }
 
   /**
+   * Forgets the tunnel credentials held in memory and removes the `cloudflared`
+   * container.
+   *
+   * Deleting the token file alone does not disconnect a running connector, which
+   * keeps serving the old hostname until its container stops. Returns false when
+   * the container could not be removed, so the caller can try again.
+   */
+  async stopTunnel(): Promise<boolean> {
+    this.tunnelToken = null;
+    this.tunnelId = null;
+
+    // Local and E2E stacks never start `cloudflared`. A development backend on a
+    // machine that also runs a real Hub must not remove that Hub's connector.
+    if (this.configService.get('domain') === 'ci.localhost') {
+      return true;
+    }
+
+    try {
+      const dockerService = this.moduleRef.get(DockerService, { strict: false });
+      if (!dockerService) {
+        this.logger.warn('stopTunnel: DockerService unavailable');
+        return false;
+      }
+
+      return await dockerService.removeContainer('cloudflared');
+    } catch (error) {
+      this.logger.warn(`stopTunnel: could not remove cloudflared: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /**
    * Starts or restarts `cloudflared` idempotently when a token is available.
    *
-   * Each Hub boot calls this method because `recoverTunnelTokenFromDb` starts
-   * `cloudflared` only when the token file is missing. Without this additional
-   * check, restarting a registered Hub with an existing file would leave the
-   * tunnel down. Local and E2E modes skip the container.
+   * A registered Hub calls this method on each boot because
+   * `recoverTunnelTokenFromDb` starts `cloudflared` only when the token file is
+   * missing. Without this additional check, restarting a registered Hub with an
+   * existing file would leave the tunnel down. An unregistered Hub never reaches
+   * this method at boot. Local and E2E modes skip the container.
    */
   async ensureCloudflaredRunning(options: { forceRestart?: boolean } = {}): Promise<boolean> {
     if (!this.tunnelToken) {

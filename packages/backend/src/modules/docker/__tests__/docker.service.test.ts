@@ -887,6 +887,30 @@ describe('DockerService', () => {
         vi.useRealTimers();
       }
     });
+
+    describe('removeContainer', () => {
+      it('force-removes the container and reports success', async () => {
+        (child_process.spawn as any).mockImplementation(() => procClosing(0));
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(true);
+
+        expect(child_process.spawn).toHaveBeenCalledWith('docker', ['rm', '-f', 'cloudflared'], {});
+      });
+
+      it('counts a container that does not exist as removed', async () => {
+        (child_process.spawn as any).mockImplementation(() => procClosing(1, 'Error response from daemon: No such container: cloudflared'));
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(true);
+      });
+
+      it('reports failure without throwing when Docker cannot remove it', async () => {
+        (child_process.spawn as any).mockImplementation(() =>
+          procClosing(1, 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'),
+        );
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(false);
+      });
+    });
   });
 
   describe('removeAppDataDirAsRoot (privileged uninstall-remnant cleanup)', () => {
