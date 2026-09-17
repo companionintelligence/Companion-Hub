@@ -375,17 +375,8 @@ describe('SystemUpdateService', () => {
   });
 
   describe('setAutoUpdatesEnabled', () => {
-    it('writes through the shared settings merge, so later settings writes cannot strip the key', async () => {
-      // settings-round-trip.test.ts proves the merge keeps it. This pins that the switch uses it,
-      // rather than a private read-modify-write that bypasses the schema.
-      mockConfig.setFileOnlySettings = vi.fn().mockResolvedValue(undefined);
-
-      await service.setAutoUpdatesEnabled(false);
-
-      expect(mockConfig.setFileOnlySettings).toHaveBeenCalledWith({ autoUpdates: false });
-      expect(fs.promises.writeFile).not.toHaveBeenCalled();
-    });
-
+    // That the switch survives other settings writes, and cannot erase the Portal credential, is
+    // proved against the real merge in core/config/__tests__/settings-round-trip.test.ts.
     it('refuses a string "false", which would read back as auto-update still on', async () => {
       mockConfig.setFileOnlySettings = vi.fn().mockResolvedValue(undefined);
 

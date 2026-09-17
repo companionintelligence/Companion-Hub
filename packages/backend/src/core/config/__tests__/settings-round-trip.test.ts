@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import fs from 'node:fs';
 import path from 'node:path';
+import { InternalServerErrorException } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 import { type PersistedSettings, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
 import { DATA_DIR } from '@/common/constants';
@@ -99,17 +100,25 @@ type Writers = {
     setHubPoolPreferences(preferences: Record<string, unknown>): Promise<unknown>;
   };
   systemUpdate: SystemUpdateService;
+  /** ConfigurationService's logger, where the merge reports what it dropped and why a write failed. */
+  logger: Record<'warn' | 'error' | 'info' | 'debug', ReturnType<typeof vi.fn>>;
 };
 
 function makeWriters(): Writers {
   // ConfigurationService's constructor validates a full appliance environment, so the instance is
   // built bare. Every method under test is the real one, and so are the parse and the file writer.
   const configuration = Object.create(ConfigurationService.prototype) as Writers['configuration'] & Record<string, unknown>;
-  configuration.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() };
-  configuration.config = { demoMode: false, userSettings: {} };
   const logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() };
-  const systemUpdate = new SystemUpdateService(logger as never, configuration as never, {} as never);
-  return { configuration, systemUpdate };
+  configuration.logger = logger;
+  configuration.config = { demoMode: false, userSettings: {} };
+  const systemUpdateLogger = { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() };
+  const systemUpdate = new SystemUpdateService(systemUpdateLogger as never, configuration as never, {} as never);
+  return { configuration, systemUpdate, logger };
+}
+
+/** Everything a logger mock was handed, as one string, so a test can assert what never reached a log. */
+function logged(logger: Writers['logger']): string {
+  return JSON.stringify(Object.values(logger).flatMap((fn) => fn.mock.calls));
 }
 
 /**
@@ -184,6 +193,41 @@ describe('settings.json round trip', () => {
     await writers.configuration.setUserSettings({ allowErrorMonitoring: false });
 
     expect(writers.systemUpdate.getAutoUpdatesEnabled()).toBe(false);
+  });
+
+  it('MUST NOT erase the Portal credential, or log its text, when the auto-update switch meets a file it cannot parse', async () => {
+    // The switch's old private writer answered an unparseable file by writing back only
+    // `{"autoUpdates": ...}`, which erased `ciHubApiKey` and left the Hub looking unregistered. An
+    // unquoted value is the usual hand-edit mistake, and V8's parse error quotes the text around it.
+    const handEdited = '{"ciHubOrganizationId": "org-1", "ciHubApiKey": sk-live-0123456789abcdef}';
+    await fs.promises.writeFile(SETTINGS_PATH, handEdited);
+    const writers = makeWriters();
+
+    const failure = await writers.systemUpdate.setAutoUpdatesEnabled(false).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(InternalServerErrorException);
+    expect(await fs.promises.readFile(SETTINGS_PATH, 'utf8')).toBe(handEdited);
+    expect(String((failure as Error).message)).not.toContain('sk-live');
+    expect(writers.logger.error).toHaveBeenCalledWith(expect.stringContaining('attemptedKeys=autoUpdates'));
+    expect(logged(writers.logger)).not.toContain('sk-live');
+  });
+
+  it('drops a key this build does not declare, and names it without its value', async () => {
+    // Deliberate: `mcpAllowDestructive` is a retired appliance-wide gate, and carrying a stale value
+    // forward is what the strip exists to prevent. The same strip removes a key that a newer build
+    // wrote before a node went back to an older one, so it has to say so in the log.
+    await fs.promises.writeFile(SETTINGS_PATH, JSON.stringify({ ...ONE_OF_EVERY_KEY, mcpAllowDestructive: 'retired-gate-value' }));
+    const writers = makeWriters();
+
+    await writers.configuration.setUserSettings({ themeColor: 'blue' });
+
+    const written = JSON.parse(await fs.promises.readFile(SETTINGS_PATH, 'utf8')) as Record<string, unknown>;
+    expect(written).not.toHaveProperty('mcpAllowDestructive');
+    expect(writers.logger.warn).toHaveBeenCalledWith(expect.stringContaining('mcpAllowDestructive'));
+    expect(logged(writers.logger)).not.toContain('retired-gate-value');
   });
 });
 
