@@ -11,7 +11,7 @@ import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosH
 import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { type TunnelHealth, TunnelHealthService } from '../cloudflare/tunnel-health.service';
-import { PortalClientService } from '@/core/portal/portal-client.service';
+import { PORTAL_GRANT_DENIED_CODE, PortalClientService } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -77,6 +77,7 @@ function describePortalPairingResponse(data: unknown): string {
   const safeBody = {
     error: typeof body.error === 'string' ? body.error : undefined,
     message: typeof body.message === 'string' ? body.message : undefined,
+    code: typeof body.code === 'string' ? body.code : undefined,
     hasDeviceId: typeof body.device_id === 'string' && body.device_id.length > 0,
     hasOrganizationId: typeof body.organization_id === 'string' && body.organization_id.length > 0,
     hasSlug: typeof body.slug === 'string' && body.slug.length > 0,
@@ -88,6 +89,33 @@ function describePortalPairingResponse(data: unknown): string {
   };
 
   return scrubString(JSON.stringify(safeBody));
+}
+
+/**
+ * The WhoIs subject the leftover-device probe sends. Portal user IDs are
+ * generated, so no user has this one, and the Portal refuses it before it
+ * reads any organization data.
+ */
+const DEVICE_KEY_PROBE_SUBJECT = 'ci-hub-device-key-probe';
+
+/** What a pairing attempt reports to the registration page. */
+export type PairDeviceResult = {
+  success: boolean;
+  message: string;
+  /**
+   * The Portal's machine-readable refusal code, such as `DEVICE_PROOF_REQUIRED`,
+   * when its answer carries one. The page chooses its guidance by this code and
+   * shows `message` when the code is absent or unknown, as it is from older
+   * Portals and from anything in front of the Portal.
+   */
+  code?: string;
+  domain?: string;
+  subdomain?: string;
+};
+
+function portalRefusalCode(data: unknown): { code?: string } {
+  const code = data && typeof data === 'object' ? (data as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && code ? { code } : {};
 }
 
 @Injectable()
@@ -1038,34 +1066,54 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Returns whether Companion Portal considers the hardware device ID active.
+   * Returns whether Companion Portal still accepts this Hub's stored device key.
    *
-   * Drift detection calls this only while the Hub is locally unregistered, when
-   * a device API key is usually absent. Because the check-in endpoint requires
-   * device authentication, a missing or invalid key returns `null` rather than a
-   * definitive result. A stale but still valid key can produce an answer.
+   * Drift detection calls this only while the Hub is locally unregistered, and
+   * the registration page polls drift every few seconds. Two rules follow:
+   *
+   * - Without a key there is nothing to ask. The Portal answers keyless device
+   *   calls with 401, and it deliberately offers no keyless lookup of whether a
+   *   device ID exists (CI-Portal#603).
+   * - With a key, ask device WhoIs rather than check-in. Check-in stamps the
+   *   device's last-seen time, so probing through it made an unregistered Hub
+   *   look online in the Portal. WhoIs only reads. The subject is a name no
+   *   Portal user has, so the Portal authenticates the key and then refuses
+   *   the subject with `GRANT_DENIED` without reading any organization data.
+   *
+   * `true` means the key authenticates a device that is not inactive. WhoIs
+   * does not name that device, so this trusts the key to belong to this
+   * hardware, as pairing does when it sends the key as proof. `null` means the
+   * answer is unknown, including a key the Portal rejects: the Portal gives a
+   * revoked key, a deleted device, and a mistyped key the same 401.
    */
   private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
+    const deviceKey = (this.config.getConfig().ciHubApiKey ?? '').trim();
+    if (!deviceKey) {
+      return null;
+    }
+
     try {
-      const { ciHubApiKey } = this.config.getConfig();
       const response = await axios.post(
-        `${ciCloudUrl.replace(/\/+$/, '')}/api/devices/check-in`,
-        { device_id: deviceId },
+        `${ciCloudUrl.replace(/\/+$/, '')}/api/whois`,
+        { subject: DEVICE_KEY_PROBE_SUBJECT, appIds: [], surface: 'hub' },
         {
           timeout: 10_000,
           validateStatus: () => true,
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), {
             'Content-Type': 'application/json',
-            ...(ciHubApiKey ? { 'x-device-key': ciHubApiKey } : {}),
+            'x-device-key': deviceKey,
           }),
         },
       );
 
-      if (response.status >= 200 && response.status < 300) {
+      const code = response.data && typeof response.data === 'object' ? (response.data as { code?: unknown }).code : undefined;
+      const passedDeviceAuth =
+        (response.status >= 200 && response.status < 300) ||
+        (response.status === 403 && code === PORTAL_GRANT_DENIED_CODE) ||
+        (response.status === 409 && code === 'ORGANIZATION_REQUIRED');
+
+      if (passedDeviceAuth) {
         return true;
-      }
-      if (response.status === 400) {
-        return false;
       }
 
       this.logger.debug(`Portal device probe returned ${response.status} for ${deviceId}`);
@@ -1472,7 +1520,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Send the code and device ID to Companion Portal, persist the returned state,
    * and mark the device as registered.
    */
-  public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
+  public async pairDevice(pairingCode: string): Promise<PairDeviceResult> {
     const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
@@ -1523,6 +1571,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return {
           success: false,
           message: errorData.error || errorData.message || `Pairing failed: HTTP ${response.status}`,
+          ...portalRefusalCode(response.data),
         };
       }
 
@@ -1544,6 +1593,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return {
           success: false,
           message: errorData.error || errorData.message || 'Pairing failed.',
+          ...portalRefusalCode(response.data),
         };
       }
 

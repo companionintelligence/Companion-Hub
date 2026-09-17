@@ -28,7 +28,11 @@ import {
 import { normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
 import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
 import { getStoredDriftChoice, storeDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
-import { RegistrationRestoreBanner, RegistrationStateDriftDialog } from '@/modules/auth/components/registration-state-drift-dialog';
+import {
+  RegistrationFreshBanner,
+  RegistrationRestoreBanner,
+  RegistrationStateDriftDialog,
+} from '@/modules/auth/components/registration-state-drift-dialog';
 import { useTranslation } from 'react-i18next';
 
 const DEFAULT_PORTAL_URL = (
@@ -61,6 +65,29 @@ type PairingTarget = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** The Portal already has a device for this computer, and the Hub sent no key that proves it is that device. */
+const DEVICE_PROOF_REQUIRED = 'DEVICE_PROOF_REQUIRED';
+
+/**
+ * The message for a refused pairing.
+ *
+ * The Portal's own text describes its API rather than what to do in the Portal,
+ * so refusals with a known code get plain instructions. A missing or unknown
+ * code, as from a Portal that predates it, keeps the Portal's message.
+ */
+function pairingRefusalMessage(data: { code?: string; message?: string }, t: (key: string) => string): string {
+  switch (data.code) {
+    case DEVICE_PROOF_REQUIRED:
+      return t('DEVICE_REGISTRATION_PAIRING_PORTAL_HAS_DEVICE');
+    case 'DEVICE_REGISTERED_ELSEWHERE':
+      return t('DEVICE_REGISTRATION_PAIRING_REGISTERED_ELSEWHERE');
+    case 'PAIRING_CODE_WRONG_DEVICE':
+      return t('DEVICE_REGISTRATION_PAIRING_CODE_WRONG_DEVICE');
+    default:
+      return typeof data.message === 'string' && data.message ? data.message : t('DEVICE_REGISTRATION_FAILED');
+  }
 }
 
 /**
@@ -161,6 +188,7 @@ export default function DeviceRegistrationPage() {
   const [pendingDeepLinkCode, setPendingDeepLinkCode] = useState<string | null>(null);
   const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
   const [driftDialogOpen, setDriftDialogOpen] = useState(false);
+  const [portalHasDevice, setPortalHasDevice] = useState(false);
   const [driftChoice, setDriftChoice] = useState<'fresh' | 'restore' | null>(() => getStoredDriftChoice());
   const [isPreparingFresh, setIsPreparingFresh] = useState(false);
   const isTauri = '__TAURI_INTERNALS__' in window;
@@ -466,9 +494,16 @@ export default function DeviceRegistrationPage() {
           toast.success(t('DEVICE_REGISTRATION_PAIRING_ACCEPTED'));
           await refreshRegistrationStatus();
         } else {
-          const errorMsg = typeof data.message === 'string' ? data.message : t('DEVICE_REGISTRATION_FAILED');
+          const errorMsg = pairingRefusalMessage(data, t);
           setPairingError(errorMsg);
-          toast.error(errorMsg);
+          if (data.code === DEVICE_PROOF_REQUIRED) {
+            // Only restoring or replacing the Portal's device gets past this refusal, so ask
+            // again even when a choice is already stored: the earlier choice did not work.
+            setPortalHasDevice(true);
+            setDriftDialogOpen(true);
+          } else {
+            toast.error(errorMsg);
+          }
         }
       } catch (error) {
         console.error(error);
@@ -546,6 +581,7 @@ export default function DeviceRegistrationPage() {
       storeDriftChoice('fresh');
       setDriftChoice('fresh');
       setDriftDialogOpen(false);
+      setPairingError(null);
       toast.success(t('DEVICE_REGISTRATION_STATE_DRIFT_PREPARE_SUCCESS'));
       await refreshRegistrationStatus();
       await loadStateDrift();
@@ -573,6 +609,7 @@ export default function DeviceRegistrationPage() {
     storeDriftChoice('restore');
     setDriftChoice('restore');
     setDriftDialogOpen(false);
+    setPairingError(null);
   };
 
   const handleRetryStatus = async () => {
@@ -714,6 +751,7 @@ export default function DeviceRegistrationPage() {
       <RegistrationStateDriftDialog
         open={driftDialogOpen}
         drift={stateDrift}
+        portalHasDevice={portalHasDevice}
         isPreparing={isPreparingFresh}
         onSetupNew={() => void handleSetupNewDevice()}
         onRestore={handleRestoreExistingDevice}
@@ -731,6 +769,7 @@ export default function DeviceRegistrationPage() {
       )}
 
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
+      {driftChoice === 'fresh' && (portalHasDevice || stateDrift?.portalDeviceActive === true) ? <RegistrationFreshBanner /> : null}
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">

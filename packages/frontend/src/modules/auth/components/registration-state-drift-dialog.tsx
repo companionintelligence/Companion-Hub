@@ -81,6 +81,7 @@ function DriftOptionCard({
         disabled={disabled}
         loading={loading}
         data-testid={testId}
+        data-recommended={highlighted ? 'true' : 'false'}
       >
         {actionLabel}
       </Button>
@@ -91,14 +92,26 @@ function DriftOptionCard({
 type RegistrationStateDriftDialogProps = {
   open: boolean;
   drift: RegistrationStateDrift | null;
+  /**
+   * The Portal refused a pairing because it already has a device for this
+   * computer and this Hub could not prove it is that device.
+   */
+  portalHasDevice?: boolean;
   isPreparing: boolean;
   onSetupNew: () => void;
   onRestore: () => void;
 };
 
-export function RegistrationStateDriftDialog({ open, drift, isPreparing, onSetupNew, onRestore }: RegistrationStateDriftDialogProps) {
+export function RegistrationStateDriftDialog({
+  open,
+  drift,
+  portalHasDevice = false,
+  isPreparing,
+  onSetupNew,
+  onRestore,
+}: RegistrationStateDriftDialogProps) {
   const { t } = useTranslation();
-  const recommendRestore = drift?.portalDeviceActive === true;
+  const recommendRestore = portalHasDevice || drift?.portalDeviceActive === true;
   const extraSignals = drift ? secondarySignals(drift) : [];
 
   return (
@@ -117,11 +130,13 @@ export function RegistrationStateDriftDialog({ open, drift, isPreparing, onSetup
             </div>
             <DialogTitle className="text-xl font-semibold leading-tight sm:text-2xl">{t('DEVICE_REGISTRATION_STATE_DRIFT_TITLE')}</DialogTitle>
             <DialogDescription className="text-sm leading-relaxed sm:text-[15px]">
-              {t('DEVICE_REGISTRATION_STATE_DRIFT_DESCRIPTION')}
+              {portalHasDevice
+                ? t('DEVICE_REGISTRATION_STATE_DRIFT_DESCRIPTION_PORTAL_HAS_DEVICE')
+                : t('DEVICE_REGISTRATION_STATE_DRIFT_DESCRIPTION')}
             </DialogDescription>
           </DialogHeader>
 
-          {recommendRestore ? (
+          {recommendRestore && !portalHasDevice ? (
             <Alert variant="info" className="mb-0">
               <AlertDescription className="text-sm leading-relaxed">{t('DEVICE_REGISTRATION_STATE_DRIFT_PORTAL_ACTIVE')}</AlertDescription>
             </Alert>
@@ -157,7 +172,11 @@ export function RegistrationStateDriftDialog({ open, drift, isPreparing, onSetup
           <DriftOptionCard
             icon={PlusCircle}
             title={t('DEVICE_REGISTRATION_STATE_DRIFT_SETUP_NEW')}
-            description={t('DEVICE_REGISTRATION_STATE_DRIFT_SETUP_NEW_HINT')}
+            description={
+              recommendRestore
+                ? t('DEVICE_REGISTRATION_STATE_DRIFT_SETUP_NEW_HINT_PORTAL_HAS_DEVICE')
+                : t('DEVICE_REGISTRATION_STATE_DRIFT_SETUP_NEW_HINT')
+            }
             actionLabel={isPreparing ? t('DEVICE_REGISTRATION_STATE_DRIFT_PREPARING') : t('DEVICE_REGISTRATION_STATE_DRIFT_SETUP_NEW_ACTION')}
             onClick={onSetupNew}
             disabled={isPreparing}
@@ -169,6 +188,17 @@ export function RegistrationStateDriftDialog({ open, drift, isPreparing, onSetup
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Shown after Start fresh while the Portal still has a device for this computer, which blocks pairing as a new one. */
+export function RegistrationFreshBanner() {
+  const { t } = useTranslation();
+
+  return (
+    <Alert variant="info">
+      <AlertDescription className="text-sm leading-relaxed">{t('DEVICE_REGISTRATION_STATE_DRIFT_FRESH_BANNER')}</AlertDescription>
+    </Alert>
   );
 }
 
