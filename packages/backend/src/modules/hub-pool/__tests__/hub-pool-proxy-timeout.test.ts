@@ -95,7 +95,9 @@ describe('poolFetchDispatcher — undici must not cap the pool budgets at 300 s'
     const { port } = server.address() as { port: number };
     const url = `http://127.0.0.1:${port}/`;
     try {
-      const AgentClass = poolFetchDispatcher()!.constructor as new (o: { headersTimeout: number }) => object;
+      const dispatcher = poolFetchDispatcher();
+      if (!dispatcher) throw new Error("Node's bundled undici Agent was not found");
+      const AgentClass = dispatcher.constructor as new (o: { headersTimeout: number }) => object;
       // A short header timer on the same class fails the slow server — proving the option is live,
       // which is what makes `headersTimeout: 0` a real change rather than a no-op.
       const short = fetch(url, { dispatcher: new AgentClass({ headersTimeout: 250 }) } as RequestInit);
