@@ -58,8 +58,9 @@ describe('AuthGuard', () => {
    * route uses, so it is what makes a new route closed to the key unless someone opens it on purpose.
    */
   it('answers 403 to a qa:read key on any route that uses it', async () => {
+    // A GET: `AuthMiddleware` only resolves the key on a read, so a read is where this answer is given.
     const error = await guard
-      .canActivate(contextFor({ hubPrincipal: 'qa-read', method: 'POST', url: '/api/inference/pool/pins' }))
+      .canActivate(contextFor({ hubPrincipal: 'qa-read', method: 'GET', url: '/api/inference/pool/settings' }))
       .catch((err) => err);
 
     expect(keyOf(error)).toBe('AUTH_ERROR_QA_READ_KEY_ROUTE_NOT_ALLOWED');

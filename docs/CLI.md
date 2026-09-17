@@ -354,8 +354,9 @@ cihub api-key list                                       # id, name, scopes, cap
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
 **Settings → Security**.
 
-`--scope` and `--scopes` are the same flag. A `qa:read` key reads pool status, the pool routing log,
-one app's status (without its config), and the install queue, and every other route answers it 403.
+`--scope` and `--scopes` are the same flag; give one, not both. A `qa:read` key reads pool status, the pool routing log,
+one app's status (without its config), and the install queue. Every other GET answers it 403, and any write
+answers 401, because the Hub only looks the key up on a read.
 Mint it for a test harness or a monitor instead of handing out the device key. It must be the only
 scope on its key, and it is stored as `read`. A Hub built before `qa:read` existed accepts the row
 but authenticates nothing with it. See

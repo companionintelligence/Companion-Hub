@@ -292,8 +292,13 @@ export function runApiKeyCommand(args: string[]) {
     }
 
     // `--scope` and `--scopes` are the same flag: a key usually has one scope, and the singular is what
-    // the fleet QA plan and the refusal messages below spell. `--scopes` wins if both are given.
-    const { scopes, invalid, managedOnly } = parseApiKeyScopes(readApiKeyFlag(args, '--scopes') ?? readApiKeyFlag(args, '--scope') ?? 'mcp');
+    // the fleet QA plan and the refusal messages below spell. Both at once is refused rather than one
+    // silently winning: `--scopes mcp --scope qa:read` would otherwise mint a write-capable MCP key for
+    // someone who asked for the read-only one, and the box that says so scrolls past in a script.
+    const scopesFlag = readApiKeyFlag(args, '--scopes');
+    const scopeFlag = readApiKeyFlag(args, '--scope');
+    if (scopesFlag !== undefined && scopeFlag !== undefined) usageAndExit('Give --scope or --scopes, not both: they are the same flag.');
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes(scopesFlag ?? scopeFlag ?? 'mcp');
     if (scopes.length === 0) usageAndExit(`At least one scope is required. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
     if (managedOnly.length > 0) {
       usageAndExit(
@@ -358,7 +363,7 @@ export function runApiKeyCommand(args: string[]) {
               `distinction to apply and ${bold(`--capability ${capability}`)} was not stored.`,
               'Update the Hub if you need capability-limited keys.',
             ]),
-        ...(isQaRead ? ['', 'Accepted only on:', ...QA_READ_ROUTES.map((route) => `  ${route}`), 'Every other route answers 403.'] : []),
+        ...(isQaRead ? ['', 'Accepted only on:', ...QA_READ_ROUTES.map((route) => `  ${route}`), 'Every other route refuses it.'] : []),
         '',
         `${bold('key')}     ${rawKey}`,
         '',

@@ -9,7 +9,8 @@
  *   ever minted as a managed key owned by an installed first-party app; an operator-created key
  *   never carries it because those have no owning app URN to satisfy the guard's identity check.
  * - 'qa:read': accepted ONLY on the GET routes marked `@ObservabilityRead()` — pool status, the
- *   routing log, one app's status and the install queue — and refused with 403 everywhere else.
+ *   routing log, one app's status and the install queue — and refused everywhere else: 403 on any
+ *   other GET, 401 on a write (`AuthMiddleware` only resolves it on a read).
  *   See {@link QA_READ_SCOPE}.
  */
 export const API_KEY_SCOPES = ['mcp', 'app', 'qa:read'] as const;

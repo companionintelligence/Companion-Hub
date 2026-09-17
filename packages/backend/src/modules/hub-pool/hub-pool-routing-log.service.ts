@@ -184,15 +184,35 @@ export interface PoolRoutingSummary {
 export interface PoolRoutingQueryResult {
   /** Newest placement first, at most `limit` rows. */
   entries: PoolRoutingRecord[];
-  /** How many rows matched `since` before `limit` cut the page. `matched > entries.length` means the page is truncated. */
+  /**
+   * How many rows matched `since` before `limit` cut the page. `matched > entries.length` means the
+   * page is truncated. With `since`, what was left out is the NEWER changes, and `nextSince` resumes
+   * at them; without it, what was left out is older placements, which a caller asking for "the
+   * latest" did not want.
+   */
   matched: number;
   /**
-   * The largest `updatedAt` among the matched rows — pass it back as `since`. `since` is inclusive, so
-   * the row carrying it comes back once more; take the newest copy of each `id`. Inclusive because a
-   * row can change twice inside one millisecond (settled, then usage attached), and an exclusive
-   * cursor would lose the second change. `null` when nothing matched: keep the cursor you had.
+   * Pass it back as `since`. With `since`, the largest `updatedAt` on this page; without, the largest
+   * in the whole ring, so a first call can start tailing from now. `since` is inclusive, so the row
+   * carrying it comes back once more; take the newest copy of each `id`. Inclusive because a row can
+   * change twice inside one millisecond (settled, then usage attached), and an exclusive cursor would
+   * lose the second change. `null` when nothing matched: keep the cursor you had.
+   *
+   * A full page whose `nextSince` equals the `since` you sent means more than `limit` rows changed in
+   * that one millisecond; the cursor cannot move past them until you ask with a larger `limit`.
    */
   nextSince: string | null;
+}
+
+/** The latest `updatedAt` among `rows`, or `null` for none. */
+function latestUpdatedAt(rows: readonly PoolRoutingRecord[]): string | null {
+  let latest: string | null = null;
+  for (const row of rows) {
+    if (latest === null || Date.parse(row.updatedAt) > Date.parse(latest)) {
+      latest = row.updatedAt;
+    }
+  }
+  return latest;
 }
 
 /**
@@ -283,15 +303,24 @@ export class HubPoolRoutingLogService {
    */
   query(options: { limit?: number; since?: string } = {}): PoolRoutingQueryResult {
     const limit = options.limit ?? ROUTING_LOG_CAPACITY;
-    const sinceMs = options.since === undefined ? null : Date.parse(options.since);
-    const matching = sinceMs === null ? this.entries : this.entries.filter((entry) => Date.parse(entry.updatedAt) >= sinceMs);
-    let nextSince: string | null = null;
-    for (const entry of matching) {
-      if (nextSince === null || Date.parse(entry.updatedAt) > Date.parse(nextSince)) {
-        nextSince = entry.updatedAt;
-      }
+    if (options.since === undefined) {
+      return { entries: this.entries.slice(-limit).reverse(), matched: this.entries.length, nextSince: latestUpdatedAt(this.entries) };
     }
-    return { entries: matching.slice(-limit).reverse(), matched: matching.length, nextSince };
+    const sinceMs = Date.parse(options.since);
+    const matching = this.entries.filter((entry) => Date.parse(entry.updatedAt) >= sinceMs);
+    // A cursor page that `limit` cuts keeps the OLDEST changes and leaves the newer ones for the next
+    // call. Cutting by newest placement, as the page without a cursor does, and then handing back the
+    // newest `updatedAt` of everything matched, made a poller that follows `nextSince` skip every row
+    // the cut dropped: a burst of 500 rows between two `limit=200` polls lost 300 of them, while
+    // `matched` said 500 and nothing else did. Stable sort, so rows that changed in the same
+    // millisecond keep placement order and the ones past the cut come back next time (`since` is
+    // inclusive).
+    let page = matching;
+    if (matching.length > limit) {
+      const kept = new Set([...matching].sort((a, b) => Date.parse(a.updatedAt) - Date.parse(b.updatedAt)).slice(0, limit));
+      page = matching.filter((entry) => kept.has(entry));
+    }
+    return { entries: [...page].reverse(), matched: matching.length, nextSince: latestUpdatedAt(page) };
   }
 
   summary(): PoolRoutingSummary {

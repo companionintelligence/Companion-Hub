@@ -208,13 +208,64 @@ describe('HubPoolRoutingLogService', () => {
       expect(service.query({ since: '2026-09-17T12:15:00+02:00' }).entries.map((entry) => entry.model)).toEqual(['after']);
     });
 
-    it('applies limit after the cursor and reports how many matched', () => {
-      for (let i = 0; i < 5; i += 1) service.record(record({ model: `m${i}` }));
+    /**
+     * The failure this pins: the page kept the newest placements but `nextSince` was the newest change
+     * of everything matched, so a poller following the documented loop through a burst bigger than its
+     * `limit` skipped every row the cut dropped — silently, since `matched` was the only sign.
+     */
+    it('pages a burst bigger than limit without losing a row, following nextSince alone', () => {
+      vi.useFakeTimers();
+      for (let i = 0; i < 7; i += 1) {
+        vi.setSystemTime(new Date(Date.UTC(2026, 8, 17, 10, 0, i)));
+        service.record(record({ model: `m${i}` }));
+      }
 
-      const page = service.query({ since: '2000-01-01T00:00:00Z', limit: 2 });
+      const first = service.query({ since: '2026-09-17T10:00:00.000Z', limit: 3 });
+      expect(first.matched).toBe(7);
+      // The oldest changes, newest first — the rest wait for the cursor.
+      expect(first.entries.map((entry) => entry.model)).toEqual(['m2', 'm1', 'm0']);
+
+      const seen = new Set<string>();
+      let since = '2026-09-17T10:00:00.000Z';
+      for (let polls = 0; polls < 10; polls += 1) {
+        const page = service.query({ since, limit: 3 });
+        for (const entry of page.entries) seen.add(entry.model ?? '');
+        if (page.nextSince === null || page.nextSince === since) break;
+        since = page.nextSince;
+      }
+
+      expect([...seen].sort()).toEqual(['m0', 'm1', 'm2', 'm3', 'm4', 'm5', 'm6']);
+    });
+
+    it('still returns the newest placements without a cursor, with a cursor that tails from the newest change', () => {
+      vi.useFakeTimers();
+      for (let i = 0; i < 5; i += 1) {
+        vi.setSystemTime(new Date(Date.UTC(2026, 8, 17, 10, 0, i)));
+        service.record(record({ model: `m${i}` }));
+      }
+
+      const page = service.query({ limit: 2 });
 
       expect(page.entries.map((entry) => entry.model)).toEqual(['m4', 'm3']);
       expect(page.matched).toBe(5);
+      expect(page.nextSince).toBe('2026-09-17T10:00:04.000Z');
+    });
+
+    it('takes a row that settled after later rows were placed on the page where its change falls', () => {
+      vi.useFakeTimers();
+      const slow = openAt('2026-09-17T10:00:00.000Z', 'slow');
+      openAt('2026-09-17T10:00:01.000Z', 'quick-1');
+      openAt('2026-09-17T10:00:02.000Z', 'quick-2');
+      vi.setSystemTime(new Date('2026-09-17T10:05:00.000Z'));
+      service.settle(slow, { outcome: 'served', status: 200, durationMs: 300_000 });
+
+      const first = service.query({ since: '2026-09-17T10:00:00.000Z', limit: 2 });
+      expect(first.entries.map((entry) => entry.model)).toEqual(['quick-2', 'quick-1']);
+      expect(first.nextSince).toBe('2026-09-17T10:00:02.000Z');
+
+      const second = service.query({ since: first.nextSince ?? '', limit: 2 });
+      expect(second.entries.map((entry) => entry.model)).toEqual(['quick-2', 'slow']);
+      expect(second.entries[1]).toMatchObject({ outcome: 'served' });
     });
   });
 

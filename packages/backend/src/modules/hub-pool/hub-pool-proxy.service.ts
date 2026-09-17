@@ -708,6 +708,8 @@ export class PoolProxyService {
           // candidate would restart the answer into a response the client is mid-way through
           // reading, so let the stream die instead and leave the client to retry.
           this.logger.warn('[PoolProxy] response already committed to the client; not failing over');
+          // The push above changed a row that settled at headers time; through `update` so `?since=` returns it.
+          this.routingLog.update(row, { failedOverFrom });
           res.destroy();
           return;
         }

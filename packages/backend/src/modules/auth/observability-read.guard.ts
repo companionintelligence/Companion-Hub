@@ -18,7 +18,7 @@ export interface ObservabilityReadOptions {
  * Mark a GET handler as readable by a `qa:read` API key (and, with `unclaimedCli`, by the CLI JWT on
  * an unclaimed Hub). Pair it with `@UseGuards(ObservabilityReadGuard)` in place of `AuthGuard`.
  *
- * The marker is the allow-list. A route without it refuses a `qa:read` key with 403 in `AuthGuard`,
+ * The marker is the allow-list. A GET route without it refuses a `qa:read` key with 403 in `AuthGuard`,
  * so adding a new operator route can never widen what a test key reaches by accident — only putting
  * this decorator on it can, and a test pins the exact set of handlers that carry it.
  *
@@ -28,8 +28,12 @@ export interface ObservabilityReadOptions {
  */
 export const ObservabilityRead = (options: ObservabilityReadOptions = {}) => SetMetadata(OBSERVABILITY_READ_METADATA, options);
 
-/** HEAD reaches a GET handler in Express, and reads exactly as much. */
-const READ_METHODS = new Set(['GET', 'HEAD']);
+/**
+ * The methods the admissions below apply to. HEAD reaches a GET handler in Express, and reads exactly
+ * as much. Exported because `AuthMiddleware` resolves a `qa:read` key only on these, and the two must
+ * not drift: a method admitted here but not looked up there would be a key that silently never works.
+ */
+export const OBSERVABILITY_READ_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 
 /**
  * `AuthGuard`, plus two narrow admissions on handlers marked `@ObservabilityRead()`.
@@ -77,7 +81,7 @@ export class ObservabilityReadGuard extends AuthGuard {
     const request = context.switchToHttp().getRequest() as Request;
     const options = this.reflector.get<ObservabilityReadOptions | undefined>(OBSERVABILITY_READ_METADATA, context.getHandler());
 
-    if (options && !request.user && READ_METHODS.has(request.method)) {
+    if (options && !request.user && OBSERVABILITY_READ_METHODS.has(request.method)) {
       if (request.hubPrincipal === 'qa-read') {
         return true;
       }

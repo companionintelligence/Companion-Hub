@@ -509,12 +509,13 @@ describe('AuthMiddleware and qa:read API keys', () => {
 
   let middleware: AuthMiddleware;
 
-  const bearer = (token: string, originalUrl = '/api/inference/pool/routing-log') =>
+  const bearer = (token: string, originalUrl = '/api/inference/pool/routing-log', method = 'GET') =>
     ({
       cookies: {},
       headers: { authorization: `Bearer ${token}` },
       query: {},
       get: () => undefined,
+      method,
       originalUrl,
       url: originalUrl,
     }) as unknown as Request;
@@ -556,6 +557,32 @@ describe('AuthMiddleware and qa:read API keys', () => {
     await middleware.use(bearer(jsonwebtoken.sign({ sub: 'someone-else' }, 'other-secret')), {} as never, vi.fn());
 
     expect(repo.findByHash).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A pool peer still on the bearer path sends a 64-hex token on every `POST /local/*` forward, and an
+   * app callback sends its managed key. Looking those up bought a SELECT per forward — and, while the
+   * database was down, 550 ms of retries and two warn lines per request — for a principal that no
+   * write route admits.
+   */
+  it.each([
+    ['a peer forward', '/api/inference/pool/local/v1/chat/completions', 'POST'],
+    ['an app callback', '/api/memory-connect/apps/x/skip', 'POST'],
+  ])('never looks a key up on a write (%s), where it could not be admitted anyway', async (_label, url, method) => {
+    const req = bearer(QA_KEY, url, method);
+
+    await middleware.use(req, {} as never, vi.fn());
+
+    expect(repo.findByHash).not.toHaveBeenCalled();
+    expect(req.hubPrincipal).toBeUndefined();
+  });
+
+  it('looks a key up on a HEAD, which Express serves from the GET handler', async () => {
+    const req = bearer(QA_KEY, '/api/inference/pool/status', 'HEAD');
+
+    await middleware.use(req, {} as never, vi.fn());
+
+    expect(req.hubPrincipal).toBe('qa-read');
   });
 
   it('skips /api/mcp, whose own guard already looks every key up', async () => {

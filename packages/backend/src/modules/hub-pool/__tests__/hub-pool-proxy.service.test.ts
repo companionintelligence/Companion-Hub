@@ -923,6 +923,40 @@ describe('PoolProxyService', () => {
       expect(res.json).not.toHaveBeenCalled();
       expect(destroySpy).toHaveBeenCalled();
     });
+
+    /**
+     * The row settled `served` at headers time, and the dead stream then appends to its
+     * `failedOverFrom`. A mutation that skipped `updatedAt` was invisible to a `?since=` poller, which
+     * had already seen the row and was told nothing had changed.
+     */
+    it('moves the row past a cursor when the stream dies after the commit', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        vi.setSystemTime(new Date('2026-09-17T10:00:00.000Z'));
+        const settle = routingLog.settle.bind(routingLog);
+        vi.spyOn(routingLog, 'settle').mockImplementation((row, patch) => {
+          settle(row, patch);
+          // The stream then runs for a second before the client's socket fails.
+          vi.setSystemTime(new Date('2026-09-17T10:00:01.000Z'));
+        });
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: 'llama3.2:3b' },
+          model: 'llama3.2:3b',
+          res: createMockResponse({ writeFails: true }),
+        });
+
+        const page = routingLog.query({ since: '2026-09-17T10:00:00.500Z' });
+        expect(page.entries).toHaveLength(1);
+        expect(page.entries[0]).toMatchObject({ outcome: 'served', failedOverFrom: [POOL_SERVED_LOCALLY], updatedAt: '2026-09-17T10:00:01.000Z' });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   /**

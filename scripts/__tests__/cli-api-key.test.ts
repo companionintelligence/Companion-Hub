@@ -129,12 +129,18 @@ describe('api-key create', () => {
 
       const printed = (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
       expect(printed).toContain('GET /api/inference/pool/routing-log');
-      expect(printed).toContain('Every other route answers 403.');
+      expect(printed).toContain('Every other route refuses it.');
     });
 
     it('refuses to put it on the same key as another scope', () => {
       expect(() => runApiKeyCommand(['create', '--name', 'fleet-qa', '--scopes', 'mcp,qa:read'])).toThrow('exit');
       expect(errorText()).toContain("The 'qa:read' scope must be the only scope on its key");
+      expect(insertSql()).toBeUndefined();
+    });
+
+    it('refuses --scope and --scopes together, instead of silently minting the wider key', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'fleet-qa', '--scopes', 'mcp', '--scope', 'qa:read'])).toThrow('exit');
+      expect(errorText()).toContain('Give --scope or --scopes, not both');
       expect(insertSql()).toBeUndefined();
     });
 
