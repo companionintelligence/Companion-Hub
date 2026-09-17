@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
+import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
@@ -403,6 +403,20 @@ export class ConfigurationService {
     }
   }
 
+  /**
+   * Persist settings.json keys that another module owns (see `FileOnlySettings`). Disk only: these
+   * keys have no in-memory mirror here, and their owner reads them back from the file.
+   *
+   * Owners must come through here rather than read-modify-write the file themselves. A private
+   * writer is how `autoUpdates` went undeclared and got stripped by every other write. The one
+   * SystemUpdateService had also answered a file it could not read or parse (including one caught
+   * mid-write by a concurrent save) by writing back only its own key, erasing the Portal credential.
+   * No demo-mode refusal: the auto-update switch never had one, and this keeps its behaviour.
+   */
+  public async setFileOnlySettings(settings: FileOnlySettings): Promise<void> {
+    await this.mergeSettingsToDisk(settings);
+  }
+
   /** Read settings.json, merge in the given partial, and write it back. Disk-only — never mutates
    *  the in-memory config (callers that want the runtime change apply it separately).
    *
@@ -411,7 +425,7 @@ export class ConfigurationService {
    *  corrected it — so the only way out was to edit the file by hand. Dropping is safe here because
    *  the boot path already ignores those fields (see {@link parsePersistedSettings}); this just
    *  stops carrying a value nothing can read forward. */
-  private async mergeSettingsToDisk(settings: UserSettingsBody): Promise<void> {
+  private async mergeSettingsToDisk(settings: PersistedSettings): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
     await ensureSettingsJsonReady(settingsPath);
     const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
