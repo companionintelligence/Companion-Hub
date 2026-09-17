@@ -7,6 +7,19 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { AppLifecycleCommand } from './command';
 
+/**
+ * The compose subcommand a start runs.
+ *
+ * `--force-recreate` stays the default, so a start from the dashboard, a sweep, a reset, or a
+ * rehydration behaves as before. `onlyRecreateChanged` drops it so compose's own change detection
+ * decides, which is what a Hub boot wants (see `AppLifecycleService.restartRunningApps`).
+ */
+export function startComposeCommand(options: { forcePull: boolean; onlyRecreateChanged?: boolean }): string {
+  return ['up', '--detach', options.onlyRecreateChanged ? '' : '--force-recreate', '--remove-orphans', options.forcePull ? '--pull always' : '']
+    .filter(Boolean)
+    .join(' ');
+}
+
 export class StartAppCommand extends AppLifecycleCommand {
   public async execute(appUrn: AppUrn, form: AppEventFormInput) {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
@@ -47,7 +60,7 @@ export class StartAppCommand extends AppLifecycleCommand {
       }
 
       const forcePull = !form.skipPull && config.force_pull;
-      await this.composeAppWithNetworkRecovery(appUrn, form, `up --detach --force-recreate --remove-orphans ${forcePull ? '--pull always' : ''}`);
+      await this.composeAppWithNetworkRecovery(appUrn, form, startComposeCommand({ forcePull, onlyRecreateChanged: form.onlyRecreateChanged }));
 
       // Regenerate Traefik file-based config after app starts
       const effectiveExposure = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');

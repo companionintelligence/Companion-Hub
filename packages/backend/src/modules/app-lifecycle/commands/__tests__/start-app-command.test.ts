@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
-import { StartAppCommand } from '../start-app-command';
+import { StartAppCommand, startComposeCommand } from '../start-app-command';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -165,6 +165,19 @@ describe('StartAppCommand — pull policy', () => {
     expect(upCmd).not.toContain('--pull');
   });
 
+  it('MUST keep --force-recreate for an ordinary start, whose callers were written against it', async () => {
+    await command.execute(appUrn, {});
+    const upCmd = composeArgs.find((a) => a.includes('up'));
+    expect(upCmd).toBe('up --detach --force-recreate --remove-orphans');
+  });
+
+  it('MUST NOT force-recreate when the Hub boot asks only for changed services (beta-max recreated ci-memory and OpenClaw on a version roll)', async () => {
+    await command.execute(appUrn, { onlyRecreateChanged: true });
+    const upCmd = composeArgs.find((a) => a.includes('up'));
+    // Compose recreates a service only when its config hash changed; everything else keeps running.
+    expect(upCmd).toBe('up --detach --remove-orphans');
+  });
+
   it('SHOULD remove stale networks before compose up', async () => {
     await command.execute(appUrn, {});
 
@@ -240,5 +253,18 @@ describe('StartAppCommand — pull policy', () => {
     expect(result.success).toBe(true);
     expect(isRocmKfdPassthroughAvailable).toHaveBeenCalled();
     expect(dockerService.composeApp).toHaveBeenCalled();
+  });
+});
+
+describe('startComposeCommand', () => {
+  it('keeps --pull always independent of the recreate mode, so a boot reconcile still honours force_pull', () => {
+    expect(startComposeCommand({ forcePull: true, onlyRecreateChanged: true })).toBe('up --detach --remove-orphans --pull always');
+    expect(startComposeCommand({ forcePull: true })).toBe('up --detach --force-recreate --remove-orphans --pull always');
+  });
+
+  it('never emits empty arguments, which compose would reject as a service name', () => {
+    for (const command of [startComposeCommand({ forcePull: false }), startComposeCommand({ forcePull: false, onlyRecreateChanged: true })]) {
+      expect(command.split(' ')).not.toContain('');
+    }
   });
 });

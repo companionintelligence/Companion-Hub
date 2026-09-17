@@ -102,6 +102,7 @@ describe('CloudflareClientService', () => {
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: path.join(DATA_DIR, 'docker-compose.yml'),
         profile: 'cloudflare',
+        forceRecreate: true,
       });
       expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
     });
@@ -114,6 +115,7 @@ describe('CloudflareClientService', () => {
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: path.join(APP_DIR, 'docker-compose.prod.yml'),
         profile: 'cloudflare',
+        forceRecreate: true,
       });
     });
 
@@ -126,6 +128,7 @@ describe('CloudflareClientService', () => {
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: path.join(APP_DIR, 'docker-compose.local.yml'),
         profile: 'cloudflare',
+        forceRecreate: true,
       });
     });
 
@@ -521,6 +524,49 @@ describe('CloudflareClientService', () => {
       portalClient.postDeviceCustomDomainBind.mockRejectedValue(new Error('socket hang up'));
 
       await expect(service.bindCustomDomain('cd_1', 'comfyui')).resolves.toMatchObject({ ok: false, message: 'socket hang up' });
+    });
+  });
+
+  describe('ensureCloudflaredRunning', () => {
+    beforeEach(() => {
+      vi.mocked(fsSync.existsSync).mockReturnValue(true);
+      (service as any).tunnelToken = 'tok';
+    });
+
+    it('asks compose to reconcile cloudflared even when a container already exists, without forcing a recreate', async () => {
+      // beta-max kept a crash-looping cloudflared from an older definition because boot only
+      // restarted what existed. Compose decides now; it leaves an unchanged container alone.
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(true);
+
+      expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
+        composeFile: path.join(DATA_DIR, 'docker-compose.yml'),
+        profile: 'cloudflare',
+        forceRecreate: false,
+      });
+      expect(dockerService.restartContainer).not.toHaveBeenCalled();
+    });
+
+    it('recreates cloudflared after the token was recovered, because it reads the token only at startup', async () => {
+      await expect(service.ensureCloudflaredRunning({ forceRestart: true })).resolves.toBe(true);
+
+      expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', expect.objectContaining({ forceRecreate: true }));
+    });
+
+    it('reports failure with the compose diagnosis instead of throwing into boot', async () => {
+      const errorSpy = vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
+      dockerService.ensureContainerRunning.mockRejectedValue(new Error('Cannot start cloudflared: no Docker Compose CLI works in this Hub.'));
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(false);
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('no Docker Compose CLI works in this Hub'));
+    });
+
+    it('does not touch docker without a tunnel token', async () => {
+      (service as any).tunnelToken = null;
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(false);
+
+      expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
     });
   });
 

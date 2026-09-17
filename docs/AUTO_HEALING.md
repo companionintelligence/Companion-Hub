@@ -131,9 +131,34 @@ On bootstrap the backend registers two repeatable jobs (production):
 - `update_all` — every **15 minutes** (pulls the marketplace app repo)
 - `sync_app_statuses` — every **5 minutes** (reconciles installed-app status)
 
-It also restarts running apps after a Hub version change or nightly build
-(`buster !== version || version === 'nightly'`) so installed apps come back up
-on the new Hub version.
+After a Hub version change or nightly build (`buster !== version || version === 'nightly'`)
+it also brings running apps in line with the new Hub version. The Hub regenerates each
+app's compose file and `app.env`, then runs `docker compose up --detach --remove-orphans`
+**without** `--force-recreate`. Compose recreates a service only when its resolved
+definition differs from the container's `com.docker.compose.config-hash` label. That
+definition covers the image, labels, mounts, networks, and environment, including
+`env_file` contents. Services whose definition did not change keep running, and stopped
+containers are pruned and created again. A start that you request from the dashboard
+still force-recreates.
+
+Before this, every version change force-recreated every running app. On beta-max the
+boot on 0.2.71 recreated all ten ci-memory containers and OpenClaw. Compose does not see
+a changed bind-mounted file, but this path rewrites only the compose file and `app.env`.
+
+### Tunnel sidecar (`cloudflared`)
+
+On boot, and after the tunnel token is recovered, the Hub runs
+`compose up --no-deps cloudflared` instead of `docker restart cloudflared`. Compose
+replaces a container created from an older definition, such as a token mount that has
+since moved, and leaves an unchanged one running. After a token recovery or a new
+registration the Hub adds `--force-recreate`, because cloudflared reads the token only at
+startup.
+
+The Hub uses the `docker compose` plugin, or the bundled `docker-compose` binary when the
+plugin is missing. The Hub image registers the plugin under
+`/usr/local/libexec/docker/cli-plugins`. If neither CLI works, the Hub logs both probe
+errors and restarts the existing container. A log line that ends in
+`unknown flag: --env-file` means the docker CLI had no compose plugin.
 
 ### App status sync (every 5 minutes)
 

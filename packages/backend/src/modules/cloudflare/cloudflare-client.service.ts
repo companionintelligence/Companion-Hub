@@ -2,7 +2,6 @@ import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, tunnelUserClearedM
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { DockerReadFacade } from '../docker/docker-read.facade';
 import { DockerService } from '../docker/docker.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import type { AvailableCustomDomain, AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
@@ -207,9 +206,11 @@ export class CloudflareClientService {
         this.logger.log('Ensuring cloudflared container is running...');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
         const composeFile = await this.getComposeFile();
+        // The token file was just rewritten and cloudflared reads it only at startup.
         await dockerService.ensureContainerRunning('cloudflared', {
           composeFile,
           profile: 'cloudflare',
+          forceRecreate: true,
         });
         this.logger.log('Cloudflared container is running.');
 
@@ -711,12 +712,21 @@ export class CloudflareClientService {
   }
 
   /**
-   * Starts or restarts `cloudflared` idempotently when a token is available.
+   * Starts `cloudflared`, or brings it back to its compose definition, when a token is available.
    *
    * Each Hub boot calls this method because `recoverTunnelTokenFromDb` starts
    * `cloudflared` only when the token file is missing. Without this additional
    * check, restarting a registered Hub with an existing file would leave the
    * tunnel down. Local and E2E modes skip the container.
+   *
+   * It goes through compose even when the container reports `running`. Compose leaves an
+   * unchanged container alone, so a healthy tunnel is not interrupted, but it replaces one
+   * created from an older definition. A "running" check cannot see that: on beta-max the
+   * container ran from a definition whose token mount no longer matched where the Hub writes the
+   * token, and a restart kept it crash-looping (see `DockerService.ensureContainerRunning`).
+   *
+   * `forceRestart` recreates the container after the token was recovered, because the
+   * definition is unchanged and cloudflared reads the token only at startup.
    */
   async ensureCloudflaredRunning(options: { forceRestart?: boolean } = {}): Promise<boolean> {
     if (!this.tunnelToken) {
@@ -729,40 +739,21 @@ export class CloudflareClientService {
       return false;
     }
     try {
-      const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
-
-      const alreadyRunning = dockerReadFacade ? await dockerReadFacade.isContainerRunning('cloudflared') : false;
-      if (alreadyRunning && !options.forceRestart) {
-        this.logger.debug('ensureCloudflaredRunning: cloudflared is already running, skipping restart');
-        return true;
-      }
-
       if (!dockerService) {
         this.logger.warn('ensureCloudflaredRunning: DockerService unavailable');
         return false;
       }
 
-      if (alreadyRunning && options.forceRestart) {
-        this.logger.warn('ensureCloudflaredRunning: restarting cloudflared after tunnel credential recovery...');
-        try {
-          await dockerService.restartContainer('cloudflared');
-          this.logger.warn('Cloudflared container restarted with recovered credentials.');
-          return true;
-        } catch (restartError) {
-          this.logger.warn(
-            `ensureCloudflaredRunning: restart failed (${restartError instanceof Error ? restartError.message : String(restartError)}); falling through to recreate`,
-          );
-        }
+      if (options.forceRestart) {
+        this.logger.warn('ensureCloudflaredRunning: recreating cloudflared after tunnel credential recovery...');
       }
-
-      this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
-      const composeFile = this.getComposeFile();
       await dockerService.ensureContainerRunning('cloudflared', {
-        composeFile,
+        composeFile: this.getComposeFile(),
         profile: 'cloudflare',
+        forceRecreate: options.forceRestart === true,
       });
-      this.logger.warn('Cloudflared container is running.');
+      this.logger.log('Cloudflared container is up to date with the compose file and running.');
       return true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);

@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { getHubStateDirs, isRelatedVolume, isWithinPath, parseNames, runHubCleanup } from '../hub-cleanup-lib';
+import {
+  getHubStateDirs,
+  isRelatedVolume,
+  isWithinPath,
+  managedAppProjectsFromLabelLines,
+  parseNames,
+  removeManagedAppProjects,
+  runHubCleanup,
+} from '../hub-cleanup-lib';
 
 describe('hub-cleanup-lib', () => {
   it('isWithinPath handles trailing separators on basePath and targetPath', () => {
@@ -26,6 +34,82 @@ describe('hub-cleanup-lib', () => {
 
   it('parses newline-delimited names', () => {
     expect(parseNames('one\n\n two \n')).toEqual(['one', 'two']);
+  });
+
+  it('reads app projects from {{.Labels}} lines without mistaking the Hub stack or a config_files label for an app', () => {
+    const lines = [
+      // core-2's Hub container: both managed labels, and a config_files value that itself contains a comma.
+      'ci-hub.managed=true,ci-os-hub.managed=true,com.docker.compose.project=ci-hub,com.docker.compose.project.config_files=/x/docker-compose.prod.yml,/x/docker-compose.dev-image.yml',
+      'ci-os-hub.appurn=ci-memory:ci-marketplace,ci-os-hub.managed=true,com.docker.compose.project=ci-memory_ci-marketplace',
+      'com.docker.compose.project=ci-memory_ci-marketplace,ci-os-hub.managed=true',
+      'ci-os-hub.managed=true,com.docker.compose.project=runcihub',
+      'ci-hub.managed=true,com.docker.compose.project=$(touch /tmp/x)',
+    ];
+
+    expect(managedAppProjectsFromLabelLines(lines)).toEqual(['ci-memory_ci-marketplace']);
+  });
+
+  describe('removeManagedAppProjects (cihub reset)', () => {
+    const fakeDocker = () => {
+      const calls: string[] = [];
+      const docker = (args: string[]) => {
+        const command = args.join(' ');
+        calls.push(command);
+        if (command === 'ps -a --filter label=ci-hub.managed=true --format {{.Labels}}') {
+          return {
+            ok: true,
+            stdout: 'ci-hub.managed=true,com.docker.compose.project=ci-hub\nci-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace',
+          };
+        }
+        if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Labels}}') {
+          return { ok: true, stdout: 'ci-os-hub.managed=true,com.docker.compose.project=ci-openclaw_ci-marketplace' };
+        }
+        if (command === 'ps -aq --filter label=com.docker.compose.project=ci-hermes_ci-marketplace') {
+          return { ok: true, stdout: 'h1\nh2' };
+        }
+        if (command === 'ps -aq --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace') {
+          return { ok: true, stdout: 'o1' };
+        }
+        if (command === 'network ls -q --filter label=com.docker.compose.project=ci-hermes_ci-marketplace') {
+          return { ok: true, stdout: 'n1' };
+        }
+        if (command === 'volume ls -q --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace') {
+          return { ok: true, stdout: 'v1' };
+        }
+        return { ok: true, stdout: '' };
+      };
+      return { calls, docker };
+    };
+
+    it('removes apps under both labels, with their networks and volumes, and leaves the Hub stack to compose down', () => {
+      const { calls, docker } = fakeDocker();
+
+      const removed = removeManagedAppProjects(docker, { removeVolumes: true });
+
+      expect(removed).toEqual(['ci-hermes_ci-marketplace', 'ci-openclaw_ci-marketplace']);
+      expect(calls).toContain('rm -f h1 h2');
+      expect(calls).toContain('rm -f o1');
+      expect(calls).toContain('network rm n1');
+      expect(calls).toContain('volume rm v1');
+      expect(calls.some((command) => command.includes('com.docker.compose.project=ci-hub'))).toBe(false);
+    });
+
+    it('keeps app volumes when asked, and does nothing when docker cannot list containers', () => {
+      const { calls, docker } = fakeDocker();
+      removeManagedAppProjects(docker, { removeVolumes: false });
+      expect(calls.some((command) => command.startsWith('volume'))).toBe(false);
+
+      const unreachable: string[] = [];
+      const removed = removeManagedAppProjects(
+        (args) => {
+          unreachable.push(args.join(' '));
+          return { ok: false, stdout: '' };
+        },
+        { removeVolumes: true },
+      );
+      expect(removed).toEqual([]);
+      expect(unreachable.every((command) => command.startsWith('ps -a --filter label='))).toBe(true);
+    });
   });
 
   it('resolves Linux state directories and includes repo-local paths', () => {

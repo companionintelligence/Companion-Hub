@@ -10,7 +10,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { dockerBindMountPath } from '../heal-hub-bind-mounts.js';
-import { isRelatedVolume, parseNames } from '../hub-cleanup-lib.js';
+import { isRelatedVolume, parseNames, removeManagedAppProjects } from '../hub-cleanup-lib.js';
 import { buildEnvOverrides, getEnvFileOrExit } from './cli-compose-env.js';
 import { startHub } from './cli-lifecycle.js';
 import { run, runBestEffort, runCapture } from './cli-proc.js';
@@ -169,11 +169,18 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
   const confirmed = await confirmDestructiveAction(
     `Resetting ${label}`,
     force,
-    `Reset ${label} runtime state (containers, volumes, and host files)? [y/N]: `,
+    `Reset ${label} runtime state (installed apps, containers, volumes, and host files)? [y/N]: `,
   );
   if (!confirmed) {
     printMessageBox('Reset cancelled', ['Left runtime state untouched.'], 'yellow');
     return false;
+  }
+  // Apps go first. `down` below only knows the Hub's own project, and the data directory this reset
+  // deletes holds every app's bind mounts; apps left running keep Hub credentials the reset Hub
+  // rejects. See removeManagedAppProjects.
+  const removedApps = removeManagedAppProjects((args) => runCapture('docker', args), { removeVolumes: true });
+  if (removedApps.length > 0) {
+    printMessageBox('Removed installed apps', removedApps, 'yellow');
   }
   downHub(env, { volumes: true });
   verifyHubVolumesRemoved();

@@ -22,6 +22,9 @@ const queueAppFormSchema = z
     skipEnv: z.boolean().default(false),
     skipPull: z.boolean().default(false),
     skipRun: z.boolean().default(false),
+    // Start only: let compose recreate just the services whose resolved definition changed. See
+    // `AppLifecycleService.restartRunningApps`.
+    onlyRecreateChanged: z.boolean().optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
     // Explicit fields for public domain selection — previously passed through catchall as unknown.

@@ -27,12 +27,17 @@ cihub up dev --detached
 
 What it does:
 
-1. `docker compose down -v --remove-orphans` — removes containers **and** named volumes such as `ci_hub_pgdata`
-2. Verifies lingering Hub volumes (`ci_hub_pgdata`, `ci_hub_app_data`, `hub_tailscale_state`) and removes any leftovers
-3. Deletes host `hub-data` / tunnel directories (repo dev) or the canonical `companion-hub` tree (prod appliance)
-4. If `hub-data` contains root-owned files (EACCES), retries cleanup via `docker run --rm -v <path>:/d alpine rm -rf /d/*`
+1. Removes every installed app: the containers, networks, and named volumes of each compose project labelled `ci-hub.managed=true` or `ci-os-hub.managed=true`. Apps are separate compose projects, so the next step does not reach them, and apps left running keep bind mounts into the deleted data directory and Hub credentials the reset Hub rejects.
+2. `docker compose down -v --remove-orphans` — removes Hub containers **and** named volumes such as `ci_hub_pgdata`
+3. Verifies lingering Hub volumes (`ci_hub_pgdata`, `ci_hub_app_data`, `hub_tailscale_state`) and removes any leftovers
+4. Deletes host `hub-data` / tunnel directories (repo dev) or the canonical `companion-hub` tree (prod appliance)
+5. If `hub-data` contains root-owned files (EACCES), retries cleanup via `docker run --rm -v <path>:/d alpine rm -rf /d/*`
 
 Use this when the Hub API is down, Docker state is corrupted, or you want the same outcome as a factory install.
+
+Step 1 assumes one Hub per Docker daemon, because the managed labels do not say which Hub installed an app.
+
+The legacy `scripts/nuke.sh` and `scripts/unsafe-cleanup.sh` also remove installed apps before they delete Hub state. To keep the apps, run `sudo scripts/nuke.sh --keep-apps`; the script lists them and what they still depend on.
 
 ## Settings: Factory reset Hub
 
