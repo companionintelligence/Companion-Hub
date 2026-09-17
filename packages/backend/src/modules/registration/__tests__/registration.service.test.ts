@@ -1323,6 +1323,22 @@ describe('RegistrationService', () => {
       expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
     });
 
+    it('keeps the token of a pairing that finishes while the leftover connector is being removed', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      cloudflareClientService.stopTunnel.mockImplementation(async () => {
+        // `docker rm` can take seconds. A pairing saves its token and registration in the meantime.
+        vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-just-paired'));
+        (service as any)._currentPhase = 'locally_ready';
+        return true;
+      });
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(vol.readFileSync(TOKEN_PATH, 'utf-8')).toBe(cloudflaredToken('tunnel-just-paired'));
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
     it('writes registration.json for an existing registered Hub and starts its connector as before', async () => {
       vol.writeFileSync(TOKEN_PATH, 'registered-token');
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);

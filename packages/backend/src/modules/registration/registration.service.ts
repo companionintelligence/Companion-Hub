@@ -490,8 +490,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * to reconnect this Hub after the token is gone.
    */
   private async stopUnregisteredTunnel(): Promise<void> {
-    // A pairing in flight writes its token before its registration row exists.
-    if (isActiveRegistrationPhase(this._currentPhase)) {
+    // A pairing writes its token before its registration row exists, and it can
+    // start or finish while this check waits on Docker. Act only while the Hub
+    // is still unregistered, or the new token would be deleted as a leftover.
+    if (this._currentPhase !== 'unregistered') {
       return;
     }
 
@@ -505,7 +507,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     this.tunnelStopPending = !stopped;
     this.tunnelCheckPending = !stopped;
 
-    if (!token || isActiveRegistrationPhase(this._currentPhase)) {
+    if (!token || this._currentPhase !== 'unregistered') {
       return;
     }
 
