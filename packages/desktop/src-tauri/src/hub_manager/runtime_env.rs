@@ -107,13 +107,21 @@ fn dedupe_compose_profile_tokens(tokens: Vec<String>) -> Vec<String> {
     out
 }
 
-fn has_cloudflare_tunnel_token(existing: &std::collections::HashMap<String, String>) -> bool {
+/// Whether the `cloudflare` profile (the `cloudflared` connector) belongs in this launch.
+///
+/// Requires a registered Hub: the token and the backend's `registration.json` marker in the
+/// same tunnel dir (canonical sibling `../tunnel`, else legacy `<root>/tunnel`). A token alone
+/// survives uninstall and reset, and starting on it connects a fresh install to the previous
+/// Hub's tunnel before it pairs. Must match `hasRegisteredCloudflareTunnel` in
+/// `scripts/lib/cli-compose-env.ts`.
+///
+/// A registered Hub whose backend has not written the marker yet still gets its tunnel: the
+/// backend starts `cloudflared` itself at boot with `--profile cloudflare`.
+fn cloudflare_tunnel_registered(existing: &std::collections::HashMap<String, String>) -> bool {
     let Some(root) = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST") else {
         return false;
     };
-    // Canonical: sibling ../tunnel/token (compose bind). Also accept legacy <root>/tunnel/token
-    // so older installs keep the cloudflare profile until they migrate.
-    tunnel_token_present_for_data_dir(&host_path_from_docker_path(&root))
+    registered_tunnel_present_for_data_dir(&host_path_from_docker_path(&root))
 }
 
 /// Ensures `private-vpn` and `cloudflare` compose profiles when enabled, without dropping other profiles.
@@ -141,7 +149,7 @@ pub(crate) fn merge_compose_profiles(
         parts.retain(|p| p != "private-vpn");
     }
 
-    if has_cloudflare_tunnel_token(existing) {
+    if cloudflare_tunnel_registered(existing) {
         if !parts.iter().any(|p| p == "cloudflare") {
             parts.push("cloudflare".into());
         }

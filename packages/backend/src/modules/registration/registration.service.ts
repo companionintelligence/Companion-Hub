@@ -11,6 +11,7 @@ import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosH
 import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { type TunnelHealth, TunnelHealthService } from '../cloudflare/tunnel-health.service';
+import { PORTAL_GRANT_DENIED_CODE } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
@@ -54,6 +55,15 @@ import {
   isDeviceNotActiveResponse,
 } from './check-in-response';
 import { resolveDeviceId } from './device-id.resolver';
+import {
+  hasTunnelLeftoverMarker,
+  removeTunnelLeftoverMarker,
+  removeTunnelRegistrationMarker,
+  tunnelIdFromToken,
+  tunnelTokenPath,
+  writeTunnelLeftoverMarker,
+  writeTunnelRegistrationMarker,
+} from './tunnel-markers';
 import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
 
@@ -118,6 +128,7 @@ function describePortalPairingResponse(data: unknown): string {
   const safeBody = {
     error: typeof body.error === 'string' ? body.error : undefined,
     message: typeof body.message === 'string' ? body.message : undefined,
+    code: typeof body.code === 'string' ? body.code : undefined,
     hasDeviceId: typeof body.device_id === 'string' && body.device_id.length > 0,
     hasOrganizationId: typeof body.organization_id === 'string' && body.organization_id.length > 0,
     hasSlug: typeof body.slug === 'string' && body.slug.length > 0,
@@ -129,6 +140,33 @@ function describePortalPairingResponse(data: unknown): string {
   };
 
   return scrubString(JSON.stringify(safeBody));
+}
+
+/**
+ * The WhoIs subject the leftover-device probe sends. Portal user IDs are
+ * generated, so no user has this one, and the Portal refuses it before it
+ * reads any organization data.
+ */
+const DEVICE_KEY_PROBE_SUBJECT = 'ci-hub-device-key-probe';
+
+/** What a pairing attempt reports to the registration page. */
+export type PairDeviceResult = {
+  success: boolean;
+  message: string;
+  /**
+   * The Portal's machine-readable refusal code, such as `DEVICE_PROOF_REQUIRED`,
+   * when its answer carries one. The page chooses its guidance by this code and
+   * shows `message` when the code is absent or unknown, as it is from older
+   * Portals and from anything in front of the Portal.
+   */
+  code?: string;
+  domain?: string;
+  subdomain?: string;
+};
+
+function portalRefusalCode(data: unknown): { code?: string } {
+  const code = data && typeof data === 'object' ? (data as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && code ? { code } : {};
 }
 
 @Injectable()
@@ -152,6 +190,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private lastCheckIn: RegistrationCheckIn | null = null;
   /** When Portal first rejected the key in the current run of rejections; cleared by an accepted check-in. */
   private portalRejectedSince: number | null = null;
+  /** The tunnel check could not finish, so the next registration check runs it again. */
+  private tunnelCheckPending = false;
+  /** An unregistered Hub still needs its `cloudflared` container removed. */
+  private tunnelStopPending = false;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -215,18 +257,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async runDeferredBootstrap() {
-    // Restore the tunnel token before checking registration. `isRegistered()`
-    // requires both a database row and the on-disk token.
-    const tunnelRecovered = await this.recoverTunnelTokenFromDb();
-
-    // Reload the token into `CloudflareClientService` because the file survives a
-    // restart while its in-memory `getTunnelToken()` state does not.
-    await this.ensureCloudflareClientHasTunnelToken();
-
-    // `recoverTunnelTokenFromDb` starts `cloudflared` only when the token file is
-    // missing. Ensure it also runs after a registered Hub restarts with an existing
-    // file, or the public hostname could resolve while its tunnel remains down.
-    await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: tunnelRecovered });
+    // Read the registration before anything touches the tunnel. `isRegistered()`
+    // requires both a database row and the on-disk token, so a registered Hub
+    // restores its token here first.
+    await this.syncTunnelWithRegistration();
 
     // Restore the Traefik route so Cloudflare Tunnel requests for the public
     // hostname reach Companion Hub.
@@ -549,6 +583,152 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Makes the tunnel connector follow the registration in the database.
+   *
+   * A token file proves nothing by itself. It survives an uninstall, so a
+   * reinstalled Hub would otherwise connect to the previous Hub's tunnel before
+   * anyone pairs it. A registered Hub gets its marker, its token, and a running
+   * connector. An unregistered Hub has its connector stopped and any leftover
+   * token removed. If the database cannot be read, nothing is started or
+   * stopped, and the next registration check tries again.
+   */
+  private async syncTunnelWithRegistration(): Promise<void> {
+    let registration: Awaited<ReturnType<DeviceRegistrationRepository['getFirstDeviceRegistration']>>;
+    try {
+      registration = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    } catch (error) {
+      this.tunnelCheckPending = true;
+      this.logger.warn(`Could not read the registration; leaving the tunnel as it is until the next check: ${describeRegistrationError(error)}`);
+      return;
+    }
+
+    if (!registration) {
+      await this.stopUnregisteredTunnel();
+      return;
+    }
+
+    this.tunnelCheckPending = false;
+    this.tunnelStopPending = false;
+
+    // Existing installs predate the marker, so boot writes it for them.
+    await this.markTunnelRegistered(registration.tunnelId);
+
+    const tunnelRecovered = await this.recoverTunnelTokenFromDb();
+
+    // Reload the token into `CloudflareClientService` because the file survives a
+    // restart while its in-memory `getTunnelToken()` state does not.
+    await this.ensureCloudflareClientHasTunnelToken();
+
+    // `recoverTunnelTokenFromDb` starts `cloudflared` only when the token file is
+    // missing. Ensure it also runs after a registered Hub restarts with an existing
+    // file, or the public hostname could resolve while its tunnel remains down.
+    await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: tunnelRecovered });
+  }
+
+  /** Runs the tunnel check again when an earlier one could not finish. */
+  private async retryPendingTunnelCheck(): Promise<void> {
+    if (this.tunnelCheckPending) {
+      await this.syncTunnelWithRegistration();
+    }
+  }
+
+  /**
+   * Stops `cloudflared` on a Hub with no registration, and moves a leftover token
+   * out of reach of the desktop app, the CLI, and this backend.
+   *
+   * `leftover.json` keeps the tunnel ID so the registration page can still offer
+   * to reconnect this Hub after the token is gone.
+   */
+  private async stopUnregisteredTunnel(): Promise<void> {
+    // A pairing writes its token before its registration row exists, and it can
+    // start or finish while this check waits on Docker. Act only while the Hub
+    // is still unregistered, or the new token would be deleted as a leftover.
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+
+    // `registration.json` without a registration is stale. Beside a token that
+    // comes back later, it would let the desktop app and CLI start that token's
+    // tunnel before this check runs again.
+    await this.unmarkTunnelRegistered();
+
+    const token = await this.readTunnelToken();
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+    if (!token && !this.tunnelStopPending) {
+      this.tunnelCheckPending = false;
+      return;
+    }
+
+    const stopped = await this.cloudflareClientService.stopTunnel();
+    this.tunnelStopPending = !stopped;
+    this.tunnelCheckPending = !stopped;
+
+    if (!token || this._currentPhase !== 'unregistered') {
+      return;
+    }
+
+    this.logger.warn('Found a tunnel token with no registration; stopped cloudflared and removed the token. Pair this Hub to connect it again.');
+
+    try {
+      await writeTunnelLeftoverMarker(tunnelIdFromToken(token));
+    } catch (error) {
+      this.logger.warn(`Could not record the leftover tunnel: ${describeRegistrationError(error)}`);
+    }
+
+    // Remove the token even without the marker: a token left behind is what lets
+    // an unregistered Hub start the previous Hub's tunnel.
+    try {
+      await fs.promises.unlink(tunnelTokenPath());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        this.logger.warn(`Could not remove the leftover tunnel token: ${describeRegistrationError(error)}`);
+      }
+    }
+  }
+
+  /** Records that the tunnel token belongs to a registration. Boot rewrites a marker that failed to write. */
+  private async markTunnelRegistered(tunnelId: string | null | undefined): Promise<void> {
+    try {
+      await writeTunnelRegistrationMarker(tunnelId ?? null);
+    } catch (error) {
+      this.logger.warn(`Could not write the tunnel registration marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
+  /** Removes `registration.json`, so the desktop app and CLI no longer start the tunnel from the token. */
+  private async unmarkTunnelRegistered(): Promise<void> {
+    try {
+      await removeTunnelRegistrationMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the tunnel registration marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
+  /**
+   * Marks the saved registration's token as registered and forgets any earlier
+   * leftover tunnel. A stale `leftover.json` would otherwise offer "Reconnect
+   * this Hub" again the next time this registration is reset.
+   */
+  private async markRegistrationSaved(tunnelId: string | null | undefined): Promise<void> {
+    await this.markTunnelRegistered(tunnelId);
+    try {
+      await removeTunnelLeftoverMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the leftover tunnel marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
+  private async readTunnelToken(): Promise<string | null> {
+    try {
+      return (await fs.promises.readFile(tunnelTokenPath(), 'utf-8')).trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Restores a missing tunnel-token file from a registered organization row.
    *
    * Container restarts, volume resets, and development environments can preserve
@@ -670,6 +850,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
   private async checkInWithCloud(): Promise<CheckInOutcome> {
     if (!isOperational(this._currentPhase)) return 'skipped';
+
+    // A registered Hub whose boot-time registration read failed starts its tunnel here.
+    await this.retryPendingTunnelCheck();
 
     if (!this.hasTunnelToken()) {
       this.logger.warn('Registration validation: tunnel token missing — transitioning to degraded');
@@ -960,6 +1143,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // A missing token already satisfies the reset.
     }
 
+    // Deleting the token does not disconnect a running `cloudflared`, which keeps
+    // serving this Hub's hostname until its container stops. A failed stop is
+    // retried by the registration check that starts below.
+    if (!(await this.cloudflareClientService.stopTunnel())) {
+      this.tunnelStopPending = true;
+      this.tunnelCheckPending = true;
+    }
+    await this.unmarkTunnelRegistered();
+
     // Remove the resolved environment so the next startup regenerates it.
     const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');
     try {
@@ -1100,7 +1292,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     const localRegistered = status.registered;
 
     const staleAppEnvDeviceIds = collectStaleHubDeviceIds(APP_DATA_DIR, hardwareDeviceId);
-    const hasStaleTunnelToken = !localRegistered && this.hasTunnelToken();
+    // Boot removes a leftover token and records it in `leftover.json`, which must
+    // still offer to reconnect this Hub.
+    const hasStaleTunnelToken = !localRegistered && (this.hasTunnelToken() || hasTunnelLeftoverMarker());
 
     let portalDeviceActive: boolean | null = null;
     const { ciCloudUrl } = this.config.getConfig();
@@ -1253,6 +1447,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.resetRegistration();
     const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
     await clearRegistrationRecoveryArtifacts();
+    try {
+      await removeTunnelLeftoverMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the leftover tunnel marker: ${describeRegistrationError(error)}`);
+    }
 
     this.logger.info(`Prepared fresh device setup (cleared registration keys from ${clearedAppEnvFiles} app.env file(s))`);
 
@@ -1264,39 +1463,57 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Returns whether Companion Portal considers the hardware device ID active.
+   * Returns whether Companion Portal still accepts this Hub's stored device key.
    *
-   * Drift detection calls this only while the Hub is locally unregistered, when
-   * a device API key is usually absent. The check-in endpoint authenticates the
-   * key, not the hardware, so `false` means "no live device holds this key" and
-   * says nothing about whether Portal still lists the hardware. A stale but
-   * still valid key answers `true`. Anything that is not a verdict — an uncoded
-   * 400 Portal refused the body with, a 5xx, a proxy page — is `null`.
+   * Drift detection calls this only while the Hub is locally unregistered, and
+   * the registration page polls drift every few seconds. Two rules follow:
+   *
+   * - Without a key there is nothing to ask. The Portal answers keyless device
+   *   calls with 401, and it deliberately offers no keyless lookup of whether a
+   *   device ID exists (CI-Portal#603).
+   * - With a key, ask device WhoIs rather than check-in. Check-in stamps the
+   *   device's last-seen time, so probing through it made an unregistered Hub
+   *   look online in the Portal. WhoIs only reads. The subject is a name no
+   *   Portal user has, so the Portal authenticates the key and then refuses
+   *   the subject with `GRANT_DENIED` without reading any organization data.
+   *
+   * `true` means the key authenticates a device that is not inactive. WhoIs
+   * does not name that device, so this trusts the key to belong to this
+   * hardware, as pairing does when it sends the key as proof. `null` means the
+   * answer is unknown, including a key the Portal rejects: the Portal gives a
+   * revoked key, a deleted device, and a mistyped key the same 401.
    */
   private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
+    const deviceKey = (this.config.getConfig().ciHubApiKey ?? '').trim();
+    if (!deviceKey) {
+      return null;
+    }
+
     try {
-      const { ciHubApiKey } = this.config.getConfig();
       const response = await axios.post(
-        `${ciCloudUrl.replace(/\/+$/, '')}/api/devices/check-in`,
-        { device_id: deviceId },
+        `${ciCloudUrl.replace(/\/+$/, '')}/api/whois`,
+        { subject: DEVICE_KEY_PROBE_SUBJECT, appIds: [], surface: 'hub' },
         {
           timeout: 10_000,
           validateStatus: () => true,
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), {
             'Content-Type': 'application/json',
-            ...(ciHubApiKey ? { 'x-device-key': ciHubApiKey } : {}),
+            'x-device-key': deviceKey,
           }),
         },
       );
 
-      const verdict = classifyCheckInResponse(response.status, response.data);
-      if (verdict.kind === 'accepted') {
+      const body = response.data && typeof response.data === 'object' ? (response.data as { code?: unknown; organizations?: unknown }) : undefined;
+      const code = body?.code;
+      // A 2xx counts only in WhoIs's own shape. A proxy, captive page or wrong
+      // host answering 200 has not authenticated the key.
+      const passedDeviceAuth =
+        (response.status >= 200 && response.status < 300 && Array.isArray(body?.organizations)) ||
+        (response.status === 403 && code === PORTAL_GRANT_DENIED_CODE) ||
+        (response.status === 409 && code === 'ORGANIZATION_REQUIRED');
+
+      if (passedDeviceAuth) {
         return true;
-      }
-      // `rejected` covers `DEVICE_NOT_ACTIVE` and a key Portal refuses; both mean no live device
-      // holds this key. A body Portal refused (`refused_body`) is not a verdict, and falls through.
-      if (verdict.kind === 'rejected') {
-        return false;
       }
 
       this.logger.debug(`Portal device probe returned ${response.status} for ${deviceId}`);
@@ -1373,6 +1590,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       try {
+        await this.retryPendingTunnelCheck();
+
         const registered = await this.checkRegistrationWithCloud();
         if (registered) {
           this.logger.info('Device successfully registered!');
@@ -1500,6 +1719,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (Object.keys(updates).length > 0) {
         await this.deviceRegistrationRepository.updateDeviceRegistration(organizationId, updates);
       }
+      await this.markRegistrationSaved(updates.tunnelId ?? existingOrg.tunnelId);
 
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         await this.cloudflareClientService.initializeTunnel(organizationId, {
@@ -1640,6 +1860,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnelToken: tunnelToken,
         provisioningPhase: 'locally_ready',
       });
+      await this.markRegistrationSaved(tunnelId);
 
       // The persisted organization makes the Hub locally operational.
       await this.setPhase('locally_ready', [], organizationId);
@@ -1734,10 +1955,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Send the code and device ID to Companion Portal, persist the returned state,
    * and mark the device as registered.
    */
-  public async pairDevice(
-    pairingCode: string,
-    options: { callerAuthenticated?: boolean } = {},
-  ): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
+  public async pairDevice(pairingCode: string, options: { callerAuthenticated?: boolean } = {}): Promise<PairDeviceResult> {
     const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
@@ -1816,6 +2034,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return {
           success: false,
           message: errorData.error || errorData.message || `Pairing failed: HTTP ${response.status}`,
+          ...portalRefusalCode(response.data),
         };
       }
 
@@ -1837,6 +2056,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         return {
           success: false,
           message: errorData.error || errorData.message || 'Pairing failed.',
+          ...portalRefusalCode(response.data),
         };
       }
 

@@ -214,7 +214,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} mcp setup [env]`, description: 'Enable the MCP endpoint in the target env file' },
       { command: `${BASE_COMMAND} mcp shutdown [env]`, description: 'Disable MCP in the target env file' },
       { command: `${BASE_COMMAND} mcp config [env]`, description: 'Show current MCP settings' },
-      { command: `${BASE_COMMAND} api-key create --name <label>`, description: "Mint an API key (default scope 'mcp'); shown once" },
+      {
+        command: `${BASE_COMMAND} api-key create --name <label>`,
+        description: "Mint an API key (default scope 'mcp'; --scope qa:read for a read-only test key); shown once",
+      },
       { command: `${BASE_COMMAND} api-key list`, description: 'List API keys (id, name, scopes, prefix)' },
     ],
   },

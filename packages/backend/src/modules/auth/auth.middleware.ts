@@ -3,6 +3,8 @@ import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
 import { Injectable, type NestMiddleware, ServiceUnavailableException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
@@ -10,6 +12,7 @@ import type { UserDto } from '../user/dto/user.dto';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
+import { OBSERVABILITY_READ_METHODS } from './observability-read.guard';
 
 /**
  * Constant-time secret comparison, length-safe.
@@ -22,6 +25,15 @@ function secretEquals(presented: string, expected: string): boolean {
   const b = Buffer.from(expected);
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+/** The raw form of a key `ApiKeyService.create` mints: 32 random bytes as hex. */
+const HUB_API_KEY_SHAPE = /^[0-9a-f]{64}$/;
+
+/** The MCP endpoint, whose own guard resolves the key it is sent. `originalUrl`, because `url` is rewritten under a mount. */
+function isMcpRoute(req: Request): boolean {
+  const path = (req.originalUrl ?? req.url ?? '').split('?')[0] ?? '';
+  return path === '/api/mcp' || path.startsWith('/api/mcp/');
 }
 
 function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
@@ -143,7 +155,51 @@ export class AuthMiddleware implements NestMiddleware {
     private readonly config: ConfigurationService,
     private readonly userRepository: UserRepository,
     private readonly sessionUserCache: SessionUserCache,
+    // Appended, and optional only to TypeScript: every middleware test constructs this positionally,
+    // and only the `qa:read` arm needs the key store. NOT `@Optional()` to Nest — AppModule imports
+    // ApiKeyModule, and if that ever stops resolving the Hub should fail to boot rather than start
+    // answering every `qa:read` key 401 with nothing in the log to say why.
+    private readonly apiKeys?: ApiKeyService,
   ) {}
+
+  /**
+   * Name a `qa:read` API key as the `qa-read` principal — and install NO user.
+   *
+   * No user is the whole design: every guard that asks "is there an operator here" still says no, so
+   * `AuthGuard` refuses the key on every other GET with 403, and only `ObservabilityReadGuard` admits it,
+   * on the GET handlers marked `@ObservabilityRead()`. The grant gate likewise sees a principal that is not
+   * exempt and not a person.
+   *
+   * Reached only after the device key and the CLI JWT have both failed to match, and only for a token
+   * shaped like a key this Hub mints (64 hex characters — `KEY_BYTES` in `ApiKeyService`), so a session
+   * or a JWT never costs a key-store lookup here. `/api/mcp` is skipped too: every MCP call presents an
+   * `mcp` key, `McpAuthGuard` already looks it up, and a second SELECT per tool call on the one
+   * high-frequency key surface would buy nothing — a `qa:read` key has no business there and gets that
+   * guard's 401.
+   *
+   * Only a GET or HEAD is looked up, because only a read can ever admit the key. The shape check alone
+   * does not keep this off the inference hot path: a pool peer still on the bearer path authenticates
+   * `POST /api/inference/pool/local/*` with a 64-hex token (`randomBytes(32).toString('hex')` in
+   * `HubPoolPeerService`), and so do app callbacks with their managed key. Each of those would pay a
+   * SELECT per forward, and during a database blip `ApiKeyService`'s retries (150 + 400 ms) and two warn
+   * lines per request, for a principal no POST route accepts. The cost is that a `qa:read` key sent
+   * with a write gets `AuthGuard`'s 401 instead of its 403 — it could not have done anything either way.
+   *
+   * A key store that cannot answer leaves the request unauthenticated rather than failing it: this
+   * runs on every route, and a database blip must not turn an unrelated caller's request into a 503.
+   */
+  private async attachQaReadKey(req: Request, token: string): Promise<void> {
+    if (!this.apiKeys || !OBSERVABILITY_READ_METHODS.has(req.method) || !HUB_API_KEY_SHAPE.test(token) || isMcpRoute(req)) {
+      return;
+    }
+    try {
+      if (await this.apiKeys.resolve(token, QA_READ_SCOPE)) {
+        req.hubPrincipal = 'qa-read';
+      }
+    } catch {
+      // Unauthenticated, as above. `ApiKeyService` has already retried transient failures and logged them.
+    }
+  }
 
   /**
    * Speak as the first operator on behalf of a host-local credential — or, when there is no
@@ -262,6 +318,8 @@ export class AuthMiddleware implements NestMiddleware {
         if (error instanceof ServiceUnavailableException) {
           throw error;
         }
+        // Not a JWT this Hub signed; the last arm is a `qa:read` API key.
+        await this.attachQaReadKey(req, token);
         return next();
       }
     }

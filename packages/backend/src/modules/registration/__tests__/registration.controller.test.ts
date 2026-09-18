@@ -416,6 +416,13 @@ describe('RegistrationController', () => {
       await controller.pairDevice({ pairing_code: 'ABCDEF' }, { hubPrincipal: 'session', user: { id: 1 } } as any);
       expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true });
     });
+
+    it('returns the Portal refusal code to the registration page', async () => {
+      registrationService.pairDevice.mockResolvedValue({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
+
+      const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
+      expect(result).toEqual({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
+    });
   });
 
   describe('registerDevice', () => {

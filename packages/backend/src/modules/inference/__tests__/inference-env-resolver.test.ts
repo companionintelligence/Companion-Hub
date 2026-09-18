@@ -17,6 +17,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
+import type { HubPoolPeer } from '@/core/database/drizzle/types';
 
 const OLLAMA_BASE_URL = 'http://host.docker.internal:11434';
 
@@ -54,6 +55,27 @@ const makeLlm = (id: string, backendModelId: string, vision = false, backend = '
     },
     tiers: { high: 'recommended', medium: 'available', low: 'available', cpuOnly: 'available' },
   }) as unknown as CuratedModel;
+
+const makeCapableLlm = (id: string, backendModelId: string, options: { tools: boolean; contextWindow: number }): CuratedModel => {
+  const base = makeLlm(id, backendModelId);
+  return {
+    ...base,
+    runtime: { ...base.runtime, contextWindow: options.contextWindow },
+    metadata: { capabilities: { tools: options.tools } },
+  } as CuratedModel;
+};
+
+const POOL_DIRECTIONS_ON = { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } };
+
+const makePeer = (name: string, modelsLoaded: string[]): HubPoolPeer =>
+  ({
+    id: `peer-${name}`,
+    nodeFqdn: `${name}.tailnet.ts.net`,
+    displayName: name,
+    status: 'connected',
+    enabled: true,
+    lastCapabilities: { hardwareTier: 'high', backends: [{ type: 'ollama', healthy: true, modelsLoaded }] },
+  }) as unknown as HubPoolPeer;
 
 const makeEmbedding = (id: string, backendModelId: string): CuratedModel =>
   ({
@@ -530,16 +552,70 @@ describe('InferenceEnvResolver', () => {
   });
 
   describe('multi-Hub pooling', () => {
+    beforeEach(() => {
+      hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([]);
+    });
+
     it('routes CI_LLM_BASE_URL and OLLAMA_HOST through the pool proxy once a peer is connected', async () => {
       hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      modelRegistry.getCatalog.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b')]);
 
       const env = await service.resolve();
 
       expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
       expect(env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
       expect(env.CI_OLLAMA_EMBED_HOST).toMatch(/\/api\/inference\/pool$/);
-      // The resolved model/context values are untouched by the override — only the transport changes.
       expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
+    });
+
+    it('names the model a peer serves when this node only holds one the app cannot use (core-4, 2026-09-17)', async () => {
+      // The app.env counterpart of the credentials handout fix: the model used to be chosen from
+      // this node's own inventory and the URL rewritten afterwards, so ci-memory and hermes-agent
+      // were baked gemma3:1b while core-6 served qwen3-coder:30b over the same proxy.
+      const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768 });
+      const qwenCoder = makeCapableLlm('qwen3-coder-30b', 'qwen3-coder:30b', { tools: true, contextWindow: 262144 });
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b'])]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([gemma1b]);
+      modelRegistry.getCatalog.mockReturnValue([gemma1b, qwenCoder]);
+
+      const env = await service.resolve({ appSlug: 'hermes-agent', minContextLength: 64_000 });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3-coder:30b');
+      expect(env.CI_LLM_NUM_CTX).toBe('64000');
+      expect(env.CI_INFERENCE_ERROR).toBeUndefined();
+    });
+
+    it('hands pooled apps an env instead of nothing when this node backend is down but a peer serves', async () => {
+      // `inference-env-resolver` returned {} whenever the local backend was not ready, so an app
+      // regenerated during a local Ollama restart lost its inference env although the pool was healthy.
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['hermes4:70b'])]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      modelRegistry.getCatalog.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b')]);
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
+      expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+    });
+
+    it('carries CI_INFERENCE_ERROR, not a model, when nothing in the pool meets the app', async () => {
+      const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768 });
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['gemma3:1b'])]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      modelRegistry.getCatalog.mockReturnValue([gemma1b]);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_CHAT_MODEL).toBeUndefined();
+      expect(env.CI_LLM_NUM_CTX).toBeUndefined();
+      expect(env.CI_INFERENCE_ERROR).toContain('gemma3:1b (no tool calling)');
     });
 
     it('leaves CI_LLM_BASE_URL pointed directly at the backend when there are no connected peers', async () => {
@@ -548,6 +624,30 @@ describe('InferenceEnvResolver', () => {
       const env = await service.resolve();
 
       expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+    });
+  });
+
+  describe('app requirements without pooling', () => {
+    it('skips an installed model the app cannot use and emits the next suitable one', async () => {
+      const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768 });
+      const qwen8b = makeCapableLlm('qwen3-8b', 'qwen3:8b', { tools: true, contextWindow: 40960 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b', 'qwen3:8b'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([gemma1b, qwen8b]);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_CHAT_MODEL).toBe('qwen3:8b');
+    });
+
+    it('keeps handing an app with no requirements the top installed model, whatever its capabilities', async () => {
+      const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([gemma1b]);
+
+      const env = await service.resolve({ appSlug: 'ci-memory' });
+
+      expect(env.CI_CHAT_MODEL).toBe('gemma3:1b');
+      expect(env.CI_INFERENCE_ERROR).toBeUndefined();
     });
   });
 });

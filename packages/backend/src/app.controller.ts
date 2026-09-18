@@ -18,6 +18,7 @@ import { CloudflareClientService } from './modules/cloudflare/cloudflare-client.
 import { TailscaleService } from './modules/tailscale/tailscale.service';
 import { AppStoreService } from './modules/app-stores/app-store.service';
 import { buildTailscaleNodeFqdn } from '@ci-hub/common/types';
+import { AiAppInferenceRefreshService, changedInferenceEnvSettings } from './modules/app-lifecycle/ai-app-inference-refresh.service';
 
 @Controller()
 export class AppController {
@@ -32,6 +33,7 @@ export class AppController {
     private readonly tailscaleService: TailscaleService,
     private readonly appStoreService: AppStoreService,
     private readonly sessionManager: SessionManager,
+    private readonly inferenceRefresh: AiAppInferenceRefreshService,
   ) {}
 
   private getSessionMetadata(req: Request): { sessionExpiresAt?: number; sessionRefreshRecommendedAt?: number } {
@@ -310,7 +312,15 @@ export class AppController {
   @Patch('/user-settings')
   @UseGuards(AuthGuard)
   async updateUserSettings(@Body() body: UserSettingsBody) {
+    // Read before the write: `setUserSettings` replaces the object, so this keeps the old values.
+    const before = this.configuration.get('userSettings');
     await this.configuration.setUserSettings(body);
+    // The same inference preferences are writable through PATCH /api/inference/preferences, which
+    // refreshes AI apps; this route used to leave them on the old model until their next restart.
+    const inferenceKeys = changedInferenceEnvSettings(before, body);
+    if (inferenceKeys.length > 0) {
+      this.inferenceRefresh.requestRefresh(`settings changed: ${inferenceKeys.join(', ')}`);
+    }
   }
 
   @Patch('/user-advanced-mode')

@@ -10,7 +10,7 @@
  * is one the probe never reached, which is evidence of nothing. Neither may fail the command, or the
  * exit code goes back to being ignored.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -277,6 +277,7 @@ describe('doctorHub operator check', () => {
 });
 
 /**
+/**
  * The registration phase and the last Portal check-in.
  *
  * On 2026-09-17 five paired fleet Hubs had device keys Portal no longer accepted, for up to a week,
@@ -376,5 +377,51 @@ describe('doctorHub registration check', () => {
 
     expect(process.exitCode).toBeUndefined();
     expect(doctorText()).toContain(why);
+  });
+});
+
+/**
+ * A tunnel token only turns the tunnel on beside the backend's `registration.json`. A token without
+ * it is what an uninstalled or reset Hub leaves behind, so doctor names that state instead of
+ * reporting a usable token.
+ */
+describe('doctorHub tunnel token line', () => {
+  const doctorText = () => (log.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+  let base: string;
+  let tunnelDir: string;
+
+  beforeEach(() => {
+    // Nested so the data dir's sibling `../tunnel` stays inside this test's own temp folder.
+    base = mkdtempSync(join(tmpdir(), 'cihub-doctor-tunnel-'));
+    const hubDir = join(base, 'hub');
+    tunnelDir = join(base, 'tunnel');
+    mkdirSync(hubDir, { recursive: true });
+    mkdirSync(tunnelDir, { recursive: true });
+    Object.assign(mocks.hubContext, { dataDir: hubDir });
+  });
+
+  afterEach(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  it('reports absent when there is no token', async () => {
+    await doctorHub('prod');
+    expect(doctorText()).toMatch(/Tunnel token\s+\S*\s*absent/);
+  });
+
+  it('calls out a token without the registration marker', async () => {
+    writeFileSync(join(tunnelDir, 'token'), 'leftover-token\n');
+    await doctorHub('prod');
+    expect(doctorText()).toContain('present, no registration marker (tunnel stays off)');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('reports present for a registered token', async () => {
+    writeFileSync(join(tunnelDir, 'token'), 'registered-token\n');
+    writeFileSync(join(tunnelDir, 'registration.json'), '{"tunnelId":"tunnel-1","writtenAt":"2026-09-17T00:00:00.000Z"}');
+    await doctorHub('prod');
+    const text = doctorText();
+    expect(text).toMatch(/Tunnel token\s+\S*\s*present/);
+    expect(text).not.toContain('no registration marker');
   });
 });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { extractUsageFromParsedJson, injectUsageOptIn, tapResponseUsageWhileStreaming } from '../response-usage-tap';
+import {
+  extractEngineTimingsFromParsedJson,
+  extractUsageFromParsedJson,
+  injectUsageOptIn,
+  tapResponseUsageWhileStreaming,
+} from '../response-usage-tap';
 
 describe('extractUsageFromParsedJson', () => {
   it('reads an OpenAI-style usage object', () => {
@@ -170,5 +175,86 @@ describe('tapResponseUsageWhileStreaming', () => {
 
     expect(usages).toHaveLength(1);
     expect(usages[0]).toEqual({ promptTokens: 1, completionTokens: 1, totalTokens: 2 });
+  });
+});
+
+describe('extractEngineTimingsFromParsedJson', () => {
+  it("reads Ollama's native trailer, converting its nanoseconds", () => {
+    expect(
+      extractEngineTimingsFromParsedJson({
+        done: true,
+        prompt_eval_count: 46_000,
+        prompt_eval_duration: 371_000_000_000,
+        eval_count: 512,
+        eval_duration: 46_500_000_000,
+        load_duration: 12_000_000_000,
+      }),
+    ).toEqual({ promptTokens: 46_000, promptMs: 371_000, completionTokens: 512, decodeMs: 46_500 });
+  });
+
+  it("reads llama.cpp's `timings` object, already in milliseconds", () => {
+    expect(
+      extractEngineTimingsFromParsedJson({
+        choices: [{ finish_reason: 'stop', delta: {} }],
+        timings: { prompt_n: 9_800, prompt_ms: 20_110.4, predicted_n: 300, predicted_ms: 9_870.2, prompt_per_second: 487.3 },
+      }),
+    ).toEqual({ promptTokens: 9_800, promptMs: 20_110.4, completionTokens: 300, decodeMs: 9_870.2 });
+  });
+
+  it('finds nothing on an OpenAI-compatible usage frame, which carries counts but no times', () => {
+    expect(extractEngineTimingsFromParsedJson({ usage: { prompt_tokens: 46_000, completion_tokens: 512 } })).toBeNull();
+    expect(extractEngineTimingsFromParsedJson({ done: false, response: 'x' })).toBeNull();
+    expect(extractEngineTimingsFromParsedJson({ timings: 'soon' })).toBeNull();
+    expect(extractEngineTimingsFromParsedJson(null)).toBeNull();
+  });
+});
+
+describe('tapResponseUsageWhileStreaming observer', () => {
+  it('reports the first chunk, the engine timings and completion, once each, without touching the bytes', async () => {
+    const frames = [
+      '{"done":false,"message":{"content":"a"}}\n',
+      '{"done":false}\n',
+      '{"done":true,"prompt_eval_count":8,"prompt_eval_duration":2000000,"eval_count":2,"eval_duration":1000000}\n',
+    ];
+    const events: string[] = [];
+    const usages: unknown[] = [];
+    const tapped = tapResponseUsageWhileStreaming(streamOf(frames), (usage) => usages.push(usage), {
+      onFirstChunk: () => events.push('first'),
+      onEngineTimings: (timings) => events.push(`timings ${timings.promptMs}/${timings.decodeMs}`),
+      onComplete: () => events.push('complete'),
+    });
+
+    const text = await drain(tapped);
+
+    expect(text).toBe(frames.join(''));
+    expect(events).toEqual(['first', 'timings 2/1', 'complete']);
+    expect(usages).toEqual([{ promptTokens: 8, completionTokens: 2, totalTokens: 10 }]);
+  });
+
+  it('keeps looking for timings after usage when they arrive on a later frame', async () => {
+    const source = streamOf([
+      'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}\n\n',
+      'data: {"choices":[],"timings":{"prompt_n":5,"prompt_ms":40,"predicted_n":2,"predicted_ms":10}}',
+    ]);
+    const timings: unknown[] = [];
+
+    await drain(tapResponseUsageWhileStreaming(source, () => undefined, { onEngineTimings: (t) => timings.push(t) }));
+
+    // The second frame has no trailing newline: timings on an unterminated last line still arrive.
+    expect(timings).toEqual([{ promptTokens: 5, promptMs: 40, completionTokens: 2, decodeMs: 10 }]);
+  });
+
+  it('never lets an observer that throws reach the stream', async () => {
+    const frames = ['{"done":false}\n', '{"done":true,"eval_count":1,"prompt_eval_count":1}\n'];
+    const tapped = tapResponseUsageWhileStreaming(streamOf(frames), () => undefined, {
+      onFirstChunk: () => {
+        throw new Error('observer bug');
+      },
+      onComplete: () => {
+        throw new Error('observer bug');
+      },
+    });
+
+    await expect(drain(tapped)).resolves.toBe(frames.join(''));
   });
 });
