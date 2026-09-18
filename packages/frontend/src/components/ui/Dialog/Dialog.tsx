@@ -39,10 +39,12 @@ export type DialogType = 'default' | 'primary' | 'success' | 'info' | 'warning' 
 interface DialogContentProps extends React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> {
   size?: DialogSize;
   type?: DialogType;
+  /** Set false for a dialog that asks for a choice and cannot be dismissed, where an X would do nothing. */
+  showCloseButton?: boolean;
 }
 
 const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.Content>, DialogContentProps>(
-  ({ className, children, size = 'lg', type, ...props }, ref) => {
+  ({ className, children, size = 'lg', type, showCloseButton = true, ...props }, ref) => {
     const maxWidthClass =
       {
         sm: 'sm:max-w-sm',
@@ -68,10 +70,12 @@ const DialogContent = React.forwardRef<React.ElementRef<typeof DialogPrimitive.C
           {...props}
         >
           {children}
-          <DialogPrimitive.Close className="absolute right-4 top-4 cursor-pointer rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
-            <X className="h-4 w-4" />
-            <span className="sr-only">{i18next.t('COMMON_CLOSE', { defaultValue: 'Close' })}</span>
-          </DialogPrimitive.Close>
+          {showCloseButton && (
+            <DialogPrimitive.Close className="absolute right-4 top-4 cursor-pointer rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+              <X className="h-4 w-4" />
+              <span className="sr-only">{i18next.t('COMMON_CLOSE', { defaultValue: 'Close' })}</span>
+            </DialogPrimitive.Close>
+          )}
         </DialogPrimitive.Content>
       </DialogPortal>
     );

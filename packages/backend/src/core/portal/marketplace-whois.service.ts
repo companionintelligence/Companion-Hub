@@ -11,7 +11,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Request } from 'express';
 
 import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
-import { type HubPrincipalFields, hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
+import { type HubPrincipalFields, hubSessionOperatorUserId, isAppViewObserverPrincipal, isGrantExemptPrincipal } from './hub-session-operator';
 import type { LifecycleActor } from './lifecycle-actor';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 
@@ -72,6 +72,11 @@ export class MarketplaceWhoIsService {
       // No person is not automatically "allow": the exemption is a named principal,
       // not the absence of a session. See `isGrantExemptPrincipal`.
       if (isGrantExemptPrincipal(req)) {
+        return;
+      }
+
+      // `view` only: a `qa:read` key may read an app's status and nothing else. See `isAppViewObserverPrincipal`.
+      if (action === 'view' && isAppViewObserverPrincipal(req)) {
         return;
       }
 

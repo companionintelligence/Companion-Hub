@@ -189,7 +189,38 @@ export const settingsSchema = z.object({
   // switch can be introduced through settings.json.
 });
 
-const partialSettingsSchema = settingsSchema.partial();
+/**
+ * settings.json keys that are not user settings: a module other than ConfigurationService owns the
+ * route that writes each one, so they are neither reported in the app context nor accepted by
+ * PATCH /user-settings. Write them with `ConfigurationService.setFileOnlySettings`.
+ *
+ * They still have to be declared, because every settings write re-reads the whole file through
+ * `parsePersistedSettings`, and that parse strips any key it does not know. `autoUpdates` used to be
+ * written straight to the file and declared nowhere, so the first unrelated write afterwards (a
+ * Settings page save, the telemetry switch, inference preferences, a cloud provider, a pool pin, or
+ * the Portal pairing callback) stripped it, and the daily auto-updater reads a missing key as "on".
+ * Auto-update was switched off through that route on all 16 fleet Hubs on 2026-09-17, so the first
+ * such write on any of them would have turned it back on.
+ */
+const fileOnlySettingsSchema = z.object({
+  // Opt-out: absent means on. Owned by POST /api/system/update/auto-updates and the
+  // `hub_set_auto_updates` MCP tool, both through SystemUpdateService.
+  autoUpdates: z.boolean().optional(),
+});
+
+export type FileOnlySettings = z.infer<typeof fileOnlySettingsSchema>;
+
+/**
+ * Every key settings.json can hold.
+ *
+ * Keys it does not declare are stripped on read, and so dropped by the next write. That is
+ * deliberate for a key a build retires, such as the MCP credentials SEC-MCP-8 moved into the hashed
+ * key store: a stale credential must stop being carried forward. It also means a key the Hub writes
+ * has to be declared here before anything writes it; `settings-round-trip.test.ts` fails otherwise.
+ */
+export const settingsFileSchema = settingsSchema.extend(fileOnlySettingsSchema.shape);
+
+const partialSettingsSchema = settingsFileSchema.partial();
 
 /** settings.json as it is persisted: every field optional, unknown keys stripped. */
 export type PersistedSettings = z.infer<typeof partialSettingsSchema>;
@@ -213,7 +244,7 @@ export interface PersistedSettingsParseResult {
  * UI needs the backend that just refused to come up.
  *
  * Parsing the fields one at a time is equivalent to one whole-object parse wherever the
- * whole-object parse would have succeeded: `settingsSchema` is a plain object with no object-level
+ * whole-object parse would have succeeded: `settingsFileSchema` is a plain object with no object-level
  * refinement, so no field's validity depends on another's.
  */
 export function parsePersistedSettings(raw: unknown): PersistedSettingsParseResult {

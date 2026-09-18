@@ -26,6 +26,13 @@ export class AuthGuard implements CanActivate {
     this.logger.debug('HTTP request', request.method, request.url, redactRequestBody(request.body));
 
     if (!request.user) {
+      // A `qa:read` key is valid and deliberately narrow, and this route is not on its list. "Log in"
+      // would send whoever holds it to debug a key that works; 403 says the route is the problem.
+      // Only `ObservabilityReadGuard` admits it, on handlers marked `@ObservabilityRead()`.
+      if (request.hubPrincipal === 'qa-read') {
+        throw new TranslatableError('AUTH_ERROR_QA_READ_KEY_ROUTE_NOT_ALLOWED', undefined, HttpStatus.FORBIDDEN);
+      }
+
       // "Log in" is not the fix when the caller already presented a valid host-local credential and
       // this Hub simply has no operator to be. Saying so cost the Hub Pool fleet a week: twelve
       // nodes answering 401 to a correct device key were all read as key failures, and the keys

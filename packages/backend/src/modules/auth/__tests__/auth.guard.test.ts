@@ -52,6 +52,21 @@ describe('AuthGuard', () => {
     expect((error as TranslatableError).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
   });
 
+  /**
+   * A `qa:read` key is valid and narrow. "Log in" would send its holder to debug a key that works; the
+   * true answer is that this route is not on the key's list. This is also the guard every operator
+   * route uses, so it is what makes a new route closed to the key unless someone opens it on purpose.
+   */
+  it('answers 403 to a qa:read key on any route that uses it', async () => {
+    // A GET: `AuthMiddleware` only resolves the key on a read, so a read is where this answer is given.
+    const error = await guard
+      .canActivate(contextFor({ hubPrincipal: 'qa-read', method: 'GET', url: '/api/inference/pool/settings' }))
+      .catch((err) => err);
+
+    expect(keyOf(error)).toBe('AUTH_ERROR_QA_READ_KEY_ROUTE_NOT_ALLOWED');
+    expect((error as TranslatableError).getStatus()).toBe(HttpStatus.FORBIDDEN);
+  });
+
   it('prefers the user over the unclaimed marker if both somehow arrive', async () => {
     // Belt and braces on the middleware's contract: the marker is set INSTEAD of a user, never
     // alongside one, and a request that has a principal must not be refused because of a flag.

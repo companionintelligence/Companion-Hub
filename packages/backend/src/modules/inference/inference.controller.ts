@@ -121,33 +121,24 @@ export class InferenceController {
     return profile.tier;
   }
 
-  private aiAppRestartTimer: ReturnType<typeof setTimeout> | undefined;
-
   /**
-   * Restart running AI apps after inference config changes. Debounced so a Settings
-   * save that POSTs four cloud providers (then PATCH preferences) recreates
-   * OpenClaw / Hermes once, not five times.
+   * Bring running AI apps up to date after an inference config change, through the same service
+   * `PATCH /api/user-settings` uses — it debounces bursts and restarts only apps whose env is stale.
+   * The credentials cache is dropped here as well, synchronously, so a failed lookup of the refresh
+   * service cannot leave apps bootstrapping from a 30 s-old answer.
    */
-  private scheduleAiAppRestart(): void {
+  private scheduleAiAppRestart(reason: string): void {
     this.appCredentials.invalidateCache();
-    if (this.aiAppRestartTimer) {
-      clearTimeout(this.aiAppRestartTimer);
-    }
-    this.aiAppRestartTimer = setTimeout(() => {
-      this.aiAppRestartTimer = undefined;
-      void this.triggerAiAppRestart();
-    }, 1500);
+    void this.requestInferenceEnvRefresh(reason);
   }
 
-  private async triggerAiAppRestart(): Promise<void> {
+  private async requestInferenceEnvRefresh(reason: string): Promise<void> {
     try {
-      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
-      const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
-      if (appLifecycle) {
-        void appLifecycle.restartAiApps();
-      }
+      // Lazy: AppLifecycleModule imports InferenceModule, so a static edge back would be a cycle.
+      const { AiAppInferenceRefreshService } = await import('../app-lifecycle/ai-app-inference-refresh.service');
+      this.moduleRef.get(AiAppInferenceRefreshService, { strict: false })?.requestRefresh(reason);
     } catch (e) {
-      this._logger.error('Failed to trigger AI app restarts after inference config update', e);
+      this._logger.error('Failed to request an AI app inference refresh after an inference config update', e);
     }
   }
 
@@ -283,7 +274,7 @@ export class InferenceController {
       body.dsparkUrl,
     );
 
-    this.scheduleAiAppRestart();
+    this.scheduleAiAppRestart('inference preferences changed');
 
     return result;
   }
@@ -527,7 +518,7 @@ export class InferenceController {
       baseUrl: body.baseUrl,
       defaultModel: body.defaultModel || this.cloudFallback.getDefaultModel(body.provider),
     });
-    this.scheduleAiAppRestart();
+    this.scheduleAiAppRestart(`cloud provider ${body.provider} changed`);
     return { success: true };
   }
 

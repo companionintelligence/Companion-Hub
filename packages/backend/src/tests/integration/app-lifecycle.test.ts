@@ -701,20 +701,25 @@ describe('App lifecycle', () => {
      * That is how `custom_domain_intent` written straight to the database below
      * was silently reverted on a loaded GitHub runner, leaving `authorize`
      * uncalled, while every local run passed because the pass finished inside
-     * `waitFor`'s first poll (CI-Hub#1497, run 35289141993).
+     * `waitFor`'s first poll — on this branch (CI-Hub#1497, run 35289141993) and
+     * on unrelated ones, which is what it looks like when the cause is the clock
+     * rather than the change under review.
      *
      * Both halves are needed, and a sleep would give neither: the spy proves a
      * pass STARTED, and `isCloudflareSyncInFlight` — the same flag the periodic
      * poll stands down on — proves it FINISHED. The flag alone would sail
-     * straight past a pass that had not begun yet.
+     * straight past a pass that had not begun yet, in the window where the
+     * status write has committed but `cloudflareSyncDepth` has not moved.
      *
      * Both read the service THIS test holds, which is why the queue is per-test
      * (see the `beforeEach` at the top of the file). Counting passes on the
      * shared `cloudflareClientService` mock instead looks equivalent and is not:
      * it also counts passes run by an earlier test's service, and those tick the
      * counter while this test's own pass has not started, so the wait ends early
-     * and the race is back. If a command is ever served elsewhere again, this
-     * times out and says so rather than quietly returning too soon.
+     * and the race is back. Measured — with one queue for the file, this block's
+     * installs were regularly executed by a service two tests old. If a command
+     * is ever served elsewhere again, this times out and says so rather than
+     * quietly returning too soon.
      */
     const runToQuiescence = async (appUrn: AppUrn, command: () => Promise<unknown>) => {
       const passesBefore = cloudflarePasses.mock.calls.length;

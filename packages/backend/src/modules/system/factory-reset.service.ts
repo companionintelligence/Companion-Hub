@@ -13,6 +13,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { removeTunnelRegistrationMarker } from '@/modules/registration/tunnel-markers';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable } from '@nestjs/common';
@@ -143,6 +144,10 @@ export class FactoryResetService {
     const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');
 
     await fs.promises.unlink(tokenPath).catch(() => undefined);
+    // Remove the marker with its token: the desktop app and CLI start the tunnel when both exist.
+    await removeTunnelRegistrationMarker().catch((error: unknown) => {
+      this.logger.warn(`Factory reset could not remove the tunnel registration marker: ${error instanceof Error ? error.message : String(error)}`);
+    });
     await fs.promises.unlink(resolvedEnvPath).catch(() => undefined);
     await clearRegistrationRecoveryArtifacts();
   }

@@ -41,24 +41,166 @@ fn merge_compose_profiles_adds_private_vpn_by_default() {
     assert_eq!(merge_compose_profiles(&env, true), "private-vpn");
 }
 
-#[test]
-fn merge_compose_profiles_adds_cloudflare_for_legacy_nested_tunnel_token() {
-    let tempdir = tempfile::tempdir().expect("tempdir");
-    let data_dir = tempdir.path().join("hub");
-    let legacy_dir = data_dir.join("tunnel");
-    std::fs::create_dir_all(&legacy_dir).expect("mkdir legacy tunnel");
-    std::fs::write(legacy_dir.join("token"), b"legacy-token").expect("write token");
-
+/// Env map pointing `ROOT_FOLDER_HOST` at `data_dir`, optionally carrying `COMPOSE_PROFILES`.
+fn tunnel_profile_env(
+    data_dir: &std::path::Path,
+    compose_profiles: Option<&str>,
+) -> std::collections::HashMap<String, String> {
     let mut env = std::collections::HashMap::new();
     env.insert(
         "ROOT_FOLDER_HOST".to_string(),
         data_dir.to_string_lossy().to_string(),
     );
+    if let Some(profiles) = compose_profiles {
+        env.insert("COMPOSE_PROFILES".to_string(), profiles.to_string());
+    }
+    env
+}
 
-    let profiles = merge_compose_profiles(&env, false);
+fn write_tunnel_file(dir: &std::path::Path, name: &str, contents: &[u8]) {
+    std::fs::create_dir_all(dir).expect("mkdir tunnel dir");
+    std::fs::write(dir.join(name), contents).expect("write tunnel file");
+}
+
+const REGISTRATION_MARKER_JSON: &[u8] =
+    br#"{"tunnelId":"tunnel-1","writtenAt":"2026-09-17T00:00:00.000Z"}"#;
+
+fn has_cloudflare_profile(profiles: &str) -> bool {
+    profiles.split(',').any(|p| p == "cloudflare")
+}
+
+#[test]
+fn merge_compose_profiles_skips_cloudflare_for_token_without_registration_marker() {
+    // A token left behind by an uninstalled or reset Hub must not connect this install to
+    // the previous Hub's tunnel before it pairs.
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    write_tunnel_file(&tunnel_dir_for(&data_dir), "token", b"leftover-token");
+
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), false);
     assert!(
-        profiles.split(',').any(|p| p == "cloudflare"),
-        "expected cloudflare profile for legacy nested token, got {profiles}"
+        !has_cloudflare_profile(&profiles),
+        "token alone must not enable cloudflare, got {profiles}"
+    );
+}
+
+#[test]
+fn merge_compose_profiles_drops_persisted_cloudflare_when_registration_marker_is_gone() {
+    // The previous launch wrote COMPOSE_PROFILES with cloudflare; a reset since then removed
+    // the marker but not the token.
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    write_tunnel_file(&tunnel_dir_for(&data_dir), "token", b"leftover-token");
+
+    let profiles = merge_compose_profiles(
+        &tunnel_profile_env(&data_dir, Some("gpu,cloudflare")),
+        false,
+    );
+    assert_eq!(profiles, "gpu");
+}
+
+#[test]
+fn merge_compose_profiles_skips_cloudflare_for_registration_marker_without_token() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    write_tunnel_file(
+        &tunnel_dir_for(&data_dir),
+        "registration.json",
+        REGISTRATION_MARKER_JSON,
+    );
+
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), false);
+    assert!(
+        !has_cloudflare_profile(&profiles),
+        "marker alone must not enable cloudflare, got {profiles}"
+    );
+}
+
+#[test]
+fn merge_compose_profiles_skips_cloudflare_for_empty_token_with_registration_marker() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    let tunnel_dir = tunnel_dir_for(&data_dir);
+    write_tunnel_file(&tunnel_dir, "token", b"");
+    write_tunnel_file(&tunnel_dir, "registration.json", REGISTRATION_MARKER_JSON);
+
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), false);
+    assert!(
+        !has_cloudflare_profile(&profiles),
+        "empty token must not enable cloudflare, got {profiles}"
+    );
+}
+
+#[test]
+fn merge_compose_profiles_adds_cloudflare_for_token_and_registration_marker() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    let tunnel_dir = tunnel_dir_for(&data_dir);
+    write_tunnel_file(&tunnel_dir, "token", b"registered-token");
+    write_tunnel_file(&tunnel_dir, "registration.json", REGISTRATION_MARKER_JSON);
+
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), true);
+    assert_eq!(profiles, "private-vpn,cloudflare");
+}
+
+#[test]
+fn merge_compose_profiles_adds_cloudflare_for_registered_legacy_nested_tunnel() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    let legacy_dir = data_dir.join("tunnel");
+    write_tunnel_file(&legacy_dir, "token", b"legacy-token");
+    write_tunnel_file(&legacy_dir, "registration.json", REGISTRATION_MARKER_JSON);
+
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), false);
+    assert!(
+        has_cloudflare_profile(&profiles),
+        "expected cloudflare profile for registered legacy nested tunnel, got {profiles}"
+    );
+}
+
+#[test]
+fn merge_compose_profiles_skips_cloudflare_for_legacy_nested_token_without_marker() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    write_tunnel_file(&data_dir.join("tunnel"), "token", b"legacy-token");
+
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), false);
+    assert!(
+        !has_cloudflare_profile(&profiles),
+        "legacy token alone must not enable cloudflare, got {profiles}"
+    );
+}
+
+#[test]
+fn merge_compose_profiles_requires_token_and_marker_in_the_same_tunnel_dir() {
+    // Token in the canonical sibling dir, marker only in the legacy nested dir (and the
+    // reverse): neither dir describes a registered Hub on its own.
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    write_tunnel_file(&tunnel_dir_for(&data_dir), "token", b"sibling-token");
+    write_tunnel_file(
+        &data_dir.join("tunnel"),
+        "registration.json",
+        REGISTRATION_MARKER_JSON,
+    );
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), false);
+    assert!(
+        !has_cloudflare_profile(&profiles),
+        "split token/marker must not enable cloudflare, got {profiles}"
+    );
+
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let data_dir = tempdir.path().join("hub");
+    write_tunnel_file(&data_dir.join("tunnel"), "token", b"legacy-token");
+    write_tunnel_file(
+        &tunnel_dir_for(&data_dir),
+        "registration.json",
+        REGISTRATION_MARKER_JSON,
+    );
+    let profiles = merge_compose_profiles(&tunnel_profile_env(&data_dir, None), false);
+    assert!(
+        !has_cloudflare_profile(&profiles),
+        "split marker/token must not enable cloudflare, got {profiles}"
     );
 }
 

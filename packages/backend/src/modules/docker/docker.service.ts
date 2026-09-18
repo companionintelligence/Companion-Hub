@@ -1263,18 +1263,31 @@ export class DockerService {
       this.logger.warn(
         `compose up ${containerName} failed with stale networking (${upError instanceof Error ? upError.message : String(upError)}); removing container and force-recreating...`,
       );
-      await this.removeContainerBestEffort(containerName);
+      // A failed removal still lets the force-recreate below report the real error.
+      await this.removeContainer(containerName);
       await this.composeUpService(containerName, { ...opts, forceRecreate: true });
     }
   }
 
-  /** Removes a stale container without letting cleanup failure block recreation. */
-  private async removeContainerBestEffort(containerName: string): Promise<void> {
+  /**
+   * Stops and removes a container, treating one that does not exist as removed.
+   *
+   * Returns false when Docker could not remove it, so a caller that needs the container gone can
+   * try again later. Never throws.
+   */
+  public async removeContainer(containerName: string): Promise<boolean> {
     try {
       await this.runProcessBounded('docker', ['rm', '-f', containerName], {}, 30_000, `docker rm -f ${containerName}`);
-      this.logger.info(`Removed stale container ${containerName} before recreate`);
+      this.logger.info(`Removed container ${containerName}`);
+      return true;
     } catch (error) {
-      this.logger.debug(`removeContainerBestEffort(${containerName}): ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      // Older Docker CLIs exit non-zero from `rm -f` when there is nothing to remove.
+      if (/no such container/i.test(message)) {
+        return true;
+      }
+      this.logger.warn(`Could not remove container ${containerName}: ${message}`);
+      return false;
     }
   }
 
