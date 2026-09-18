@@ -58,6 +58,7 @@ export function normalizeDetachedFlag(args: string[]): { detached: boolean; atta
 
 export function normalizeRegisterFlags(args: string[]): RegisterHubOptions & { env: HubEnv } {
   let fresh = false;
+  let move = false;
   let code: string | undefined;
   const remaining: string[] = [];
 
@@ -67,10 +68,14 @@ export function normalizeRegisterFlags(args: string[]): RegisterHubOptions & { e
       fresh = true;
       continue;
     }
+    if (arg === '--move') {
+      move = true;
+      continue;
+    }
     if (arg === '--code') {
       const next = args[i + 1];
       if (!next) {
-        usageAndExit(`Usage: ${BASE_COMMAND} register [env] [--fresh] [--code <code>]`);
+        usageAndExit(`Usage: ${BASE_COMMAND} register [env] [--fresh] [--code <code>] [--move]`);
       }
       code = next;
       i++;
@@ -86,6 +91,7 @@ export function normalizeRegisterFlags(args: string[]): RegisterHubOptions & { e
   return {
     fresh,
     code,
+    move,
     env: resolveEnvFromArgs(remaining),
   };
 }

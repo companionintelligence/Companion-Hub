@@ -430,21 +430,32 @@ describe('RegistrationController', () => {
 
       const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
       expect(result).toEqual({ success: true });
-      expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF', { callerAuthenticated: false });
+      expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: false });
     });
 
     it('tells the service who is asking, so a stranger on the port cannot re-pair a registered Hub', async () => {
       registrationService.pairDevice.mockResolvedValue({ success: true } as any);
 
       await controller.pairDevice({ pairing_code: 'ABCDEF' }, {} as any);
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false });
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: false });
 
       // `cihub register` on an unclaimed Hub: the device key authenticates, with no operator row to be.
       await controller.pairDevice({ pairing_code: 'ABCDEF' }, { hubPrincipal: 'portal-device', hubUnclaimed: true } as any);
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true });
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true, confirmMove: false });
 
       await controller.pairDevice({ pairing_code: 'ABCDEF' }, { hubPrincipal: 'session', user: { id: 1 } } as any);
-      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true });
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true, confirmMove: false });
+    });
+
+    it('passes the yes to a move on, and nothing else as one', async () => {
+      registrationService.pairDevice.mockResolvedValue({ success: true } as any);
+
+      await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: true });
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: true });
+
+      // Only a literal true: a string from a hand-made request is not a yes.
+      await controller.pairDevice({ pairing_code: 'ABCDEF', confirm_move: 'yes' as never });
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false, confirmMove: false });
     });
 
     it('returns the Portal refusal code to the registration page', async () => {
