@@ -453,9 +453,13 @@ describe('SystemUpdateService', () => {
 
   describe('setAutoUpdatesEnabled', () => {
     // A string "false" was persisted as-is and read back as "on", so the node kept auto-updating.
+    // That the switch survives other settings writes, and cannot erase the Portal credential, is
+    // proved against the real merge in core/config/__tests__/settings-round-trip.test.ts.
     it.each(['false', 0, null, undefined])('refuses %j instead of storing a value that reads as on', async (enabled) => {
+      mockConfig.setFileOnlySettings = vi.fn().mockResolvedValue(undefined);
+
       await expect(service.setAutoUpdatesEnabled(enabled as never)).rejects.toThrow(BadRequestException);
-      expect(fs.promises.writeFile).not.toHaveBeenCalled();
+      expect(mockConfig.setFileOnlySettings).not.toHaveBeenCalled();
     });
   });
 

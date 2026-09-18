@@ -13,7 +13,6 @@ import {
   Optional,
 } from '@nestjs/common';
 import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME, hubContainerName } from '@/common/constants';
-import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
@@ -524,22 +523,15 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async setAutoUpdatesEnabled(enabled: boolean): Promise<void> {
-    // Neither the controller body nor the MCP input is validated before this. `{"enabled": "false"}`
-    // used to be stored as a string, which the read above treats as on and the settings schema drops.
+    // The controller body is not schema-validated, and neither is the MCP input; the reader above
+    // treats only a real `false` as off. A stored `"false"` would show the switch as off in the
+    // response while auto-update stayed on.
     if (typeof enabled !== 'boolean') {
       throw new BadRequestException('enabled must be true or false');
     }
-    const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-    let settings: Record<string, unknown> = {};
-    try {
-      if (fs.existsSync(settingsPath)) {
-        settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-      }
-    } catch {
-      // ignore
-    }
-    settings.autoUpdates = enabled;
-    await writeSettingsJsonFile(settingsPath, JSON.stringify(settings, null, 2));
+    // Through the shared settings merge, never a private read-modify-write: see
+    // `ConfigurationService.setFileOnlySettings` for what the private one cost.
+    await this.config.setFileOnlySettings({ autoUpdates: enabled });
   }
 
   private async autoUpdateCheck() {
