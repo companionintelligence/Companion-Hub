@@ -12,7 +12,13 @@ import { parseEnvFile } from '../env-file.js';
 import { runHubCleanup } from '../hub-cleanup-lib.js';
 import { runNetworkDoctorSection } from '../network-diagnostics-cli.js';
 import { HubUnreachableError } from '../public-web-cli.js';
-import { getEnvFileOrExit, hasCloudflareTunnelToken, hasCloudflareTunnelTokenAtDataDir } from './cli-compose-env.js';
+import {
+  getEnvFileOrExit,
+  hasCloudflareTunnelToken,
+  hasCloudflareTunnelTokenAtDataDir,
+  hasRegisteredCloudflareTunnel,
+  hasRegisteredCloudflareTunnelAtDataDir,
+} from './cli-compose-env.js';
 import { fetchHubClaimStatus, HubClaimNoDeviceKey, type HubClaimStatus } from './hub-claim.js';
 import { run, runCapture } from './cli-proc.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
@@ -109,7 +115,7 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     `Env file             ${existsSync(resolvePath(envFileName)) ? cliOk('found') : cliWarn('missing')}  ${envFileName}`,
     `Root folder          ${existsSync(rootFolderHost) ? cliOk('present') : cliWarn('missing')}  ${rootFolderHost}`,
     `Compose files        ${composeFilesFound ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
-    `Tunnel token         ${doctorHasTunnelToken(ctx) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
+    `Tunnel token         ${doctorTunnelTokenStatus(ctx)}`,
     ...operatorSection.lines,
     ...networkSection.lines,
     ...bridgeSection.lines,
@@ -128,14 +134,17 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
 }
 
 /**
- * Tunnel token lives at `<ROOT>/../tunnel/token` (compose bind). Also accepts the
- * legacy nested `<dataDir>/tunnel/token` so doctor matches profile detection.
+ * Tunnel token lives at `<ROOT>/../tunnel/token` (compose bind), or the legacy nested
+ * `<dataDir>/tunnel/token`. Uses the same rules as profile detection: a token only turns the
+ * tunnel on beside the backend's `registration.json`, so a token without it is called out.
  */
-function doctorHasTunnelToken(ctx: HubContext): boolean {
-  if (ctx.appliance && ctx.dataDir) {
-    return hasCloudflareTunnelTokenAtDataDir(ctx.dataDir);
-  }
-  return hasCloudflareTunnelToken(ctx.envFile);
+function doctorTunnelTokenStatus(ctx: HubContext): string {
+  const dataDir = ctx.appliance ? ctx.dataDir : undefined;
+  const registered = dataDir ? hasRegisteredCloudflareTunnelAtDataDir(dataDir) : hasRegisteredCloudflareTunnel(ctx.envFile);
+  if (registered) return cliOk('present');
+  const tokenPresent = dataDir ? hasCloudflareTunnelTokenAtDataDir(dataDir) : hasCloudflareTunnelToken(ctx.envFile);
+  if (tokenPresent) return cliWarn('present, no registration marker (tunnel stays off)');
+  return colorize(`${STEP_ICONS.pending} absent`, 'dim');
 }
 
 export async function uninstallHub(force: boolean) {
