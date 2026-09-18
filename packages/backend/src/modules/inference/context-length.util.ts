@@ -1,3 +1,5 @@
+import { appInferenceRequirements } from './app-inference-requirements';
+
 /**
  * Hardware-aware context-length (num_ctx) selection.
  *
@@ -111,25 +113,14 @@ export function recommendContextLength(input: ContextLengthInput): number {
 }
 
 /**
- * Per-app minimum context window, in tokens. Apps that cannot function below a
- * hard floor declare it here so EVERY Hub code path that sizes their context —
- * the `credentials.env` endpoint (AppCredentialsService) and the standardized
- * env-file generator (InferenceEnvResolver via AppHelpers) — applies the same
- * floor. Apps not listed have no minimum and keep the pure hardware ladder.
+ * The app's minimum context window in tokens, or undefined when it has no floor.
  *
- * hermes-agent: the upstream Hermes Agent fatally rejects a context window below
- * its MINIMUM_CONTEXT_LENGTH, which is the literal 64000 (not 65536) and is
- * compared with a strict `<`, so 64000 itself is accepted.
+ * Every Hub code path that sizes an app's context — the `credentials.env` endpoint
+ * (AppCredentialsService) and the env-file generator (InferenceEnvResolver via AppHelpers) — reads
+ * the same floor. The table lives in `app-inference-requirements.ts`, beside the tool-calling
+ * requirement, because a floor the model cannot reach has to be checked where the model is chosen.
  */
-const APP_MIN_CONTEXT_LENGTH: Record<string, number> = {
-  'hermes-agent': 64_000,
-};
-
-/** The app's minimum context window in tokens, or undefined when it has no floor. */
 export function appMinContextLength(slug: string | null | undefined): number | undefined {
-  // Own-property check so a slug colliding with an Object.prototype member
-  // (e.g. "toString", "constructor", "__proto__") can't return a non-number.
-  if (!slug || !Object.hasOwn(APP_MIN_CONTEXT_LENGTH, slug)) return undefined;
-  const min = APP_MIN_CONTEXT_LENGTH[slug];
+  const min = appInferenceRequirements(slug).minContextLength;
   return typeof min === 'number' ? min : undefined;
 }

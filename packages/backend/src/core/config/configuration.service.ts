@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
+import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
@@ -81,6 +81,14 @@ const envSchema = z
   }));
 
 function describeSettingsError(error: unknown): string {
+  // For an unquoted value, the usual hand-edit mistake, V8's message quotes about ten characters of the
+  // file on each side of it, and several settings.json values are credentials (`ciHubApiKey`, cloud
+  // provider keys). The scrubber only catches that when a key name lands inside the quote, so keep
+  // the position and never the text.
+  if (error instanceof SyntaxError) {
+    const position = /at position \d+(?: \(line \d+ column \d+\))?/.exec(error.message)?.[0];
+    return `settings.json is not valid JSON${position ? `, ${position}` : ''}; its content is not logged`;
+  }
   if (error instanceof Error) {
     return scrubString(error.stack || error.message);
   }
@@ -411,6 +419,29 @@ export class ConfigurationService {
     }
   }
 
+  /**
+   * Persist settings.json keys that another module owns (see `FileOnlySettings`). Disk only: these
+   * keys have no in-memory mirror here, and their owner reads them back from the file.
+   *
+   * Owners must come through here rather than read-modify-write the file themselves. A private
+   * writer is how `autoUpdates` went undeclared and got stripped by every other write. The one
+   * SystemUpdateService had also answered a file it could not read or parse (including one caught
+   * mid-write by a concurrent save) by writing back only its own key, erasing the Portal credential.
+   * No demo-mode refusal: the auto-update switch never had one, and this keeps its behaviour.
+   *
+   * Failures are logged and rethrown the way `setUserSettings` does it. Left raw, a parse error
+   * reached the global exception filter, which logs the exception as-is, and V8's message for an
+   * unquoted value quotes the file around it.
+   */
+  public async setFileOnlySettings(settings: FileOnlySettings): Promise<void> {
+    try {
+      await this.mergeSettingsToDisk(settings);
+    } catch (error) {
+      this.logger.error(`Failed to save settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(settings).join(',') || '(none)'}`);
+      throw new InternalServerErrorException('Failed to save settings');
+    }
+  }
+
   /** Read settings.json, merge in the given partial, and write it back. Disk-only — never mutates
    *  the in-memory config (callers that want the runtime change apply it separately).
    *
@@ -419,11 +450,20 @@ export class ConfigurationService {
    *  corrected it — so the only way out was to edit the file by hand. Dropping is safe here because
    *  the boot path already ignores those fields (see {@link parsePersistedSettings}); this just
    *  stops carrying a value nothing can read forward. */
-  private async mergeSettingsToDisk(settings: UserSettingsBody): Promise<void> {
+  private async mergeSettingsToDisk(settings: PersistedSettings): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
     await ensureSettingsJsonReady(settingsPath);
     const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
-    const current = parsePersistedSettings(JSON.parse(fileContent));
+    const raw: unknown = JSON.parse(fileContent);
+    const current = parsePersistedSettings(raw);
+    // The parse strips keys this build does not declare, on purpose (see `settingsFileSchema`). Name
+    // them, so a drop is visible: `autoUpdates` went unnoticed on the fleet, and a node that runs an
+    // older build after a newer one (a trial image, a branch build on core-14) loses that build's keys
+    // here. Names only; the values can be credentials.
+    const undeclared = current.unreadable ? [] : Object.keys(raw as object).filter((key) => !Object.hasOwn(settingsFileSchema.shape, key));
+    if (undeclared.length > 0) {
+      this.logger.warn(`Dropping settings.json key(s) this build does not declare: ${scrubString(undeclared.slice(0, 20).join(', '))}.`);
+    }
     if (current.unreadable) {
       this.logger.warn(`${settingsPath} does not contain a JSON object; replacing it with the settings being written.`);
     } else if (current.invalidKeys.length > 0) {

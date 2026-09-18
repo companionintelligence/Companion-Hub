@@ -1,10 +1,24 @@
+import { scrubString } from '@/core/error-reporting/sentry-scrubber';
+
 /**
- * How the Hub reads Companion Portal's answer to `POST /api/devices/check-in`.
+ * What a Portal answer to `POST /api/devices/check-in` means for this Hub.
  *
- * Only one answer clears the local registration: a 400 whose body carries `code: 'DEVICE_NOT_ACTIVE'`.
- * The Portal sends it for a device it deleted or marked inactive. A 400 without that code is a
- * schema refusal (the Hub sent a field the Portal does not accept), and resetting over that would
- * unpair a healthy Hub. Every other device-key failure (401, 403) stays a failure, never a removal.
+ * - `accepted`: Portal knows this device key and recorded the check-in.
+ * - `rejected`: Portal answered, and it does not accept this Hub as the device its key names.
+ *   Retrying cannot change that. Only pairing again can.
+ * - `refused_body`: Portal refused the request body. That is a schema mismatch between the two
+ *   builds, not a verdict on the device, so it must never cost the Hub its registration.
+ * - `failed`: anything else — 5xx, a rate limit, or a page from something in front of Portal.
+ */
+export type CheckInVerdict =
+  | { kind: 'accepted'; code: null; error: null }
+  | { kind: 'rejected' | 'refused_body' | 'failed'; code: string | null; error: string };
+
+/**
+ * The one coded answer the Hub acts on by clearing its own registration: Portal says this device row
+ * is gone or inactive, which is what a person removing the Hub from their account in Portal produces
+ * and what the Settings removal watch is waiting for. Every other 400 is a schema refusal (the Hub
+ * sent a field Portal does not accept), and resetting over that would unpair a healthy Hub.
  */
 export const DEVICE_NOT_ACTIVE_CODE = 'DEVICE_NOT_ACTIVE';
 
@@ -14,7 +28,7 @@ export type CheckInOutcome =
   | 'active'
   /** The Portal said the device was removed or deactivated, and the Hub cleared its registration. */
   | 'removed'
-  /** The Portal refused the device key (401 or 403). Nothing was reset. */
+  /** The Portal refused the device key (a `rejected` verdict that is not `DEVICE_NOT_ACTIVE`). Nothing was reset. */
   | 'key_refused'
   /** The Portal was unreachable or answered with any other failure. */
   | 'failed'
@@ -53,7 +67,69 @@ export function isDeviceNotActiveResponse(response: { status: number; data?: unk
   return typeof body === 'object' && body !== null && (body as { code?: unknown }).code === DEVICE_NOT_ACTIVE_CODE;
 }
 
-/** A 401 or 403: the Portal does not accept this device key for this device. */
-export function isDeviceKeyRefusedStatus(status: number): boolean {
-  return status === 401 || status === 403;
+const MAX_ERROR_LENGTH = 200;
+
+/**
+ * Classifies a check-in response against the contract CI-Portal actually implements.
+ *
+ * The contract, read from CI-Portal `dev` (`CheckIn.ts`, `deviceAuthMiddleware.ts`, `DeviceService.findByApiKey`):
+ *
+ * | Portal answer | Cause |
+ * | --- | --- |
+ * | `401 UNAUTHORIZED` | No key, or no live device holds it: the device was removed, an owner or admin re-registered it (status `inactive`, refused since CI-Portal 05b84f3, 2026-09-08), or a later pair rotated the key |
+ * | `403` with a JSON `error` | The key authenticates as a different `device_id` than the one this Hub resolved |
+ * | `400 DEVICE_NOT_ACTIVE` | The device row vanished between authentication and the handler's read |
+ * | `400` with any other body | `zValidator` refused a field this Hub sent |
+ *
+ * The Hub used to read every 400 as "removed" and delete its registration, and every 401 as a
+ * transient failure. That is backwards for the fleet. A removal answers 401, so on 2026-09-17 five
+ * paired Hubs had retried a dead key for up to a week under `cloud_validation_failed`, which tells
+ * an owner to wait rather than to pair again. And the one 400 that is not a removal, a schema
+ * refusal, was the one that wiped a healthy Hub's tunnel token; CI-Portal's own `CheckIn.ts` warns
+ * that a vocabulary mismatch there "makes every healthy Hub in the fleet unpair itself".
+ *
+ * `rejected` covers the key refusals and `DEVICE_NOT_ACTIVE` alike: both are Portal answering about
+ * this device rather than failing to answer. They differ in what the Hub does about it, not in how
+ * they are read, so the caller separates them with `isDeviceNotActiveResponse` — that coded answer
+ * is the only one that clears the registration.
+ *
+ * A 401 or 403 counts only when the body is a JSON object, which is how Portal's `respond()`
+ * answers. A page from Cloudflare or a captive proxy arrives as a string, and it says nothing
+ * about this device.
+ */
+export function classifyCheckInResponse(status: number, body: unknown): CheckInVerdict {
+  if (status >= 200 && status < 300) {
+    return { kind: 'accepted', code: null, error: null };
+  }
+
+  const object = body !== null && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+  const code = typeof object?.code === 'string' && object.code.trim() ? object.code.trim() : null;
+  const error = describePortalError(status, object);
+
+  if (object && (status === 401 || (status === 403 && typeof object.error === 'string'))) {
+    return { kind: 'rejected', code, error };
+  }
+
+  if (status === 400) {
+    return { kind: code === DEVICE_NOT_ACTIVE_CODE ? 'rejected' : 'refused_body', code, error };
+  }
+
+  return { kind: 'failed', code, error };
+}
+
+function describePortalError(status: number, object: Record<string, unknown> | null): string {
+  const text = [object?.error, object?.message].find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  return truncate(scrubString(text ? `HTTP ${status}: ${text.trim()}` : `HTTP ${status}`));
+}
+
+/** A check-in that never got an HTTP response, described the same bounded way. */
+export function describeCheckInTransportError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+
+  return truncate(scrubString(message || 'request failed'));
+}
+
+function truncate(value: string): string {
+  return value.length > MAX_ERROR_LENGTH ? `${value.slice(0, MAX_ERROR_LENGTH - 1)}…` : value;
 }

@@ -6,8 +6,33 @@ import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
 import { OllamaBackend } from './backends/ollama.backend';
+import { inventoryListsModel } from '@/common/helpers/hub-pool';
+import type { PoolPeerCapabilities } from '@/modules/hub-pool/hub-pool.types';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { BackendHealthStatus, InferenceBackendType } from '@ci-hub/common/types';
+import { LOCAL_POOL_NODE, type PoolInventory, type PoolInventoryBackend } from './app-model-handout';
+
+/** Path segment every pool-proxy URL an app is handed contains; see {@link InferenceEndpointService.poolBaseUrl}. */
+export const POOL_PROXY_PATH = '/api/inference/pool';
+
+/** Whether an inference URL an app holds points at this Hub's pool proxy rather than at a backend. */
+export function isPoolProxyUrl(url: string | null | undefined): boolean {
+  return typeof url === 'string' && url.includes(POOL_PROXY_PATH);
+}
+
+/** A decision to route apps through the pool proxy, with what the pool can serve. */
+export interface PoolRouting {
+  baseUrl: string;
+  inventory: PoolInventory;
+  /** Which rule put apps on the proxy: the default-on preference, or connected peers. */
+  reason: 'always' | 'peers';
+  /**
+   * Whether the inventory reaches past this node. Only then does routing change which model the
+   * app is handed: `poolRouteAppsAlways` on a peerless Hub is a transport change, and the proxy
+   * can serve nothing this node could not serve directly.
+   */
+  spansPeers: boolean;
+}
 
 /** The backend an app should actually be pointed at, plus the health probe that decided it. */
 export interface ActiveInferenceBackend {
@@ -112,41 +137,51 @@ export class InferenceEndpointService {
 
   /** This Hub's own pool proxy prefix, reachable container-to-container from an installed app. */
   private poolBaseUrl(): string {
-    return `http://${hubContainerName()}:${process.env.API_PORT || '3000'}/api/inference/pool`;
+    return `http://${hubContainerName()}:${process.env.API_PORT || '3000'}${POOL_PROXY_PATH}`;
   }
 
   /**
-   * Rewrite an app's inference URLs to this Hub's pool proxy once any peer is connected.
+   * Whether apps are routed through the pool right now, and if so what the pool can serve.
    *
-   * A global override with no per-app opt-in: with zero connected peers it returns `endpoints`
-   * untouched, so a single-node Hub behaves exactly as it did before pooling existed. Model and
-   * context values are deliberately NOT touched — the proxy uses the model name the caller already
-   * resolved to pick whichever pool node actually has it.
+   * Two rules put an app on the proxy, checked cheapest first. `poolRouteAppsAlways` is the
+   * default-on preference; the peer check is what an operator who turned it off still gets, and
+   * behaves as before — with zero connected peers this is `null`, the app talks to a backend
+   * directly, and its model comes from that backend.
+   *
+   * When it is not `null`, the inventory is what the proxy will match the app's model against, so
+   * both handout paths choose the model from it (`selectPoolChatModel`) before
+   * {@link applyPoolRouting} rewrites the URLs. Rewriting the URLs alone, which is all this once
+   * did, left the model chosen from this node's inventory.
+   */
+  async resolvePoolRouting(context: string): Promise<PoolRouting | null> {
+    const always = this.routeAppsAlways();
+    const peers = await this.hasConnectedPeers(context);
+    if (!always && !peers) {
+      return null;
+    }
+    return { baseUrl: this.poolBaseUrl(), inventory: await this.poolInventory(context), reason: always ? 'always' : 'peers', spansPeers: peers };
+  }
+
+  /**
+   * Rewrite an app's inference URLs to this Hub's pool proxy when `routing` says to.
    *
    * Apps need no extra credential for this: the pool's app-facing routes are guarded by
    * `InternalNetworkGuard` + `PoolAppGuard`, which is an origin check (is this request from inside
    * the appliance?), not caller authentication.
    */
-  async routeThroughPool<T extends PoolRoutableEndpoints>(endpoints: T, context: string): Promise<T> {
-    // Two reasons to hand an app the proxy instead of the engine, checked cheapest first. The
-    // preference is the default-on one (see `HubPoolPreferences.poolRouteAppsAlways`); the peer
-    // check is what an operator who turned it off still gets, unchanged from before.
-    const always = this.routeAppsAlways();
-    const peers = always ? false : await this.hasConnectedPeers(context);
-    if (!always && !peers) {
+  applyPoolRouting<T extends PoolRoutableEndpoints>(endpoints: T, routing: Pick<PoolRouting, 'baseUrl' | 'reason'> | null, context: string): T {
+    if (!routing) {
       return endpoints;
     }
-
-    const poolBaseUrl = this.poolBaseUrl();
     const routed: T = { ...endpoints };
-    if (routed.openAiBaseUrl) routed.openAiBaseUrl = `${poolBaseUrl}/v1`;
-    if (routed.ollamaHost) routed.ollamaHost = poolBaseUrl;
-    if (routed.ollamaEmbedHost) routed.ollamaEmbedHost = poolBaseUrl;
+    if (routed.openAiBaseUrl) routed.openAiBaseUrl = `${routing.baseUrl}/v1`;
+    if (routed.ollamaHost) routed.ollamaHost = routing.baseUrl;
+    if (routed.ollamaEmbedHost) routed.ollamaEmbedHost = routing.baseUrl;
 
     this.logger.info(
-      always
-        ? `[${context}] routing app inference through this Hub's proxy at ${poolBaseUrl} (poolRouteAppsAlways)`
-        : `[${context}] connected pool peer(s) present; routing app inference through the pool proxy at ${poolBaseUrl}`,
+      routing.reason === 'always'
+        ? `[${context}] routing app inference through this Hub's proxy at ${routing.baseUrl} (poolRouteAppsAlways)`
+        : `[${context}] connected pool peer(s) present; routing app inference through the pool proxy at ${routing.baseUrl}`,
     );
     return routed;
   }
@@ -161,6 +196,104 @@ export class InferenceEndpointService {
       return this.config.getHubPoolPreferences()?.poolRouteAppsAlways ?? true;
     } catch {
       return true;
+    }
+  }
+
+  /**
+   * Every model the pool proxy could route a request to: this node's healthy backends, then each
+   * peer the proxy would actually send work to.
+   *
+   * The peer filter repeats `PoolProxyService.usablePeers` and `peerCandidates` (outbound switch,
+   * per-peer switch, `acceptingWork`, healthy backends) rather than calling them, because both are
+   * private to the request path and the proxy is mid-rework on other branches. If the two drift,
+   * a handout names a model the proxy then refuses, so a change to either belongs in both.
+   */
+  async poolInventory(context: string): Promise<PoolInventory> {
+    const [local, peers] = await Promise.all([this.localInventory(), this.peerInventory(context)]);
+    return { backends: [...local, ...peers] };
+  }
+
+  private async localInventory(): Promise<PoolInventoryBackend[]> {
+    const entries = await Promise.all(
+      this.backends.entries().map(async ([type, backend]): Promise<PoolInventoryBackend | null> => {
+        try {
+          const health = await backend.healthCheck();
+          if (!health.running || !health.healthy) {
+            return null;
+          }
+          const models = (health.modelsLoaded ?? []).filter((id) => !inventoryListsModel(health.unservableModels, id));
+          return { node: LOCAL_POOL_NODE, local: true, backend: type, models };
+        } catch {
+          // Six backends are probed and most nodes run one; a dead one is simply not in the inventory.
+          return null;
+        }
+      }),
+    );
+    return entries.filter((entry): entry is PoolInventoryBackend => entry !== null);
+  }
+
+  private async peerInventory(context: string): Promise<PoolInventoryBackend[]> {
+    try {
+      if (this.hubPoolPeerService.directions()?.outbound?.enabled === false) {
+        return [];
+      }
+      const peers = ((await this.hubPoolPeerService.listConnectedPeers()) ?? []).filter((peer) => peer.enabled !== false);
+      const entries: PoolInventoryBackend[] = [];
+      for (const peer of peers) {
+        const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
+        if (!capabilities || capabilities.acceptingWork === false) continue;
+        for (const backend of capabilities.backends ?? []) {
+          if (!backend.healthy) continue;
+          entries.push({ node: peer.displayName || peer.nodeFqdn, local: false, backend: backend.type, models: backend.modelsLoaded ?? [] });
+        }
+      }
+      return entries;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`[${context}] could not read pool peer inventories (${message}); choosing from this node's models only.`);
+      return [];
+    }
+  }
+
+  /**
+   * A value that changes when the pool membership an app's handout depends on changes: whether apps
+   * are routed through the pool at all, and which peers the proxy would send their work to.
+   *
+   * Pairing, unpairing, a peer going `unreachable` and back, and the pool switches all move it.
+   * Model inventories deliberately do not: an engine withholding a model it failed to load, then
+   * restoring it, would otherwise restart every AI app on the node each time. Two per-peer facts
+   * do: a just-approved peer is `connected` a full health poll before its first capability
+   * snapshot lands, so a refresh at approval time sees none of its models; and a peer that stops
+   * accepting work drops out of the proxy's candidates as surely as an unpaired one.
+   */
+  async poolMembership(context: string): Promise<{ signature: string | null; description: string }> {
+    try {
+      // Asked directly rather than through `hasConnectedPeers`, which reads a failed query as "no
+      // peers": right for a handout, wrong here, where it would look like every peer disconnecting.
+      if (!(await this.hubPoolPeerService.hasConnectedPeers())) {
+        return { signature: 'direct', description: 'no connected pool peers' };
+      }
+      const outbound = this.hubPoolPeerService.directions()?.outbound?.enabled !== false;
+      const peers = ((await this.hubPoolPeerService.listConnectedPeers()) ?? []).filter((peer) => outbound && peer.enabled !== false);
+      const ids = peers
+        .map((peer) => {
+          const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
+          const state = capabilities ? (capabilities.acceptingWork === false ? ':refusing' : '') : ':unprobed';
+          return `${peer.id}${state}`;
+        })
+        .sort();
+      const names = peers.map((peer) => peer.displayName || peer.nodeFqdn).sort();
+      return {
+        signature: `pool;outbound=${outbound};peers=${ids.join(',')}`,
+        description: outbound
+          ? `routing through the pool with ${names.length ? names.join(', ') : 'no usable peers'}`
+          : 'routing through the pool, outbound off',
+      };
+    } catch (err) {
+      // `null` tells a caller comparing signatures to keep its last observation rather than read a
+      // failed peer-table query as a membership change.
+      const message = err instanceof Error ? err.message : String(err);
+      return { signature: null, description: `pool peer state unreadable for ${context} (${message})` };
     }
   }
 

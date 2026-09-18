@@ -1,6 +1,7 @@
 import { Body, Controller, ForbiddenException, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
+import type { RegistrationPhaseReport } from './registration-state';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
@@ -83,6 +84,20 @@ export class RegistrationController {
   @ApiResponse({ status: 200, description: 'Returns the explicit provisioning status' })
   async getStatus() {
     return this.registrationService.getLiveRegistrationStatus();
+  }
+
+  /*
+   * `status` is what the UI polls, and past a 30 s throttle each read sends a check-in to Portal.
+   * This is the route for anything that only wants to look — `cihub doctor`, fleet preflight, a
+   * person with curl — so looking cannot change `last_seen` in Portal or the phase it reports.
+   * Unauthenticated like `status`, which already returns the phase and reasons; the check-in
+   * fields add a status code and a scrubbed Portal error, and no credential.
+   */
+  @Get('phase')
+  @ApiOperation({ summary: 'Get registration phase and the last Portal check-in without sending one' })
+  @ApiResponse({ status: 200, description: 'Returns the in-memory phase, degraded reasons, and last check-in outcome' })
+  getPhase(): RegistrationPhaseReport {
+    return this.registrationService.getRegistrationPhaseReport();
   }
 
   @Post('reconnect-tunnel')
@@ -419,7 +434,7 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Pair device using a pairing code — atomic registration in one step' })
   @ApiResponse({ status: 200, description: 'Device paired and registered successfully' })
   @ApiResponse({ status: 400, description: 'Invalid pairing code or pairing failed' })
-  async pairDevice(@Body() body: PairDeviceDto) {
+  async pairDevice(@Body() body: PairDeviceDto, @Req() req?: Request) {
     const pairingCode = body.pairing_code?.trim().toUpperCase();
 
     this.logger.info(`Received local pairing request: codeLength=${pairingCode?.length ?? 0} validShape=${pairingCode?.length === 6}`);
@@ -428,7 +443,10 @@ export class RegistrationController {
       return { success: false, message: 'A valid 6-character pairing code is required.' };
     }
 
-    const result = await this.registrationService.pairDevice(pairingCode);
+    // No guard: first pairing has nobody to authenticate. `AuthMiddleware` names the principal
+    // when there is one (a session, the host-local device key, or the CLI token, including on an
+    // unclaimed Hub), and the service requires one before it re-pairs a registered Hub.
+    const result = await this.registrationService.pairDevice(pairingCode, { callerAuthenticated: Boolean(req?.hubPrincipal) });
     return result;
   }
 

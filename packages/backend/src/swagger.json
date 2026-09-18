@@ -303,6 +303,21 @@
         ]
       }
     },
+    "/api/registration/phase": {
+      "get": {
+        "operationId": "getPhase",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns the in-memory phase, degraded reasons, and last check-in outcome"
+          }
+        },
+        "summary": "Get registration phase and the last Portal check-in without sending one",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/registration/reconnect-tunnel": {
       "post": {
         "operationId": "reconnectTunnel",
@@ -2320,6 +2335,29 @@
         ]
       }
     },
+    "/api/apps/{urn}/inference-env": {
+      "get": {
+        "operationId": "getInferenceEnvStaleness",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/{urn}/check-availability": {
       "get": {
         "operationId": "checkAvailability",
@@ -3583,7 +3621,17 @@
             "schema": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 200
+              "maximum": 10000
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           }
         ],
@@ -15987,7 +16035,12 @@
           "limit": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 200
+            "maximum": 10000
+          },
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
           }
         },
         "additionalProperties": false

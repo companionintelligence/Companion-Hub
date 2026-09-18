@@ -21,15 +21,36 @@ const API_KEY_PREFIX_LEN = 8; // mirrors PREFIX_LEN in ApiKeyService
 
 /**
  * Scopes an *operator* key may carry — deliberately narrower than API_KEY_SCOPES in
- * packages/backend/src/modules/api-keys/api-key.scopes.ts, and the same line ApiKeyAdminService
- * takes for the UI (it pins operator keys to ['mcp']).
+ * packages/backend/src/modules/api-keys/api-key.scopes.ts. Wider than the UI by exactly 'qa:read'
+ * (ApiKeyAdminService pins operator keys to ['mcp']): a test key is minted over ssh on the node under
+ * test, which is where this command runs and a browser usually is not.
  *
  * 'app' is honoured only on a *managed* row: resolveManagedAppUrn requires `managed` and an owning
  * app URN, both of which only app provisioning sets. An operator key carrying 'app' would list as
  * correctly provisioned and authenticate nothing — the same "credential that isn't one" this
  * command exists to retire.
  */
-const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp'];
+const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp', 'qa:read'];
+
+/**
+ * Scopes that must be the only scope on their key — mirrors QA_READ_SCOPE in api-key.scopes.ts.
+ *
+ * A `qa:read` key is the credential a test harness holds so that it does NOT hold operator authority.
+ * One row carrying 'mcp' as well would hand that harness the whole MCP tool surface under a name that
+ * says "read", which is the exact mistake the scope exists to prevent.
+ */
+const STANDALONE_API_KEY_SCOPES: readonly string[] = ['qa:read'];
+
+/**
+ * What a `qa:read` key reaches — mirrors the handlers marked `@ObservabilityRead()` in the backend.
+ * Printed at creation so the operator minting it sees the whole of its authority.
+ */
+const QA_READ_ROUTES: readonly string[] = [
+  'GET /api/inference/pool/status',
+  'GET /api/inference/pool/routing-log',
+  'GET /api/apps/:urn (without the app config)',
+  'GET /api/apps/install-queue',
+];
 
 /** Scopes that exist but are only ever minted for an app, so the error can say why, not just "unknown". */
 const MANAGED_ONLY_API_KEY_SCOPES: readonly string[] = ['app'];
@@ -88,6 +109,18 @@ export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: s
     managedOnly: rejected.filter((scope) => MANAGED_ONLY_API_KEY_SCOPES.includes(scope)),
     invalid: rejected.filter((scope) => !MANAGED_ONLY_API_KEY_SCOPES.includes(scope)),
   };
+}
+
+/**
+ * Why this scope set may not be minted as one key, or `null` when it may.
+ */
+function apiKeyScopeConflict(scopes: string[]): string | null {
+  const standalone = scopes.filter((scope) => STANDALONE_API_KEY_SCOPES.includes(scope));
+  if (standalone.length === 0 || scopes.length === 1) return null;
+  return (
+    `The '${standalone.join("', '")}' scope must be the only scope on its key: it exists so a test harness can hold ` +
+    'a credential that reads and does nothing else. Create a separate key for the other scope.'
+  );
 }
 
 /**
@@ -249,7 +282,7 @@ export function runApiKeyCommand(args: string[]) {
     const name = readApiKeyFlag(args, '--name');
     if (!name)
       usageAndExit(
-        `Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes ${OPERATOR_API_KEY_SCOPES.join(',')}] ` +
+        `Usage: ${BASE_COMMAND} api-key create --name <label> [--scope ${OPERATOR_API_KEY_SCOPES.join('|')}] ` +
           `[--capability ${API_KEY_CAPABILITIES.join('|')}]`,
       );
     if (!isValidApiKeyName(name)) {
@@ -258,7 +291,14 @@ export function runApiKeyCommand(args: string[]) {
       );
     }
 
-    const { scopes, invalid, managedOnly } = parseApiKeyScopes(readApiKeyFlag(args, '--scopes') ?? 'mcp');
+    // `--scope` and `--scopes` are the same flag: a key usually has one scope, and the singular is what
+    // the fleet QA plan and the refusal messages below spell. Both at once is refused rather than one
+    // silently winning: `--scopes mcp --scope qa:read` would otherwise mint a write-capable MCP key for
+    // someone who asked for the read-only one, and the box that says so scrolls past in a script.
+    const scopesFlag = readApiKeyFlag(args, '--scopes');
+    const scopeFlag = readApiKeyFlag(args, '--scope');
+    if (scopesFlag !== undefined && scopeFlag !== undefined) usageAndExit('Give --scope or --scopes, not both: they are the same flag.');
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes(scopesFlag ?? scopeFlag ?? 'mcp');
     if (scopes.length === 0) usageAndExit(`At least one scope is required. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
     if (managedOnly.length > 0) {
       usageAndExit(
@@ -266,8 +306,18 @@ export function runApiKeyCommand(args: string[]) {
       );
     }
     if (invalid.length > 0) usageAndExit(`Unknown scope(s): ${invalid.join(', ')}. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
+    const conflict = apiKeyScopeConflict(scopes);
+    if (conflict) usageAndExit(conflict);
 
-    const capability = readApiKeyFlag(args, '--capability') ?? DEFAULT_API_KEY_CAPABILITY;
+    const isQaRead = scopes.includes('qa:read');
+    const requestedCapability = readApiKeyFlag(args, '--capability');
+    // Capability decides what an MCP key may do among tools; a `qa:read` key has no tools, only its
+    // route list. Stored as 'read' so `api-key list` does not show a test key as 'write', and an explicit
+    // wider value is refused rather than stored as a grant the server would never apply.
+    if (isQaRead && requestedCapability !== undefined && requestedCapability !== 'read') {
+      usageAndExit(`A qa:read key reads a fixed list of routes; --capability ${requestedCapability || '(empty)'} would do nothing. Omit it.`);
+    }
+    const capability = requestedCapability ?? (isQaRead ? 'read' : DEFAULT_API_KEY_CAPABILITY);
     if (!API_KEY_CAPABILITIES.includes(capability)) {
       usageAndExit(
         `Unknown capability: ${capability || '(empty)'}. Valid: ${API_KEY_CAPABILITIES.join(', ')} — ` +
@@ -313,11 +363,12 @@ export function runApiKeyCommand(args: string[]) {
               `distinction to apply and ${bold(`--capability ${capability}`)} was not stored.`,
               'Update the Hub if you need capability-limited keys.',
             ]),
+        ...(isQaRead ? ['', 'Accepted only on:', ...QA_READ_ROUTES.map((route) => `  ${route}`), 'Every other route refuses it.'] : []),
         '',
         `${bold('key')}     ${rawKey}`,
         '',
         'This is the only time the key is shown. Store it now.',
-        'Change what it can do, or revoke it, in Settings → Security.',
+        isQaRead ? 'Revoke it in Settings → Security.' : 'Change what it can do, or revoke it, in Settings → Security.',
       ],
       'green',
     );

@@ -6,8 +6,9 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
-import { recommendContextLength } from './context-length.util';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
+import { describeNoSuitableChatModel, handoutContextLength, selectPoolChatModel } from './app-model-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /** Fallback keys for backends that do not expose a configured or desktop-managed key. */
@@ -29,7 +30,7 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
  * Ollama instance or a cloud provider.
  */
 export interface StandardizedAiEnv {
-  /** OpenAI-compatible base URL (Ollama `/v1` or cloud provider). */
+  /** OpenAI-compatible base URL (Ollama `/v1`, the pool proxy, or a cloud provider). */
   CI_LLM_BASE_URL?: string;
   /** API key for the base URL. `"ollama"` for local Ollama. */
   CI_LLM_API_KEY?: string;
@@ -56,8 +57,23 @@ export interface StandardizedAiEnv {
   CI_LLM_NUM_CTX?: string;
   /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `lucebox` | `cloud`). */
   CI_INFERENCE_BACKEND?: string;
+  /** Why no chat model was emitted, when the app declares requirements no available model meets. */
+  CI_INFERENCE_ERROR?: string;
   /** Every enabled cloud provider (CI_CLOUD_* + conventional aliases). Additive. */
   cloudProviderEnv?: Record<string, string>;
+}
+
+export interface InferenceEnvResolveOptions {
+  /**
+   * The app the env is for. Selects its entry in the requirement table, so a model it would refuse
+   * (no tool calling, a window below its floor) is never emitted as `CI_CHAT_MODEL`.
+   */
+  appSlug?: string | null;
+  /**
+   * App-specific floor for the recommended context window (tokens). Overrides the table's value
+   * when set. Omit for apps with no minimum — the pure hardware ladder is used.
+   */
+  minContextLength?: number;
 }
 
 /**
@@ -82,13 +98,9 @@ export class InferenceEnvResolver {
     private readonly endpoints: InferenceEndpointService,
   ) {}
 
-  /**
-   * @param options.minContextLength App-specific floor for the recommended Ollama
-   *   context window (tokens). Apps with a hard minimum (e.g. Hermes' 64K) pass it
-   *   so this path applies the same floor as the credentials.env endpoint. Omit for
-   *   apps with no minimum — the pure hardware ladder is used.
-   */
-  async resolve(options?: { minContextLength?: number }): Promise<StandardizedAiEnv> {
+  async resolve(options?: InferenceEnvResolveOptions): Promise<StandardizedAiEnv> {
+    const requirements = resolveRequirements(options);
+    const appLabel = options?.appSlug || 'this app';
     const cloudProviderEnv = this.cloudFallback.toAppEnv();
     const cloudProviders = this.cloudFallback.getEnabledProviders();
     const fallbackCloud = cloudProviders[0];
@@ -103,7 +115,25 @@ export class InferenceEnvResolver {
       ready: backendReady,
     } = await this.endpoints.resolveActiveBackend(preferences.preferredBackend, 'InferenceEnvResolver');
 
-    if (!backendReady) {
+    // Multi-Hub pooling: once any peer is connected, the app's requests go through this Hub's pool
+    // proxy, so the chat model comes from what the pool serves — see selectPoolChatModel. Decided
+    // before the "backend not ready" exit, because a node whose own backend is down but whose
+    // peers are healthy used to hand its apps no inference env at all.
+    const poolRouting = await this.endpoints.resolvePoolRouting('InferenceEnvResolver');
+    const poolChoice = poolRouting?.spansPeers
+      ? selectPoolChatModel({
+          appSlug: appLabel,
+          inventory: poolRouting.inventory,
+          catalog: this.modelRegistry.getCatalog() ?? [],
+          preferredId: preferences.preferredModel,
+          requirements,
+        })
+      : null;
+
+    // `spansPeers`, not `poolRouting`: with `poolRouteAppsAlways` on and no peer connected the
+    // proxy fronts this node's own backends, so a local backend that is down leaves the pool with
+    // nothing to serve either — bail exactly as a peerless Hub did before.
+    if (!backendReady && !poolChoice?.engineId && (fallbackCloud || !poolRouting?.spansPeers)) {
       if (fallbackCloud) {
         const env: StandardizedAiEnv = {
           CI_INFERENCE_BACKEND: 'cloud',
@@ -132,48 +162,31 @@ export class InferenceEnvResolver {
     const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : managedBackendKey || BACKEND_API_KEY[backendType];
 
     // ── Chat model ────────────────────────────────────────────────────────
-    // Prefer a model that is actually present on the active backend: this env is
-    // written into an app's app.env with no pre-pull on this path, so naming a
-    // merely-recommended (but unpulled) model would 404 on the app's first
-    // request. Resolution: preference-if-installed-on-this-backend → best
-    // installed recommended model on this backend → previous behavior
-    // (preference, then top recommendation) as a last resort when nothing on
-    // this backend is pulled yet.
-    const modelsLoaded = backendHealth.modelsLoaded ?? [];
-    const preferredId = preferences.preferredModel;
-    const preferredCurated = preferredId ? this.modelRegistry.getCuratedModel(preferredId) : undefined;
-    const backendPreferredCurated = preferredCurated?.backend === backendType ? preferredCurated : undefined;
-    const llmCandidates = this.modelRegistry
-      .getRecommendedModelsForHardware(profile.tier, profile)
-      .filter((m) => m.modality === 'llm' && m.backend === backendType);
-
     let chatCurated: CuratedModel | undefined;
-    if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded)) {
-      chatCurated = backendPreferredCurated;
+    let chatModel: string | undefined;
+    let chatServedLocally = true;
+    let chatError: string | undefined;
+    if (poolChoice) {
+      chatCurated = poolChoice.model ?? undefined;
+      chatModel = poolChoice.engineId ?? undefined;
+      chatServedLocally = poolChoice.servedLocally;
+      chatError = poolChoice.error ?? undefined;
+      this.logger.info(
+        `[InferenceEnvResolver] ${appLabel}: pool chat=${chatModel ?? 'none'} source=${poolChoice.source} ` +
+          `servedBy=${poolChoice.servedBy.join(',') || 'none'}${poolChoice.preferredNote ? ` (${poolChoice.preferredNote})` : ''}`,
+      );
     } else {
-      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded));
-    }
-    if (!chatCurated) {
-      chatCurated = backendPreferredCurated ?? llmCandidates[0];
-      if (chatCurated) {
-        this.logger.warn(
-          `[InferenceEnvResolver] no recommended ${backendType} chat model is pulled yet; ` +
-            `emitting ${chatCurated.backendModelId} — apps will 404 until it is pulled.`,
-        );
-      }
-    }
-    let chatModel = chatCurated?.backendModelId;
-    // Host-managed vLLM/Lemonade can serve models outside the Hub catalog (e.g. an
-    // operator's existing `vllm serve` on :8000). When nothing catalog-shaped matches
-    // but the backend reports loaded models, emit the first runtime id so apps get a
-    // working default instead of omitting CI_CHAT_MODEL entirely.
-    if (chatModel && modelsLoaded.length > 0 && backendType !== 'ollama' && !modelsLoaded.includes(chatModel)) {
-      const runtimeModel = modelsLoaded[0];
-      this.logger.info(`[InferenceEnvResolver] catalog chat model ${chatModel} is not loaded on ${backendType}; using runtime ${runtimeModel}`);
-      chatModel = runtimeModel;
-    } else if (!chatModel && modelsLoaded.length > 0 && backendType !== 'ollama') {
-      chatModel = modelsLoaded[0];
-      this.logger.info(`[InferenceEnvResolver] no catalog ${backendType} chat model matched runtime; using ${chatModel}`);
+      const local = this.resolveLocalChatModel(
+        backendType,
+        backendHealth.modelsLoaded ?? [],
+        preferences.preferredModel,
+        profile,
+        requirements,
+        appLabel,
+      );
+      chatCurated = local.curated;
+      chatModel = local.engineId;
+      chatError = local.error;
     }
 
     // ── Embedding model + dedicated embed host ────────────────────────────
@@ -230,37 +243,39 @@ export class InferenceEnvResolver {
     // even when chat runs on another backend (split-backend embeddings).
     if (embedHost) env.CI_OLLAMA_EMBED_HOST = embedHost;
     if (chatModel) env.CI_CHAT_MODEL = chatModel;
+    else if (chatError) env.CI_INFERENCE_ERROR = chatError;
     if (embeddingModel) env.CI_EMBEDDING_MODEL = embeddingModel;
     if (visionModel) env.CI_VISION_MODEL = visionModel;
 
-    // Hardware-aware context window for the chat model, so apps don't inherit
-    // Ollama's oversized memory-based default (e.g. 262144 on unified-memory APUs).
-    if (chatCurated) {
-      // Ask the engine what a token of context costs THIS model before falling back to the
-      // fixed ladder — see `model-geometry.util`. Only Ollama can be asked; the other backends
-      // keep the heuristic.
-      const cost = backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatCurated.backendModelId)) ?? null) : null;
-      const numCtx = recommendContextLength({
-        effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
-        modelFootprintMb: chatCurated.runtime.memoryFootprintMb,
-        modelContextWindow: chatCurated.runtime.contextWindow,
-        minContextLength: options?.minContextLength,
-        kvMbPerToken: cost?.kvMbPerToken ?? null,
-        weightMb: cost?.weightMb ?? null,
-      });
-      env.CI_LLM_NUM_CTX = String(numCtx);
+    // Context window for the chat model, so apps don't inherit Ollama's oversized memory-based
+    // default (e.g. 262144 on unified-memory APUs). Sized from this node's memory only when this
+    // node serves the model; see handoutContextLength.
+    if (chatCurated && chatModel) {
+      // Ask the engine what a token of context costs THIS model before falling back to the fixed
+      // ladder — see `model-geometry.util`. Only Ollama can be asked, and only about a model this
+      // node serves: a peer's geometry is not measurable from here, so a pool-served model keeps
+      // the heuristic, as do the other backends.
+      const cost =
+        chatServedLocally && backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatCurated.backendModelId)) ?? null) : null;
+      env.CI_LLM_NUM_CTX = String(
+        handoutContextLength({
+          model: chatCurated,
+          servedLocally: chatServedLocally,
+          effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
+          minContextLength: requirements.minContextLength,
+          kvMbPerToken: cost?.kvMbPerToken ?? null,
+          weightMb: cost?.weightMb ?? null,
+        }),
+      );
     }
 
     if (Object.keys(cloudProviderEnv).length > 0) {
       env.cloudProviderEnv = cloudProviderEnv;
     }
 
-    // Multi-Hub pooling: once any peer is connected, route the app through this Hub's own pool
-    // proxy instead of a directly-resolved backend URL. Shared with the credentials.env path —
-    // see InferenceEndpointService.routeThroughPool for why it is a global override and why the
-    // model/context values above are deliberately left alone.
-    const routed = await this.endpoints.routeThroughPool(
+    const routed = this.endpoints.applyPoolRouting(
       { openAiBaseUrl: env.CI_LLM_BASE_URL, ollamaHost: env.OLLAMA_HOST, ollamaEmbedHost: env.CI_OLLAMA_EMBED_HOST },
+      poolRouting,
       'InferenceEnvResolver',
     );
     env.CI_LLM_BASE_URL = routed.openAiBaseUrl;
@@ -269,11 +284,93 @@ export class InferenceEnvResolver {
 
     this.logger.info(
       `[InferenceEnvResolver] backend=${backendType} chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +
-        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl} backendReady=${backendReady} ` +
-        `cloudProviders=${cloudProviders.length}`,
+        `vision=${visionModel ?? 'none'} baseUrl=${env.CI_LLM_BASE_URL} backendReady=${backendReady} pool=${poolRouting !== null} ` +
+        `cloudProviders=${cloudProviders.length}${chatError && !chatModel ? ` error="${chatError}"` : ''}`,
     );
 
     return env;
+  }
+
+  /**
+   * The chat model when the app talks to this node's backend directly.
+   *
+   * Prefer a model that is actually present on the active backend: this env is written into an
+   * app's app.env with no pre-pull on this path, so naming a merely-recommended (but unpulled) model
+   * would 404 on the app's first request. Resolution: preference-if-installed → best installed
+   * recommended model → preference, then top recommendation, as a last resort when nothing on this
+   * backend is pulled yet. Every step skips a model the app's requirements rule out.
+   */
+  private resolveLocalChatModel(
+    backendType: InferenceBackendType,
+    modelsLoaded: string[],
+    preferredId: string | null,
+    profile: Awaited<ReturnType<HardwareInspectorService['getProfile']>>,
+    requirements: AppInferenceRequirements,
+    appLabel: string,
+  ): { curated?: CuratedModel; engineId?: string; error?: string } {
+    const rejected: Array<{ engineId: string; unmet: string[] }> = [];
+    const suitable = (model: CuratedModel | undefined): model is CuratedModel => {
+      if (!model) return false;
+      const check = checkModelRequirements(model, requirements);
+      if (check.verdict === 'fails') {
+        if (this.isInstalled(model, modelsLoaded) && !rejected.some((r) => r.engineId === model.backendModelId)) {
+          rejected.push({ engineId: model.backendModelId, unmet: check.unmet });
+        }
+        return false;
+      }
+      return true;
+    };
+
+    const preferredCurated = preferredId ? this.modelRegistry.getCuratedModel(preferredId) : undefined;
+    const backendPreferredCurated = preferredCurated?.backend === backendType ? preferredCurated : undefined;
+    const llmCandidates = this.modelRegistry
+      .getRecommendedModelsForHardware(profile.tier, profile)
+      .filter((m) => m.modality === 'llm' && m.backend === backendType);
+
+    let chatCurated: CuratedModel | undefined;
+    if (backendPreferredCurated && this.isInstalled(backendPreferredCurated, modelsLoaded) && suitable(backendPreferredCurated)) {
+      chatCurated = backendPreferredCurated;
+    } else {
+      chatCurated = llmCandidates.find((m) => this.isInstalled(m, modelsLoaded) && suitable(m));
+    }
+    if (!chatCurated) {
+      chatCurated = [backendPreferredCurated, ...llmCandidates].find((m) => suitable(m));
+      if (chatCurated) {
+        this.logger.warn(
+          `[InferenceEnvResolver] no recommended ${backendType} chat model is pulled yet; ` +
+            `emitting ${chatCurated.backendModelId} — apps will 404 until it is pulled.`,
+        );
+      }
+    }
+    let engineId = chatCurated?.backendModelId;
+    // Host-managed vLLM/Lemonade can serve models outside the Hub catalog (e.g. an
+    // operator's existing `vllm serve` on :8000). When nothing catalog-shaped matches
+    // but the backend reports loaded models, emit the first runtime id so apps get a
+    // working default instead of omitting CI_CHAT_MODEL entirely.
+    const runtimeFallback = () => modelsLoaded.find((id) => this.servedModelVerdict(id, backendType, requirements) !== 'fails');
+    if (engineId && modelsLoaded.length > 0 && backendType !== 'ollama' && !modelsLoaded.includes(engineId)) {
+      const runtimeModel = runtimeFallback();
+      if (runtimeModel) {
+        this.logger.info(`[InferenceEnvResolver] catalog chat model ${engineId} is not loaded on ${backendType}; using runtime ${runtimeModel}`);
+        engineId = runtimeModel;
+      }
+    } else if (!engineId && modelsLoaded.length > 0 && backendType !== 'ollama') {
+      engineId = runtimeFallback();
+      if (engineId) this.logger.info(`[InferenceEnvResolver] no catalog ${backendType} chat model matched runtime; using ${engineId}`);
+    }
+
+    if (!engineId && rejected.length > 0) {
+      return { error: describeNoSuitableChatModel({ appSlug: appLabel, requirements, rejected, scope: 'local' }) };
+    }
+    return { curated: chatCurated, engineId };
+  }
+
+  /** The catalog's verdict on a host-served engine id, or `unverified` when no catalog row matches it. */
+  private servedModelVerdict(engineId: string, backendType: InferenceBackendType, requirements: AppInferenceRequirements) {
+    const row = (this.modelRegistry.getCatalog() ?? []).find(
+      (m) => m.backend === backendType && m.modality === 'llm' && isServedModelForCatalog(m, [engineId]),
+    );
+    return checkModelRequirements(row ?? null, requirements).verdict;
   }
 
   /** True when the model is on disk on the active backend or tracked as pulled/loaded/pinned in the registry. */
@@ -285,4 +382,13 @@ export class InferenceEnvResolver {
     }
     return isCatalogModelInstalled(model, modelsLoaded, trackedPulled, this.modelRegistry.getCatalogBackendModelIds());
   }
+}
+
+/** The table's requirements for `appSlug`, with an explicit `minContextLength` taking precedence. */
+function resolveRequirements(options: InferenceEnvResolveOptions | undefined): AppInferenceRequirements {
+  const fromTable = appInferenceRequirements(options?.appSlug);
+  if (options?.minContextLength === undefined) {
+    return fromTable;
+  }
+  return { ...fromTable, minContextLength: options.minContextLength };
 }

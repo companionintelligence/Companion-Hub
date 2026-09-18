@@ -696,6 +696,11 @@ export function inventoryListsModel(listed: readonly string[] | undefined, reque
   return (listed ?? []).some((id) => sameModelId(id, requested));
 }
 
+/** One spelling per model for keying state by model, under the same folding {@link sameModelId} compares with. */
+export function canonicalModelId(id: string): string {
+  return withLatestTag(id);
+}
+
 function withLatestTag(id: string): string {
   const slash = id.lastIndexOf('/');
   const colon = id.lastIndexOf(':');

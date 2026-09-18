@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, type OnApplicationShutdown } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
@@ -9,9 +9,19 @@ import { OllamaBackend } from './backends/ollama.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
-import { appMinContextLength, recommendContextLength } from './context-length.util';
 import { BACKEND_API_KEY } from './inference-env-resolver';
 import { cloudProviderManagedKeys } from './cloud-provider-env';
+import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
+import {
+  decideModelPrePull,
+  describeNoSuitableChatModel,
+  handoutContextLength,
+  INFERENCE_ERROR_ENV_KEY,
+  nodesServing,
+  selectPoolChatModel,
+  type PrePullDecision,
+} from './app-model-handout';
+import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHandout } from './app-handout-record';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -26,17 +36,25 @@ export const DEFAULT_API_VERSION: ApiVersion = 1;
 export interface AppCredentialsConfig {
   app: AppSlug;
   apiVersion: ApiVersion;
-  /** Where the app should send inference requests directly (Ollama /v1 or a cloud provider). */
+  /** Where the app should send inference requests directly (Ollama /v1, the pool proxy, or a cloud provider). */
   endpointUrl: string;
   endpointReady: boolean;
   /** Chat model id the app should request. Native backend id for Ollama, provider model for cloud. */
   chatModelId: string | null;
   /** Embeddings model id (native backend id for Ollama). */
   embeddingsModelId: string | null;
-  /** True once the recommended local chat model is pulled into Ollama. */
+  /** True once the chat model can be served: pulled into the local backend, or listed by a pool node. */
   chatModelReady: boolean;
   /** Which connection the app was handed: the active local backend, or a cloud provider. */
   provider: InferenceBackendType | 'cloud';
+  /** True when `endpointUrl` is this Hub's pool proxy, so the model was chosen from what the pool serves. */
+  routedThroughPool: boolean;
+  /** Pool nodes that serve `chatModelId`; empty when the app is not routed through the pool. */
+  chatModelServedBy: string[];
+  /** Why no chat model was handed out, when none was. Also sent as `CI_INFERENCE_ERROR`. */
+  chatModelError: string | null;
+  /** Every pull this handout considered, with the reason it did or did not start one. */
+  prePull: PrePullDecision[];
   env: Record<string, string>;
   managedKeys: string[];
 }
@@ -65,6 +83,8 @@ interface CacheEntry {
   expiresAt: number;
 }
 
+export type { RecordedHandout } from './app-handout-record';
+
 /**
  * Distributes inference connection info ("credentials") to sibling apps so they
  * can talk to inference *directly* — never through the Hub.
@@ -85,10 +105,20 @@ function isHostServedBackend(backendType: InferenceBackendType): boolean {
   return backendType === 'vllm' || backendType === 'dspark' || backendType === 'mtplx' || backendType === 'lucebox';
 }
 
+interface LocalChatSelection {
+  model: CuratedModel | null;
+  /** Installed models the app's requirements excluded. */
+  rejected: Array<{ engineId: string; unmet: string[] }>;
+}
+
 @Injectable()
-export class AppCredentialsService {
+export class AppCredentialsService implements OnApplicationShutdown {
   /** In-memory credentials cache keyed by `${slug}:${apiVersion}`. */
   private cache = new Map<string, CacheEntry>();
+  /** What each app was last actually served, mirrored to disk; see {@link RecordedHandout}. */
+  private handouts = new Map<AppSlug, RecordedHandout>();
+  private handoutsLoaded: Promise<void> | null = null;
+  private handoutWrites: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly logger: LoggerService,
@@ -125,6 +155,7 @@ export class AppCredentialsService {
     return parsed as ApiVersion;
   }
 
+  /** Serve an app its credentials: cached for 30 s, recorded as that app's current handout, and the only path that may start a pre-pull. */
   async getCredentials(slug: string, apiVersion: ApiVersion = DEFAULT_API_VERSION): Promise<AppCredentialsConfig> {
     if (!this.isSupported(slug)) {
       throw new NotFoundException(`Unknown app slug: ${slug}. Supported: ${SUPPORTED_APP_SLUGS.join(', ')}`);
@@ -135,11 +166,82 @@ export class AppCredentialsService {
     const now = Date.now();
     if (cached && cached.expiresAt > now) {
       this.logger.info(`[AppCredentials] cache hit slug=${slug} v=${apiVersion} ttl=${Math.round((cached.expiresAt - now) / 1000)}s`);
+      this.recordHandout(slug, cached.config, now);
       return cached.config;
     }
 
+    const config = await this.resolveCredentials(slug, apiVersion);
+    for (const decision of config.prePull) {
+      this.logger.info(
+        `[AppCredentials] pre-pull decision slug=${slug} ${decision.kind}=${decision.catalogId} pull=${decision.pull}: ${decision.reason}`,
+      );
+      if (decision.pull) {
+        void this.maybeFirePrePull(decision.catalogId);
+      }
+    }
+
+    this.cache.set(cacheKey, { config, expiresAt: now + CACHE_TTL_MS });
+    this.recordHandout(slug, config, now);
+    return config;
+  }
+
+  /**
+   * What {@link getCredentials} would hand `slug` right now, with none of its side effects: no
+   * cache read or write, no pre-pull, and no handout record. The staleness check compares this
+   * against {@link lastHandout}, and a check must never be the thing that starts a download.
+   */
+  async previewCredentials(slug: string, apiVersion: ApiVersion = DEFAULT_API_VERSION): Promise<AppCredentialsConfig> {
+    if (!this.isSupported(slug)) {
+      throw new NotFoundException(`Unknown app slug: ${slug}. Supported: ${SUPPORTED_APP_SLUGS.join(', ')}`);
+    }
+    return this.resolveCredentials(slug, apiVersion);
+  }
+
+  /** The handout `slug` last received from this Hub, including before its last restart, or null when there is no record. */
+  async lastHandout(slug: string): Promise<RecordedHandout | null> {
+    if (!this.isSupported(slug)) {
+      return null;
+    }
+    await this.loadPersistedHandouts();
+    return this.handouts.get(slug) ?? null;
+  }
+
+  /** Let a pending record reach the disk, so an app that fetched just before shutdown is not read as stale after it. */
+  async onApplicationShutdown(): Promise<void> {
+    await this.handoutWrites;
+  }
+
+  private recordHandout(slug: AppSlug, config: AppCredentialsConfig, now: number): void {
+    this.handouts.set(slug, handoutRecord(config, new Date(now).toISOString()));
+    // Chained so writes land in order, and loaded first so the first fetch after a restart does not
+    // overwrite the other app's persisted record with a file holding only its own.
+    this.handoutWrites = this.handoutWrites
+      .then(async () => {
+        await this.loadPersistedHandouts();
+        await writeHandoutRecords(Object.fromEntries(this.handouts));
+      })
+      .catch((err) => {
+        this.logger.warn(`[AppCredentials] could not persist the ${slug} handout record: ${err instanceof Error ? err.message : String(err)}`);
+      });
+  }
+
+  private loadPersistedHandouts(): Promise<void> {
+    this.handoutsLoaded ??= readHandoutRecords().then((records) => {
+      for (const slug of SUPPORTED_APP_SLUGS) {
+        const record = records[slug];
+        // A record this process already made is newer than anything on disk.
+        if (record && !this.handouts.has(slug)) {
+          this.handouts.set(slug, record);
+        }
+      }
+    });
+    return this.handoutsLoaded;
+  }
+
+  private async resolveCredentials(slug: AppSlug, apiVersion: ApiVersion): Promise<AppCredentialsConfig> {
     const profile = await this.hardwareInspector.getProfile();
     const preferences = this.configurationService.getInferencePreferences();
+    const requirements = appInferenceRequirements(slug);
     // Shared with the app.env path (InferenceEnvResolver): resolves an unknown *or* an unavailable
     // `inferenceBackend` preference down to a healthy local Ollama before anyone considers cloud.
     const {
@@ -168,28 +270,32 @@ export class AppCredentialsService {
 
     const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     const preferredModelId = preferences.preferredModel;
-    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile);
-    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, profile, endpointHealth.modelsLoaded, backendType);
+    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile, slug, requirements);
     const embeddings =
       (preferences.preferredEmbeddingModel ? this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel) : null) ??
       this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama', profile);
 
-    const cloudProviders = this.cloudFallback.getEnabledProviders();
-    const cloudProvider = endpointReady ? undefined : cloudProviders[0];
+    // ─── Multi-Hub pooling: decided before the model and before cloud ────
+    // Once a peer is connected the app's requests go to this Hub's pool proxy, which serves whatever
+    // model ANY usable node lists. Choosing from this node's inventory alone is what handed core-4's
+    // apps its local gemma3:1b while core-6 served qwen3-coder:30b to them over the pool. Gated on
+    // the local path, like the resolver: a cloud-primary answer already has a working endpoint.
+    const poolRouting = await this.endpoints.resolvePoolRouting('AppCredentials');
+    const poolChoice = poolRouting?.spansPeers
+      ? selectPoolChatModel({
+          appSlug: slug,
+          inventory: poolRouting.inventory,
+          catalog: this.modelRegistry.getCatalog() ?? [],
+          preferredId: preferredModelId,
+          requirements,
+        })
+      : null;
+    const poolServesChat = Boolean(poolChoice?.engineId);
 
-    // Host-managed servers can expose an operator-chosen model that is not in the Hub catalog.
-    // A healthy endpoint with at least one served model is therefore ready even when there is no
-    // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
-    const chatModelReady =
-      (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false) ||
-      (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
-    if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady && backendType === 'ollama') {
-      void this.maybeFirePrePull(recommendedLlm.id);
-    }
-    const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, ollamaHealth.modelsLoaded, 'ollama') : false;
-    if (embeddings && !embeddingsReady && ollamaEndpointReady) {
-      void this.maybeFirePrePull(embeddings.id);
-    }
+    // A pool that serves the app is local inference too — peers this operator paired, over the
+    // tailnet — so cloud only becomes primary when neither this node nor the pool can serve chat.
+    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    const cloudProvider = endpointReady || poolServesChat ? undefined : cloudProviders[0];
 
     const keys = APP_ENV_KEYS[slug];
 
@@ -203,12 +309,52 @@ export class AppCredentialsService {
         apiKey = customKey;
       }
     }
-    let chatModelId = availableLlm?.backendModelId ?? null;
-    // vLLM, MTPLX, and mlx-dspark are all host-managed servers with no Hub pull registry — an
-    // operator can serve a model outside the catalog, so fall back to whatever it reports rather
-    // than leaving chatModelId empty.
-    if (!chatModelId && isHostServedBackend(backendType) && endpointHealth.modelsLoaded.length > 0) {
-      chatModelId = endpointHealth.modelsLoaded[0] ?? null;
+
+    let chatModel: CuratedModel | null;
+    let chatModelId: string | null;
+    let chatServedLocally = true;
+    let chatModelError: string | null = null;
+    let chatModelReady: boolean;
+    if (poolChoice) {
+      chatModel = poolChoice.model;
+      chatModelId = poolChoice.engineId;
+      chatServedLocally = poolChoice.servedLocally;
+      chatModelError = poolChoice.error;
+      chatModelReady = poolServesChat;
+      this.logger.info(
+        `[AppCredentials] ${slug}: pool handout chat=${chatModelId ?? 'none'} source=${poolChoice.source} ` +
+          `servedBy=${poolChoice.servedBy.join(',') || 'none'}` +
+          (poolChoice.preferredNote ? ` (${poolChoice.preferredNote})` : '') +
+          (poolChoice.rejected.length ? ` rejected=${poolChoice.rejected.map((r) => `${r.engineId}[${r.unmet.join('; ')}]`).join(',')}` : ''),
+      );
+    } else {
+      const localChat = this.resolveAvailableLlm(
+        candidates,
+        preferredModelId,
+        profile.tier,
+        profile,
+        endpointHealth.modelsLoaded,
+        backendType,
+        slug,
+        requirements,
+      );
+      chatModel = localChat.model;
+      chatModelId = localChat.model?.backendModelId ?? null;
+      // vLLM, MTPLX, and mlx-dspark are all host-managed servers with no Hub pull registry — an
+      // operator can serve a model outside the catalog, so fall back to whatever it reports rather
+      // than leaving chatModelId empty. A served model the catalog knows fails the app is skipped.
+      if (!chatModelId && isHostServedBackend(backendType)) {
+        chatModelId = endpointHealth.modelsLoaded.find((id) => this.servedModelVerdict(id, backendType, requirements) !== 'fails') ?? null;
+      }
+      // Host-managed servers can expose an operator-chosen model that is not in the Hub catalog.
+      // A healthy endpoint with at least one served model is therefore ready even when there is no
+      // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
+      chatModelReady =
+        (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false) ||
+        (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
+      if (!chatModelId && localChat.rejected.length > 0) {
+        chatModelError = describeNoSuitableChatModel({ appSlug: slug, requirements, rejected: localChat.rejected, scope: 'local' });
+      }
     }
     const embeddingsModelId = embeddings?.backendModelId ?? null;
 
@@ -217,7 +363,10 @@ export class AppCredentialsService {
       provider = 'cloud';
       endpointUrl = cloudProvider.baseUrl || endpointUrl;
       apiKey = cloudProvider.apiKey || apiKey;
-      chatModelId = cloudProvider.defaultModel || chatModelId;
+      if (cloudProvider.defaultModel) {
+        chatModelId = cloudProvider.defaultModel;
+        chatModelError = null;
+      }
     }
 
     // Always expose a native (non-OpenAI) Ollama URL, regardless of which backend is primary or
@@ -227,15 +376,9 @@ export class AppCredentialsService {
     // `api/embeddings`, `api/tags`) under its own prefix.
     let ollamaHost = this.ollamaBackend.getBaseUrl();
 
-    // ─── Multi-Hub pooling: app → this Hub's pool proxy ──────────────────
-    // The same override the generated-app.env path applies, through the same helper. It used to
-    // live only there, so an app that bootstraps its inference config over HTTP (CI-OpenClaw,
-    // CI-Hermes) was handed a direct backend URL and never used the pool, even on a node actively
-    // routing to peers. Gated on the local path for the same reason the resolver gates it: a
-    // cloud-primary answer means this node has no local inference to pool with, and the app
-    // already has a working endpoint.
-    if (provider !== 'cloud') {
-      const routed = await this.endpoints.routeThroughPool({ openAiBaseUrl: endpointUrl, ollamaHost }, 'AppCredentials');
+    const routedThroughPool = provider !== 'cloud' && poolRouting !== null;
+    if (routedThroughPool) {
+      const routed = this.endpoints.applyPoolRouting({ openAiBaseUrl: endpointUrl, ollamaHost }, poolRouting, 'AppCredentials');
       endpointUrl = routed.openAiBaseUrl;
       ollamaHost = routed.ollamaHost;
     }
@@ -248,70 +391,103 @@ export class AppCredentialsService {
     };
     if (chatModelId) {
       env[keys.model] = chatModelId;
+    } else if (chatModelError) {
+      env[INFERENCE_ERROR_ENV_KEY] = chatModelError;
+      this.logger.warn(`[AppCredentials] ${slug}: handing out no chat model: ${chatModelError}`);
     }
     if (embeddingsModelId) {
       env[keys.embeddings] = embeddingsModelId;
     }
     env.OLLAMA_HOST = ollamaHost;
 
-    // Hardware-aware default context window for the model the app will actually
-    // run locally. Cloud providers manage their own context, so this is only
-    // emitted on the direct-local-backend path. Apps cap their token budget / pass
-    // it as the backend's native `num_ctx` so they don't inherit an oversized
-    // memory-based default (e.g. 262144 on unified-memory APUs).
-    if (provider !== 'cloud' && availableLlm) {
-      const minContextLength = appMinContextLength(slug);
-      // Same measured-first sizing as InferenceEnvResolver; see `model-geometry.util`.
-      const cost = backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(availableLlm.backendModelId)) ?? null) : null;
-      const numCtx = recommendContextLength({
+    // Context window for the model the app will actually run. Cloud providers manage their own
+    // context, so this is only emitted on the local and pooled paths. Apps cap their token budget /
+    // pass it as the backend's native `num_ctx` so they don't inherit an oversized memory-based
+    // default (e.g. 262144 on unified-memory APUs). The model already meets the app's minimum, so
+    // the floor below is always reachable.
+    if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
+      // Same measured-first sizing as InferenceEnvResolver; see `model-geometry.util`. Only a
+      // model this node serves can be measured, so a pool-served one keeps the heuristic.
+      const cost =
+        chatServedLocally && backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatModel.backendModelId)) ?? null) : null;
+      const numCtx = handoutContextLength({
+        model: chatModel,
+        servedLocally: chatServedLocally,
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
-        modelFootprintMb: availableLlm.runtime.memoryFootprintMb,
-        modelContextWindow: availableLlm.runtime.contextWindow,
-        minContextLength,
+        minContextLength: requirements.minContextLength,
         kvMbPerToken: cost?.kvMbPerToken ?? null,
         weightMb: cost?.weightMb ?? null,
       });
       env[keys.numCtx] = String(numCtx);
-      // When an app declares a minimum the model cannot satisfy, the floor is
-      // capped to the model window and the app will refuse to start — surface it.
-      if (minContextLength && numCtx < minContextLength) {
-        this.logger.warn(
-          `[AppCredentials] ${slug}: resolved context window ${numCtx} is below the app's ` +
-            `${minContextLength}-token minimum (model ${availableLlm.runtime.contextWindow}-token window ` +
-            `caps the floor); ${slug} may refuse to start. Choose a larger-context model.`,
-        );
-      }
     }
 
-    // Always declare the per-app num_ctx key as Hub-managed — even when we don't
-    // emit a value (cloud provider selected, or no runnable local model) — so the
-    // X-Hub-Managed-Keys header tells consumers to strip any stale *_NUM_CTX left
-    // in the app's .env rather than honoring an outdated context cap.
-    const managedKeys = [...new Set([...Object.keys(env), ...cloudProviderManagedKeys()])];
-    if (!managedKeys.includes(keys.numCtx)) {
-      managedKeys.push(keys.numCtx);
-    }
+    // Declare num_ctx and the error key as Hub-managed even when no value is emitted, so the
+    // X-Hub-Managed-Keys header tells the bootstrap scripts to strip a stale one.
+    //
+    // The model key is declared only when this answer is authoritative: a model was chosen, or an
+    // unsuitable one was refused while this node's own backend was up to be judged. Withholding
+    // gemma3:1b must strip the previous run's DEFAULT_MODEL=gemma3:1b, which is the value this
+    // handout exists to replace. But a container that starts while Ollama is still coming up gets
+    // an empty inventory, and declaring the key then would erase a model that works a minute later
+    // and leave the app with none until its next restart.
+    const modelAnswerIsAuthoritative = chatModelId !== null || (chatModelError !== null && endpointReady);
+    const managedKeys = [
+      ...new Set([
+        ...Object.keys(env),
+        ...cloudProviderManagedKeys(),
+        ...(modelAnswerIsAuthoritative ? [keys.model] : []),
+        keys.numCtx,
+        INFERENCE_ERROR_ENV_KEY,
+      ]),
+    ];
 
+    const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, ollamaHealth.modelsLoaded, 'ollama') : false;
+    const prePull = [
+      decideModelPrePull({
+        kind: 'chat',
+        model: recommendedLlm,
+        backendType,
+        endpointReady,
+        cloudPrimary: provider === 'cloud',
+        installedLocally: recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false,
+        poolServedBy: poolRouting && recommendedLlm ? nodesServing(poolRouting.inventory, recommendedLlm.backendModelId, recommendedLlm.backend) : [],
+        poolHandout: routedThroughPool ? (poolChoice?.engineId ?? null) : null,
+        operatorPreferred: Boolean(recommendedLlm && preferredModelId && recommendedLlm.id === preferredModelId),
+        requirements,
+      }),
+      decideModelPrePull({
+        kind: 'embeddings',
+        model: embeddings ?? null,
+        backendType: 'ollama',
+        endpointReady: ollamaEndpointReady,
+        cloudPrimary: false,
+        installedLocally: embeddingsReady,
+        poolServedBy: poolRouting && embeddings ? nodesServing(poolRouting.inventory, embeddings.backendModelId, embeddings.backend) : [],
+      }),
+    ].filter((decision): decision is PrePullDecision => decision !== null);
+
+    const reportedReady = endpointReady || (routedThroughPool && poolServesChat);
     this.logger.info(
-      `[AppCredentials] resolve slug=${slug} v=${apiVersion} provider=${provider} endpoint=${endpointUrl} endpointReady=${endpointReady} ` +
-        `chat=${chatModelId ?? 'none'} chatReady=${chatModelReady} embeddings=${embeddingsModelId ?? 'none'}`,
+      `[AppCredentials] resolve slug=${slug} v=${apiVersion} provider=${provider} endpoint=${endpointUrl} endpointReady=${reportedReady} ` +
+        `pool=${routedThroughPool} chat=${chatModelId ?? 'none'} chatReady=${chatModelReady} embeddings=${embeddingsModelId ?? 'none'}`,
     );
 
-    const config: AppCredentialsConfig = {
+    return {
       app: slug,
       apiVersion,
       endpointUrl,
-      endpointReady,
+      endpointReady: reportedReady,
       chatModelId,
       embeddingsModelId,
       chatModelReady,
       provider,
+      routedThroughPool,
+      chatModelServedBy: routedThroughPool && poolChoice ? poolChoice.servedBy : [],
+      chatModelError: chatModelId ? null : chatModelError,
+      prePull,
       env,
       managedKeys,
     };
-
-    this.cache.set(cacheKey, { config, expiresAt: now + CACHE_TTL_MS });
-    return config;
   }
 
   serializeAsDotenv(config: AppCredentialsConfig): string {
@@ -326,31 +502,37 @@ export class AppCredentialsService {
   }
 
   /**
-   * Resolve the default LLM for a sibling app. Honors the user's preferred model (set during AI
-   * setup) when it is an LLM that is runnable on the current hardware — otherwise falls back to the
-   * top hardware-recommended model (candidates[0], biggest that fits at q4+). This is what makes the
-   * onboarding "preferred model" selection actually drive what Hermes/OpenClaw default to.
+   * The model this node would pull for a sibling app. Honors the user's preferred model (set during
+   * AI setup) when it is an LLM that is runnable on the current hardware and meets the app's
+   * requirements — otherwise falls back to the top hardware-recommended model that meets them.
+   * Pulling a model the app would refuse spends the disk for nothing.
    */
   private resolveRecommendedLlm(
     candidates: CuratedModel[],
     preferredId: string | null,
     tier: HardwareTier,
     profile: HardwareProfile,
+    slug: AppSlug,
+    requirements: AppInferenceRequirements,
   ): CuratedModel | null {
+    const suitable = (model: CuratedModel) => checkModelRequirements(model, requirements).verdict !== 'fails';
     if (preferredId) {
       const fromCandidates = candidates.find((m) => m.id === preferredId);
-      if (fromCandidates) return fromCandidates;
       const curated = this.modelRegistry.getCuratedModel(preferredId);
       const hardwareModels =
         this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? this.modelRegistry.getModelsForTier(tier);
-      if (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId)) {
-        return curated;
+      const preferred =
+        fromCandidates ?? (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId) ? curated : undefined);
+      if (preferred && suitable(preferred)) return preferred;
+      if (preferred) {
+        this.logger.warn(`[AppBootstrap] preferred model ${preferredId} does not meet ${slug}'s requirements; recommending one that does.`);
+      } else {
+        this.logger.warn(
+          `[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}/platform=${profile.os?.platform ?? 'unknown'}; falling back to recommended.`,
+        );
       }
-      this.logger.warn(
-        `[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}/platform=${profile.os?.platform ?? 'unknown'}; falling back to recommended.`,
-      );
     }
-    return candidates[0] ?? null;
+    return candidates.find((m) => m.modality === 'llm' && suitable(m)) ?? null;
   }
 
   private resolveAvailableLlm(
@@ -360,34 +542,55 @@ export class AppCredentialsService {
     profile: HardwareProfile,
     modelsLoaded: string[],
     backendType: InferenceBackendType,
-  ): CuratedModel | null {
+    slug: AppSlug,
+    requirements: AppInferenceRequirements,
+  ): LocalChatSelection {
+    const rejected: LocalChatSelection['rejected'] = [];
     const pickIfAvailable = (model: CuratedModel | null | undefined): CuratedModel | null => {
       if (!model || model.modality !== 'llm') return null;
-      return this.isCuratedModelAvailable(model, modelsLoaded, backendType) ? model : null;
+      if (!this.isCuratedModelAvailable(model, modelsLoaded, backendType)) return null;
+      const check = checkModelRequirements(model, requirements);
+      if (check.verdict === 'fails') {
+        if (!rejected.some((r) => r.engineId === model.backendModelId)) {
+          rejected.push({ engineId: model.backendModelId, unmet: check.unmet });
+        }
+        return null;
+      }
+      return model;
     };
 
     if (preferredId) {
       const fromCandidates = candidates.find((m) => m.id === preferredId);
       const preferred = pickIfAvailable(fromCandidates);
-      if (preferred) return preferred;
+      if (preferred) return { model: preferred, rejected };
 
       const curated = this.modelRegistry.getCuratedModel(preferredId);
       const hardwareModels =
         this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? this.modelRegistry.getModelsForTier(tier);
       if (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId)) {
         const preferredCurated = pickIfAvailable(curated);
-        if (preferredCurated) return preferredCurated;
+        if (preferredCurated) return { model: preferredCurated, rejected };
       }
 
-      this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not available on ${backendType}; falling back to a served model.`);
+      this.logger.warn(
+        `[AppBootstrap] preferred model ${preferredId} is not available to ${slug} on ${backendType}; falling back to a served model.`,
+      );
     }
 
     for (const candidate of candidates) {
       const available = pickIfAvailable(candidate);
-      if (available) return available;
+      if (available) return { model: available, rejected };
     }
 
-    return null;
+    return { model: null, rejected };
+  }
+
+  /** The catalog's verdict on a host-served engine id, or `unverified` when no catalog row matches it. */
+  private servedModelVerdict(engineId: string, backendType: InferenceBackendType, requirements: AppInferenceRequirements) {
+    const row = (this.modelRegistry.getCatalog() ?? []).find(
+      (m) => m.backend === backendType && m.modality === 'llm' && isServedModelForCatalog(m, [engineId]),
+    );
+    return checkModelRequirements(row ?? null, requirements).verdict;
   }
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {

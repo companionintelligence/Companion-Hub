@@ -346,12 +346,21 @@ carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_K
 **not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
 
 ```bash
-cihub api-key create --name "laptop"   # operator keys carry the 'mcp' scope
-cihub api-key list                     # id, name, scopes, capability, prefix
+cihub api-key create --name "laptop"                     # operator keys carry the 'mcp' scope
+cihub api-key create --name "fleet-qa" --scope qa:read   # read-only test key (see below)
+cihub api-key list                                       # id, name, scopes, capability, prefix
 ```
 
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
 **Settings → Security**.
+
+`--scope` and `--scopes` are the same flag; give one, not both. A `qa:read` key reads pool status, the pool routing log,
+one app's status (without its config), and the install queue. Every other GET answers it 403, and any write
+answers 401, because the Hub only looks the key up on a read.
+Mint it for a test harness or a monitor instead of handing out the device key. It must be the only
+scope on its key, and it is stored as `read`. A Hub built before `qa:read` existed accepts the row
+but authenticates nothing with it. See
+[Reading these without an operator credential](hub-pool.md#reading-these-without-an-operator-credential).
 
 `create` also accepts `--capability read|write|full`, which decides what the key may do on the
 surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
@@ -507,6 +516,7 @@ authentication modes are listed — there is no `pool pins` subcommand to keep i
 | `Pins` | Each pin with its target resolved, and whether it can apply right now |
 | `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
 | `Ceiling` / `Prompt ceilings` | Only when set: this node's prompt ceiling (and whether the `.env` sets it), and each peer's advertised one |
+| `Measured speed` | Only once something has been timed: prompt and output rates per node, engine and model, with each peer shown as timed here and as it reported itself |
 | `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
 
 The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
@@ -1163,7 +1173,7 @@ IPMI host, `physical`) or you pass `--i-have-console`. The refusal says which in
 ## Maintenance
 
 ```bash
-cihub doctor [env]         # validate env files, Docker access, and bind mounts
+cihub doctor [env]         # validate env files, Docker access, bind mounts, and registration health
 cihub clean [env] [--yes]  # remove generated host-state files for one environment
 cihub reset [env] [--yes]  # remove runtime state for one environment
 cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
@@ -1181,7 +1191,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 
 | Command | Exits `1` when |
 | --- | --- |
-| `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
+| `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, a network/bridge check that ran and failed, a registered Hub with no operator, or a Hub `degraded` for a reason only pairing clears (`portal_rejected`, `tunnel_token_missing`). Registration health comes from `GET /api/registration/phase`, which sends no check-in; see [`portal-check-in.md`](portal-check-in.md) |
 | `fleet backends` / `install` / `update` / `apps` / `rdp` | Any node failed. It is counted per node, so 13 of 14 is still a failure. For `rdp --execute`, "failed" includes a node whose 3389 is still reachable off the tailnet after the install |
 | `fleet backends` / `install` / `update` / `apps` / `cert` | Any node failed. It is counted per node, so 13 of 14 is still a failure. For `cert`, a node that could not be measured at all, or where `tailscale cert` ran and the store still lacks the file; a node skipped with a reason is not a failure |
 | `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |

@@ -132,13 +132,18 @@ fn clear_tunnel_token_keeps_dir_with_siblings() {
 }
 
 #[test]
-fn merge_compose_profiles_adds_cloudflare_for_sibling_tunnel_token() {
+fn merge_compose_profiles_adds_cloudflare_for_registered_sibling_tunnel() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let data_dir = tempdir.path().join("hub");
     std::fs::create_dir_all(&data_dir).expect("mkdir hub");
     let token_path = tunnel_token_path_for(&data_dir);
     std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
     std::fs::write(&token_path, b"test-token").expect("write token");
+    std::fs::write(
+        tunnel_dir_for(&data_dir).join("registration.json"),
+        br#"{"tunnelId":"tunnel-1","writtenAt":"2026-09-17T00:00:00.000Z"}"#,
+    )
+    .expect("write registration marker");
 
     let mut env = std::collections::HashMap::new();
     env.insert(
@@ -149,6 +154,6 @@ fn merge_compose_profiles_adds_cloudflare_for_sibling_tunnel_token() {
     let profiles = merge_compose_profiles(&env, false);
     assert!(
         profiles.split(',').any(|p| p == "cloudflare"),
-        "expected cloudflare profile for sibling token, got {profiles}"
+        "expected cloudflare profile for registered sibling tunnel, got {profiles}"
     );
 }

@@ -10,7 +10,7 @@ import { PoolProxyService } from './hub-pool-proxy.service';
  *
  * `HubPoolController` already answers `GET api/version` / `GET api/tags` (full path
  * `/api/inference/pool/api/version` etc.), and that is the path every Hub-*generated* credential
- * points an app at (`InferenceEndpointService.routeThroughPool()` → `HERMES_OPENAI_BASE_URL` /
+ * points an app at (`InferenceEndpointService.applyPoolRouting()` → `HERMES_OPENAI_BASE_URL` /
  * `OLLAMA_HOST`, consumed by `CI-Hermes`'s `native_root()` in `ollama_native_adapter.py`). For an
  * app that bootstraps through the Hub, that path was always reachable.
  *

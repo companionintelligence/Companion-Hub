@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { RegistrationService } from '../registration.service';
+import { PORTAL_REJECTION_CONFIRM_MS, RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
@@ -13,6 +13,9 @@ import { TailscaleService } from '../../tailscale/tailscale.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
+import path from 'node:path';
+import { vol } from 'memfs';
+import { TUNNEL_DIR } from '@/common/constants';
 import { writePairingAppCheck } from '../../app-lifecycle/registration-recovery-state';
 
 vi.mock('systeminformation');
@@ -21,6 +24,29 @@ vi.mock('../../app-lifecycle/registration-recovery-state', async (importOriginal
   ...(await importOriginal<typeof import('../../app-lifecycle/registration-recovery-state')>()),
   writePairingAppCheck: vi.fn(),
 }));
+
+/** Runs `fn` as a check-in `ms` from now sees it: `Date.now()` moved on, and put back afterwards. */
+async function later<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now + ms);
+  try {
+    return await fn();
+  } finally {
+    clock.mockRestore();
+  }
+}
+
+const TOKEN_PATH = path.join(TUNNEL_DIR, 'token');
+const REGISTRATION_MARKER_PATH = path.join(TUNNEL_DIR, 'registration.json');
+const LEFTOVER_MARKER_PATH = path.join(TUNNEL_DIR, 'leftover.json');
+
+function cloudflaredToken(tunnelId: string): string {
+  return Buffer.from(JSON.stringify({ a: 'account-tag', t: tunnelId, s: 'tunnel-secret' })).toString('base64');
+}
+
+function readJson(filePath: string): Record<string, unknown> {
+  return JSON.parse(vol.readFileSync(filePath, 'utf-8') as string);
+}
 
 describe('RegistrationService', () => {
   let service: RegistrationService;
@@ -140,6 +166,12 @@ describe('RegistrationService', () => {
       await expect(service.isRegisteredAndServing()).resolves.toBe(false);
       // Still registered — only the callback guard treats it differently.
       await expect(service.isRegistered()).resolves.toBe(true);
+    });
+
+    it('is false for a Hub whose device key Portal rejects, so the callback can re-pair it', async () => {
+      setPhase('degraded', ['portal_rejected']);
+
+      await expect(service.isRegisteredAndServing()).resolves.toBe(false);
     });
 
     it('is true for a Hub degraded for any other reason', async () => {
@@ -300,6 +332,49 @@ describe('RegistrationService', () => {
       await service.setPhase('locally_ready');
       await service.setPhase('unregistered');
       expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+  });
+
+  describe('getRegistrationPhaseReport', () => {
+    it('reports the phase without sending a check-in, where every status read past the throttle sends one', async () => {
+      // Fleet preflight polled `GET /registration/status` on 16 Hubs and wrote Portal's `last_seen`
+      // on every registered one. Observation must not change what it observes.
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: 'k' } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockClear();
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockClear();
+      const validate = vi.spyOn(service as any, 'validateRegistrationWithCloud').mockResolvedValue(undefined);
+
+      const report = service.getRegistrationPhaseReport();
+
+      expect(report).toEqual({
+        phase: 'locally_ready',
+        degradedReasons: [],
+        registered: true,
+        lastCheckIn: null,
+        consecutiveCheckInFailures: 0,
+      });
+      expect(validate).not.toHaveBeenCalled();
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      expect(deviceRegistrationRepository.getFirstDeviceRegistration).not.toHaveBeenCalled();
+      expect(deviceRegistrationRepository.hasAnyDeviceRegistration).not.toHaveBeenCalled();
+
+      // The contrast: the live status read does send one.
+      await service.getLiveRegistrationStatus();
+      expect(validate).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns a copy, so a caller cannot edit what the next reader sees', () => {
+      (service as any).lastCheckIn = { at: '2026-09-17T09:15:00.000Z', httpStatus: 401, code: 'UNAUTHORIZED', error: 'HTTP 401: Invalid Device Key' };
+
+      const report = service.getRegistrationPhaseReport();
+      (report.lastCheckIn as { httpStatus: number }).httpStatus = 200;
+
+      expect(service.getRegistrationPhaseReport().lastCheckIn?.httpStatus).toBe(401);
     });
   });
 
@@ -526,6 +601,79 @@ describe('RegistrationService', () => {
       expect(['locally_ready', 'publicly_ready']).toContain(status.phase);
       expect(status.registered).toBe(true);
     });
+
+    it('clears portal_rejected when a re-pair into the same organization lands, instead of waiting for the next check-in', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-existing' } as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['portal_rejected']);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({
+        id: 'org-existing',
+        slug: 'existing',
+        name: 'Existing Org',
+        tunnelId: 't-old',
+        tunnelToken: 'tok-old',
+        hubSubdomain: 'hub-existing',
+      } as any);
+
+      await (service as any).setupOrganizationInfrastructure('org-existing', {
+        organization_name: 'Existing Org',
+        tunnel_id: 't-new',
+        tunnel_token: 'tok-new',
+        subdomain: 'hub-existing',
+        slug: 'existing',
+      });
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'locally_ready', degradedReasons: [], registered: true });
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
+
+    it("replaces the previous organization's row on a re-pair into another, so boot recovery cannot restore the old tunnel token", async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-old' } as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['portal_rejected']);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+
+      await (service as any).setupOrganizationInfrastructure('org-new', {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'device1-neworg',
+        slug: 'neworg',
+        domain: 'example.com',
+      });
+
+      expect(deviceRegistrationRepository.deleteAll).toHaveBeenCalledTimes(1);
+      expect(deviceRegistrationRepository.deleteAll.mock.invocationCallOrder[0]).toBeLessThan(
+        deviceRegistrationRepository.createDeviceRegistration.mock.invocationCallOrder[0] ?? 0,
+      );
+    });
+
+    it('leaves existing rows alone when the Hub was not re-pairing, so an unauthenticated register call cannot delete a serving registration', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-old' } as any);
+      await service.setPhase('locally_ready');
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+      configService.setDomain.mockResolvedValue(undefined);
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+
+      await (service as any).setupOrganizationInfrastructure('org-new', {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'device1-neworg',
+        slug: 'neworg',
+        domain: 'example.com',
+      });
+
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
   });
 
   describe('pairDevice', () => {
@@ -668,6 +816,53 @@ describe('RegistrationService', () => {
       expect(result.message).toBe('Portal returned incomplete registration data.');
     });
 
+    it('passes the Portal refusal code on with its message', async () => {
+      // The registration page picks its guidance by this code: a refused re-pair
+      // opens "Reconnect this Hub" instead of showing the Portal's raw text.
+      mockedAxios.post.mockResolvedValue({
+        status: 403,
+        statusText: 'Forbidden',
+        data: {
+          error: 'That device is already paired. Send its current device key to re-pair it, or ask an owner or admin to re-register it first.',
+          code: 'DEVICE_PROOF_REQUIRED',
+        },
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result).toEqual({
+        success: false,
+        message: 'That device is already paired. Send its current device key to re-pair it, or ask an owner or admin to re-register it first.',
+        code: 'DEVICE_PROOF_REQUIRED',
+      });
+    });
+
+    it('passes the code on from a 200 answer that reports failure', async () => {
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: { success: false, error: 'This code was made for another device.', code: 'PAIRING_CODE_WRONG_DEVICE' },
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result).toEqual({ success: false, message: 'This code was made for another device.', code: 'PAIRING_CODE_WRONG_DEVICE' });
+    });
+
+    it('reports no code when the refusal carries none or a non-string one', async () => {
+      // Older Portals and proxies in front of the Portal answer without a code; the page falls back to the message.
+      mockedAxios.post.mockResolvedValueOnce({ status: 409, data: { error: 'Already registered elsewhere' } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 409, data: { error: 'Already registered elsewhere', code: 42 } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 502, data: '<html>Bad gateway</html>' } as any);
+
+      const withoutCode = await service.pairDevice('ABC123');
+      const numericCode = await service.pairDevice('ABC123');
+      const htmlBody = await service.pairDevice('ABC123');
+
+      expect(withoutCode).not.toHaveProperty('code');
+      expect(numericCode).not.toHaveProperty('code');
+      expect(htmlBody).toEqual({ success: false, message: 'Pairing failed: HTTP 502' });
+    });
+
     it('returns error when pairing code is invalid (Portal returns error)', async () => {
       mockedAxios.post.mockResolvedValue({
         status: 400,
@@ -710,6 +905,119 @@ describe('RegistrationService', () => {
       expect(result.message).toBe('Device is already registered.');
     });
 
+    it('lets a Hub whose device key Portal rejects pair again without resetting, since no retry can revive the key', async () => {
+      // Five fleet Hubs sat here for up to a week: registered locally, key dead at Portal, and
+      // `pairDevice` refusing them as "already registered", so the only way back was a reset that
+      // deletes the tunnel token.
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'degraded',
+        degradedReasons: '["portal_rejected"]',
+      } as any);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      (service as any)._currentPhase = 'degraded';
+      (service as any)._degradedReasons = ['portal_rejected'];
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-1',
+          organization_name: 'Org',
+          slug: 'org',
+          subdomain: 'hub-org',
+          tunnel_id: 'tunnel-1',
+          tunnel_token: 'token-1',
+          api_key: 'fresh-key',
+          domain: 'companionintelligence.com',
+        },
+      } as any);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
+
+      expect(result.success).toBe(true);
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+      setupSpy.mockRestore();
+    });
+
+    it('refuses to re-pair a registered Hub for a caller nobody authenticated, who could move it into their own organization', async () => {
+      // The route is unauthenticated for first pairing, and this Hub sends its own device key as proof
+      // of possession, so Portal would accept a code from any organization the caller belongs to.
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'degraded',
+        degradedReasons: '["portal_rejected"]',
+      } as any);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      (service as any)._currentPhase = 'degraded';
+      (service as any)._degradedReasons = ['portal_rejected'];
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('cihub register --code');
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      expect(configService.setUserSettings).not.toHaveBeenCalled();
+    });
+
+    it('lets an authenticated caller re-pair while Portal is still rejecting the key, before the rejection is confirmed', async () => {
+      // The documented remedy is "update, then `cihub register --code`". The update restarts the Hub,
+      // which restarts the ten-minute confirmation, so without this the remedy is refused on arrival.
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        provisioningPhase: 'degraded',
+        degradedReasons: '["cloud_validation_failed"]',
+      } as any);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      (service as any)._currentPhase = 'degraded';
+      (service as any)._degradedReasons = ['cloud_validation_failed'];
+      mockedAxios.post.mockResolvedValueOnce({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().degradedReasons).toEqual(['cloud_validation_failed']);
+
+      // Not for a stranger, and not for anyone while Portal accepts the key.
+      await expect(service.pairDevice('ABC123')).resolves.toMatchObject({ success: false, message: 'Device is already registered.' });
+
+      mockedAxios.post.mockResolvedValueOnce({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-1',
+          organization_name: 'Org',
+          slug: 'org',
+          subdomain: 'hub-org',
+          tunnel_id: 'tunnel-1',
+          tunnel_token: 'token-1',
+          api_key: 'fresh-key',
+          domain: 'companionintelligence.com',
+        },
+      } as any);
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+
+      const result = await service.pairDevice('ABC123', { callerAuthenticated: true });
+
+      expect(result.success).toBe(true);
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'fresh-key' });
+      setupSpy.mockRestore();
+    });
+
+    it('refuses an authenticated re-pair of a Hub Portal accepts, which is what reset is for', async () => {
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1', provisioningPhase: 'publicly_ready' } as any);
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      (service as any)._currentPhase = 'publicly_ready';
+
+      await expect(service.pairDevice('ABC123', { callerAuthenticated: true })).resolves.toMatchObject({
+        success: false,
+        message: 'Device is already registered.',
+      });
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
     it('returns error when Portal is unreachable', async () => {
       // Shaped like a real axios transport failure: `validateStatus` accepts every
       // status, so a thrown error here never carries a `response`.
@@ -748,6 +1056,61 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toBe('Portal returned incomplete registration data.');
+    });
+  });
+
+  describe('probePortalDeviceActive', () => {
+    const probe = () => (service as any).probePortalDeviceActive('test-device', 'http://cloud.api/') as Promise<boolean | null>;
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: 'stored-device-key' } as any);
+    });
+
+    it('asks nothing when the Hub holds no device key', async () => {
+      // A keyless call can only be refused, and the Portal offers no keyless "does this device exist" lookup.
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: '' } as any);
+
+      await expect(probe()).resolves.toBeNull();
+
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api' } as any);
+
+      await expect(probe()).resolves.toBeNull();
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('asks device WhoIs with the key, never check-in, so probing does not mark the device as seen', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 403, data: { error: 'Not a member', code: 'GRANT_DENIED' } } as any);
+
+      await expect(probe()).resolves.toBe(true);
+
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      const [url, body, options] = mockedAxios.post.mock.calls[0] as [string, unknown, { headers: Record<string, string> }];
+      expect(url).toBe('http://cloud.api/api/whois');
+      expect(url).not.toContain('check-in');
+      expect(body).toEqual({ subject: 'ci-hub-device-key-probe', appIds: [], surface: 'hub' });
+      expect(options.headers).toMatchObject({ 'x-device-key': 'stored-device-key' });
+    });
+
+    it('counts every answer that got past device authentication as an active device', async () => {
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { organizations: [] } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 409, data: { error: 'Name the organization', code: 'ORGANIZATION_REQUIRED' } } as any);
+
+      await expect(probe()).resolves.toBe(true);
+      await expect(probe()).resolves.toBe(true);
+    });
+
+    it('does not know when the key is refused, the refusal is not from WhoIs, or the Portal is unreachable', async () => {
+      mockedAxios.post.mockResolvedValueOnce({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 403, data: '<html>Blocked</html>' } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: '<html>Sign in to this network</html>' } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { success: true } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { success: false } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 503, data: { error: 'WhoIs unavailable', code: 'UNAVAILABLE' } } as any);
+      mockedAxios.post.mockRejectedValueOnce(Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true }));
+
+      for (let i = 0; i < 7; i++) {
+        await expect(probe()).resolves.toBeNull();
+      }
     });
   });
 
@@ -1167,17 +1530,6 @@ describe('RegistrationService', () => {
       expect(service.getRegistrationStatus().phase).toBe('locally_ready');
     });
 
-    it('leaves the drift-detection probe as a bare device_id, so it can never blank a reported field', async () => {
-      // `probePortalDeviceActive` hits the same endpoint while the Hub is locally unregistered.
-      // Portal treats an absent field as "unchanged"; if this probe ever grew status fields it
-      // would overwrite a real report with whatever an unregistered Hub happens to know.
-      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
-
-      await (service as any).probePortalDeviceActive('test-device', 'http://cloud.api');
-
-      expect(mockedAxios.post.mock.calls[0]?.[1]).toEqual({ device_id: 'test-device' });
-    });
-
     it('transitions to degraded when tunnel token is missing', async () => {
       // Manually set phase to locally_ready
       await service.setPhase('paired');
@@ -1216,7 +1568,34 @@ describe('RegistrationService', () => {
       expect(status.degradedReasons).toContain('cloud_validation_failed');
     });
 
+    it('reports portal_rejected once Portal has kept rejecting the key, where it used to say "wait" for a week', async () => {
+      // Measured 2026-09-17: core-14, beta-1, beta-3-glass and liam-demo all got this 401 from
+      // 05:45Z on 2026-09-16 and reported `cloud_validation_failed`, a reason that says "wait".
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      await service.setPhase('publicly_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      // Visible at once to anyone who looks, even before it is acted on.
+      expect(service.getRegistrationPhaseReport().lastCheckIn).toMatchObject({
+        httpStatus: 401,
+        code: 'UNAUTHORIZED',
+        error: 'HTTP 401: Invalid Device Key',
+      });
+
+      await later(PORTAL_REJECTION_CONFIRM_MS, () => (service as any).validateRegistrationWithCloud());
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['portal_rejected'], registered: true });
+    });
+
     it('clears local registration immediately on 400 DEVICE_NOT_ACTIVE (device removed from Portal)', async () => {
+      // The one coded answer that is a removal, and the one the Settings removal watch waits for. It
+      // is not held back by the confirmation window below: Portal names the device, not just the key.
       await service.setPhase('paired');
       await service.setPhase('provisioning');
       await service.setPhase('locally_ready');
@@ -1234,6 +1613,144 @@ describe('RegistrationService', () => {
       } finally {
         service.onApplicationShutdown();
       }
+    });
+
+    it('does not tell every Hub to pair again over a Portal database blip, which answers the same 401', async () => {
+      // CI-Portal `deviceAuthMiddleware`: `!result.ok || !result.data` → 401 "Invalid Device Key", so a
+      // D1 read error inside `findByApiKey` is indistinguishable from a removed device.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+      // Status polling during the blip checks in every 30 s.
+      await (service as any).validateRegistrationWithCloud();
+      await later(30_000, () => (service as any).validateRegistrationWithCloud());
+      await later(60_000, () => (service as any).validateRegistrationWithCloud());
+
+      expect(service.getRegistrationStatus().degradedReasons).not.toContain('portal_rejected');
+
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { status: 'OK' } } as any);
+      mockedAxios.head.mockResolvedValue({ status: 200 } as any);
+      await later(90_000, () => (service as any).validateRegistrationWithCloud());
+
+      // The blip is forgotten: a 401 after it starts a new ten minutes rather than confirming the old one.
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+      await later(PORTAL_REJECTION_CONFIRM_MS, () => (service as any).validateRegistrationWithCloud());
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'locally_ready', degradedReasons: [], registered: true });
+    });
+
+    it('keeps the registration and tunnel token when Portal refuses the key, so a Portal incident is not a public outage', async () => {
+      // A refused key is not a removal. Portal answers 401 for a device it removed, for a key a later
+      // pair rotated, and for a D1 read error alike, so the Hub degrades and goes on serving. Only the
+      // coded DEVICE_NOT_ACTIVE above clears the registration.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+      const resetSpy = vi.spyOn(service, 'resetRegistration');
+
+      await (service as any).validateRegistrationWithCloud();
+      await later(PORTAL_REJECTION_CONFIRM_MS, () => (service as any).validateRegistrationWithCloud());
+
+      expect(service.getRegistrationStatus().degradedReasons).toEqual(['portal_rejected']);
+      expect(resetSpy).not.toHaveBeenCalled();
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
+
+    it('never unpairs over a check-in body Portal refused, which is a schema mismatch and not a removal', async () => {
+      // CI-Portal's CheckIn.ts: a vocabulary mismatch "makes every healthy Hub in the fleet unpair
+      // itself, one per hourly check-in". It stays a transient failure.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { success: false, error: { name: 'ZodError' } } } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+
+      await (service as any).validateRegistrationWithCloud();
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['cloud_validation_failed'], registered: true });
+      expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('refused the check-in body'));
+    });
+
+    it('does not relabel a rejected key as cloud_validation_failed when later check-ins only time out', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+      await (service as any).validateRegistrationWithCloud();
+      await later(PORTAL_REJECTION_CONFIRM_MS, () => (service as any).validateRegistrationWithCloud());
+      expect(service.getRegistrationStatus().degradedReasons).toEqual(['portal_rejected']);
+
+      mockedAxios.post.mockRejectedValue(new Error('timeout of 5000ms exceeded'));
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await (service as any).validateRegistrationWithCloud();
+      }
+
+      expect(service.getRegistrationStatus().degradedReasons).toEqual(['portal_rejected']);
+      expect(service.getRegistrationPhaseReport()).toMatchObject({
+        consecutiveCheckInFailures: 4,
+        lastCheckIn: { httpStatus: null, code: null, error: 'timeout of 5000ms exceeded' },
+      });
+    });
+
+    it('does not rewrite the row or page the agent when a check-in re-asserts the same degraded state', async () => {
+      // core-4 logged "Provisioning phase: degraded → degraded" and persisted it on every one of 130
+      // failed check-ins in a row.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['portal_rejected']);
+      deviceRegistrationRepository.updateProvisioningState.mockClear();
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(deviceRegistrationRepository.updateProvisioningState).not.toHaveBeenCalled();
+      expect(service.getRegistrationStatus().degradedReasons).toEqual(['portal_rejected']);
+
+      // A different reason is a real change, and is still written.
+      await service.setPhase('degraded', ['tunnel_token_missing']);
+      expect(deviceRegistrationRepository.updateProvisioningState).toHaveBeenCalledWith('org-1', 'degraded', ['tunnel_token_missing']);
+    });
+
+    it('recovers from portal_rejected once a check-in passes with a fresh key, and records the success', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['portal_rejected']);
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { status: 'OK' } } as any);
+      mockedAxios.head.mockResolvedValue({ status: 200 } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      expect(service.getRegistrationPhaseReport().lastCheckIn).toMatchObject({ httpStatus: 200, code: null, error: null });
+    });
+
+    // The drift probe asks WhoIs, not check-in (#1473), so a 401 is not a verdict: the Portal
+    // answers a revoked key, a deleted device and a mistyped key alike. That is the same
+    // conservative reading this branch gives Portal 401s on the check-in path, where
+    // `classifyCheckInResponse` still calls one a rejection and the 10-minute wait confirms it.
+    it('reads a 401 from the drift probe as "unknown", not as a verdict', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 401, data: { error: 'Unauthorized', code: 'UNAUTHORIZED' } } as any);
+
+      await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBeNull();
     });
 
     describe('DEVICE_NOT_ACTIVE for a registration replaced while the check-in was in flight', () => {
@@ -1401,9 +1918,13 @@ describe('RegistrationService', () => {
       expect(service.getRegistrationStatus().phase).toBe('degraded');
     });
 
-    it('treats only the coded 400 as an inactive device in the drift probe', async () => {
+    // The drift probe used to ask check-in, where a coded 400 meant an inactive
+    // device. It now asks WhoIs, which has no such answer, so neither 400 is
+    // conclusive. Only `true` ever raised a drift signal, so nothing regressed.
+    // Check-in itself still honours the coded 400 — see the sibling cases above.
+    it('treats no 400 as conclusive in the drift probe, coded or not', async () => {
       mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { code: 'DEVICE_NOT_ACTIVE' } } as any);
-      await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBe(false);
+      await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBeNull();
 
       mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { success: false } } as any);
       await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBeNull();
@@ -1423,6 +1944,391 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(status.phase).toBe('locally_ready');
       expect(status.degradedReasons).toEqual([]);
+    });
+  });
+
+  describe('tunnel follows the registration', () => {
+    const registeredRow = {
+      id: 'org-1',
+      name: 'Org',
+      slug: 'org',
+      hubSubdomain: 'hub-org',
+      tunnelId: 'tunnel-registered',
+      tunnelToken: 'registered-token',
+      provisioningPhase: 'locally_ready',
+      degradedReasons: '[]',
+    };
+
+    beforeEach(() => {
+      vol.mkdirSync(TUNNEL_DIR, { recursive: true });
+      cloudflareClientService.stopTunnel.mockResolvedValue(true);
+      cloudflareClientService.loadTunnelTokenFromDisk.mockResolvedValue(true);
+      cloudflareClientService.ensureCloudflaredRunning.mockResolvedValue(true);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      deviceRegistrationRepository.deleteAll.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      service.onApplicationShutdown();
+    });
+
+    const expectConnectorNeverStarted = () => {
+      expect(cloudflareClientService.ensureCloudflaredRunning).not.toHaveBeenCalled();
+      expect(cloudflareClientService.initializeTunnel).not.toHaveBeenCalled();
+      expect(cloudflareClientService.loadTunnelTokenFromDisk).not.toHaveBeenCalled();
+    };
+
+    it('stops the connector and sets a leftover token aside when an unregistered Hub boots with one', async () => {
+      // The reported case: a reinstall kept the previous Hub's token and joined its tunnel before pairing.
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', writtenAt: '2026-09-01T00:00:00.000Z' }));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(readJson(LEFTOVER_MARKER_PATH)).toEqual({ tunnelId: 'tunnel-previous-hub', foundAt: expect.any(String) });
+      expect(Number.isNaN(Date.parse(readJson(LEFTOVER_MARKER_PATH).foundAt as string))).toBe(false);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expect(service.getRegistrationStatus().phase).toBe('unregistered');
+    });
+
+    it('records a leftover token it cannot decode with no tunnel ID', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'opaque-token');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expect(readJson(LEFTOVER_MARKER_PATH).tunnelId).toBeNull();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+    });
+
+    it('leaves an unregistered Hub with no token alone', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('removes a stale registration.json from an unregistered Hub with no token', async () => {
+      // A token restored beside it later would otherwise start that tunnel from the desktop app or CLI.
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', writtenAt: '2026-09-01T00:00:00.000Z' }));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('still sets a leftover token aside when registration.json cannot be removed, and logs why', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      // A directory in the marker's place makes the unlink fail.
+      vol.mkdirSync(path.join(REGISTRATION_MARKER_PATH, 'blocker'), { recursive: true });
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Could not remove the tunnel registration marker'));
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(readJson(LEFTOVER_MARKER_PATH).tunnelId).toBe('tunnel-previous-hub');
+    });
+
+    it('neither starts nor stops anything when the registration cannot be read, and retries on the next check', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-unknown'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValue(new Error('database starting up'));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockRejectedValue(new Error('database starting up'));
+      const pollSpy = vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(true);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expect(pollSpy).toHaveBeenCalledOnce();
+
+      // The database answers on the next registration check: still no registration.
+      pollSpy.mockRestore();
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'checkRegistrationWithCloud').mockResolvedValue(false);
+
+      await (service as any).pollRegistration();
+
+      expectConnectorNeverStarted();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(readJson(LEFTOVER_MARKER_PATH).tunnelId).toBe('tunnel-unknown');
+    });
+
+    it('starts the tunnel of a registered Hub whose boot-time read failed at its next validation', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockRejectedValueOnce(new Error('database starting up'));
+      await (service as any).syncTunnelWithRegistration();
+      expect(cloudflareClientService.ensureCloudflaredRunning).not.toHaveBeenCalled();
+
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      (service as any)._currentPhase = 'locally_ready';
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(cloudflareClientService.ensureCloudflaredRunning).toHaveBeenCalledOnce();
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-registered');
+
+      // Once the check has run, validation does not repeat it.
+      await (service as any).validateRegistrationWithCloud();
+      expect(cloudflareClientService.ensureCloudflaredRunning).toHaveBeenCalledOnce();
+    });
+
+    it('does not touch the token or registration.json of a pairing in progress', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-being-paired'));
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-being-paired', writtenAt: '2026-09-17T00:00:00.000Z' }));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      (service as any)._currentPhase = 'provisioning';
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(true);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(true);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('does not stop the connector of a pairing that starts while the token is being read', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'readTunnelToken').mockImplementation(async () => {
+        (service as any)._currentPhase = 'paired';
+        return cloudflaredToken('tunnel-previous-hub');
+      });
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(true);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('keeps the token of a pairing that finishes while the leftover connector is being removed', async () => {
+      vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-previous-hub'));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      cloudflareClientService.stopTunnel.mockImplementation(async () => {
+        // `docker rm` can take seconds. A pairing saves its token and registration in the meantime.
+        vol.writeFileSync(TOKEN_PATH, cloudflaredToken('tunnel-just-paired'));
+        vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-just-paired', writtenAt: '2026-09-17T00:00:00.000Z' }));
+        (service as any)._currentPhase = 'locally_ready';
+        return true;
+      });
+
+      await (service as any).syncTunnelWithRegistration();
+
+      expect(vol.readFileSync(TOKEN_PATH, 'utf-8')).toBe(cloudflaredToken('tunnel-just-paired'));
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-just-paired');
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('writes registration.json for an existing registered Hub and starts its connector as before', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
+      vi.spyOn(service as any, 'validateRegistrationWithCloud').mockResolvedValue(undefined);
+      vi.spyOn(service as any, 'startPeriodicValidation').mockReturnValue(undefined);
+
+      await (service as any).runDeferredBootstrap();
+
+      expect(readJson(REGISTRATION_MARKER_PATH)).toEqual({ tunnelId: 'tunnel-registered', writtenAt: expect.any(String) });
+      expect(cloudflareClientService.loadTunnelTokenFromDisk).toHaveBeenCalledWith('tunnel-registered');
+      expect(cloudflareClientService.ensureCloudflaredRunning).toHaveBeenCalledWith({ forceRestart: false });
+      expect(cloudflareClientService.stopTunnel).not.toHaveBeenCalled();
+      expect(vol.readFileSync(TOKEN_PATH, 'utf-8')).toBe('registered-token');
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+    });
+
+    it('writes registration.json once a pairing saves its registration', async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      configService.setDomain.mockResolvedValue(undefined);
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.createDeviceRegistration.mockResolvedValue({} as any);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 'tunnel-pair', token: 'token-pair' });
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          organization_name: 'Paired Org',
+          slug: 'paired-org',
+          subdomain: 'hub-paired-org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          api_key: 'key-pair',
+          domain: 'example.com',
+        },
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(true);
+      await vi.waitFor(() => expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(true));
+      expect(deviceRegistrationRepository.createDeviceRegistration).toHaveBeenCalled();
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-pair');
+    });
+
+    it('writes registration.json when a registration callback lands on an existing row', async () => {
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue({ ...registeredRow, tunnelId: 'tunnel-old' } as any);
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'example.com' } as any);
+
+      await (service as any).setupOrganizationInfrastructure('org-1', {
+        organization_name: 'Org',
+        tunnel_id: 'tunnel-new',
+        tunnel_token: 'token-new',
+        subdomain: 'hub-org',
+        slug: 'org',
+      });
+
+      expect(readJson(REGISTRATION_MARKER_PATH).tunnelId).toBe('tunnel-new');
+    });
+
+    it('removes leftover.json when a registration is saved, so a later reset does not offer to reconnect a stale tunnel', async () => {
+      const leftover = JSON.stringify({ tunnelId: 'tunnel-previous-hub', foundAt: '2026-09-01T00:00:00.000Z' });
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        domain: 'example.com',
+        userSettings: { domain: 'example.com' },
+      } as any);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      configService.setDomain.mockResolvedValue(undefined);
+      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 'tunnel-new', token: 'token-new' });
+      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      const activation = { organization_name: 'Org', tunnel_id: 'tunnel-new', tunnel_token: 'token-new', subdomain: 'hub-org', slug: 'org' };
+
+      // A new registration row.
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, leftover);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+      deviceRegistrationRepository.createDeviceRegistration.mockResolvedValue({} as any);
+      await (service as any).setupOrganizationInfrastructure('org-1', activation);
+      expect(deviceRegistrationRepository.createDeviceRegistration).toHaveBeenCalled();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+
+      // An existing registration row.
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, leftover);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(registeredRow as any);
+      await (service as any).setupOrganizationInfrastructure('org-1', activation);
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+
+      // Reset from Settings: the registration page shows no stale tunnel.
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+      await service.resetRegistration();
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 401 } as any);
+
+      const drift = await service.getStateDrift();
+      expect(drift.hasStaleTunnelToken).toBe(false);
+      expect(drift.signals.map((signal) => signal.reason)).not.toContain('stale_tunnel_token');
+    });
+
+    it('stops the connector and removes the token and registration.json on reset, keeping the device key', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-registered', writtenAt: '2026-09-01T00:00:00.000Z' }));
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      await service.resetRegistration();
+
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(TOKEN_PATH)).toBe(false);
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+      expect(configService.setUserSettings).not.toHaveBeenCalled();
+    });
+
+    it('stops the connector when the Portal rejects the check-in', async () => {
+      vol.writeFileSync(TOKEN_PATH, 'registered-token');
+      vol.writeFileSync(REGISTRATION_MARKER_PATH, '{}');
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(registeredRow as any);
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+      (service as any)._currentPhase = 'publicly_ready';
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Device not active', code: 'DEVICE_NOT_ACTIVE' } } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(REGISTRATION_MARKER_PATH)).toBe(false);
+    });
+
+    it('retries stopping the connector on the next check when a reset could not stop it', async () => {
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      cloudflareClientService.stopTunnel.mockResolvedValueOnce(false);
+      vi.spyOn(service as any, 'checkRegistrationWithCloud').mockResolvedValue(false);
+
+      await service.resetRegistration();
+      // The registration check that the reset starts retries the stop.
+      await vi.waitFor(() => expect((service as any).checkInterval).not.toBeNull());
+      service.onApplicationShutdown();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledTimes(2);
+
+      // Stopped on the retry, so later checks leave the connector alone.
+      await (service as any).pollRegistration();
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledTimes(2);
+    });
+
+    it('removes leftover.json on Start fresh', async () => {
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', foundAt: '2026-09-01T00:00:00.000Z' }));
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      vi.spyOn(service as any, 'pollRegistration').mockResolvedValue(undefined);
+
+      const result = await service.prepareFreshSetup();
+
+      expect(result.success).toBe(true);
+      expect(cloudflareClientService.stopTunnel).toHaveBeenCalledOnce();
+      expect(vol.existsSync(LEFTOVER_MARKER_PATH)).toBe(false);
+    });
+
+    it('reports a stale tunnel token from leftover.json after the token itself is gone', async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 401 } as any);
+
+      const before = await service.getStateDrift();
+      expect(before.signals.map((signal) => signal.reason)).not.toContain('stale_tunnel_token');
+
+      vol.writeFileSync(LEFTOVER_MARKER_PATH, JSON.stringify({ tunnelId: 'tunnel-previous-hub', foundAt: '2026-09-01T00:00:00.000Z' }));
+
+      const after = await service.getStateDrift();
+      expect(after.detected).toBe(true);
+      expect(after.hasStaleTunnelToken).toBe(true);
+      expect(after.signals.map((signal) => signal.reason)).toContain('stale_tunnel_token');
     });
   });
 
