@@ -39,7 +39,20 @@ export const test = base.extend({
 export { expect } from '@playwright/test';
 
 export const createTestUser = async () => {
-  await db.insert(user).values({ password: testUser.hashedPassword, username: testUser.email, operator: true, hasCompletedOnboarding: true });
+  await db.insert(user).values({
+    password: testUser.hashedPassword,
+    username: testUser.email,
+    operator: true,
+    hasCompletedOnboarding: true,
+    /*
+     * Required, not decorative. `loginWithCachedPassword` rejects a user with no
+     * `localPasswordSetAt` as invalid credentials BEFORE it ever verifies the hash
+     * (auth.service.ts:511), because a null value means "this account has no offline
+     * password". Seeding a hash without it produced a user who could never log in,
+     * which silently killed every authenticated spec in the default lane.
+     */
+    localPasswordSetAt: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+  });
 };
 
 export const loginUser = async (page: Page, _?: BrowserContext) => {
