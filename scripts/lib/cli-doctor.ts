@@ -11,7 +11,7 @@ import { runBridgeDoctorSection } from '../bridge-diagnostics-cli.js';
 import { parseEnvFile } from '../env-file.js';
 import { runHubCleanup } from '../hub-cleanup-lib.js';
 import { runNetworkDoctorSection } from '../network-diagnostics-cli.js';
-import { HubUnreachableError } from '../public-web-cli.js';
+import { HubUnreachableError, resolveHubApiBase } from '../public-web-cli.js';
 import {
   getEnvFileOrExit,
   hasCloudflareTunnelToken,
@@ -20,6 +20,7 @@ import {
   hasRegisteredCloudflareTunnelAtDataDir,
 } from './cli-compose-env.js';
 import { fetchHubClaimStatus, HubClaimNoDeviceKey, type HubClaimStatus } from './hub-claim.js';
+import { fetchRegistrationPhase, RegistrationPhaseRouteMissing, type RegistrationPhaseResponse } from './register-hub.js';
 import { run, runCapture } from './cli-proc.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { checkDockerAvailable, requireRepoRoot } from './cli-repo-context.js';
@@ -88,6 +89,105 @@ export async function runOperatorDoctorSection(envFileName: string): Promise<{ l
   };
 }
 
+/** Degraded reasons that only pairing again clears; doctor fails on these rather than noting them. */
+const RE_PAIRING_REASONS = new Set(['tunnel_token_missing', 'portal_rejected']);
+
+function describeAge(at: string, now: number): string {
+  const seconds = Math.round((now - Date.parse(at)) / 1000);
+  if (!Number.isFinite(seconds)) return 'at an unknown time';
+  if (seconds < 90) return `${Math.max(seconds, 0)}s ago`;
+  if (seconds < 90 * 60) return `${Math.round(seconds / 60)}m ago`;
+  if (seconds < 36 * 3600) return `${Math.round(seconds / 3600)}h ago`;
+  return `${Math.round(seconds / 86400)}d ago`;
+}
+
+/**
+ * The registration phase and the last Portal check-in, as doctor lines.
+ *
+ * A Hub whose device key Portal rejects runs its stack perfectly well, which is why five paired
+ * fleet Hubs sat that way for up to a week: nothing on the machine looked wrong. It fails doctor
+ * for the same reason an unclaimed Hub does. The machine is fine, and its identity is not, and only
+ * a person with a pairing code can fix that.
+ *
+ * `cloud_validation_failed` and `tunnel_unreachable` are notes: both can clear on their own.
+ */
+export function describeRegistrationPhase(
+  report: RegistrationPhaseResponse,
+  now = Date.now(),
+): { lines: string[]; failureCount: number; issueCount: number } {
+  const reasons = report.degradedReasons ?? [];
+  const lines: string[] = [];
+  let failureCount = 0;
+  let issueCount = 0;
+
+  if (report.phase === 'unregistered') {
+    lines.push(`Registration         ${cliWarn('unregistered')}  ${dim(`${BASE_COMMAND} register`)}`);
+    return { lines, failureCount, issueCount: 1 };
+  }
+
+  if (report.phase === 'paired' || report.phase === 'provisioning') {
+    lines.push(`Registration         ${colorize(`${STEP_ICONS.pending} ${report.phase}`, 'dim')}  ${dim('pairing in progress')}`);
+    return { lines, failureCount, issueCount };
+  }
+
+  if (report.phase === 'degraded') {
+    const label = `degraded (${reasons.join(', ') || 'no reason recorded'})`;
+    if (reasons.some((reason) => RE_PAIRING_REASONS.has(reason))) {
+      const why = reasons.includes('portal_rejected') ? "Portal rejects this Hub's device key" : 'tunnel token missing';
+      lines.push(`Registration         ${cliFail(label)}  ${dim(`${why} — pair again: ${BASE_COMMAND} register --code <code>`)}`);
+      failureCount = 1;
+    } else {
+      lines.push(`Registration         ${cliWarn(label)}`);
+    }
+    issueCount = 1;
+  } else {
+    lines.push(`Registration         ${cliOk(report.phase)}`);
+  }
+
+  const checkIn = report.lastCheckIn;
+  if (!checkIn) {
+    lines.push(`Portal check-in      ${colorize(`${STEP_ICONS.pending} none yet`, 'dim')}  ${dim('none sent since the Hub started')}`);
+  } else if (checkIn.httpStatus !== null && checkIn.httpStatus >= 200 && checkIn.httpStatus < 300) {
+    lines.push(`Portal check-in      ${cliOk(`accepted (HTTP ${checkIn.httpStatus})`)}  ${dim(describeAge(checkIn.at, now))}`);
+  } else {
+    const outcome = checkIn.httpStatus === null ? 'no response' : `HTTP ${checkIn.httpStatus}${checkIn.code ? ` ${checkIn.code}` : ''}`;
+    // The Hub waits ten minutes before it believes a rejection, because Portal answers a database
+    // error with the same 401. Until then the phase says nothing about it, so the line has to.
+    const unconfirmedRejection =
+      !reasons.includes('portal_rejected') && (checkIn.httpStatus === 401 || checkIn.httpStatus === 403 || checkIn.code === 'DEVICE_NOT_ACTIVE');
+    const detail = [
+      checkIn.error,
+      describeAge(checkIn.at, now),
+      unconfirmedRejection ? 'Portal refuses the device key; if that lasts 10 min, pair again' : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+    lines.push(`Portal check-in      ${failureCount > 0 ? cliFail(outcome) : cliWarn(outcome)}  ${dim(detail)}`);
+    issueCount = 1;
+  }
+
+  return { lines, failureCount, issueCount };
+}
+
+/** Reads `GET /api/registration/phase`, which never sends a check-in, and reports it. */
+export async function runRegistrationDoctorSection(envFileName: string): Promise<{ lines: string[]; failureCount: number; issueCount: number }> {
+  try {
+    return describeRegistrationPhase(await fetchRegistrationPhase(resolveHubApiBase(envFileName)));
+  } catch (error) {
+    // Not having asked is not the same as having been told no; see `runOperatorDoctorSection`.
+    const why =
+      error instanceof HubUnreachableError
+        ? 'Hub not answering'
+        : error instanceof RegistrationPhaseRouteMissing
+          ? 'Hub build predates /api/registration/phase'
+          : error instanceof Error
+            ? error.message.slice(0, 60)
+            : String(error).slice(0, 60);
+
+    return { lines: [`Registration         ${colorize(`${STEP_ICONS.pending} unknown`, 'dim')}  ${dim(why)}`], failureCount: 0, issueCount: 0 };
+  }
+}
+
 export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolean }) {
   const ctx = resolveHubContext(env);
   if (ctx.appliance) {
@@ -104,8 +204,9 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   // firewall drops these silently and the failure is invisible from the host,
   // so it is checked from inside the container.
   const bridgeSection = await runBridgeDoctorSection(envFileName);
-  // The one check that is about the Hub's own identity rather than the machine under it.
+  // The checks about the Hub's own identity rather than the machine under it.
   const operatorSection = await runOperatorDoctorSection(envFileName);
+  const registrationSection = await runRegistrationDoctorSection(envFileName);
   const dockerOk = checkDockerAvailable();
   const composeOk = runCapture('docker', ['compose', 'version']).ok;
   const composeFilesFound = composeFiles.every((file) => existsSync(resolvePath(file)));
@@ -117,6 +218,7 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     `Compose files        ${composeFilesFound ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorTunnelTokenStatus(ctx)}`,
     ...operatorSection.lines,
+    ...registrationSection.lines,
     ...networkSection.lines,
     ...bridgeSection.lines,
   ];
@@ -127,8 +229,9 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     [dockerOk, composeOk, composeFilesFound].filter((ok) => !ok).length +
     networkSection.failureCount +
     bridgeSection.failureCount +
-    operatorSection.failureCount;
-  const issueCount = networkSection.issueCount + bridgeSection.issueCount + operatorSection.issueCount;
+    operatorSection.failureCount +
+    registrationSection.failureCount;
+  const issueCount = networkSection.issueCount + bridgeSection.issueCount + operatorSection.issueCount + registrationSection.issueCount;
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, failureCount > 0 ? 'red' : issueCount > 0 ? 'yellow' : 'cyan');
   if (failureCount > 0) process.exitCode = 1;
 }

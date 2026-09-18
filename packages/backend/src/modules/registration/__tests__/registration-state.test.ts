@@ -8,6 +8,8 @@ import {
   type ProvisioningPhase,
   PROVISIONING_PHASES,
   DEGRADED_REASONS,
+  requiresPortalRePairing,
+  sameDegradedReasons,
 } from '../registration-state';
 
 describe('registration-state', () => {
@@ -152,7 +154,32 @@ describe('registration-state', () => {
     });
 
     it('DEGRADED_REASONS contains all expected values', () => {
-      expect(DEGRADED_REASONS).toEqual(['tunnel_token_missing', 'tunnel_unreachable', 'cloud_validation_failed']);
+      expect(DEGRADED_REASONS).toEqual(['tunnel_token_missing', 'tunnel_unreachable', 'cloud_validation_failed', 'portal_rejected']);
+    });
+  });
+
+  describe('requiresPortalRePairing', () => {
+    it('reopens pairing for a rejected device key as well as a missing tunnel token, the two reasons no retry clears', () => {
+      expect(requiresPortalRePairing('degraded', ['portal_rejected'])).toBe(true);
+      expect(requiresPortalRePairing('degraded', ['tunnel_token_missing'])).toBe(true);
+    });
+
+    it('keeps pairing closed for reasons that clear on their own, so a Portal blip cannot re-key a serving Hub', () => {
+      expect(requiresPortalRePairing('degraded', ['cloud_validation_failed'])).toBe(false);
+      expect(requiresPortalRePairing('degraded', ['tunnel_unreachable'])).toBe(false);
+      expect(requiresPortalRePairing('publicly_ready', ['portal_rejected'])).toBe(false);
+    });
+
+    it('survives a restart: a persisted portal_rejected is parsed back rather than dropped as unknown', () => {
+      expect(parseDegradedReasons('["portal_rejected"]')).toEqual(['portal_rejected']);
+    });
+  });
+
+  describe('sameDegradedReasons', () => {
+    it('ignores order and catches a changed set', () => {
+      expect(sameDegradedReasons(['portal_rejected', 'tunnel_unreachable'], ['tunnel_unreachable', 'portal_rejected'])).toBe(true);
+      expect(sameDegradedReasons(['portal_rejected'], ['cloud_validation_failed'])).toBe(false);
+      expect(sameDegradedReasons(['portal_rejected'], [])).toBe(false);
     });
   });
 });

@@ -282,7 +282,8 @@ Links
 
 Registration
   POST /registration/register               Register device with Companion Portal
-  GET  /registration/status                 Registration status
+  GET  /registration/status                 Registration status (can send a Portal check-in)
+  GET  /registration/phase                  Registration phase and last check-in, read-only
 
 Settings
   GET  /settings                            Hub settings

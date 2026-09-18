@@ -1173,7 +1173,7 @@ IPMI host, `physical`) or you pass `--i-have-console`. The refusal says which in
 ## Maintenance
 
 ```bash
-cihub doctor [env]         # validate env files, Docker access, and bind mounts
+cihub doctor [env]         # validate env files, Docker access, bind mounts, and registration health
 cihub clean [env] [--yes]  # remove generated host-state files for one environment
 cihub reset [env] [--yes]  # remove runtime state for one environment
 cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
@@ -1191,7 +1191,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 
 | Command | Exits `1` when |
 | --- | --- |
-| `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
+| `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, a network/bridge check that ran and failed, a registered Hub with no operator, or a Hub `degraded` for a reason only pairing clears (`portal_rejected`, `tunnel_token_missing`). Registration health comes from `GET /api/registration/phase`, which sends no check-in; see [`portal-check-in.md`](portal-check-in.md) |
 | `fleet backends` / `install` / `update` / `apps` / `rdp` | Any node failed. It is counted per node, so 13 of 14 is still a failure. For `rdp --execute`, "failed" includes a node whose 3389 is still reachable off the tailnet after the install |
 | `fleet backends` / `install` / `update` / `apps` / `cert` | Any node failed. It is counted per node, so 13 of 14 is still a failure. For `cert`, a node that could not be measured at all, or where `tailscale cert` ran and the store still lacks the file; a node skipped with a reason is not a failure |
 | `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |

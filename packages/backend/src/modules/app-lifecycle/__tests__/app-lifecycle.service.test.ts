@@ -9,8 +9,6 @@ import { ExposureSyncService } from '../exposure-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppEventsQueue } from '@/modules/queue/entities/app-events';
 import { QUEUE_UNAVAILABLE_CODE } from '@/modules/queue/queue.constants';
-import { TranslatableError } from '@/common/error/translatable-error';
-import { HttpStatus } from '@nestjs/common';
 import { AppLifecycleCommandFactory } from '../app-lifecycle-command.factory';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -39,6 +37,8 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 import * as registrationRecoveryState from '../registration-recovery-state';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { HttpStatus } from '@nestjs/common';
 import { assertHostDevicesAvailable } from '../commands/host-device-preflight';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -1701,6 +1701,42 @@ describe('AppLifecycleService', () => {
 
         expect(whois.has).not.toHaveBeenCalled();
         expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: action, appUrn }));
+      });
+    });
+
+    describe('restart and the Start entitlement policy', () => {
+      const paymentRequired = () => new TranslatableError('APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED', {}, HttpStatus.PAYMENT_REQUIRED);
+      const entitlements = { assertForStart: vi.fn() };
+
+      beforeEach(() => {
+        entitlements.assertForStart.mockReset();
+        entitlements.assertForStart.mockRejectedValue(paymentRequired());
+        whois.has.mockResolvedValue(true);
+        vi.mocked((service as any).moduleRef.get).mockImplementation((token: unknown) =>
+          token === MarketplaceWhoIsService ? whois : token === MarketplaceEntitlementService ? entitlements : undefined,
+        );
+      });
+
+      it('refuses a person restarting an app Start refuses, before the status says restarting', async () => {
+        // Ungated, Restart (`down` then `up --force-recreate`) brought back an app Start had refused.
+        await expect(service.restartApp({ actor: OPERATOR, appUrn })).rejects.toMatchObject({ status: HttpStatus.PAYMENT_REQUIRED });
+
+        expect(entitlements.assertForStart).toHaveBeenCalledWith(appUrn);
+        // Refused in the queue instead, the restart settled the app as `stopped` while it kept running.
+        expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('refuses an MCP key the same way', async () => {
+        await expect(service.restartApp({ actor: MANAGED_NEIGHBOUR, appUrn })).rejects.toMatchObject({ status: HttpStatus.PAYMENT_REQUIRED });
+        expect(appEventsQueue.publish).not.toHaveBeenCalled();
+      });
+
+      it('still restarts for the Hub itself, so a credential rotation never strands an app on the key it revoked', async () => {
+        await service.restartApp({ actor: { kind: 'system', reason: 'hub-access-rotate' }, appUrn });
+
+        expect(entitlements.assertForStart).not.toHaveBeenCalled();
+        expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'restart', appUrn }));
       });
     });
 

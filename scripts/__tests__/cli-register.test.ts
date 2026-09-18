@@ -15,9 +15,22 @@ const mocks = vi.hoisted(() => ({
     deviceInfoFails: false,
     prepareFresh: { success: true, message: 'cleared' },
     prepareFreshFails: false,
+    status: { phase: 'unregistered', registered: false } as { phase: string; registered: boolean; degradedReasons?: string[] },
+    driftDetected: false,
+    prepareFreshCalls: 0,
   },
+  deviceKey: undefined as string | undefined,
   localDeviceId: { value: 'local-dev-1', fails: false },
-  submitPairingCode: vi.fn(async () => ({ success: true, domain: 'example.com', subdomain: 'hub' })),
+  submitPairingCode: vi.fn(async (_apiBase: string, _code: string, _deviceKey?: string) => ({
+    success: true,
+    domain: 'example.com',
+    subdomain: 'hub',
+  })),
+}));
+
+vi.mock('../public-web-cli.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../public-web-cli.js')>()),
+  readHubApiKey: () => mocks.deviceKey,
 }));
 
 vi.mock('../lib/hub-context.js', () => ({
@@ -44,9 +57,10 @@ vi.mock('../lib/register-hub.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/register-hub.js')>()),
   resolveRegisterApiBase: () => 'http://localhost:3001',
   waitForHubApi: async () => true,
-  fetchRegistrationStatus: async () => ({ phase: 'unregistered', registered: false }),
-  fetchStateDrift: async () => ({ detected: false }),
+  fetchRegistrationStatus: async () => mocks.hub.status,
+  fetchStateDrift: async () => ({ detected: mocks.hub.driftDetected }),
   prepareFreshSetup: async () => {
+    mocks.hub.prepareFreshCalls++;
     if (mocks.hub.prepareFreshFails) throw new Error('backend refused');
     return mocks.hub.prepareFresh;
   },
@@ -71,6 +85,10 @@ beforeEach(() => {
   mocks.hub.deviceInfoFails = false;
   mocks.hub.prepareFresh = { success: true, message: 'cleared' };
   mocks.hub.prepareFreshFails = false;
+  mocks.hub.status = { phase: 'unregistered', registered: false };
+  mocks.hub.driftDetected = false;
+  mocks.hub.prepareFreshCalls = 0;
+  mocks.deviceKey = undefined;
   mocks.localDeviceId.fails = false;
   mocks.submitPairingCode.mockClear();
   // The runner's stdin is already a pipe; pinning it keeps "no terminal" a property of the test.
@@ -100,7 +118,7 @@ describe('cihub register without a terminal', () => {
 
   it('pairs with a code passed on the command line, normalizing it first', async () => {
     await expect(registerHub('local', { code: ' ab-12cd ' })).resolves.toBeUndefined();
-    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD');
+    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', undefined);
   });
 
   it('names the env it was invoked for so the suggested command is copy-pasteable', async () => {
@@ -133,6 +151,31 @@ describe('cihub register exit codes', () => {
   it('exits non-zero when the Hub resolves no device id', async () => {
     mocks.hub.deviceInfo = { device_id: '' };
     await expect(registerHub('local', { code: 'AB12CD' })).rejects.toThrow('exit 1');
+  });
+});
+
+describe('cihub register on a Hub that is registered and needs pairing again', () => {
+  beforeEach(() => {
+    mocks.hub.status = { phase: 'degraded', registered: true, degradedReasons: ['portal_rejected'] };
+  });
+
+  // The Hub re-pairs a registered Hub only for an authenticated caller, so without the host-local
+  // key the remedy for a Portal-rejected key would be refused by the Hub it runs on.
+  it('sends the host-local device key with the code', async () => {
+    mocks.deviceKey = 'host-local-key';
+
+    await expect(registerHub('local', { code: 'AB12CD' })).resolves.toBeUndefined();
+
+    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', 'host-local-key');
+  });
+
+  it('does not try to clear drifted state first, which the Hub refuses while registered and would exit 1', async () => {
+    mocks.hub.driftDetected = true;
+
+    await expect(registerHub('local', { code: 'AB12CD' })).resolves.toBeUndefined();
+
+    expect(mocks.hub.prepareFreshCalls).toBe(0);
+    expect(mocks.submitPairingCode).toHaveBeenCalledTimes(1);
   });
 });
 

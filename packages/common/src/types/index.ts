@@ -4,11 +4,21 @@ import {
   type ProvisioningPhase,
   DEGRADED_REASONS,
   type DegradedReason,
+  type RegistrationCheckIn,
+  type RegistrationPhaseReport,
   type RegistrationStatus,
 } from './registration-status.js';
 
 export { type AppUrn, zodAppUrn };
-export { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus };
+export {
+  PROVISIONING_PHASES,
+  type ProvisioningPhase,
+  DEGRADED_REASONS,
+  type DegradedReason,
+  type RegistrationCheckIn,
+  type RegistrationPhaseReport,
+  type RegistrationStatus,
+};
 export type {
   AvailableDomain,
   AvailableDomainsResponse,
