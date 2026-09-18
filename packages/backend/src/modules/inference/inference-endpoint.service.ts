@@ -1,6 +1,7 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { hubContainerName } from '@/common/constants';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
@@ -23,6 +24,14 @@ export function isPoolProxyUrl(url: string | null | undefined): boolean {
 export interface PoolRouting {
   baseUrl: string;
   inventory: PoolInventory;
+  /** Which rule put apps on the proxy: the default-on preference, or connected peers. */
+  reason: 'always' | 'peers';
+  /**
+   * Whether the inventory reaches past this node. Only then does routing change which model the
+   * app is handed: `poolRouteAppsAlways` on a peerless Hub is a transport change, and the proxy
+   * can serve nothing this node could not serve directly.
+   */
+  spansPeers: boolean;
 }
 
 /** The backend an app should actually be pointed at, plus the health probe that decided it. */
@@ -73,6 +82,7 @@ export class InferenceEndpointService {
     // forwardRef: InferenceModule and HubPoolModule import each other.
     @Inject(forwardRef(() => HubPoolPeerService))
     private readonly hubPoolPeerService: HubPoolPeerService,
+    private readonly config: ConfigurationService,
   ) {}
 
   /**
@@ -133,18 +143,23 @@ export class InferenceEndpointService {
   /**
    * Whether apps are routed through the pool right now, and if so what the pool can serve.
    *
-   * A global override with no per-app opt-in: with zero connected peers this is `null`, the app
-   * talks to a backend directly, and its model comes from that backend — a single-node Hub behaves
-   * exactly as it did before pooling existed. Otherwise the inventory is what the proxy will match
-   * the app's model against, so both handout paths choose the model from it (`selectPoolChatModel`)
-   * before {@link applyPoolRouting} rewrites the URLs. Rewriting the URLs alone, which is all this
-   * once did, left the model chosen from this node's inventory.
+   * Two rules put an app on the proxy, checked cheapest first. `poolRouteAppsAlways` is the
+   * default-on preference; the peer check is what an operator who turned it off still gets, and
+   * behaves as before — with zero connected peers this is `null`, the app talks to a backend
+   * directly, and its model comes from that backend.
+   *
+   * When it is not `null`, the inventory is what the proxy will match the app's model against, so
+   * both handout paths choose the model from it (`selectPoolChatModel`) before
+   * {@link applyPoolRouting} rewrites the URLs. Rewriting the URLs alone, which is all this once
+   * did, left the model chosen from this node's inventory.
    */
   async resolvePoolRouting(context: string): Promise<PoolRouting | null> {
-    if (!(await this.hasConnectedPeers(context))) {
+    const always = this.routeAppsAlways();
+    const peers = await this.hasConnectedPeers(context);
+    if (!always && !peers) {
       return null;
     }
-    return { baseUrl: this.poolBaseUrl(), inventory: await this.poolInventory(context) };
+    return { baseUrl: this.poolBaseUrl(), inventory: await this.poolInventory(context), reason: always ? 'always' : 'peers', spansPeers: peers };
   }
 
   /**
@@ -154,7 +169,7 @@ export class InferenceEndpointService {
    * `InternalNetworkGuard` + `PoolAppGuard`, which is an origin check (is this request from inside
    * the appliance?), not caller authentication.
    */
-  applyPoolRouting<T extends PoolRoutableEndpoints>(endpoints: T, routing: Pick<PoolRouting, 'baseUrl'> | null, context: string): T {
+  applyPoolRouting<T extends PoolRoutableEndpoints>(endpoints: T, routing: Pick<PoolRouting, 'baseUrl' | 'reason'> | null, context: string): T {
     if (!routing) {
       return endpoints;
     }
@@ -163,8 +178,25 @@ export class InferenceEndpointService {
     if (routed.ollamaHost) routed.ollamaHost = routing.baseUrl;
     if (routed.ollamaEmbedHost) routed.ollamaEmbedHost = routing.baseUrl;
 
-    this.logger.info(`[${context}] connected pool peer(s) present; routing app inference through the pool proxy at ${routing.baseUrl}`);
+    this.logger.info(
+      routing.reason === 'always'
+        ? `[${context}] routing app inference through this Hub's proxy at ${routing.baseUrl} (poolRouteAppsAlways)`
+        : `[${context}] connected pool peer(s) present; routing app inference through the pool proxy at ${routing.baseUrl}`,
+    );
     return routed;
+  }
+
+  /**
+   * The persisted switch, read per call so a PATCH takes effect on the next env generation. A
+   * configuration that cannot answer (a partial mock, a settings file mid-migration) means the
+   * default, which is on.
+   */
+  private routeAppsAlways(): boolean {
+    try {
+      return this.config.getHubPoolPreferences()?.poolRouteAppsAlways ?? true;
+    } catch {
+      return true;
+    }
   }
 
   /**

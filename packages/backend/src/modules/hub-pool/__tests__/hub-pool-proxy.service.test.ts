@@ -3349,4 +3349,63 @@ describe('PoolProxyService', () => {
       expect(signals[0]?.aborted).toBe(true);
     });
   });
+
+  // Every app's inference crosses `forward()` on its way to this node's engine, so it is where the
+  // Hub's residency arbitration reaches apps that call the engine's native routes by tag.
+  describe('residency arbitration before a local generation request', () => {
+    const MODEL = 'llama3.2:3b';
+    let router: MockProxy<InferenceRouterService>;
+    let withRouter: PoolProxyService;
+
+    beforeEach(() => {
+      router = mock<InferenceRouterService>();
+      router.prepareTrackedModel.mockResolvedValue(null);
+      withRouter = new PoolProxyService(
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        peerService,
+        tailscaleService,
+        loadService,
+        configuration,
+        routingLog,
+        pressureService,
+        // Two `undefined`s: `router` is appended after `modelRegistry` and `throughput`, because
+        // #1483 dropped the old router slot that used to sit before them (see the note in
+        // `makeService`). Passing it positionally here would land it in the model-registry slot.
+        undefined,
+        undefined,
+        router,
+      );
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ done: true }), { status: 200 }));
+    });
+
+    it('asks the router to prepare the model before /api/chat reaches the local engine', async () => {
+      const res = createMockResponse();
+
+      await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
+
+      expect(router.prepareTrackedModel).toHaveBeenCalledWith(MODEL);
+      expect(router.prepareTrackedModel.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(global.fetch).mock.invocationCallOrder[0]);
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('still forwards when the arbitration itself fails: it is advice to the engine, not a gate', async () => {
+      router.prepareTrackedModel.mockRejectedValue(new Error('registry unavailable'));
+      const res = createMockResponse();
+
+      await withRouter.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('does not arbitrate read-only natives, which never spend GPU time', async () => {
+      const res = createMockResponse();
+
+      await withRouter.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
+
+      expect(router.prepareTrackedModel).not.toHaveBeenCalled();
+    });
+  });
 });

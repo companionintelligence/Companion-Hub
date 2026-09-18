@@ -19,6 +19,9 @@ export class FilesystemService {
       allowedDirs.push(path.resolve('/host/proc/'));
       allowedDirs.push(path.resolve('/dev/kfd'));
       allowedDirs.push(path.resolve('/dev/dri'));
+      // amdgpu publishes each card's real VRAM total under sysfs, readable from the Hub
+      // container without device passthrough (HardwareInspectorService.detectAmdVramFromSysfs).
+      allowedDirs.push(path.resolve('/sys/class/drm'));
     }
 
     // Resolve container `/data/...` paths to DATA_DIR when running outside Docker.

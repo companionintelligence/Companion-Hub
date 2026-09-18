@@ -166,8 +166,10 @@ describe('AppCredentialsService', () => {
     configurationService = mock<ConfigurationService>();
     hubPoolPeerService = mock<HubPoolPeerService>();
     // No connected peers by default — every existing case asserts the direct-backend shape, so the
-    // pool override must be a no-op unless a test opts in explicitly.
+    // pool override must be a no-op unless a test opts in explicitly. The always-on routing switch
+    // is pinned OFF for the same reason; its own cases below turn it on.
     hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
+    configurationService.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: false } as never);
 
     configurationService.getInferencePreferences.mockReturnValue({
       preferredBackend: null,
@@ -598,6 +600,18 @@ describe('AppCredentialsService', () => {
 
       expect(config.env.HERMES_OPENAI_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
       expect(config.env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
+    });
+
+    it('hands the app the proxy with no peer connected when poolRouteAppsAlways is on (the default)', async () => {
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
+      configurationService.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.endpointUrl).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(config.env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
+      expect(config.env.DEFAULT_MODEL).toBe('hermes4:70b');
     });
 
     it('leaves the app on the direct backend URL when no peer is connected', async () => {

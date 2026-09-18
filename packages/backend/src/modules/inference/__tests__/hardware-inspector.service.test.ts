@@ -512,6 +512,54 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.runtimeAvailable).toBe(false);
     });
 
+    it('SHALL tier a discrete AMD card by its VRAM when only the HOST has ROCm passthrough (container sees no /dev/kfd)', async () => {
+      // systeminformation reports the lspci BAR (32 GB aperture) for a 24 GB RX 7900 XTX; sysfs has the truth.
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [
+          { vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Navi 31 [Radeon RX 7900 XTX]', vram: 32768, driverVersion: '' },
+          { vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Raphael', vram: 256, driverVersion: '' },
+        ],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 24, brand: 'AMD Ryzen 9 7900X 12-Core Processor' });
+      filesystemService.listFiles.mockImplementation(async (dirPath: string) =>
+        dirPath === '/sys/class/drm' ? ['card0', 'card0-DP-4', 'card1', 'card1-DP-1', 'renderD128'] : [],
+      );
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/rocm.json') return '{"available":true,"source":"host-dev-kfd"}';
+        if (filePath === '/sys/class/drm/card0/device/mem_info_vram_total') return '536870912\n';
+        if (filePath === '/sys/class/drm/card1/device/mem_info_vram_total') return '25753026560\n';
+        return 'MemTotal: 64947200\nMemAvailable: 34543616';
+      });
+      // The Hub container itself has no /dev/kfd or /dev/dri.
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.vendor).toBe('amd');
+      expect(profile.gpu.vramMb).toBe(24560);
+      expect(profile.gpu.runtimeAvailable).toBe(false);
+      expect(profile.gpu.hostRocmKfdAvailable).toBe(true);
+      expect(profile.tier).toBe('high');
+    });
+
+    it('SHALL keep an AMD box on cpu-only when neither the container nor the host has ROCm device nodes', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+      filesystemService.listFiles.mockResolvedValue([]);
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/rocm.json') return '{"available":false,"source":"host-rocm-smi"}';
+        return 'MemTotal: 67108864\nMemAvailable: 50331648';
+      });
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const profile = await service.detect();
+
+      expect(profile.gpu.hostRocmKfdAvailable).toBe(false);
+      expect(profile.tier).toBe('cpu-only');
+    });
+
     it('should set hostRocmAvailable when drivers are present but /dev/kfd is not ready', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
@@ -625,6 +673,56 @@ describe('HardwareInspectorService', () => {
       const tier = service.computeTier(
         { available: false, vendor: 'none', model: '', vramMb: 0, unifiedMemory: false, driverVersion: '', runtimeAvailable: false },
         { totalMb: 32768, availableMb: 16384 },
+      );
+      expect(tier).toBe('cpu-only');
+    });
+
+    it('S-HW-3.1: high tier for a discrete AMD card when only the host has ROCm passthrough', () => {
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+          vramMb: 24560,
+          unifiedMemory: false,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostRocmKfdAvailable: true,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('high');
+    });
+
+    it('S-HW-3.1: cpu-only for a discrete AMD card with neither container nor host ROCm', () => {
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+          vramMb: 24560,
+          unifiedMemory: false,
+          driverVersion: '',
+          runtimeAvailable: false,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('cpu-only');
+    });
+
+    it('S-HW-3.1: the host ROCm shortcut is AMD-only — an NVIDIA card still needs the container runtime', () => {
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'nvidia',
+          model: 'RTX 4090',
+          vramMb: 24576,
+          unifiedMemory: false,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostRocmKfdAvailable: true,
+        },
+        { totalMb: 63425, availableMb: 33734 },
       );
       expect(tier).toBe('cpu-only');
     });

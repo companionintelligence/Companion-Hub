@@ -7,6 +7,7 @@ import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/comm
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
+import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
@@ -373,6 +374,17 @@ const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encodi
  * these specifically deserves louder logging than any other local-only path.
  */
 const NATIVE_CAPABILITY_PROBE_PATHS = new Set(['/api/version', '/api/tags']);
+
+/** Requests that spend GPU time on a named model, and so get the Hub's residency arbitration first. */
+const GENERATION_PATHS = new Set([
+  '/v1/chat/completions',
+  '/v1/completions',
+  '/v1/embeddings',
+  '/api/chat',
+  '/api/generate',
+  '/api/embed',
+  '/api/embeddings',
+]);
 
 // ── Serving-node attribution ────────────────────────────────────────────────
 //
@@ -814,6 +826,11 @@ export class PoolProxyService {
     // against a store of its own; Nest always injects the module's one, which the peer service
     // advertises and reports from.
     @Optional() throughput?: HubPoolThroughputService,
+    // Appended last and optional for the same positional reason. #1483 took the router out of
+    // `auto` resolution, which now runs against the whole pool; residency arbitration
+    // (`prepareTrackedModel`) is a separate job and is the only thing left that reads it. Without
+    // it a local generation still forwards, just without the keep-resident/evict step.
+    @Optional() @Inject(forwardRef(() => InferenceRouterService)) private readonly router?: InferenceRouterService,
   ) {
     this.throughput = throughput ?? new HubPoolThroughputService();
   }
@@ -1965,6 +1982,18 @@ export class PoolProxyService {
     clientClosed?: AbortSignal,
   ): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
+      // The one place every app's inference crosses on this node, so the one place the Hub's
+      // residency arbitration can apply to all of them: keep a tracked model resident, or make
+      // room for it, before the engine sees the request. Read-only natives (`/api/tags`, `/api/ps`,
+      // `/api/show`) never reach here — they go through `proxyLocalOnlyRequest`.
+      if (GENERATION_PATHS.has(path) && this.router) {
+        await this.router.prepareTrackedModel(model).catch((error: unknown) => {
+          this.logger.debug(
+            `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return null;
+        });
+      }
       return this.callBackend(candidate.backend, path, method, body, payload, clientClosed);
     }
 

@@ -145,8 +145,10 @@ describe('InferenceEnvResolver', () => {
     cloudFallback = mock<CloudFallbackService>();
     hubPoolPeerService = mock<HubPoolPeerService>();
     // No connected peers by default — every existing test asserts the pre-pooling env shape, so
-    // the pool override must be a no-op unless a test opts in explicitly.
+    // the pool override must be a no-op unless a test opts in explicitly. The always-on routing
+    // switch is pinned OFF here for the same reason; its own cases below turn it back on.
     hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
+    config.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: false } as never);
 
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: null,
@@ -618,12 +620,38 @@ describe('InferenceEnvResolver', () => {
       expect(env.CI_INFERENCE_ERROR).toContain('gemma3:1b (no tool calling)');
     });
 
-    it('leaves CI_LLM_BASE_URL pointed directly at the backend when there are no connected peers', async () => {
+    it('leaves CI_LLM_BASE_URL pointed directly at the backend when there are no connected peers and always-on routing is off', async () => {
       hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
 
       const env = await service.resolve();
 
       expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+    });
+  });
+
+  describe('routing every app through this Hub (poolRouteAppsAlways)', () => {
+    it('hands the app the proxy with no peer connected when the switch is on', async () => {
+      config.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
+      expect(env.CI_OLLAMA_EMBED_HOST).toMatch(/\/api\/inference\/pool$/);
+      // Transport only: the model and window are what the direct path would have said.
+      expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
+      // The peer state is still read: it is what decides whether the pool inventory reaches past
+      // this node, and so whether routing changes the model as well as the transport. With no peer
+      // it does not, which is what the two assertions above pin.
+    });
+
+    it('treats a configuration that cannot answer as the default, which is on', async () => {
+      config.getHubPoolPreferences.mockReturnValue(undefined as never);
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
     });
   });
 
