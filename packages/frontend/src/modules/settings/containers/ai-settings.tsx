@@ -758,7 +758,16 @@ export const AiSettingsContainer = () => {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium truncate">{model.name}</div>
-                      <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
+                      {/*
+                        Only show the id when it differs from the display name. Every backend's
+                        `listModels()` sets both from the same string for models it has no catalog
+                        entry for — ollama.backend.ts:263 maps `id: m.name, name: m.name` — so on a
+                        stock Ollama host this printed the same tag twice on every card, with the
+                        useful line truncating first.
+                      */}
+                      {model.id === model.name ? null : (
+                        <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
+                      )}
                     </div>
                     <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-success/30 bg-success/10 text-success font-medium">
                       {t('AI_SETTINGS_DOWNLOADED_BADGE')}

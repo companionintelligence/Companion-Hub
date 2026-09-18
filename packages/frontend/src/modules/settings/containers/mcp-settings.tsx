@@ -289,7 +289,18 @@ export const McpSettingsContainer = () => {
                   {installedMcpApps.map((entry) => (
                     <tr key={entry.urn} className="border-b border-border/40 last:border-0">
                       <td className="py-2 pr-4">
-                        <Link to={`/app-store/${entry.urn.replace(':', '/')}`} className="text-primary underline-offset-2 hover:underline">
+                        {/*
+                          An app URN is `appName:appStoreId`, and the route is
+                          `/apps/:storeId/:appId` — so the segments have to be swapped, not
+                          just joined. This was `/app-store/${urn.replace(':', '/')}`, which
+                          is wrong twice over: there is no `/app-store` route (the store lives
+                          at `/store`) and the order was reversed, so every row here landed on
+                          the 404 page. Same split as horizontal-app-list.tsx.
+                        */}
+                        <Link
+                          to={`/apps/${entry.urn.split(':')[1]}/${entry.urn.split(':')[0]}`}
+                          className="text-primary underline-offset-2 hover:underline"
+                        >
                           {entry.name}
                         </Link>
                       </td>

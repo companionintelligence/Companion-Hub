@@ -46,7 +46,7 @@ export const LoginForm: React.FC<IProps> = ({
   const {
     register,
     handleSubmit,
-    formState: { errors },
+    formState: { errors, dirtyFields },
     watch,
     setValue,
   } = useForm({
@@ -54,11 +54,17 @@ export const LoginForm: React.FC<IProps> = ({
     defaultValues: { email: portalAccountEmail ?? '', password: '' },
   });
 
+  /*
+   * The Portal session hint resolves asynchronously, so it can land after the user
+   * has started typing. It is a convenience default, not an instruction: writing it
+   * over a dirty field discarded whatever they had entered and then failed the login
+   * with an address they never chose. Only prefill a field the user has not touched.
+   */
   useEffect(() => {
-    if (portalAccountEmail) {
+    if (portalAccountEmail && !dirtyFields.email) {
       setValue('email', portalAccountEmail);
     }
-  }, [portalAccountEmail, setValue]);
+  }, [portalAccountEmail, setValue, dirtyFields.email]);
 
   const watchEmail = watch('email');
   const watchPassword = watch('password');
