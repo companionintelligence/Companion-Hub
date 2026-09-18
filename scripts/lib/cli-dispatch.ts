@@ -152,7 +152,7 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'clean') {
     const force = args.includes('--yes');
     const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--yes'));
-    if (await confirmDestructiveAction(`Cleaning ${env}`, force, `Remove generated files for ${env}? [y/N]: `)) {
+    if (await confirmDestructiveAction(`Cleaning ${env}`, force, `Remove installed app containers and generated files for ${env}? [y/N]: `)) {
       cleanHub(env);
     } else {
       printMessageBox('Clean cancelled', ['Left generated files untouched.'], 'yellow');

@@ -44,7 +44,7 @@ import { DeviceRegistrationRepository } from '@/modules/registration/device-regi
 import { Test } from '@nestjs/testing';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { eq } from 'drizzle-orm';
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type MockInstance, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import waitFor from 'wait-for-expect';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
@@ -154,18 +154,38 @@ describe('App lifecycle', () => {
 
   const queueFactory = new QueueFactory(loggerService, configurationService);
   let appEventsQueue: AppEventsQueue;
+  /** Serial for the per-test queue name. See the comment where the queue is created. */
+  let queueSerial = 0;
 
   beforeAll(async () => {
     db = await createTestDatabase(DB_NAME);
-    appEventsQueue = await queueFactory.createQueue({
-      queueName: 'app-events-queue',
-      workers: 1,
-      eventSchema: appEventSchema,
-    });
   });
 
   beforeEach(async () => {
     await cleanTestData(db);
+
+    /*
+     * ⚠ A QUEUE PER TEST, BECAUSE EVERY EARLIER TEST'S CONSUMER IS STILL LISTENING.
+     *
+     * This `beforeEach` compiles a fresh module, and `AppLifecycleService`'s constructor
+     * calls `appEventsQueue.onEvent(...)` — which registers ANOTHER consumer and does not
+     * close the previous one (`Queue.registerConsumer`). One queue for the whole file
+     * therefore carries N consumers by test N, and RabbitMQ round-robins between them: an
+     * install this test publishes is regularly executed by the services of a test that has
+     * already finished, against this test's rows, with this test's mocks. Measured, not
+     * theorised — `custom domains` cases were routinely served by an instance two tests
+     * old.
+     *
+     * Nothing asserts on those services, so the work they do is invisible here: their
+     * exposure sync writes app columns this test is reading, and no flag this test can see
+     * says a pass is running. `runToQuiescence` below waits on the service instance this
+     * test holds, which is only the right instance if this test's commands run on it.
+     */
+    appEventsQueue = await queueFactory.createQueue({
+      queueName: `app-events-queue-${++queueSerial}`,
+      workers: 1,
+      eventSchema: appEventSchema,
+    });
     portalCatalogService.warmCacheInBackground.mockReturnValue(undefined);
     portalCatalogService.invalidateCache.mockReturnValue(undefined);
     portalCatalogService.getAppInfoForUrn.mockResolvedValue(null);
@@ -656,6 +676,9 @@ describe('App lifecycle', () => {
 
     const exposedForm = { exposureMode: 'cloudflare' as const, exposedLocal: true, openPort: false };
 
+    /** Cloudflare passes run by THIS test's service. See {@link runToQuiescence}. */
+    let cloudflarePasses: MockInstance<ExposureSyncService['triggerCloudflareSync']>;
+
     /** The env actually written for the app, parsed. */
     const readEnv = async (urn: AppUrn) => {
       const env = await appFilesManager.getAppEnv(urn);
@@ -663,38 +686,67 @@ describe('App lifecycle', () => {
       return new EnvUtils().envStringToMap(env.content ?? '');
     };
 
-    /*
-     * ⚠ `running` IS NOT THE END OF AN INSTALL, AND WAITING ONLY FOR IT MAKES THE
-     * CASES BELOW FLAKY.
+    /**
+     * Wait for the point at which a lifecycle command is REALLY finished.
      *
-     * `installApp` returns as soon as the command is published; its completion
-     * handler writes `running` and only THEN awaits its own exposure sync. So the
-     * status this used to wait for appears while a custom-domain reconcile is still
-     * running, and that reconcile clears an intent it reads as held elsewhere. A
-     * test that set up a second app's intent right after this returned was racing
-     * it — `counts re-recording a binding another app is waiting for as a
-     * custom-domain change` lost that race in CI (and on unrelated branches),
-     * because the late pass wiped the intent before the assertion read it.
+     * ⚠ `status === 'running'` IS NOT THAT POINT, and every case in this block
+     * depends on the difference. The start outcome writes `running` and only
+     * THEN runs the Cloudflare pass, from `settleCommandOutcome`'s `afterApply`
+     * (`AppLifecycleService`). That pass re-reads every app row at its bind step
+     * and writes `custom_domain_intent: null` on the rows it gives up on
+     * (`ExposureSyncService`'s `abandonChoice`) — so anything a test sets up
+     * between the `running` poll and the end of the pass is set up in a row the
+     * Hub is about to overwrite.
      *
-     * So wait for that sync to both START (it has reached Companion Portal, which
-     * every pass in this describe does) and FINISH before handing the app back.
-     * Counting the Portal call closes the window where the status write has
-     * committed but `cloudflareSyncDepth` has not been incremented yet.
+     * That is how `custom_domain_intent` written straight to the database below
+     * was silently reverted on a loaded GitHub runner, leaving `authorize`
+     * uncalled, while every local run passed because the pass finished inside
+     * `waitFor`'s first poll — on this branch (CI-Hub#1497, run 35289141993) and
+     * on unrelated ones, which is what it looks like when the cause is the clock
+     * rather than the change under review.
+     *
+     * Both halves are needed, and a sleep would give neither: the spy proves a
+     * pass STARTED, and `isCloudflareSyncInFlight` — the same flag the periodic
+     * poll stands down on — proves it FINISHED. The flag alone would sail
+     * straight past a pass that had not begun yet, in the window where the
+     * status write has committed but `cloudflareSyncDepth` has not moved.
+     *
+     * Both read the service THIS test holds, which is why the queue is per-test
+     * (see the `beforeEach` at the top of the file). Counting passes on the
+     * shared `cloudflareClientService` mock instead looks equivalent and is not:
+     * it also counts passes run by an earlier test's service, and those tick the
+     * counter while this test's own pass has not started, so the wait ends early
+     * and the race is back. Measured — with one queue for the file, this block's
+     * installs were regularly executed by a service two tests old. If a command
+     * is ever served elsewhere again, this times out and says so rather than
+     * quietly returning too soon.
      */
-    const installExposed = async (id: string) => {
-      const appInfo = await createAppInStore('test', { id });
-      const syncsBefore = cloudflareClientService.syncState.mock.calls.length;
+    const runToQuiescence = async (appUrn: AppUrn, command: () => Promise<unknown>) => {
+      const passesBefore = cloudflarePasses.mock.calls.length;
 
-      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: exposedForm });
+      await command();
+
       await waitFor(async () => {
-        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
-      });
-      await waitFor(() => {
-        expect(cloudflareClientService.syncState.mock.calls.length).toBeGreaterThan(syncsBefore);
+        expect((await appsRepository.getAppByUrn(appUrn))?.status).toBe('running');
+        expect(cloudflarePasses.mock.calls.length).toBeGreaterThan(passesBefore);
         expect(exposureSyncService.isCloudflareSyncInFlight()).toBe(false);
       });
+    };
+
+    /** Install an exposed app and return once its own exposure sync has settled. */
+    const installExposed = async (id: string, form: { customDomain?: string } = {}) => {
+      const appInfo = await createAppInStore('test', { id });
+
+      await runToQuiescence(appInfo.urn, () =>
+        appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: { ...exposedForm, ...form } }),
+      );
 
       return appInfo;
+    };
+
+    /** Restart an exposed app and return once the exposure sync that restart triggers has settled. */
+    const restartExposed = async (appUrn: AppUrn) => {
+      await runToQuiescence(appUrn, () => appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn, skipPull: true }));
     };
 
     const syncReporting = async (customDomains: unknown) => {
@@ -703,6 +755,8 @@ describe('App lifecycle', () => {
     };
 
     beforeEach(async () => {
+      // Spied, not stubbed: `vi.spyOn` keeps the real pass and only counts it.
+      cloudflarePasses = vi.spyOn(exposureSyncService, 'triggerCloudflareSync');
       await db.delete(deviceRegistrationTable);
       await deviceRegistrationRepository.createDeviceRegistration(ORG);
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(fromPartial(ORG));
@@ -726,10 +780,7 @@ describe('App lifecycle', () => {
       expect(bound?.pendingRestart).toBe(true);
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
 
-      await appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, skipPull: true });
-      await waitFor(async () => {
-        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
-      });
+      await restartExposed(appInfo.urn);
 
       const boundEnv = await readEnv(appInfo.urn);
       expect(boundEnv.get('APP_PUBLIC_URL')).toBe('https://comfy.acme.com');
@@ -750,10 +801,7 @@ describe('App lifecycle', () => {
       }
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
 
-      await appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, skipPull: true });
-      await waitFor(async () => {
-        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
-      });
+      await restartExposed(appInfo.urn);
 
       const revertedEnv = await readEnv(appInfo.urn);
       expect(revertedEnv.get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
@@ -784,12 +832,7 @@ describe('App lifecycle', () => {
       ]);
       cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true });
 
-      const appInfo = await createAppInStore('test', { id: 'cdomain-intent' });
-
-      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: { ...exposedForm, customDomain: 'comfy.acme.com' } });
-      await waitFor(async () => {
-        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
-      });
+      const appInfo = await installExposed('cdomain-intent', { customDomain: 'comfy.acme.com' });
 
       const platformHostname = 'cdomain-intent-test-core2-acme.ci.test';
       const installed = await appsRepository.getAppByUrn(appInfo.urn);
@@ -820,10 +863,7 @@ describe('App lifecycle', () => {
       expect(bound?.customDomain).toBe('comfy.acme.com');
       expect(bound?.pendingRestart).toBe(true);
 
-      await appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, skipPull: true });
-      await waitFor(async () => {
-        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
-      });
+      await restartExposed(appInfo.urn);
 
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://comfy.acme.com');
     });
@@ -860,22 +900,13 @@ describe('App lifecycle', () => {
       ]);
       cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true });
 
-      const first = await createAppInStore('test', { id: 'cdomain-first' });
-      const second = await createAppInStore('test', { id: 'cdomain-second' });
-
-      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: first.urn, form: { ...exposedForm, customDomain: 'shared.acme.com' } });
-      await waitFor(async () => {
-        expect((await appsRepository.getAppByUrn(first.urn))?.status).toBe('running');
-      });
+      const first = await installExposed('cdomain-first', { customDomain: 'shared.acme.com' });
 
       expect((await appsRepository.getAppByUrn(first.urn))?.customDomainIntent).toBe('shared.acme.com');
 
       // Mixed case on the way in: DNS is case-insensitive, so the rule cannot be
       // escaped by spelling the same name differently.
-      await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: second.urn, form: { ...exposedForm, customDomain: 'Shared.Acme.Com' } });
-      await waitFor(async () => {
-        expect((await appsRepository.getAppByUrn(second.urn))?.status).toBe('running');
-      });
+      const second = await installExposed('cdomain-second', { customDomain: 'Shared.Acme.Com' });
 
       // Normalized on the way in — DNS is case-insensitive, and every reader of
       // the column (the exclusivity check, the bind pass, the picker's options)
@@ -900,6 +931,12 @@ describe('App lifecycle', () => {
       expect(authorize).not.toHaveBeenCalled();
 
       // Another app now waits for it, spelled differently: the same save would cancel that move.
+      //
+      // Written straight to the column because the install form normalizes the case this
+      // case is about. That makes the write racy against the install's own exposure sync,
+      // which is why `installExposed` returns only once that pass is over — see
+      // `runToQuiescence`. Without it this write lands in a row the bind pass then clears,
+      // and `authorize` is never called.
       await installExposed('cdomain-waiting');
       await db.update(appTable).set({ customDomainIntent: 'Comfy.Acme.com' }).where(eq(appTable.appName, 'cdomain-waiting'));
 

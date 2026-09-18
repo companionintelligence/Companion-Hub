@@ -10,8 +10,9 @@ This complements, and does not replace, the existing single-node model recommend
 - **Pairing**: a two-way handshake — the requesting Hub sends a token to the candidate; the candidate's operator approves or rejects in **Settings → Network → Hub Pool**; on approval, the candidate issues its own token back. Each side ends up trusting the other with one bearer token per direction (see `hub_pool_peer` in `schema.ts` for the exact model). Rejecting, or never approving, leaves nothing paired. Rejecting and unpairing both send a best-effort *authenticated* notification — the caller presents the token the other side issued it — so the other Hub drops its half immediately instead of forwarding work to a node that will now reject it.
 - **Routing**: once at least one peer is `connected`, every app using `hub_integration.inference` is routed through this Hub's own pool proxy (`/api/inference/pool/*`) instead of a directly-resolved backend URL — this is a global switch, not a per-app setting. With zero connected peers, nothing changes: a single-node Hub behaves exactly as it did before this feature existed. A routed app is also handed its chat model from what the *pool* serves — this node's healthy backends plus every usable peer's inventory — filtered by the app's requirements (tool calling, minimum context), and AI apps whose env would change are regenerated and restarted when pool membership changes. See [App inference handout](system/backend.md#app-inference-handout).
 - **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle.
-- **The `auto` alias**: an app may ask for model `auto` — "whatever this Hub's default LLM is" — on any pooled route, exactly as it always could on the peerless `/api/inference/v1` path. The pool resolves it on the node that received the request (`InferenceRouterService.resolveAutoModel`: the pinned LLM, else a loaded one, else the first model a healthy backend reports), maps the catalog id to the engine id the inventories list (`qwen3-6-27b` → `qwen3.6:27b`), rewrites the body, and only then ranks candidates — so a peer holding that model is as eligible as the local engine. A Hub with nothing to stand `auto` in for answers 502 saying so, rather than `No pool node currently has model "auto"`. Apps whose primary is the alias (OpenClaw ships `ci-hub/auto`) depend on this: before it, the first connected peer took them off inference entirely.
+- **The `auto` alias**: an app may ask for model `auto` on any pooled route, exactly as it always could on the peerless `/api/inference/v1` path. The pool resolves it against every node that could take the request — this Hub and each usable peer, by the same rules candidate ranking applies — and picks, in order: the model named in **Settings → Inference** on the Hub that received the request, wherever in the pool it is served; otherwise the best chat model the pool holds, ranked tool-capable first (known, then unknown, then known tool-less), then 7 B parameters or more, then the catalog's intelligence index, parameter count, how many nodes serve it, and whether this Hub does. Embedding and rerank models are never picked, and the ranking never picks an Ollama Cloud (`:cloud`) tag, which would send the prompt off the appliance — only a Settings → Inference choice can name one. The resolved engine id replaces `auto` in the body before candidates are ranked, so a peer holding the model is as eligible as the local engine. `POST /api/show` resolves `auto` the same way, so the model an app is told about is the model its chat runs on; when no local engine holds that model, a peer that does describes it. A pool with no chat model anywhere answers 502 saying so. See `pool-auto-model.ts` for the fleet evidence behind the order: resolving on the entry node alone handed agents `gemma3:1b` and `deepseek-r1:8b` — the latter with `qwen3.6:27b` on the same disk — and a Hub with no local LLM answered 502 while its peers held a dozen. Every Hub in a pool resolves `auto` to the same model unless its Settings say otherwise, so the nodes holding that model carry the pool's `auto` traffic.
 - **Failover**: the proxy tries candidates in the ranked order above. It fails over on a connection error, a timeout waiting for response headers (on a streamed request the first byte comes only after model load *and* prompt evaluation, so the budget grows with the prompt: `max(HUB_POOL_FIRST_BYTE_TIMEOUT_MS, bytes/4 ÷ HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC)` — defaults 300 s and 50 tok/s, so a 160 KB agent turn gets 800 s. Ollama's log on beta-max showed a 47k-token turn 98 % evaluated at 296.8 s when a fixed 300 s budget cancelled it and moved the work, cold, to a peer), a 5xx, or a 408/429 — never on an ordinary 4xx, since retrying a malformed request on a different machine wouldn't help. A peer additionally gets failed over on 401/403/404: those come from the peer's *own* pairing checks (it stopped trusting our token, or was unpaired from its side) and say nothing about the app's request, so the request moves to the next node and that peer's cached capabilities are dropped until its next successful health poll. Failover stops as soon as a response is committed — once status and headers have gone to the app, a stream that then dies is left to die rather than restarted on another node.
+- **Client hang-ups**: if the app closes its connection before the response finishes, the proxy aborts the upstream request, so the engine stops instead of prefilling a turn nobody will read (a 47k-token agent turn is about 300 s of prefill on a GPU node). This holds on both ends of a pool hop: the peer that served the work sees the sending Hub's aborted forward close and aborts its own engine request. A hang-up before response headers is never failed over — the turn is not placed on another candidate — and the routing log records it as `failed` with no status.
 - **Recovery**: a peer that fails three consecutive health polls is marked `unreachable` and stops being offered as a candidate, but it keeps being polled — the first successful probe puts it straight back to `connected`. No operator action is needed, and unpairing is never the way to fix a node that was merely offline.
 
 ## Required configuration
@@ -77,7 +78,12 @@ Both groups keep the ranker's order, and [pins](#manual-routing-pins) reorder wi
 pin at an over-ceiling node cannot move a long prompt back to the front. Only chat and completion
 routes are judged (`/v1/chat/completions`, `/v1/completions`, `/api/chat`, and `/api/generate`).
 Embeddings are not: a batch is many short inputs, so its size says nothing about the prefill a
-ceiling is for.
+ceiling is for. Nor is the peer `POST /api/show` lookup, which ranks the same candidates to find a
+node that can describe a model: it is answered from metadata already on disk in under 0.3 s whatever
+its body says, so measuring that body would only walk past the node best placed to answer. That
+exemption covers both prompt-size decisions — this ceiling and the
+[measured-throughput placement](#throughput-aware-placement) below — because the lookup supplies no prompt
+to judge at all.
 
 **A ceiling never refuses work.** An over-ceiling node stays at the end of the failover order, so it
 still serves the request when every node under its ceiling fails. When every candidate is over its
@@ -467,6 +473,47 @@ be fatal, and it is not:
 - The reason appears as `localNode.identity.identityError` on `/pool/status`, exactly the way a down
   inference backend already appears as `capabilitiesError`.
 
+### A peer whose identity changed
+
+A Hub whose database is recreated comes back with a new UUID and key under the same MagicDNS name. On
+2026-09-16 a compose project-name fix created a fresh `ci_hub_pgdata` volume on beta-max. Every peer
+still had the old identity pinned. Their signed probes addressed a node that no longer existed, so
+beta-max answered each one with a 401. The peers logged `capabilities probe ... failed: 401` for 28
+hours, and nothing said the pairing had to be redone.
+
+A Hub now tells that case apart from the others:
+
+- A signed request carries `X-Hub-Pool-Recipient`, the UUID the sender has pinned for the receiver.
+  The signature already covers that value, and the header only puts it in the clear.
+- When the header names a UUID the receiver does not hold, the guard answers 401 with
+  `X-Hub-Pool-Refusal: identity-mismatch`. This is the one refusal the guard names. It tells a caller
+  only that a UUID it already knew is no longer this node's. The current UUID is never sent.
+- The prober classifies each failed health probe as `unreachable` (no answer, a 5xx, or a 403),
+  `unauthorized` (a bare 401), or `identity_changed` (a 401 with the refusal header). The verdict
+  appears as `probeFailure` on each peer in `GET /pool/status`, with an `action` that names the
+  commands to run. `cihub pool status` prints it under **Peers refusing this Hub**, and
+  `cihub pool doctor` fails check F1.
+- `unreachable` keeps the normal cadence, because it clears on its own. The two refusal kinds back
+  off from two polls to at most 15 minutes. `identity_changed` also leaves routing on the first
+  strike instead of the third.
+- This node never trusts the new key by itself. A far end that says its key changed is exactly what an
+  impostor at that name would say.
+
+If `cihub pool status` shows **identity changed** for a peer, re-pair in this order:
+
+1. On this Hub, run `cihub pool unpair <peer name>`. The stale row has to go first, because
+   `pair` answers 409 while it exists, and a PIN request from the far side is ignored.
+2. On the peer, run `cihub pool pairing-pin`.
+3. On this Hub, run `cihub pool pair <peer name> --pin <digits>`.
+4. On the peer, compare the key fingerprint with this Hub's `cihub pool status`, then run
+   `cihub pool approve <this Hub's name>`.
+
+If it shows **credentials refused** instead, the far end runs a build without the refusal header or
+refused for another reason. Run `cihub pool status` on the peer. If this Hub is not listed there,
+re-pair as above. If it is listed, compare the two clocks: a signed request allows 5 minutes of skew.
+
+The classification is process-local and rebuilt by the next failed probe after a restart.
+
 ### What `/identify` no longer says, and where the name went instead
 
 `GET /api/inference/pool/identify` is unauthenticated and reachable through the Cloudflare tunnel. It
@@ -503,7 +550,7 @@ it"; the PIN-gated exchange answers "and this is who it is".
 4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
 5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
 
-A peer shown **unreachable** needs no operator action: it is skipped while it fails probes and rejoins on the next successful one. Unpairing is for removing a Hub from the pool, not for recovering one.
+A peer shown **unreachable** needs no operator action: it is skipped while it fails probes and rejoins on the next successful one. Unpairing is for removing a Hub from the pool, not for recovering one. The exception is a peer that answers but refuses this Hub, shown as **identity changed** or **credentials refused**. It will not recover by waiting. See [A peer whose identity changed](#a-peer-whose-identity-changed).
 
 To validate a real two-node pool end to end — pairing, routing, load handoff, failover, recovery, the
 kill switch, and the security checks — follow [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md).
@@ -673,6 +720,8 @@ Apps using `hub_integration.inference` get `CI_LLM_BASE_URL`, `OLLAMA_HOST` and 
 |---|---|
 | `POST /v1/chat/completions`, `/v1/completions`, `/v1/embeddings` | `GET /v1/models` |
 | `POST /api/generate`, `/api/chat`, `/api/embeddings`, `/api/embed` | `GET /api/tags`, `GET /api/ps`, `GET /api/version`, `POST /api/show` |
+
+`POST /api/show` is served by this node's engines first. When none of them holds the model, it is asked of a connected peer that does, through that peer's `local/api/show` route — which is what lets an `auto` resolved to a peer-only model be described at all. A peer on a build without that route answers 404, and the caller gets the same 502 as before — so when rolling this out, upgrade the nodes that hold the pool's `auto` model before the nodes that do not, or an app on `auto` there (OpenClaw) cannot describe its model until they are. A peer that has not sent response headers within 15 s is skipped for the next one: the engine answers `/api/show` in under 0.3 s on every node measured, and the lookup would otherwise wait out the 300 s completion budget per stalled peer. On the asking Hub the lookup opens no routing-log row and adds nothing to the peer's queue depth.
 
 `POST /api/pull` and the other model-management natives are deliberately absent — pulling a model is a node-local administrative action, not something the pool should silently perform on whichever machine answered.
 

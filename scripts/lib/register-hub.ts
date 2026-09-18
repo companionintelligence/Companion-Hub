@@ -49,6 +49,8 @@ export type DeviceIdResponse = {
   device_id?: string;
   ci_cloud_url?: string | null;
   registration_url?: string | null;
+  /** Absent on a Hub predating the check. `foreign` means the Hub will refuse to pair; `message` says what to do. */
+  device_id_host?: { status: string; message: string | null };
 };
 
 export type PairResponse = {

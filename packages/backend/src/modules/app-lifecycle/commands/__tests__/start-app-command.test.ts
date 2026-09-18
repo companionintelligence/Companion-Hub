@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
-import { StartAppCommand } from '../start-app-command';
+import { removeRestartingAppContainers, StartAppCommand, startComposeCommand } from '../start-app-command';
 import type { ModuleRef } from '@nestjs/core';
 import type Dockerode from 'dockerode';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -49,6 +49,7 @@ describe('StartAppCommand — pull policy', () => {
   let subnetManager: ReturnType<typeof mock<SubnetManagerService>>;
   let composeArgs: string[];
   let appFilesManager: any;
+  let dockerode: ReturnType<typeof mock<Dockerode>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -108,7 +109,7 @@ describe('StartAppCommand — pull policy', () => {
       subnet: '10.128.10.0/24',
     } as any);
 
-    const dockerode = mock<Dockerode>();
+    dockerode = mock<Dockerode>();
     // @ts-expect-error
     dockerode.pruneContainers.mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 });
 
@@ -163,6 +164,54 @@ describe('StartAppCommand — pull policy', () => {
     await command.execute(appUrn, { skipPull: true });
     const upCmd = composeArgs.find((a) => a.includes('up'));
     expect(upCmd).not.toContain('--pull');
+  });
+
+  it('MUST keep --force-recreate for an ordinary start, whose callers were written against it', async () => {
+    await command.execute(appUrn, {});
+    const upCmd = composeArgs.find((a) => a.includes('up'));
+    expect(upCmd).toBe('up --detach --force-recreate --remove-orphans');
+  });
+
+  it('MUST NOT force-recreate when the Hub boot asks only for changed services (beta-max recreated ci-memory and OpenClaw on a version roll)', async () => {
+    await command.execute(appUrn, { onlyRecreateChanged: true });
+    const upCmd = composeArgs.find((a) => a.includes('up'));
+    // Compose recreates a service only when its config hash changed; everything else keeps running.
+    expect(upCmd).toBe('up --detach --remove-orphans');
+  });
+
+  it('MUST remove a restart-looping container before a boot start, which no longer force-recreates it', async () => {
+    // core-2, 2026-09-17: a ci-memory service sat in `restarting`. The old boot gave it a fresh
+    // container on every version change; a change-only `up` would leave it looping.
+    const events: string[] = [];
+    const docker = fakeDocker([
+      { Id: 'loop', Names: ['/test-app-db-1'], State: 'restarting', Labels: { 'ci-hub.appurn': appUrn } },
+      { Id: 'ok', Names: ['/test-app-web-1'], State: 'running', Labels: { 'ci-hub.appurn': appUrn } },
+    ]);
+    dockerode.listContainers.mockImplementation(docker.listContainers as any);
+    dockerode.getContainer.mockImplementation(((id: string) => ({ remove: async () => events.push(`remove ${id}`) })) as any);
+    dockerService.composeApp.mockImplementation(async (_urn: string, args: string) => {
+      events.push(args);
+    });
+
+    const result = await command.execute(appUrn, { onlyRecreateChanged: true });
+
+    expect(result.success).toBe(true);
+    expect(events).toEqual(['remove loop', 'up --detach --remove-orphans']);
+  });
+
+  it('MUST NOT look for restart-looping containers on an ordinary start, which force-recreates everything anyway', async () => {
+    await command.execute(appUrn, {});
+
+    expect(dockerode.listContainers).not.toHaveBeenCalled();
+  });
+
+  it('SHOULD still start when listing restart-looping containers fails', async () => {
+    dockerode.listContainers.mockRejectedValue(new Error('connect ENOENT /var/run/docker.sock'));
+
+    const result = await command.execute(appUrn, { onlyRecreateChanged: true });
+
+    expect(result.success).toBe(true);
+    expect(composeArgs).toEqual(['up --detach --remove-orphans']);
   });
 
   it('SHOULD remove stale networks before compose up', async () => {
@@ -240,5 +289,71 @@ describe('StartAppCommand — pull policy', () => {
     expect(result.success).toBe(true);
     expect(isRocmKfdPassthroughAvailable).toHaveBeenCalled();
     expect(dockerService.composeApp).toHaveBeenCalled();
+  });
+});
+
+type FakeContainer = { Id: string; Names: string[]; State: string; Labels: Record<string, string> };
+
+/** Answers `listContainers` the way the daemon does: every label filter and one of the status filters must match. */
+function fakeDocker(containers: FakeContainer[]) {
+  const removed: string[] = [];
+  return {
+    removed,
+    listContainers: async (options: { filters: { label: string[]; status: string[] } }) =>
+      containers.filter(
+        (container) =>
+          options.filters.label.every((pair) => {
+            const [key, ...value] = pair.split('=');
+            return container.Labels[key] === value.join('=');
+          }) && options.filters.status.includes(container.State),
+      ),
+    getContainer: (id: string) => ({
+      remove: async () => {
+        removed.push(id);
+      },
+    }),
+  };
+}
+
+describe('removeRestartingAppContainers', () => {
+  const appUrn = 'ci-memory:ci-marketplace' as AppUrn;
+
+  it("removes only this app's restart-looping containers, under the current or the retired label", async () => {
+    const docker = fakeDocker([
+      { Id: 'new-loop', Names: ['/ci-memory_ci-marketplace-api-1'], State: 'restarting', Labels: { 'ci-hub.appurn': appUrn } },
+      // core-2's app containers predate the rename and carry only the ci-os-hub labels.
+      { Id: 'legacy-loop', Names: ['/ci-memory_ci-marketplace-database-1'], State: 'restarting', Labels: { 'ci-os-hub.appurn': appUrn } },
+      {
+        Id: 'both-labels',
+        Names: ['/ci-memory_ci-marketplace-gateway-1'],
+        State: 'restarting',
+        Labels: { 'ci-hub.appurn': appUrn, 'ci-os-hub.appurn': appUrn },
+      },
+      { Id: 'healthy', Names: ['/ci-memory_ci-marketplace-summary-service-1'], State: 'running', Labels: { 'ci-hub.appurn': appUrn } },
+      {
+        Id: 'other-app',
+        Names: ['/ci-openclaw_ci-marketplace-ci-openclaw-1'],
+        State: 'restarting',
+        Labels: { 'ci-hub.appurn': 'ci-openclaw:ci-marketplace' },
+      },
+    ]);
+
+    const removed = await removeRestartingAppContainers(docker as unknown as Dockerode, appUrn);
+
+    expect(docker.removed).toEqual(['new-loop', 'both-labels', 'legacy-loop']);
+    expect(removed).toEqual(['ci-memory_ci-marketplace-api-1', 'ci-memory_ci-marketplace-gateway-1', 'ci-memory_ci-marketplace-database-1']);
+  });
+});
+
+describe('startComposeCommand', () => {
+  it('keeps --pull always independent of the recreate mode, so a boot reconcile still honours force_pull', () => {
+    expect(startComposeCommand({ forcePull: true, onlyRecreateChanged: true })).toBe('up --detach --remove-orphans --pull always');
+    expect(startComposeCommand({ forcePull: true })).toBe('up --detach --force-recreate --remove-orphans --pull always');
+  });
+
+  it('never emits empty arguments, which compose would reject as a service name', () => {
+    for (const command of [startComposeCommand({ forcePull: false }), startComposeCommand({ forcePull: false, onlyRecreateChanged: true })]) {
+      expect(command.split(' ')).not.toContain('');
+    }
   });
 });
