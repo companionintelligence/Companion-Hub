@@ -1,6 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AppCredentialsService } from '../app-credentials.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
@@ -19,10 +19,34 @@ import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
+import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { cloudProviderManagedKeys } from '../cloud-provider-env';
+import { differingHandoutKeys, HANDOUT_RECORDS_PATH, type RecordedHandout } from '../app-handout-record';
+import fs from 'node:fs';
 
 const OLLAMA_BASE_URL = 'http://ci-hub-ollama:11434';
 const OLLAMA_OPENAI_URL = `${OLLAMA_BASE_URL}/v1`;
+const POOL_DIRECTIONS_ON = { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } };
+
+/** A connected peer row as the health poll leaves it: its last capability snapshot cached on the row. */
+const makePeer = (
+  name: string,
+  modelsLoaded: string[],
+  overrides: Partial<HubPoolPeer> = {},
+  capabilities: Record<string, unknown> = {},
+): HubPoolPeer =>
+  ({
+    id: `peer-${name}`,
+    nodeFqdn: `${name}.tailnet.ts.net`,
+    displayName: name,
+    direction: 'outbound',
+    status: 'connected',
+    enabled: true,
+    consecutiveFailures: 0,
+    lastSeenAt: new Date().toISOString(),
+    lastCapabilities: { hardwareTier: 'high', backends: [{ type: 'ollama', healthy: true, modelsLoaded }], ...capabilities },
+    ...overrides,
+  }) as unknown as HubPoolPeer;
 
 const makeLlm = (id: string, backendModelId: string, minVramMb = 0, minRamMb = 0, backend: CuratedModel['backend'] = 'ollama'): CuratedModel =>
   ({
@@ -51,8 +75,25 @@ const makeLlm = (id: string, backendModelId: string, minVramMb = 0, minRamMb = 0
       pinnedByDefault: false,
       memoryFootprintMb: 0,
     },
+    // Both apps this service serves call tools, so a row without the flag is one the handout must
+    // refuse. Every real catalog LLM row sets it explicitly; the fixture does the same.
+    metadata: { capabilities: { tools: true } },
     tiers: { high: 'recommended', medium: 'available', low: 'available', cpuOnly: 'available' },
   }) as unknown as CuratedModel;
+
+/** A catalog LLM row with the capability flags and window that decide whether an app may be handed it. */
+const makeCapableLlm = (
+  id: string,
+  backendModelId: string,
+  options: { tools: boolean; contextWindow: number; intelligenceIndex?: number },
+): CuratedModel => {
+  const base = makeLlm(id, backendModelId);
+  return {
+    ...base,
+    runtime: { ...base.runtime, contextWindow: options.contextWindow },
+    metadata: { intelligenceIndex: options.intelligenceIndex, capabilities: { tools: options.tools } },
+  } as CuratedModel;
+};
 
 const makeEmbedding = (id: string, backendModelId: string): CuratedModel =>
   ({
@@ -108,6 +149,7 @@ describe('AppCredentialsService', () => {
   let luceboxBackend: MockProxy<LuceboxBackend>;
   let configurationService: MockProxy<ConfigurationService>;
   let hubPoolPeerService: MockProxy<HubPoolPeerService>;
+  let testingModule: TestingModule;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -161,7 +203,7 @@ describe('AppCredentialsService', () => {
     cloudFallback.getEnabledProviders.mockReturnValue([]);
     cloudFallback.toAppEnv.mockReturnValue({});
 
-    const module: TestingModule = await Test.createTestingModule({
+    testingModule = await Test.createTestingModule({
       providers: [
         AppCredentialsService,
         { provide: LoggerService, useValue: logger },
@@ -185,7 +227,12 @@ describe('AppCredentialsService', () => {
       ],
     }).compile();
 
-    service = module.get<AppCredentialsService>(AppCredentialsService);
+    service = testingModule.get<AppCredentialsService>(AppCredentialsService);
+  });
+
+  afterEach(async () => {
+    // Drain handout-record writes so one test's file cannot land after the next test resets the volume.
+    await service.onApplicationShutdown();
   });
 
   describe('getCredentials — local (direct Ollama) path', () => {
@@ -250,9 +297,10 @@ describe('AppCredentialsService', () => {
       expect(openclaw.env.CI_LLM_NUM_CTX).toBe('32768');
     });
 
-    it('warns when no model can satisfy hermes-agent’s minimum context window', async () => {
-      // A model whose own window is below the 64K floor cannot satisfy it: the
-      // recommendation caps to the model window and we surface a warning.
+    it('hands hermes-agent no model rather than one below its 64K minimum, and says why in CI_INFERENCE_ERROR', async () => {
+      // This used to cap num_ctx to the model's 32K window, log "hermes-agent may refuse to start",
+      // and hand the model out anyway — and Hermes then refused to start. An explicit error in a
+      // 200 body is the only thing the bootstrap script will actually write into the app's env.
       const smallModel = {
         ...makeLlm('small-1b', 'small:1b', 1024, 2048),
         runtime: { ...makeLlm('small-1b', 'small:1b').runtime, contextWindow: 32768 },
@@ -263,8 +311,31 @@ describe('AppCredentialsService', () => {
       service.invalidateCache();
 
       const config = await service.getCredentials('hermes-agent');
-      expect(config.env.HERMES_NUM_CTX).toBe('32768');
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('may refuse to start'));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.env.HERMES_DEFAULT_MODEL).toBeUndefined();
+      expect(config.env.HERMES_NUM_CTX).toBeUndefined();
+      expect(config.env.CI_INFERENCE_ERROR).toContain('small:1b');
+      expect(config.env.CI_INFERENCE_ERROR).toContain('32768-token window (needs 64000)');
+      expect(config.chatModelError).toBe(config.env.CI_INFERENCE_ERROR);
+      // Managed even though unset, so the bootstrap script strips a model left from an earlier run.
+      expect(config.managedKeys).toEqual(expect.arrayContaining(['HERMES_DEFAULT_MODEL', 'CI_INFERENCE_ERROR']));
+      // Pulling a model the app would refuse spends the disk for nothing.
+      expect(modelPuller.startPull).not.toHaveBeenCalledWith('small-1b', expect.anything());
+    });
+
+    it('hands openclaw no model that lacks tool calling, even when it is the only one installed', async () => {
+      const noTools = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768 });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([noTools]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === 'gemma3-1b' ? noTools : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.DEFAULT_MODEL).toBeUndefined();
+      expect(config.env.CI_INFERENCE_ERROR).toContain('gemma3:1b (no tool calling)');
     });
 
     it('always includes OLLAMA_HOST (direct native ollama url) even when no model is runnable', async () => {
@@ -495,11 +566,14 @@ describe('AppCredentialsService', () => {
     // shipped; this endpoint did not. Apps that bootstrap their inference config over HTTP rather
     // than from app.env — CI-OpenClaw and CI-Hermes, the only two slugs this endpoint serves — were
     // therefore the one class of app that never used the pool, on every pooled node. Both paths now
-    // call InferenceEndpointService.routeThroughPool, so these assertions and the resolver's own
+    // call InferenceEndpointService.resolvePoolRouting, so these assertions and the resolver's own
     // pooling block are pinning a single implementation.
     beforeEach(() => {
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
       hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([]);
+      modelRegistry.getCatalog.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b'), makeLlm('hermes4-8b', 'hermes4:8b')]);
       service.invalidateCache();
     });
 
@@ -509,9 +583,10 @@ describe('AppCredentialsService', () => {
       expect(config.endpointUrl).toMatch(/\/api\/inference\/pool\/v1$/);
       expect(config.env.OPENAI_API_BASE).toBe(config.endpointUrl);
       expect(config.env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
-      // Transport only. The proxy picks whichever pool node actually has this model, so the
-      // resolved model id, the backend name, and the context cap survive the override untouched.
+      expect(config.routedThroughPool).toBe(true);
+      // This node serves the model itself, so its own memory still sizes the context window.
       expect(config.chatModelId).toBe('hermes4:70b');
+      expect(config.chatModelServedBy).toEqual(['this Hub']);
       expect(config.env.DEFAULT_MODEL).toBe('hermes4:70b');
       expect(config.provider).toBe('ollama');
       expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
@@ -549,6 +624,247 @@ describe('AppCredentialsService', () => {
 
       expect(config.provider).toBe('cloud');
       expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+    });
+  });
+
+  describe('getCredentials — pooled handout chooses from what the pool serves (core-4, 2026-09-17)', () => {
+    // core-4's own Ollama held only gemma3:1b (no tools, 32K window). Its one peer, core-6, served
+    // qwen3-coder:30b (tools, 262K). The operator's preferred model was qwen3-coder-30b. Both
+    // bootstrap.env handouts named gemma3:1b with HERMES_NUM_CTX=32000, and the next fetch queued a
+    // ~21 GB pull of qwen3-coder:30b onto core-4.
+    const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32768, intelligenceIndex: 4.8 });
+    const qwenCoder = makeCapableLlm('qwen3-coder-30b', 'qwen3-coder:30b', { tools: true, contextWindow: 262144, intelligenceIndex: 9.6 });
+    const core6 = makePeer('core-6', ['qwen3-coder:30b', 'qwen3-coder-30b', 'nomic-embed-text:latest']);
+
+    beforeEach(() => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 6144, tier: 'low' });
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: 'qwen3-coder-30b',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      // The recommender lists the preferred model for this hardware, which is what made the old
+      // handout queue a pull of it.
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([qwenCoder, gemma1b]);
+      modelRegistry.getCatalog.mockReturnValue([gemma1b, qwenCoder, makeEmbedding('nomic-embed-text', 'nomic-embed-text')]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => [gemma1b, qwenCoder].find((m) => m.id === id));
+      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([core6]);
+      service.invalidateCache();
+    });
+
+    it('hands openclaw and hermes-agent the model core-6 serves, not the local gemma3:1b', async () => {
+      const openclaw = await service.getCredentials('openclaw');
+      const hermes = await service.getCredentials('hermes-agent');
+
+      for (const config of [openclaw, hermes]) {
+        expect(config.routedThroughPool).toBe(true);
+        expect(config.chatModelId).toBe('qwen3-coder:30b');
+        expect(config.chatModelServedBy).toEqual(['core-6']);
+        expect(config.chatModelReady).toBe(true);
+        expect(config.chatModelError).toBeNull();
+      }
+      expect(openclaw.env.DEFAULT_MODEL).toBe('qwen3-coder:30b');
+      expect(hermes.env.HERMES_DEFAULT_MODEL).toBe('qwen3-coder:30b');
+    });
+
+    it('sizes num_ctx for the peer that serves the model, not from core-4 memory, and still floors hermes-agent at 64000', async () => {
+      const openclaw = await service.getCredentials('openclaw');
+      const hermes = await service.getCredentials('hermes-agent');
+
+      // core-4's 6 GB budget would have produced 16384; the model runs on core-6.
+      expect(openclaw.env.CI_LLM_NUM_CTX).toBe('32768');
+      expect(hermes.env.HERMES_NUM_CTX).toBe('64000');
+    });
+
+    it('does not queue a pull of a model the pool already serves when a credentials GET arrives', async () => {
+      const config = await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(modelPuller.startPull).not.toHaveBeenCalledWith('qwen3-coder-30b', expect.anything());
+      const chat = config.prePull.find((decision) => decision.kind === 'chat');
+      expect(chat).toEqual({ kind: 'chat', catalogId: 'qwen3-coder-30b', pull: false, reason: 'already served by pool node(s) core-6' });
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('pre-pull decision slug=openclaw chat=qwen3-coder-30b pull=false'));
+      // The embedder core-6 lists under its implicit :latest tag is not pulled either.
+      expect(modelPuller.startPull).not.toHaveBeenCalledWith('nomic-embed-text', expect.anything());
+    });
+
+    it('skips a preferred model that fails the app and hands out the best one that meets it', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: 'gemma3-1b',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b', 'gemma3:1b'])]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe('qwen3-coder:30b');
+    });
+
+    it('honours a preferred model the pool serves over a higher-ranked one', async () => {
+      const qwen8b = makeCapableLlm('qwen3-8b', 'qwen3:8b', { tools: true, contextWindow: 40960, intelligenceIndex: 5 });
+      modelRegistry.getCatalog.mockReturnValue([gemma1b, qwenCoder, qwen8b]);
+      modelRegistry.getModelsForHardware.mockReturnValue([gemma1b, qwenCoder, qwen8b]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => [gemma1b, qwenCoder, qwen8b].find((m) => m.id === id));
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: 'qwen3-8b',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b', 'qwen3:8b'])]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe('qwen3:8b');
+    });
+
+    it('hands out an explicit error, not gemma3:1b, when no pool node serves a model the app can use', async () => {
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['gemma3:1b'])]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+      const dotenv = service.serializeAsDotenv(config);
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.env.DEFAULT_MODEL).toBeUndefined();
+      expect(config.env.CI_INFERENCE_ERROR).toContain("No chat model served by this Hub's pool meets openclaw's requirements (tool calling)");
+      expect(config.env.CI_INFERENCE_ERROR).toContain('gemma3:1b (no tool calling)');
+      expect(dotenv).toMatch(/^CI_INFERENCE_ERROR="No chat model/m);
+      expect(config.managedKeys).toEqual(expect.arrayContaining(['DEFAULT_MODEL', 'CI_INFERENCE_ERROR']));
+    });
+
+    it('ignores peers the proxy would not send work to: outbound off, peer disabled, or not accepting work', async () => {
+      const cases: Array<{ label: string; setup: () => void }> = [
+        {
+          label: 'outbound off',
+          setup: () => hubPoolPeerService.directions.mockReturnValue({ ...POOL_DIRECTIONS_ON, outbound: { enabled: false, disabledBy: 'setting' } }),
+        },
+        { label: 'peer disabled', setup: () => hubPoolPeerService.listConnectedPeers.mockResolvedValue([{ ...core6, enabled: false }]) },
+        {
+          label: 'not accepting work',
+          setup: () =>
+            hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b'], {}, { acceptingWork: false })]),
+        },
+      ];
+      for (const { label, setup } of cases) {
+        hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([core6]);
+        setup();
+        service.invalidateCache();
+
+        const config = await service.getCredentials('openclaw');
+
+        expect({ label, model: config.chatModelId }).toEqual({ label, model: null });
+      }
+    });
+
+    it('serves the pool instead of cloud when this node backend is down but a peer serves the app', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-operator-key', enabled: true, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o' },
+      ] as CloudProviderConfig[]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.provider).toBe('ollama');
+      expect(config.endpointUrl).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(config.endpointReady).toBe(true);
+      expect(config.chatModelId).toBe('qwen3-coder:30b');
+    });
+
+    it("does not pull this node's hardware recommendation for an app the pool already serves when no model was chosen", async () => {
+      const qwen36 = makeCapableLlm('qwen3-6-27b', 'qwen3.6:27b', { tools: true, contextWindow: 262144, intelligenceIndex: 9 });
+      modelRegistry.getCatalog.mockReturnValue([gemma1b, qwenCoder, qwen36]);
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3.6:27b', 'nomic-embed-text:latest'])]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.chatModelId).toBe('qwen3.6:27b');
+      expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'qwen3-coder-30b', pull: false });
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
+    });
+
+    it('still pulls when neither this node nor any pool node serves the recommended model', async () => {
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(config.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'qwen3-coder-30b', pull: true });
+      expect(modelPuller.startPull).toHaveBeenCalledWith('qwen3-coder-30b', { bestEffort: true });
+    });
+  });
+
+  describe('previewCredentials and lastHandout', () => {
+    it('previews without pulling, caching, or recording a handout', async () => {
+      const preview = await service.previewCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      // The same default setup makes getCredentials pre-pull hermes4-70b (see the pre-pull suite).
+      expect(preview.prePull.find((d) => d.kind === 'chat')).toMatchObject({ catalogId: 'hermes4-70b', pull: true });
+      expect(modelPuller.startPull).not.toHaveBeenCalled();
+      expect(await service.lastHandout('openclaw')).toBeNull();
+
+      await service.getCredentials('openclaw');
+      expect(hardwareInspector.getProfile).toHaveBeenCalledTimes(2);
+    });
+
+    it('records what each app was actually served, including cache hits', async () => {
+      const served = await service.getCredentials('openclaw');
+      const first = await service.lastHandout('openclaw');
+      expect(first).toMatchObject({ chatModelId: served.chatModelId, routedThroughPool: false, endpointUrl: served.endpointUrl });
+
+      await service.getCredentials('openclaw');
+      expect((await service.lastHandout('openclaw'))?.envDigests).toEqual(first?.envDigests);
+      expect(await service.lastHandout('hermes-agent')).toBeNull();
+    });
+
+    it('still knows what an app holds after the Hub restarts, without writing its keys to disk', async () => {
+      // App containers keep running through a Hub restart and fetch bootstrap.env only when they
+      // start. A record lost with the process made every such app read as stale, and the next
+      // refresh restarted it for nothing.
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-secret' });
+      const served = await service.getCredentials('openclaw');
+      await service.onApplicationShutdown();
+
+      const restarted = new AppCredentialsService(
+        logger,
+        hardwareInspector,
+        modelRegistry,
+        modelPuller,
+        cloudFallback,
+        ollamaBackend,
+        configurationService,
+        testingModule.get(InferenceEndpointService),
+      );
+      const record = await restarted.lastHandout('openclaw');
+
+      expect(record).toMatchObject({ chatModelId: served.chatModelId, endpointUrl: served.endpointUrl });
+      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual([]);
+      expect(await fs.promises.readFile(HANDOUT_RECORDS_PATH, 'utf8')).not.toContain('sk-operator-secret');
+
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-rotated' });
+      expect(differingHandoutKeys(record as RecordedHandout, await restarted.previewCredentials('openclaw'))).toEqual(['CI_CLOUD_OPENAI_API_KEY']);
     });
   });
 
@@ -638,6 +954,10 @@ describe('AppCredentialsService', () => {
         embeddingsModelId: null,
         chatModelReady: false,
         provider: 'ollama' as const,
+        routedThroughPool: false,
+        chatModelServedBy: [],
+        chatModelError: null,
+        prePull: [],
         env: {
           SIMPLE: 'plain',
           WITH_SPACES: 'foo bar',
@@ -672,17 +992,44 @@ describe('AppCredentialsService', () => {
       expect(config.endpointReady).toBe(false);
     });
 
-    it('exposes managedKeys covering env keys plus the always-managed num_ctx key', async () => {
-      // Default setup has no loaded model, so HERMES_NUM_CTX is not emitted — but it
-      // must still be declared managed so header consumers drop a stale value.
+    it('exposes managedKeys covering env keys plus the always-managed num_ctx and error keys', async () => {
+      // Default setup has no loaded model, so neither is emitted — but each must still be declared
+      // managed so header consumers drop a stale value.
       const config = await service.getCredentials('hermes-agent');
       expect(config.env.HERMES_NUM_CTX).toBeUndefined();
+      expect(config.env.HERMES_DEFAULT_MODEL).toBeUndefined();
       expect(config.managedKeys).toContain('HERMES_NUM_CTX');
       for (const k of Object.keys(config.env)) {
         expect(config.managedKeys).toContain(k);
       }
-      const expected = [...new Set([...Object.keys(config.env), 'HERMES_NUM_CTX', ...cloudProviderManagedKeys()])];
+      const expected = [...new Set([...Object.keys(config.env), 'HERMES_NUM_CTX', 'CI_INFERENCE_ERROR', ...cloudProviderManagedKeys()])];
       expect(config.managedKeys.sort()).toEqual(expected.sort());
+    });
+
+    it("leaves an app's last model in place when the container starts before Ollama is up", async () => {
+      // Declaring DEFAULT_MODEL managed here would make bootstrap-from-hub.sh strip a model that works
+      // as soon as Ollama finishes starting, and the app would run with none until its next restart.
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.managedKeys).not.toContain('DEFAULT_MODEL');
+      expect(config.managedKeys).toEqual(expect.arrayContaining(['CI_LLM_NUM_CTX', 'CI_INFERENCE_ERROR']));
+    });
+
+    it('strips the stale model once a running backend has judged every installed model unsuitable', async () => {
+      const gemma1b = makeCapableLlm('gemma3-1b', 'gemma3:1b', { tools: false, contextWindow: 32000 });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([gemma1b]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBeNull();
+      expect(config.chatModelError).toContain('gemma3:1b (no tool calling)');
+      expect(config.managedKeys).toContain('DEFAULT_MODEL');
     });
 
     it('always defaults apiVersion to 1', async () => {
