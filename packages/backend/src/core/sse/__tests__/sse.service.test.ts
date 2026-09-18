@@ -36,6 +36,16 @@ describe('SSEService app stream', () => {
     expect(JSON.parse(second.data as string)).toEqual({ event: 'install_queue', active: null, queued: [] });
   });
 
+  it('reports whether a client is listening on the app topic', () => {
+    expect(service.hasSubscribers('app')).toBe(false);
+
+    const subscription = service.getAppEventsObservable().subscribe();
+    expect(service.hasSubscribers('app')).toBe(true);
+
+    subscription.unsubscribe();
+    expect(service.hasSubscribers('app')).toBe(false);
+  });
+
   it('greets a second subscriber independently (a reconnecting tab gets its own hello)', async () => {
     const a = await collect(1);
     const b = await collect(1);
