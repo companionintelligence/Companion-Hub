@@ -16,6 +16,9 @@ const logsPageHref = '/settings?tab=logs';
 /**
  * Map Companion Portal's public-DNS failure class onto the message the user sees. An
  * unknown or absent code (older Companion Portal) falls back to the generic copy.
+ *
+ * The SSE event carries only the class, not the Portal's own message, so each class
+ * gets translated copy here.
  */
 const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   conflict: 'APP_ERROR_PUBLIC_DNS_CONFLICT',
@@ -27,6 +30,13 @@ const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   // The subdomain is the problem, not the domain — pointing the user at the
   // domain would be the same wrong turn in a class we ourselves introduced.
   invalid_subdomain: 'APP_ERROR_PUBLIC_DNS_INVALID_SUBDOMAIN',
+  // The plan is the cause, and the Portal refuses every retry the same way, so
+  // this copy names the plan and never promises a retry.
+  subdomain_quota_exceeded: 'APP_ERROR_PUBLIC_DNS_QUOTA_EXCEEDED',
+  duplicate_subdomain: 'APP_ERROR_PUBLIC_DNS_DUPLICATE_SUBDOMAIN',
+  release_pending: 'APP_ERROR_PUBLIC_DNS_RELEASE_PENDING',
+  // The Portal could not record the app, changed nothing, and the next sync retries.
+  write_failed: 'APP_ERROR_PUBLIC_DNS_TEMPORARY',
 };
 
 export const SSEProvider = ({ children }: PropsWithChildren) => {

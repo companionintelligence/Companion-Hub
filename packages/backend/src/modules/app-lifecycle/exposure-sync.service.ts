@@ -115,8 +115,12 @@ function findStaleHost(entries: readonly TailscaleServeEntry[], port: number, se
  * Distinguishing a DNS conflict from a domain or zone problem prevents operators
  * from investigating the wrong cause (CI-Portal#403). The generic wording remains
  * available when an older Portal sends no details.
+ *
+ * Only `api_error` and unknown reasons fall through to the "usually transient"
+ * wording. A plan-limit refusal read that way would send operators to wait for a
+ * retry that the Portal refuses every time.
  */
-function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
+export function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
   if (failures.length === 0) {
     return "verify the selected domain's zone is provisioned in CI-Cloud for this device.";
   }
@@ -130,6 +134,14 @@ function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
           return `${failure.app}: the selected domain is not provisioned for this device in CI-Cloud (${failure.message ?? 'no detail'})`;
         case 'invalid_subdomain':
           return `${failure.app}: the requested subdomain is not a valid DNS label (${failure.message ?? 'no detail'})`;
+        case 'subdomain_quota_exceeded':
+          return `${failure.app}: the organization's plan includes no more public app addresses, so CI-Cloud refused it and retrying will not help until another app's public address is removed or the plan is upgraded (${failure.message ?? 'no detail'})`;
+        case 'duplicate_subdomain':
+          return `${failure.app}: another app in this sync claimed the same subdomain first and CI-Cloud kept that app's address (${failure.message ?? 'no detail'})`;
+        case 'release_pending':
+          return `${failure.app}: its previous public address has not been released yet, so CI-Cloud kept it on its current address and a later sync retries the change (${failure.message ?? 'no detail'})`;
+        case 'write_failed':
+          return `${failure.app}: CI-Cloud could not record the app and changed nothing about it, and the next sync retries (${failure.message ?? 'no detail'})`;
         default:
           return `${failure.app}: Cloudflare rejected the DNS write, usually transient (${failure.message ?? 'no detail'})`;
       }

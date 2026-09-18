@@ -423,6 +423,54 @@ describe('AppLifecycleService', () => {
       );
     });
 
+    it('blames the plan, not Cloudflare, when the Portal refuses an app over the quota', async () => {
+      // Once the Portal enforces the plan, an organization at its allowance gets this refusal
+      // for every further app it publishes, and every retry is refused the same way.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([
+        {
+          appName: 'n8n',
+          exposedLocal: true,
+          status: 'running',
+          localSubdomain: 'n8n',
+          appStoreSlug: 'ci-marketplace',
+        },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: ['n8n'],
+        failures: [
+          {
+            app: 'n8n',
+            hostname: 'n8n-laptop-cid.companionintelligence.com',
+            reason: 'subdomain_quota_exceeded',
+            message: 'Your plan includes 3 public subdomains (the hub URL does not count). Remove an app or upgrade to publish more.',
+          },
+        ],
+        synced: 0,
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("n8n: the organization's plan includes no more public app addresses"));
+      expect(logger.error).not.toHaveBeenCalledWith(expect.stringContaining('usually transient'));
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'public_dns_error', appUrn: 'n8n:ci-marketplace', errorCode: 'subdomain_quota_exceeded' }),
+        'n8n:ci-marketplace',
+      );
+    });
+
     it('names every failed app in the log, including ones it cannot map to a hostname', async () => {
       // The log used to list only the apps it could rebuild a hostname for, while the
       // count came from result.failed — so a failed app with no DB row (or the
