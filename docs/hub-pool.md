@@ -80,8 +80,10 @@ routes are judged (`/v1/chat/completions`, `/v1/completions`, `/api/chat`, and `
 Embeddings are not: a batch is many short inputs, so its size says nothing about the prefill a
 ceiling is for. Nor is the peer `POST /api/show` lookup, which ranks the same candidates to find a
 node that can describe a model: it is answered from metadata already on disk in under 0.3 s whatever
-its body says, so measuring that body against a ceiling would only walk past the node best placed to
-answer.
+its body says, so measuring that body would only walk past the node best placed to answer. That
+exemption covers both prompt-size decisions — this ceiling and the
+[measured-throughput placement](#throughput-aware-placement) below — because the lookup supplies no prompt
+to judge at all.
 
 **A ceiling never refuses work.** An over-ceiling node stays at the end of the failover order, so it
 still serves the request when every node under its ceiling fails. When every candidate is over its

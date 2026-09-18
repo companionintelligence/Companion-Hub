@@ -1677,14 +1677,15 @@ export class PoolProxyService {
     if (!model) {
       return false;
     }
-    // No `measurePromptBytes`, and that omission is the point rather than an oversight: a prompt
-    // ceiling is a statement about how long a TURN this node is willing to prefill, and a metadata
-    // lookup is not a turn. Its body is the model name — tens of bytes — so measuring it would
-    // compare a node's turn ceiling against a number that has nothing to do with one, and a node
-    // that advertised a small ceiling would be demoted out of first place for a request it can
-    // answer in a millisecond. The exemption is belt-and-braces with `PROMPT_CEILING_PATHS`, which
-    // lists only the four generation paths and so already excludes every {@link MODEL_METADATA_PATHS}
-    // entry on the `proxyRequest` side; keep both, because they guard different callers.
+    // No `prompt`, and that omission is the point rather than an oversight. Both prompt-size
+    // decisions it gates — the operator's ceiling and the measured-throughput demotion — are
+    // statements about how long a TURN a node takes to prefill, and a metadata lookup is not a turn:
+    // the peer answers it from metadata already on disk, in under 0.3 s on every node measured,
+    // whatever the body says. Judging it would compare a node's turn budget against a number that
+    // has nothing to do with one, and walk past the node best placed to answer instantly.
+    // Belt-and-braces with `PROMPT_CEILING_PATHS`, which lists only the four generation paths and so
+    // already excludes every {@link MODEL_METADATA_PATHS} entry on the `proxyRequest` side; keep
+    // both, because they guard different callers.
     const { candidates } = await this.rankCandidates(model);
     for (const candidate of candidates) {
       if (clientClosed.aborted) {
