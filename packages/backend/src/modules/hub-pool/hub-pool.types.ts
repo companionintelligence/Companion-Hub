@@ -84,7 +84,55 @@ export interface PoolPeerCapabilities {
    * Read through `clampPromptCeiling`, never raw — a value this build cannot believe is no ceiling.
    */
   maxPromptTokens?: number;
+  /**
+   * How fast the answering node's own engines have been reading prompts and writing tokens, per
+   * (backend, model), as it measured them serving its apps and its peers. A caller treats it as a
+   * second opinion next to what it timed itself, and believes whichever is slower — see
+   * `hub-pool-throughput.service.ts`.
+   *
+   * ABSENT means unmeasured, and so does every build predating the field; an unmeasured node ranks
+   * exactly as it did before throughput existed. Read through `readAdvertisedThroughput`, never raw.
+   */
+  throughput?: PoolThroughputEstimate[];
   updatedAt: string;
+}
+
+/**
+ * What is known about how fast one engine serves one model. Rates are in the pool's own token
+ * estimate (`bytes / 4` of the forwarded body) because that is the unit the first-byte budget is
+ * sized in, so they can differ from an engine's own tokens-per-second figure.
+ */
+export interface PoolThroughputEstimate {
+  model: string;
+  backend: InferenceBackendType;
+  /** One point per prompt-size band with live evidence, smallest band first. Empty when only decode has been seen. */
+  prefill: PoolPrefillEstimate[];
+  /** Decayed mean generation rate in engine tokens, or `null` when unmeasured. Reported only; ranking does not read it. */
+  decode: PoolDecodeEstimate | null;
+}
+
+export interface PoolPrefillEstimate {
+  /** The band's lower edge in estimated tokens: this point is applied to prompts of this size and larger. */
+  fromTokens: number;
+  /** The estimated size of the prompt behind the evidence. */
+  promptTokens: number;
+  /** Estimated prompt tokens per second to the first byte, rounded down. */
+  tokensPerSec: number;
+  /** `true` when the evidence is a request that ran out of its deadline with no first byte: the node is at least this slow. */
+  deadline: boolean;
+  /** How old the evidence is. An age rather than a timestamp, so two nodes' clocks never have to agree. */
+  ageMs: number;
+}
+
+export interface PoolDecodeEstimate {
+  tokensPerSec: number;
+  ageMs: number;
+}
+
+/** A peer's throughput as `/pool/status` shows it: what this node timed, and what the peer said about itself, both as routing reads them. */
+export interface PoolStatusPeerThroughput {
+  observed: PoolThroughputEstimate[];
+  advertised: PoolThroughputEstimate[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -365,6 +413,8 @@ export interface PoolStatusPeer extends PublicHubPoolPeer {
    * ranker applies it for as long as it still trusts the same snapshot's inventory.
    */
   maxPromptTokens?: number | null;
+  /** The peer's prefill and decode rates, timed here and self-reported, after the same validation and decay the ranker applies. */
+  throughput?: PoolStatusPeerThroughput;
 }
 
 export interface PoolStatusLocalNode {
@@ -389,6 +439,8 @@ export interface PoolStatusLocalNode {
   maxPromptTokens?: number | null;
   /** Which source set {@link maxPromptTokens}: `'env'` is `HUB_POOL_MAX_PROMPT_TOKENS`, which a settings PATCH cannot change. */
   maxPromptTokensSetBy?: 'env' | 'setting' | null;
+  /** This node's own engines' measured rates: exactly what it advertises to peers. */
+  throughput?: PoolThroughputEstimate[];
 }
 
 /**

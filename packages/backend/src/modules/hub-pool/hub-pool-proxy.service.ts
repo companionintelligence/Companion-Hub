@@ -19,6 +19,7 @@ import {
   resolveHubPoolDirections,
   resolvePinFor,
   resolvePoolMaxPromptTokens,
+  sameModelId,
   type HubPoolDirectionalState,
   type HubPoolPin,
 } from '@/common/helpers/hub-pool';
@@ -30,10 +31,23 @@ import {
   type PoolRoutingOutcome,
   type PoolRoutingPin,
   type PoolRoutingPromptCeiling,
+  type PoolRoutingRecordInput,
+  type PoolRoutingThroughput,
+  type PoolRoutingThroughputEstimate,
   type PoolRoutingUsage,
 } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
-import { injectUsageOptIn, tapResponseUsageWhileStreaming } from './response-usage-tap';
+import {
+  HubPoolThroughputService,
+  missesBudget,
+  predictPrefill,
+  prefillPointsOf,
+  readAdvertisedThroughput,
+  type PrefillPrediction,
+  type SourcedPrefillPoint,
+  type ThroughputTarget,
+} from './hub-pool-throughput.service';
+import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -90,6 +104,62 @@ export function firstByteBudgetMs(bodyBytes: number): number {
   return Math.max(CONNECT_TIMEOUT_MS, Math.ceil(estimatePromptTokens(bodyBytes) / MIN_PREFILL_TOKENS_PER_SEC) * 1000);
 }
 
+/**
+ * The deadline a forward is actually placed under: the header wait for a streamed request, the whole
+ * completion for a non-streamed one. One function, because throughput placement predicts against the
+ * same number `fetchWithConnectTimeout` enforces.
+ */
+export function forwardBudgetMs(streaming: boolean, bodyBytes: number): number {
+  return streaming ? firstByteBudgetMs(bodyBytes) : Math.max(COMPLETION_TIMEOUT_MS, firstByteBudgetMs(bodyBytes));
+}
+
+/**
+ * A forward that ran out of its budget, as the abort reason `fetch` rejects with. Typed so a missed
+ * deadline can be recorded as throughput evidence without matching on a message the operator-facing
+ * 502 text depends on.
+ */
+export class PoolForwardDeadlineError extends Error {
+  constructor(
+    message: string,
+    readonly budgetMs: number,
+  ) {
+    super(message);
+    this.name = 'PoolForwardDeadlineError';
+  }
+}
+
+/** Our own budget running out, or undici's 300 s header timer when `poolFetchDispatcher` could not be installed. */
+export function isForwardDeadline(error: unknown): boolean {
+  if (error instanceof PoolForwardDeadlineError) {
+    return true;
+  }
+  const cause = error instanceof Error ? (error as Error & { cause?: { code?: unknown } }).cause : undefined;
+  return cause?.code === 'UND_ERR_HEADERS_TIMEOUT';
+}
+
+/**
+ * `HUB_POOL_THROUGHPUT_PLACEMENT=off` (or `0`/`false`) stops measured rates from reordering candidates.
+ * Measuring and advertising carry on, so turning it back on needs no warm-up. Read per request, like
+ * every other pool override.
+ */
+export const HUB_POOL_THROUGHPUT_PLACEMENT_ENV_VAR = 'HUB_POOL_THROUGHPUT_PLACEMENT';
+function throughputPlacementEnabled(): boolean {
+  const raw = process.env[HUB_POOL_THROUGHPUT_PLACEMENT_ENV_VAR]?.trim().toLowerCase();
+  return !(raw === 'off' || raw === '0' || raw === 'false');
+}
+
+function memoize<T>(compute: () => T): () => T {
+  let computed = false;
+  let value: T;
+  return () => {
+    if (!computed) {
+      value = compute();
+      computed = true;
+    }
+    return value;
+  };
+}
+
 /** The body exactly as it goes on the wire to an engine or a peer, which is what both prompt-size decisions measure. */
 function forwardedPayload(method: string, body: unknown): string | undefined {
   return method === 'GET' ? undefined : JSON.stringify(body);
@@ -128,6 +198,21 @@ const PROMPT_CEILING_PATHS: ReadonlySet<string> = new Set(['/v1/chat/completions
  * right number is a property of the operator's hardware, not of this file.
  */
 const COMPLETION_TIMEOUT_MS = Math.max(CONNECT_TIMEOUT_MS, Number(process.env.HUB_POOL_COMPLETION_TIMEOUT_MS) || 300_000);
+
+/**
+ * `stream`, `bodyBytes` and `budgetMs` for the routing log, from the body as it will be forwarded.
+ *
+ * This serialises the body once more than the forward itself does. Measured on a dev Mac: 0.9 ms for
+ * a 184 KB agent turn and 3.5 ms for a 1 MB embeddings batch, against requests that take seconds to
+ * minutes — cheaper than threading a pre-serialised payload through every forward signature. The
+ * budget reads the string length, exactly as the forward's timer does; `bodyBytes` is the UTF-8 size
+ * on the wire, and the two differ only for non-ASCII text.
+ */
+export function describeRequestShape(method: string, body: unknown): { stream: boolean; bodyBytes: number; budgetMs: number } {
+  const payload = method === 'GET' ? '' : (JSON.stringify(body) ?? '');
+  const stream = isStreamingRequest(body);
+  return { stream, bodyBytes: Buffer.byteLength(payload, 'utf8'), budgetMs: forwardBudgetMs(stream, payload.length) };
+}
 
 /**
  * The dispatcher every pool forward is sent through: Node's OWN bundled undici `Agent`, with its
@@ -317,6 +402,25 @@ export const POOL_BACKEND_HEADER = 'X-Hub-Pool-Backend';
 /** Request → peer and response → caller: the model the request was routed for. */
 export const POOL_MODEL_HEADER = 'X-Hub-Pool-Model';
 /**
+ * Response → caller: the routing-log `id` of this request on the Hub that routed it — on a 502 as well
+ * as a served response, since a failed call is the one most worth looking up. Request → peer: the same
+ * id, so the peer's inbound row carries it and the two nodes' rows for one call join on equality.
+ * It names a log row the caller could already read with an operator credential, and nothing else.
+ */
+export const POOL_REQUEST_ID_HEADER = 'X-Hub-Pool-Request-Id';
+
+/**
+ * A peer-supplied request id, or `undefined` when there is none worth keeping.
+ *
+ * The sender is an authenticated peer, but the value still lands in a log that operators read and
+ * scripts parse, so it is held to the shape this Hub mints (a UUID) plus room for another build's
+ * choice: 1-64 characters of `[A-Za-z0-9._:-]`, starting alphanumeric. Anything else is dropped and
+ * the row gets a fresh id instead, rather than failing a forward over a label.
+ */
+export function normalizePoolRequestId(value: string | undefined): string | undefined {
+  return value !== undefined && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(value) ? value : undefined;
+}
+/**
  * {@link POOL_SERVED_BY_HEADER}'s value when this node's own engine served the request. Shares the
  * routing log's key on purpose, and can never collide with a peer: `normalizePeerFqdn` admits only
  * names of two or more labels, so no peer row is ever the bare word `local`.
@@ -331,11 +435,12 @@ export const POOL_SERVED_LOCALLY = LOCAL_CANDIDATE_KEY;
 const POOL_HEADER_PREFIX = 'x-hub-pool-';
 
 /** The attribution headers for a response served by `candidate`. Pure, so the contract has its own test. */
-export function servedByHeaders(candidate: PoolCandidate, model: string): Record<string, string> {
+export function servedByHeaders(candidate: PoolCandidate, model: string, requestId?: string): Record<string, string> {
   return {
     [POOL_SERVED_BY_HEADER]: candidate.nodeFqdn ?? POOL_SERVED_LOCALLY,
     [POOL_BACKEND_HEADER]: candidate.backend,
     [POOL_MODEL_HEADER]: model,
+    ...(requestId ? { [POOL_REQUEST_ID_HEADER]: requestId } : {}),
   };
 }
 /** 4xx that means "this node can't serve you", never "your request is bad" — retryable on any candidate. */
@@ -466,6 +571,98 @@ export function applyPromptCeiling(
   return excluded.length === 0 || overridden ? { preferred: ordered, overCeiling: [], decision } : { preferred, overCeiling, decision };
 }
 
+const NOTHING_DEMOTED: ReadonlySet<PoolCandidate> = new Set();
+
+/**
+ * Judge each candidate's measured prefill rate against the request's budget. `demoted` is the set of
+ * candidates predicted to miss it, to be moved behind every candidate that is not.
+ *
+ * The rules are the prompt ceiling's, because the risk is the same — a preference must never become a
+ * refusal:
+ *
+ * 1. **Unmeasured is neither fast nor slow.** A candidate with no applicable evidence is not in
+ *    `estimates`, is never demoted, and keeps its place relative to the ones that are not demoted.
+ * 2. **Demoted, never removed**, so failover still reaches a slow node when every faster one fails.
+ * 3. **All slow means nothing moves.** When every candidate is predicted to miss, `demoted` is empty,
+ *    the ranker's order stands, and `overridden: true` says so.
+ *
+ * `decision` is `null` when no candidate had applicable evidence, so a fleet nothing has been timed on
+ * gets the list back untouched. Pure and exported for its own test, like `applyPromptCeiling`.
+ */
+export function applyThroughputPlacement(
+  ordered: PoolCandidate[],
+  predictionOf: (candidate: PoolCandidate) => PrefillPrediction | null,
+  estimatedTokens: number,
+  budgetMs: number,
+): { demoted: ReadonlySet<PoolCandidate>; decision: PoolRoutingThroughput | null } {
+  const estimates: PoolRoutingThroughputEstimate[] = [];
+  const slow = new Set<PoolCandidate>();
+  for (const candidate of ordered) {
+    const prediction = predictionOf(candidate);
+    if (!prediction) {
+      continue;
+    }
+    const isSlow = missesBudget(prediction, budgetMs);
+    if (isSlow) {
+      slow.add(candidate);
+    }
+    estimates.push({
+      node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      backend: candidate.backend,
+      tokensPerSec: prediction.tokensPerSec,
+      fromPromptTokens: prediction.fromPromptTokens,
+      extrapolated: prediction.extrapolated,
+      predictedMs: prediction.predictedMs,
+      source: prediction.source,
+      deadline: prediction.deadline,
+      slow: isSlow,
+    });
+  }
+  if (estimates.length === 0) {
+    return { demoted: NOTHING_DEMOTED, decision: null };
+  }
+  const overridden = slow.size === ordered.length;
+  return { demoted: overridden ? NOTHING_DEMOTED : slow, decision: { estimatedTokens, budgetMs, estimates, overridden } };
+}
+
+/**
+ * One ceiling group split into the candidates expected to meet the budget and the ones that are not,
+ * each in the order given. A group with nothing demoted comes back whole, so pins see the exact list
+ * they did before throughput existed.
+ */
+export function splitDemoted(group: PoolCandidate[], demoted: ReadonlySet<PoolCandidate>): PoolCandidate[][] {
+  if (!group.some((candidate) => demoted.has(candidate))) {
+    return [group];
+  }
+  return [group.filter((candidate) => !demoted.has(candidate)), group.filter((candidate) => demoted.has(candidate))];
+}
+
+/** What one forwarded response revealed about its engine's speed, gathered while it streams. */
+interface ResponseTiming {
+  firstChunkAt: number | null;
+  completedAt: number | null;
+  engine: EngineTimings | null;
+  usage: PoolRoutingUsage | null;
+}
+
+function startResponseTiming(): { timing: ResponseTiming; observer: ResponseTapObserver } {
+  const timing: ResponseTiming = { firstChunkAt: null, completedAt: null, engine: null, usage: null };
+  return {
+    timing,
+    observer: {
+      onFirstChunk: () => {
+        timing.firstChunkAt = Date.now();
+      },
+      onComplete: () => {
+        timing.completedAt = Date.now();
+      },
+      onEngineTimings: (engine) => {
+        timing.engine = engine;
+      },
+    },
+  };
+}
+
 /** The pin, reduced to the metadata the routing log may hold. Never the model or the peer id — the record already carries both. */
 export function describePinForLog(pin: HubPoolPin | null): PoolRoutingPin | null {
   return pin ? { scope: pin.scope, mode: pin.mode, targetKind: pin.targetKind } : null;
@@ -546,7 +743,15 @@ export class PoolProxyService {
     // the `auto` resolution below is the only thing that needs the local model registry.
     @Optional() @Inject(forwardRef(() => InferenceRouterService)) private readonly router?: InferenceRouterService,
     @Optional() @Inject(forwardRef(() => ModelRegistryService)) private readonly modelRegistry?: ModelRegistryService,
-  ) {}
+    // Optional for the same positional reason. A harness that passes none still measures and places,
+    // against a store of its own; Nest always injects the module's one, which the peer service
+    // advertises and reports from.
+    @Optional() throughput?: HubPoolThroughputService,
+  ) {
+    this.throughput = throughput ?? new HubPoolThroughputService();
+  }
+
+  private readonly throughput: HubPoolThroughputService;
 
   /**
    * `auto` → the engine id of this Hub's default LLM; any other model unchanged.
@@ -622,11 +827,15 @@ export class PoolProxyService {
    * request's estimate moves behind every node that is not, keeping its place in the failover walk —
    * see {@link applyPromptCeiling}.
    *
-   * An operator pin is applied LAST, within each of those two groups — see {@link applyPin}. It
+   * Then measured throughput, within each of those groups: a candidate whose measured prefill rate
+   * would take it past the request's budget moves behind the ones that would not — see
+   * {@link applyThroughputPlacement}. `streaming` picks the budget, as it does for the forward.
+   *
+   * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
    */
-  async buildCandidateList(model: string, promptBytes?: number): Promise<PoolCandidate[]> {
-    return (await this.rankCandidates(model, promptBytes === undefined ? undefined : () => promptBytes)).candidates;
+  async buildCandidateList(model: string, promptBytes?: number, streaming = true): Promise<PoolCandidate[]> {
+    return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming })).candidates;
   }
 
   /**
@@ -641,12 +850,19 @@ export class PoolProxyService {
   private async rankCandidates(
     model: string,
     /**
-     * The forwarded payload's size, measured only if some candidate has a ceiling: that is one more
-     * serialisation of what can be a 184 KB agent turn, and a fleet with no ceilings should not pay
-     * it. Absent means "no body to judge", and the ceiling step is skipped.
+     * The forwarded payload's size, measured only if some candidate has a ceiling or applicable
+     * throughput evidence: that is one more serialisation of what can be a 184 KB agent turn, and a
+     * fleet with neither should not pay it. Absent means "no body to judge", and both steps are skipped.
      */
-    measurePromptBytes?: () => number,
-  ): Promise<{ candidates: PoolCandidate[]; pin: HubPoolPin | null; promptCeiling: PoolRoutingPromptCeiling | null }> {
+    prompt?: { bytes: () => number; streaming: boolean },
+  ): Promise<{
+    candidates: PoolCandidate[];
+    pin: HubPoolPin | null;
+    promptCeiling: PoolRoutingPromptCeiling | null;
+    throughput: PoolRoutingThroughput | null;
+    /** The peer rows ranking read, so placement-time checks see the same snapshot the order came from. */
+    peers: HubPoolPeer[];
+  }> {
     const [local, peers] = await Promise.all([this.localCandidates(model), this.usablePeers()]);
     const weight = this.pressureWeight();
     const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
@@ -663,19 +879,97 @@ export class PoolProxyService {
     const ordered = ranked
       .sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank)
       .map((entry) => entry.candidate);
+    // Shared, so the two prompt-size decisions cost one serialisation between them at most.
+    const measurePromptBytes = prompt ? memoize(prompt.bytes) : undefined;
     const ceiling = measurePromptBytes
       ? this.applyPromptCeilings(model, ordered, peers, measurePromptBytes)
       : { preferred: ordered, overCeiling: [], decision: null };
+    const throughput =
+      prompt && measurePromptBytes
+        ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming)
+        : { demoted: NOTHING_DEMOTED, decision: null };
     // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
     // effect on the next request and costs no query on the inference hot path.
     const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
-    // With no over-ceiling tail this is `applyPin(ordered, pin)` exactly, which is what keeps a fleet
-    // without ceilings, and a request under every ceiling, on the order it had before ceilings existed.
+    // The ceiling is the outer split because it is an operator's statement and throughput is an
+    // inference. With nothing demoted and no over-ceiling tail this is `applyPin(ordered, pin)`
+    // exactly, which keeps an unmeasured fleet on the order it had before either existed.
     return {
-      candidates: [...applyPin(ceiling.preferred, pin), ...applyPin(ceiling.overCeiling, pin)],
+      candidates: [ceiling.preferred, ceiling.overCeiling].flatMap((group) =>
+        splitDemoted(group, throughput.demoted).flatMap((part) => applyPin(part, pin)),
+      ),
       pin,
       promptCeiling: ceiling.decision,
+      throughput: throughput.decision,
+      peers,
     };
+  }
+
+  /**
+   * Each candidate's live prefill evidence — what this node timed, plus for a peer what it advertised
+   * about itself — then {@link applyThroughputPlacement} against the budget the forward will carry.
+   *
+   * Both sources feed one prediction that takes the slowest applicable point, so a peer cannot talk its
+   * way out of a deadline this node watched it miss. The body is measured only when some candidate has
+   * evidence, and one debug line is written per request that demoted something, as for the ceiling.
+   */
+  private applyMeasuredThroughput(
+    model: string,
+    ordered: PoolCandidate[],
+    peers: HubPoolPeer[],
+    measurePromptBytes: () => number,
+    streaming: boolean,
+  ): ReturnType<typeof applyThroughputPlacement> {
+    if (!throughputPlacementEnabled()) {
+      return { demoted: NOTHING_DEMOTED, decision: null };
+    }
+    const now = Date.now();
+    const advertised = new Map(
+      peers.map((peer) => [
+        peer.id,
+        readAdvertisedThroughput(
+          (peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.throughput,
+          // Our clock, like snapshot freshness: the advert's ages are relative to when the peer answered.
+          peer.lastSeenAt ? now - Date.parse(peer.lastSeenAt) : Number.NaN,
+        ),
+      ]),
+    );
+    const pointsOf = (candidate: PoolCandidate): SourcedPrefillPoint[] => {
+      const observed = this.throughput.prefillPoints({ nodeKey: candidate.peerId ?? LOCAL_CANDIDATE_KEY, backend: candidate.backend, model }, now);
+      if (candidate.peerId === null) {
+        return observed;
+      }
+      const told = (advertised.get(candidate.peerId) ?? [])
+        .filter((estimate) => estimate.backend === candidate.backend && sameModelId(estimate.model, model))
+        .flatMap((estimate) => prefillPointsOf(estimate, 'advertised', now));
+      return [...observed, ...told];
+    };
+    const points = new Map(ordered.map((candidate) => [candidate, pointsOf(candidate)]));
+    if (![...points.values()].some((list) => list.length > 0)) {
+      return { demoted: NOTHING_DEMOTED, decision: null };
+    }
+    const bytes = measurePromptBytes();
+    const estimatedTokens = estimatePromptTokens(bytes);
+    const result = applyThroughputPlacement(
+      ordered,
+      (candidate) => predictPrefill(points.get(candidate) ?? [], estimatedTokens, now),
+      estimatedTokens,
+      forwardBudgetMs(streaming, bytes),
+    );
+    const decision = result.decision;
+    if (decision && result.demoted.size > 0) {
+      const nodes = decision.estimates
+        .filter((estimate) => estimate.slow)
+        .map(
+          (estimate) =>
+            `${estimate.node} (~${estimate.tokensPerSec} tok/s at ~${estimate.fromPromptTokens} tokens${estimate.extrapolated ? ', read forward' : ''} → ~${estimate.predictedMs}ms)`,
+        )
+        .join(', ');
+      this.logger.debug(
+        `[PoolProxy] ~${estimatedTokens}-token prompt for "${model}" put ${nodes} behind every candidate expected to meet its ${decision.budgetMs}ms budget`,
+      );
+    }
+    return result;
   }
 
   /**
@@ -720,7 +1014,7 @@ export class PoolProxyService {
     const startedAt = Date.now();
     const model = await this.resolveModelAlias(params.model);
     if (!model) {
-      this.routingLog.record({
+      const failed = this.routingLog.record({
         at: new Date().toISOString(),
         direction: 'outbound',
         path,
@@ -733,11 +1027,13 @@ export class PoolProxyService {
         failedOverFrom: [],
         pin: null,
         promptCeiling: null,
+        throughput: null,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
         usage: null,
       });
+      res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       res.status(502).json({ error: describeUnresolvableAuto() });
       return;
     }
@@ -748,16 +1044,22 @@ export class PoolProxyService {
     // app that originated this call has no reason to know that, so the proxy adds it here rather
     // than never seeing a usage frame at all. See `response-usage-tap.ts`.
     const body = injectUsageOptIn(aliasedBody);
-    const { candidates, pin, promptCeiling } = await this.rankCandidates(
+    const streaming = isStreamingRequest(body);
+    // Throughput is judged, and measured, on exactly the routes the ceiling is: a body that is one
+    // context the engine reads before its first token.
+    const judged = PROMPT_CEILING_PATHS.has(path);
+    // Serialised once for ranking and every attempt, rather than once per forward.
+    const payload = memoize(() => forwardedPayload(method, body));
+    const { candidates, pin, promptCeiling, throughput, peers } = await this.rankCandidates(
       model,
-      PROMPT_CEILING_PATHS.has(path) ? () => forwardedPayload(method, body)?.length ?? 0 : undefined,
+      judged ? { bytes: () => payload()?.length ?? 0, streaming } : undefined,
     );
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
     const failedOverFrom: string[] = [];
 
     if (candidates.length === 0) {
-      this.routingLog.record({
+      const failed = this.routingLog.record({
         at: new Date().toISOString(),
         direction: 'outbound',
         path,
@@ -770,11 +1072,14 @@ export class PoolProxyService {
         failedOverFrom,
         pin: describePinForLog(pin),
         promptCeiling,
+        throughput,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
         usage: null,
+        ...describeRequestShape(method, body),
       });
+      res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
       res.status(502).json({ error: describeNoCandidates(model, pin) });
       return;
     }
@@ -799,6 +1104,8 @@ export class PoolProxyService {
       failedOverFrom,
       pin: describePinForLog(pin),
       promptCeiling,
+      ...describeRequestShape(method, body),
+      throughput,
     });
 
     let lastError: unknown;
@@ -807,7 +1114,7 @@ export class PoolProxyService {
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
       if (index > 0) {
-        Object.assign(row, { node: nodeLabel, peerId: candidate.peerId, backend: candidate.backend, attempt: index + 1 });
+        this.routingLog.update(row, { node: nodeLabel, peerId: candidate.peerId, backend: candidate.backend, attempt: index + 1 });
       }
       // Reaching an over-ceiling node means every node under a ceiling already failed. Recorded as an
       // override, so the log reads "placed over its ceiling" instead of claiming the node was skipped.
@@ -817,9 +1124,26 @@ export class PoolProxyService {
           `[PoolProxy] every candidate under its prompt ceiling failed for "${model}"; trying ${nodeLabel}, which is over its ceiling`,
         );
       }
+      const placedThroughput = row.throughput;
+      if (
+        placedThroughput &&
+        !placedThroughput.overridden &&
+        placedThroughput.estimates.some((estimate) => estimate.slow && estimate.node === nodeLabel && estimate.backend === candidate.backend)
+      ) {
+        placedThroughput.overridden = true;
+        this.logger.debug(
+          `[PoolProxy] placing "${model}" on ${nodeLabel}, predicted to miss its ${placedThroughput.budgetMs}ms budget, because nothing ahead of it answered`,
+        );
+      }
+      const target: ThroughputTarget = { nodeKey: key, backend: candidate.backend, model };
+      // Judged before this request joins the count: a node with other work in flight is timed as a
+      // queue, and a queue recorded as slow hardware would outlive the queue by hours.
+      const measurable = judged && this.idleForMeasurement(candidate, peers);
+      const attemptStartedAt = Date.now();
       this.loadService.acquire(key);
       try {
-        const upstream = await this.forward(candidate, path, method, body, model);
+        const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id);
+        const headersAt = Date.now();
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status);
@@ -842,12 +1166,30 @@ export class PoolProxyService {
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
-        this.commitResponse(upstream, res, servedByHeaders(candidate, model));
+        this.commitResponse(upstream, res, servedByHeaders(candidate, model, row.id));
         committed = true;
-        await this.streamResponse(upstream, res, (usage) => this.routingLog.attachUsage(row, usage));
+        const meter = measurable && upstream.ok ? startResponseTiming() : null;
+        try {
+          await this.streamResponse(
+            upstream,
+            res,
+            (usage) => {
+              this.routingLog.attachUsage(row, usage);
+              if (meter) meter.timing.usage = usage;
+            },
+            meter?.observer,
+          );
+        } finally {
+          if (meter) {
+            this.recordServedThroughput(target, streaming, payload()?.length ?? 0, attemptStartedAt, headersAt, meter.timing);
+          }
+        }
         return;
       } catch (error) {
         lastError = error;
+        if (!committed && measurable && streaming) {
+          this.recordMissedDeadline(target, payload()?.length ?? 0, attemptStartedAt, error);
+        }
         failedOverFrom.push(nodeLabel);
         this.logger.warn(
           `[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -857,6 +1199,8 @@ export class PoolProxyService {
           // candidate would restart the answer into a response the client is mid-way through
           // reading, so let the stream die instead and leave the client to retry.
           this.logger.warn('[PoolProxy] response already committed to the client; not failing over');
+          // The push above changed a row that settled at headers time; through `update` so `?since=` returns it.
+          this.routingLog.update(row, { failedOverFrom });
           res.destroy();
           return;
         }
@@ -877,7 +1221,62 @@ export class PoolProxyService {
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
+    if (!res.headersSent) {
+      res.setHeader(POOL_REQUEST_ID_HEADER, row.id);
+    }
     this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
+  }
+
+  /**
+   * Whether a request placed on `candidate` now can be timed as that engine's speed: nothing else in
+   * flight there as far as this node can tell — its own counter for the local engine, and for a peer
+   * both what we have forwarded and what its fresh snapshot reported. An unknown load is not idle.
+   */
+  private idleForMeasurement(candidate: PoolCandidate, peers: readonly HubPoolPeer[]): boolean {
+    if (candidate.peerId === null) {
+      return this.loadService.localInFlight() === 0;
+    }
+    const peer = peers.find((row) => row.id === candidate.peerId);
+    const capabilities = peer?.lastCapabilities as unknown as PoolPeerCapabilities | null | undefined;
+    return !!peer && !!capabilities && this.peerLoad(peer, capabilities) === 0;
+  }
+
+  /**
+   * One served response as throughput evidence. Prefill is the engine's own figure when it reported
+   * one, since that leaves out the model load and the queue; otherwise, for a streamed request, the
+   * wait for the first chunk. A non-streamed request with no engine timings says nothing about
+   * prefill, because its wait was the whole generation. Decode is reported, never ranked on.
+   */
+  private recordServedThroughput(
+    target: ThroughputTarget,
+    streaming: boolean,
+    promptBytes: number,
+    startedAt: number,
+    headersAt: number,
+    timing: ResponseTiming,
+  ): void {
+    const prefillMs = timing.engine?.promptMs ?? (streaming ? (timing.firstChunkAt ?? headersAt) - startedAt : null);
+    if (prefillMs !== null) {
+      this.throughput.recordPrefill(target, { promptTokens: estimatePromptTokens(promptBytes), ms: prefillMs, deadline: false });
+    }
+    const engine = timing.engine;
+    if (engine && engine.completionTokens !== null && engine.decodeMs !== null) {
+      this.throughput.recordDecode(target, { tokens: engine.completionTokens, ms: engine.decodeMs });
+    } else if (streaming && timing.usage?.completionTokens != null && timing.firstChunkAt !== null && timing.completedAt !== null) {
+      this.throughput.recordDecode(target, { tokens: timing.usage.completionTokens, ms: timing.completedAt - timing.firstChunkAt });
+    }
+  }
+
+  /**
+   * A streamed forward that ran out of its budget as "at least this slow" evidence. It carries no usage
+   * frame, and it is the most important sample there is: the failure placement exists to stop repeating.
+   */
+  private recordMissedDeadline(target: ThroughputTarget, promptBytes: number, startedAt: number, error: unknown): void {
+    if (!isForwardDeadline(error)) {
+      return;
+    }
+    const waited = Math.max(Date.now() - startedAt, error instanceof PoolForwardDeadlineError ? error.budgetMs : 0);
+    this.throughput.recordPrefill(target, { promptTokens: estimatePromptTokens(promptBytes), ms: waited, deadline: true });
   }
 
   /**
@@ -971,29 +1370,60 @@ export class PoolProxyService {
     fromPeerFqdn?: string,
     /** Model the peer asked for, from `X-Hub-Pool-Model`. Optional: an older peer won't send it, and a missing model only costs us the strike, never the forward. */
     model?: string,
+    /** The sender's routing-log id, from `X-Hub-Pool-Request-Id`, already normalised. Optional for the same reason as `model`. */
+    requestId?: string,
   ): Promise<void> {
     // Counted like a locally-routed request: a peer's forwarded work occupies this node's engine
     // exactly as its own apps' does, and a node busy serving the pool must not report itself idle
     // to the very peers deciding whether to send it more.
     const startedAt = Date.now();
+    // Timed exactly like a request this node's own apps sent here, because it is the same engine
+    // doing the same work — and a node that mostly serves peers learns its own speed only this way.
+    // It reads the response for timing frames as the outbound tap does, and never the request body.
+    const target: ThroughputTarget | null =
+      model && PROMPT_CEILING_PATHS.has(path) && this.loadService.localInFlight() === 0 ? { nodeKey: LOCAL_CANDIDATE_KEY, backend, model } : null;
+    const streaming = isStreamingRequest(body);
+    const payload = forwardedPayload(method, body);
     this.loadService.acquire(LOCAL_CANDIDATE_KEY);
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
     let recorded = false;
+    const request = { id: requestId, ...describeRequestShape(method, body) };
     try {
-      const upstream = await this.callBackend(backend, path, method, body);
+      const upstream = await this.callBackend(backend, path, method, body, payload);
+      const headersAt = Date.now();
       // Logged from the receiving side too, so an operator can answer "which of my peers is
       // spending my GPU time" — the sender's own log only covers what it sent.
-      this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt);
+      this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt, undefined, request);
       recorded = true;
       // A peer's forward is the only evidence an inbound-only node ever gets that one of its own
       // models cannot run: nothing here goes through `proxyRequest`, so without this the node
       // earns no strikes, withholds nothing, and keeps advertising the dead model to its peers.
       this.noteLocalServingOutcome(backend, model, upstream.status);
-      await this.pipeResponse(upstream, res);
+      if (!target || !upstream.ok) {
+        await this.pipeResponse(upstream, res);
+        return;
+      }
+      const meter = startResponseTiming();
+      this.commitResponse(upstream, res);
+      try {
+        await this.streamResponse(
+          upstream,
+          res,
+          (usage) => {
+            meter.timing.usage = usage;
+          },
+          meter.observer,
+        );
+      } finally {
+        this.recordServedThroughput(target, streaming, payload?.length ?? 0, startedAt, headersAt, meter.timing);
+      }
     } catch (error) {
       if (!recorded) {
-        this.recordInbound(backend, path, fromPeerFqdn, null, startedAt);
+        this.recordInbound(backend, path, fromPeerFqdn, null, startedAt, undefined, request);
+        if (target && streaming) {
+          this.recordMissedDeadline(target, payload?.length ?? 0, startedAt, error);
+        }
       }
       throw error;
     } finally {
@@ -1015,10 +1445,12 @@ export class PoolProxyService {
     path: string;
     fromPeerFqdn: string | undefined;
     status: number;
+    /** The sender's routing-log id, when it sent one — so a refusal joins to the sender's failover row too. */
+    requestId?: string;
   }): void {
     // 'failed' explicitly: nothing was served, and the status is a 4xx that the served-path rule
     // below would otherwise read as success.
-    this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed');
+    this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed', { id: params.requestId });
   }
 
   private recordInbound(
@@ -1028,8 +1460,10 @@ export class PoolProxyService {
     status: number | null,
     startedAt: number,
     outcome?: PoolRoutingOutcome,
+    request: Pick<PoolRoutingRecordInput, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'> = {},
   ): void {
     this.routingLog.record({
+      ...request,
       at: new Date().toISOString(),
       direction: 'inbound',
       path,
@@ -1047,6 +1481,7 @@ export class PoolProxyService {
       pin: null,
       // Null for the same reason as the pin: the ceiling is applied by the node choosing where work goes.
       promptCeiling: null,
+      throughput: null,
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,
@@ -1247,11 +1682,16 @@ export class PoolProxyService {
     });
   }
 
-  private async callBackend(backend: InferenceBackendType, path: string, method: string, body: unknown): Promise<globalThis.Response> {
+  private async callBackend(
+    backend: InferenceBackendType,
+    path: string,
+    method: string,
+    body: unknown,
+    payload: string | undefined = forwardedPayload(method, body),
+  ): Promise<globalThis.Response> {
     const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
-    const payload = forwardedPayload(method, body);
     return this.fetchWithConnectTimeout(
       url,
       {
@@ -1264,9 +1704,17 @@ export class PoolProxyService {
     );
   }
 
-  private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown, model: string): Promise<globalThis.Response> {
+  private async forward(
+    candidate: PoolCandidate,
+    path: string,
+    method: string,
+    body: unknown,
+    model: string,
+    payload: string | undefined = forwardedPayload(method, body),
+    requestId?: string,
+  ): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
-      return this.callBackend(candidate.backend, path, method, body);
+      return this.callBackend(candidate.backend, path, method, body, payload);
     }
 
     const peer = await this.peerService.getPeerById(candidate.peerId);
@@ -1280,7 +1728,7 @@ export class PoolProxyService {
     // `/local/*`, because the recipient UUID, nonce and timestamp already make a captured request
     // unreplayable, and canonicalizing a megabyte embeddings batch per hop is not affordable here.
     const authHeaders = await this.peerService.peerAuthHeaders(peer, method, requestPath, body);
-    const peerPayload = forwardedPayload(method, body);
+    const peerPayload = payload;
     return this.fetchWithConnectTimeout(
       url,
       {
@@ -1293,6 +1741,9 @@ export class PoolProxyService {
           // Lets the receiver credit the outcome to the right model without parsing the body it
           // promises not to read. Same reason as the header above: the path alone doesn't carry it.
           [POOL_MODEL_HEADER]: model,
+          // So the peer's inbound row carries the id this Hub's outbound row has. Outside the signed
+          // material, like the two headers above: it labels a log row and authorises nothing.
+          ...(requestId ? { [POOL_REQUEST_ID_HEADER]: requestId } : {}),
           ...authHeaders,
         },
         body: peerPayload,
@@ -1314,9 +1765,12 @@ export class PoolProxyService {
     const controller = new AbortController();
     // A streamed request's first byte waits on the prompt being read, so its budget grows with the
     // prompt (see MIN_PREFILL_TOKENS_PER_SEC); a non-streamed one waits on the whole completion.
-    const budget = streaming ? firstByteBudgetMs(bodyBytes) : Math.max(COMPLETION_TIMEOUT_MS, firstByteBudgetMs(bodyBytes));
+    const budget = forwardBudgetMs(streaming, bodyBytes);
     const timer = setTimeout(
-      () => controller.abort(new Error(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`)),
+      () =>
+        controller.abort(
+          new PoolForwardDeadlineError(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`, budget),
+        ),
       budget,
     );
     try {
@@ -1357,13 +1811,18 @@ export class PoolProxyService {
    * `response-usage-tap.ts`. Optional because not every caller has a routing-log row to attach it
    * to (`pipeResponse`, the inbound/listing paths below, records usage nowhere today).
    */
-  private async streamResponse(upstream: globalThis.Response, res: Response, onUsage?: (usage: PoolRoutingUsage) => void): Promise<void> {
+  private async streamResponse(
+    upstream: globalThis.Response,
+    res: Response,
+    onUsage?: (usage: PoolRoutingUsage) => void,
+    observer?: ResponseTapObserver,
+  ): Promise<void> {
     if (!upstream.body) {
       res.end();
       return;
     }
     const webBody = upstream.body as WebReadableStream<Uint8Array>;
-    const body = onUsage ? tapResponseUsageWhileStreaming(webBody, onUsage) : webBody;
+    const body = onUsage || observer ? tapResponseUsageWhileStreaming(webBody, onUsage ?? (() => undefined), observer) : webBody;
     await pipeline(Readable.fromWeb(body), res);
   }
 

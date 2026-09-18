@@ -94,6 +94,16 @@ export interface PoolPeerRow {
    * it. `null` is no ceiling; absent is a Hub predating ceilings. Both mean the peer serves any prompt.
    */
   maxPromptTokens?: number | null;
+  /** Present on `/status` rows only: the peer's rates as timed here and as it reported them. Absent on a Hub predating throughput. */
+  throughput?: { observed: PoolThroughputEstimate[]; advertised: PoolThroughputEstimate[] };
+}
+
+/** Mirrors `PoolThroughputEstimate` in `hub-pool.types.ts`. Rates are in estimated tokens (bytes / 4). */
+export interface PoolThroughputEstimate {
+  model: string;
+  backend: string;
+  prefill: { fromTokens: number; promptTokens: number; tokensPerSec: number; deadline: boolean; ageMs: number }[];
+  decode: { tokensPerSec: number; ageMs: number } | null;
 }
 
 export interface PoolRoutingSummary {
@@ -153,6 +163,8 @@ export interface PoolStatusResponse {
     maxPromptTokens?: number | null;
     /** `'env'` when `HUB_POOL_MAX_PROMPT_TOKENS` set it, which no settings write can change. */
     maxPromptTokensSetBy?: 'env' | 'setting' | null;
+    /** This node's own measured rates, as it advertises them. Absent on a Hub predating throughput. */
+    throughput?: PoolThroughputEstimate[];
   };
   peers: PoolPeerRow[];
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
@@ -209,6 +221,30 @@ export interface PoolRoutingRecord {
   pin?: { scope: PoolPinScope; mode: 'prefer'; targetKind: PoolPinTargetKind } | null;
   /** What the prompt ceilings did to this decision, or `null` when no candidate had one. Absent on a Hub predating ceilings. */
   promptCeiling?: PoolRoutingPromptCeiling | null;
+  /** What measured prefill rates did to this decision, or `null` when nothing applicable was measured. Absent on a Hub predating throughput. */
+  throughput?: PoolRoutingThroughput | null;
+}
+
+/** Mirrors `PoolRoutingThroughput` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingThroughput {
+  estimatedTokens: number;
+  budgetMs: number;
+  estimates: {
+    node: string;
+    backend: string;
+    /** The rate as measured, before any growth. */
+    tokensPerSec: number;
+    /** The prompt size it was measured at. Absent on a Hub predating reading a measurement forward. */
+    fromPromptTokens?: number;
+    /** Whether `predictedMs` grew a smaller measurement to this prompt's size. */
+    extrapolated?: boolean;
+    predictedMs: number;
+    source: 'observed' | 'advertised';
+    deadline: boolean;
+    slow: boolean;
+  }[];
+  /** Placed on a node predicted to miss the budget anyway: every candidate was, or every faster one failed first. */
+  overridden: boolean;
 }
 
 /** Mirrors `PoolRoutingPromptCeiling` in `hub-pool-routing-log.service.ts`. */
@@ -660,6 +696,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
 
   lines.push('', 'Peers', ...formatPoolPeerTable(status.peers).map((line) => `  ${line}`));
   lines.push(...formatPeerPromptCeilingLines(status.peers));
+  lines.push(...formatThroughputLines(status));
 
   if (status.peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
     lines.push('', PENDING_INBOUND_HINT);
@@ -693,6 +730,34 @@ export function formatPeerPromptCeilingLines(peers: PoolPeerRow[]): string[] {
     'Prompt ceilings (a longer prompt skips that node while another can serve it)',
     ...limited.map((peer) => `  ${cell(peer.nodeFqdn, PEER_WIDTHS[1])} ~${peer.maxPromptTokens} tokens`),
   ];
+}
+
+/**
+ * Measured prompt and output speed, one line per node, engine and model, under `pool status`. Nothing
+ * at all until something has been timed, so an unmeasured fleet — or a Hub predating throughput —
+ * reads exactly as before. A peer can appear twice: once as timed here, once as it reported itself.
+ */
+export function formatThroughputLines(status: PoolStatusResponse): string[] {
+  const rows: string[] = [];
+  const add = (node: string, estimates: PoolThroughputEstimate[] | undefined, source: string) => {
+    for (const estimate of estimates ?? []) {
+      const prefill = estimate.prefill.map(
+        (point) =>
+          `≥${Math.round(point.fromTokens / 1024)}k ${point.deadline ? '≤' : '~'}${point.tokensPerSec} tok/s${point.deadline ? ' (missed deadline)' : ''}`,
+      );
+      const decode = estimate.decode ? [`output ~${estimate.decode.tokensPerSec} tok/s`] : [];
+      rows.push(
+        `  ${cell(node, PEER_WIDTHS[1])} ${sanitizeForBox(estimate.model)} (${sanitizeForBox(estimate.backend)}) ${[...prefill.map((text) => `prompt ${text}`), ...decode].join(' · ')}${source}`,
+      );
+    }
+  };
+  add('this node', status.localNode.throughput, '');
+  for (const peer of status.peers) {
+    add(peer.nodeFqdn, peer.throughput?.observed, '  — timed here');
+    add(peer.nodeFqdn, peer.throughput?.advertised, '  — reported');
+  }
+  if (rows.length === 0) return [];
+  return ['', 'Measured speed (a long prompt skips a node too slow to start it within its deadline)', ...rows];
 }
 
 /**
@@ -1036,6 +1101,23 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         ceiling.overridden
           ? `  ↳ ~${ceiling.estimatedTokens}-token prompt placed anyway over the ceiling of ${nodes}: no node under its ceiling could serve it`
           : `  ↳ ~${ceiling.estimatedTokens}-token prompt skipped ${nodes}`,
+      );
+    }
+    // Only when a measurement changed something, for the same reason as the ceiling line above.
+    const throughput = entry.throughput;
+    const slow = throughput?.estimates.filter((estimate) => estimate.slow) ?? [];
+    if (throughput && slow.length > 0) {
+      const budget = `${Math.round(throughput.budgetMs / 1000)} s`;
+      const nodes = slow
+        .map(
+          (estimate) =>
+            `${sanitizeForBox(estimate.node)} (~${estimate.tokensPerSec} tok/s${estimate.extrapolated && estimate.fromPromptTokens ? ` measured at ~${estimate.fromPromptTokens} tokens` : ''}, ${estimate.deadline ? '≥' : '~'}${Math.round(estimate.predictedMs / 1000)} s)`,
+        )
+        .join(', ');
+      lines.push(
+        throughput.overridden
+          ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
+          : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
       );
     }
     // The chain, not a count: which nodes refused is the whole point of reading this log.

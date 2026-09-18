@@ -16,6 +16,8 @@ import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 type PairDeviceResult = {
   success?: boolean;
   message?: string;
+  /** The Portal's refusal code, such as `DEVICE_PROOF_REQUIRED`. Older Portals send none. */
+  code?: string;
   domain?: string;
   subdomain?: string;
 };

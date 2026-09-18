@@ -377,6 +377,20 @@ describe('Windows uninstall cleanup of the tunnel folder', () => {
   const pwsh = findExecutable('pwsh');
 
   describe.skipIf(!pwsh)('PowerShell helper (needs pwsh)', () => {
+    /*
+     * The FIRST `pwsh` in a job pays .NET's cold start, and on a GitHub runner that
+     * alone can outlast vitest's 5s default: this block's first case failed CI at
+     * 5538ms while every later case — running against a warm pwsh — finished well
+     * inside the limit. Charging that one-off startup to a test that is really
+     * measuring a cleanup script made the whole suite flaky on nothing.
+     *
+     * Pay it here instead, in a hook with a timeout that fits a cold runtime load,
+     * so each case below keeps the default budget for the work it actually does.
+     */
+    beforeAll(() => {
+      spawnSync(pwsh as string, ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { encoding: 'utf-8' });
+    }, 120_000);
+
     function runPs(tunnelDir: string) {
       const work = tempDir('ci-hub-uninstall-ps-');
       const script = path.join(work, 'run.ps1');

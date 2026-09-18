@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { DockerService } from '../docker.service';
+import { ComposeCliUnavailableError, DockerService } from '../docker.service';
 import { DockerReadFacade } from '../docker-read.facade';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -369,10 +369,9 @@ describe('DockerService', () => {
   });
 
   describe('ensureContainerRunning', () => {
-    it('should include the hub env file when compose fallback uses the runtime hub compose file', async () => {
+    it('should include the hub env file when compose up uses the runtime hub compose file', async () => {
       process.env.ENV_FILE = '.env.dev';
       process.env.UNRELATED_VAR = 'still-here';
-      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
 
       const mockSpawnProcess = createMockSpawnProcess();
       mockSpawnProcess.on = vi.fn().mockImplementation((event, handler) => {
@@ -419,8 +418,6 @@ describe('DockerService', () => {
     });
 
     it('should not include env file for non-runtime compose files', async () => {
-      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
-
       const mockSpawnProcess = createMockSpawnProcess();
       mockSpawnProcess.on = vi.fn().mockImplementation((event, handler) => {
         if (event === 'close') {
@@ -744,20 +741,28 @@ describe('DockerService', () => {
     };
 
     // A child whose spawn fails (e.g. ENOENT): emits 'error', never 'close'.
-    const procErroring = () => {
+    const procErroring = (message = 'spawn docker ENOENT') => {
       const proc = createMockSpawnProcess();
       proc.on = vi.fn().mockImplementation((event, handler) => {
         if (event === 'error') {
-          queueMicrotask(() => handler(new Error('spawn docker ENOENT')));
+          queueMicrotask(() => handler(new Error(message)));
         }
         return proc;
       });
       return proc;
     };
 
+    const isVersionProbe = (args: unknown) => Array.isArray(args) && args[args.length - 1] === 'version';
+    const upCallsOf = () => ((child_process.spawn as any).mock.calls as any[][]).filter((c) => Array.isArray(c[1]) && c[1].includes('up'));
+
+    /** Every `... version` probe succeeds; every other spawn comes from `other`. */
+    const withComposePlugin = (other: () => any) =>
+      (child_process.spawn as any).mockImplementation((_cmd: string, args: string[]) => (isVersionProbe(args) ? procClosing(0) : other()));
+
     it('force-recreates after a stale-network compose up failure', async () => {
-      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('Failed to restart container cloudflared'));
       (child_process.spawn as any)
+        // docker compose version probe
+        .mockImplementationOnce(() => procClosing(0))
         // Initial compose up (2 attempts) — both report the deleted-network error.
         .mockImplementationOnce(() => procClosing(1, 'Error response from daemon: failed to set up container networking: network abcdef not found'))
         .mockImplementationOnce(() => procClosing(1, 'Error response from daemon: failed to set up container networking: network abcdef not found'))
@@ -776,19 +781,75 @@ describe('DockerService', () => {
       expect(upCalls[2][1]).toEqual(expect.arrayContaining(['--force-recreate']));
     });
 
-    it('does not run compose up when the container restart succeeds', async () => {
-      vi.spyOn(service, 'restartContainer').mockResolvedValue(undefined);
-      (child_process.spawn as any).mockImplementation(() => procClosing(0));
+    it('goes through compose up, not docker restart, so a container from an older definition is replaced (beta-max cloudflared 530)', async () => {
+      // beta-max: `docker restart cloudflared` exited 0 on every boot while the container, created
+      // from a definition whose token mount had since moved, crash-looped on "Failed to read token
+      // file". A restart that "succeeds" must not be what decides the service is fine.
+      const restart = vi.spyOn(service, 'restartContainer').mockResolvedValue(undefined);
+      withComposePlugin(() => procClosing(0));
 
       await service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
 
-      const calls = (child_process.spawn as any).mock.calls as any[][];
-      expect(calls.some((c) => Array.isArray(c[1]) && c[1].includes('up'))).toBe(false);
+      expect(restart).not.toHaveBeenCalled();
+      expect(upCallsOf()).toHaveLength(1);
+      // Plain `up`: compose recreates only when the config hash differs, so a healthy tunnel is not bounced.
+      expect(upCallsOf()[0][1]).not.toContain('--force-recreate');
+    });
+
+    it('force-recreates when the caller just rewrote a file the service reads only at startup (tunnel token)', async () => {
+      withComposePlugin(() => procClosing(0));
+
+      await service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare', forceRecreate: true });
+
+      expect(upCallsOf()[0][1]).toEqual(expect.arrayContaining(['up', 'cloudflared', '--force-recreate']));
+    });
+
+    it('falls back to the docker-compose binary when the plugin is missing, instead of failing with "unknown flag: --env-file"', async () => {
+      // beta-ms-a2 / beta-red / beta-max, 2026-09-17: /data/.docker had no cli-plugins directory, so
+      // `docker compose` was not a command, while /usr/local/bin/docker-compose was present.
+      (child_process.spawn as any).mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'docker' && args[0] === 'compose') {
+          return procClosing(125, "unknown flag: --env-file\nSee 'docker --help'.");
+        }
+        return procClosing(0);
+      });
+
+      await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).resolves.toBeUndefined();
+
+      const up = upCallsOf();
+      expect(up).toHaveLength(1);
+      expect(up[0][0]).toBe('docker-compose');
+      expect(up[0][1][0]).toBe('--env-file');
+      expect(up[0][1]).toEqual(expect.arrayContaining(['--project-name', 'ci-hub', '--profile', 'cloudflare', 'up', 'cloudflared', '-d']));
+    });
+
+    it('names the missing compose plugin when no compose CLI works and there is no container to restart', async () => {
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('Failed to restart container cloudflared'));
+      (child_process.spawn as any).mockImplementation((cmd: string) =>
+        cmd === 'docker-compose' ? procErroring('spawn docker-compose ENOENT') : procClosing(1, "docker: 'compose' is not a docker command."),
+      );
+
+      const result = service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
+
+      await expect(result).rejects.toBeInstanceOf(ComposeCliUnavailableError);
+      await expect(result).rejects.toThrow(/is not a docker command.*docker-compose ENOENT.*unknown flag: --env-file.*cli-plugins/s);
+      expect(upCallsOf()).toHaveLength(0);
+    });
+
+    it('still restarts an existing container when no compose CLI works, and logs why its definition was not checked', async () => {
+      const restart = vi.spyOn(service, 'restartContainer').mockResolvedValue(undefined);
+      (child_process.spawn as any).mockImplementation((cmd: string) =>
+        cmd === 'docker-compose' ? procErroring('spawn docker-compose ENOENT') : procClosing(1, "docker: 'compose' is not a docker command."),
+      );
+
+      await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).resolves.toBeUndefined();
+
+      expect(restart).toHaveBeenCalledWith('cloudflared');
+      expect(loggerService.error).toHaveBeenCalledWith(expect.stringContaining('no Docker Compose CLI works in this Hub'));
     });
 
     it('brings the service up via a single docker compose up (up pulls on demand; no separate pull)', async () => {
-      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
-      (child_process.spawn as any).mockImplementation(() => procClosing(0));
+      withComposePlugin(() => procClosing(0));
 
       await service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
 
@@ -804,8 +865,8 @@ describe('DockerService', () => {
     });
 
     it('retries compose up after a transient failure', async () => {
-      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
       (child_process.spawn as any)
+        .mockImplementationOnce(() => procClosing(0)) // docker compose version probe
         .mockImplementationOnce(() => procClosing(1)) // up attempt 1 fails
         .mockImplementationOnce(() => procClosing(0)); // up attempt 2 succeeds
 
@@ -817,8 +878,7 @@ describe('DockerService', () => {
     });
 
     it('rejects (with the exit code) after both up attempts exit non-zero', async () => {
-      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
-      (child_process.spawn as any).mockImplementation(() => procClosing(1)); // every attempt fails
+      withComposePlugin(() => procClosing(1)); // every up attempt fails
 
       await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).rejects.toThrow(/exit 1/);
 
@@ -828,8 +888,7 @@ describe('DockerService', () => {
     });
 
     it('rejects (and retries) when the child process fails to spawn', async () => {
-      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
-      (child_process.spawn as any).mockImplementation(() => procErroring());
+      withComposePlugin(() => procErroring());
 
       await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).rejects.toThrow(/ENOENT/);
 
@@ -841,10 +900,9 @@ describe('DockerService', () => {
     it('on timeout, escalates SIGTERM→SIGKILL and rejects once the child exits (normal path)', async () => {
       vi.useFakeTimers();
       try {
-        vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
         // Child ignores SIGTERM, exits on SIGKILL — so the `close` handler (not the backstop) rejects.
         const proc = procKilledOnSigkill();
-        (child_process.spawn as any).mockImplementation(() => proc);
+        withComposePlugin(() => proc);
 
         const resultPromise = service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
         const assertion = expect(resultPromise).rejects.toThrow(/timed out/);
@@ -864,10 +922,9 @@ describe('DockerService', () => {
     it('unblocks via the hard backstop if a killed child never exits', async () => {
       vi.useFakeTimers();
       try {
-        vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('missing container'));
         const hungUp = createMockSpawnProcess();
         hungUp.on = vi.fn().mockReturnValue(hungUp); // never emits close/error
-        (child_process.spawn as any).mockImplementation(() => hungUp);
+        withComposePlugin(() => hungUp);
 
         const resultPromise = service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' });
         const assertion = expect(resultPromise).rejects.toThrow(/timed out/);
@@ -886,6 +943,81 @@ describe('DockerService', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    describe('removeContainer', () => {
+      it('force-removes the container and reports success', async () => {
+        (child_process.spawn as any).mockImplementation(() => procClosing(0));
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(true);
+
+        expect(child_process.spawn).toHaveBeenCalledWith('docker', ['rm', '-f', 'cloudflared'], {});
+      });
+
+      it('counts a container that does not exist as removed', async () => {
+        (child_process.spawn as any).mockImplementation(() => procClosing(1, 'Error response from daemon: No such container: cloudflared'));
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(true);
+      });
+
+      it('reports failure without throwing when Docker cannot remove it', async () => {
+        (child_process.spawn as any).mockImplementation(() =>
+          procClosing(1, 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'),
+        );
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(false);
+      });
+    });
+
+    describe('readContainerLabel', () => {
+      const LABEL = 'com.docker.compose.project.working_dir';
+      const inspectAnswer = (code: number, stdout: string, stderr = '') => {
+        const proc = createMockSpawnProcess();
+        proc.on = vi.fn().mockImplementation((event, handler) => {
+          if (event === 'close') {
+            queueMicrotask(() => {
+              if (stdout) proc.stdout.emit('data', Buffer.from(stdout));
+              if (stderr) proc.stderr.emit('data', Buffer.from(stderr));
+              handler(code);
+            });
+          }
+          return proc;
+        });
+        return proc;
+      };
+
+      it("reads the label from the container's config", async () => {
+        (child_process.spawn as any).mockImplementation(() => inspectAnswer(0, '/home/someone/.local/share/companion-hub\n'));
+
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toEqual({
+          found: true,
+          value: '/home/someone/.local/share/companion-hub',
+        });
+        expect(child_process.spawn).toHaveBeenCalledWith('docker', [
+          'inspect',
+          '--type',
+          'container',
+          '--format',
+          `{{ index .Config.Labels "${LABEL}" }}`,
+          'cloudflared',
+        ]);
+      });
+
+      it('reads a label the container does not have as null', async () => {
+        (child_process.spawn as any).mockImplementation(() => inspectAnswer(0, '<no value>\n'));
+
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toEqual({ found: true, value: null });
+      });
+
+      it('tells a missing container apart from Docker being unavailable', async () => {
+        (child_process.spawn as any).mockImplementationOnce(() => inspectAnswer(1, '', 'Error: No such container: cloudflared'));
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toEqual({ found: false });
+
+        (child_process.spawn as any).mockImplementationOnce(() =>
+          inspectAnswer(1, '', 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.'),
+        );
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toBeNull();
+      });
     });
   });
 

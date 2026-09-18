@@ -854,8 +854,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return oldJSON !== newJSON;
   }
 
-  async startApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull } = params;
+  async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
+    const { appUrn, skipPull, onlyRecreateChanged } = params;
 
     // Before the app is even read — see `assertActorMay`.
     await this.assertActorMay(params.actor, appUrn, 'start');
@@ -871,8 +871,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
+    // `appFormSchema` passes unknown keys through into the stored config, so a stored
+    // `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
+    // Only the boot path decides it.
+    const { onlyRecreateChanged: _storedRecreateMode, ...storedConfig } = (app.config ?? {}) as Record<string, unknown>;
     this.appEventsQueue
-      .publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } })
+      .publish({ appUrn, command: 'start', requestId, form: { ...storedConfig, skipPull, ...(onlyRecreateChanged ? { onlyRecreateChanged } : {}) } })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -1651,6 +1655,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     if (!app) {
       throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    /*
+     * A restart a person or a key asks for shares Start's entitlement policy: restart is `down`
+     * then `up --force-recreate`, so ungated it brought back an app Start had refused. Checked here,
+     * before the status flips to `restarting`, because a refusal that reaches the queue settles as
+     * `restart_error` with status `stopped` while the containers go on running.
+     *
+     * The Hub's own restarts are not gated. Every one of them re-provisions an app that is already
+     * running (a credential rotation, a saved config, an inference or custom-domain change), and
+     * `HubAccessService` says what a refused one costs: the app stays up "with revoked credentials".
+     * `restartAllApps` restarts only running apps, so its per-app `sweep` cannot revive a refused one.
+     */
+    if (params.actor.kind !== 'system') {
+      await this.moduleRef.get(MarketplaceEntitlementService, { strict: false })?.assertForStart(appUrn);
     }
 
     this.refuseWhileQueueUnavailable(appUrn, 'restart');
@@ -2555,6 +2574,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
+  /**
+   * Brings every running app in line with what this Hub version generates, after a version change.
+   *
+   * Each app's compose file and `app.env` are regenerated, then compose runs `up` WITHOUT
+   * `--force-recreate`. Compose recreates a service only when its resolved definition differs
+   * from the container's config-hash label, and that hash covers everything the Hub regenerates
+   * here: image, labels, mounts, networks, and environment including `env_file` contents.
+   * Measured locally with compose v5.5.1: an `env_file` edit and an interpolation-variable edit
+   * each recreated the container, an unchanged `up` reported "Running" and kept the container ID,
+   * and an edited bind-mounted file did not recreate. With the bundled compose 2.40.0, a
+   * `--dry-run` of this `up` inside the Hub on beta-max (2026-09-17) recreated nothing: every
+   * long-running ci-memory service and OpenClaw reported "Running". Stopped containers are pruned
+   * while the compose directory is prepared, so they are created fresh, and containers stuck in
+   * `restarting` are removed first (see `removeRestartingAppContainers`).
+   *
+   * It used to force-recreate. On beta-max (2026-09-17) the boot on 0.2.71 ran
+   * `up --detach --force-recreate` for ci-memory (ten containers) and OpenClaw. The one input
+   * compose cannot see, a bind-mounted file whose contents changed, is not something the Hub
+   * rewrites on this path; it rewrites only the compose file and `app.env`.
+   */
   async restartRunningApps() {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
@@ -2564,7 +2603,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          await this.startApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'bootstrap-restart' } });
+          await this.startApp({ appUrn, skipPull: true, onlyRecreateChanged: true, actor: { kind: 'system', reason: 'bootstrap-restart' } });
         } catch (e) {
           this.logger.error(`Failed to start app ${app.id}`, e);
         }
@@ -2633,12 +2672,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * Restart every running app whose marketplace listing is categorized as "ai".
-   * Called after inference preferences change so AI apps pick up the new
-   * model/backend env. Fire-and-forget: restarts run in the background so the
-   * caller (e.g. the preferences endpoint) isn't blocked.
+   * Restart every running app whose marketplace listing is categorized as "ai" (or that declares an
+   * inference mapping), so it picks up a regenerated inference env. Fire-and-forget: restarts run in
+   * the background so the caller isn't blocked.
+   *
+   * With `shouldRestart`, each AI app is restarted only when it answers true — the inference refresh
+   * passes a staleness check there. Without it every AI app restarts, which is what the Hub-upgrade
+   * sync needs: a new Hub build can change the env in ways no comparison against the old one sees.
    */
-  async restartAiApps() {
+  async restartAiApps(options?: { trigger?: string; shouldRestart?: (appUrn: AppUrn) => Promise<boolean> }) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -2653,7 +2695,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           if (!info?.categories?.includes('ai') && !hasInferenceIntegration) {
             return;
           }
-          this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
+          if (options?.shouldRestart && !(await options.shouldRestart(appUrn))) {
+            return;
+          }
+          this.logger.info(`Restarting AI app ${appUrn} after ${options?.trigger ?? 'an inference preferences change'}`);
           // Awaited so a refused restart (the queue is down) is logged here for this app instead of rejecting restartAiApps as a whole.
           return await this.restartApp({ appUrn, actor: { kind: 'system', reason: 'inference-env-refresh' } });
         } catch (e) {
@@ -2663,7 +2708,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     );
 
     const prefs = this.config.getInferencePreferences();
-    if (prefs.preferredBackend) {
+    // A filtered sweep restarted only some apps, so it cannot vouch that every app matches this build.
+    if (prefs.preferredBackend && !options?.shouldRestart) {
       try {
         await this.markInferenceAppsEnvSynced();
       } catch (err) {

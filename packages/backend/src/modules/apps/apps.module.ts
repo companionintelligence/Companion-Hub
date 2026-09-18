@@ -11,6 +11,7 @@ import { AppsController } from './apps.controller';
 import { AppsReadModule } from './apps-read.module';
 import { AppsService } from './apps.service';
 import { AppIntentSyncService } from './app-intent-sync.service';
+import { InferenceEnvStalenessService } from './inference-env-staleness.service';
 import { RegistrationModule } from '../registration/registration.module';
 import { ApiKeyModule } from '../api-keys/api-key.module';
 import { MemoryConnectionModule } from '../memory-connect/memory-connection.module';
@@ -41,6 +42,7 @@ import { POOL_CONTAINER_SAMPLER } from '@/common/helpers/hub-pool';
     AppsService,
     AppIntentSyncService,
     AppRuntimeMonitorService,
+    InferenceEnvStalenessService,
     // The Hub pool publishes an aggregate container rollup to its peers and reads it from the
     // sample this monitor has already collected. It resolves this token through ModuleRef with
     // `strict: false` rather than injecting the class, so there is no HubPoolModule -> AppsModule
@@ -49,6 +51,14 @@ import { POOL_CONTAINER_SAMPLER } from '@/common/helpers/hub-pool';
     // imports from modules/hub-pool. See `PoolContainerSampler`.
     { provide: POOL_CONTAINER_SAMPLER, useExisting: AppRuntimeMonitorService },
   ],
-  exports: [AppsReadModule, AppHelpers, AppsService, AppIntentSyncService, AppRuntimeMonitorService, POOL_CONTAINER_SAMPLER],
+  exports: [
+    AppsReadModule,
+    AppHelpers,
+    AppsService,
+    AppIntentSyncService,
+    AppRuntimeMonitorService,
+    InferenceEnvStalenessService,
+    POOL_CONTAINER_SAMPLER,
+  ],
 })
 export class AppsModule {}

@@ -255,6 +255,49 @@ export class DockerReadFacade {
   }
 
   /**
+   * Reads one label of a container by name.
+   *
+   * Resolves `{ found: false }` when no container has that name, `{ found: true, value: null }`
+   * when the container has no such label, and `null` when Docker could not be asked or did not
+   * answer within {@link DOCKER_INSPECT_TIMEOUT_MS}.
+   */
+  public async readContainerLabel(containerName: string, label: string): Promise<{ found: false } | { found: true; value: string | null } | null> {
+    return new Promise((resolve) => {
+      const cmd = spawn('docker', [
+        'inspect',
+        '--type',
+        'container',
+        '--format',
+        `{{ index .Config.Labels ${JSON.stringify(label)} }}`,
+        containerName,
+      ]);
+      const out: string[] = [];
+      const err: string[] = [];
+      const timer = setTimeout(() => {
+        cmd.kill('SIGKILL');
+        resolve(null);
+      }, DOCKER_INSPECT_TIMEOUT_MS);
+      cmd.stdout.on('data', (data: Buffer) => out.push(String(data)));
+      cmd.stderr.on('data', (data: Buffer) => err.push(String(data)));
+      cmd.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) {
+          const value = out.join('').trim();
+          resolve({ found: true, value: value && value !== '<no value>' ? value : null });
+        } else if (/no such (object|container)/i.test(err.join(''))) {
+          resolve({ found: false });
+        } else {
+          resolve(null);
+        }
+      });
+      cmd.on('error', () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+    });
+  }
+
+  /**
    * Verify Hub-labeled containers exist and match the same running/stopped/missing
    * rules used by app status sync (ci-hub.managed + ci-hub.appurn labels, plus the retired ci-os-hub spellings).
    */

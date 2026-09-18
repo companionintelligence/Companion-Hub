@@ -1,4 +1,4 @@
-import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
+import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, detectContainerDataRoot, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -210,9 +210,11 @@ export class CloudflareClientService {
         this.logger.log('Ensuring cloudflared container is running...');
         const dockerService = this.moduleRef.get(DockerService, { strict: false });
         const composeFile = await this.getComposeFile();
+        // The token file was just rewritten and cloudflared reads it only at startup.
         await dockerService.ensureContainerRunning('cloudflared', {
           composeFile,
           profile: 'cloudflare',
+          forceRecreate: true,
         });
         this.logger.log('Cloudflared container is running.');
 
@@ -733,12 +735,77 @@ export class CloudflareClientService {
   }
 
   /**
-   * Starts or restarts `cloudflared` idempotently when a token is available.
+   * Forgets the tunnel credentials held in memory and removes the `cloudflared`
+   * container.
+   *
+   * Deleting the token file alone does not disconnect a running connector, which
+   * keeps serving the old hostname until its container stops. Returns false when
+   * the container could not be removed, so the caller can try again.
+   */
+  async stopTunnel(): Promise<boolean> {
+    this.tunnelToken = null;
+    this.tunnelId = null;
+
+    // Local and E2E stacks never start `cloudflared`. A development backend on a
+    // machine that also runs a real Hub must not remove that Hub's connector.
+    if (this.configService.get('domain') === 'ci.localhost') {
+      return true;
+    }
+
+    try {
+      const dockerService = this.moduleRef.get(DockerService, { strict: false });
+      if (!dockerService) {
+        this.logger.warn('stopTunnel: DockerService unavailable');
+        return false;
+      }
+
+      const owned = await this.ownsCloudflaredContainer();
+      if (owned === null) {
+        this.logger.warn('stopTunnel: could not check which Hub started cloudflared');
+        return false;
+      }
+      if (!owned) {
+        this.logger.warn(
+          'stopTunnel: leaving cloudflared alone because Docker Compose started it from another folder, so it belongs to another Hub on this machine',
+        );
+        return true;
+      }
+
+      return await dockerService.removeContainer('cloudflared');
+    } catch (error) {
+      this.logger.warn(`stopTunnel: could not remove cloudflared: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Starts `cloudflared`, or brings it back to its compose definition, when a token is available.
    *
    * Each Hub boot calls this method because `recoverTunnelTokenFromDb` starts
    * `cloudflared` only when the token file is missing. Without this additional
    * check, restarting a registered Hub with an existing file would leave the
-   * tunnel down. Local and E2E modes skip the container.
+   * tunnel down. An unregistered Hub never reaches this method at boot. Local and E2E modes skip
+   * the container.
+   *
+   * A container whose status is `running` is left alone. Anything else (missing, exited, or
+   * `restarting` in a crash loop) goes through `compose up`, which replaces a container created
+   * from an older definition instead of restarting it. On beta-max (2026-09-17) cloudflared
+   * crash-looped because its token mount predated the current compose file, and the old
+   * `docker restart` here reported success every boot (see `DockerService.ensureContainerRunning`).
+   * A crash-looping cloudflared spends its backoff in `restarting`, not `running`, so it is not
+   * skipped.
+   *
+   * Healthy tunnels are skipped rather than reconciled because the Hub's compose and the host's
+   * disagree on the config hash. A `--dry-run` of this `up` inside the Hub (2026-09-17) would have
+   * recreated a healthy cloudflared on 6 of the 9 fleet nodes running one (core-2, core-3,
+   * core-7, ci, fzzy, beta-max), with the same image and the same token mount. Compose 2.40.0 in
+   * the Hub hashes the core-3/beta-max definition as e65e7ff…, and the host's 5.x compose hashes
+   * the same definition as 53b859b…. `cihub up` includes the `cloudflare` profile, so every
+   * roll would have recreated the tunnel twice, once per compose, and dropped every public app
+   * hostname twice. Definition changes to a running tunnel are the host tooling's job.
+   *
+   * `forceRestart` recreates the container after the token was recovered, because the
+   * definition is unchanged and cloudflared reads the token only at startup.
    */
   async ensureCloudflaredRunning(options: { forceRestart?: boolean } = {}): Promise<boolean> {
     if (!this.tunnelToken) {
@@ -752,39 +819,27 @@ export class CloudflareClientService {
     }
     try {
       const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
-      const dockerService = this.moduleRef.get(DockerService, { strict: false });
-
       const alreadyRunning = dockerReadFacade ? await dockerReadFacade.isContainerRunning('cloudflared') : false;
       if (alreadyRunning && !options.forceRestart) {
-        this.logger.debug('ensureCloudflaredRunning: cloudflared is already running, skipping restart');
+        this.logger.debug('ensureCloudflaredRunning: cloudflared is running; leaving it alone');
         return true;
       }
 
+      const dockerService = this.moduleRef.get(DockerService, { strict: false });
       if (!dockerService) {
         this.logger.warn('ensureCloudflaredRunning: DockerService unavailable');
         return false;
       }
 
-      if (alreadyRunning && options.forceRestart) {
-        this.logger.warn('ensureCloudflaredRunning: restarting cloudflared after tunnel credential recovery...');
-        try {
-          await dockerService.restartContainer('cloudflared');
-          this.logger.warn('Cloudflared container restarted with recovered credentials.');
-          return true;
-        } catch (restartError) {
-          this.logger.warn(
-            `ensureCloudflaredRunning: restart failed (${restartError instanceof Error ? restartError.message : String(restartError)}); falling through to recreate`,
-          );
-        }
+      if (options.forceRestart) {
+        this.logger.warn('ensureCloudflaredRunning: recreating cloudflared after tunnel credential recovery...');
       }
-
-      this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
-      const composeFile = this.getComposeFile();
       await dockerService.ensureContainerRunning('cloudflared', {
-        composeFile,
+        composeFile: this.getComposeFile(),
         profile: 'cloudflare',
+        forceRecreate: options.forceRestart === true,
       });
-      this.logger.warn('Cloudflared container is running.');
+      this.logger.log('Cloudflared container is up to date with the compose file and running.');
       return true;
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -802,6 +857,50 @@ export class CloudflareClientService {
    * `NODE_ENV`: `.env.dev` sets `NODE_ENV=development` inside the bundled image,
    * which would select the nonexistent `/app/docker-compose.local.yml`.
    */
+  /**
+   * Whether the `cloudflared` container on this Docker engine is this Hub's to remove.
+   *
+   * Inside the Hub container it is: that engine runs this one Hub. A backend run from a source
+   * checkout shares the engine with the rest of the machine, often an installed Hub whose
+   * connector has the same container name, and `DOMAIN` stops marking local mode once pairing
+   * writes the Portal's domain. So there only a container that Compose started from this
+   * backend's compose folder counts. Compose records that folder as a host path, which a process
+   * on the host can compare. A missing container counts as this Hub's, since there is nothing to
+   * remove. Returns null when Docker could not be asked.
+   */
+  private async ownsCloudflaredContainer(): Promise<boolean | null> {
+    if (this.runsInsideHubContainer()) {
+      return true;
+    }
+
+    const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
+    if (!dockerReadFacade) {
+      return null;
+    }
+
+    const label = await dockerReadFacade.readContainerLabel('cloudflared', 'com.docker.compose.project.working_dir');
+    if (label === null) {
+      return null;
+    }
+    if (!label.found) {
+      return true;
+    }
+    if (!label.value) {
+      return false;
+    }
+
+    const normalize = (dir: string) => {
+      const resolved = path.resolve(dir);
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    };
+    return normalize(label.value) === normalize(path.dirname(this.getComposeFile()));
+  }
+
+  /** Split out so tests can run the source-checkout rules on any machine. */
+  private runsInsideHubContainer(): boolean {
+    return detectContainerDataRoot();
+  }
+
   private getComposeFile(): string {
     const mounted = path.join(DATA_DIR, 'docker-compose.yml');
     if (fsSync.existsSync(mounted)) {

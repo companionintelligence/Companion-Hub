@@ -25,6 +25,9 @@ import { AppOperationRegistry } from './app-operation-registry';
 import { AppStatusSyncService } from './app-status-sync.service';
 import { PortalModule } from '@/core/portal/portal.module';
 import { LifecycleJobService } from './lifecycle-job.service';
+import { InferenceModule } from '../inference/inference.module';
+import { AiAppInferenceRefreshService } from './ai-app-inference-refresh.service';
+import { INFERENCE_ENV_REFRESHER } from '@/common/helpers/inference-env-refresh';
 import { DeviceKeyRefreshService } from './device-key-refresh.service';
 import { PairingAppRestoreService } from './pairing-app-restore.service';
 
@@ -46,6 +49,8 @@ import { PairingAppRestoreService } from './pairing-app-restore.service';
     NetworkModule,
     ApiKeyModule,
     PortalModule,
+    // forwardRef for the same reason AppsModule uses one: Inference -> HubPool -> Inference.
+    forwardRef(() => InferenceModule),
   ],
   providers: [
     HubAccessService,
@@ -57,6 +62,9 @@ import { PairingAppRestoreService } from './pairing-app-restore.service';
     AppStatusSyncService,
     AppRehydrationService,
     LifecycleJobService,
+    AiAppInferenceRefreshService,
+    // Resolved lazily by the pool settings route; see INFERENCE_ENV_REFRESHER.
+    { provide: INFERENCE_ENV_REFRESHER, useExisting: AiAppInferenceRefreshService },
     DeviceKeyRefreshService,
     PairingAppRestoreService,
   ],
@@ -69,6 +77,8 @@ import { PairingAppRestoreService } from './pairing-app-restore.service';
     AppStatusSyncService,
     AppRehydrationService,
     LifecycleJobService,
+    AiAppInferenceRefreshService,
+    INFERENCE_ENV_REFRESHER,
   ],
 })
 export class AppLifecycleModule {}

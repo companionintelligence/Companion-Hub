@@ -12,7 +12,7 @@ const dummyUrl = new URL('http://localhost:4444/');
 
 describe('PORTAL_SCENARIOS', () => {
   it('includes all expected scenario names', () => {
-    assert.deepStrictEqual([...PORTAL_SCENARIOS], ['registered', 'unregistered', 'delayed', 'degraded']);
+    assert.deepStrictEqual([...PORTAL_SCENARIOS], ['registered', 'unregistered', 'delayed', 'degraded', 'removed']);
   });
 });
 
@@ -124,6 +124,34 @@ describe('buildRoutes', () => {
       assert.strictEqual(result.status, 200);
       assert.strictEqual((result.body as { success: boolean }).success, true);
     });
+
+    it("refuses check-in with CI-Portal's 401, not the 400 the Hub reads as a schema refusal", () => {
+      const handler = routes['POST /api/devices/check-in'];
+      assert.ok(handler);
+      const result = handler(dummyUrl, { device_id: 'test-device' });
+      assert.strictEqual(result.status, 401);
+      assert.deepStrictEqual(result.body, { error: 'Invalid Device Key', code: 'UNAUTHORIZED' });
+    });
+  });
+
+  describe('removed scenario', () => {
+    const routes = buildRoutes('removed');
+
+    it('refuses the device key on every device-authenticated route', () => {
+      for (const route of ['POST /api/devices/check-in', 'GET /api/entitlements/check', 'GET /api/store'] as const) {
+        const handler = routes[route];
+        assert.ok(handler, `Missing ${route}`);
+        const result = handler(dummyUrl);
+        assert.strictEqual(result.status, 401, `${route} should refuse the key`);
+        assert.strictEqual((result.body as { code?: string }).code, 'UNAUTHORIZED');
+      }
+    });
+
+    it('still pairs with a fresh code, which is the way back', () => {
+      const handler = routes['POST /api/devices/pair'];
+      assert.ok(handler);
+      assert.strictEqual(handler(dummyUrl).status, 200);
+    });
   });
 
   describe('delayed scenario', () => {
@@ -207,6 +235,7 @@ describe('buildRoutes', () => {
       unregistered: false,
       delayed: true,
       degraded: false, // 500 means the field isn't trustworthy — handler returns an error body
+      removed: true, // Portal-side removal is what the Hub cannot see from this route
     };
 
     for (const scenario of PORTAL_SCENARIOS) {

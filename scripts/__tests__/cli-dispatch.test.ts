@@ -398,7 +398,7 @@ describe('runCli clean confirmation gate', () => {
     await runCli(['clean', 'dev', '--yes']);
 
     expect(mocks.calls).toEqual<Dispatch[]>([
-      { handler: 'confirmDestructiveAction', args: ['Cleaning dev', true, 'Remove generated files for dev? [y/N]: '] },
+      { handler: 'confirmDestructiveAction', args: ['Cleaning dev', true, 'Remove installed app containers and generated files for dev? [y/N]: '] },
       { handler: 'cleanHub', args: ['dev'] },
     ]);
   });

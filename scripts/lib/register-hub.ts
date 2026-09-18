@@ -1,4 +1,4 @@
-import { resolveHubApiBase } from '../public-web-cli.js';
+import { HubUnreachableError, resolveHubApiBase } from '../public-web-cli.js';
 
 export type RegistrationPhase = 'unregistered' | 'paired' | 'provisioning' | 'locally_ready' | 'publicly_ready' | 'degraded';
 
@@ -7,6 +7,43 @@ export type RegistrationStatusResponse = {
   registered: boolean;
   degradedReasons?: string[];
 };
+
+/** `GET /api/registration/phase`: the status plus the last check-in, read without sending one. */
+export type RegistrationPhaseResponse = RegistrationStatusResponse & {
+  lastCheckIn: { at: string; httpStatus: number | null; code: string | null; error: string | null } | null;
+  consecutiveCheckInFailures?: number;
+};
+
+/** The Hub answered 404: its build predates `GET /api/registration/phase`. */
+export class RegistrationPhaseRouteMissing extends Error {
+  constructor() {
+    super('this Hub build has no /api/registration/phase');
+    this.name = 'RegistrationPhaseRouteMissing';
+  }
+}
+
+/**
+ * Reads the phase without triggering a check-in.
+ *
+ * Not `fetchRegistrationStatus`: `GET /registration/status` sends a check-in to Portal once its
+ * 30 s throttle has passed, so a diagnostic that read it would change the `last_seen` it was trying
+ * to observe.
+ */
+export async function fetchRegistrationPhase(apiBase: string): Promise<RegistrationPhaseResponse> {
+  let res: Response;
+  try {
+    res = await fetch(`${apiBase}/api/registration/phase`, { signal: AbortSignal.timeout(10_000) });
+  } catch (error) {
+    throw new HubUnreachableError(`Cannot reach the Hub at ${apiBase} — ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (res.status === 404) {
+    throw new RegistrationPhaseRouteMissing();
+  }
+  if (!res.ok) {
+    throw new Error(`Registration phase failed (${res.status})`);
+  }
+  return (await res.json()) as RegistrationPhaseResponse;
+}
 
 export type DeviceIdResponse = {
   device_id?: string;
@@ -130,10 +167,16 @@ export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshRe
   return data;
 }
 
-export async function submitPairingCode(apiBase: string, pairingCode: string): Promise<PairResponse> {
+/**
+ * `deviceKey` is the host-local device key from `state/settings.json`, when this machine has one.
+ * A first pairing needs no credential, but the Hub re-pairs an already registered Hub (a key Portal
+ * rejects, a lost tunnel token) only for an authenticated caller, and this is how `cihub register`
+ * on the Hub itself is one.
+ */
+export async function submitPairingCode(apiBase: string, pairingCode: string, deviceKey?: string): Promise<PairResponse> {
   const res = await fetch(`${apiBase}/api/registration/pair`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(deviceKey ? { Authorization: `Bearer ${deviceKey}` } : {}) },
     body: JSON.stringify({ pairing_code: normalizePairingCode(pairingCode) }),
     signal: AbortSignal.timeout(30_000),
   });

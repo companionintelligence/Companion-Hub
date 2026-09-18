@@ -6,10 +6,26 @@
  * about local readiness, public readiness, and recovery.
  */
 
-import { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus } from '@ci-hub/common/types';
+import {
+  PROVISIONING_PHASES,
+  type ProvisioningPhase,
+  DEGRADED_REASONS,
+  type DegradedReason,
+  type RegistrationCheckIn,
+  type RegistrationPhaseReport,
+  type RegistrationStatus,
+} from '@ci-hub/common/types';
 
 // Re-export shared types so existing imports from this module continue to work.
-export { PROVISIONING_PHASES, type ProvisioningPhase, DEGRADED_REASONS, type DegradedReason, type RegistrationStatus };
+export {
+  PROVISIONING_PHASES,
+  type ProvisioningPhase,
+  DEGRADED_REASONS,
+  type DegradedReason,
+  type RegistrationCheckIn,
+  type RegistrationPhaseReport,
+  type RegistrationStatus,
+};
 
 // ---------------------------------------------------------------------------
 // Transition rules
@@ -42,16 +58,33 @@ export function isOperational(phase: ProvisioningPhase): boolean {
   return phase === 'locally_ready' || phase === 'publicly_ready' || phase === 'degraded';
 }
 
+/** The degraded reasons that only pairing again can clear. */
+const RE_PAIRING_REASONS: readonly DegradedReason[] = ['tunnel_token_missing', 'portal_rejected'];
+
 /**
  * Whether a registered Hub is expected to pair with Portal again.
  *
  * A Hub that lost its tunnel token is registered but cannot serve publicly, and
- * pairing again is how the token is restored — so it must not be treated the
- * same as a Hub that is up and serving. The frontend gates its pairing form on
- * the same test.
+ * pairing again is how the token is restored. A Hub whose device key Portal
+ * rejects still serves locally, and often through its tunnel too, but no
+ * retry revives the key. Neither may be treated as a Hub that is up and
+ * serving, or `POST /registration/pair` and the registration callback refuse
+ * the one step that fixes them.
+ *
+ * The frontend's copy of this test (`lib/registration-status.ts`) still checks
+ * only `tunnel_token_missing`, because its banner offers a tunnel reconnect
+ * that cannot help a rejected key. Until it has its own copy for that reason,
+ * a `portal_rejected` Hub pairs with `cihub register --code`.
  */
 export function requiresPortalRePairing(phase: ProvisioningPhase, degradedReasons: readonly DegradedReason[]): boolean {
-  return phase === 'degraded' && degradedReasons.includes('tunnel_token_missing');
+  return phase === 'degraded' && degradedReasons.some((reason) => RE_PAIRING_REASONS.includes(reason));
+}
+
+/** Order-insensitive equality, so re-asserting the same degraded state is a no-op. */
+export function sameDegradedReasons(a: readonly DegradedReason[], b: readonly DegradedReason[]): boolean {
+  if (a.length !== b.length) return false;
+  const sortedB = [...b].sort();
+  return [...a].sort().every((reason, index) => reason === sortedB[index]);
 }
 
 /** Transient phases while a pairing request is being provisioned — not state drift. */

@@ -13,6 +13,9 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
+import { TUNNEL_DIR } from '@/common/constants';
+import path from 'node:path';
+import { vol } from 'memfs';
 
 const uninstallExecute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
 
@@ -142,6 +145,18 @@ describe('FactoryResetService', () => {
 
     expect(sessionUserCache.get(1)).toBeUndefined();
     expect(cache.clear).toHaveBeenCalled();
+  });
+
+  it('removes registration.json with the tunnel token, so the desktop app and CLI cannot restart the tunnel', async () => {
+    // The registration service mock does no file work here, so this checks the factory reset's own cleanup.
+    vol.mkdirSync(TUNNEL_DIR, { recursive: true });
+    vol.writeFileSync(path.join(TUNNEL_DIR, 'token'), 'tunnel-token');
+    vol.writeFileSync(path.join(TUNNEL_DIR, 'registration.json'), JSON.stringify({ tunnelId: 'tunnel-1', writtenAt: '2026-09-01T00:00:00.000Z' }));
+
+    await service.execute();
+
+    expect(vol.existsSync(path.join(TUNNEL_DIR, 'token'))).toBe(false);
+    expect(vol.existsSync(path.join(TUNNEL_DIR, 'registration.json'))).toBe(false);
   });
 
   it('tears down installed apps before wiping data mounts', async () => {

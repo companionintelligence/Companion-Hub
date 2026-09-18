@@ -105,6 +105,79 @@ export function parseNames(output: string): string[] {
     .filter(Boolean);
 }
 
+/** The Hub's own compose projects. Their services carry the managed labels too, but they are not apps. */
+const HUB_STACK_PROJECTS = new Set(['ci-os-hub', 'ci-hub', 'runcihub']);
+const COMPOSE_PROJECT_LABEL_PREFIX = 'com.docker.compose.project=';
+
+/**
+ * Compose project names of marketplace apps, from `docker ps --format "{{.Labels}}"` lines of
+ * containers filtered by `ci-hub.managed=true` or `ci-os-hub.managed=true`.
+ *
+ * `{{.Labels}}` is a comma-joined `key=value` list; parsing it here avoids a quoted Go-template
+ * argument (`'{{.Label "..."}}'`), which cmd.exe mishandles on Windows.
+ */
+export function managedAppProjectsFromLabelLines(lines: string[]): string[] {
+  const projects = new Set<string>();
+  for (const line of lines) {
+    for (const pair of line.split(',')) {
+      const trimmed = pair.trim();
+      if (!trimmed.startsWith(COMPOSE_PROJECT_LABEL_PREFIX)) {
+        continue;
+      }
+      const project = trimmed.slice(COMPOSE_PROJECT_LABEL_PREFIX.length);
+      // Defense-in-depth: only act on values matching Docker's compose-project charset
+      // before interpolating them into a shell command string.
+      if (!HUB_STACK_PROJECTS.has(project) && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(project)) {
+        projects.add(project);
+      }
+    }
+  }
+  return [...projects];
+}
+
+export type DockerCliRunner = (args: string[]) => { ok: boolean; stdout: string };
+
+/**
+ * Removes every Hub-managed marketplace app: its containers, its project networks, and, when
+ * `removeVolumes` is set, its named volumes. Returns the compose projects it found.
+ *
+ * Run this BEFORE deleting the Hub state the apps depend on. Each app is its own compose project
+ * outside the Hub stack, with bind mounts under the Hub data directory and Hub-issued credentials
+ * in its environment. On core-2 (2026-09-17) a wipe that removed only the Hub stack and its data
+ * directory left ci-memory, OpenClaw, Hermes, and import-tools running against deleted bind
+ * sources, and their Hub MCP calls to the fresh Hub returned 401.
+ *
+ * This assumes one Hub per Docker daemon, as the managed labels carry no Hub identity.
+ */
+export function removeManagedAppProjects(docker: DockerCliRunner, options: { removeVolumes: boolean }): string[] {
+  const labelLines = ['ci-hub.managed=true', 'ci-os-hub.managed=true'].flatMap((label) => {
+    const { ok, stdout } = docker(['ps', '-a', '--filter', `label=${label}`, '--format', '{{.Labels}}']);
+    return ok ? parseNames(stdout) : [];
+  });
+  const projects = managedAppProjectsFromLabelLines(labelLines);
+  const byProject = (project: string) => ['--filter', `label=com.docker.compose.project=${project}`];
+
+  for (const project of projects) {
+    const containers = docker(['ps', '-aq', ...byProject(project)]);
+    const ids = containers.ok ? parseNames(containers.stdout) : [];
+    if (ids.length > 0) {
+      docker(['rm', '-f', ...ids]);
+    }
+    const networks = docker(['network', 'ls', '-q', ...byProject(project)]);
+    for (const network of networks.ok ? parseNames(networks.stdout) : []) {
+      docker(['network', 'rm', network]);
+    }
+    if (!options.removeVolumes) {
+      continue;
+    }
+    const volumes = docker(['volume', 'ls', '-q', ...byProject(project)]);
+    for (const volume of volumes.ok ? parseNames(volumes.stdout) : []) {
+      docker(['volume', 'rm', volume]);
+    }
+  }
+  return projects;
+}
+
 /**
  * Build all removable Hub state directories for the current platform.
  */
@@ -387,36 +460,15 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   // separate from the Hub stack. Hub stamps every managed app container with canonical and
   // legacy managed labels (store-agnostic). Tear these down BEFORE the shared Hub networks
   // below: main app services attach to those networks, so removing either while an app
-  // container is still attached would fail.
-  //
-  // `{{.Labels}}` returns a comma-joined `key=value` list; parsing it here avoids a quoted
-  // Go-template arg (`'{{.Label "..."}}'`), which cmd.exe mishandles on Windows.
+  // container is still attached would fail. The Hub stack projects are excluded here; the
+  // dedicated Hub teardown (which also snapshots Hub images) handles them.
   const managedLabelLines = parseNames(
     [
       runCommand('docker ps -a --filter label=ci-hub.managed=true --format "{{.Labels}}"', commandContext),
       runCommand('docker ps -a --filter label=ci-os-hub.managed=true --format "{{.Labels}}"', commandContext),
     ].join('\n'),
   );
-  const projectLabelPrefix = 'com.docker.compose.project=';
-  // The Hub's own compose services in docker-compose.*.yml also carry both managed labels,
-  // so exclude the Hub stack projects here — they're handled by the dedicated Hub teardown
-  // (which is also where Hub images are snapshotted), keeping that the single source of truth.
-  const hubProjects = new Set(['ci-os-hub', 'ci-hub', 'runcihub']);
-  const managedProjects = new Set<string>();
-  for (const line of managedLabelLines) {
-    for (const pair of line.split(',')) {
-      const trimmed = pair.trim();
-      if (!trimmed.startsWith(projectLabelPrefix)) {
-        continue;
-      }
-      const project = trimmed.slice(projectLabelPrefix.length);
-      // Defense-in-depth: only act on values matching Docker's compose-project charset
-      // before interpolating them into a shell command string.
-      if (!hubProjects.has(project) && /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(project)) {
-        managedProjects.add(project);
-      }
-    }
-  }
+  const managedProjects = managedAppProjectsFromLabelLines(managedLabelLines);
 
   const sharedNetworks = new Set(['bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network']);
   for (const project of managedProjects) {

@@ -70,6 +70,21 @@ describe('RegistrationController', () => {
       });
     });
 
+    it('serves GET /registration/phase from the side-effect-free report, never the live status that checks in', () => {
+      registrationService.getRegistrationPhaseReport.mockReturnValue({
+        phase: 'degraded',
+        degradedReasons: ['portal_rejected'],
+        registered: true,
+        lastCheckIn: { at: '2026-09-17T09:15:00.000Z', httpStatus: 401, code: 'UNAUTHORIZED', error: 'HTTP 401: Invalid Device Key' },
+        consecutiveCheckInFailures: 0,
+      });
+
+      const result = controller.getPhase();
+
+      expect(result.lastCheckIn?.httpStatus).toBe(401);
+      expect(registrationService.getLiveRegistrationStatus).not.toHaveBeenCalled();
+    });
+
     it('should return degraded status with reasons', async () => {
       registrationService.getLiveRegistrationStatus.mockResolvedValue({
         phase: 'degraded',
@@ -415,7 +430,28 @@ describe('RegistrationController', () => {
 
       const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
       expect(result).toEqual({ success: true });
-      expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF');
+      expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF', { callerAuthenticated: false });
+    });
+
+    it('tells the service who is asking, so a stranger on the port cannot re-pair a registered Hub', async () => {
+      registrationService.pairDevice.mockResolvedValue({ success: true } as any);
+
+      await controller.pairDevice({ pairing_code: 'ABCDEF' }, {} as any);
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: false });
+
+      // `cihub register` on an unclaimed Hub: the device key authenticates, with no operator row to be.
+      await controller.pairDevice({ pairing_code: 'ABCDEF' }, { hubPrincipal: 'portal-device', hubUnclaimed: true } as any);
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true });
+
+      await controller.pairDevice({ pairing_code: 'ABCDEF' }, { hubPrincipal: 'session', user: { id: 1 } } as any);
+      expect(registrationService.pairDevice).toHaveBeenLastCalledWith('ABCDEF', { callerAuthenticated: true });
+    });
+
+    it('returns the Portal refusal code to the registration page', async () => {
+      registrationService.pairDevice.mockResolvedValue({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
+
+      const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
+      expect(result).toEqual({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
     });
   });
 
