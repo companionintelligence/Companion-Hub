@@ -526,8 +526,8 @@ export const GeneralActionsContainer = () => {
           </DialogHeader>
           <DialogDescription className="space-y-4 py-2">
             <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
-            <div className="space-y-2 text-left">
-              <label htmlFor="factory-reset-confirmation" className="text-sm font-medium">
+            <div className="space-y-3 text-left">
+              <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
                 {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: FACTORY_RESET_CONFIRMATION })}
               </label>
               <Input
