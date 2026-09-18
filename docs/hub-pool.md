@@ -22,6 +22,7 @@ This complements, and does not replace, the existing single-node model recommend
 - **`HUB_POOL_USER_DISABLED=true`**: explicit opt-out. Forces this Hub to behave as if it had no connected peers (routing reverts to direct/local resolution), makes it stop answering peer capability probes so paired Hubs naturally mark it unreachable, and makes it refuse new inbound pairing requests. Existing pairings are preserved: paired Hubs keep polling an unreachable peer, so within one poll of the flag being removed the pairing is back to `connected` on its own.
 - **`HUB_POOL_OUTBOUND_DISABLED=true`** / **`HUB_POOL_INBOUND_DISABLED=true`**: the same kind of operator-of-the-box override for one direction only. Each overrides its persisted setting below and is reported separately by `GET /inference/pool/status`. Like the master flag, neither is projected into `.env` by `generateSystemEnvFile`.
 - **`HUB_POOL_MAX_PROMPT_TOKENS=<tokens>`**: this node's [prompt ceiling](#prompt-ceilings), overriding the persisted `poolMaxPromptTokens`. A value outside 1024–1048576, or not a whole number, is ignored rather than guessed at. `GET /inference/pool/status` reports `localNode.maxPromptTokensSetBy: "env"` while it is in force. Not projected into `.env` by `generateSystemEnvFile`.
+- **`HUB_POOL_THROUGHPUT_PLACEMENT=off`** (or `0`, `false`): stop [measured throughput](#throughput-aware-placement) from reordering candidates. This node keeps measuring, reporting and advertising, so turning it back on needs no warm-up. Read per request.
 
 ## Operator settings
 
@@ -95,6 +96,91 @@ a ceiling, otherwise `{ estimatedTokens, excluded: [{ node, maxPromptTokens }], 
 ceiling skipped that node" can be told apart from "the ranker preferred another". `excluded` lists the
 nodes moved to the back. `overridden` is `true` when the request was placed on one of them anyway.
 `cihub pool log` marks the requests the ceiling changed.
+
+## Throughput-aware placement
+
+The automatic counterpart to a prompt ceiling. The ranker weighs queue depth and hardware tier, and
+neither tells a GPU node from one serving the same model on CPU. For a long prompt that is the whole
+difference. Measured on the fleet, 2026-09-17, with `qwen3-coder:30b`: core-6 (GPU) prefilled a 184 KB
+(~48k-token) streamed turn at ~496 tok/s and answered in 268 s. fzzy (CPU, `size_vram` 0) read a
+10.6k-token turn at ~123 tok/s, but produced no first byte for a ~46k-token turn inside its 922 s
+budget, because CPU attention cost grows with the context. Earlier, `qwen3.6:27b` prefilled at
+~300 tok/s on GPU nodes and at 27–37 tok/s on fzzy and core-7.
+
+**What is measured.** Every chat or completion request an engine serves (the routes a ceiling judges)
+is timed per node, engine, and model, both on the entry node and on the node that serves it:
+
+- **Prefill.** The engine's own prompt-evaluation time when it reports one (Ollama's native
+  `prompt_eval_duration`, llama.cpp's `timings.prompt_ms`), which leaves out the model load and the
+  queue. Otherwise, for a streamed request, the wait for the first byte. A non-streamed request without
+  engine timings gives no prefill sample, because its wait was the whole generation.
+- **Missed deadlines.** A streamed request that ran out of its first-byte budget with no answer is
+  recorded as "at least this slow". It carries no usage frame, and it is the failure placement exists
+  to stop repeating.
+- **Decode.** The engine's own generation time, or the stream from the first byte to the end. It is
+  reported, not ranked on.
+
+Rates are in the pool's own token estimate, `bytes / 4` of the forwarded body, because that is the unit
+the budget is sized in. A sample is taken only when the node had nothing else in flight, as far as this
+node can tell, so a queue is never recorded as slow hardware. Prompts under 4096 estimated tokens are
+neither measured nor judged: their wait is mostly fixed cost, and the 300 s minimum budget is missed
+only below ~14 tok/s.
+
+**How it is kept.** Evidence sits in prompt-size bands that double from 4096 tokens. A band applies to
+prompts of that size and larger, never smaller, because prefill only gets slower as the prompt grows.
+Most agent turns share a cached prefix with the turn before and reach their first byte in seconds, so
+averaging them in would make a CPU node look fast between the cold turns that time out. So slower
+evidence replaces a band at once. A faster sample is kept beside it and takes over only as the slow
+evidence decays: it holds for 30 minutes, then halves every 30 minutes. Everything is forgotten after
+2 hours, which is also how a demoted node gets tried again. All of it is in memory, so a restart
+forgets it.
+
+**Predicting a prompt larger than anything measured.** Attention is quadratic in the prompt, so the
+cost per token rises with the context: on a CPU-served model that is the dominant term, and on a GPU
+one it is nearly invisible. Both halves are on this fleet. fzzy's per-token cost more than doubled
+between 10.6k and 46k tokens; beta-max's `qwen3.6:27b` fell only from 192 to 157 tok/s across 47k.
+So a measurement is read forward to a larger prompt at `min(N / measured, 3)` times its per-token
+cost — the physical worst case, refusing to extrapolate more than threefold however much longer the
+prompt is. Only the measurement nearest the requested size is read forward, and never past the
+slowest reading at or below that size, which is a bound rather than a guess: a node already that slow
+on a shorter prompt cannot be faster on a longer one.
+
+The line this draws: a node is demoted for a much longer prompt when it was measured below about
+150 tok/s, three times the 50 tok/s floor the budget is sized from. Every GPU node measured on this
+fleet is above it (157–496 tok/s, and higher at the shorter prompts a reading is taken from), and
+every CPU-served one is below. This is what places the first long turn correctly instead of learning
+it from a missed deadline, and it is also the part most likely to be wrong on hardware unlike this
+fleet's: `HUB_POOL_THROUGHPUT_PLACEMENT=off` turns the reordering off, and the routing log names the
+size every prediction was read forward from.
+
+**Where it applies.** The entry node predicts each candidate's time to a first byte from the slowest
+applicable evidence: what it timed itself, and what the peer advertises in `GET /capabilities` as
+`throughput` (omitted when nothing has been timed, as on every older build). It takes the slower of
+the two, so a peer cannot advertise its way out of a deadline this node watched it miss. A candidate
+predicted to take longer than the request's budget moves behind every candidate that is not. The
+rules are a ceiling's:
+
+- **Unmeasured is neither fast nor slow.** It keeps its place, and a measured-fast node is never
+  promoted past it.
+- **Demoted, never removed.** A slow node stays at the end of the failover order and still serves the
+  request when every faster node fails.
+- **All slow means nothing moves.** When every candidate is predicted to miss, the ranker's order
+  stands.
+- **Ceilings stay outside.** A ceiling is an operator's statement and a measurement is an inference,
+  so throughput reorders within each ceiling group. [Pins](#manual-routing-pins) then reorder within
+  each resulting group, so a pin at a node measured too slow does not bring a long prompt back to it.
+
+**Seeing it.** `GET /api/inference/pool/status` reports `localNode.throughput`, this node's own
+estimates and exactly what it advertises, and `peers[].throughput` as `{ observed, advertised }`: what
+this node timed, and the peer's report after the validation and ageing routing applies. Each estimate
+lists its prefill bands (`fromTokens`, `promptTokens`, `tokensPerSec`, `deadline`, `ageMs`) and its
+`decode` rate. Each routing-log entry carries `throughput`: `null` when no candidate had applicable
+evidence, otherwise `{ estimatedTokens, budgetMs, estimates: [{ node, backend, tokensPerSec,
+fromPromptTokens, extrapolated, predictedMs, source, deadline, slow }], overridden }`. `tokensPerSec`
+is the rate as measured, at `fromPromptTokens`, so it can be compared with an engine's own log;
+`predictedMs` includes the growth factor when `extrapolated` is true. `overridden` is `true` when the request was
+placed on a `slow` node anyway. `cihub pool status` lists measured speed per node, and `cihub pool log`
+marks the requests a measurement moved.
 
 ## GPU pressure: a second load signal, AMD-only and off by default
 
@@ -224,7 +310,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
   | `X-Hub-Pool-Model` | The model the request was routed for |
 
   A request that failed over names the node that *answered*, not the one tried first. The headers are absent on a 502. `local` is deliberately not this node's own MagicDNS name: the proxy is origin-checked but unauthenticated, and `/identify` stopped disclosing the name to unauthenticated callers for the same reason — see [What `/identify` no longer says](#what-identify-no-longer-says-and-where-the-name-went-instead). Nothing else about the peer appears: never its node UUID, and never a container name. Any `x-hub-pool-*` header the upstream engine or peer returns is dropped, so the attribution is always this Hub's own statement. To check by hand: `curl -i` and read the headers, or `curl -sD - -o /dev/null` for headers only.
-- **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed) — and `promptCeiling`, what [prompt ceilings](#prompt-ceilings) did to the decision, or `null`. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
+- **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed) — `promptCeiling`, what [prompt ceilings](#prompt-ceilings) did to the decision, or `null`, and `throughput`, what [measured throughput](#throughput-aware-placement) did to it, or `null`. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
 
 ## Peer identity: PIN pairing and signed requests
 

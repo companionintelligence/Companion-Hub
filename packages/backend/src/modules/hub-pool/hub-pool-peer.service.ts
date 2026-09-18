@@ -40,11 +40,12 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
-import { HubPoolLoadService } from './hub-pool-load.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
 import { HubPoolPairingPinService, type PinAttemptSource } from './hub-pool-pairing-pin.service';
 import { buildSignedPoolHeaders, MIN_PAIR_BY_ADDRESS_PROTOCOL, POOL_PEER_HEADER, publicKeyFingerprint } from './hub-pool-peer-auth';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
+import { HubPoolThroughputService, readAdvertisedThroughput } from './hub-pool-throughput.service';
 import {
   resolveStatusPins,
   toPublicPeer,
@@ -55,6 +56,7 @@ import {
   type PoolIdentitySummary,
   type PoolStatusLocalNode,
   type PoolStatusPeer,
+  type PoolStatusPeerThroughput,
   type PoolStatusReason,
 } from './hub-pool.types';
 
@@ -163,6 +165,11 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
      * sample", which is an omitted key.
      */
     @Optional() private readonly moduleRef?: ModuleRef,
+    /**
+     * Where the proxy keeps what it has timed. `@Optional()` for the positional harnesses; without it
+     * this node advertises no throughput and status reports none, which is what an unmeasured node is.
+     */
+    @Optional() private readonly throughput?: HubPoolThroughputService,
   ) {}
 
   onModuleInit(): void {
@@ -483,6 +490,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // usable, without ever putting a probe or a keygen on this path.
         identity,
         ...this.localPromptCeilingStatus(),
+        throughput: this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [],
       },
       // `peerKeyFingerprint`, never the key: the fingerprint is what an operator compares across two
       // screens when confirming a pairing, and the full key is only ever needed in-process.
@@ -500,6 +508,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         containers: this.peerContainers(peer),
         // Through the same clamp the ranker reads it with, so a value routing ignores shows as none.
         maxPromptTokens: clampPromptCeiling((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxPromptTokens),
+        throughput: this.peerThroughput(peer),
       })),
       peerCounts: {
         total: peers.length,
@@ -514,6 +523,22 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // and the availability shown is the one routing would actually see.
       pins: resolveStatusPins(this.configuration.getHubPoolPreferences().poolPins, peers, localNode.backends),
       pairingPin: this.pairingPins.state(),
+    };
+  }
+
+  /**
+   * A peer's throughput as routing reads it: what this node timed, and its own advert after the same
+   * validation and ageing `PoolProxyService` applies. Not freshness-gated — evidence ages on its own
+   * clock, and the ranker keeps using it while it lives.
+   */
+  private peerThroughput(peer: HubPoolPeer): PoolStatusPeerThroughput {
+    const now = Date.now();
+    return {
+      observed: this.throughput?.estimatesFor(peer.id, now) ?? [],
+      advertised: readAdvertisedThroughput(
+        (peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.throughput,
+        peer.lastSeenAt ? now - Date.parse(peer.lastSeenAt) : Number.NaN,
+      ),
     };
   }
 
@@ -1141,6 +1166,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const gpuPressureSource = this.pressureService.source();
     const containers = this.ownContainerRollup();
     const promptCeiling = resolvePoolMaxPromptTokens(this.configuration.getHubPoolPreferences().poolMaxPromptTokens).maxPromptTokens;
+    const throughput = this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [];
     return {
       hardwareTier: inventory.hardwareTier,
       backends: acceptingWork ? inventory.backends : [],
@@ -1178,6 +1204,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // not see it flicker with the inbound switch. Read per call, so a PATCH reaches peers on their
       // next poll rather than after a restart.
       ...(promptCeiling === null ? {} : { maxPromptTokens: promptCeiling }),
+      // Omitted when nothing has been timed, like every other measurement here: absence is what an
+      // older build sends and what a reader ranks as unmeasured. Advertised whether or not this node
+      // is accepting work, like the ceiling, because it describes the hardware rather than an offer.
+      ...(throughput.length === 0 ? {} : { throughput }),
       updatedAt: new Date().toISOString(),
     };
   }

@@ -1,5 +1,5 @@
 import { Writable } from 'node:stream';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { Logger } from '@nestjs/common';
 import type { Response } from 'express';
@@ -24,20 +24,25 @@ import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
+import { HubPoolThroughputService, THROUGHPUT_FORGET_AFTER_MS, THROUGHPUT_HALF_LIFE_MS, THROUGHPUT_HOLD_MS } from '../hub-pool-throughput.service';
 import {
   AUTO_MODEL,
   POOL_BACKEND_HEADER,
   POOL_MODEL_HEADER,
   POOL_SERVED_BY_HEADER,
   POOL_SERVED_LOCALLY,
+  PoolForwardDeadlineError,
   PoolProxyService,
   applyPromptCeiling,
+  applyThroughputPlacement,
   describeUnresolvableAuto,
+  firstByteBudgetMs,
   servedByHeaders,
+  splitDemoted,
 } from '../hub-pool-proxy.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import type { PoolPeerCapabilities } from '../hub-pool.types';
+import type { PoolPeerCapabilities, PoolThroughputEstimate } from '../hub-pool.types';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
   return {
@@ -139,6 +144,8 @@ describe('PoolProxyService', () => {
   // Real too: the ring buffer's contents are the assertion in the routing-log tests.
   let routingLog: HubPoolRoutingLogService;
   let pressureService: MockProxy<HubPoolPressureService>;
+  // Real: placement is only meaningful against the evidence the proxy itself records.
+  let throughput: HubPoolThroughputService;
   let service: PoolProxyService;
 
   /** Repoint the settings the proxy reads per request, as a settings PATCH would. */
@@ -193,7 +200,13 @@ describe('PoolProxyService', () => {
     // The fleet default: this node cannot measure its GPU, so it ranks neutral.
     pressureService.band.mockReturnValue(null);
     pressureService.source.mockReturnValue(null);
-    service = new PoolProxyService(
+    throughput = new HubPoolThroughputService();
+    service = buildService();
+    global.fetch = vi.fn();
+  });
+
+  function buildService(): PoolProxyService {
+    return new PoolProxyService(
       // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
       // return undefined and quietly drop every local candidate.
       new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
@@ -203,9 +216,14 @@ describe('PoolProxyService', () => {
       configuration,
       routingLog,
       pressureService,
+      // One `undefined` (the model registry), not two: this branch drops the `InferenceRouterService`
+      // slot that used to sit before it, because `auto` is now resolved by `pool-auto-model.ts`
+      // against the whole pool. Leaving the old placeholder in would land `throughput` past the end
+      // of the constructor and silently give every test its own empty store.
+      undefined,
+      throughput,
     );
-    global.fetch = vi.fn();
-  });
+  }
 
   describe('buildCandidateList', () => {
     it('includes the local backend when it is healthy and reports the model', async () => {
@@ -1967,6 +1985,669 @@ describe('PoolProxyService', () => {
           excluded: [{ node: LOCAL_CANDIDATE_KEY, maxPromptTokens: FZZY_CEILING }],
           overridden: false,
         });
+      });
+    });
+  });
+
+  /**
+   * Throughput-aware placement, with the fleet's own numbers (2026-09-17, `qwen3-coder:30b`): fzzy
+   * serves it on CPU, read a ~10.6k-token turn at ~123 tok/s, and produced no first byte for a
+   * ~46k-token one inside its 922 s budget; core-6 (GPU) prefilled that turn at ~496 tok/s. The ranker
+   * alone prefers fzzy here — it is idle and core-6 is not — which is exactly the placement that burned
+   * the budget. Every test is one of three questions: does a long prompt go first to a node measured
+   * able to answer it in time, does everything unmeasured or short route exactly as before, and can a
+   * measurement ever turn a request that would have been served into a 502.
+   */
+  describe('throughput placement', () => {
+    const MODEL = 'qwen3-coder:30b';
+    const LONG_PROMPT_BYTES = 184_000; // ~46k estimated tokens
+    const MEDIUM_PROMPT_BYTES = 42_400; // ~10.6k
+    const SMALL_PROMPT_BYTES = 20_000; // ~5k
+    const FZZY = { nodeKey: 'fzzy', backend: 'ollama', model: MODEL } as const;
+    const CORE_6 = { nodeKey: 'core-6', backend: 'ollama', model: MODEL } as const;
+
+    /** A connected peer holding MODEL, idle unless told otherwise, optionally advertising throughput. */
+    function node(
+      id: string,
+      options: { inFlightRequests?: number; hardwareTier?: string; maxPromptTokens?: number; throughput?: unknown } = {},
+    ): HubPoolPeer {
+      return mockPeer({
+        id,
+        nodeFqdn: `${id}.tailxyz.ts.net`,
+        lastCapabilities: capabilitiesWithModel(MODEL, {
+          inFlightRequests: options.inFlightRequests ?? 0,
+          ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
+          ...(options.maxPromptTokens ? { maxPromptTokens: options.maxPromptTokens } : {}),
+          ...('throughput' in options ? { throughput: options.throughput as PoolThroughputEstimate[] } : {}),
+        }) as unknown as Record<string, unknown>,
+      });
+    }
+
+    /** fzzy idle and first by score; core-6 busier, so without measurements the ranker picks fzzy. */
+    function fzzyAndCore6(): HubPoolPeer[] {
+      return [node('fzzy', { hardwareTier: 'cpu-only' }), node('core-6', { inFlightRequests: 2 })];
+    }
+
+    /** Serve `peers()` fresh on every read, so a test that moves the clock never ages a snapshot into staleness. */
+    function usePeers(peers: () => HubPoolPeer[]): void {
+      peerService.listConnectedPeers.mockImplementation(async () => peers());
+      peerService.getPeerById.mockImplementation(async (id: string) => peers().find((peer) => peer.id === id));
+    }
+
+    /** What the fleet measured on fzzy. */
+    function recordFzzyOnTheFleet(now = Date.now()): void {
+      throughput.recordPrefill(FZZY, { promptTokens: 10_600, ms: (10_600 / 123) * 1000, deadline: false }, now);
+      throughput.recordPrefill(FZZY, { promptTokens: 46_000, ms: 922_000, deadline: true }, now);
+    }
+
+    const ids = (candidates: { peerId: string | null }[]) => candidates.map((candidate) => candidate.peerId);
+    const turn = (bytes: number, extra: Record<string, unknown> = {}) => ({
+      model: MODEL,
+      stream: true,
+      messages: [{ role: 'user', content: 'x'.repeat(bytes) }],
+      ...extra,
+    });
+
+    describe('ranking', () => {
+      it('moves a node measured too slow for a long prompt behind the rest — and only for a long prompt', async () => {
+        usePeers(fzzyAndCore6);
+        recordFzzyOnTheFleet();
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+        // ~10.6k tokens at the ~123 tok/s fzzy managed is well inside the 300 s minimum budget.
+        expect(ids(await service.buildCandidateList(MODEL, MEDIUM_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        // Below the smallest measured band nothing applies, so the ranker decides alone.
+        expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+      });
+
+      /**
+       * The case the feature exists for. fzzy's only evidence is the 10.6k turn it served at ~123
+       * tok/s — nothing has missed a deadline yet — and the next turn is the ~46k one that ran out of
+       * its 922 s budget on the fleet. Reading the measurement forward is what places that FIRST turn
+       * on core-6 instead of learning it the expensive way.
+       */
+      it('places the first long turn away from a node measured slow at a smaller prompt, before any deadline is missed', async () => {
+        usePeers(fzzyAndCore6);
+        throughput.recordPrefill(FZZY, { promptTokens: 10_600, ms: (10_600 / 123) * 1000, deadline: false });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+        // The same measurement leaves the prompts it actually covers alone.
+        expect(ids(await service.buildCandidateList(MODEL, MEDIUM_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+      });
+
+      it('leaves a GPU node in front for that same turn: its measured rate has the headroom', async () => {
+        usePeers(() => [node('beta-max', { hardwareTier: 'high' }), node('core-6', { inFlightRequests: 2 })]);
+        // ~190 tok/s at 8k, where beta-max's 27B still is before the context grows.
+        throughput.recordPrefill({ ...FZZY, nodeKey: 'beta-max' }, { promptTokens: 8_000, ms: (8_000 / 190) * 1000, deadline: false });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['beta-max', 'core-6']);
+      });
+
+      it('reads a node slow on small prompts as too slow for large ones, from the small measurement alone', async () => {
+        usePeers(fzzyAndCore6);
+        // `qwen3.6:27b` on fzzy and core-7: 27–37 tok/s. Prefill only gets slower as the prompt grows.
+        throughput.recordPrefill(FZZY, { promptTokens: 5_000, ms: (5_000 / 30) * 1000, deadline: false });
+
+        expect(ids(await service.buildCandidateList(MODEL, SMALL_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+      });
+
+      it('leaves an unmeasured node where the ranker put it, and never promotes a measured-fast one', async () => {
+        usePeers(() => [
+          node('fzzy', { hardwareTier: 'cpu-only' }),
+          node('core-7', { inFlightRequests: 1 }),
+          node('core-6', { inFlightRequests: 2 }),
+        ]);
+        recordFzzyOnTheFleet();
+        throughput.recordPrefill(CORE_6, { promptTokens: 48_000, ms: (48_000 / 496) * 1000, deadline: false });
+
+        // core-7 has no measurement: neither fast nor slow, so it keeps its place ahead of core-6.
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', 'core-6', 'fzzy']);
+      });
+
+      it('keeps the ranked order when every candidate is predicted to miss its budget', async () => {
+        usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only' }), node('core-7', { inFlightRequests: 1 })]);
+        recordFzzyOnTheFleet();
+        throughput.recordPrefill({ ...FZZY, nodeKey: 'core-7' }, { promptTokens: 40_000, ms: (40_000 / 30) * 1000, deadline: false });
+
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-7']);
+      });
+
+      it("judges this node's own engine by what it timed serving locally", async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        usePeers(() => [node('core-6', { inFlightRequests: 2 })]);
+        throughput.recordPrefill({ ...FZZY, nodeKey: LOCAL_CANDIDATE_KEY }, { promptTokens: 46_000, ms: 922_000, deadline: true });
+
+        expect(ids(await service.buildCandidateList(MODEL, MEDIUM_PROMPT_BYTES))).toEqual([null, 'core-6']);
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', null]);
+      });
+
+      it('judges nothing when there is no body to measure', async () => {
+        usePeers(fzzyAndCore6);
+        recordFzzyOnTheFleet();
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['fzzy', 'core-6']);
+      });
+
+      it('keeps measuring but stops reordering under HUB_POOL_THROUGHPUT_PLACEMENT=off', async () => {
+        usePeers(fzzyAndCore6);
+        recordFzzyOnTheFleet();
+        vi.stubEnv('HUB_POOL_THROUGHPUT_PLACEMENT', 'off');
+        try {
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        } finally {
+          vi.unstubAllEnvs();
+        }
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+      });
+
+      describe('advertised throughput', () => {
+        const advertisedDeadline = [
+          {
+            model: MODEL,
+            backend: 'ollama',
+            prefill: [{ fromTokens: 32_768, promptTokens: 46_000, tokensPerSec: 49.8, deadline: true, ageMs: 60_000 }],
+            decode: null,
+          },
+        ];
+        const advertisedFast = [
+          {
+            model: MODEL,
+            backend: 'ollama',
+            prefill: [{ fromTokens: 32_768, promptTokens: 46_000, tokensPerSec: 496, deadline: false, ageMs: 0 }],
+            decode: null,
+          },
+        ];
+
+        it('demotes a peer on its own report, which is how an entry node that never sent it a long prompt learns', async () => {
+          usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only', throughput: advertisedDeadline }), node('core-6', { inFlightRequests: 2 })]);
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+        });
+
+        it('believes what it timed over a faster advert, so a peer cannot talk its way out of a missed deadline', async () => {
+          usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only', throughput: advertisedFast }), node('core-6', { inFlightRequests: 2 })]);
+          recordFzzyOnTheFleet();
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+        });
+
+        it('matches the advert to the engine and model being ranked', async () => {
+          const otherModel = [{ ...advertisedDeadline[0], model: 'qwen3.6:27b' }];
+          const otherEngine = [{ ...advertisedDeadline[0], backend: 'vllm' }];
+          usePeers(() => [
+            node('fzzy', { hardwareTier: 'cpu-only', throughput: [...otherModel, ...otherEngine] }),
+            node('core-6', { inFlightRequests: 2 }),
+          ]);
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        });
+
+        it.each([
+          ['not an array', { model: MODEL }],
+          ['a string rate', [{ ...advertisedDeadline[0], prefill: [{ ...advertisedDeadline[0]?.prefill[0], tokensPerSec: '49.8' }] }]],
+          ['a negative age', [{ ...advertisedDeadline[0], prefill: [{ ...advertisedDeadline[0]?.prefill[0], ageMs: -5 }] }]],
+          ['an unknown backend', [{ ...advertisedDeadline[0], backend: 'something-else' }]],
+        ])('lets a malformed advert (%s) demote nothing', async (_label, hostile) => {
+          usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only', throughput: hostile }), node('core-6', { inFlightRequests: 2 })]);
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        });
+
+        it('ages an advert by how old the snapshot carrying it is', async () => {
+          const staleSnapshot = new Date(Date.now() - THROUGHPUT_FORGET_AFTER_MS).toISOString();
+          usePeers(() => [
+            { ...node('fzzy', { hardwareTier: 'cpu-only', throughput: advertisedDeadline }), lastSeenAt: staleSnapshot },
+            node('core-6', { inFlightRequests: 2 }),
+          ]);
+
+          // The evidence outlived its forget time on our clock, so fzzy is unmeasured again. (The stale
+          // snapshot also makes fzzy's load unknown, which is why it still ranks behind core-6 here.)
+          const list = await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES);
+          const ranked = await service.buildCandidateList(MODEL);
+          expect(ids(list)).toEqual(ids(ranked));
+        });
+      });
+
+      describe('decay', () => {
+        it('forgets evidence after THROUGHPUT_FORGET_AFTER_MS, so a node that was too slow is tried again', async () => {
+          usePeers(fzzyAndCore6);
+          recordFzzyOnTheFleet(Date.now() - THROUGHPUT_FORGET_AFTER_MS);
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        });
+
+        it('still demotes on evidence just short of its forget time', async () => {
+          usePeers(fzzyAndCore6);
+          recordFzzyOnTheFleet(Date.now() - THROUGHPUT_FORGET_AFTER_MS + 60_000);
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+        });
+
+        it('holds a fresh missed deadline against fast cache-hit turns, and lets an old one give way to them', async () => {
+          usePeers(fzzyAndCore6);
+          const fastTurn = { promptTokens: 46_500, ms: 20_000, deadline: false };
+
+          recordFzzyOnTheFleet(Date.now() - 60_000);
+          for (let index = 0; index < 5; index += 1) throughput.recordPrefill(FZZY, fastTurn);
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+
+          throughput = new HubPoolThroughputService();
+          service = buildService();
+          // Past its hold by two half-lives: a quarter of its weight left, and the fast turn carries the rest.
+          recordFzzyOnTheFleet(Date.now() - THROUGHPUT_HOLD_MS - 2 * THROUGHPUT_HALF_LIFE_MS);
+          throughput.recordPrefill(FZZY, fastTurn);
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        });
+      });
+
+      describe('with a pin', () => {
+        it('does not let a pin at a node measured too slow put a long prompt back at the front', async () => {
+          usePeers(fzzyAndCore6);
+          recordFzzyOnTheFleet();
+          setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'fzzy', mode: 'prefer' }] });
+
+          expect(ids(await service.buildCandidateList(MODEL, MEDIUM_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy']);
+        });
+
+        it('still reorders the candidates expected to meet the budget', async () => {
+          ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+          usePeers(() => [...fzzyAndCore6(), node('core-7', { inFlightRequests: 5 })]);
+          recordFzzyOnTheFleet();
+          setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'core-7', mode: 'prefer' }] });
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', null, 'core-6', 'fzzy']);
+        });
+
+        it('applies to the whole list when every candidate is predicted to miss', async () => {
+          usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only' }), node('core-7', { inFlightRequests: 3 })]);
+          recordFzzyOnTheFleet();
+          throughput.recordPrefill({ ...FZZY, nodeKey: 'core-7' }, { promptTokens: 46_000, ms: 922_000, deadline: true });
+          setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'core-7', mode: 'prefer' }] });
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-7', 'fzzy']);
+        });
+      });
+
+      describe('with prompt ceilings', () => {
+        it('demotes within each ceiling group, never across them', async () => {
+          usePeers(() => [
+            node('fzzy', { hardwareTier: 'cpu-only' }),
+            node('core-6', { inFlightRequests: 2 }),
+            node('core-7', { maxPromptTokens: 16_000, inFlightRequests: 3 }),
+            node('core-8', { maxPromptTokens: 16_000, inFlightRequests: 4 }),
+          ]);
+          recordFzzyOnTheFleet();
+          throughput.recordPrefill({ ...FZZY, nodeKey: 'core-7' }, { promptTokens: 46_000, ms: 922_000, deadline: true });
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-6', 'fzzy', 'core-8', 'core-7']);
+        });
+
+        it("keeps the ceiling as the outer order: it is an operator's statement, and a measurement is an inference", async () => {
+          usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only' }), node('core-6', { inFlightRequests: 2, maxPromptTokens: 16_000 })]);
+          recordFzzyOnTheFleet();
+
+          expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+        });
+      });
+    });
+
+    describe('in the routing log', () => {
+      function answerWith200(): void {
+        vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+      }
+
+      it('records the estimate, the budget and the node it moved, so a skip reads as a measurement and not the ranker', async () => {
+        usePeers(fzzyAndCore6);
+        recordFzzyOnTheFleet();
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        const sent = String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body);
+        const estimatedTokens = Math.ceil(sent.length / 4);
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-6.tailxyz.ts.net', candidates: 2, attempt: 1, outcome: 'served', failedOverFrom: [] });
+        expect(entry?.throughput).toEqual({
+          estimatedTokens,
+          budgetMs: firstByteBudgetMs(sent.length),
+          estimates: [
+            {
+              node: 'fzzy.tailxyz.ts.net',
+              backend: 'ollama',
+              tokensPerSec: 49.8,
+              fromPromptTokens: 46_000,
+              // A hair past the measured size, so the growth factor barely applies.
+              extrapolated: true,
+              predictedMs: Math.round(estimatedTokens * (922_000 / 46_000) * (estimatedTokens / 46_000)),
+              source: 'observed',
+              deadline: true,
+              slow: true,
+            },
+          ],
+          overridden: false,
+        });
+      });
+
+      it('still fails over to the slow node when every faster one fails, and says it was placed there anyway', async () => {
+        usePeers(fzzyAndCore6);
+        recordFzzyOnTheFleet();
+        vi.mocked(global.fetch).mockImplementation(async (url) =>
+          String(url).includes('core-6') ? new Response('model not loaded', { status: 503 }) : new Response('data: [DONE]\n\n', { status: 200 }),
+        );
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'fzzy.tailxyz.ts.net', outcome: 'served', status: 200, failedOverFrom: ['core-6.tailxyz.ts.net'] });
+        expect(entry?.throughput).toMatchObject({ overridden: true });
+      });
+
+      it('marks the decision overridden when every candidate is predicted to miss, and still serves it', async () => {
+        usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only' })]);
+        recordFzzyOnTheFleet();
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'fzzy.tailxyz.ts.net', outcome: 'served', status: 200 });
+        expect(entry?.throughput).toMatchObject({ estimates: [{ node: 'fzzy.tailxyz.ts.net', slow: true }], overridden: true });
+      });
+
+      it('stays null where nothing applicable has been measured, and on embeddings', async () => {
+        usePeers(fzzyAndCore6);
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        expect(routingLog.list()[0]?.throughput).toBeNull();
+
+        recordFzzyOnTheFleet();
+        const batch = { model: MODEL, input: Array.from({ length: 400 }, () => 'x'.repeat(LONG_PROMPT_BYTES / 400)) };
+        await service.proxyRequest({ path: '/v1/embeddings', method: 'POST', body: batch, model: MODEL, res: createMockResponse() });
+        expect(routingLog.list()[0]).toMatchObject({ node: 'fzzy.tailxyz.ts.net' });
+        expect(routingLog.list()[0]?.throughput).toBeNull();
+      });
+    });
+
+    describe('measuring', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('times a streamed turn to its first byte and places the next, longer prompt on that', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        usePeers(fzzyAndCore6);
+        vi.mocked(global.fetch).mockImplementation(async (url) => {
+          // fzzy takes 250 s to start answering ~10.6k tokens: ~42 tok/s, as `qwen3.6:27b` does on CPU.
+          if (String(url).includes('fzzy')) vi.setSystemTime(Date.now() + 250_000);
+          return new Response('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n', { status: 200 });
+        });
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(MEDIUM_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        expect(routingLog.list()[0]).toMatchObject({ node: 'fzzy.tailxyz.ts.net', throughput: null });
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-6.tailxyz.ts.net', attempt: 1 });
+        expect(entry?.throughput?.estimates).toEqual([
+          expect.objectContaining({ node: 'fzzy.tailxyz.ts.net', source: 'observed', deadline: false, slow: true }),
+        ]);
+        expect(entry?.throughput?.estimates[0]?.tokensPerSec).toBeCloseTo(42.5, 0);
+      });
+
+      it('records a missed deadline, and the next long prompt skips that node without waiting it out again', async () => {
+        usePeers(fzzyAndCore6);
+        vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+          if (String(url).includes('fzzy')) {
+            const budget = firstByteBudgetMs(String(init?.body).length);
+            throw new PoolForwardDeadlineError(`No response headers within ${budget}ms`, budget);
+          }
+          return new Response('data: [DONE]\n\n', { status: 200 });
+        });
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        expect(routingLog.list()[0]).toMatchObject({ node: 'core-6.tailxyz.ts.net', failedOverFrom: ['fzzy.tailxyz.ts.net'] });
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-6.tailxyz.ts.net', attempt: 1, failedOverFrom: [] });
+        expect(entry?.throughput?.estimates).toEqual([expect.objectContaining({ node: 'fzzy.tailxyz.ts.net', deadline: true, slow: true })]);
+      });
+
+      it('does not time a node that had other work in flight, so a queue is never recorded as slow hardware', async () => {
+        usePeers(() => [node('fzzy', { hardwareTier: 'cpu-only', inFlightRequests: 1 }), node('core-6', { inFlightRequests: 2 })]);
+        vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+          if (String(url).includes('fzzy')) {
+            const budget = firstByteBudgetMs(String(init?.body).length);
+            throw new PoolForwardDeadlineError(`No response headers within ${budget}ms`, budget);
+          }
+          return new Response('data: [DONE]\n\n', { status: 200 });
+        });
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(LONG_PROMPT_BYTES),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(throughput.prefillPoints(FZZY)).toEqual([]);
+      });
+
+      it("prefers the engine's own prefill time, which leaves out a cold model load", async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        usePeers(fzzyAndCore6);
+        const trailer = { done: true, prompt_eval_count: 10_600, prompt_eval_duration: 20_000_000_000, eval_count: 64, eval_duration: 4_000_000_000 };
+        vi.mocked(global.fetch).mockImplementation(async (url) => {
+          // 250 s to the first byte, but 230 s of it was loading weights: prefill itself took 20 s.
+          if (String(url).includes('fzzy')) vi.setSystemTime(Date.now() + 250_000);
+          return new Response(`{"done":false}\n${JSON.stringify(trailer)}\n`, { status: 200 });
+        });
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: turn(MEDIUM_PROMPT_BYTES), model: MODEL, res: createMockResponse() });
+
+        const [estimate] = throughput.estimatesFor('fzzy');
+        expect(estimate?.prefill).toEqual([expect.objectContaining({ fromTokens: 8_192, deadline: false })]);
+        expect(estimate?.prefill[0]?.tokensPerSec).toBeGreaterThan(500);
+        expect(estimate?.decode).toEqual(expect.objectContaining({ tokensPerSec: 16 }));
+        expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['fzzy', 'core-6']);
+      });
+
+      it('learns nothing about prefill from a non-streamed response that carries no engine timings', async () => {
+        usePeers(fzzyAndCore6);
+        vi.mocked(global.fetch).mockImplementation(
+          async () => new Response(JSON.stringify({ choices: [], usage: { prompt_tokens: 10_600 } }), { status: 200 }),
+        );
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: turn(MEDIUM_PROMPT_BYTES, { stream: false }),
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(throughput.prefillPoints(FZZY)).toEqual([]);
+      });
+
+      describe('work a peer forwarded here', () => {
+        const LOCAL = { ...FZZY, nodeKey: LOCAL_CANDIDATE_KEY };
+
+        it("records its missed deadline as this node's own, which is what this node then advertises", async () => {
+          vi.mocked(global.fetch).mockImplementation(async (_url, init) => {
+            const budget = firstByteBudgetMs(String(init?.body).length);
+            throw new PoolForwardDeadlineError(`No response headers within ${budget}ms`, budget);
+          });
+
+          await expect(
+            service.forwardToLocalBackendAndRespond(
+              'ollama',
+              '/v1/chat/completions',
+              'POST',
+              turn(LONG_PROMPT_BYTES),
+              createMockResponse(),
+              'entry.tailxyz.ts.net',
+              MODEL,
+            ),
+          ).rejects.toBeInstanceOf(PoolForwardDeadlineError);
+
+          expect(throughput.estimatesFor(LOCAL_CANDIDATE_KEY)).toEqual([
+            expect.objectContaining({ model: MODEL, backend: 'ollama', prefill: [expect.objectContaining({ fromTokens: 32_768, deadline: true })] }),
+          ]);
+        });
+
+        it("records the engine's timings from a served forward", async () => {
+          const trailer = {
+            done: true,
+            prompt_eval_count: 46_000,
+            prompt_eval_duration: 92_000_000_000,
+            eval_count: 128,
+            eval_duration: 8_000_000_000,
+          };
+          vi.mocked(global.fetch).mockImplementation(async () => new Response(`${JSON.stringify(trailer)}\n`, { status: 200 }));
+
+          const res = createMockResponse();
+          await service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', turn(LONG_PROMPT_BYTES), res, 'entry.tailxyz.ts.net', MODEL);
+
+          expect(Buffer.concat(res.chunks).toString()).toBe(`${JSON.stringify(trailer)}\n`);
+          const [point] = throughput.prefillPoints(LOCAL);
+          expect(point?.deadline).toBe(false);
+          expect(1000 / (point?.msPerToken ?? 1)).toBeCloseTo(Math.ceil(String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body).length / 4) / 92, 1);
+        });
+
+        it('records nothing while this node is already busy, or when the peer did not say which model', async () => {
+          vi.mocked(global.fetch).mockImplementation(async (_url, init) => {
+            const budget = firstByteBudgetMs(String(init?.body).length);
+            throw new PoolForwardDeadlineError(`No response headers within ${budget}ms`, budget);
+          });
+          const forward = (model?: string) =>
+            service
+              .forwardToLocalBackendAndRespond(
+                'ollama',
+                '/api/chat',
+                'POST',
+                turn(LONG_PROMPT_BYTES),
+                createMockResponse(),
+                'entry.tailxyz.ts.net',
+                model,
+              )
+              .catch(() => undefined);
+
+          loadService.acquire(LOCAL_CANDIDATE_KEY);
+          await forward(MODEL);
+          loadService.release(LOCAL_CANDIDATE_KEY);
+          await forward(undefined);
+
+          expect(throughput.estimatesFor(LOCAL_CANDIDATE_KEY)).toEqual([]);
+        });
+      });
+    });
+
+    describe('applyThroughputPlacement', () => {
+      const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+      const fzzy = { peerId: 'fzzy', nodeFqdn: 'fzzy.tailxyz.ts.net', backend: 'ollama' } as const;
+      const core6 = { peerId: 'core-6', nodeFqdn: 'core-6.tailxyz.ts.net', backend: 'ollama' } as const;
+      const slow = { predictedMs: 1_000_000, tokensPerSec: 46, deadline: false, source: 'observed' } as const;
+      const fast = { predictedMs: 93_000, tokensPerSec: 496, deadline: false, source: 'advertised' } as const;
+
+      it('returns no decision, and demotes nothing, when no candidate has a measurement', () => {
+        expect(applyThroughputPlacement([fzzy, core6], () => null, 46_000, 920_000)).toEqual({ demoted: new Set(), decision: null });
+      });
+
+      it('names every measured candidate and demotes only the ones predicted to miss', () => {
+        const result = applyThroughputPlacement(
+          [fzzy, local, core6],
+          (candidate) => (candidate === fzzy ? slow : candidate === core6 ? fast : null),
+          46_000,
+          920_000,
+        );
+
+        expect([...result.demoted]).toEqual([fzzy]);
+        expect(result.decision).toEqual({
+          estimatedTokens: 46_000,
+          budgetMs: 920_000,
+          estimates: [
+            {
+              node: 'fzzy.tailxyz.ts.net',
+              backend: 'ollama',
+              tokensPerSec: 46,
+              predictedMs: 1_000_000,
+              source: 'observed',
+              deadline: false,
+              slow: true,
+            },
+            {
+              node: 'core-6.tailxyz.ts.net',
+              backend: 'ollama',
+              tokensPerSec: 496,
+              predictedMs: 93_000,
+              source: 'advertised',
+              deadline: false,
+              slow: false,
+            },
+          ],
+          overridden: false,
+        });
+        expect(splitDemoted([fzzy, local, core6], result.demoted)).toEqual([[local, core6], [fzzy]]);
+      });
+
+      it('demotes nothing, and says it was overridden, when every candidate is predicted to miss', () => {
+        const result = applyThroughputPlacement([fzzy, local], () => slow, 46_000, 920_000);
+
+        expect(result.demoted.size).toBe(0);
+        expect(result.decision?.overridden).toBe(true);
+        expect(splitDemoted([fzzy, local], result.demoted)).toEqual([[fzzy, local]]);
       });
     });
   });
