@@ -507,6 +507,7 @@ authentication modes are listed — there is no `pool pins` subcommand to keep i
 | `Pins` | Each pin with its target resolved, and whether it can apply right now |
 | `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
 | `Ceiling` / `Prompt ceilings` | Only when set: this node's prompt ceiling (and whether the `.env` sets it), and each peer's advertised one |
+| `Measured speed` | Only once something has been timed: prompt and output rates per node, engine and model, with each peer shown as timed here and as it reported itself |
 | `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
 
 The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
