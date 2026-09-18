@@ -2,6 +2,7 @@ import { Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { Logger } from '@nestjs/common';
+import { OPTIONAL_DEPS_METADATA, SELF_DECLARED_DEPS_METADATA } from '@nestjs/common/constants';
 import type { Response } from 'express';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -43,6 +44,7 @@ import {
   servedByHeaders,
   splitDemoted,
 } from '../hub-pool-proxy.service';
+import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import type { LoggerService } from '@/core/logger/logger.service';
 import type { PoolPeerCapabilities, PoolThroughputEstimate } from '../hub-pool.types';
@@ -3406,6 +3408,36 @@ describe('PoolProxyService', () => {
       await withRouter.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
 
       expect(router.prepareTrackedModel).not.toHaveBeenCalled();
+    });
+
+    // Both halves of what #1483 brought in, together: a client hanging up aborts the upstream
+    // engine, and arbitration is the most expensive step on this path — it is what loads or evicts
+    // a model. Arbitrating for a request nobody is waiting for would reload a model for no one.
+    it('does not arbitrate for a client that has already hung up', async () => {
+      const res = createMockResponse();
+      res.destroy();
+
+      await withRouter.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, messages: [] }, model: MODEL, res });
+
+      expect(router.prepareTrackedModel).not.toHaveBeenCalled();
+    });
+
+    // Every harness in this file builds the service positionally, and the router has already moved
+    // once: it used to sit before the model registry, and #1483 removed that slot while #1497 added
+    // another after it. A positional argument that lands on the wrong parameter is silent here —
+    // the arbitration above simply stops happening and every other assertion still passes, because
+    // a missing router is a legitimate configuration. `tsc` cannot catch it either: this package's
+    // tsconfig excludes `**/__tests__`. So assert the shape itself.
+    it('takes the router in the last constructor slot, so a new parameter cannot silently displace it', () => {
+      const selfDeclared = (Reflect.getMetadata(SELF_DECLARED_DEPS_METADATA, PoolProxyService) ?? []) as Array<{
+        index: number;
+        param: { forwardRef?: () => unknown };
+      }>;
+      const optional = (Reflect.getMetadata(OPTIONAL_DEPS_METADATA, PoolProxyService) ?? []) as number[];
+      const lastSlot = PoolProxyService.length - 1;
+
+      expect(selfDeclared.find((dep) => dep.index === lastSlot)?.param.forwardRef?.()).toBe(InferenceRouterService);
+      expect(optional).toContain(lastSlot);
     });
   });
 });
