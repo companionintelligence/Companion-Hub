@@ -628,26 +628,6 @@ fn inspect_status_ok(status: &str) -> bool {
     !status.is_empty() && !status.contains("No such object") && !status.contains("Error")
 }
 
-pub(crate) fn service_inspect_state<'a>(
-    states: &'a std::collections::HashMap<String, (String, String)>,
-    container: &str,
-) -> (&'a str, &'a str) {
-    if let Some((state, health)) = states.get(container) {
-        return (state.as_str(), health.as_str());
-    }
-    let fallback = if container == HUB_CONTAINER {
-        Some(LEGACY_HUB_CONTAINER)
-    } else if container == HUB_QUEUE {
-        Some(LEGACY_HUB_QUEUE)
-    } else {
-        None
-    };
-    fallback
-        .and_then(|name| states.get(name))
-        .map(|(state, health)| (state.as_str(), health.as_str()))
-        .unwrap_or(("", ""))
-}
-
 pub(crate) fn wait_for_container_healthy(
     container_name: &str,
     display_name: &str,

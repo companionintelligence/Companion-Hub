@@ -172,6 +172,22 @@ pub fn is_user_stopped(data_dir: &Path) -> bool {
     user_stopped_marker_path(data_dir).exists()
 }
 
+fn marker_written_at_ms(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    u64::try_from(since_epoch.as_millis()).ok()
+}
+
+/// When the user stopped the Hub, in Unix milliseconds: the marker's write time.
+pub fn user_stopped_at_ms(data_dir: &Path) -> Option<u64> {
+    marker_written_at_ms(&user_stopped_marker_path(data_dir))
+}
+
+/// When the last start failed, in Unix milliseconds: the marker's write time.
+pub fn start_failed_at_ms(data_dir: &Path) -> Option<u64> {
+    marker_written_at_ms(&start_failed_marker_path(data_dir))
+}
+
 /// Consecutive failed tray health probes before a full `start_hub` is attempted
 /// when the Hub container is missing or hard-stopped.
 pub const HUB_WATCHDOG_FAILURE_THRESHOLD: u32 = 3;

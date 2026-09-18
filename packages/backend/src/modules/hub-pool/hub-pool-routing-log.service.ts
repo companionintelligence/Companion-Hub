@@ -48,6 +48,16 @@ export interface PoolRoutingRecord {
    * never re-routed.
    */
   pin: PoolRoutingPin | null;
+  /**
+   * What the prompt ceiling did to this decision, or `null` when no candidate had a ceiling at all.
+   *
+   * The pin's twin, for the same question: when a long prompt skips fzzy, an operator has to be able
+   * to tell "its ceiling excluded it" from "the ranker preferred another node". Present (with an
+   * empty `excluded`) whenever some candidate carried a ceiling, so the estimate is visible for the
+   * requests that stayed under it too. Always `null` on `inbound` rows — the ceiling is applied by
+   * the node that chooses, and a peer's forward is never re-routed.
+   */
+  promptCeiling: PoolRoutingPromptCeiling | null;
   outcome: PoolRoutingOutcome;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
@@ -77,6 +87,27 @@ export interface PoolRoutingPin {
   scope: PoolPinScope;
   mode: PoolPinMode;
   targetKind: PoolPinTargetKind;
+}
+
+/** The prompt-ceiling half of a routing decision. Sizes and node names only — never any of the prompt it measured. */
+export interface PoolRoutingPromptCeiling {
+  /** bytes / 4 of the forwarded payload: the same estimate `firstByteBudgetMs` sizes the header wait from. */
+  estimatedTokens: number;
+  /**
+   * Nodes whose ceiling was below the estimate, in ranked order; `'local'` for this node. They were
+   * moved behind every node under its ceiling, not removed, so failover can still reach them.
+   */
+  excluded: PoolRoutingCeilingExclusion[];
+  /**
+   * `true` when the request was placed on one of those nodes anyway: every candidate was over its
+   * ceiling, or every candidate under one failed first. A slow answer beats none.
+   */
+  overridden: boolean;
+}
+
+export interface PoolRoutingCeilingExclusion {
+  node: string;
+  maxPromptTokens: number;
 }
 
 export interface PoolRoutingSummary {

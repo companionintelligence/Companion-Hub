@@ -362,6 +362,77 @@ export const MIN_POOL_PRESSURE_WEIGHT = 0;
 /** Above 3 one band outweighs the entire 0-3 scale plus a full queue, which is a kill switch spelled badly. */
 export const MAX_POOL_PRESSURE_WEIGHT = 3;
 
+/**
+ * The per-node prompt ceiling: the largest estimated prompt, in tokens, this node should SERVE for
+ * the pool while another candidate can take the request instead.
+ *
+ * It exists because prefill on a CPU-bound node slows as the context grows, and no other routing
+ * control can see prompt size. Measured on fzzy, 2026-09-17, which serves `qwen3-coder:30b` entirely
+ * on CPU: a 40 KB (~10.6k-token) streamed turn prefilled at ~123 tok/s and answered in 103 s, while a
+ * 184 KB (~46k-token) turn produced no first byte inside its 922 s body-sized budget and was
+ * cancelled — below the 50 tok/s floor that budget assumes. core-6, a GPU node, served the same turn
+ * in 268 s. Pins are `prefer`-only and the ranker weighs queue depth and tier, so until this an
+ * operator had no way to say "not the long ones".
+ *
+ * A preference, like a pin, never a refusal: when every candidate is over its ceiling the request is
+ * placed anyway, because a slow answer beats a 502. That is also why it is applied by the ENTRY node
+ * rather than by the serving node refusing work — only the entry node knows whether there was
+ * anywhere else to send it.
+ *
+ * `null` (the default) is no ceiling, and so is an absent key on the wire, so an untouched node and a
+ * peer on an older build route exactly as before.
+ */
+export const HUB_POOL_MAX_PROMPT_TOKENS_ENV_VAR = 'HUB_POOL_MAX_PROMPT_TOKENS';
+/**
+ * Below this nearly every agent request is over the ceiling — a system prompt and a few tool schemas
+ * already are — which is "stop serving the pool" spelled badly, and a dropped `000` from `16000` is
+ * the likelier explanation. Inbound pooling has its own switch for the first case.
+ */
+export const MIN_POOL_MAX_PROMPT_TOKENS = 1024;
+/** 2^20: past the longest context window any engine on this fleet offers, so a higher ceiling could never exclude anything. */
+export const MAX_POOL_MAX_PROMPT_TOKENS = 1_048_576;
+
+/**
+ * A ceiling as this build will believe it, or `null` for "no ceiling".
+ *
+ * Runs on the READ path for the same reason {@link clampPressureBand} does: a peer's advertised
+ * value is free-form jsonb it controls. Anything but an in-range integer reads as no ceiling. There
+ * is no anti-gaming concern to answer here — a ceiling can only get its own node LESS work, which
+ * `acceptingWork: false` already allows — so the clamp exists to stop a malformed value from
+ * excluding a node, not out of distrust.
+ */
+export function clampPromptCeiling(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= MIN_POOL_MAX_PROMPT_TOKENS && raw <= MAX_POOL_MAX_PROMPT_TOKENS ? raw : null;
+}
+
+/** This node's effective prompt ceiling, and which of the two sources set it. */
+export interface HubPoolPromptCeilingState {
+  maxPromptTokens: number | null;
+  setBy: 'env' | 'setting' | null;
+}
+
+/**
+ * The effective local ceiling. `HUB_POOL_MAX_PROMPT_TOKENS` wins over the persisted setting, like
+ * every other `HUB_POOL_*` override, and is reported apart from it so a settings surface can say
+ * "the .env sets this" instead of showing a value that appears to do nothing.
+ *
+ * An unparseable or out-of-range env value is ignored rather than guessed at: quietly excluding this
+ * node from long prompts because of a typo in `.env` is the worse failure, and the setting (or no
+ * ceiling) still applies. Like the kill switches, never projected into `.env` by
+ * `generateSystemEnvFile` — env-first precedence would make the stored value unchangeable afterwards.
+ */
+export function resolvePoolMaxPromptTokens(
+  persisted: number | null | undefined,
+  envValue: string | undefined = process.env[HUB_POOL_MAX_PROMPT_TOKENS_ENV_VAR],
+): HubPoolPromptCeilingState {
+  const fromEnv = envValue?.trim() ? clampPromptCeiling(Number(envValue.trim())) : null;
+  if (fromEnv !== null) {
+    return { maxPromptTokens: fromEnv, setBy: 'env' };
+  }
+  const fromSetting = clampPromptCeiling(persisted);
+  return fromSetting === null ? { maxPromptTokens: null, setBy: null } : { maxPromptTokens: fromSetting, setBy: 'setting' };
+}
+
 /** How often each `connected`/`unreachable` peer is probed for capabilities. */
 export const DEFAULT_POOL_HEALTH_POLL_SECONDS = 30;
 /** Below this the probes cost more than the routing accuracy they buy, and an 8s probe timeout would start overlapping ticks. */
@@ -417,6 +488,11 @@ export interface HubPoolPreferences {
   poolShareContainerStats: boolean;
   /** How heavily the GPU-pressure band counts in candidate ranking. 0 (the default) keeps ranking byte-identical to the pre-pressure build. */
   poolPressureWeight: number;
+  /**
+   * The persisted prompt ceiling only, `null` for none. `HUB_POOL_MAX_PROMPT_TOKENS` overrides it, so
+   * resolve the two through {@link resolvePoolMaxPromptTokens} rather than reading this as effective.
+   */
+  poolMaxPromptTokens: number | null;
   /**
    * Operator routing overrides, newest last. Empty (the default) means the ranker decides alone and
    * routing is byte-identical to a build without pinning — see {@link resolvePinFor}.
