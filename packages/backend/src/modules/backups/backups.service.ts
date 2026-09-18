@@ -69,7 +69,7 @@ export class BackupsService {
 
         if (appStatusBeforeUpdate === 'running') {
           // Part of the backup the caller was authorized for: the app only comes back to how it was.
-          await this.appLifecycle.startApp({ appUrn, actor: { kind: 'system', reason: 'resume-after-backup' } });
+          await this.resumeApp(app.id, appUrn, 'resume-after-backup');
         } else {
           await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
           this.sseService.emit('app', { event: 'backup_success', appUrn, appStatus: appStatusBeforeUpdate });
@@ -120,7 +120,7 @@ export class BackupsService {
 
         if (appStatusBeforeUpdate === 'running') {
           // Part of the restore the caller was authorized for: the app only comes back to how it was.
-          await this.appLifecycle.startApp({ appUrn, actor: { kind: 'system', reason: 'resume-after-restore' } });
+          await this.resumeApp(app.id, appUrn, 'resume-after-restore');
         } else {
           await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
           this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
@@ -135,6 +135,22 @@ export class BackupsService {
     });
 
     return { requestId };
+  }
+
+  /**
+   * Start an app that a backup or restore stopped. `startApp` refuses while the queue
+   * is down, and this runs in a detached `.then` with no catch, so a refusal became an
+   * unhandled rejection and left the app in `backing_up` or `restoring` even though the
+   * command had already stopped its containers.
+   */
+  private async resumeApp(appId: number, appUrn: AppUrn, reason: 'resume-after-backup' | 'resume-after-restore') {
+    try {
+      await this.appLifecycle.startApp({ appUrn, actor: { kind: 'system', reason } });
+    } catch (error) {
+      this.logger.error(`Could not start ${appUrn} again (${reason}); it stays stopped`, error);
+      await this.appsRepository.updateAppById(appId, { status: 'stopped' });
+      this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'stopped' });
+    }
   }
 
   public async getAppBackups(params: { appUrn: AppUrn; page: number; pageSize: number; actor: LifecycleActor }) {

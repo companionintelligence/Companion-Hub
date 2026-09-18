@@ -44,6 +44,11 @@ tauri-plugin-opener = "2"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The GTK3 bindings Tauri already builds on these targets, for the main window's resize
+# edges (src/gtk_resize_edges.rs).
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+gtk = "0.18"
+
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # tauri-plugin-updater removed — full installers from dl.ci.computer via updater.rs
 

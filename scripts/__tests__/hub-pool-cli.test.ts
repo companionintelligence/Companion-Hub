@@ -18,6 +18,7 @@ import {
   formatPoolPinLines,
   formatPoolStatusLines,
   formatPoolTimestamp,
+  formatPromptCeilingResultLines,
   deletePoolPin,
   setPoolPin,
   probePoolAddress,
@@ -25,6 +26,7 @@ import {
   resolvePoolPeerTarget,
   runPoolDiscover,
   setPoolEnabledSetting,
+  setPoolMaxPromptTokens,
   unpairPoolPeer,
 } from '../hub-pool-cli';
 
@@ -504,6 +506,153 @@ describe('hub-pool-cli pins', () => {
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pins?scope=model&model=hf.co%2Forg%2Frepo%3AQ4_K_M');
     expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
     expect(hubApiFetch.mock.calls[2]?.[1]).toBe('/inference/pool/pins?scope=default');
+  });
+});
+
+describe('hub-pool-cli prompt ceiling', () => {
+  const FZZY = 'hub-d.example-tailnet.ts.net';
+
+  function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
+    return {
+      at: '2026-09-17T10:00:01.000Z',
+      direction: 'outbound',
+      path: '/v1/chat/completions',
+      model: 'qwen3-coder:30b',
+      node: PEER_A,
+      peerId: 'peer-1',
+      backend: 'ollama',
+      candidates: 1,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'served',
+      status: 200,
+      durationMs: 268_000,
+      ...overrides,
+    };
+  }
+
+  function logOf(entries: PoolRoutingLogResponse['entries']): string {
+    const summary = { recorded: entries.length, capacity: 200, served: entries.length, failed: 0, failovers: 0, lastAt: '2026-09-17T10:00:01.000Z' };
+    return formatPoolRoutingLogLines({ summary, entries }).join('\n');
+  }
+
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('PATCHes only the ceiling, and sends an explicit null to clear it', async () => {
+    hubApiFetch.mockResolvedValue({});
+
+    await setPoolMaxPromptTokens('.env.local', 16_000);
+    await setPoolMaxPromptTokens('.env.local', null);
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/settings');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toBe('{"poolMaxPromptTokens":16000}');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    // Omitting the field would leave the old ceiling in place: null is the "clear".
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"poolMaxPromptTokens":null}');
+  });
+
+  it('shows this node’s ceiling in status, naming the .env when that is what sets it', () => {
+    const base = status();
+    const fromSetting = formatPoolStatusLines({
+      ...base,
+      localNode: { ...base.localNode, maxPromptTokens: 16_000, maxPromptTokensSetBy: 'setting' },
+    });
+    const fromEnv = formatPoolStatusLines({ ...base, localNode: { ...base.localNode, maxPromptTokens: 8_000, maxPromptTokensSetBy: 'env' } });
+
+    expect(fromSetting.join('\n')).toContain('Ceiling    prompts over ~16000 tokens');
+    expect(fromSetting.join('\n')).toContain('cihub pool ceiling clear');
+    expect(fromEnv.join('\n')).toContain('HUB_POOL_MAX_PROMPT_TOKENS');
+  });
+
+  it('lists the peers advertising a ceiling, and leaves the status of a fleet without one unchanged', () => {
+    const limited = formatPoolStatusLines(status({ peers: [peer(), peer({ id: 'fzzy-row', nodeFqdn: FZZY, maxPromptTokens: 16_000 })] })).join('\n');
+
+    expect(limited).toContain('Prompt ceilings');
+    expect(limited).toContain(`${FZZY}`);
+    expect(limited).toContain('~16000 tokens');
+    // No ceiling anywhere — including a Hub predating the field, and one reporting explicit nulls —
+    // renders exactly what it rendered before.
+    const base = status();
+    const nulls = status({ peers: [peer({ maxPromptTokens: null })] });
+    const unchanged = formatPoolStatusLines(base);
+    expect(formatPoolStatusLines({ ...nulls, localNode: { ...nulls.localNode, maxPromptTokens: null, maxPromptTokensSetBy: null } })).toEqual(
+      unchanged,
+    );
+    expect(unchanged.join('\n')).not.toContain('eiling');
+  });
+
+  it('marks a routing-log row the ceiling changed, naming the node it skipped and at what ceiling', () => {
+    const text = logOf([
+      routingEntry({
+        promptCeiling: { estimatedTokens: 46_031, excluded: [{ node: FZZY, maxPromptTokens: 16_000 }], overridden: false },
+      }),
+    ]);
+
+    expect(text).toContain(`~46031-token prompt skipped ${FZZY} (ceiling 16000)`);
+  });
+
+  it('says so when a long prompt was placed over a ceiling after all, rather than hiding the override', () => {
+    const text = logOf([
+      routingEntry({
+        node: FZZY,
+        promptCeiling: { estimatedTokens: 46_031, excluded: [{ node: FZZY, maxPromptTokens: 16_000 }], overridden: true },
+      }),
+    ]);
+
+    // Worded for both ways it happens — every candidate over its ceiling, or every one under a ceiling failed.
+    expect(text).toContain(`~46031-token prompt placed anyway over the ceiling of ${FZZY} (ceiling 16000)`);
+    expect(text).not.toContain('skipped');
+  });
+
+  it('adds nothing to a row the ceiling did not change', () => {
+    const text = logOf([
+      routingEntry({ promptCeiling: { estimatedTokens: 2_000, excluded: [], overridden: false } }),
+      routingEntry({ promptCeiling: null }),
+      routingEntry(),
+    ]);
+
+    expect(text).not.toContain('prompt');
+  });
+
+  describe('formatPromptCeilingResultLines', () => {
+    const settings = (poolMaxPromptTokens: number | null) => ({ ...status().settings, poolMaxPromptTokens });
+    const statusIn = (maxPromptTokens: number | null, maxPromptTokensSetBy: 'env' | 'setting' | null) => {
+      const base = status();
+      return { ...base, localNode: { ...base.localNode, maxPromptTokens, maxPromptTokensSetBy } };
+    };
+
+    it('confirms a ceiling that is in force', () => {
+      const result = formatPromptCeilingResultLines(16_000, settings(16_000), statusIn(16_000, 'setting'));
+
+      expect(result.tone).toBe('green');
+      expect(result.title).toBe('Prompt ceiling set');
+      expect(result.lines.join('\n')).toContain('about 64 KB');
+    });
+
+    it('confirms a clear', () => {
+      expect(formatPromptCeilingResultLines(null, settings(null), statusIn(null, null))).toMatchObject({ title: 'Prompt ceiling cleared' });
+    });
+
+    it('still confirms when the status read failed, since the write itself landed', () => {
+      expect(formatPromptCeilingResultLines(16_000, settings(16_000), null)).toMatchObject({ title: 'Prompt ceiling set' });
+    });
+
+    it('reports the .env override instead of success, whichever way the request went', () => {
+      expect(formatPromptCeilingResultLines(16_000, settings(16_000), statusIn(8_000, 'env'))).toMatchObject({ tone: 'yellow' });
+      expect(formatPromptCeilingResultLines(null, settings(null), statusIn(8_000, 'env')).lines.join('\n')).toContain('changed nothing in effect');
+      // An env value that happens to equal the request is not a conflict worth alarming anyone over.
+      expect(formatPromptCeilingResultLines(8_000, settings(8_000), statusIn(8_000, 'env'))).toMatchObject({ tone: 'green' });
+    });
+
+    it('says an older Hub stored nothing', () => {
+      const result = formatPromptCeilingResultLines(16_000, status().settings, null);
+
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('predates prompt ceilings');
+    });
   });
 });
 

@@ -1,19 +1,17 @@
 import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
 import { cloudflareStatusOptions, tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
-import { disconnect, resetRegistration, startAuth } from '@/api-client/sdk.gen';
+import { disconnect, startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Globe, Shield } from 'lucide-react';
-import { useState } from 'react';
-import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import toast from 'react-hot-toast';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
 import { Detail, DetailGrid, LoadingCard, SectionHeader, StatusBadge } from '../components/network-section/network-section';
+import { HubAccountSection } from './hub-account-settings';
 import { HubPoolSection } from './hub-pool-settings';
 
 interface CloudflareStatus {
@@ -169,40 +167,12 @@ const TailscaleSidecarSection = () => {
 
 const CloudflareSection = () => {
   const { t } = useTranslation();
-  const demoMode = useDemoMode();
-  const [isResetting, setIsResetting] = useState(false);
-  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
   const { data: status, isLoading } = useQuery({
     ...cloudflareStatusOptions(),
     select: (payload) => payload as unknown as CloudflareStatus,
     refetchInterval: 30_000,
   });
-
-  const handleResetRegistration = async () => {
-    if (demoMode) {
-      toast.error(t('SERVER_ERROR_NOT_ALLOWED_IN_DEMO'));
-      return;
-    }
-    setResetConfirmOpen(false);
-    setIsResetting(true);
-    try {
-      const result = await resetRegistration();
-      if (result.error) {
-        toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
-        return;
-      }
-      toast.success(t('SETTINGS_NETWORK_RESET_REGISTRATION_SUCCESS'));
-      clearClientHubState({ keepPortalEmail: true });
-      setTimeout(() => {
-        window.location.href = '/device-registration';
-      }, 1500);
-    } catch {
-      toast.error(t('SETTINGS_NETWORK_RESET_REGISTRATION_ERROR'));
-    } finally {
-      setIsResetting(false);
-    }
-  };
 
   if (isLoading) {
     return <LoadingCard icon={Globe} title={t('SETTINGS_NETWORK_CLOUDFLARE_TUNNEL')} />;
@@ -219,20 +189,6 @@ const CloudflareSection = () => {
             label={status?.tunnelEnabled ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')}
           />
         }
-        actions={
-          <Button
-            type="button"
-            size="sm"
-            intent="danger"
-            variant="outline"
-            disabled={demoMode}
-            loading={isResetting}
-            onClick={() => setResetConfirmOpen(true)}
-            data-testid="reregister-device-btn"
-          >
-            {isResetting ? t('SETTINGS_NETWORK_RESETTING') : t('SETTINGS_NETWORK_REREGISTER_DEVICE')}
-          </Button>
-        }
       />
       <CardContent className="space-y-3">
         {status?.tunnelId && (
@@ -245,23 +201,6 @@ const CloudflareSection = () => {
             which the removed boilerplate never did. */}
         {status?.message && <p className="text-xs text-muted-foreground">{status.message}</p>}
       </CardContent>
-
-      <Dialog open={resetConfirmOpen} onOpenChange={setResetConfirmOpen}>
-        <DialogContent type="danger" size="sm">
-          <DialogHeader>
-            <DialogTitle>{t('SETTINGS_NETWORK_REREGISTER_DEVICE')}</DialogTitle>
-          </DialogHeader>
-          <DialogDescription className="py-2">{t('SETTINGS_NETWORK_RESET_REGISTRATION_CONFIRM')}</DialogDescription>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setResetConfirmOpen(false)} disabled={isResetting}>
-              {t('COMMON_CANCEL')}
-            </Button>
-            <Button intent="danger" loading={isResetting} onClick={handleResetRegistration} data-testid="reregister-confirm-btn">
-              {t('SETTINGS_NETWORK_REREGISTER_DEVICE')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </Card>
   );
 };
@@ -271,5 +210,6 @@ export const NetworkSettingsContainer = () => (
     <TailscaleSidecarSection />
     <HubPoolSection />
     <CloudflareSection />
+    <HubAccountSection />
   </div>
 );

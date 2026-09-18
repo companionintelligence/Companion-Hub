@@ -10,10 +10,12 @@ import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
 import { isMobileClient, isTauriMobileSync, isCloudConnectPath } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
+import { Button } from '@/components/ui/Button';
 import { HintText } from '@/components/ui/field-hint/field-hint';
+import { cn } from '@/lib/utils';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
 import { configureHubApiPort, isViteLocalFrontend, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
-import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { getTauriInvoke, type TauriInvoke } from '@/lib/helpers/tauri-invoke';
 import {
   clearHubSteadySession,
   clearStackUpdatePending,
@@ -22,13 +24,7 @@ import {
   readHubSteadySession,
 } from '@/lib/desktop-stack-session';
 import { openLogsFolder } from '@/lib/helpers/open-folder';
-import {
-  DOCKER_MAC_ARCH_HINT,
-  DOCKER_REQUIRED_HINT,
-  STARTUP_IMAGE_PULL_HINT,
-  STARTUP_PROGRESS_HINT,
-  STARTUP_SERVICE_HINTS,
-} from './hub-status-tooltips';
+import { DOCKER_MAC_ARCH_HINT, DOCKER_REQUIRED_HINT, STARTUP_SERVICE_HINTS } from './hub-status-tooltips';
 import { Container, Download, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -37,24 +33,12 @@ interface HubStatusProps {
   children: ReactNode;
 }
 
-type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | { Error: { message: string } };
+type HubStatusError = { Error: { message: string } };
 
-type ServiceState = 'pending' | 'starting' | 'ready' | 'failed' | 'unavailable';
+type HubStatusResponse = 'DockerNotAvailable' | 'Stopped' | 'Starting' | 'Running' | HubStatusError;
 
-interface ServiceStatus {
-  label: string;
-  container: string;
-  state: ServiceState;
-  optional?: boolean;
-}
-
-interface StartupProgress {
-  services: ServiceStatus[];
-  progress_pct: number;
-  image_pulled: number;
-  image_total: number;
-  image_pull_pct: number;
-  all_ready: boolean;
+function isErrorStatus(status: HubStatusResponse | null): status is HubStatusError {
+  return typeof status === 'object' && status !== null && 'Error' in status;
 }
 
 function getErrorMessage(err: unknown): string {
@@ -497,167 +481,646 @@ function DockerInstallGuide() {
   return <LinuxDockerGuide />;
 }
 
-// ─── Startup progress screen ─────────────────────────────────────────────────
+// ─── Startup screens: starting, stuck, stopped, couldn't start ────────────────
+//
+// The in-app half of the Hub's startup screen. The desktop bootstrap page
+// (packages/desktop/bootstrap/) shows the same screens until the Hub API answers and then
+// hands over to these mid-startup, so the two must look and read the same.
 
-const SERVICE_ICON: Record<ServiceState, string> = {
-  pending: '○',
-  starting: '◌',
-  ready: '●',
-  failed: '✕',
-  unavailable: '—',
+/** Starting this long turns into "hasn't finished starting". Keep waiting adds as much again. */
+const STUCK_AFTER_SECONDS = 180;
+/** After this long, a View logs link joins the starting screen. */
+const LOGS_LINK_AFTER_SECONDS = 90;
+const STARTUP_PROGRESS_POLL_MS = 2000;
+const COPIED_FEEDBACK_MS = 2000;
+
+type ServiceState = 'pending' | 'starting' | 'ready' | 'failed' | 'stopped' | 'not_started';
+
+interface ServiceStatus {
+  label: string;
+  container: string;
+  state: ServiceState;
+  /** Optional sidecars (Tunnel, Private VPN, Ollama) are not shown on these screens. */
+  optional: boolean;
+  /** For `failed`: Docker's error for the container, or its exit code. */
+  detail: string | null;
+  /** For `starting`: seconds since the container started. */
+  starting_secs: number | null;
+}
+
+type DockerAccessState = 'available' | 'permission_denied' | 'daemon_unavailable' | 'not_installed' | 'error';
+
+/** What `get_startup_progress_command` reports, as far as these screens use it. */
+interface StartupProgress {
+  services: ServiceStatus[];
+  progress_pct: number;
+  image_pulled: number;
+  image_total: number;
+  image_pull_pct: number;
+  start_in_progress: boolean;
+  user_stopped: boolean;
+  user_stopped_at_ms: number | null;
+  start_failed_at_ms: number | null;
+  docker_access: DockerAccessState;
+  hub_api_live: boolean;
+}
+
+const SERVICE_STATES: ReadonlySet<string> = new Set<ServiceState>(['pending', 'starting', 'ready', 'failed', 'stopped', 'not_started']);
+const DOCKER_ACCESS_STATES: ReadonlySet<string> = new Set<DockerAccessState>([
+  'available',
+  'permission_denied',
+  'daemon_unavailable',
+  'not_installed',
+  'error',
+]);
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readServiceStatus(raw: unknown): ServiceStatus[] {
+  if (!raw || typeof raw !== 'object') return [];
+  const service = raw as Record<string, unknown>;
+  const container = typeof service.container === 'string' ? service.container : '';
+  return [
+    {
+      label: typeof service.label === 'string' ? service.label : container,
+      container,
+      // Core services never report `unavailable`; anything unrecognised reads as waiting.
+      state: typeof service.state === 'string' && SERVICE_STATES.has(service.state) ? (service.state as ServiceState) : 'pending',
+      optional: service.optional === true,
+      detail: typeof service.detail === 'string' && service.detail.trim() !== '' ? service.detail.trim() : null,
+      starting_secs: finiteOrNull(service.starting_secs),
+    },
+  ];
+}
+
+function readDockerAccess(raw: unknown): DockerAccessState {
+  const state = raw && typeof raw === 'object' ? (raw as { state?: unknown }).state : undefined;
+  if (state === undefined || state === null) return 'available';
+  return typeof state === 'string' && DOCKER_ACCESS_STATES.has(state) ? (state as DockerAccessState) : 'error';
+}
+
+/**
+ * Read a startup-progress payload. The Hub container serving this page can be newer or older
+ * than the desktop shell answering the command, so whatever an older shell leaves out reads as
+ * false, null, or (for Docker) available.
+ */
+function readStartupProgress(raw: unknown): StartupProgress | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const payload = raw as Record<string, unknown>;
+  return {
+    services: Array.isArray(payload.services) ? payload.services.flatMap(readServiceStatus) : [],
+    progress_pct: Math.min(100, Math.max(0, finiteOrNull(payload.progress_pct) ?? 0)),
+    image_pulled: finiteOrNull(payload.image_pulled) ?? 0,
+    image_total: finiteOrNull(payload.image_total) ?? 0,
+    image_pull_pct: finiteOrNull(payload.image_pull_pct) ?? 0,
+    start_in_progress: payload.start_in_progress === true,
+    user_stopped: payload.user_stopped === true,
+    user_stopped_at_ms: finiteOrNull(payload.user_stopped_at_ms),
+    start_failed_at_ms: finiteOrNull(payload.start_failed_at_ms),
+    docker_access: readDockerAccess(payload.docker_access),
+    hub_api_live: payload.hub_api_live === true,
+  };
+}
+
+interface PolledStartupProgress {
+  progress: StartupProgress;
+  /** When it arrived: `starting_secs` keeps counting between polls. */
+  receivedAt: number;
+}
+
+/** Poll the desktop shell's per-container startup progress while a startup screen is showing. */
+function useStartupProgress(): PolledStartupProgress | null {
+  const [polled, setPolled] = useState<PolledStartupProgress | null>(null);
+
+  useEffect(() => {
+    const invoke = getTauriInvoke();
+    if (!invoke) return;
+    let active = true;
+    let inFlight = false;
+    const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const progress = readStartupProgress(await invoke('get_startup_progress_command'));
+        if (active && progress) {
+          setPolled({ progress, receivedAt: Date.now() });
+        }
+      } catch {
+        // Keep the last known state; hub status polling handles recovery.
+      } finally {
+        inFlight = false;
+      }
+    };
+    void poll();
+    const id = setInterval(() => void poll(), STARTUP_PROGRESS_POLL_MS);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  return polled;
+}
+
+const NO_BREAK_SPACE = '\u00a0';
+
+/** m:ss, with minutes past 59 left as they are. */
+function formatClock(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+/** "Sep 16", kept on one line. */
+function formatDay(ms: number): string {
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }).replaceAll(' ', NO_BREAK_SPACE);
+}
+
+/** "9:25 PM", kept on one line. */
+function formatTimeOfDay(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }).replaceAll(' ', NO_BREAK_SPACE);
+}
+
+/** Copy with the Clipboard API, or a hidden textarea where that is unavailable or refused. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // Refused (insecure context, permissions): fall back below.
+  }
+  // Selecting the textarea moves focus; hand it back to the button that asked.
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const area = document.createElement('textarea');
+  area.value = text;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.opacity = '0';
+  document.body.append(area);
+  area.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    area.remove();
+    previousFocus?.focus();
+  }
+}
+
+const SERVICE_STATE_LABEL: Record<ServiceState, string> = {
+  pending: 'HUB_STATUS_SERVICE_WAITING',
+  starting: 'HUB_STATUS_SERVICE_STARTING',
+  ready: 'HUB_STATUS_SERVICE_READY',
+  failed: 'HUB_STATUS_SERVICE_FAILED',
+  stopped: 'HUB_STATUS_SERVICE_STOPPED',
+  not_started: 'HUB_STATUS_SERVICE_NOT_STARTED',
 };
 
-const SERVICE_COLOR: Record<ServiceState, string> = {
+/** State label colours follow the mark. */
+const SERVICE_STATE_TONE: Record<ServiceState, string> = {
   pending: 'text-muted-foreground',
   starting: 'text-warning',
   ready: 'text-success',
   failed: 'text-destructive',
-  unavailable: 'text-muted-foreground',
+  stopped: 'text-muted-foreground',
+  not_started: 'text-muted-foreground',
 };
 
-function ServiceRow({ service }: { service: ServiceStatus }) {
+/** The couldn't-start line names the service Docker could not start (current and legacy container names). */
+const FAILED_SERVICE_LINE: Record<string, string> = {
+  'ci-hub-db': 'HUB_STATUS_FAILED_DATABASE_LINE',
+  'ci-hub-queue': 'HUB_STATUS_FAILED_QUEUE_LINE',
+  'ci-os-hub-queue': 'HUB_STATUS_FAILED_QUEUE_LINE',
+  'ci-hub': 'HUB_STATUS_FAILED_BACKEND_LINE',
+  'ci-os-hub': 'HUB_STATUS_FAILED_BACKEND_LINE',
+  traefik: 'HUB_STATUS_FAILED_ROUTER_LINE',
+};
+
+interface FactValue {
+  key: string;
+  tone?: string;
+}
+
+const DOCKER_FACT: Record<DockerAccessState, FactValue> = {
+  available: { key: 'HUB_STATUS_DOCKER_RUNNING' },
+  daemon_unavailable: { key: 'HUB_STATUS_DOCKER_NOT_RUNNING', tone: 'text-destructive' },
+  not_installed: { key: 'HUB_STATUS_DOCKER_NOT_INSTALLED', tone: 'text-destructive' },
+  permission_denied: { key: 'HUB_STATUS_DOCKER_NO_PERMISSION', tone: 'text-destructive' },
+  error: { key: 'HUB_STATUS_DOCKER_UNREACHABLE', tone: 'text-destructive' },
+};
+
+/** Always counted, zero or not. */
+const ALWAYS_COUNTED: ServiceState[] = ['ready', 'starting', 'pending', 'failed'];
+/** Counted only when they happen. */
+const COUNTED_WHEN_PRESENT: ServiceState[] = ['stopped', 'not_started'];
+
+const ACTION_BUTTON_CLASS = 'h-10 min-w-[164px] px-5 font-semibold focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-card';
+const OUTLINE_BUTTON_CLASS = 'border-primary/30 bg-transparent text-foreground shadow-none';
+
+/** One mark per state, drawn rather than typed so every platform renders it the same. */
+function StatusMark({ state }: { state: ServiceState }) {
+  switch (state) {
+    case 'ready':
+      return <span aria-hidden="true" className="size-[10px] shrink-0 rounded-full bg-success" />;
+    case 'starting':
+      // One SVG, so the dot stays centred in the ring. As a bordered span with an inset
+      // dot, each box was rounded to device pixels separately and the dot drifted.
+      return (
+        <svg aria-hidden="true" viewBox="0 0 10 10" fill="none" className="size-[10px] shrink-0 text-warning">
+          <circle cx="5" cy="5" r="4.25" stroke="currentColor" strokeWidth="1.5" />
+          <circle cx="5" cy="5" r="1.5" fill="currentColor" className="animate-pulse motion-reduce:animate-none" />
+        </svg>
+      );
+    case 'failed':
+      return (
+        <svg aria-hidden="true" viewBox="0 0 10 10" fill="none" className="size-[10px] shrink-0 overflow-visible text-destructive">
+          <path d="M1.46 1.46l7.08 7.08M8.54 1.46l-7.08 7.08" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+      );
+    case 'stopped':
+      return <span aria-hidden="true" className="size-[9px] shrink-0 rounded-[2px] bg-muted-foreground" />;
+    case 'not_started':
+      return <span aria-hidden="true" className="size-[10px] shrink-0 rounded-full border-[1.5px] border-dashed border-muted-foreground" />;
+    default:
+      return <span aria-hidden="true" className="size-[10px] shrink-0 rounded-full border-[1.5px] border-muted-foreground" />;
+  }
+}
+
+interface ServiceRowProps {
+  service: ServiceStatus;
+  /** Replaces the state label, e.g. "Starting for 3:12" on the stuck service. */
+  stateLabel?: string;
+  /** What went wrong, in monospace under the row. */
+  detail?: string | null;
+  /** The service holding up startup. */
+  attention?: boolean;
+}
+
+function ServiceRow({ service, stateLabel, detail, attention = false }: ServiceRowProps) {
   const { t } = useTranslation();
-  const color = SERVICE_COLOR[service.state];
   const hintKey = STARTUP_SERVICE_HINTS[service.container];
-  const hint = hintKey ? t(hintKey) : undefined;
-  const label =
-    service.state === 'pending'
-      ? t('HUB_STATUS_SERVICE_WAITING')
-      : service.state === 'starting'
-        ? t('HUB_STATUS_SERVICE_STARTING')
-        : service.state === 'ready'
-          ? t('HUB_STATUS_SERVICE_READY')
-          : service.state === 'unavailable'
-            ? t('HUB_STATUS_SERVICE_UNAVAILABLE')
-            : t('COMMON_FAILED');
 
   return (
-    <div className="flex items-center justify-between gap-4 py-1.5">
-      <div className="flex items-center gap-2.5 min-w-0">
-        <span className={`text-sm font-medium tabular-nums ${color} ${service.state === 'starting' ? 'animate-pulse' : ''}`}>
-          {SERVICE_ICON[service.state]}
-        </span>
-        <span className="text-sm text-foreground min-w-0">
-          {hint ? (
-            <HintText id={`svc-${service.container}`} hint={hint}>
+    <li className={cn('px-4 py-2 compact-window:py-[5px]', attention && 'bg-primary/6', service.state === 'failed' && 'bg-destructive/8')}>
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-2.5 text-sm leading-normal text-foreground">
+          <StatusMark state={service.state} />
+          {hintKey ? (
+            <HintText id={`svc-${service.container}`} hint={t(hintKey)}>
               {service.label}
             </HintText>
           ) : (
-            service.label
+            <span>{service.label}</span>
           )}
+        </div>
+        <span className={cn('shrink-0 text-xs tabular-nums', SERVICE_STATE_TONE[service.state])}>
+          {stateLabel ?? t(SERVICE_STATE_LABEL[service.state])}
         </span>
       </div>
-      <span className={`text-xs tabular-nums shrink-0 ${color}`}>{label}</span>
+      {detail && (
+        // Four lines at most, so a long compose error cannot push the actions off screen; Copy error has the rest.
+        <p className="mt-1.5 mb-0.5 ml-5 max-h-[6.4em] overflow-y-auto whitespace-pre-wrap font-mono compact-window:max-h-[4.8em] text-[12px] leading-[1.6] text-foreground [overflow-wrap:anywhere]">
+          {detail}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function StatusFact({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="mr-6 flex gap-1.5">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className={cn('font-medium tabular-nums text-foreground', tone)}>{value}</dd>
     </div>
   );
 }
 
-function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
+/** Muted, underlined, no box — with a full-size hit area. */
+function QuietAction({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex min-h-[44px] cursor-pointer items-center rounded-sm px-2.5 text-[13.5px] text-muted-foreground underline decoration-muted-foreground/45 underline-offset-[3px] transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {children}
+    </button>
+  );
+}
+
+function InitialisingRow() {
   const { t } = useTranslation();
-  const invoke = getTauriInvoke();
-  const [progress, setProgress] = useState<StartupProgress | null>(null);
+  return (
+    <div className="flex items-center justify-center gap-2 text-muted-foreground">
+      <svg
+        className="h-4 w-4 animate-spin text-primary motion-reduce:animate-none"
+        xmlns="http://www.w3.org/2000/svg"
+        fill="none"
+        viewBox="0 0 24 24"
+        aria-hidden="true"
+      >
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+      </svg>
+      <span className="text-sm">{t('HUB_STATUS_INITIALISING')}</span>
+    </div>
+  );
+}
+
+/** The screen a `get_hub_status_command` result maps to. `starting` becomes stuck by itself. */
+type StartupScreenStatus = 'starting' | 'stopped' | 'failed';
+
+type StartupView = StartupScreenStatus | 'stuck';
+
+interface StartupScreenProps {
+  status: StartupScreenStatus;
+  /** The `{ Error }` status message, for the couldn't-start screen. */
+  errorMessage: string | null;
+  /** Seconds since the current wait began. */
+  elapsedSeconds: number;
+  /** The elapsed second at which starting becomes "hasn't finished starting". */
+  stuckAfterSeconds: number;
+  /** How long this page's own start ran before it failed, or null when the page did not run it. */
+  failedAfterSeconds: number | null;
+  onStart: () => void;
+  onRestart: () => void;
+  onKeepWaiting: () => void;
+  /** Push the stuck deadline out to at least this elapsed second. */
+  onHoldStuckDeadline: (elapsedSeconds: number) => void;
+  onViewLogs: () => void;
+}
+
+/**
+ * The starting, "hasn't finished starting", stopped and couldn't-start screens: one card with the
+ * progress bar, a status panel read from `get_startup_progress_command`, and the actions for
+ * the screen. It stays mounted while the status moves between them, so the panel never blanks.
+ */
+function StartupScreen({
+  status,
+  errorMessage,
+  elapsedSeconds,
+  stuckAfterSeconds,
+  failedAfterSeconds,
+  onStart,
+  onRestart,
+  onKeepWaiting,
+  onHoldStuckDeadline,
+  onViewLogs,
+}: StartupScreenProps) {
+  const { t } = useTranslation();
+  const polled = useStartupProgress();
+  const progress = polled?.progress ?? null;
+  const [copied, setCopied] = useState(false);
+
+  // Only a start that is running pulls images: a mismatched image name must not read as a
+  // download that never ends.
+  const downloading = Boolean(progress?.start_in_progress && progress.image_pulled < progress.image_total);
+
+  // Never stuck while downloading; the services get their three minutes once the download ends.
+  useEffect(() => {
+    if (status === 'starting' && downloading) {
+      onHoldStuckDeadline(elapsedSeconds + STUCK_AFTER_SECONDS);
+    }
+  }, [status, downloading, elapsedSeconds, onHoldStuckDeadline]);
 
   useEffect(() => {
-    if (!invoke) return;
-    const poll = async () => {
-      try {
-        const result = (await invoke('get_startup_progress_command')) as StartupProgress;
-        setProgress(result);
-      } catch {
-        // ignore — hub_status polling handles recovery
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
+    return () => clearTimeout(id);
+  }, [copied]);
+
+  const view: StartupView = status === 'starting' && !downloading && elapsedSeconds >= stuckAfterSeconds ? 'stuck' : status;
+  const core = progress ? progress.services.filter((service) => !service.optional) : [];
+  const dockerReady = !progress || progress.docker_access === 'available';
+  const failedService = core.find((service) => service.state === 'failed') ?? null;
+
+  // The service that has been starting the longest. A container in a restart loop keeps
+  // resetting its own start time, so never report less than this page has waited.
+  const stuckService =
+    view === 'stuck'
+      ? (core.filter((service) => service.state === 'starting').sort((a, b) => (b.starting_secs ?? 0) - (a.starting_secs ?? 0))[0] ?? null)
+      : null;
+  const stuckSeconds =
+    stuckService && polled
+      ? Math.max((stuckService.starting_secs ?? 0) + Math.floor((Date.now() - polled.receivedAt) / 1000), elapsedSeconds)
+      : elapsedSeconds;
+
+  const errorText = status === 'failed' ? errorMessage?.trim() || null : null;
+  // Docker's own words go under the failed service's row; the status message stands in when the
+  // shell sent none, and sits in the panel when no core service failed.
+  const rowDetail = (service: ServiceStatus) => {
+    if (service.state !== 'failed') return null;
+    return service === failedService ? (service.detail ?? errorText) : service.detail;
+  };
+  const panelError = failedService ? null : errorText;
+  const errorToCopy = [...new Set([failedService?.detail, errorText].filter((text): text is string => Boolean(text)))].join('\n\n');
+
+  let title: string;
+  let line: string;
+  let timeText: string;
+  switch (view) {
+    case 'stuck': {
+      const count = Math.max(1, Math.floor(stuckSeconds / 60));
+      title = t('HUB_STATUS_STUCK_TITLE');
+      line = stuckService ? t('HUB_STATUS_STUCK_SERVICE_LINE', { service: stuckService.label, count }) : t('HUB_STATUS_STUCK_HUB_LINE', { count });
+      timeText = t('HUB_STATUS_ELAPSED_TIME', { time: formatClock(elapsedSeconds) });
+      break;
+    }
+    case 'stopped': {
+      const stoppedAt = progress?.user_stopped ? progress.user_stopped_at_ms : null;
+      const when = stoppedAt === null ? null : { date: formatDay(stoppedAt), time: formatTimeOfDay(stoppedAt) };
+      if (!progress) {
+        // Until the first poll says whether the user stopped it, don't guess which it was.
+        title = t('HUB_STATUS_STOPPED_TITLE');
+        line = '';
+      } else if (progress.user_stopped) {
+        title = t('HUB_STATUS_STOPPED_TITLE');
+        line = when ? t('HUB_STATUS_STOPPED_AT_LINE', when) : t('HUB_STATUS_STOPPED_LINE');
+      } else {
+        title = t('HUB_STATUS_NOT_RUNNING_TITLE');
+        line = t('HUB_STATUS_NOT_RUNNING_LINE');
       }
-    };
-    void poll();
-    const id = setInterval(() => void poll(), 2000);
-    return () => clearInterval(id);
-  }, [invoke]);
-
-  const pct = progress?.progress_pct ?? 0;
-  const showSlowMessage = elapsedSeconds > 90;
-  const showVerySlowMessage = elapsedSeconds > 180;
-
-  // Optional sidecars (Private VPN, tunnel, Ollama) must not block or clutter startup
-  // when disconnected — only show them once ready; never count them in progress stats.
-  const visibleServices = (progress?.services ?? []).filter((svc) => !svc.optional || svc.state === 'ready');
-
-  const serviceCounts = (progress?.services ?? []).reduce(
-    (acc, svc) => {
-      if (svc.optional) {
-        return acc;
+      timeText = when ? t('HUB_STATUS_STOPPED_SINCE', when) : t('HUB_STATUS_NOT_RUNNING_META');
+      break;
+    }
+    case 'failed': {
+      const lineKey = failedService ? FAILED_SERVICE_LINE[failedService.container] : undefined;
+      const failedAt = progress?.start_failed_at_ms ?? null;
+      title = t('HUB_STATUS_FAILED_TITLE');
+      line = t(lineKey ?? 'HUB_STATUS_FAILED_LINE');
+      if (failedAfterSeconds !== null) {
+        timeText = t('HUB_STATUS_FAILED_AFTER', { time: formatClock(failedAfterSeconds) });
+      } else if (failedAt === null) {
+        timeText = t('HUB_STATUS_FAILED_META');
+      } else {
+        timeText = t('HUB_STATUS_FAILED_AT', { time: formatTimeOfDay(failedAt) });
       }
-      acc[svc.state] += 1;
-      return acc;
-    },
-    { pending: 0, starting: 0, ready: 0, failed: 0, unavailable: 0 } as Record<ServiceState, number>,
-  );
+      break;
+    }
+    default:
+      title = t('HUB_STATUS_STARTING_TITLE');
+      line = downloading ? t('HUB_STATUS_STARTING_DOWNLOADING') : t('HUB_STATUS_STARTING_SERVICES_ONLINE');
+      timeText = t('HUB_STATUS_ELAPSED_TIME', { time: formatClock(elapsedSeconds) });
+  }
 
-  const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, '0')}`;
+  // A stopped Hub reads 0% whatever the containers score.
+  const pct = progress && view !== 'stopped' ? progress.progress_pct : 0;
+  const barWidth = view === 'starting' || view === 'stuck' ? Math.max(pct, 4) : pct;
+
+  let hubApi: FactValue = { key: 'HUB_STATUS_API_NOT_RUNNING' };
+  if (progress?.hub_api_live) {
+    hubApi = { key: 'HUB_STATUS_API_ANSWERING' };
+  } else if (view === 'stuck') {
+    hubApi = { key: 'HUB_STATUS_API_NOT_ANSWERING', tone: 'text-warning' };
+  } else if (view === 'starting') {
+    hubApi = { key: 'HUB_STATUS_API_NOT_ANSWERING_YET' };
+  }
+
+  const countOf = (state: ServiceState) => core.filter((service) => service.state === state).length;
+  const counts: { state: ServiceState; count: number | null }[] = dockerReady
+    ? [
+        ...ALWAYS_COUNTED.map((state) => ({ state, count: countOf(state) })),
+        ...COUNTED_WHEN_PRESENT.map((state) => ({ state, count: countOf(state) })).filter(({ count }) => count > 0),
+      ]
+    : ALWAYS_COUNTED.map((state) => ({ state, count: null }));
+
+  const handleCopyError = async () => {
+    if (errorToCopy && (await copyText(errorToCopy))) {
+      setCopied(true);
+    }
+  };
 
   return (
-    <SetupCard className="max-w-2xl w-full">
-      <div className="flex flex-col items-center gap-6 w-full">
-        <div className="text-center space-y-1 w-full">
-          <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_STARTING_TITLE')}</h2>
-          <p className="text-sm text-muted-foreground">
-            {showVerySlowMessage
-              ? t('HUB_STATUS_STARTING_STILL_WORKING')
-              : showSlowMessage
-                ? t('HUB_STATUS_STARTING_ALMOST_THERE')
-                : t('HUB_STATUS_STARTING_SERVICES_ONLINE')}
+    <SetupCard className="w-full max-w-2xl" contentClassName="tight-window:px-8 tight-window:py-6 compact-window:px-[24px] compact-window:py-[22px]">
+      <div className="flex flex-col gap-5 tight-window:gap-4 compact-window:gap-3.5">
+        <div className="flex flex-col items-center gap-1.5 text-center">
+          <h2 className="text-xl font-semibold leading-[1.3] text-foreground">{title}</h2>
+          <p role="status" className="max-w-[560px] text-balance text-sm leading-[1.55] text-muted-foreground compact-window:max-w-[600px]">
+            {line}
           </p>
-          <p className="text-xs text-muted-foreground">{t('HUB_STATUS_STARTING_FIRST_STARTUP_NOTE')}</p>
         </div>
 
-        <div className="w-full space-y-1.5">
-          <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-            <div className="h-full rounded-full bg-primary transition-all duration-700 ease-out" style={{ width: `${Math.max(pct, 4)}%` }} />
-          </div>
-          <div className="flex justify-between text-xs text-muted-foreground tabular-nums">
-            <span className="inline-flex items-center">
-              <HintText id="startup-progress" hint={t(STARTUP_PROGRESS_HINT)}>
-                {pct}%
-              </HintText>
-            </span>
-            <span>
-              {elapsed} {t('HUB_STATUS_ELAPSED')}
-            </span>
-          </div>
-          {progress && (
-            <div className="space-y-0.5">
-              <div className="text-xs text-muted-foreground">
-                {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('HUB_STATUS_SERVICE_STARTING')},{' '}
-                {serviceCounts.pending} {t('HUB_STATUS_SERVICE_PENDING')}
-                {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
+        {progress ? (
+          <>
+            <div className="flex flex-col gap-2">
+              <div aria-hidden="true" className="h-1.5 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-700 ease-out motion-reduce:transition-none"
+                  style={{ width: `${barWidth}%` }}
+                />
               </div>
-              <div className="text-xs text-muted-foreground">
-                <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>
-                  {t('HUB_STATUS_IMAGE_PULLS')}: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
-                </HintText>
+              <div className="flex justify-between gap-4 text-xs tabular-nums text-muted-foreground">
+                <span>
+                  <span className="sr-only">{t('HUB_STATUS_PROGRESS_LABEL')} </span>
+                  {pct}%
+                </span>
+                <span>{timeText}</span>
               </div>
             </div>
-          )}
-        </div>
 
-        {visibleServices.length > 0 ? (
-          <div className="w-full rounded-lg border border-border bg-muted/30 px-4 divide-y divide-border/50">
-            {visibleServices.map((svc) => (
-              <ServiceRow key={svc.container} service={svc} />
-            ))}
-          </div>
+            <div className="overflow-hidden rounded-lg border border-border bg-muted/30">
+              <dl className="flex flex-wrap gap-y-1.5 border-b border-border px-4 py-2.5 text-xs compact-window:py-[7px]">
+                <StatusFact
+                  label={t('HUB_STATUS_FACT_IMAGES')}
+                  value={
+                    dockerReady
+                      ? t('HUB_STATUS_FACT_IMAGES_VALUE', {
+                          pulled: progress.image_pulled,
+                          total: progress.image_total,
+                          pct: progress.image_pull_pct,
+                        })
+                      : '—'
+                  }
+                />
+                <StatusFact
+                  label={t('HUB_STATUS_FACT_DOCKER')}
+                  value={t(DOCKER_FACT[progress.docker_access].key)}
+                  tone={DOCKER_FACT[progress.docker_access].tone}
+                />
+                <StatusFact label={t('HUB_STATUS_FACT_HUB_API')} value={t(hubApi.key)} tone={hubApi.tone} />
+              </dl>
+
+              {dockerReady ? (
+                <ul className="divide-y divide-border">
+                  {core.map((service) => (
+                    <ServiceRow
+                      key={service.container || service.label}
+                      service={service}
+                      attention={service === stuckService}
+                      stateLabel={service === stuckService ? t('HUB_STATUS_SERVICE_STARTING_FOR', { time: formatClock(stuckSeconds) }) : undefined}
+                      detail={rowDetail(service)}
+                    />
+                  ))}
+                </ul>
+              ) : (
+                <p className="px-4 py-3 text-[13.5px] text-muted-foreground">{t('HUB_STATUS_SERVICES_AFTER_DOCKER')}</p>
+              )}
+
+              {panelError && (
+                <p className="max-h-[calc(6.4em_+_1.25rem)] overflow-y-auto whitespace-pre-wrap compact-window:max-h-[calc(4.8em_+_1.25rem)] border-t border-border bg-destructive/8 px-4 py-2.5 font-mono text-[12px] leading-[1.6] text-foreground [overflow-wrap:anywhere]">
+                  {panelError}
+                </p>
+              )}
+
+              <ul className="flex flex-wrap items-center gap-y-1.5 border-t border-border px-4 py-2.5 text-xs text-muted-foreground compact-window:py-[7px]">
+                {counts.map(({ state, count }) => (
+                  <li key={state} className={cn('mr-5 inline-flex items-center gap-[7px] tabular-nums', !count && 'opacity-55')}>
+                    <StatusMark state={state} />
+                    <span className="font-semibold text-foreground">{count ?? '—'}</span>
+                    <span>{t(SERVICE_STATE_LABEL[state])}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </>
         ) : (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <svg
-              className="h-4 w-4 animate-spin text-primary"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-              role="img"
-              aria-label={t('COMMON_LOADING')}
-            >
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            <span className="text-sm">{t('HUB_STATUS_INITIALISING')}</span>
+          <InitialisingRow />
+        )}
+
+        {view === 'starting' && elapsedSeconds > LOGS_LINK_AFTER_SECONDS && (
+          <div className="flex justify-center">
+            <QuietAction onClick={onViewLogs}>{t('HUB_STATUS_VIEW_LOGS')}</QuietAction>
+          </div>
+        )}
+
+        {view === 'stuck' && (
+          <div className="flex flex-wrap items-center justify-center gap-2.5">
+            <Button type="button" className={ACTION_BUTTON_CLASS} onClick={onRestart}>
+              {t('HUB_STATUS_RESTART_HUB')}
+            </Button>
+            <Button type="button" variant="outline" className={cn(ACTION_BUTTON_CLASS, OUTLINE_BUTTON_CLASS)} onClick={onKeepWaiting}>
+              {t('HUB_STATUS_KEEP_WAITING')}
+            </Button>
+            <QuietAction onClick={onViewLogs}>{t('HUB_STATUS_VIEW_LOGS')}</QuietAction>
+          </div>
+        )}
+
+        {view === 'stopped' && (
+          <div className="flex flex-col items-center gap-1.5">
+            <Button type="button" className={ACTION_BUTTON_CLASS} onClick={onStart}>
+              {t('HUB_STATUS_START_HUB')}
+            </Button>
+            <p className="mt-1 text-xs text-muted-foreground">{t('HUB_STATUS_START_USUALLY_QUICK')}</p>
+          </div>
+        )}
+
+        {view === 'failed' && (
+          <div className="flex flex-wrap items-center justify-center gap-2.5">
+            <Button type="button" className={ACTION_BUTTON_CLASS} onClick={onStart}>
+              {t('HUB_STATUS_TRY_AGAIN')}
+            </Button>
+            {errorToCopy && (
+              <QuietAction onClick={() => void handleCopyError()}>{copied ? t('HUB_STATUS_COPIED') : t('HUB_STATUS_COPY_ERROR')}</QuietAction>
+            )}
+            <QuietAction onClick={onViewLogs}>{t('HUB_STATUS_VIEW_LOGS')}</QuietAction>
+            <span role="status" className="sr-only">
+              {copied ? t('HUB_STATUS_ERROR_COPIED') : ''}
+            </span>
           </div>
         )}
       </div>
@@ -667,6 +1130,29 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
 
 // ─── Main HubStatus gate ──────────────────────────────────────────────────────
 
+type HubStartCommand = 'start_hub_command' | 'restart_hub_command';
+
+/** Tauri refused the command itself (not on this origin's IPC allowlist, or an older shell without it). */
+function isCommandUnavailable(err: unknown): boolean {
+  return /not allowed by ACL|command \S+ not found/i.test(getErrorMessage(err));
+}
+
+/**
+ * Run a start or a restart. When the shell will not let this page restart, start instead, so
+ * Restart Hub still does something rather than failing on an ACL error.
+ */
+async function invokeHubStart(invoke: TauriInvoke, command: HubStartCommand): Promise<void> {
+  if (command === 'restart_hub_command') {
+    try {
+      await invoke('restart_hub_command');
+      return;
+    } catch (err) {
+      if (!isCommandUnavailable(err)) throw err;
+    }
+  }
+  await invoke('start_hub_command');
+}
+
 export function HubStatus({ children }: HubStatusProps) {
   const { t } = useTranslation();
   const { revalidate } = useRevalidator();
@@ -674,6 +1160,8 @@ export function HubStatus({ children }: HubStatusProps) {
   useAppIntentDeepLinks();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
+  const [stuckAfterSeconds, setStuckAfterSeconds] = useState(STUCK_AFTER_SECONDS);
+  const [failedAfterSeconds, setFailedAfterSeconds] = useState<number | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const resolvedTheme = useResolvedTheme();
@@ -687,8 +1175,14 @@ export function HubStatus({ children }: HubStatusProps) {
       .map((line) => DOMPurify.sanitize(colorizeLogLine(line, resolvedTheme)))
       .join('<br />');
   }, [logs, resolvedTheme, t]);
-  const [confirmRetry, setConfirmRetry] = useState(false);
+  /** When the current wait for the Hub began. */
   const startupStartRef = useRef<number | null>(null);
+  /** This page's own start or restart command is still running. */
+  const startCommandRunningRef = useRef(false);
+  /** This page ran the latest start, so a failure can say how long it ran. */
+  const startedHereRef = useRef(false);
+  /** Why this page's own start was rejected. Stays on screen until something else starts the Hub. */
+  const startCommandErrorRef = useRef<string | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isWindows = isTauri && detectPlatform() === 'windows';
   const shouldAutoStartWindowsHubRef = useRef(true);
@@ -718,6 +1212,10 @@ export function HubStatus({ children }: HubStatusProps) {
       setStatus('Running');
       return;
     }
+    // This page's own start is still running: stay on the starting screen.
+    if (startCommandRunningRef.current) {
+      return;
+    }
     sawNonRunningRef.current = true;
     setStatus('Stopped');
   }, []);
@@ -726,25 +1224,35 @@ export function HubStatus({ children }: HubStatusProps) {
   statusRef.current = status;
 
   const startHub = useCallback(
-    async (logMessage: string) => {
+    async (logMessage: string, command: HubStartCommand = 'start_hub_command') => {
       const invoke = getTauriInvoke();
       if (!invoke) return false;
 
       const current = statusRef.current;
-      const previousSticky = typeof current === 'object' && current !== null && 'Error' in current ? current.Error.message : undefined;
+      const previousSticky = isErrorStatus(current) ? current.Error.message : undefined;
 
       hubSteadyRunningRef.current = false;
+      startCommandRunningRef.current = true;
+      startedHereRef.current = true;
+      startCommandErrorRef.current = null;
+      // A new wait: the buttons go at once, and the clock and the stuck deadline start over.
+      startupStartRef.current = Date.now();
+      setStartupElapsed(0);
+      setStuckAfterSeconds(STUCK_AFTER_SECONDS);
+      setFailedAfterSeconds(null);
       setStatus('Starting');
 
       try {
-        await invoke('start_hub_command');
+        await invokeHubStart(invoke, command);
         return true;
       } catch (err) {
         console.error(logMessage, err);
-        setStatus({
-          Error: { message: formatHubStartError(err, t('HUB_STATUS_ACL_DENIED'), previousSticky) },
-        });
+        const message = formatHubStartError(err, t('HUB_STATUS_ACL_DENIED'), previousSticky);
+        startCommandErrorRef.current = message;
+        setStatus({ Error: { message } });
         return false;
+      } finally {
+        startCommandRunningRef.current = false;
       }
     },
     [t],
@@ -783,12 +1291,25 @@ export function HubStatus({ children }: HubStatusProps) {
             return;
           }
 
-          const result = (await invoke('get_hub_status_command')) as HubStatusResponse;
+          let result = (await invoke('get_hub_status_command')) as HubStatusResponse;
+
+          // This page's own start or restart is still running. A restart takes the stack down
+          // first, so the shell reports Stopped for a while: keep the starting screen.
+          if (startCommandRunningRef.current && (result === 'Stopped' || isErrorStatus(result))) {
+            return;
+          }
+          if (result === 'Starting' || result === 'Running') {
+            // Something else started the Hub: this page's failed attempt is history.
+            startCommandErrorRef.current = null;
+          } else if (startCommandErrorRef.current && (result === 'Stopped' || isErrorStatus(result))) {
+            // Keep this page's rejected start on screen; the shell may not have recorded it.
+            result = { Error: { message: startCommandErrorRef.current } };
+          }
 
           if (isWindows && !(await isStackDevMode())) {
             if (result === 'DockerNotAvailable') {
               shouldAutoStartWindowsHubRef.current = true;
-            } else if (result === 'Running' || result === 'Starting' || (typeof result === 'object' && 'Error' in result)) {
+            } else if (result === 'Running' || result === 'Starting' || isErrorStatus(result)) {
               shouldAutoStartWindowsHubRef.current = false;
             } else if (result === 'Stopped' && shouldAutoStartWindowsHubRef.current) {
               shouldAutoStartWindowsHubRef.current = false;
@@ -797,8 +1318,7 @@ export function HubStatus({ children }: HubStatusProps) {
             }
           }
 
-          const isHardNonRunning =
-            result === 'Stopped' || result === 'DockerNotAvailable' || (typeof result === 'object' && result !== null && 'Error' in result);
+          const isHardNonRunning = result === 'Stopped' || result === 'DockerNotAvailable' || isErrorStatus(result);
 
           if (isHardNonRunning) {
             consecutiveProbeFailuresRef.current = 0;
@@ -848,17 +1368,18 @@ export function HubStatus({ children }: HubStatusProps) {
     }
   }, [isTauri, isWindows, checkHealthFallback, isStackDevMode, startHub, t]);
 
-  // Track elapsed seconds while in Starting state
   useEffect(() => {
     if (status === 'Running') {
       hubSteadyRunningRef.current = true;
       markHubSteadySession();
-    } else if (status === 'Stopped' || status === 'DockerNotAvailable' || (typeof status === 'object' && status !== null && 'Error' in status)) {
+    } else if (status === 'Stopped' || status === 'DockerNotAvailable' || isErrorStatus(status)) {
       hubSteadyRunningRef.current = false;
       clearHubSteadySession();
     }
   }, [status]);
 
+  // Track the wait while Starting: elapsed seconds, and how long a start this page ran lasted
+  // before it failed.
   useEffect(() => {
     if (status === 'Starting') {
       if (startupStartRef.current === null) {
@@ -869,8 +1390,17 @@ export function HubStatus({ children }: HubStatusProps) {
       }, 1000);
       return () => clearInterval(id);
     }
+    if (isErrorStatus(status)) {
+      if (startedHereRef.current && startupStartRef.current !== null) {
+        setFailedAfterSeconds(Math.floor((Date.now() - startupStartRef.current) / 1000));
+      }
+    } else {
+      startedHereRef.current = false;
+      setFailedAfterSeconds(null);
+    }
     startupStartRef.current = null;
     setStartupElapsed(0);
+    setStuckAfterSeconds(STUCK_AFTER_SECONDS);
   }, [status]);
 
   useEffect(() => {
@@ -879,24 +1409,24 @@ export function HubStatus({ children }: HubStatusProps) {
     return () => clearInterval(interval);
   }, [checkStatus]);
 
-  useEffect(() => {
-    const hasError = typeof status === 'object' && status !== null && 'Error' in status;
-    if (!hasError && confirmRetry) {
-      setConfirmRetry(false);
-    }
-  }, [status, confirmRetry]);
-
   const handleStartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
-    setConfirmRetry(false);
     await startHub(t('HUB_STATUS_FAILED_START'));
   }, [startHub, t]);
 
   const handleRestartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
-    setConfirmRetry(false);
-    await startHub(t('HUB_STATUS_FAILED_RESTART'));
+    await startHub(t('HUB_STATUS_FAILED_RESTART'), 'restart_hub_command');
   }, [startHub, t]);
+
+  const handleKeepWaiting = useCallback(() => {
+    const elapsed = startupStartRef.current === null ? 0 : Math.floor((Date.now() - startupStartRef.current) / 1000);
+    setStuckAfterSeconds(elapsed + STUCK_AFTER_SECONDS);
+  }, []);
+
+  const holdStuckDeadline = useCallback((elapsedSeconds: number) => {
+    setStuckAfterSeconds((current) => Math.max(current, elapsedSeconds));
+  }, []);
 
   // When the Hub transitions from a non-running state to Running, route loaders
   // that failed during startup (backend wasn't ready) would stay stale in React
@@ -923,10 +1453,6 @@ export function HubStatus({ children }: HubStatusProps) {
     }
   }, []);
 
-  const handleOpenLogsDir = useCallback(async () => {
-    await openLogsFolder();
-  }, []);
-
   // If not in Tauri, don't block the UI — web users have the backend proxied.
   // On mobile there is no *local* Hub to manage (no Docker on a phone): the app
   // is a thin client pointed at a remote Hub, so this local-Hub gate (and its
@@ -940,7 +1466,7 @@ export function HubStatus({ children }: HubStatusProps) {
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {
     return (
-      <SetupPageShell title={t('APP_NAME')} contentClassName="items-center">
+      <SetupPageShell title={t('APP_NAME')} className="bg-transparent" contentClassName="items-center" fitShortWindows>
         <div className="flex justify-center py-16" role="status" aria-busy="true" aria-label={t('HUB_STATUS_CHECKING')}>
           <svg
             className="h-8 w-8 animate-spin text-primary"
@@ -979,94 +1505,33 @@ export function HubStatus({ children }: HubStatusProps) {
     return <>{children}</>;
   }
 
-  // Error message extraction
-  const errorMessage = typeof status === 'object' && 'Error' in status ? status.Error.message : null;
-
   const gateTitle = status === 'DockerNotAvailable' ? t('COMMON_SET_UP_YOUR_HUB') : t('APP_NAME');
+  let screenStatus: StartupScreenStatus = 'starting';
+  if (status === 'Stopped') {
+    screenStatus = 'stopped';
+  } else if (isErrorStatus(status)) {
+    screenStatus = 'failed';
+  }
 
   return (
-    <SetupPageShell title={gateTitle} contentClassName="items-center">
+    // Transparent so the body's background lift shows, as on the desktop bootstrap page.
+    <SetupPageShell title={gateTitle} className="bg-transparent" contentClassName="items-center" fitShortWindows>
       <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
-        {status === 'DockerNotAvailable' && <DockerInstallGuide />}
-
-        {status === 'Stopped' && (
-          <SetupCard className="max-w-md w-full text-center">
-            <h2 className="text-xl font-semibold text-foreground mb-2">{t('HUB_STATUS_NOT_RUNNING')}</h2>
-            <p className="text-muted-foreground mb-6">{t('HUB_STATUS_BACKEND_NOT_RUNNING')}</p>
-            <button
-              type="button"
-              onClick={handleStartHub}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {t('HUB_STATUS_START_HUB')}
-            </button>
-            <div className="flex gap-4 justify-center mt-6">
-              <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
-                {t('HUB_STATUS_VIEW_LOGS')}
-              </button>
-              <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
-                {t('HUB_STATUS_OPEN_LOGS_FOLDER')}
-              </button>
-            </div>
-          </SetupCard>
-        )}
-
-        {status === 'Starting' && <StartupScreen elapsedSeconds={startupElapsed} />}
-
-        {errorMessage && (
-          <SetupCard className="max-w-3xl w-full text-left">
-            <div className="flex items-start gap-3 mb-3">
-              <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" aria-hidden />
-              <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_START_FAILED_TITLE')}</h2>
-            </div>
-            <p className="text-sm text-muted-foreground mb-3">{t('HUB_STATUS_START_FAILED_HINT')}</p>
-            <pre className="bg-muted rounded-md p-4 text-xs sm:text-sm font-mono text-foreground/90 mb-6 max-h-72 overflow-auto whitespace-pre-wrap break-words">
-              {errorMessage}
-            </pre>
-            {confirmRetry ? (
-              <div className="rounded-md border border-border bg-muted/40 p-4 space-y-4">
-                <p className="text-sm text-foreground">{t('HUB_STATUS_RETRY_CONFIRM_PROMPT')}</p>
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    type="button"
-                    onClick={handleRestartHub}
-                    className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-                  >
-                    {t('HUB_STATUS_RETRY_CONFIRM')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmRetry(false)}
-                    className="inline-flex items-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
-                  >
-                    {t('HUB_STATUS_RETRY_CANCEL')}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmRetry(true)}
-                className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-              >
-                {t('HUB_STATUS_RETRY_HUB')}
-              </button>
-            )}
-            <div className="flex gap-4 mt-6">
-              <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
-                {t('HUB_STATUS_VIEW_LOGS')}
-              </button>
-              <button type="button" onClick={handleOpenLogsDir} className="text-sm text-muted-foreground underline hover:text-foreground">
-                {t('HUB_STATUS_OPEN_LOGS_FOLDER')}
-              </button>
-            </div>
-          </SetupCard>
-        )}
-
-        {status !== 'Starting' && status !== 'DockerNotAvailable' && !errorMessage && (
-          <button type="button" onClick={() => checkStatus()} className="text-sm text-muted-foreground underline hover:text-foreground">
-            {t('COMMON_CHECK_AGAIN')}
-          </button>
+        {status === 'DockerNotAvailable' ? (
+          <DockerInstallGuide />
+        ) : (
+          <StartupScreen
+            status={screenStatus}
+            errorMessage={isErrorStatus(status) ? status.Error.message : null}
+            elapsedSeconds={startupElapsed}
+            stuckAfterSeconds={stuckAfterSeconds}
+            failedAfterSeconds={failedAfterSeconds}
+            onStart={() => void handleStartHub()}
+            onRestart={() => void handleRestartHub()}
+            onKeepWaiting={handleKeepWaiting}
+            onHoldStuckDeadline={holdStuckDeadline}
+            onViewLogs={() => void handleViewLogs()}
+          />
         )}
 
         {showLogs && logs !== null && (

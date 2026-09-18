@@ -52,6 +52,8 @@ describe('AppRehydrationService.executeRehydrate', () => {
 
   let lifecycle: MockProxy<AppLifecycleService>;
   let users: MockProxy<UserRepository>;
+  let cloudflare: MockProxy<CloudflareClientService>;
+  let marketplace: MockProxy<MarketplaceService>;
   let service: AppRehydrationService;
 
   beforeEach(async () => {
@@ -71,9 +73,9 @@ describe('AppRehydrationService.executeRehydrate', () => {
     users = mock<UserRepository>();
     const registration = mock<RegistrationService>();
     registration.getLiveRegistrationStatus.mockResolvedValue({ phase: 'publicly_ready' } as never);
-    const cloudflare = mock<CloudflareClientService>();
+    cloudflare = mock<CloudflareClientService>();
     cloudflare.getDeviceApplications.mockResolvedValue([{ name: 'immich' }] as never);
-    const marketplace = mock<MarketplaceService>();
+    marketplace = mock<MarketplaceService>();
     marketplace.getAvailableAppUrns.mockResolvedValue([appUrn] as never);
     const appStores = mock<AppStoreService>();
     appStores.getEnabledAppStores.mockResolvedValue([{ slug: 'ci-marketplace' }] as never);
@@ -187,5 +189,72 @@ describe('AppRehydrationService.executeRehydrate', () => {
     expect(lifecycle.installApp).not.toHaveBeenCalled();
     expect(lifecycle.startApp).not.toHaveBeenCalled();
     expect(result).toMatchObject({ incomplete: false, skipped: [{ name: 'Immich', reason: expect.stringContaining('in progress') }] });
+  });
+  /*
+   * After a pairing the Hub restores on its own, and the restore page asks too. Both used to plan from
+   * rows the other had not written, and queue the same installs twice.
+   */
+  it('joins a run already under way instead of queueing its installs again', async () => {
+    let finishInstall: () => void = () => {};
+    lifecycle.installApp.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishInstall = () => resolve({ requestId: 'r' } as never);
+        }),
+    );
+
+    const byHub = service.executeRehydrate({ actor: { kind: 'system', reason: 'restore-after-pairing' } });
+    await vi.waitFor(() => expect(lifecycle.installApp).toHaveBeenCalled());
+    const byPage = service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+    finishInstall();
+
+    const [hubResult, pageResult] = await Promise.all([byHub, byPage]);
+
+    expect(lifecycle.installApp).toHaveBeenCalledTimes(1);
+    expect(pageResult).toBe(hubResult);
+    // The person on the page still finishes the restore flow.
+    expect(users.updateUser).toHaveBeenCalledWith(7, { hasCompletedOnboarding: true });
+  });
+
+  it('finishes the restore flow for a person who arrives after the Hub restored on its own', async () => {
+    lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+    await service.executeRehydrate({ actor: { kind: 'system', reason: 'restore-after-pairing' } });
+    expect(users.updateUser).not.toHaveBeenCalled();
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    expect(result.alreadyCompleted).toBe(true);
+    expect(lifecycle.installApp).toHaveBeenCalledTimes(1);
+    expect(users.updateUser).toHaveBeenCalledWith(7, { hasCompletedOnboarding: true });
+    expect(recovery.clearRestoreIntent).toHaveBeenCalled();
+  });
+
+  it('reports a finished run even when the Portal cannot be asked for its plan', async () => {
+    lifecycle.installApp.mockResolvedValue({ requestId: 'r' } as never);
+    await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+    cloudflare.getDeviceApplications.mockRejectedValue(new Error('socket hang up'));
+
+    const result = await service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR });
+
+    expect(result).toMatchObject({ success: true, alreadyCompleted: true, plan: { items: [], portalAppCount: 0 } });
+  });
+
+  // An unanswered read and an empty catalog both used to finish with nothing installed; the next sync then released every app.
+  it('does not record a run when the Portal cannot be asked for the apps', async () => {
+    cloudflare.getDeviceApplications.mockRejectedValue(new Error("Could not read this device's apps from CI Portal: 503"));
+
+    await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow('503');
+
+    expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
+    expect(lifecycle.installApp).not.toHaveBeenCalled();
+  });
+
+  it('does not record a run when the app catalog has not been downloaded', async () => {
+    marketplace.getAvailableAppUrns.mockResolvedValue([]);
+
+    await expect(service.executeRehydrate({ source: 'restore', operatorUserId: 7, actor: OPERATOR })).rejects.toThrow('app catalog');
+
+    expect(recovery.writeRehydrationState).not.toHaveBeenCalled();
+    expect(lifecycle.installApp).not.toHaveBeenCalled();
   });
 });
