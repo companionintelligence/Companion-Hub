@@ -66,20 +66,28 @@ fn legacy_tunnel_token_path_for(data_dir: &Path) -> PathBuf {
     legacy_tunnel_dir_for(data_dir).join("token")
 }
 
-/// True when a non-empty tunnel token exists at the canonical sibling path or the legacy nested path.
-pub(crate) fn tunnel_token_present_for_data_dir(data_dir: &Path) -> bool {
-    for path in [
-        tunnel_token_path_for(data_dir),
-        legacy_tunnel_token_path_for(data_dir),
-    ] {
-        if std::fs::metadata(&path)
-            .map(|m| m.is_file() && m.len() > 0)
+/// Non-secret marker the Hub backend writes into its tunnel dir whenever it holds a
+/// Portal registration, and deletes on every registration reset.
+pub(crate) const TUNNEL_REGISTRATION_MARKER: &str = "registration.json";
+
+/// True when `tunnel_dir` holds a non-empty `token` and a `registration.json` marker.
+fn tunnel_dir_holds_registered_token(tunnel_dir: &Path) -> bool {
+    let token_present = std::fs::metadata(tunnel_dir.join("token"))
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false);
+    token_present
+        && std::fs::metadata(tunnel_dir.join(TUNNEL_REGISTRATION_MARKER))
+            .map(|m| m.is_file())
             .unwrap_or(false)
-        {
-            return true;
-        }
-    }
-    false
+}
+
+/// True when the tunnel token belongs to a registered Hub: one tunnel dir — the
+/// canonical sibling first, then the legacy nested dir — holds both a non-empty
+/// `token` and `registration.json`. A token without the marker is a leftover from an
+/// uninstalled or reset Hub and must not start `cloudflared`.
+pub(crate) fn registered_tunnel_present_for_data_dir(data_dir: &Path) -> bool {
+    tunnel_dir_holds_registered_token(&tunnel_dir_for(data_dir))
+        || tunnel_dir_holds_registered_token(&legacy_tunnel_dir_for(data_dir))
 }
 
 const TUNNEL_USER_CLEARED_MARKER: &str = ".user-cleared-token";

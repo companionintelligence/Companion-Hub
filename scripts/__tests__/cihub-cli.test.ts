@@ -42,7 +42,15 @@ import {
   stripAnsi,
   upsertEnvVar,
 } from '../cihub-cli';
-import { setTailscalePersistedStateProbeForTests, tailscaledStateLooksLoggedIn } from '../lib/cli-compose-env';
+import {
+  hasCloudflareTunnelToken,
+  hasRegisteredCloudflareTunnel,
+  hasRegisteredCloudflareTunnelAtDataDir,
+  hostPathFromDockerPath,
+  setTailscalePersistedStateProbeForTests,
+  tailscaledStateLooksLoggedIn,
+  TUNNEL_REGISTRATION_MARKER,
+} from '../lib/cli-compose-env';
 import { parsePromptCeilingArg } from '../lib/cli-pool';
 
 /**
@@ -588,32 +596,161 @@ describe('mergeComposeProfilesFromEnvFile', () => {
     upsertEnvVar(TMP, 'COMPOSE_PROFILES', 'private-vpn');
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
   });
+});
 
-  it('adds cloudflare profile when tunnel/token exists beside ROOT_FOLDER_HOST (sibling)', () => {
-    const root = join(process.cwd(), '.internal.__vitest_tunnel__');
-    const tokenDir = join(root, '..', 'tunnel');
-    mkdirSync(tokenDir, { recursive: true });
-    writeFileSync(join(tokenDir, 'token'), 'test-tunnel-token\n', 'utf8');
-    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', root);
+// --- compose profiles / cloudflare follows registration -----------------------------------------
+
+/** A Hub data dir inside its own temp folder, so the sibling `../tunnel` never lands in the checkout. */
+function makeTunnelFixture() {
+  const base = mkdtempSync(join(tmpdir(), 'cihub-tunnel-profile-'));
+  const root = join(base, 'hub');
+  mkdirSync(root, { recursive: true });
+  const siblingDir = join(base, 'tunnel');
+  const legacyDir = join(root, 'tunnel');
+  const write = (dir: string, name: string, contents: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, name), contents, 'utf8');
+  };
+  return {
+    base,
+    root,
+    siblingDir,
+    legacyDir,
+    writeToken: (dir: string, contents = 'tunnel-token\n') => write(dir, 'token', contents),
+    writeMarker: (dir: string) => write(dir, TUNNEL_REGISTRATION_MARKER, '{"tunnelId":"tunnel-1","writtenAt":"2026-09-17T00:00:00.000Z"}'),
+    cleanup: () => rmSync(base, { recursive: true, force: true }),
+  };
+}
+
+describe('cloudflare compose profile', () => {
+  const TMP = '.env.__vitest_tunnel_profile__';
+  const abs = join(process.cwd(), TMP);
+  let fixture: ReturnType<typeof makeTunnelFixture>;
+  let shellRootFolderHost: string | undefined;
+
+  beforeEach(() => {
+    setTailscalePersistedStateProbeForTests(() => false);
+    fixture = makeTunnelFixture();
+    // A shell ROOT_FOLDER_HOST outranks the env file and would point these checks at a real install.
+    shellRootFolderHost = process.env.ROOT_FOLDER_HOST;
+    delete process.env.ROOT_FOLDER_HOST;
+  });
+
+  afterEach(() => {
+    setTailscalePersistedStateProbeForTests(null);
+    if (existsSync(abs)) rmSync(abs);
+    delete process.env.COMPOSE_PROFILES;
+    if (shellRootFolderHost === undefined) delete process.env.ROOT_FOLDER_HOST;
+    else process.env.ROOT_FOLDER_HOST = shellRootFolderHost;
+    fixture.cleanup();
+  });
+
+  const profilesFor = () => mergeComposeProfilesFromEnvFile(TMP).split(',');
+
+  it('stays off for a token without the registration marker (leftover from an uninstalled or reset Hub)', () => {
+    fixture.writeToken(fixture.siblingDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    expect(profilesFor()).not.toContain('cloudflare');
+    expect(hasRegisteredCloudflareTunnel(TMP)).toBe(false);
+    expect(hasCloudflareTunnelToken(TMP)).toBe(true);
+  });
+
+  it('stays off for the registration marker without a token', () => {
+    fixture.writeMarker(fixture.siblingDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    expect(profilesFor()).not.toContain('cloudflare');
+  });
+
+  it('stays off for an empty token beside the registration marker', () => {
+    fixture.writeToken(fixture.siblingDir, '');
+    fixture.writeMarker(fixture.siblingDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    expect(profilesFor()).not.toContain('cloudflare');
+  });
+
+  it('turns on for a token and the registration marker beside ROOT_FOLDER_HOST (sibling)', () => {
+    fixture.writeToken(fixture.siblingDir);
+    fixture.writeMarker(fixture.siblingDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    expect(profilesFor()).toContain('cloudflare');
+    expect(hasRegisteredCloudflareTunnelAtDataDir(fixture.root)).toBe(true);
+  });
+
+  it('turns on for a token and the registration marker in the legacy nested ROOT_FOLDER_HOST/tunnel', () => {
+    fixture.writeToken(fixture.legacyDir);
+    fixture.writeMarker(fixture.legacyDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    expect(profilesFor()).toContain('cloudflare');
+  });
+
+  it('stays off for a legacy nested token without the marker', () => {
+    fixture.writeToken(fixture.legacyDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    expect(profilesFor()).not.toContain('cloudflare');
+  });
+
+  it('needs the token and the marker in the same tunnel dir', () => {
+    fixture.writeToken(fixture.siblingDir);
+    fixture.writeMarker(fixture.legacyDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    expect(profilesFor()).not.toContain('cloudflare');
+
+    const reversed = makeTunnelFixture();
     try {
-      expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('cloudflare');
+      reversed.writeToken(reversed.legacyDir);
+      reversed.writeMarker(reversed.siblingDir);
+      expect(hasRegisteredCloudflareTunnelAtDataDir(reversed.root)).toBe(false);
     } finally {
-      rmSync(join(root, '..', 'tunnel'), { recursive: true, force: true });
-      rmSync(root, { recursive: true, force: true });
+      reversed.cleanup();
     }
   });
 
-  it('adds cloudflare profile when a legacy nested ROOT_FOLDER_HOST/tunnel/token exists', () => {
-    const root = join(process.cwd(), '.internal.__vitest_tunnel_legacy__');
-    const tokenDir = join(root, 'tunnel');
-    mkdirSync(tokenDir, { recursive: true });
-    writeFileSync(join(tokenDir, 'token'), 'legacy-tunnel-token\n', 'utf8');
-    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', root);
-    try {
-      expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('cloudflare');
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+  it('drops a cloudflare profile the env file or shell still names once the Hub is not registered', () => {
+    fixture.writeToken(fixture.siblingDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    upsertEnvVar(TMP, 'COMPOSE_PROFILES', 'gpu,cloudflare');
+    process.env.COMPOSE_PROFILES = 'cloudflare';
+    expect(profilesFor()).toEqual(['gpu']);
+  });
+
+  it('applies the same rule before an env file exists', () => {
+    fixture.writeToken(fixture.siblingDir);
+    process.env.ROOT_FOLDER_HOST = fixture.root;
+    process.env.COMPOSE_PROFILES = 'cloudflare';
+    expect(profilesFor()).not.toContain('cloudflare');
+
+    fixture.writeMarker(fixture.siblingDir);
+    expect(profilesFor()).toContain('cloudflare');
+  });
+
+  it('passes an empty COMPOSE_PROFILES so Compose cannot fall back to the env file value', () => {
+    fixture.writeToken(fixture.siblingDir);
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', fixture.root);
+    upsertEnvVar(TMP, 'COMPOSE_PROFILES', 'cloudflare');
+    const overrides = buildEnvOverrides(TMP);
+    expect(overrides).toHaveProperty('COMPOSE_PROFILES', '');
+  });
+});
+
+/**
+ * On Windows the desktop writes `ROOT_FOLDER_HOST` in Docker's form. Read as-is, Node resolves it
+ * against the current drive, the tunnel files are never found, and the CLI drops the `cloudflare`
+ * profile the desktop app kept for a registered Hub.
+ */
+describe('hostPathFromDockerPath', () => {
+  it('turns the Docker Desktop and WSL2 engine forms into the native Windows path', () => {
+    const native = 'C:\\Users\\hub\\AppData\\Roaming\\companion-hub';
+    expect(hostPathFromDockerPath('/c/Users/hub/AppData/Roaming/companion-hub', 'win32')).toBe(native);
+    expect(hostPathFromDockerPath('/mnt/c/Users/hub/AppData/Roaming/companion-hub', 'win32')).toBe(native);
+    expect(hostPathFromDockerPath('/D/hub', 'win32')).toBe('D:\\hub');
+    expect(hostPathFromDockerPath('/c', 'win32')).toBe('C:\\');
+  });
+
+  it('leaves native Windows paths and every non-Windows path alone', () => {
+    expect(hostPathFromDockerPath('C:\\Users\\hub\\companion-hub', 'win32')).toBe('C:\\Users\\hub\\companion-hub');
+    expect(hostPathFromDockerPath('/var/lib/companion-hub', 'win32')).toBe('/var/lib/companion-hub');
+    expect(hostPathFromDockerPath('/c/Users/hub/companion-hub', 'linux')).toBe('/c/Users/hub/companion-hub');
+    expect(hostPathFromDockerPath('/mnt/c/Users/hub/companion-hub', 'darwin')).toBe('/mnt/c/Users/hub/companion-hub');
   });
 });
 
@@ -637,7 +774,13 @@ describe('buildEnvOverrides', () => {
   const TMP = '.env.__vitest_overrides__';
   const abs = join(process.cwd(), TMP);
 
+  // The profile merge otherwise runs `docker run` against the machine's real Tailscale state volume.
+  beforeEach(() => {
+    setTailscalePersistedStateProbeForTests(() => false);
+  });
+
   afterEach(() => {
+    setTailscalePersistedStateProbeForTests(null);
     if (existsSync(abs)) rmSync(abs);
     delete process.env.CI_HUB_CONTAINER_UID;
     delete process.env.CI_HUB_CONTAINER_GID;
@@ -912,6 +1055,10 @@ describe('api-key scope parsing', () => {
     expect(scopes).toEqual(['mcp', 'admin']);
     expect(invalid).toEqual(['admin']);
     expect(managedOnly).toEqual([]);
+  });
+
+  it('accepts qa:read as an operator scope rather than reporting it unknown', () => {
+    expect(parseApiKeyScopes('qa:read')).toEqual({ scopes: ['qa:read'], invalid: [], managedOnly: [] });
   });
 
   it('dedupes and orders like ApiKeyService.normalizeScopes', () => {

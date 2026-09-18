@@ -683,6 +683,53 @@ describe('RegistrationService', () => {
       expect(result.message).toBe('Portal returned incomplete registration data.');
     });
 
+    it('passes the Portal refusal code on with its message', async () => {
+      // The registration page picks its guidance by this code: a refused re-pair
+      // opens "Reconnect this Hub" instead of showing the Portal's raw text.
+      mockedAxios.post.mockResolvedValue({
+        status: 403,
+        statusText: 'Forbidden',
+        data: {
+          error: 'That device is already paired. Send its current device key to re-pair it, or ask an owner or admin to re-register it first.',
+          code: 'DEVICE_PROOF_REQUIRED',
+        },
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result).toEqual({
+        success: false,
+        message: 'That device is already paired. Send its current device key to re-pair it, or ask an owner or admin to re-register it first.',
+        code: 'DEVICE_PROOF_REQUIRED',
+      });
+    });
+
+    it('passes the code on from a 200 answer that reports failure', async () => {
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: { success: false, error: 'This code was made for another device.', code: 'PAIRING_CODE_WRONG_DEVICE' },
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result).toEqual({ success: false, message: 'This code was made for another device.', code: 'PAIRING_CODE_WRONG_DEVICE' });
+    });
+
+    it('reports no code when the refusal carries none or a non-string one', async () => {
+      // Older Portals and proxies in front of the Portal answer without a code; the page falls back to the message.
+      mockedAxios.post.mockResolvedValueOnce({ status: 409, data: { error: 'Already registered elsewhere' } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 409, data: { error: 'Already registered elsewhere', code: 42 } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 502, data: '<html>Bad gateway</html>' } as any);
+
+      const withoutCode = await service.pairDevice('ABC123');
+      const numericCode = await service.pairDevice('ABC123');
+      const htmlBody = await service.pairDevice('ABC123');
+
+      expect(withoutCode).not.toHaveProperty('code');
+      expect(numericCode).not.toHaveProperty('code');
+      expect(htmlBody).toEqual({ success: false, message: 'Pairing failed: HTTP 502' });
+    });
+
     it('returns error when pairing code is invalid (Portal returns error)', async () => {
       mockedAxios.post.mockResolvedValue({
         status: 400,
@@ -763,6 +810,61 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toBe('Portal returned incomplete registration data.');
+    });
+  });
+
+  describe('probePortalDeviceActive', () => {
+    const probe = () => (service as any).probePortalDeviceActive('test-device', 'http://cloud.api/') as Promise<boolean | null>;
+
+    beforeEach(() => {
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: 'stored-device-key' } as any);
+    });
+
+    it('asks nothing when the Hub holds no device key', async () => {
+      // A keyless call can only be refused, and the Portal offers no keyless "does this device exist" lookup.
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: '' } as any);
+
+      await expect(probe()).resolves.toBeNull();
+
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api' } as any);
+
+      await expect(probe()).resolves.toBeNull();
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('asks device WhoIs with the key, never check-in, so probing does not mark the device as seen', async () => {
+      mockedAxios.post.mockResolvedValue({ status: 403, data: { error: 'Not a member', code: 'GRANT_DENIED' } } as any);
+
+      await expect(probe()).resolves.toBe(true);
+
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      const [url, body, options] = mockedAxios.post.mock.calls[0] as [string, unknown, { headers: Record<string, string> }];
+      expect(url).toBe('http://cloud.api/api/whois');
+      expect(url).not.toContain('check-in');
+      expect(body).toEqual({ subject: 'ci-hub-device-key-probe', appIds: [], surface: 'hub' });
+      expect(options.headers).toMatchObject({ 'x-device-key': 'stored-device-key' });
+    });
+
+    it('counts every answer that got past device authentication as an active device', async () => {
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { organizations: [] } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 409, data: { error: 'Name the organization', code: 'ORGANIZATION_REQUIRED' } } as any);
+
+      await expect(probe()).resolves.toBe(true);
+      await expect(probe()).resolves.toBe(true);
+    });
+
+    it('does not know when the key is refused, the refusal is not from WhoIs, or the Portal is unreachable', async () => {
+      mockedAxios.post.mockResolvedValueOnce({ status: 401, data: { error: 'Invalid Device Key', code: 'UNAUTHORIZED' } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 403, data: '<html>Blocked</html>' } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: '<html>Sign in to this network</html>' } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 200, data: { success: true } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { success: false } } as any);
+      mockedAxios.post.mockResolvedValueOnce({ status: 503, data: { error: 'WhoIs unavailable', code: 'UNAVAILABLE' } } as any);
+      mockedAxios.post.mockRejectedValueOnce(Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true }));
+
+      for (let i = 0; i < 7; i++) {
+        await expect(probe()).resolves.toBeNull();
+      }
     });
   });
 
@@ -1182,17 +1284,6 @@ describe('RegistrationService', () => {
       expect(service.getRegistrationStatus().phase).toBe('locally_ready');
     });
 
-    it('leaves the drift-detection probe as a bare device_id, so it can never blank a reported field', async () => {
-      // `probePortalDeviceActive` hits the same endpoint while the Hub is locally unregistered.
-      // Portal treats an absent field as "unchanged"; if this probe ever grew status fields it
-      // would overwrite a real report with whatever an unregistered Hub happens to know.
-      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
-
-      await (service as any).probePortalDeviceActive('test-device', 'http://cloud.api');
-
-      expect(mockedAxios.post.mock.calls[0]?.[1]).toEqual({ device_id: 'test-device' });
-    });
-
     it('transitions to degraded when tunnel token is missing', async () => {
       // Manually set phase to locally_ready
       await service.setPhase('paired');
@@ -1416,9 +1507,13 @@ describe('RegistrationService', () => {
       expect(service.getRegistrationStatus().phase).toBe('degraded');
     });
 
-    it('treats only the coded 400 as an inactive device in the drift probe', async () => {
+    // The drift probe used to ask check-in, where a coded 400 meant an inactive
+    // device. It now asks WhoIs, which has no such answer, so neither 400 is
+    // conclusive. Only `true` ever raised a drift signal, so nothing regressed.
+    // Check-in itself still honours the coded 400 — see the sibling cases above.
+    it('treats no 400 as conclusive in the drift probe, coded or not', async () => {
       mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { code: 'DEVICE_NOT_ACTIVE' } } as any);
-      await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBe(false);
+      await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBeNull();
 
       mockedAxios.post.mockResolvedValueOnce({ status: 400, data: { success: false } } as any);
       await expect((service as any).probePortalDeviceActive('test-device', 'http://cloud.api')).resolves.toBeNull();

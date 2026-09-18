@@ -91,6 +91,7 @@ const TEST_ACTOR: LifecycleActor = { kind: 'exempt', principal: 'cli' };
 
 describe('App lifecycle', () => {
   let appLifecycleService: AppLifecycleService;
+  let exposureSyncService: ExposureSyncService;
   let marketplaceService: MarketplaceService;
   let appsRepository: AppsRepository;
   let appFilesManager: AppFilesManager;
@@ -345,6 +346,7 @@ describe('App lifecycle', () => {
     }).compile();
 
     appLifecycleService = moduleRef.get(AppLifecycleService);
+    exposureSyncService = moduleRef.get(ExposureSyncService);
     databaseService = moduleRef.get(DatabaseService);
     marketplaceService = moduleRef.get(MarketplaceService);
     appsRepository = moduleRef.get(AppsRepository);
@@ -661,12 +663,35 @@ describe('App lifecycle', () => {
       return new EnvUtils().envStringToMap(env.content ?? '');
     };
 
+    /*
+     * ⚠ `running` IS NOT THE END OF AN INSTALL, AND WAITING ONLY FOR IT MAKES THE
+     * CASES BELOW FLAKY.
+     *
+     * `installApp` returns as soon as the command is published; its completion
+     * handler writes `running` and only THEN awaits its own exposure sync. So the
+     * status this used to wait for appears while a custom-domain reconcile is still
+     * running, and that reconcile clears an intent it reads as held elsewhere. A
+     * test that set up a second app's intent right after this returned was racing
+     * it — `counts re-recording a binding another app is waiting for as a
+     * custom-domain change` lost that race in CI (and on unrelated branches),
+     * because the late pass wiped the intent before the assertion read it.
+     *
+     * So wait for that sync to both START (it has reached Companion Portal, which
+     * every pass in this describe does) and FINISH before handing the app back.
+     * Counting the Portal call closes the window where the status write has
+     * committed but `cloudflareSyncDepth` has not been incremented yet.
+     */
     const installExposed = async (id: string) => {
       const appInfo = await createAppInStore('test', { id });
+      const syncsBefore = cloudflareClientService.syncState.mock.calls.length;
 
       await appLifecycleService.installApp({ actor: TEST_ACTOR, appUrn: appInfo.urn, form: exposedForm });
       await waitFor(async () => {
         expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+      await waitFor(() => {
+        expect(cloudflareClientService.syncState.mock.calls.length).toBeGreaterThan(syncsBefore);
+        expect(exposureSyncService.isCloudflareSyncInFlight()).toBe(false);
       });
 
       return appInfo;
