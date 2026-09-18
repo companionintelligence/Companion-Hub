@@ -36,6 +36,34 @@ export const POOL_PEER_HEADER = 'X-Hub-Pool-Peer';
 export const POOL_TIMESTAMP_HEADER = 'X-Hub-Pool-Timestamp';
 export const POOL_NONCE_HEADER = 'X-Hub-Pool-Nonce';
 export const POOL_SIGNATURE_HEADER = 'X-Hub-Pool-Signature';
+/**
+ * The recipient UUID the sender has pinned, in the clear, beside the signature that already covers it.
+ *
+ * It exists so the receiver can say "that is not me" out loud. A signed request carries the
+ * recipient only inside the signature, and a node whose database was recreated has neither the
+ * sender's key nor its own old UUID. It can only answer 401, and a 401 looks the same as clock skew
+ * or a revoked pairing. That happened on beta-max on 2026-09-16: a compose project-name fix created a
+ * fresh `ci_hub_pgdata`, so beta-max got a new UUID and key. Every peer kept probing the old identity
+ * and logged `capabilities probe ... failed: 401` for 28 hours, with nothing that said "re-pair".
+ *
+ * Authenticates nothing and changes no trust decision. The receiver compares it with its own UUID and
+ * stops there. See {@link POOL_REFUSAL_HEADER}.
+ */
+export const POOL_RECIPIENT_HEADER = 'X-Hub-Pool-Recipient';
+/**
+ * Response header on a 401 that says why, for the one refusal that is safe to name.
+ *
+ * `PoolPeerGuard` answers every other refusal with the same body, because naming the failed check is
+ * an oracle. Only {@link POOL_REFUSAL_IDENTITY_MISMATCH} is named. It says one thing: "the UUID you
+ * addressed is not mine". Only a caller that already knows a UUID this node once held can learn
+ * anything from it, and that caller is a former peer. The node's current UUID is never disclosed.
+ *
+ * A header rather than a body field, because `MainExceptionFilter` rebuilds every error body and would
+ * drop an extra field.
+ */
+export const POOL_REFUSAL_HEADER = 'X-Hub-Pool-Refusal';
+/** {@link POOL_REFUSAL_HEADER} value: the sender addressed a pool identity this node does not hold. */
+export const POOL_REFUSAL_IDENTITY_MISMATCH = 'identity-mismatch';
 
 /** Versioned so a future algorithm change is a parse, not a guess. */
 export const POOL_SIGNATURE_PREFIX = 'v1.ed25519.';
@@ -188,7 +216,13 @@ export function buildPoolMessage(parts: PoolMessageParts): string {
 
 export type SignedPoolHeaders = Record<string, string>;
 
-/** Produce the five headers a signed peer request carries. Never emits an `Authorization` header — that is the bearer path. */
+/**
+ * Produce the headers a signed peer request carries: the five that the signature covers, plus
+ * {@link POOL_RECIPIENT_HEADER}. Never emits an `Authorization` header, which is the bearer path.
+ *
+ * A receiver built before the recipient header ignores it, and a receiver built after it skips the
+ * check when the header is missing. So a mixed-version fleet verifies exactly as it did before.
+ */
 export function buildSignedPoolHeaders(
   privateKey: KeyObject,
   parts: Omit<PoolMessageParts, 'timestampMs' | 'nonce'>,
@@ -203,6 +237,7 @@ export function buildSignedPoolHeaders(
     [POOL_TIMESTAMP_HEADER]: String(now),
     [POOL_NONCE_HEADER]: nonce,
     [POOL_SIGNATURE_HEADER]: `${POOL_SIGNATURE_PREFIX}${signature}`,
+    [POOL_RECIPIENT_HEADER]: parts.recipientNodeUuid,
   };
 }
 

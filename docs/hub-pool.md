@@ -473,6 +473,47 @@ be fatal, and it is not:
 - The reason appears as `localNode.identity.identityError` on `/pool/status`, exactly the way a down
   inference backend already appears as `capabilitiesError`.
 
+### A peer whose identity changed
+
+A Hub whose database is recreated comes back with a new UUID and key under the same MagicDNS name. On
+2026-09-16 a compose project-name fix created a fresh `ci_hub_pgdata` volume on beta-max. Every peer
+still had the old identity pinned. Their signed probes addressed a node that no longer existed, so
+beta-max answered each one with a 401. The peers logged `capabilities probe ... failed: 401` for 28
+hours, and nothing said the pairing had to be redone.
+
+A Hub now tells that case apart from the others:
+
+- A signed request carries `X-Hub-Pool-Recipient`, the UUID the sender has pinned for the receiver.
+  The signature already covers that value, and the header only puts it in the clear.
+- When the header names a UUID the receiver does not hold, the guard answers 401 with
+  `X-Hub-Pool-Refusal: identity-mismatch`. This is the one refusal the guard names. It tells a caller
+  only that a UUID it already knew is no longer this node's. The current UUID is never sent.
+- The prober classifies each failed health probe as `unreachable` (no answer, a 5xx, or a 403),
+  `unauthorized` (a bare 401), or `identity_changed` (a 401 with the refusal header). The verdict
+  appears as `probeFailure` on each peer in `GET /pool/status`, with an `action` that names the
+  commands to run. `cihub pool status` prints it under **Peers refusing this Hub**, and
+  `cihub pool doctor` fails check F1.
+- `unreachable` keeps the normal cadence, because it clears on its own. The two refusal kinds back
+  off from two polls to at most 15 minutes. `identity_changed` also leaves routing on the first
+  strike instead of the third.
+- This node never trusts the new key by itself. A far end that says its key changed is exactly what an
+  impostor at that name would say.
+
+If `cihub pool status` shows **identity changed** for a peer, re-pair in this order:
+
+1. On this Hub, run `cihub pool unpair <peer name>`. The stale row has to go first, because
+   `pair` answers 409 while it exists, and a PIN request from the far side is ignored.
+2. On the peer, run `cihub pool pairing-pin`.
+3. On this Hub, run `cihub pool pair <peer name> --pin <digits>`.
+4. On the peer, compare the key fingerprint with this Hub's `cihub pool status`, then run
+   `cihub pool approve <this Hub's name>`.
+
+If it shows **credentials refused** instead, the far end runs a build without the refusal header or
+refused for another reason. Run `cihub pool status` on the peer. If this Hub is not listed there,
+re-pair as above. If it is listed, compare the two clocks: a signed request allows 5 minutes of skew.
+
+The classification is process-local and rebuilt by the next failed probe after a restart.
+
 ### What `/identify` no longer says, and where the name went instead
 
 `GET /api/inference/pool/identify` is unauthenticated and reachable through the Cloudflare tunnel. It
@@ -509,7 +550,7 @@ it"; the PIN-gated exchange answers "and this is who it is".
 4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
 5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
 
-A peer shown **unreachable** needs no operator action: it is skipped while it fails probes and rejoins on the next successful one. Unpairing is for removing a Hub from the pool, not for recovering one.
+A peer shown **unreachable** needs no operator action: it is skipped while it fails probes and rejoins on the next successful one. Unpairing is for removing a Hub from the pool, not for recovering one. The exception is a peer that answers but refuses this Hub, shown as **identity changed** or **credentials refused**. It will not recover by waiting. See [A peer whose identity changed](#a-peer-whose-identity-changed).
 
 To validate a real two-node pool end to end — pairing, routing, load handoff, failover, recovery, the
 kill switch, and the security checks — follow [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md).

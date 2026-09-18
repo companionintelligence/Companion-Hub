@@ -1059,6 +1059,64 @@ describe('RegistrationService', () => {
     });
   });
 
+  describe('pairing under a DEVICE_ID copied from another machine', () => {
+    // beta-red and beta-nas, 2026-09-17: one DEVICE_ID in both env files, and neither host's machine ID. Placeholder value.
+    const COPIED = 'c0ffee00c0ffee00c0ffee00c0ffee00';
+    const foreign = { status: 'foreign' as const, deviceId: COPIED, message: `DEVICE_ID=${COPIED} was not generated on this machine` };
+
+    beforeEach(() => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue(COPIED);
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+    });
+
+    it('refuses a pairing code before Portal can bind the other Hub’s device', async () => {
+      vi.spyOn(service, 'getDeviceIdHostBinding').mockReturnValue(foreign);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result).toEqual({ success: false, message: foreign.message });
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('refuses the manual registration form under the environment’s DEVICE_ID', async () => {
+      vi.spyOn(service, 'getDeviceIdHostBinding').mockReturnValue(foreign);
+
+      const result = await service.initiateRegistration('org-1', 'My Org');
+
+      expect(result).toEqual({ success: false, message: foreign.message });
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('leaves an ID the operator typed into the form to the operator', async () => {
+      vi.spyOn(service, 'getDeviceIdHostBinding').mockReturnValue(foreign);
+      mockedAxios.post.mockResolvedValue({ status: 500, data: {} } as any);
+
+      await service.initiateRegistration('org-1', 'My Org', 'typed-by-the-operator');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/register',
+        expect.objectContaining({ device_id: 'typed-by-the-operator' }),
+        expect.anything(),
+      );
+    });
+
+    it.each([
+      [{ status: 'matches_host' as const, deviceId: COPIED }],
+      [{ status: 'allowed_foreign' as const, deviceId: COPIED }],
+      [{ status: 'not_set' as const }],
+      [{ status: 'not_checkable' as const, deviceId: COPIED, reason: 'no machine id' }],
+    ])('does not refuse when the binding is %o', async (binding) => {
+      vi.spyOn(service, 'getDeviceIdHostBinding').mockReturnValue(binding);
+      mockedAxios.post.mockResolvedValue({ status: 400, data: { error: 'Invalid pairing code' } } as any);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalled();
+    });
+  });
+
   describe('probePortalDeviceActive', () => {
     const probe = () => (service as any).probePortalDeviceActive('test-device', 'http://cloud.api/') as Promise<boolean | null>;
 

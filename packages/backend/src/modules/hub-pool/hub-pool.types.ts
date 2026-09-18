@@ -1,6 +1,7 @@
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { HubPoolDirectionalState, HubPoolDisabledBy, HubPoolPin, HubPoolPreferences, PoolContainerRollup } from '@/common/helpers/hub-pool';
+import type { PoolPeerProbeFailure } from './hub-pool-probe-failure';
 
 /** One backend's live model availability on a node, as reported by `GET /inference/pool/capabilities`. */
 export interface PoolPeerBackendCapability {
@@ -377,6 +378,11 @@ export function isPairingIncomplete(status: string | null | undefined): boolean 
 
 /** A peer row plus what this node currently has in flight to it. Built from {@link toPublicPeer}, so the token columns cannot reach it. */
 export interface PoolStatusPeer extends PublicHubPoolPeer {
+  /**
+   * Why this peer's health probes are failing, and what to do about it, or `null` while they succeed.
+   * Process-local, so it is `null` after a restart until the next probe fails again.
+   */
+  probeFailure?: PoolPeerProbeFailure | null;
   /** Requests this node has forwarded to the peer and not yet finished reading. A live gauge reset by a restart, never a total. */
   inFlightRequests: number;
   /** How this peer authenticates to us today. */
