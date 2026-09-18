@@ -74,6 +74,9 @@ export default defineConfig({
     '**/cross-domain/**',
     '**/platform/**',
     '**/mcp-openclaw-integration.spec.ts',
+    // Writes PNGs into docs/images/screens/, so it never runs as a side effect of a
+    // test run. `pnpm run docs:screens` uses playwright.screens.config.ts.
+    '**/screens/**',
     ...(USE_REAL_PORTAL ? [] : ['**/app-store-lifecycle.spec.ts']),
   ],
   fullyParallel: false,
