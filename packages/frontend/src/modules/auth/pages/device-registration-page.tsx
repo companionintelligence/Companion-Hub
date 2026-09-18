@@ -34,6 +34,7 @@ import {
   RegistrationStateDriftDialog,
 } from '@/modules/auth/components/registration-state-drift-dialog';
 import { useTranslation } from 'react-i18next';
+import { RegistrationMoveDialog } from '@/modules/auth/components/registration-move-dialog';
 
 const DEFAULT_PORTAL_URL = (
   (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim() ||
@@ -70,6 +71,9 @@ function sleep(ms: number) {
 /** The Portal already has a device for this computer, and the Hub sent no key that proves it is that device. */
 const DEVICE_PROOF_REQUIRED = 'DEVICE_PROOF_REQUIRED';
 
+/** This Hub proved itself with its key, but it is in another organization: pairing moves it, so ask first. */
+const DEVICE_MOVE_CONFIRMATION_REQUIRED = 'DEVICE_MOVE_CONFIRMATION_REQUIRED';
+
 /**
  * The message for a refused pairing.
  *
@@ -85,6 +89,8 @@ function pairingRefusalMessage(data: { code?: string; message?: string }, t: (ke
       return t('DEVICE_REGISTRATION_PAIRING_REGISTERED_ELSEWHERE');
     case 'PAIRING_CODE_WRONG_DEVICE':
       return t('DEVICE_REGISTRATION_PAIRING_CODE_WRONG_DEVICE');
+    case DEVICE_MOVE_CONFIRMATION_REQUIRED:
+      return t('DEVICE_REGISTRATION_PAIRING_MOVE_REQUIRED');
     default:
       return typeof data.message === 'string' && data.message ? data.message : t('DEVICE_REGISTRATION_FAILED');
   }
@@ -177,6 +183,8 @@ export default function DeviceRegistrationPage() {
   const [pairingCode, setPairingCode] = useState('');
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
+  /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
+  const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
@@ -475,7 +483,7 @@ export default function DeviceRegistrationPage() {
   }, [deviceId, isLoading, registrationStatus]);
 
   const doPair = useCallback(
-    async (code: string) => {
+    async (code: string, confirmMove = false) => {
       pairingInProgressRef.current = true;
       setIsPairing(true);
       setPairingError(null);
@@ -484,16 +492,22 @@ export default function DeviceRegistrationPage() {
       completionStartedRef.current = false;
 
       try {
-        const { ok, data } = await pairWithCode(code);
+        const { ok, data } = await pairWithCode(code, { confirmMove });
 
         if (ok && data.success) {
+          setMoveConfirmation(null);
           pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
           setPairingCode('');
           setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
           setRedirectStatusKey('DEVICE_REGISTRATION_PROVISIONING_STATUS');
           toast.success(t('DEVICE_REGISTRATION_PAIRING_ACCEPTED'));
           await refreshRegistrationStatus();
+        } else if (data.code === DEVICE_MOVE_CONFIRMATION_REQUIRED && !confirmMove) {
+          // Nothing changed on the Portal, and the code is still good: ask before taking this Hub
+          // from the organization that holds it.
+          setMoveConfirmation({ code, organizationName: data.organizationName ?? null });
         } else {
+          setMoveConfirmation(null);
           const errorMsg = pairingRefusalMessage(data, t);
           setPairingError(errorMsg);
           if (data.code === DEVICE_PROOF_REQUIRED) {
@@ -507,6 +521,7 @@ export default function DeviceRegistrationPage() {
         }
       } catch (error) {
         console.error(error);
+        setMoveConfirmation(null);
         setPairingError(t('DEVICE_REGISTRATION_FAILED_RETRY'));
       } finally {
         pairingInProgressRef.current = false;
@@ -755,6 +770,18 @@ export default function DeviceRegistrationPage() {
 
   return (
     <div className="space-y-6">
+      <RegistrationMoveDialog
+        open={moveConfirmation !== null}
+        organizationName={moveConfirmation?.organizationName ?? null}
+        isPairing={isPairing}
+        onMove={() => {
+          if (moveConfirmation) {
+            void doPair(moveConfirmation.code, true);
+          }
+        }}
+        onCancel={() => setMoveConfirmation(null)}
+      />
+
       <RegistrationStateDriftDialog
         open={driftDialogOpen}
         drift={stateDrift}

@@ -242,7 +242,7 @@ describe('DeviceRegistrationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
-      expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+      expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false });
     });
 
     expect(navigate).not.toHaveBeenCalled();
@@ -271,7 +271,7 @@ describe('DeviceRegistrationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
-      expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+      expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false });
     });
 
     expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
@@ -325,9 +325,47 @@ describe('DeviceRegistrationPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
       await waitFor(() => {
-        expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+        expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false });
       });
     }
+
+    it('asks before moving a Hub another organization holds, and moves it on yes', async () => {
+      await submitRefusedPairing({
+        message: 'This Hub is registered to another organization.',
+        code: 'DEVICE_MOVE_CONFIRMATION_REQUIRED',
+        organizationName: 'Studio',
+      });
+
+      const dialog = await screen.findByTestId('registration-move-dialog');
+
+      expect(within(dialog).getByRole('heading', { name: 'Move this Hub to Studio?' })).toBeInTheDocument();
+      // Asking is not a failure: nothing changed yet.
+      expect(toast.error).not.toHaveBeenCalled();
+
+      pairWithCode.mockResolvedValue({ ok: true, status: 201, data: { success: true, domain: 'example.com', subdomain: 'hub' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Move it here' }));
+
+      await waitFor(() => {
+        expect(pairWithCode).toHaveBeenLastCalledWith('ABC123', { confirmMove: true });
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId('registration-move-dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('moves nothing when the person cancels the move', async () => {
+      await submitRefusedPairing({ message: 'This Hub is registered to another organization.', code: 'DEVICE_MOVE_CONFIRMATION_REQUIRED' });
+
+      const dialog = await screen.findByTestId('registration-move-dialog');
+
+      expect(within(dialog).getByRole('heading', { name: 'Move this Hub to this organization?' })).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('registration-move-dialog')).not.toBeInTheDocument();
+      });
+      expect(pairWithCode).toHaveBeenCalledTimes(1);
+    });
 
     it('opens Reconnect this Hub over a stored choice and recommends Restore when the Portal already has this device', async () => {
       // The earlier choice led to this refusal, so it must not keep the dialog closed.
@@ -521,7 +559,7 @@ describe('DeviceRegistrationPage', () => {
 
       act(() => openPairingLink('ABC123'));
 
-      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123'));
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       await waitFor(() => expect(shell.parkedPairingCode).toBeNull());
       expect(sessionStorage.getItem(STASH_KEY)).toBeNull();
 
@@ -535,7 +573,7 @@ describe('DeviceRegistrationPage', () => {
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('ABC123'));
-      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123'));
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       // Linux and Windows hand the app every link twice.
       act(() => openPairingLink('ABC123'));
 
@@ -554,7 +592,7 @@ describe('DeviceRegistrationPage', () => {
 
       const first = render(<DeviceRegistrationPage />);
 
-      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('DEF456'));
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('DEF456', { confirmMove: false }));
       await waitFor(() => expect(sessionStorage.getItem(STASH_KEY)).toBeNull());
       expect(shell.parkedPairingCode).toBeNull();
 

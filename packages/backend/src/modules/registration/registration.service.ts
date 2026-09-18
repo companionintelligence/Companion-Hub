@@ -161,13 +161,22 @@ export type PairDeviceResult = {
    * Portals and from anything in front of the Portal.
    */
   code?: string;
+  /**
+   * The organization a refused pairing would have joined, when the Portal names
+   * it: with `DEVICE_MOVE_CONFIRMATION_REQUIRED`, the one the page asks the
+   * person to move this Hub into.
+   */
+  organizationName?: string;
   domain?: string;
   subdomain?: string;
 };
 
-function portalRefusalCode(data: unknown): { code?: string } {
-  const code = data && typeof data === 'object' ? (data as { code?: unknown }).code : undefined;
-  return typeof code === 'string' && code ? { code } : {};
+function portalRefusalCode(data: unknown): { code?: string; organizationName?: string } {
+  const body = data && typeof data === 'object' ? (data as { code?: unknown; organization_name?: unknown }) : {};
+  return {
+    ...(typeof body.code === 'string' && body.code ? { code: body.code } : {}),
+    ...(typeof body.organization_name === 'string' && body.organization_name ? { organizationName: body.organization_name } : {}),
+  };
 }
 
 @Injectable()
@@ -1987,7 +1996,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Send the code and device ID to Companion Portal, persist the returned state,
    * and mark the device as registered.
    */
-  public async pairDevice(pairingCode: string, options: { callerAuthenticated?: boolean } = {}): Promise<PairDeviceResult> {
+  public async pairDevice(
+    pairingCode: string,
+    options: {
+      callerAuthenticated?: boolean;
+      /**
+       * The person's yes to `DEVICE_MOVE_CONFIRMATION_REQUIRED`: this Hub is in another organization,
+       * and pairing here moves it, taking it from that organization. The Portal only acts on it with
+       * the device key this request already sends as proof.
+       */
+      confirmMove?: boolean;
+    } = {},
+  ): Promise<PairDeviceResult> {
     const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
@@ -2053,7 +2073,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
        */
       const response = await axios.post(
         pairUrl,
-        { pairing_code: pairingCode, device_id: deviceId, ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}) },
+        {
+          pairing_code: pairingCode,
+          device_id: deviceId,
+          ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}),
+          ...(options.confirmMove ? { confirm_move: true } : {}),
+        },
         {
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
           validateStatus: () => true,

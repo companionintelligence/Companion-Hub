@@ -837,6 +837,33 @@ describe('RegistrationService', () => {
       });
     });
 
+    it('asks the Portal to move the Hub only once the person has confirmed it', async () => {
+      mockedAxios.post.mockResolvedValue({
+        status: 409,
+        data: {
+          error: 'This Hub is registered to another organization.',
+          code: 'DEVICE_MOVE_CONFIRMATION_REQUIRED',
+          organization_name: 'Studio',
+        },
+      } as any);
+
+      // First try: no confirmation sent, and the page is told which organization the move is into.
+      const asked = await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post.mock.calls[0]?.[1]).not.toHaveProperty('confirm_move');
+      expect(asked).toEqual({
+        success: false,
+        message: 'This Hub is registered to another organization.',
+        code: 'DEVICE_MOVE_CONFIRMATION_REQUIRED',
+        organizationName: 'Studio',
+      });
+
+      // After the yes, the same code is sent again with the confirmation.
+      await service.pairDevice('ABC123', { confirmMove: true });
+
+      expect(mockedAxios.post.mock.calls[1]?.[1]).toMatchObject({ pairing_code: 'ABC123', confirm_move: true });
+    });
+
     it('passes the code on from a 200 answer that reports failure', async () => {
       mockedAxios.post.mockResolvedValue({
         status: 200,

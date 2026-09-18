@@ -18,6 +18,8 @@ type PairDeviceResult = {
   message?: string;
   /** The Portal's refusal code, such as `DEVICE_PROOF_REQUIRED`. Older Portals send none. */
   code?: string;
+  /** With `DEVICE_MOVE_CONFIRMATION_REQUIRED`, the organization pairing would move this Hub into. */
+  organizationName?: string;
   domain?: string;
   subdomain?: string;
 };
@@ -39,8 +41,17 @@ export async function probeRegistrationDomain(url: string): Promise<{ ready: boo
   return unwrapSdkOrNull(probeDomain({ query: { url } } as Parameters<typeof probeDomain>[0])) as Promise<{ ready: boolean } | null>;
 }
 
-export async function pairWithCode(pairingCode: string): Promise<{ ok: boolean; status: number; data: PairDeviceResult }> {
-  const result = await sdkResult(pairDevice({ body: { pairing_code: pairingCode } } as Parameters<typeof pairDevice>[0]));
+/**
+ * `confirmMove` is the person's yes to `DEVICE_MOVE_CONFIRMATION_REQUIRED`: move this Hub here from
+ * the organization that holds it now.
+ */
+export async function pairWithCode(
+  pairingCode: string,
+  { confirmMove = false }: { confirmMove?: boolean } = {},
+): Promise<{ ok: boolean; status: number; data: PairDeviceResult }> {
+  const result = await sdkResult(
+    pairDevice({ body: { pairing_code: pairingCode, ...(confirmMove ? { confirm_move: true } : {}) } } as Parameters<typeof pairDevice>[0]),
+  );
   return {
     ok: result.ok,
     status: result.status,
