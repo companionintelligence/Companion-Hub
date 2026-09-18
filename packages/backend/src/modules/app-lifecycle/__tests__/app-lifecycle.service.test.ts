@@ -554,7 +554,7 @@ describe('AppLifecycleService', () => {
       expect(syncedSubdomains).toEqual(['shared-other']);
     });
 
-    it('emits per-app public DNS error events when the entire sync fails', async () => {
+    it('logs a sync the Portal never answered, without a per-app toast', async () => {
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         id: 'org-id',
         tunnelId: 'tunnel-id',
@@ -585,12 +585,9 @@ describe('AppLifecycleService', () => {
       // The failure is logged, not swallowed.
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('did not complete'));
 
-      // Every exposed app still gets a per-app toast event so a full failure is
-      // not silent in the UI.
-      expect(sseService.emit).toHaveBeenCalledWith(
-        'app',
-        expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
-      );
+      // But it says nothing about any app's address, so no app gets a toast that
+      // blames its domain.
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'public_dns_error' }));
     });
 
     it('does not acquire install pipeline mutex for non-install commands', async () => {
@@ -2110,6 +2107,23 @@ describe('AppLifecycleService', () => {
         .filter((data) => data.event === 'public_dns_error' && data.appUrn === appUrn)
         .map((data) => data.errorCode);
 
+    /** Every public DNS toast sent so far, for any app. */
+    const allToasts = () => sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'public_dns_error');
+
+    /** Runs a sync `minutes` after the previous one that got no answer about any app. */
+    const syncUnanswered = async (minutes: number, failure: { errorStatus?: number; errorMessage?: string } = { errorMessage: 'Network Error' }) => {
+      now += minutes * 60_000;
+      cloudflareClientService.syncState.mockResolvedValueOnce({ ok: false, failed: [], failures: [], synced: 0, ...failure });
+      await service.triggerCloudflareSync();
+    };
+
+    /** Runs a sync `minutes` after the previous one, answered by a Portal that names failed apps but gives no reasons. */
+    const syncAnsweredWithoutDetails = async (minutes: number, failed: string[]) => {
+      now += minutes * 60_000;
+      cloudflareClientService.syncState.mockResolvedValueOnce({ ok: true, failed, failures: [], synced: 0 });
+      await service.triggerCloudflareSync();
+    };
+
     it.each(['subdomain_quota_exceeded', 'duplicate_subdomain'])('shows a %s refusal once, however many syncs repeat it', async (reason) => {
       // The Portal gives the same answer on every pass until the user acts, so the
       // five-minute cooldown alone would repeat the toast all day.
@@ -2157,14 +2171,87 @@ describe('AppLifecycleService', () => {
 
     it('keeps a refusal counted as shown while the Portal cannot be reached', async () => {
       await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
-      now += 6 * 60_000;
-      cloudflareClientService.syncState.mockResolvedValueOnce({ ok: false, failed: [], failures: [], synced: 0 });
-      await service.triggerCloudflareSync();
+      await syncUnanswered(6);
       await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
 
-      // The outage gets its own toast, as before. It says nothing new about the
-      // refusal, so the refusal is not shown again after it.
-      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded', undefined]);
+      // The outage says nothing new about the refusal, so it is not shown again after it.
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded']);
+    });
+
+    it.each([
+      'conflict',
+      'zone_unreachable',
+      'invalid_subdomain',
+    ])('shows %s once, and again after the reason changes or the app recovers', async (reason) => {
+      await syncAfter(0, { n8n: reason });
+      await syncAfter(6, { n8n: reason });
+      await syncAfter(6, { n8n: reason });
+      expect(toastsFor(N8N)).toEqual([reason]);
+
+      // Another refusal that stands is news, and so is this one coming back.
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+      await syncAfter(6, { n8n: reason });
+      expect(toastsFor(N8N)).toEqual([reason, 'subdomain_quota_exceeded', reason]);
+
+      // The app publishes, then is refused again.
+      await syncAfter(6);
+      await syncAfter(6, { n8n: reason });
+      expect(toastsFor(N8N)).toEqual([reason, 'subdomain_quota_exceeded', reason, reason]);
+    });
+
+    it.each([
+      ['the Hub is offline', { errorMessage: 'getaddrinfo ENOTFOUND portal.companionintelligence.com' }],
+      ['the request timed out', { errorMessage: 'timeout of 15000ms exceeded' }],
+      // `postJson` throws this for every non-2xx answer, 5xx included.
+      ['the Portal answered with an error status', { errorMessage: 'PORTAL_REQUEST_FAILED' }],
+      ['the Portal answered 503', { errorStatus: 503, errorMessage: 'Portal/Cloudflare control-plane error (503)' }],
+      ['the Portal reported success: false', { errorMessage: 'Portal returned success=false for tunnel state sync' }],
+    ])('raises no public address toast when %s', async (_case, failure) => {
+      await syncUnanswered(0, failure);
+
+      expect(allToasts()).toEqual([]);
+      // The log and Sentry still record it, as before.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('State sync did not complete'));
+      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('State sync did not complete'), 'error', {
+        failedApps: ['n8n', 'excalidraw'],
+      });
+    });
+
+    it('raises none over several unanswered syncs in a row', async () => {
+      await syncUnanswered(0);
+      await syncUnanswered(6);
+      await syncUnanswered(6, { errorMessage: 'PORTAL_REQUEST_FAILED' });
+      await syncUnanswered(60);
+
+      expect(allToasts()).toEqual([]);
+      expect(logger.error).toHaveBeenCalledTimes(4);
+      // Each sync is more than five minutes after the last, so each one is reported.
+      expect(errorReportingService.captureMessage).toHaveBeenCalledTimes(4);
+    });
+
+    it('keeps the generic toast on the cooldown when the Portal answered without per-app details', async () => {
+      // An older Portal names the failed apps but gives no reason. It was reached,
+      // and it did say which app failed.
+      await syncAnsweredWithoutDetails(0, ['n8n']);
+      await syncAnsweredWithoutDetails(1, ['n8n']);
+      await syncAnsweredWithoutDetails(5, ['n8n']);
+
+      expect(toastsFor(N8N)).toEqual([undefined, undefined]);
+    });
+
+    it('behaves normally once the Portal answers again', async () => {
+      await syncUnanswered(0);
+      await syncUnanswered(6);
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded', excalidraw: 'api_error' });
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded']);
+      expect(toastsFor(EXCALIDRAW)).toEqual(['api_error']);
+
+      await syncAfter(1, { n8n: 'subdomain_quota_exceeded', excalidraw: 'api_error' });
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded', excalidraw: 'api_error' });
+
+      // The refusal is shown once, and the passing error on its five-minute cooldown.
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded']);
+      expect(toastsFor(EXCALIDRAW)).toEqual(['api_error', 'api_error']);
     });
 
     it('does not count a refusal as shown until a UI is listening', async () => {
@@ -2195,6 +2282,14 @@ describe('AppLifecycleService', () => {
       expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded']);
       expect(toastsFor(EXCALIDRAW)).toEqual(['duplicate_subdomain']);
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("n8n: the organization's plan includes no more public app addresses"));
+    });
+
+    it.each(['conflict', 'zone_unreachable', 'invalid_subdomain'])('still reports a sync refused for %s to Sentry', async (reason) => {
+      await syncAfter(0, { n8n: reason });
+
+      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('Public DNS records were NOT created'), 'error', {
+        failedApps: ['n8n'],
+      });
     });
 
     it('still reports a sync that mixes a quota refusal with a real DNS failure', async () => {
