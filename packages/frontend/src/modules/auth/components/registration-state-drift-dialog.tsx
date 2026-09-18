@@ -114,10 +114,11 @@ export function RegistrationStateDriftDialog({
 }: RegistrationStateDriftDialogProps) {
   const { t } = useTranslation();
   const recommendRestore = portalHasDevice || drift?.portalDeviceActive === true;
-  // Pairing with another organization's code moves this Hub only when it proves it is the device, with
-  // the key it still holds. `portalDeviceActive` is the Portal accepting that key; after a refused proof
-  // there is no key that works, so a move could only fail.
-  const canMove = drift?.portalDeviceActive === true && !portalHasDevice;
+  // Pairing with another organization's code moves this Hub only when it proves it may, with the device
+  // key and the move key it still holds. `portalDeviceActive` is the Portal accepting that device key,
+  // and a Hub paired before move keys has none. After a refused proof there is no key that works, so a
+  // move could only fail.
+  const canMove = drift?.portalDeviceActive === true && drift.hasMoveKey === true && !portalHasDevice;
   const extraSignals = drift ? secondarySignals(drift) : [];
 
   return (

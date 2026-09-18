@@ -779,6 +779,84 @@ describe('RegistrationService', () => {
       setupSpy.mockRestore();
     });
 
+    it('sends the stored move key with the device key, and keeps the new one a pairing returns', async () => {
+      // The move key is what lets this Hub move itself out of another organization. It rides with the
+      // device key on every pair, because the Portal checks proof before it asks to confirm a move.
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'stored-device-key',
+        ciHubMoveKey: 'stored-move-key',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          organization_name: 'Paired Org',
+          slug: 'paired-org',
+          subdomain: 'hub-paired-org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          api_key: 'key-pair',
+          move_key: 'move-pair',
+          domain: 'companionintelligence.com',
+        },
+      } as any);
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      configService.setDomain.mockResolvedValue(undefined);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(true);
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key', move_key: 'stored-move-key' },
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
+      );
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
+      expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubMoveKey: 'move-pair' });
+
+      setupSpy.mockRestore();
+    });
+
+    it('keeps the stored move key when a Portal older than move keys returns none', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'stored-device-key',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          organization_name: 'Paired Org',
+          slug: 'paired-org',
+          subdomain: 'hub-paired-org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          api_key: 'key-pair',
+          domain: 'companionintelligence.com',
+        },
+      } as any);
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      configService.setDomain.mockResolvedValue(undefined);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post.mock.calls[0]?.[1]).not.toHaveProperty('move_key');
+      expect(configService.setUserSettings).not.toHaveBeenCalledWith(expect.objectContaining({ ciHubMoveKey: expect.anything() }));
+
+      setupSpy.mockRestore();
+    });
+
     it('omits device_key rather than sending an empty one when no credential is stored', async () => {
       // An empty string is not a credential, and sending one would have the
       // Portal look up a device by `''` instead of treating the caller as
@@ -2414,6 +2492,23 @@ describe('RegistrationService', () => {
       expect(after.detected).toBe(true);
       expect(after.hasStaleTunnelToken).toBe(true);
       expect(after.signals.map((signal) => signal.reason)).toContain('stale_tunnel_token');
+    });
+
+    it('says whether this Hub holds a move key, and never what it is', async () => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
+      deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(false);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(null);
+      mockedAxios.post.mockResolvedValue({ status: 401 } as any);
+      const config = configService.getConfig();
+
+      configService.getConfig.mockReturnValue({ ...config, ciHubMoveKey: 'stored-move-key' } as any);
+      const holding = await service.getStateDrift();
+      expect(holding.hasMoveKey).toBe(true);
+      expect(JSON.stringify(holding)).not.toContain('stored-move-key');
+
+      configService.getConfig.mockReturnValue({ ...config, ciHubMoveKey: null } as any);
+      expect((await service.getStateDrift()).hasMoveKey).toBe(false);
     });
   });
 

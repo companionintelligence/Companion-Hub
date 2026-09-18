@@ -103,6 +103,11 @@ function describeSettingsError(error: unknown): string {
  */
 type PersistedSettingsValues = {
   ciHubApiKey: string | null;
+  /**
+   * The move key the Portal returned with `ciHubApiKey` at the last pairing: what lets this Hub move
+   * itself to another organization. Unlike the device key it is never handed to an app.
+   */
+  ciHubMoveKey: string | null;
   ciHubOrganizationId: string | null;
   allowErrorMonitoring?: boolean;
   defaultAppCpuLimit?: string;
@@ -134,6 +139,7 @@ type PersistedSettingsValues = {
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   ciHubApiKey: null,
+  ciHubMoveKey: null,
   ciHubOrganizationId: null,
   allowErrorMonitoring: undefined,
   defaultAppCpuLimit: undefined,
@@ -223,6 +229,7 @@ export class ConfigurationService {
 
     return {
       ciHubApiKey: settings.ciHubApiKey || null,
+      ciHubMoveKey: settings.ciHubMoveKey || null,
       ciHubOrganizationId: settings.ciHubOrganizationId || null,
       allowErrorMonitoring: settings.allowErrorMonitoring,
       defaultAppCpuLimit: settings.defaultAppCpuLimit?.trim() || undefined,
@@ -360,6 +367,7 @@ export class ConfigurationService {
       ciCloudUrl: env.data.CI_CLOUD_URL,
       ciHubOrganizationId: settingsValues.ciHubOrganizationId,
       ciHubApiKey: settingsValues.ciHubApiKey,
+      ciHubMoveKey: settingsValues.ciHubMoveKey,
       architecture: env.data.ARCHITECTURE,
       demoMode: env.data.DEMO_MODE,
       rootFolderHost: env.data.ROOT_FOLDER_HOST,
@@ -409,6 +417,9 @@ export class ConfigurationService {
       // Update in-memory config for runtime changes.
       if (settings.ciHubApiKey) {
         (this.config as Record<string, unknown>).ciHubApiKey = settings.ciHubApiKey;
+      }
+      if (settings.ciHubMoveKey) {
+        (this.config as Record<string, unknown>).ciHubMoveKey = settings.ciHubMoveKey;
       }
       if (settings.ciHubOrganizationId) {
         (this.config as Record<string, unknown>).ciHubOrganizationId = settings.ciHubOrganizationId;

@@ -66,6 +66,17 @@ describe('scrubString', () => {
     expect(scrubString('api_key=sk-live-1234567890')).not.toContain('sk-live-1234567890');
   });
 
+  it('redacts the Portal device and move keys by field name, and leaves prose about them readable', () => {
+    // A pairing request body, as an axios error carries it.
+    const body = scrubString('{"pairing_code":"ABC123","device_key":"3f0c9a1e-device","move_key":"7b2d4e6f-move"}');
+
+    expect(body).not.toContain('3f0c9a1e-device');
+    expect(body).not.toContain('7b2d4e6f-move');
+    expect(body).toContain('ABC123');
+    expect(scrubString('ciHubMoveKey=7b2d4e6f-move')).not.toContain('7b2d4e6f-move');
+    expect(scrubString('Could not refresh the device key held by apps')).toBe('Could not refresh the device key held by apps');
+  });
+
   it('redacts credentials embedded in connection URLs', () => {
     const scrubbed = scrubString('postgres://ci:pgadmin_s3cure@ci-hub-db:5432/hub');
 
@@ -160,6 +171,9 @@ describe('key denylist', () => {
       extra: {
         'x-api-key': 'ci_hub_9f3a7c21be40',
         'X-API-Key': 'ci_hub_9f3a7c21be40',
+        device_key: '3f0c9a1e-device',
+        ciHubMoveKey: '7b2d4e6f-move',
+        move_key: '7b2d4e6f-move',
         signature: 'deadbeef',
         email: 'liam@example.com',
         username: 'liam',

@@ -1303,6 +1303,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         staleAppEnvDeviceIds: [],
         hasStaleTunnelToken: false,
         hasOrphanedDbRegistration: false,
+        hasMoveKey: Boolean(this.config.getConfig().ciHubMoveKey),
       });
     }
 
@@ -1329,6 +1330,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       staleAppEnvDeviceIds,
       hasStaleTunnelToken,
       hasOrphanedDbRegistration,
+      hasMoveKey: Boolean(this.config.getConfig().ciHubMoveKey),
     });
   }
 
@@ -2003,12 +2005,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       /**
        * The person's yes to `DEVICE_MOVE_CONFIRMATION_REQUIRED`: this Hub is in another organization,
        * and pairing here moves it, taking it from that organization. The Portal only acts on it with
-       * the device key this request already sends as proof.
+       * the device key and move key this request already sends as proof.
        */
       confirmMove?: boolean;
     } = {},
   ): Promise<PairDeviceResult> {
-    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey, ciHubMoveKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
       return { success: false, message: 'CI Cloud URL not configured.' };
@@ -2077,6 +2079,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           pairing_code: pairingCode,
           device_id: deviceId,
           ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}),
+          // With the device key, what lets this Hub move itself out of another organization. The
+          // Portal reads it only for that; a Hub paired before move keys has none.
+          ...(ciHubMoveKey ? { move_key: ciHubMoveKey } : {}),
           ...(options.confirmMove ? { confirm_move: true } : {}),
         },
         {
@@ -2111,6 +2116,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnel_id: string;
         tunnel_token: string;
         api_key: string;
+        /** Absent from a Portal older than move keys. */
+        move_key?: string;
         domain: string;
       };
 
@@ -2144,6 +2151,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnelId: data.tunnel_id,
         tunnelToken: data.tunnel_token,
         apiKey: data.api_key,
+        moveKey: data.move_key,
         domain: data.domain,
       });
     } catch (error) {
@@ -2317,6 +2325,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     tunnelId: string;
     tunnelToken: string;
     apiKey?: string;
+    /** Only `/pair` returns one; the redirected callback never carries it. */
+    moveKey?: string;
     domain?: string;
   }): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     try {
@@ -2336,6 +2346,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (data.apiKey) {
         this.logger.info('Saving CI Hub API Key from registration callback');
         await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
+      }
+
+      /*
+       * Kept in settings.json with the device key, and nowhere else: `AppHelpers` hands first-party
+       * Memory the device key, never this, so a key leaked from an app cannot move this Hub.
+       */
+      if (data.moveKey) {
+        await this.config.setUserSettings({ ciHubMoveKey: data.moveKey });
       }
 
       // Persist the organization ID for future Portal disambiguation.

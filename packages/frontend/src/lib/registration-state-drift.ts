@@ -14,6 +14,8 @@ export interface RegistrationStateDrift {
   hardwareDeviceId: string;
   localRegistered: boolean;
   portalDeviceActive: boolean | null;
+  /** Whether this Hub holds the move key its last pairing returned. Absent from an older backend. */
+  hasMoveKey?: boolean;
   staleAppEnvDeviceIds: string[];
   signals: StateDriftSignal[];
   hasStaleTunnelToken: boolean;

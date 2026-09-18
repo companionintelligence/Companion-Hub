@@ -6862,6 +6862,9 @@
               "ciHubApiKey": {
                 "type": "string"
               },
+              "ciHubMoveKey": {
+                "type": "string"
+              },
               "ciHubOrganizationId": {
                 "type": "string"
               },
@@ -7365,6 +7368,9 @@
             "type": "string"
           },
           "ciHubApiKey": {
+            "type": "string"
+          },
+          "ciHubMoveKey": {
             "type": "string"
           },
           "ciHubOrganizationId": {

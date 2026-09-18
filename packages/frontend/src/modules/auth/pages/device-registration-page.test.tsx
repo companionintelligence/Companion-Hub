@@ -132,6 +132,7 @@ const PORTAL_ACCEPTS_KEY_DRIFT = {
   hardwareDeviceId: 'device-123',
   localRegistered: false,
   portalDeviceActive: true,
+  hasMoveKey: true,
   staleAppEnvDeviceIds: [],
   hasStaleTunnelToken: false,
   signals: [{ reason: 'local_unregistered_portal_active' }],
@@ -329,6 +330,16 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+    expect(screen.queryByTestId('drift-move')).not.toBeInTheDocument();
+  });
+
+  it('offers no move to a Hub paired before move keys', async () => {
+    // The Portal accepts its device key, but moving also takes the move key a later pairing hands out.
+    fetchRegistrationStateDrift.mockResolvedValue({ ...PORTAL_ACCEPTS_KEY_DRIFT, hasMoveKey: false });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByTestId('drift-restore')).toBeInTheDocument();
     expect(screen.queryByTestId('drift-move')).not.toBeInTheDocument();
   });
 
