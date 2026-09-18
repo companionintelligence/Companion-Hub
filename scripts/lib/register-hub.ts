@@ -56,6 +56,10 @@ export type DeviceIdResponse = {
 export type PairResponse = {
   success?: boolean;
   message?: string;
+  /** The Portal's refusal code, such as `DEVICE_MOVE_CONFIRMATION_REQUIRED`. */
+  code?: string;
+  /** With `DEVICE_MOVE_CONFIRMATION_REQUIRED`, the organization pairing would move this Hub into. */
+  organizationName?: string;
   domain?: string;
   subdomain?: string;
 };
@@ -173,11 +177,16 @@ export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshRe
  * rejects, a lost tunnel token) only for an authenticated caller, and this is how `cihub register`
  * on the Hub itself is one.
  */
-export async function submitPairingCode(apiBase: string, pairingCode: string, deviceKey?: string): Promise<PairResponse> {
+export async function submitPairingCode(
+  apiBase: string,
+  pairingCode: string,
+  deviceKey?: string,
+  { confirmMove = false }: { confirmMove?: boolean } = {},
+): Promise<PairResponse> {
   const res = await fetch(`${apiBase}/api/registration/pair`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(deviceKey ? { Authorization: `Bearer ${deviceKey}` } : {}) },
-    body: JSON.stringify({ pairing_code: normalizePairingCode(pairingCode) }),
+    body: JSON.stringify({ pairing_code: normalizePairingCode(pairingCode), ...(confirmMove ? { confirm_move: true } : {}) }),
     signal: AbortSignal.timeout(30_000),
   });
   const data = (await res.json()) as PairResponse;

@@ -20,6 +20,8 @@ interface RegisterDeviceDto {
 
 interface PairDeviceDto {
   pairing_code: string;
+  /** Yes to `DEVICE_MOVE_CONFIRMATION_REQUIRED`: move this Hub from the organization that holds it. */
+  confirm_move?: boolean;
 }
 
 interface RegistrationCallbackDto {
@@ -453,7 +455,10 @@ export class RegistrationController {
     // No guard: first pairing has nobody to authenticate. `AuthMiddleware` names the principal
     // when there is one (a session, the host-local device key, or the CLI token, including on an
     // unclaimed Hub), and the service requires one before it re-pairs a registered Hub.
-    const result = await this.registrationService.pairDevice(pairingCode, { callerAuthenticated: Boolean(req?.hubPrincipal) });
+    const result = await this.registrationService.pairDevice(pairingCode, {
+      callerAuthenticated: Boolean(req?.hubPrincipal),
+      confirmMove: body.confirm_move === true,
+    });
     return result;
   }
 

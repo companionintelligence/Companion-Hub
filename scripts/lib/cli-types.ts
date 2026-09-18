@@ -14,4 +14,10 @@ export type StartMode = 'local-dev' | 'attached' | 'detached';
 export type RegisterHubOptions = {
   fresh?: boolean;
   code?: string;
+  /**
+   * `--move`: yes, move this Hub from the organization that holds it now into the one the code
+   * belongs to, when the Portal asks (`DEVICE_MOVE_CONFIRMATION_REQUIRED`). Without it, a terminal
+   * asks and a script is told to run again with it.
+   */
+  move?: boolean;
 };

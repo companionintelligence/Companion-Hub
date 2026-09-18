@@ -122,7 +122,26 @@ describe('cihub register without a terminal', () => {
 
   it('pairs with a code passed on the command line, normalizing it first', async () => {
     await expect(registerHub('local', { code: ' ab-12cd ' })).resolves.toBeUndefined();
-    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', undefined);
+    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', undefined, { confirmMove: false });
+  });
+
+  it('does not move a Hub from another organization without --move, and says how', async () => {
+    mocks.submitPairingCode.mockResolvedValueOnce({
+      success: false,
+      message: 'This Hub is registered to another organization.',
+      code: 'DEVICE_MOVE_CONFIRMATION_REQUIRED',
+      organizationName: 'Studio',
+    } as never);
+
+    await expect(registerHub('local', { code: 'AB12CD' })).rejects.toThrow('exit 1');
+    expect(mocks.submitPairingCode).toHaveBeenCalledTimes(1);
+    expect(output()).toContain('--move');
+    expect(output()).toContain('Studio');
+  });
+
+  it('moves it with --move', async () => {
+    await expect(registerHub('local', { code: 'AB12CD', move: true })).resolves.toBeUndefined();
+    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', undefined, { confirmMove: true });
   });
 
   it('names the env it was invoked for so the suggested command is copy-pasteable', async () => {
@@ -197,7 +216,7 @@ describe('cihub register on a Hub that is registered and needs pairing again', (
 
     await expect(registerHub('local', { code: 'AB12CD' })).resolves.toBeUndefined();
 
-    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', 'host-local-key');
+    expect(mocks.submitPairingCode).toHaveBeenCalledWith('http://localhost:3001', 'AB12CD', 'host-local-key', { confirmMove: false });
   });
 
   it('does not try to clear drifted state first, which the Hub refuses while registered and would exit 1', async () => {

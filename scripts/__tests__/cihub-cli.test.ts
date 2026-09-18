@@ -385,6 +385,7 @@ describe('normalizeRegisterFlags', () => {
       env: 'dev',
       fresh: true,
       code: '8XNYEB',
+      move: false,
     });
   });
 
@@ -393,6 +394,7 @@ describe('normalizeRegisterFlags', () => {
       env: 'staging',
       fresh: true,
       code: 'ABC123',
+      move: false,
     });
   });
 
@@ -401,7 +403,12 @@ describe('normalizeRegisterFlags', () => {
       env: 'local',
       fresh: false,
       code: 'ABC123',
+      move: false,
     });
+  });
+
+  it('parses --move, the yes to moving this Hub from another organization', () => {
+    expect(normalizeRegisterFlags(['--code', 'ABC123', '--move'])).toMatchObject({ code: 'ABC123', move: true });
   });
 });
 

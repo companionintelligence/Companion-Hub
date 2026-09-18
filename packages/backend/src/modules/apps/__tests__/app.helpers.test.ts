@@ -1851,6 +1851,29 @@ describe('AppHelpers', () => {
         expect(envMap.get('CI_CLOUD_URL')).toBe('https://hub.ci.computer');
       });
 
+      it('never gives Memory the move key, which is what keeps a device key leaked from it from moving the Hub', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'portal-device-key',
+            ciHubMoveKey: 'portal-move-key',
+            ciCloudUrl: 'https://hub.ci.computer',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('HUB_API_KEY')).toBe('portal-device-key');
+        expect([...envMap.values()]).not.toContain('portal-move-key');
+      });
+
       it('injects HUB_API_KEY for a first-party app identified by CI-Server source', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
