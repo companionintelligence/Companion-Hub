@@ -62,7 +62,9 @@ export class ModelPullerService {
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
     const alreadyInstalled =
       trackedPulled ||
-      (curated.backend === 'ollama' ? isCatalogModelInstalled(curated, backendModels) : isServedModelForCatalog(curated, backendModels));
+      (curated.backend === 'ollama'
+        ? isCatalogModelInstalled(curated, backendModels, false, this.modelRegistry.getCatalogBackendModelIds())
+        : isServedModelForCatalog(curated, backendModels));
 
     if (alreadyInstalled) {
       return {

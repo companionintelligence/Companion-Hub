@@ -84,6 +84,9 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   hubPoolHealthPollSeconds: 60,
   hubPoolRequireSignedPeers: true,
   hubPoolShareContainerStats: false,
+  // The default is on, so pin the non-default here: a fixture equal to the default would pass
+  // even if the key stopped round-tripping.
+  hubPoolRouteAppsAlways: false,
   hubPoolPressureWeight: 2,
   // #1480: the per-node prompt ceiling. A key added to the schema without a fixture here fails the
   // first test in this file, which is how this one was caught when #1480 landed first.

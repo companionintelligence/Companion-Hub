@@ -19,7 +19,13 @@ import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
-import { clearHubSteadySession, markStackUpdatePending } from '@/lib/desktop-stack-session';
+import {
+  clearHubSteadySession,
+  clearStackUpdatePending,
+  isStackUpdatePending,
+  markStackUpdatePending,
+  subscribeStackUpdate,
+} from '@/lib/desktop-stack-session';
 import toast from 'react-hot-toast';
 import {
   checkForUpdates,
@@ -41,9 +47,13 @@ export const GeneralActionsContainer = () => {
   const { version, refreshAppContext } = useAppContext();
   const demoMode = useDemoMode();
 
-  const [updating, setUpdating] = useState(false);
+  // A stack update outlives this component: the request returns in a second, the Hub is
+  // recreated over the next minute, and the user may switch tabs in between. The pending
+  // marker in sessionStorage is the source of truth; `hub_hello` on the app SSE stream
+  // resolves it (see `lib/hub-hello.ts`) and the subscription below turns that into UI.
+  const [updating, setUpdating] = useState<boolean>(() => isStackUpdatePending());
   const [checking, setChecking] = useState(false);
-  const [stackMessage, setStackMessage] = useState<string | null>(null);
+  const [stackMessage, setStackMessage] = useState<string | null>(() => (isStackUpdatePending() ? t('SETTINGS_ACTIONS_UPDATE_RESTARTING') : null));
   const [shellMessage, setShellMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
@@ -122,6 +132,26 @@ export const GeneralActionsContainer = () => {
     void refreshShellUpdateState();
   }, [refreshShellUpdateState]);
 
+  useEffect(
+    () =>
+      subscribeStackUpdate((outcome) => {
+        setUpdating(false);
+        setStackMessage(
+          outcome.state === 'completed'
+            ? t('SETTINGS_ACTIONS_UPDATE_COMPLETE', { version: outcome.version })
+            : t('SETTINGS_ACTIONS_UPDATE_NOT_CONFIRMED', { version: outcome.version }),
+        );
+        void refreshAppContext();
+      }),
+    [refreshAppContext, t],
+  );
+
+  const handleStopWaiting = useCallback(() => {
+    clearStackUpdatePending();
+    setUpdating(false);
+    setStackMessage(null);
+  }, []);
+
   useEffect(() => {
     void refreshHostListenerStatus();
   }, [refreshHostListenerStatus]);
@@ -161,7 +191,7 @@ export const GeneralActionsContainer = () => {
     try {
       const stackResult = await performStackUpdate(version.latest);
       if (stackResult.ok) {
-        markStackUpdatePending();
+        markStackUpdatePending(version.current);
         clearHubSteadySession();
         setStackMessage(getUpdateMessage(stackResult));
       } else {
@@ -172,7 +202,7 @@ export const GeneralActionsContainer = () => {
       setStackMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
-  }, [getUpdateMessage, t, version.latest]);
+  }, [getUpdateMessage, t, version.latest, version.current]);
 
   const handleShellUpdate = useCallback(async () => {
     setUpdatingShell(true);
@@ -293,9 +323,14 @@ export const GeneralActionsContainer = () => {
   const renderUpdateButton = () => {
     if (stackMessage) {
       return (
-        <div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm">
+        <div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm" data-testid="hub-update-status">
           {updating && <Loader2 className="h-4 w-4 animate-spin" />}
-          {stackMessage}
+          <span className="flex-1">{stackMessage}</span>
+          {updating && (
+            <Button variant="ghost" size="sm" onClick={handleStopWaiting} data-testid="hub-update-stop-waiting">
+              {t('SETTINGS_ACTIONS_UPDATE_STOP_WAITING')}
+            </Button>
+          )}
         </div>
       );
     }

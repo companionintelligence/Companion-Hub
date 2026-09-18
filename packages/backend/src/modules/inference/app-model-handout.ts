@@ -211,6 +211,14 @@ export function handoutContextLength(input: {
   servedLocally: boolean;
   effectiveInferenceMemoryMb: number;
   minContextLength?: number;
+  /**
+   * What a token of context actually costs this model, probed from the local engine
+   * (see `model-geometry.util`). Only meaningful when this node serves the model — a peer's
+   * geometry cannot be measured from here — so it is ignored on the pool-served path below.
+   * Absent, `recommendContextLength` falls back to its footprint heuristic.
+   */
+  kvMbPerToken?: number | null;
+  weightMb?: number | null;
 }): number {
   const { model, minContextLength } = input;
   if (input.servedLocally) {
@@ -219,6 +227,8 @@ export function handoutContextLength(input: {
       modelFootprintMb: model.runtime.memoryFootprintMb,
       modelContextWindow: model.runtime.contextWindow,
       minContextLength,
+      kvMbPerToken: input.kvMbPerToken ?? null,
+      weightMb: input.weightMb ?? null,
     });
   }
   const cap = Math.floor(model.runtime.contextWindow > 0 ? model.runtime.contextWindow : PEER_SERVED_CONTEXT_LENGTH);

@@ -374,4 +374,72 @@ describe('InferenceRouterService', () => {
       expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
     });
   });
+
+  // ─── prepareTrackedModel ───────────────────────────────
+  // The load-or-evict step, shared with the pool proxy so an app calling the engine's native
+  // routes by ENGINE tag gets the same arbitration `auto` always had.
+  describe('prepareTrackedModel', () => {
+    const pulled = { catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', backend: 'ollama', state: 'pulled' } as TrackedModel;
+
+    it('answers null for a model the Hub does not track, so the caller falls through to the engine', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(undefined);
+      modelRegistry.getTrackedModels.mockReturnValue([]);
+      await expect(service.prepareTrackedModel('mystery:7b')).resolves.toBeNull();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+
+    it('finds a tracked model by its ENGINE tag, which is what every app sends', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(undefined);
+      modelRegistry.getTrackedModels.mockReturnValue([{ ...pulled, state: 'pinned' } as TrackedModel]);
+      await expect(service.prepareTrackedModel('qwen3.8:27b-mtp-q4_K_M')).resolves.toEqual({
+        backend: 'ollama',
+        backendModelId: 'qwen3.8:27b-mtp-q4_K_M',
+      });
+    });
+
+    it('asks the engine first: a `pulled` model that is already resident is marked loaded and NOT reloaded or evicted for', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(pulled);
+      ollamaBackend.isModelLoaded.mockResolvedValue(true);
+
+      await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' });
+
+      expect(modelRegistry.updateModelState).toHaveBeenCalledWith('qwen3-8-27b-mtp', 'loaded');
+      expect(memoryManager.canFitModel).not.toHaveBeenCalled();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+      expect(modelPuller.unloadModel).not.toHaveBeenCalled();
+    });
+
+    it('loads a `pulled` model that is absent from the engine when it fits', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(pulled);
+      modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      memoryManager.canFitModel.mockReturnValue({ fits: true, availableMb: 24_000, requiredMb: 20_000 });
+
+      await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' });
+      expect(modelPuller.loadModel).toHaveBeenCalledWith('qwen3-8-27b-mtp');
+    });
+
+    it('evicts what the memory manager names, then loads, when the model does not fit as is', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(pulled);
+      modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      memoryManager.canFitModel.mockReturnValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
+      memoryManager.getModelsToEvict.mockReturnValue({ canFree: true, modelsToEvict: ['gemma4-e4b'], freedMb: 12_000 });
+
+      await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.not.toBeNull();
+      expect(modelPuller.unloadModel).toHaveBeenCalledWith('gemma4-e4b');
+      expect(modelPuller.loadModel).toHaveBeenCalledWith('qwen3-8-27b-mtp');
+    });
+
+    it('answers null when nothing can be freed, leaving the engine to decide', async () => {
+      modelRegistry.getTrackedModel.mockReturnValue(pulled);
+      modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
+      ollamaBackend.isModelLoaded.mockResolvedValue(false);
+      memoryManager.canFitModel.mockReturnValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
+      memoryManager.getModelsToEvict.mockReturnValue({ canFree: false, modelsToEvict: [], freedMb: 0 });
+
+      await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toBeNull();
+      expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -24,6 +24,8 @@ export type AppInstallErrorCache = {
 
 export type AppSsePayload = {
   event: string;
+  /** `hub_hello` only: the running Hub's version. */
+  version?: string;
   appUrn?: string;
   appStatus?: string;
   error?: string;

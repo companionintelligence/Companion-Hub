@@ -120,7 +120,7 @@ export class InferenceEnvResolver {
     // before the "backend not ready" exit, because a node whose own backend is down but whose
     // peers are healthy used to hand its apps no inference env at all.
     const poolRouting = await this.endpoints.resolvePoolRouting('InferenceEnvResolver');
-    const poolChoice = poolRouting
+    const poolChoice = poolRouting?.spansPeers
       ? selectPoolChatModel({
           appSlug: appLabel,
           inventory: poolRouting.inventory,
@@ -130,7 +130,10 @@ export class InferenceEnvResolver {
         })
       : null;
 
-    if (!backendReady && !poolChoice?.engineId && (fallbackCloud || !poolRouting)) {
+    // `spansPeers`, not `poolRouting`: with `poolRouteAppsAlways` on and no peer connected the
+    // proxy fronts this node's own backends, so a local backend that is down leaves the pool with
+    // nothing to serve either — bail exactly as a peerless Hub did before.
+    if (!backendReady && !poolChoice?.engineId && (fallbackCloud || !poolRouting?.spansPeers)) {
       if (fallbackCloud) {
         const env: StandardizedAiEnv = {
           CI_INFERENCE_BACKEND: 'cloud',
@@ -248,12 +251,20 @@ export class InferenceEnvResolver {
     // default (e.g. 262144 on unified-memory APUs). Sized from this node's memory only when this
     // node serves the model; see handoutContextLength.
     if (chatCurated && chatModel) {
+      // Ask the engine what a token of context costs THIS model before falling back to the fixed
+      // ladder — see `model-geometry.util`. Only Ollama can be asked, and only about a model this
+      // node serves: a peer's geometry is not measurable from here, so a pool-served model keeps
+      // the heuristic, as do the other backends.
+      const cost =
+        chatServedLocally && backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatCurated.backendModelId)) ?? null) : null;
       env.CI_LLM_NUM_CTX = String(
         handoutContextLength({
           model: chatCurated,
           servedLocally: chatServedLocally,
           effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
           minContextLength: requirements.minContextLength,
+          kvMbPerToken: cost?.kvMbPerToken ?? null,
+          weightMb: cost?.weightMb ?? null,
         }),
       );
     }
@@ -369,7 +380,7 @@ export class InferenceEnvResolver {
     if (model.backend === 'vllm' || model.backend === 'mtplx' || model.backend === 'dspark' || model.backend === 'lucebox') {
       return trackedPulled || isServedModelForCatalog(model, modelsLoaded);
     }
-    return isCatalogModelInstalled(model, modelsLoaded, trackedPulled);
+    return isCatalogModelInstalled(model, modelsLoaded, trackedPulled, this.modelRegistry.getCatalogBackendModelIds());
   }
 }
 

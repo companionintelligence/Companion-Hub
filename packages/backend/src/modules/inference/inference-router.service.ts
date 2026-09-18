@@ -306,33 +306,11 @@ export class InferenceRouterService {
       throw new Error('No models available — no local models loaded and no cloud providers configured');
     }
 
-    // 2. Check if model is loaded locally
-    const tracked = this.modelRegistry.getTrackedModel(resolvedModel);
-    if (tracked && (tracked.state === 'loaded' || tracked.state === 'pinned')) {
-      return this.proxyToBackend(tracked.backend, tracked.backendModelId, body);
-    }
-
-    // 3. Check if model is pulled but not loaded — try to load it
-    if (tracked && tracked.state === 'pulled') {
-      const profile = await this.hardwareInspector.getProfile();
-      const curated = this.modelRegistry.getCuratedModel(resolvedModel);
-      const footprint = curated?.runtime.memoryFootprintMb || 0;
-      const fit = this.memoryManager.canFitModel(profile, footprint);
-
-      if (fit.fits) {
-        await this.modelPuller.loadModel(resolvedModel);
-        return this.proxyToBackend(tracked.backend, tracked.backendModelId, body);
-      }
-
-      // Try eviction
-      const eviction = this.memoryManager.getModelsToEvict(profile, footprint - fit.availableMb);
-      if (eviction.canFree) {
-        for (const evictId of eviction.modelsToEvict) {
-          await this.modelPuller.unloadModel(evictId);
-        }
-        await this.modelPuller.loadModel(resolvedModel);
-        return this.proxyToBackend(tracked.backend, tracked.backendModelId, body);
-      }
+    // 2 + 3. A tracked model: serve it if loaded, else make room and load it. Shared with the pool
+    // proxy so an app that calls the engine's native routes gets the same arbitration.
+    const prepared = await this.prepareTrackedModel(resolvedModel);
+    if (prepared) {
+      return this.proxyToBackend(prepared.backend, prepared.backendModelId, body);
     }
 
     // 4. Check if model is directly available on a local backend (not tracked/curated)
@@ -447,6 +425,66 @@ export class InferenceRouterService {
   }
 
   /** Proxy request to a local backend */
+  /**
+   * Make a Hub-tracked model servable before a request reaches the engine, or say it is not one.
+   *
+   * `model` may be a catalog id (`qwen3-8-27b-mtp`, what `auto` resolves to) or the engine's own
+   * tag (`qwen3.8:27b-mtp-q4_K_M`, what every app's `DEFAULT_MODEL` is). Apps only ever send the
+   * latter, which is why this arbitration used to apply to `auto` alone.
+   *
+   * Order matters. The engine is asked first whether the model is already resident: the registry
+   * only knows about loads the Hub itself made, so a model another caller loaded is `pulled` here
+   * while occupying the card, and a fit check against the tracked state alone would try to evict
+   * something to make room for a model that is already there — measured on a box where the chat
+   * model was loaded by the app and the Hub then evicted it for its own copy. Only a model that is
+   * genuinely absent goes through the fit check and, if needed, eviction.
+   *
+   * Null means "not a tracked model, or it does not fit and nothing can be freed"; the caller then
+   * falls through to the engine as before. Never throws for a residency probe that fails.
+   */
+  async prepareTrackedModel(model: string): Promise<{ backend: InferenceBackendType; backendModelId: string } | null> {
+    const tracked =
+      this.modelRegistry.getTrackedModel(model) ?? this.modelRegistry.getTrackedModels().find((entry) => entry.backendModelId === model);
+    if (!tracked) {
+      return null;
+    }
+    const served = { backend: tracked.backend, backendModelId: tracked.backendModelId };
+    if (tracked.state === 'loaded' || tracked.state === 'pinned') {
+      return served;
+    }
+    if (tracked.state !== 'pulled') {
+      return null;
+    }
+
+    const resident = await this.backends
+      .get(tracked.backend)
+      .isModelLoaded(tracked.backendModelId)
+      .catch(() => false);
+    if (resident) {
+      this.modelRegistry.updateModelState(tracked.catalogId, 'loaded');
+      return served;
+    }
+
+    const profile = await this.hardwareInspector.getProfile();
+    const curated = this.modelRegistry.getCuratedModel(tracked.catalogId);
+    const footprint = curated?.runtime.memoryFootprintMb || 0;
+    const fit = this.memoryManager.canFitModel(profile, footprint);
+    if (fit.fits) {
+      await this.modelPuller.loadModel(tracked.catalogId);
+      return served;
+    }
+
+    const eviction = this.memoryManager.getModelsToEvict(profile, footprint - fit.availableMb);
+    if (eviction.canFree) {
+      for (const evictId of eviction.modelsToEvict) {
+        await this.modelPuller.unloadModel(evictId);
+      }
+      await this.modelPuller.loadModel(tracked.catalogId);
+      return served;
+    }
+    return null;
+  }
+
   private async proxyToBackend(
     backendType: InferenceBackendType,
     backendModelId: string,

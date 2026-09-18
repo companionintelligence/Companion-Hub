@@ -281,7 +281,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     // apps its local gemma3:1b while core-6 served qwen3-coder:30b to them over the pool. Gated on
     // the local path, like the resolver: a cloud-primary answer already has a working endpoint.
     const poolRouting = await this.endpoints.resolvePoolRouting('AppCredentials');
-    const poolChoice = poolRouting
+    const poolChoice = poolRouting?.spansPeers
       ? selectPoolChatModel({
           appSlug: slug,
           inventory: poolRouting.inventory,
@@ -406,11 +406,17 @@ export class AppCredentialsService implements OnApplicationShutdown {
     // default (e.g. 262144 on unified-memory APUs). The model already meets the app's minimum, so
     // the floor below is always reachable.
     if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
+      // Same measured-first sizing as InferenceEnvResolver; see `model-geometry.util`. Only a
+      // model this node serves can be measured, so a pool-served one keeps the heuristic.
+      const cost =
+        chatServedLocally && backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatModel.backendModelId)) ?? null) : null;
       const numCtx = handoutContextLength({
         model: chatModel,
         servedLocally: chatServedLocally,
         effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
         minContextLength: requirements.minContextLength,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        weightMb: cost?.weightMb ?? null,
       });
       env[keys.numCtx] = String(numCtx);
     }
@@ -594,7 +600,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     if (isHostServedBackend(backendType)) {
       return isServedModelForCatalog(model, modelsLoaded);
     }
-    return isCatalogModelInstalled(model, modelsLoaded);
+    return isCatalogModelInstalled(model, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());
   }
 
   private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
@@ -607,7 +613,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     if (tracked && (tracked.state === 'pulled' || tracked.state === 'loaded' || tracked.state === 'pinned')) {
       return true;
     }
-    return isCatalogModelInstalled(curated, modelsLoaded);
+    return isCatalogModelInstalled(curated, modelsLoaded, false, this.modelRegistry.getCatalogBackendModelIds());
   }
 
   private maybeFirePrePull(catalogId: string): void {
