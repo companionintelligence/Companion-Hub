@@ -1,4 +1,4 @@
-import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
+import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, detectContainerDataRoot, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -733,12 +733,57 @@ export class CloudflareClientService {
   }
 
   /**
+   * Forgets the tunnel credentials held in memory and removes the `cloudflared`
+   * container.
+   *
+   * Deleting the token file alone does not disconnect a running connector, which
+   * keeps serving the old hostname until its container stops. Returns false when
+   * the container could not be removed, so the caller can try again.
+   */
+  async stopTunnel(): Promise<boolean> {
+    this.tunnelToken = null;
+    this.tunnelId = null;
+
+    // Local and E2E stacks never start `cloudflared`. A development backend on a
+    // machine that also runs a real Hub must not remove that Hub's connector.
+    if (this.configService.get('domain') === 'ci.localhost') {
+      return true;
+    }
+
+    try {
+      const dockerService = this.moduleRef.get(DockerService, { strict: false });
+      if (!dockerService) {
+        this.logger.warn('stopTunnel: DockerService unavailable');
+        return false;
+      }
+
+      const owned = await this.ownsCloudflaredContainer();
+      if (owned === null) {
+        this.logger.warn('stopTunnel: could not check which Hub started cloudflared');
+        return false;
+      }
+      if (!owned) {
+        this.logger.warn(
+          'stopTunnel: leaving cloudflared alone because Docker Compose started it from another folder, so it belongs to another Hub on this machine',
+        );
+        return true;
+      }
+
+      return await dockerService.removeContainer('cloudflared');
+    } catch (error) {
+      this.logger.warn(`stopTunnel: could not remove cloudflared: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+  }
+
+  /**
    * Starts or restarts `cloudflared` idempotently when a token is available.
    *
-   * Each Hub boot calls this method because `recoverTunnelTokenFromDb` starts
-   * `cloudflared` only when the token file is missing. Without this additional
-   * check, restarting a registered Hub with an existing file would leave the
-   * tunnel down. Local and E2E modes skip the container.
+   * A registered Hub calls this method on each boot because
+   * `recoverTunnelTokenFromDb` starts `cloudflared` only when the token file is
+   * missing. Without this additional check, restarting a registered Hub with an
+   * existing file would leave the tunnel down. An unregistered Hub never reaches
+   * this method at boot. Local and E2E modes skip the container.
    */
   async ensureCloudflaredRunning(options: { forceRestart?: boolean } = {}): Promise<boolean> {
     if (!this.tunnelToken) {
@@ -802,6 +847,50 @@ export class CloudflareClientService {
    * `NODE_ENV`: `.env.dev` sets `NODE_ENV=development` inside the bundled image,
    * which would select the nonexistent `/app/docker-compose.local.yml`.
    */
+  /**
+   * Whether the `cloudflared` container on this Docker engine is this Hub's to remove.
+   *
+   * Inside the Hub container it is: that engine runs this one Hub. A backend run from a source
+   * checkout shares the engine with the rest of the machine, often an installed Hub whose
+   * connector has the same container name, and `DOMAIN` stops marking local mode once pairing
+   * writes the Portal's domain. So there only a container that Compose started from this
+   * backend's compose folder counts. Compose records that folder as a host path, which a process
+   * on the host can compare. A missing container counts as this Hub's, since there is nothing to
+   * remove. Returns null when Docker could not be asked.
+   */
+  private async ownsCloudflaredContainer(): Promise<boolean | null> {
+    if (this.runsInsideHubContainer()) {
+      return true;
+    }
+
+    const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
+    if (!dockerReadFacade) {
+      return null;
+    }
+
+    const label = await dockerReadFacade.readContainerLabel('cloudflared', 'com.docker.compose.project.working_dir');
+    if (label === null) {
+      return null;
+    }
+    if (!label.found) {
+      return true;
+    }
+    if (!label.value) {
+      return false;
+    }
+
+    const normalize = (dir: string) => {
+      const resolved = path.resolve(dir);
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    };
+    return normalize(label.value) === normalize(path.dirname(this.getComposeFile()));
+  }
+
+  /** Split out so tests can run the source-checkout rules on any machine. */
+  private runsInsideHubContainer(): boolean {
+    return detectContainerDataRoot();
+  }
+
   private getComposeFile(): string {
     const mounted = path.join(DATA_DIR, 'docker-compose.yml');
     if (fsSync.existsSync(mounted)) {

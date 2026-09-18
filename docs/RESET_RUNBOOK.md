@@ -61,7 +61,7 @@ The Hub cannot remove itself from CI Portal. Its device key is also held by firs
 
 **Settings → Network → This Hub in your account → Reset this Hub only**
 
-- Clears `device_registration`, tunnel token, and resolved env
+- Clears `device_registration`, tunnel token, `tunnel/registration.json`, and resolved env, and stops `cloudflared`
 - **Does not** delete the operator account
 - **Does not** change CI Portal: the device, its web addresses, and its apps stay in the account
 - Use when you only need to pair again with CI Portal, not wipe local users/apps

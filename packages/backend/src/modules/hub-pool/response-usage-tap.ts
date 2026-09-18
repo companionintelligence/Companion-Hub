@@ -71,6 +71,68 @@ function sumOrNull(a: number | null, b: number | null): number | null {
   return a === null && b === null ? null : (a ?? 0) + (b ?? 0);
 }
 
+/** An engine's own account of where a request's time went, in milliseconds. Any part it did not report is `null`. */
+export interface EngineTimings {
+  promptTokens: number | null;
+  promptMs: number | null;
+  completionTokens: number | null;
+  decodeMs: number | null;
+}
+
+/**
+ * The engine's own prefill and decode timings from one parsed frame, for throughput placement. Better
+ * than timing the first byte from outside when present, because they leave out the model load and the
+ * queue. Two dialects, both on the frame that ends the response:
+ *   - Ollama native: `prompt_eval_duration` / `eval_duration` in NANOSECONDS on the `done: true` line.
+ *     Its OpenAI-compatible surface reports no timings, which is why the proxy also times the first byte.
+ *   - llama.cpp's server (llama-server, lemonade): a `timings` object in milliseconds.
+ */
+export function extractEngineTimingsFromParsedJson(value: unknown): EngineTimings | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.done === true) {
+    const promptNs = toFiniteNumberOrNull(record.prompt_eval_duration);
+    const decodeNs = toFiniteNumberOrNull(record.eval_duration);
+    if (promptNs !== null || decodeNs !== null) {
+      return {
+        promptTokens: toFiniteNumberOrNull(record.prompt_eval_count),
+        promptMs: promptNs === null ? null : promptNs / 1e6,
+        completionTokens: toFiniteNumberOrNull(record.eval_count),
+        decodeMs: decodeNs === null ? null : decodeNs / 1e6,
+      };
+    }
+  }
+  const timings = record.timings;
+  if (timings && typeof timings === 'object' && !Array.isArray(timings)) {
+    const t = timings as Record<string, unknown>;
+    const promptMs = toFiniteNumberOrNull(t.prompt_ms);
+    const decodeMs = toFiniteNumberOrNull(t.predicted_ms);
+    if (promptMs !== null || decodeMs !== null) {
+      return { promptTokens: toFiniteNumberOrNull(t.prompt_n), promptMs, completionTokens: toFiniteNumberOrNull(t.predicted_n), decodeMs };
+    }
+  }
+  return null;
+}
+
+/** The rest of what a response can tell throughput placement while it streams through. Every callback is optional and at most once. */
+export interface ResponseTapObserver {
+  onEngineTimings?: (timings: EngineTimings) => void;
+  /** The first body chunk arrived. For an engine that holds its headers until it has a token, that is the same moment. */
+  onFirstChunk?: () => void;
+  /** The body ended normally. Never called for a stream that was cut off. */
+  onComplete?: () => void;
+}
+
+function notify(callback: (() => void) | undefined): void {
+  try {
+    callback?.();
+  } catch {
+    // An observer's failure must never reach the client's stream.
+  }
+}
+
 /**
  * Adds `stream_options.include_usage: true` to a streamed request body, which is what makes an
  * OpenAI-compatible backend include a `usage` frame at all — without it, a streamed completion
@@ -102,25 +164,40 @@ export function injectUsageOptIn(body: unknown): unknown {
 export function tapResponseUsageWhileStreaming(
   source: ReadableStream<Uint8Array>,
   onUsage: (usage: PoolRoutingUsage) => void,
+  observer: ResponseTapObserver = {},
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder();
   let lineBuffer = '';
   let wholeBodyBuffer = '';
   let wholeBodyOverflowed = false;
-  let fired = false;
+  let usageFired = false;
+  // Nothing to look for when nobody asked, so a usage-only tap stops parsing where it always did.
+  let timingsFired = !observer.onEngineTimings;
+  let sawFirstChunk = false;
   let sawNewline = false;
+  const fired = () => usageFired && timingsFired;
 
   const tryLine = (line: string) => {
-    if (fired) return;
+    if (fired()) return;
     const trimmed = line.trim();
     if (!trimmed || trimmed === 'data: [DONE]' || trimmed === '[DONE]') return;
     const jsonText = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
     if (!jsonText) return;
     try {
-      const usage = extractUsageFromParsedJson(JSON.parse(jsonText));
-      if (usage) {
-        fired = true;
-        onUsage(usage);
+      const parsed: unknown = JSON.parse(jsonText);
+      if (!usageFired) {
+        const usage = extractUsageFromParsedJson(parsed);
+        if (usage) {
+          usageFired = true;
+          onUsage(usage);
+        }
+      }
+      if (!timingsFired) {
+        const timings = extractEngineTimingsFromParsedJson(parsed);
+        if (timings) {
+          timingsFired = true;
+          observer.onEngineTimings?.(timings);
+        }
       }
     } catch {
       // Not a JSON line — most NDJSON/SSE lines this ever sees are exactly that, and are not the
@@ -129,7 +206,7 @@ export function tapResponseUsageWhileStreaming(
   };
 
   const consumeText = (text: string) => {
-    if (fired) return;
+    if (fired()) return;
 
     if (!wholeBodyOverflowed) {
       wholeBodyBuffer += text;
@@ -145,7 +222,7 @@ export function tapResponseUsageWhileStreaming(
       const line = lineBuffer.slice(0, newlineIndex);
       lineBuffer = lineBuffer.slice(newlineIndex + 1);
       tryLine(line);
-      if (fired) return;
+      if (fired()) return;
     }
     if (lineBuffer.length > MAX_LINE_BUFFER_BYTES) {
       // One line has grown implausibly long without a newline — not a shape this tap recognises
@@ -158,6 +235,10 @@ export function tapResponseUsageWhileStreaming(
     new TransformStream<Uint8Array, Uint8Array>({
       transform(chunk, controller) {
         controller.enqueue(chunk);
+        if (!sawFirstChunk) {
+          sawFirstChunk = true;
+          notify(observer.onFirstChunk);
+        }
         try {
           consumeText(decoder.decode(chunk, { stream: true }));
         } catch {
@@ -166,19 +247,20 @@ export function tapResponseUsageWhileStreaming(
         }
       },
       flush() {
-        if (fired) return;
         try {
-          if (lineBuffer.trim()) tryLine(lineBuffer);
+          if (!fired() && lineBuffer.trim()) tryLine(lineBuffer);
           // A non-streamed response is one JSON object with no internal newlines at all — nothing
           // above ever called `tryLine` for it. Only worth trying when nothing that looked like a
           // line-oriented stream was seen, so a genuinely huge streamed generation whose usage line
           // got dropped by the per-line cap does not ALSO pay for a 2 MB whole-body re-parse.
-          if (!fired && !sawNewline && !wholeBodyOverflowed && wholeBodyBuffer.trim()) {
+          if (!fired() && !sawNewline && !wholeBodyOverflowed && wholeBodyBuffer.trim()) {
             tryLine(wholeBodyBuffer);
           }
         } catch {
           // Same rule as above: telemetry extraction must never throw out of a stream's flush.
         }
+        // After the last line was read, so timings on an unterminated final line arrive first.
+        notify(observer.onComplete);
       },
     }),
   );
