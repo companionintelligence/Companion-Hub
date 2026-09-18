@@ -71,7 +71,8 @@ front of a Hub session. An operator with no federated row is treated as a compil
 an owner. See CI-Engineering `architecture/identity/unified-identity-plan.md`.
 
 **A device key is not a user, and an API key is neither.** `cihub api-key create` mints an MCP-scoped
-key for tools; it is refused by the pool routes and by Portal. Keep the three apart when debugging a
+key for tools; it is refused by the pool routes and by Portal. The one exception is a
+`--scope qa:read` key, which reads pool status and the routing log and nothing else. Keep the three apart when debugging a
 401 — the answer is usually that the right credential was never in play.
 
 > **Every installed app receives the device key in its environment.** Treat app installation as

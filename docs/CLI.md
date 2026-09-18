@@ -346,12 +346,21 @@ carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_K
 **not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
 
 ```bash
-cihub api-key create --name "laptop"   # operator keys carry the 'mcp' scope
-cihub api-key list                     # id, name, scopes, capability, prefix
+cihub api-key create --name "laptop"                     # operator keys carry the 'mcp' scope
+cihub api-key create --name "fleet-qa" --scope qa:read   # read-only test key (see below)
+cihub api-key list                                       # id, name, scopes, capability, prefix
 ```
 
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
 **Settings → Security**.
+
+`--scope` and `--scopes` are the same flag; give one, not both. A `qa:read` key reads pool status, the pool routing log,
+one app's status (without its config), and the install queue. Every other GET answers it 403, and any write
+answers 401, because the Hub only looks the key up on a read.
+Mint it for a test harness or a monitor instead of handing out the device key. It must be the only
+scope on its key, and it is stored as `read`. A Hub built before `qa:read` existed accepts the row
+but authenticates nothing with it. See
+[Reading these without an operator credential](hub-pool.md#reading-these-without-an-operator-credential).
 
 `create` also accepts `--capability read|write|full`, which decides what the key may do on the
 surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in

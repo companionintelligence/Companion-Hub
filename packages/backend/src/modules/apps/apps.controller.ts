@@ -4,6 +4,7 @@ import type { Request } from 'express';
 import { ModuleRef } from '@nestjs/core';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { ObservabilityRead, ObservabilityReadGuard } from '../auth/observability-read.guard';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { AppsReadService } from './apps-read.service';
 import { AppsService } from './apps.service';
@@ -62,8 +63,10 @@ export class AppsController {
     return UpdatesAvailableDto.parse({ updatesAvailable }, { reportOnly: true });
   }
 
+  /** Readable by a `qa:read` key: an install journey polls this until its app is running or has failed. */
   @Get('install-queue')
-  @UseGuards(AuthGuard)
+  @UseGuards(ObservabilityReadGuard)
+  @ObservabilityRead()
   @ApiResponse({ type: InstallQueueDto })
   async getInstallQueue(@Req() req: Request) {
     const queue = await this.appsReadService.getInstallQueueState();
@@ -104,15 +107,25 @@ export class AppsController {
     return AppRuntimeMonitorDto.parse(snapshot, { reportOnly: true });
   }
 
+  /**
+   * Readable by a `qa:read` key, for an app's install status — but without `app.config`.
+   *
+   * `config` is the form the operator filled in at install: admin passwords, provider API keys,
+   * anything a manifest asks for. A test polling for `running` needs none of it, and a leaked test key
+   * must not be a way to read every app's secrets, so it is removed for that principal rather than the
+   * route being opened as it is.
+   */
   @Get(':urn')
-  @UseGuards(AuthGuard)
+  @UseGuards(ObservabilityReadGuard)
+  @ObservabilityRead()
   @ApiResponse({ type: GetAppDto })
   async getApp(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'view');
     const res = await this.appsReadService.getApp(appUrn);
     const mcpExtras = await this.buildMcpExtras(appUrn, res.info);
-    return GetAppDto.parse({ ...res, ...mcpExtras }, { reportOnly: true });
+    const app = req.hubPrincipal === 'qa-read' && res.app ? { ...res.app, config: undefined } : res.app;
+    return GetAppDto.parse({ ...res, app, ...mcpExtras }, { reportOnly: true });
   }
 
   private async buildMcpExtras(appUrn: AppUrn, info: { mcp?: unknown }) {

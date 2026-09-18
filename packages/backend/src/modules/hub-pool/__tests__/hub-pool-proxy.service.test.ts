@@ -28,6 +28,7 @@ import {
   AUTO_MODEL,
   POOL_BACKEND_HEADER,
   POOL_MODEL_HEADER,
+  POOL_REQUEST_ID_HEADER,
   POOL_SERVED_BY_HEADER,
   POOL_SERVED_LOCALLY,
   PoolForwardDeadlineError,
@@ -36,6 +37,8 @@ import {
   applyThroughputPlacement,
   describeUnresolvableAuto,
   firstByteBudgetMs,
+  forwardBudgetMs,
+  normalizePoolRequestId,
   servedByHeaders,
   splitDemoted,
 } from '../hub-pool-proxy.service';
@@ -936,6 +939,40 @@ describe('PoolProxyService', () => {
       expect(res.json).not.toHaveBeenCalled();
       expect(destroySpy).toHaveBeenCalled();
     });
+
+    /**
+     * The row settled `served` at headers time, and the dead stream then appends to its
+     * `failedOverFrom`. A mutation that skipped `updatedAt` was invisible to a `?since=` poller, which
+     * had already seen the row and was told nothing had changed.
+     */
+    it('moves the row past a cursor when the stream dies after the commit', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        vi.setSystemTime(new Date('2026-09-17T10:00:00.000Z'));
+        const settle = routingLog.settle.bind(routingLog);
+        vi.spyOn(routingLog, 'settle').mockImplementation((row, patch) => {
+          settle(row, patch);
+          // The stream then runs for a second before the client's socket fails.
+          vi.setSystemTime(new Date('2026-09-17T10:00:01.000Z'));
+        });
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: 'llama3.2:3b' },
+          model: 'llama3.2:3b',
+          res: createMockResponse({ writeFails: true }),
+        });
+
+        const page = routingLog.query({ since: '2026-09-17T10:00:00.500Z' });
+        expect(page.entries).toHaveLength(1);
+        expect(page.entries[0]).toMatchObject({ outcome: 'served', failedOverFrom: [POOL_SERVED_LOCALLY], updatedAt: '2026-09-17T10:00:01.000Z' });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   /**
@@ -1101,6 +1138,137 @@ describe('PoolProxyService', () => {
 
       expect(res.status).toHaveBeenCalledWith(502);
       expect(headersSetOn(res)).not.toHaveProperty('x-hub-pool-served-by');
+    });
+  });
+
+  /**
+   * The routing log had no key, so a caller holding a response could not find the row that explains
+   * it, and the peer's inbound row could only be matched by time. The id is minted once per request and
+   * has to reach three places — the response, the row, and the forward to the peer — identically.
+   */
+  describe('request ids and request shape', () => {
+    const MODEL = 'llama3.2:3b';
+
+    function peerHasModel(): void {
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel(MODEL) as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+    }
+
+    /** Header names of a forward are whatever case the proxy wrote; read them the way a server would. */
+    function forwardedHeader(call: number, name: string): string | undefined {
+      const init = vi.mocked(global.fetch).mock.calls[call]?.[1] as RequestInit | undefined;
+      const entry = Object.entries((init?.headers ?? {}) as Record<string, string>).find(([key]) => key.toLowerCase() === name.toLowerCase());
+      return entry?.[1];
+    }
+
+    it('adds the id to the attribution headers only when there is one', () => {
+      const candidate = { peerId: null, nodeFqdn: null, backend: 'ollama' as const };
+
+      expect(servedByHeaders(candidate, MODEL, 'req-1')[POOL_REQUEST_ID_HEADER]).toBe('req-1');
+      expect(servedByHeaders(candidate, MODEL)).not.toHaveProperty(POOL_REQUEST_ID_HEADER);
+    });
+
+    it('answers with the id of the routing-log row, and sends the same id to the serving peer', async () => {
+      peerHasModel();
+      vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      const id = routingLog.list()[0]?.id;
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+      expect(headersSetOn(res)['x-hub-pool-request-id']).toBe(id);
+      expect(forwardedHeader(0, POOL_REQUEST_ID_HEADER)).toBe(id);
+    });
+
+    it('keeps one id across a failover, so the row a caller finds is the whole story', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerHasModel();
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(new Response('engine down', { status: 500 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      expect(routingLog.list()).toHaveLength(1);
+      const row = routingLog.list()[0];
+      expect(row).toMatchObject({ outcome: 'served', failedOverFrom: [POOL_SERVED_LOCALLY] });
+      expect(forwardedHeader(1, POOL_REQUEST_ID_HEADER)).toBe(row?.id);
+      expect(headersSetOn(res)['x-hub-pool-request-id']).toBe(row?.id);
+    });
+
+    it('hands the caller the id on a 502 too — a failed call is the one worth looking up', async () => {
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'missing' }, model: 'missing', res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(headersSetOn(res)['x-hub-pool-request-id']).toBe(routingLog.list()[0]?.id);
+    });
+
+    /**
+     * A 900 s wait and a 300 s wait looked like the same row: the first-byte budget is sized from the
+     * prompt, and nothing recorded the prompt size or the budget. The row states both, from the body
+     * as forwarded — including the usage opt-in the proxy adds to a streamed body — and from the same
+     * budget function the forward's timer calls.
+     */
+    it('records stream, the forwarded body size, and the budget the forward timer used', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      vi.mocked(global.fetch).mockResolvedValueOnce(new Response('data: [DONE]\n\n', { status: 200 }));
+      const prompt = 'x'.repeat(184_000);
+
+      await service.proxyRequest({
+        path: '/v1/chat/completions',
+        method: 'POST',
+        body: { model: MODEL, stream: true, messages: [{ role: 'user', content: prompt }] },
+        model: MODEL,
+        res: createMockResponse(),
+      });
+
+      const forwarded = String((vi.mocked(global.fetch).mock.calls[0]?.[1] as RequestInit).body);
+      expect(routingLog.list()[0]).toMatchObject({
+        stream: true,
+        bodyBytes: Buffer.byteLength(forwarded),
+        budgetMs: forwardBudgetMs(true, forwarded.length),
+      });
+      // Sized from the prompt, not the fixed floor: this is the case the field exists for.
+      expect(routingLog.list()[0]?.budgetMs).toBe(firstByteBudgetMs(forwarded.length));
+    });
+
+    it('records the shape on an inbound forward, and keeps the id the sender minted', async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      await service.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/api/chat',
+        'POST',
+        { model: MODEL, stream: false },
+        createMockResponse(),
+        'core.tailxyz.ts.net',
+        MODEL,
+        'req-from-core',
+      );
+
+      expect(routingLog.list()[0]).toMatchObject({
+        id: 'req-from-core',
+        direction: 'inbound',
+        stream: false,
+        budgetMs: forwardBudgetMs(false, JSON.stringify({ model: MODEL, stream: false }).length),
+      });
+    });
+
+    it.each([
+      ['a UUID', '0b7c2d4e-8f7a-4a51-9d0e-3c5f6a7b8c9d', '0b7c2d4e-8f7a-4a51-9d0e-3c5f6a7b8c9d'],
+      ['another build’s dotted id', 'core-2.req:42', 'core-2.req:42'],
+      ['nothing', undefined, undefined],
+      ['an empty header', '', undefined],
+      ['a leading separator', '-flag', undefined],
+      ['a control character', 'abc\u0007', undefined],
+    ])('normalises %s from a peer', (_label, raw, expected) => {
+      expect(normalizePoolRequestId(raw)).toBe(expected);
     });
   });
 

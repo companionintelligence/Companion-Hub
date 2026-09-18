@@ -38,3 +38,16 @@ export function hubSessionOperatorUserId(req: HubPrincipalFields): number | unde
 export function isGrantExemptPrincipal(req: HubPrincipalFields): boolean {
   return req.hubPrincipal === 'portal-device' || req.hubPrincipal === 'cli';
 }
+
+/**
+ * Whether this caller may `view` any app without a grant lookup: a `qa:read` API key.
+ *
+ * Deliberately NOT folded into {@link isGrantExemptPrincipal}, which every mutating gate and
+ * `lifecycleActor` also consult — this admits `view` and nothing else. The key has no person behind
+ * it whose grants could be asked, and it is minted only by `cihub` on the host, which already sees
+ * every app; it reaches only the GET handlers marked `@ObservabilityRead()`, so the gate is a second
+ * wall behind the route list, not the first.
+ */
+export function isAppViewObserverPrincipal(req: HubPrincipalFields): boolean {
+  return req.hubPrincipal === 'qa-read';
+}

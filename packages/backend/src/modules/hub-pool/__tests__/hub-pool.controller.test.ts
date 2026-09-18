@@ -229,6 +229,48 @@ describe('HubPoolController', () => {
 
       expect(result.entries.map((e) => e.model)).toEqual(['c', 'b']);
       expect(result.summary.recorded).toBe(3);
+      // The page was cut by `limit`, and the response says so rather than looking like the whole log.
+      expect(result.matched).toBe(3);
+    });
+
+    /**
+     * A poller that re-read the whole ring every time could not tell a burst that overflowed it from
+     * a quiet pool. `since` + `nextSince` is the cursor; the row that settles after the poller last saw
+     * it `pending` must come back, because that settle is the thing the poller is waiting for.
+     */
+    it('returns only rows placed or changed since the cursor, including a pending row that settled', async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date('2026-09-17T10:00:00.000Z'));
+        const slow = routingLog.open({
+          at: new Date().toISOString(),
+          direction: 'outbound',
+          path: '/v1/chat/completions',
+          model: 'qwen3.6:27b',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 1,
+          attempt: 1,
+          failedOverFrom: [],
+          pin: null,
+        });
+        const first = await controller.getPoolRoutingLog({});
+        expect(first.nextSince).toBe('2026-09-17T10:00:00.000Z');
+
+        vi.setSystemTime(new Date('2026-09-17T10:02:11.800Z'));
+        routingLog.settle(slow, { outcome: 'served', status: 200, durationMs: 131_800 });
+        const second = await controller.getPoolRoutingLog({ since: '2026-09-17T10:00:00.001Z' });
+
+        expect(second.entries).toHaveLength(1);
+        expect(second.entries[0]).toMatchObject({ id: slow.id, outcome: 'served', durationMs: 131_800 });
+        expect(second.nextSince).toBe('2026-09-17T10:02:11.800Z');
+        // Nothing newer: an empty page, and no cursor to move to.
+        const third = await controller.getPoolRoutingLog({ since: '2026-09-17T10:02:11.801Z' });
+        expect(third).toMatchObject({ entries: [], matched: 0, nextSince: null });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -333,6 +375,7 @@ describe('HubPoolController', () => {
         res,
         'hub-b.example-tailnet.ts.net',
         undefined,
+        undefined,
       );
     });
 
@@ -350,7 +393,47 @@ describe('HubPoolController', () => {
         res,
         'hub-b.example-tailnet.ts.net',
         'llama3.2:3b',
+        undefined,
       );
+    });
+
+    /**
+     * The id is what joins the sender's outbound row to this node's inbound row for the same call.
+     * Before it, fleet QA matched the two by time window on each Hub's own clock, which cannot tell two
+     * concurrent calls for one model apart.
+     */
+    it('passes the sender request id through, so this node logs the same id the sender did', async () => {
+      const res = mockResponse();
+      const id = '0b7c2d4e-8f7a-4a51-9d0e-3c5f6a7b8c9d';
+
+      await controller.localOllamaChat(
+        peerRequest(
+          { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' },
+          { 'x-hub-pool-backend': 'ollama', 'x-hub-pool-request-id': id },
+        ),
+        body,
+        res,
+      );
+
+      expect(vi.mocked(proxyService.forwardToLocalBackendAndRespond).mock.calls[0]?.[7]).toBe(id);
+    });
+
+    it.each([
+      ['a value with spaces and quotes', 'id" OR "1"="1'],
+      ['a value longer than 64 characters', 'a'.repeat(65)],
+      ['a value with a newline that would split a log line', 'abc\nNODE forged'],
+    ])('drops %s instead of writing it into the routing log', async (_label, id) => {
+      await controller.localOllamaChat(
+        peerRequest(
+          { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' },
+          { 'x-hub-pool-backend': 'ollama', 'x-hub-pool-request-id': id },
+        ),
+        body,
+        mockResponse(),
+      );
+
+      // Undefined, so the inbound row gets a fresh id of this node's own rather than the forward failing.
+      expect(vi.mocked(proxyService.forwardToLocalBackendAndRespond).mock.calls[0]?.[7]).toBeUndefined();
     });
 
     it('refuses a pending peer with 403 without touching a backend', async () => {
@@ -411,10 +494,16 @@ describe('HubPoolController', () => {
     ])('records %s in the routing log, so the serving side can say why a peer got nothing', async (_label, refusal, status, peer) => {
       peerService.inboundRefusal.mockReturnValue(refusal);
 
-      await controller.localOllamaChat(peerRequest(peer, { 'x-hub-pool-backend': 'ollama' }), body, mockResponse());
+      await controller.localOllamaChat(
+        peerRequest(peer, { 'x-hub-pool-backend': 'ollama', 'x-hub-pool-request-id': 'req-from-sender' }),
+        body,
+        mockResponse(),
+      );
 
+      // With the sender's id: a refusal is the other half of the sender's failover row, and the id is
+      // the only thing that says which row.
       expect(proxyService.recordRefusedInboundForward).toHaveBeenCalledWith(
-        expect.objectContaining({ path: '/api/chat', fromPeerFqdn: 'hub-b.example-tailnet.ts.net', status }),
+        expect.objectContaining({ path: '/api/chat', fromPeerFqdn: 'hub-b.example-tailnet.ts.net', status, requestId: 'req-from-sender' }),
       );
     });
 
