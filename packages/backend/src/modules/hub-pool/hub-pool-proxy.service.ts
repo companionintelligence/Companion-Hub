@@ -1986,7 +1986,13 @@ export class PoolProxyService {
       // residency arbitration can apply to all of them: keep a tracked model resident, or make
       // room for it, before the engine sees the request. Read-only natives (`/api/tags`, `/api/ps`,
       // `/api/show`) never reach here — they go through `proxyLocalOnlyRequest`.
-      if (GENERATION_PATHS.has(path) && this.router) {
+      //
+      // Skipped once the client has already hung up, which is the other half of what #1483 brought
+      // in: arbitration is what loads or evicts a model, the most expensive thing on this path — a
+      // 27B reload measured ~168 s on core-6 — and running it for a request nobody is waiting for
+      // is the opposite of what the client-abort propagation is for. The `fetch` below rejects on
+      // the same signal anyway, so nothing would have used the model we just made room for.
+      if (GENERATION_PATHS.has(path) && this.router && !clientClosed?.aborted) {
         await this.router.prepareTrackedModel(model).catch((error: unknown) => {
           this.logger.debug(
             `[PoolProxy] residency arbitration for ${model} failed; forwarding anyway: ${error instanceof Error ? error.message : String(error)}`,
