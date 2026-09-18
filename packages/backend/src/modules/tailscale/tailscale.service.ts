@@ -34,6 +34,14 @@ export interface TailscaleServeEntry {
   mountPoint: string;
   dest: string;
   listenPort?: number;
+  /**
+   * The node name this listener answers TLS for, lower-cased without the trailing dot.
+   *
+   * tailscaled keys every web listener by `<name>:<port>` and only completes a handshake for a
+   * name it holds a listener for. After a tailnet rename the old listener stays behind and the
+   * new name has none, so the port alone cannot say whether peers can reach this node.
+   */
+  host?: string;
   rawServiceName?: string;
 }
 
@@ -44,6 +52,54 @@ interface TailscaleServeServiceConfig {
 interface TailscaleServeWebHandler {
   Proxy?: string;
   Path?: string;
+}
+
+/**
+ * One `Web` listener of `tailscale serve status --json` (ipn.WebServerConfig).
+ *
+ * Mount points sit one level down, under `Handlers`. Tailscale 1.98.2 on core-6 and 1.102.3 on
+ * core-17 both print `"<node>.<tailnet>:443": { "Handlers": { "/": { "Proxy": … } } }`. Reading
+ * the listener as the handler map made every entry look like mount `Handlers` with no target, so
+ * the sync never recognised the Hub as published and re-ran `tailscale serve` every five minutes.
+ */
+interface TailscaleServeWebServerConfig {
+  Handlers?: Record<string, TailscaleServeWebHandler | null>;
+}
+
+/**
+ * Whether tailscaled refused a `tailscale serve` write because the caller is neither root nor the
+ * host's Tailscale operator.
+ *
+ * In host mode the Hub talks to the mounted tailscaled socket as its own uid: root on beta-1,
+ * beta-glass and fzzy, but the host's `ci` account on most appliances (uid 1000, or 1001 on
+ * core-2, core-3 and core-6). tailscaled accepts Serve writes only from root or the host's
+ * operator, so a host that never ran `tailscale set --operator` answers every publish with
+ * `sending serve config: Access denied: serve config denied`. Retrying cannot succeed until
+ * someone on the host grants the operator role.
+ */
+export function isServePermissionDenied(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const execErr = error as ExecError;
+  const output = [error.message, execErr.stderr?.toString() ?? '', execErr.stdout?.toString() ?? ''].join('\n');
+  return /serve config denied|tailscale set --operator/i.test(output);
+}
+
+/**
+ * The host command that lets the Hub's own uid write Tailscale Serve config.
+ *
+ * The container's passwd file does not name the host account (uid 1000 is `ci` on the host but
+ * may be `node` in the image), and `--operator` takes a host username. `id -nu <uid>` resolves it
+ * where the command runs, so the command can be pasted as-is. The `&&` matters: where the uid has
+ * no host account, a bare `--operator="$(id -nu <uid>)"` still runs with an empty name and clears
+ * whichever operator the host already had.
+ */
+export function servePermissionRemedy(uid: number | null = process.getuid?.() ?? null): string {
+  if (uid === null) {
+    return 'sudo tailscale set --operator=<user>, where <user> is the host account that runs the Hub';
+  }
+  return `u="$(id -nu ${uid})" && sudo tailscale set --operator="$u" (the Hub runs as uid ${uid})`;
 }
 
 interface ExecError extends Error {
@@ -659,6 +715,8 @@ export class TailscaleService {
       await this.execTailscale(['serve', `--https=${httpsPort}`, 'off']);
       this.logger.log(`Tailscale Serve removed from :${httpsPort}`);
     } catch (error) {
+      // The operator refusal goes back to the sync, which reports it once instead of every pass.
+      if (isServePermissionDenied(error)) throw error;
       this.logger.warn(`Failed to remove Tailscale serve for :${httpsPort}: ${error}`);
     }
   }
@@ -668,6 +726,7 @@ export class TailscaleService {
       await this.execTailscale(['serve', 'clear', serviceName]);
       this.logger.log(`Tailscale Service removed: ${serviceName}`);
     } catch (error) {
+      if (isServePermissionDenied(error)) throw error;
       this.logger.warn(`Failed to remove Tailscale Service ${serviceName}: ${error}`);
     }
   }
@@ -695,16 +754,18 @@ export class TailscaleService {
       }
 
       if (data.Web) {
-        for (const [listener, handlers] of Object.entries(data.Web as Record<string, Record<string, TailscaleServeWebHandler>>)) {
-          const portMatch = listener.match(/:(\d+)$/);
-          const listenPort = portMatch ? Number.parseInt(portMatch[1] || '', 10) : undefined;
-          for (const [path, config] of Object.entries(handlers)) {
+        for (const [listener, server] of Object.entries(data.Web as Record<string, TailscaleServeWebServerConfig | null>)) {
+          const listenerMatch = listener.match(/^(.*):(\d+)$/);
+          const listenPort = listenerMatch ? Number.parseInt(listenerMatch[2] || '', 10) : undefined;
+          const host = normalizeDnsName(listenerMatch?.[1])?.toLowerCase();
+          for (const [path, config] of Object.entries(server?.Handlers ?? {})) {
             entries.push({
               service: listenPort ? String(listenPort) : path.replace(/^\//, ''),
               proto: 'https',
               mountPoint: path,
-              dest: config.Proxy || config.Path || '',
+              dest: config?.Proxy || config?.Path || '',
               listenPort,
+              ...(host ? { host } : {}),
             });
           }
         }
