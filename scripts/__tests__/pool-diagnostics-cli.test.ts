@@ -53,6 +53,7 @@ const {
   measureColdCapabilityBuild,
   modelParameterBillions,
   parseComposeService,
+  readComposeDeclarations,
   parseHubContainerInspect,
   inspectHubDataDirs,
   parseTailscaleServeConfig,
@@ -2586,5 +2587,73 @@ describe('runPoolDoctorSection', () => {
     expect(section.remediationCommands).toContain('sudo ufw allow from 172.18.0.0/16 to 172.18.0.1 port 11434 proto tcp');
     expect(section.issueCount).toBeGreaterThanOrEqual(1);
     vi.unstubAllGlobals();
+  });
+});
+
+describe('readComposeDeclarations — a stack is every file it was created from, not the first one', () => {
+  // The real shape on seven of sixteen fleet nodes: prod.yml declares the Hub service build:-only
+  // with NO image:, and the dev-image overlay is what supplies one. Reading prod.yml alone compares
+  // a container against half the document that made it.
+  const PROD = [
+    'services:',
+    '  ci-hub:',
+    '    build: .',
+    '    volumes:',
+    '      - ./state:/data/state',
+    '    environment:',
+    '      OLLAMA_URL: http://localhost:11434',
+  ].join('\n');
+  const OVERLAY = [
+    'services:',
+    '  ci-hub:',
+    '    image: ghcr.io/companionintelligence/ci-hub:dev',
+    '    volumes:',
+    '      - /var/run/tailscale:/var/run/tailscale',
+    '    environment:',
+    '      MTPLX_URL: http://localhost:8080',
+  ].join('\n');
+
+  beforeEach(() => {
+    existsSync.mockReset();
+    readFileSync.mockReset();
+  });
+
+  it('unions the mounts and variables both files declare', () => {
+    existsSync.mockReturnValue(true);
+    readFileSync.mockImplementation((file: string) => (String(file).includes('dev-image') ? OVERLAY : PROD));
+    const { declaration, reason } = readComposeDeclarations(['/s/docker-compose.prod.yml', '/s/docker-compose.dev-image.yml'], ['ci-hub']);
+    expect(reason).toBeNull();
+    expect(declaration?.spec.mountTargets).toEqual(['/data/state', '/var/run/tailscale']);
+    expect(declaration?.spec.envNames).toEqual(['OLLAMA_URL', 'MTPLX_URL']);
+    // Both documents are named, so the operator can see what was actually read.
+    expect(declaration?.path).toBe('/s/docker-compose.prod.yml + /s/docker-compose.dev-image.yml');
+  });
+
+  it('still answers from the files it could read, and says which one it could not', () => {
+    existsSync.mockImplementation((file: string) => !String(file).includes('dev-image'));
+    readFileSync.mockReturnValue(PROD);
+    const { declaration, reason } = readComposeDeclarations(['/s/docker-compose.prod.yml', '/s/docker-compose.dev-image.yml'], ['ci-hub']);
+    expect(declaration?.spec.mountTargets).toEqual(['/data/state']);
+    expect(reason).toContain('dev-image');
+    expect(reason).toContain('does not exist');
+  });
+
+  it('reports every reason when no file yields a declaration', () => {
+    existsSync.mockReturnValue(false);
+    const { declaration, reason } = readComposeDeclarations(['/s/a.yml', '/s/b.yml'], ['ci-hub']);
+    expect(declaration).toBeNull();
+    expect(reason).toContain('/s/a.yml');
+    expect(reason).toContain('/s/b.yml');
+  });
+
+  it('a partial read is surfaced on the check itself, not swallowed', () => {
+    const image = { container: 'ci-hub', mountTargets: ['/data/state'], envNames: ['OLLAMA_URL'], service: 'ci-hub', composeFiles: [] };
+    const created = { path: '/s/docker-compose.prod.yml', spec: { service: 'ci-hub', mountTargets: ['/data/state'], envNames: ['OLLAMA_URL'] } };
+    const check = checkComposeDrift(
+      { image, created, createdReason: '/s/docker-compose.dev-image.yml does not exist on this host', repo: null } as never,
+      'prod',
+    );
+    expect(check.verdict).toBe('ok');
+    expect(text(check.notes ?? [])).toContain('Only part of the stack was read');
   });
 });

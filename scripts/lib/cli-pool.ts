@@ -42,6 +42,7 @@ import {
   buildPoolUpdateComposeArgs,
   composeFilesForPoolUpdate,
   decideGitUpdate,
+  describeImageChange,
   gatherGitUpdateFacts,
   resolvePoolUpdateImage,
 } from './cli-pool-update.js';
@@ -495,6 +496,11 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
     lines.push(cliWarn(`git checkout left untouched — ${gitDecision.reason}`));
   }
 
+  // Read WHICH build is running before anything is pulled, so the end of this command can say
+  // whether the image actually moved. A floating tag makes a no-op pull indistinguishable from a
+  // real update on liveness alone — see describeImageChange.
+  const imageBefore = readRunningImageIdentity();
+
   const { files, overlayApplied } = composeFilesForPoolUpdate(ctx.cwd, ctx.composeFiles);
   const image = resolvePoolUpdateImage(ctx.env, process.env.CI_HUB_IMAGE);
   if (overlayApplied) {
@@ -551,6 +557,12 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   }
   lines.push('', cliOk(`${base}/api/health answered — Hub is up`));
 
+  // Liveness is not the same as "the update landed". A pull that fetched nothing and an `up` that
+  // recreated nothing answer health exactly like a real update does.
+  const imageAfter = readRunningImageIdentity();
+  const moved = describeImageChange(imageBefore, imageAfter);
+  lines.push(moved.warn ? cliWarn(moved.line) : cliOk(moved.line));
+
   try {
     const identify = await fetch(`${base}/api/inference/pool/identify`, { signal: AbortSignal.timeout(3000) });
     const body = identify.ok ? ((await identify.json()) as { poolProtocol?: number }) : null;
@@ -562,7 +574,7 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   } catch {
     // identify is a bonus signal on top of health, not a requirement for a successful update.
   }
-  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, 'green');
+  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, moved.warn ? 'yellow' : 'green');
 }
 
 /** What each axis is called, which env var overrides it, and how `/status` reports its state. */

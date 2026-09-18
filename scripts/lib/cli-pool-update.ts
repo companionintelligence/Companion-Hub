@@ -121,3 +121,55 @@ export function buildPoolUpdateComposeArgs(
     upArgs: [...base, 'up', '-d', '--remove-orphans', '--no-build'],
   };
 }
+
+/** The subset of a running container's identity that says WHICH build it is. */
+export interface UpdatedImageFacts {
+  /** `org.opencontainers.image.revision` — the commit the image was built from. */
+  revision: string | null;
+  /** `org.opencontainers.image.created` — when it was built. */
+  imageCreatedIso: string | null;
+}
+
+/**
+ * Did the redeploy actually change the image, and can we tell?
+ *
+ * `pool update` used to report success on liveness alone: `/api/health` answered, so the update
+ * "worked". But every node runs a floating tag, and a pull that fetched nothing followed by an `up`
+ * that recreated nothing answers health exactly like a real update does. On 2026-09-17 that
+ * ambiguity cost a fleet roll several hours — a node whose registry DNS was dead silently kept its
+ * old image while every command reported fine, and two others quietly redeployed a CACHED `:dev`
+ * from days earlier. The tag proves nothing; the revision is what distinguishes two builds.
+ *
+ * Returns `warn: true` when the image did not move, or when this build stamps no revision to compare
+ * — "cannot tell" is a different answer from "unchanged", and both are different from success.
+ */
+export function describeImageChange(
+  before: UpdatedImageFacts | null,
+  after: UpdatedImageFacts | null,
+): { changed: boolean; warn: boolean; line: string } {
+  const short = (rev: string | null): string => (rev ? rev.slice(0, 9) : 'unknown');
+  if (after === null) {
+    return { changed: false, warn: true, line: 'could not read the running container after redeploy, so the image it ended on is unverified' };
+  }
+  if (before === null) {
+    return { changed: true, warn: false, line: `Hub container created on image ${short(after.revision)}` };
+  }
+  if (before.revision !== null && after.revision !== null) {
+    return before.revision === after.revision
+      ? {
+          changed: false,
+          warn: true,
+          line: `image did NOT change — still ${short(after.revision)}. The pull fetched nothing new; the tag may not have moved, or this node could not reach the registry.`,
+        }
+      : { changed: true, warn: false, line: `image ${short(before.revision)} → ${short(after.revision)}` };
+  }
+  // No revision label on one side or the other: fall back to build time, and say that is what it is.
+  if (before.imageCreatedIso && after.imageCreatedIso && before.imageCreatedIso !== after.imageCreatedIso) {
+    return { changed: true, warn: false, line: `image rebuilt ${before.imageCreatedIso} → ${after.imageCreatedIso} (no revision label to compare)` };
+  }
+  return {
+    changed: false,
+    warn: true,
+    line: 'could not tell whether the image changed — this build stamps no org.opencontainers.image.revision to compare',
+  };
+}
