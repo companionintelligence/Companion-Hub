@@ -10,6 +10,7 @@ import {
   buildPoolUpdateComposeArgs,
   composeFilesForPoolUpdate,
   decideGitUpdate,
+  describeImageChange,
   gatherGitUpdateFacts,
   resolvePoolUpdateImage,
 } from '../lib/cli-pool-update';
@@ -157,5 +158,48 @@ describe('resolvePoolUpdateImage', () => {
 
   it('treats a blank CI_HUB_IMAGE (set but empty) the same as unset, not as a literal empty image name', () => {
     expect(resolvePoolUpdateImage('dev', '   ')).toBe('ghcr.io/companionintelligence/ci-hub:dev');
+  });
+});
+
+describe('describeImageChange', () => {
+  const at = (revision: string | null, imageCreatedIso: string | null = null) => ({ revision, imageCreatedIso });
+
+  it('reports the move when the revision changed', () => {
+    const moved = describeImageChange(at('53fc3ea9bb11f34e'), at('6c343b78a754c36a'));
+    expect(moved).toEqual({ changed: true, warn: false, line: 'image 53fc3ea9b → 6c343b78a' });
+  });
+
+  it('WARNS when the image did not move — a pull that fetched nothing answers health like a real update', () => {
+    const moved = describeImageChange(at('53fc3ea9bb11f34e'), at('53fc3ea9bb11f34e'));
+    expect(moved.changed).toBe(false);
+    expect(moved.warn).toBe(true);
+    expect(moved.line).toContain('did NOT change');
+    expect(moved.line).toContain('could not reach the registry');
+  });
+
+  it('warns rather than claiming success when the build stamps no revision to compare', () => {
+    const moved = describeImageChange(at(null), at(null));
+    expect(moved).toEqual({
+      changed: false,
+      warn: true,
+      line: 'could not tell whether the image changed — this build stamps no org.opencontainers.image.revision to compare',
+    });
+  });
+
+  it('falls back to build time when there is no revision label but the image was rebuilt', () => {
+    const moved = describeImageChange(at(null, '2026-09-10T00:00:00Z'), at(null, '2026-09-17T00:00:00Z'));
+    expect(moved.changed).toBe(true);
+    expect(moved.line).toContain('no revision label to compare');
+  });
+
+  it('treats a first-ever container as a change, not as "unchanged"', () => {
+    const moved = describeImageChange(null, at('6c343b78a754c36a'));
+    expect(moved).toEqual({ changed: true, warn: false, line: 'Hub container created on image 6c343b78a' });
+  });
+
+  it('warns when the container cannot be read after the redeploy', () => {
+    const moved = describeImageChange(at('53fc3ea9bb11f34e'), null);
+    expect(moved.warn).toBe(true);
+    expect(moved.line).toContain('unverified');
   });
 });

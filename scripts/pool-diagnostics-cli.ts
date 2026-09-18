@@ -1631,6 +1631,9 @@ export function checkComposeDrift(input: ComposeDriftInput, env: string): PoolCh
   const repoOnlyMounts =
     repo === null || usesRepoCompose ? [] : repo.spec.mountTargets.filter((target) => !created.spec.mountTargets.includes(target));
   const source = `${sanitizeForBox(created.path)} (service ${sanitizeForBox(created.spec.service)})`;
+  // A multi-file stack where one file could not be read still produces a declaration — from the rest.
+  // Say so, because an incomplete declaration under-reports drift and otherwise looks complete.
+  const partial = created !== null && input.createdReason ? [`Only part of the stack was read: ${sanitizeForBox(input.createdReason)}`] : [];
 
   if (missingMounts.length > 0 || missingVars.length > 0) {
     return {
@@ -1640,6 +1643,7 @@ export function checkComposeDrift(input: ComposeDriftInput, env: string): PoolCh
       detail: `the running container is missing ${missingMounts.length} mount(s) and ${missingVars.length} backend URL var(s) its compose declares`,
       notes: [
         `Compared against ${source}.`,
+        ...partial,
         ...(missingMounts.length > 0 ? [`Mounts declared but not present: ${missingMounts.map((target) => sanitizeForBox(target)).join(', ')}`] : []),
         ...(missingVars.length > 0 ? [`Variables declared but not set: ${missingVars.map((name) => sanitizeForBox(name)).join(', ')}`] : []),
         'The container predates its own compose file: it was created before these lines were added and',
@@ -1672,7 +1676,7 @@ export function checkComposeDrift(input: ComposeDriftInput, env: string): PoolCh
     label,
     verdict: 'ok',
     detail: `container matches ${created.spec.mountTargets.length} mount(s) and ${declaredBackendVars.length} backend URL var(s) declared in its compose`,
-    notes: [`Compared against ${source}.`],
+    notes: [`Compared against ${source}.`, ...partial],
   };
 }
 
@@ -2718,19 +2722,60 @@ function readComposeDeclaration(file: string, services: readonly string[]): { de
   }
 }
 
+/**
+ * Every compose file the container was created from, merged — not just the first one.
+ *
+ * `com.docker.compose.project.config_files` is a comma-separated LIST, and on this fleet seven of
+ * sixteen nodes run two files: `docker-compose.prod.yml` plus an overlay. Reading only the first is
+ * how B3 came to compare a container against half the document that made it — a mount or variable
+ * an overlay declares reads as "the container has it, the compose does not", which is drift that
+ * is not there. Worse, `docker-compose.prod.yml` declares the Hub service `build:`-only with no
+ * `image:` at all; the overlay is what supplies one, so the first file alone does not even describe
+ * how the container gets its image.
+ *
+ * Merge semantics follow compose's own: later files override earlier ones, and since the two fields
+ * compared here are lists of names, the union is what "declared by this stack" means. The reported
+ * path names every file, so the operator can see which documents were read.
+ */
+export function readComposeDeclarations(
+  files: readonly string[],
+  services: readonly string[],
+): { declaration: ComposeDeclaration | null; reason: string | null } {
+  const parts: ComposeDeclaration[] = [];
+  const reasons: string[] = [];
+  for (const file of files) {
+    const one = readComposeDeclaration(file, services);
+    if (one.declaration) parts.push(one.declaration);
+    else if (one.reason) reasons.push(one.reason);
+  }
+  if (parts.length === 0) return { declaration: null, reason: reasons.join('; ') || null };
+  return {
+    declaration: {
+      path: parts.map((p) => p.path).join(' + '),
+      spec: {
+        service: parts[0].spec.service,
+        mountTargets: [...new Set(parts.flatMap((p) => p.spec.mountTargets))],
+        envNames: [...new Set(parts.flatMap((p) => p.spec.envNames))],
+      },
+    },
+    // A file that could not be read is worth saying even when another one answered: the merged
+    // declaration is then incomplete, and silently complete-looking is the failure mode here.
+    reason: reasons.length > 0 ? reasons.join('; ') : null,
+  };
+}
+
 function collectComposeDrift(image: RunningImageIdentity | null, repo: RepoIdentity): ComposeDriftInput {
   if (image === null) return { image, created: null, createdReason: null, repo: null };
   // Both topologies: the canonical `ci-hub` service and the older `ci-os-hub` one. The container's
   // own label names which it is, and the fallbacks cover a compose file that predates the label.
   const services = [...new Set([image.service, 'ci-hub', 'ci-os-hub'].filter((name): name is string => Boolean(name)))];
-  const composeFile = image.composeFiles[0] ?? null;
   const created =
-    composeFile === null
+    image.composeFiles.length === 0
       ? {
           declaration: null,
           reason: 'the container carries no `com.docker.compose.project.config_files` label, so the compose it was created from is unknown',
         }
-      : readComposeDeclaration(composeFile, services);
+      : readComposeDeclarations(image.composeFiles, services);
   const repoCompose = repo.root === null ? null : readComposeDeclaration(path.join(repo.root, 'docker-compose.prod.yml'), services).declaration;
   return { image, created: created.declaration, createdReason: created.reason, repo: repoCompose };
 }
