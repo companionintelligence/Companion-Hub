@@ -914,6 +914,10 @@ describe('api-key scope parsing', () => {
     expect(managedOnly).toEqual([]);
   });
 
+  it('accepts qa:read as an operator scope rather than reporting it unknown', () => {
+    expect(parseApiKeyScopes('qa:read')).toEqual({ scopes: ['qa:read'], invalid: [], managedOnly: [] });
+  });
+
   it('dedupes and orders like ApiKeyService.normalizeScopes', () => {
     expect(parseApiKeyScopes('mcp,mcp').scopes).toEqual(['mcp']);
   });

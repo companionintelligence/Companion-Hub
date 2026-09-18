@@ -18,6 +18,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
+import { ObservabilityRead, ObservabilityReadGuard } from '@/modules/auth/observability-read.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { callerSourceIp, describeHubPoolDisabled, describeHubPoolInboundRefused } from '@/common/helpers/hub-pool';
@@ -25,7 +26,7 @@ import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
-import { PoolProxyService } from './hub-pool-proxy.service';
+import { POOL_REQUEST_ID_HEADER, PoolProxyService, normalizePoolRequestId } from './hub-pool-proxy.service';
 import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
 import { HubPoolPinService } from './hub-pool-pin.service';
 import {
@@ -107,8 +108,12 @@ export class HubPoolController {
    * One call answering "is pooling on, why or why not, who is in the pool, what can they serve, and
    * how loaded is everything". Safe to poll: see `HubPoolPeerService.getPoolStatus` for what it does
    * and does not touch. Peer rows come from `toPublicPeer`, so the token columns cannot leak here.
+   *
+   * Readable by a `qa:read` key, and by the CLI JWT on a Hub nobody has claimed — see
+   * `ObservabilityReadGuard` for why that second one is safe.
    */
-  @UseGuards(AuthGuard)
+  @UseGuards(ObservabilityReadGuard)
+  @ObservabilityRead({ unclaimedCli: true })
   @Get('status')
   async poolStatus() {
     return { ...(await this.peerService.getPoolStatus()), routing: this.routingLog.summary() };
@@ -131,11 +136,21 @@ export class HubPoolController {
     return this.configuration.setHubPoolPreferences(body);
   }
 
-  /** Recent routing decisions, newest first. Metadata only — never prompts or response bodies. */
-  @UseGuards(AuthGuard)
+  /**
+   * Recent routing decisions, newest first. Metadata only — never prompts or response bodies.
+   *
+   * `?since=` turns this into a cursor: pass back the `nextSince` of the previous call and get only
+   * the rows placed or changed since, so a poller neither re-reads the ring nor misses a row that was
+   * `pending` last time. `matched > entries.length` says the page was cut by `limit`; `summary.bootId`
+   * changing says the Hub restarted and the old cursor points into a log that no longer exists.
+   * Readable by the same credentials as `status`.
+   */
+  @UseGuards(ObservabilityReadGuard)
+  @ObservabilityRead({ unclaimedCli: true })
   @Get('routing-log')
   async getPoolRoutingLog(@Query() query: RoutingLogQueryDto) {
-    return { entries: this.routingLog.list(query.limit), summary: this.routingLog.summary() };
+    const page = this.routingLog.query({ limit: query.limit, since: query.since });
+    return { entries: page.entries, summary: this.routingLog.summary(), matched: page.matched, nextSince: page.nextSince };
   }
 
   // ── Operator-facing routing pins ────────────────────────────────────────
@@ -574,12 +589,14 @@ export class HubPoolController {
 
   private async forwardLocal(req: Request, path: string, method: string, body: unknown, res: Response): Promise<void> {
     const peer = req.poolPeer;
+    // Read before any refusal, so a refused forward joins to the sender's failover row by id too.
+    const requestId = normalizePoolRequestId(req.header(POOL_REQUEST_ID_HEADER));
     // `isPairingIncomplete`, not `status !== 'connected'`: a peer we have marked unreachable is
     // still paired, and 403 here is read by the sender's `noteRejectedCandidate` as "it no longer
     // considers us paired", dropping a valid pairing's cached capabilities over our own stale
     // outbound health opinion. Only a pairing that was never completed has nothing to serve.
     if (!peer || isPairingIncomplete(peer.status)) {
-      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer?.nodeFqdn, status: 403 });
+      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer?.nodeFqdn, status: 403, requestId });
       res.status(403).json({ error: 'Peer is not connected' });
       return;
     }
@@ -592,7 +609,7 @@ export class HubPoolController {
     // decision would make a healthy pairing repeatedly invalidate itself.
     const refusal = this.peerService.inboundRefusal(peer);
     if (refusal) {
-      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer.nodeFqdn, status: 503 });
+      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer.nodeFqdn, status: 503, requestId });
       res.status(503).json({ error: describeHubPoolInboundRefused(refusal) });
       return;
     }
@@ -609,6 +626,6 @@ export class HubPoolController {
     const model = req.header('x-hub-pool-model') || undefined;
     // The peer's FQDN comes from its `hub_pool_peer` row, not the caller-supplied header, so the
     // routing log records who the guard actually authenticated rather than who claimed to call.
-    await this.proxyService.forwardToLocalBackendAndRespond(backend, path, method, body, res, peer.nodeFqdn, model);
+    await this.proxyService.forwardToLocalBackendAndRespond(backend, path, method, body, res, peer.nodeFqdn, model, requestId);
   }
 }
