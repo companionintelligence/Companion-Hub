@@ -9,6 +9,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { parseEnvFile } from '../env-file.js';
 import { getDeviceId as resolveLocalDeviceId } from '../get-device-id.js';
+import { readHubApiKey } from '../public-web-cli.js';
 import { requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, CI_CLOUD_DEFAULT, type HubEnv, type RegisterHubOptions } from './cli-types.js';
 import { bold, colorize, dim, printMessageBox } from './cli-ui.js';
@@ -159,7 +160,10 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
   }
 
   let shouldPrepareFresh = options.fresh === true;
-  if (!shouldPrepareFresh) {
+  // A registered Hub that got here needs pairing again (Portal rejects its key, or its tunnel token
+  // is gone), and `prepare-fresh` refuses every registered Hub, so a stale app.env device id found
+  // by the drift check would turn the re-pair into an exit 1 before the code was ever sent.
+  if (!shouldPrepareFresh && !status.registered) {
     try {
       const drift = await fetchStateDrift(apiBase);
       shouldPrepareFresh = drift.detected;
@@ -229,7 +233,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
   const pairingCode = await resolvePairingCode(env, options.code);
 
   printMessageBox('Pairing', ['Submitting pairing code to the Hub\u2026'], 'cyan');
-  const pairResult = await submitPairingCode(apiBase, pairingCode);
+  const pairResult = await submitPairingCode(apiBase, pairingCode, readHubApiKey(envFileName));
   if (!pairResult.success) {
     printMessageBox('Pairing failed', [pairResult.message || 'Unknown error'], 'red');
     process.exit(1);

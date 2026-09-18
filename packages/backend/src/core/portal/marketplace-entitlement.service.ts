@@ -43,6 +43,11 @@ export class MarketplaceEntitlementService {
     await this.assert(appUrn, 'update');
   }
 
+  /**
+   * Start and restart share this policy. Restart is `down` then `up --force-recreate`, which is a
+   * start in every sense the gate cares about; leaving it ungated meant an app refused at Start
+   * came back through Restart.
+   */
   async assertForStart(appUrn: AppUrn): Promise<void> {
     await this.assert(appUrn, 'start');
   }
@@ -72,6 +77,21 @@ export class MarketplaceEntitlementService {
     }
 
     if (result.status === 401) {
+      /*
+       * A 401 is Portal refusing this Hub's device key, not an entitlement decision: Portal never
+       * looked at the app. Install and update still refuse, because the bundle download and
+       * registry mint that follow would get the same 401. Starting an app that is already on disk
+       * needs neither, so it gets the unreachable policy. Refusing it is measured: on core-4, whose
+       * key Portal had rejected, the boot-time start of ci-memory, ci-hermes, ci-openclaw and
+       * ci-import-tools all failed with this error at 2026-09-15T20:17:48Z, while a restart of
+       * the same apps, which was not gated, would have brought them straight back.
+       */
+      if (mode === 'start') {
+        this.logger.warn(`Portal rejected this Hub's device key while checking ${appUrn}; starting on the unreachable policy`);
+        this.applyUnreachable(cache, now, mode);
+        return;
+      }
+
       throw new TranslatableError('APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED', undefined, HttpStatus.UNAUTHORIZED);
     }
 

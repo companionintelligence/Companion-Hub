@@ -303,6 +303,21 @@
         ]
       }
     },
+    "/api/registration/phase": {
+      "get": {
+        "operationId": "getPhase",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns the in-memory phase, degraded reasons, and last check-in outcome"
+          }
+        },
+        "summary": "Get registration phase and the last Portal check-in without sending one",
+        "tags": [
+          "Registration"
+        ]
+      }
+    },
     "/api/registration/reconnect-tunnel": {
       "post": {
         "operationId": "reconnectTunnel",

@@ -11,6 +11,9 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { HttpStatus } from '@nestjs/common';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
@@ -47,6 +50,7 @@ describe('RestartAppCommand — pull policy', () => {
   let dockerService: any;
   let composeArgs: string[];
   let appFilesManager: any;
+  let entitlements: ReturnType<typeof mock<MarketplaceEntitlementService>>;
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
@@ -92,6 +96,9 @@ describe('RestartAppCommand — pull policy', () => {
     const marketplaceService = mock<MarketplaceService>();
     marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
 
+    entitlements = mock<MarketplaceEntitlementService>();
+    entitlements.assertForStart.mockResolvedValue(undefined);
+
     const subnetManager = mock<SubnetManagerService>();
     subnetManager.allocateSubnet.mockResolvedValue('172.20.0.0/16');
     subnetManager.releaseSubnet.mockResolvedValue(undefined);
@@ -111,6 +118,7 @@ describe('RestartAppCommand — pull policy', () => {
         if (token === MarketplaceService) return marketplaceService;
         if (token === SubnetManagerService) return subnetManager;
         if (token === EnvUtils) return new EnvUtils();
+        if (token === MarketplaceEntitlementService) return entitlements;
         return mock();
       }),
     } as unknown as ModuleRef;
@@ -157,5 +165,20 @@ describe('RestartAppCommand — pull policy', () => {
     expect((result as any).errorCode).toBe('rocm_kfd_missing');
     expect(result.message).toContain('Set up ROCm in AI Settings');
     expect(dockerService.composeApp).not.toHaveBeenCalled();
+  });
+
+  // The queued restart also carries the Hub's own restarts: a credential rotation, a saved config, an
+  // inference change. Refused here, on a cached 402, a rotation strands the app on the credentials
+  // it just revoked, and the failure settles the app as `stopped` while its containers keep running.
+  // A person's restart is gated before it is queued, in `AppLifecycleService.restartApp`.
+  it('re-provisions the app even when Start would refuse it, because a Hub restart must land', async () => {
+    entitlements.assertForStart.mockRejectedValue(
+      new TranslatableError('APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED', {}, HttpStatus.PAYMENT_REQUIRED),
+    );
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(composeArgs.some((args) => args.startsWith('up'))).toBe(true);
   });
 });

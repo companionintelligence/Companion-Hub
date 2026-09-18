@@ -74,10 +74,36 @@ describe('MarketplaceEntitlementService', () => {
     });
   });
 
-  it('refuses when the device key is missing or unknown', async () => {
+  it('refuses an install or update when the device key is missing or unknown, since the bundle download would 401 too', async () => {
     portal.checkAppEntitlement.mockResolvedValue({ status: 401 });
 
     await expect(service.assertForInstall(APP_URN)).rejects.toBeInstanceOf(TranslatableError);
+    await expect(service.assertForUpdate(APP_URN)).rejects.toBeInstanceOf(TranslatableError);
+  });
+
+  it('still starts an installed app when Portal rejects the device key, which is not an entitlement decision', async () => {
+    // core-4, key rejected by Portal: ci-memory, ci-hermes, ci-openclaw and ci-import-tools all
+    // failed to start at boot with APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED on 2026-09-15.
+    portal.checkAppEntitlement.mockResolvedValue({ status: 401 });
+
+    await expect(service.assertForStart(APP_URN)).resolves.toBeUndefined();
+  });
+
+  it('does not start on a rejected key when the last real answer was a fresh 402', async () => {
+    cacheRows = [
+      {
+        appUrn: APP_URN,
+        entitled: false,
+        reason: 'not_entitled',
+        paymentUrl: 'https://portal.example/store/immich',
+        cachedAt: new Date().toISOString(),
+      },
+    ];
+    portal.checkAppEntitlement.mockResolvedValue({ status: 401 });
+
+    await expect(service.assertForStart(APP_URN)).rejects.toMatchObject({
+      status: HttpStatus.PAYMENT_REQUIRED,
+    });
   });
 
   it('fails closed on install when Portal is unreachable and there is no fresh entitled cache', async () => {
