@@ -93,13 +93,13 @@ pnpm run test:visual
 
 1. Baselines live in `e2e/screenshots/baselines/`
 2. Failed runs write actual + diff to gitignored dirs
-3. Update baselines intentionally when UI changes are correct — see `.cursor/skills/visual-regression/SKILL.md`
+3. Update baselines intentionally when UI changes are correct — see `.claude/skills/visual-regression/SKILL.md` (mirrored at `.cursor/skills/`)
 
 ---
 
 ## False-confidence tests
 
-Periodically audit with `.cursor/skills/test-audit/SKILL.md`:
+Periodically audit with `.claude/skills/test-audit/SKILL.md` (mirrored at `.cursor/skills/`):
 
 - Tests that mock the thing they claim to test
 - Assertions that can never fail

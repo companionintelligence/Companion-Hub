@@ -16,9 +16,9 @@ From the repo root:
 
 ```bash
 pnpm install
-pnpm --filter @ci-hub/frontend dev
-pnpm --filter @ci-hub/frontend test
-pnpm --filter @ci-hub/frontend typecheck
+pnpm --filter frontend dev
+pnpm --filter frontend test
+pnpm --filter frontend tsc
 ```
 
 ## Docs

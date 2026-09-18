@@ -61,6 +61,20 @@ Follow the [Google developer documentation style guide](https://developers.googl
 
 `packages/backend/ARCHITECTURE.md` is a short pointer only; do not treat it as the source of truth.
 
+### UI and UX
+
+| Doc | Role |
+|-----|------|
+| [`system/ui-screens.md`](system/ui-screens.md) | The screen inventory: every route, what the user does there, what gates it, and measured test coverage |
+| [`system/user-flows.md`](system/user-flows.md) | The twelve journeys people come to the Hub for, and where each is documented and tested |
+| [`UI-STYLE-GUIDE.md`](UI-STYLE-GUIDE.md) | Tokens and primitives; Part I delegates values to CI-Common, Part III tracks known drift |
+| [`DESKTOP-UI-ARCHITECTURE.md`](DESKTOP-UI-ARCHITECTURE.md) | ADR: why the container, not the Tauri shell, owns product UI |
+| [`system/frontend.md`](system/frontend.md) | Frontend mechanics: scroll contract, hub-status gate, auth flows |
+| [`RESET_RUNBOOK.md`](RESET_RUNBOOK.md) | Factory reset and account removal, by exact navigation path |
+
+User-facing Hub documentation — onboarding walkthroughs, app-store guides, screenshots — lives in the sibling
+**CI-Docs** repo (`docs.ci.computer`), not here. This tree documents mechanism for people changing the code.
+
 ### Testing and QA
 
 | Doc | Role |
