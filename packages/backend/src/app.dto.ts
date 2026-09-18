@@ -161,6 +161,9 @@ export const settingsSchema = z.object({
   // Absent means no prompt ceiling, which routes exactly as a build without one does. See
   // `HUB_POOL_MAX_PROMPT_TOKENS_ENV_VAR` for what the ceiling is and why it is only a preference.
   hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional().catch(undefined),
+  // Opt-OUT: absent means every app is handed this Hub's proxy as its inference endpoint, peers or
+  // not. See `HubPoolPreferences.poolRouteAppsAlways`.
+  hubPoolRouteAppsAlways: z.boolean().optional(),
   // Inference-backend observation. Opt-IN, unlike the pool switches: absent means `'off'`, which is
   // the only value that costs a deployed Hub literally nothing — no timer, no probe, no boot work.
   // `CI_HUB_INFERENCE_SUPERVISION_DISABLED=true` in the environment overrides it

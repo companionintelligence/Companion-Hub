@@ -11,6 +11,7 @@ import type { MtplxBackend } from '../backends/mtplx.backend';
 import type { OllamaBackend } from '../backends/ollama.backend';
 import type { VllmBackend } from '../backends/vllm.backend';
 import { InferenceEndpointService, isPoolProxyUrl } from '../inference-endpoint.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
 
 const DIRECTIONS_ON = { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } };
 const DOWN = { running: false, healthy: false, modelsLoaded: [] as string[] };
@@ -32,9 +33,11 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
   let ollama: MockProxy<OllamaBackend>;
   let vllm: MockProxy<VllmBackend>;
   let logger: MockProxy<LoggerService>;
+  let config: MockProxy<ConfigurationService>;
 
   beforeEach(() => {
     logger = mock<LoggerService>();
+    config = mock<ConfigurationService>();
     peers = mock<HubPoolPeerService>();
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
@@ -50,7 +53,10 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
       others[2] as DsparkBackend,
       others[3] as LuceboxBackend,
     );
-    service = new InferenceEndpointService(logger, registry, ollama, peers);
+    service = new InferenceEndpointService(logger, registry, ollama, peers, config);
+
+    // `poolRouteAppsAlways` defaults on; the one case that needs it off turns it off itself.
+    config.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
 
     peers.hasConnectedPeers.mockResolvedValue(true);
     peers.directions.mockReturnValue(DIRECTIONS_ON);
@@ -114,11 +120,24 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
   });
 
   describe('resolvePoolRouting', () => {
-    it('is null with no connected peer, so a single-node Hub keeps choosing from its own backend', async () => {
+    it('is null with no connected peer once the always-on switch is off, so a single-node Hub keeps choosing from its own backend', async () => {
+      config.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: false } as never);
       peers.hasConnectedPeers.mockResolvedValue(false);
 
       expect(await service.resolvePoolRouting('test')).toBeNull();
       expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+
+    it('routes a peerless Hub through the proxy for transport only when the always-on switch is on', async () => {
+      // `poolRouteAppsAlways` is the default. Routing is on, but `spansPeers` is false, so the two
+      // handout paths keep choosing the model the direct path would have chosen.
+      peers.hasConnectedPeers.mockResolvedValue(false);
+
+      const routing = await service.resolvePoolRouting('test');
+
+      expect(isPoolProxyUrl(routing?.baseUrl)).toBe(true);
+      expect(routing?.reason).toBe('always');
+      expect(routing?.spansPeers).toBe(false);
     });
 
     it('carries the proxy URL apps are rewritten to', async () => {

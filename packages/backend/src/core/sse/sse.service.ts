@@ -3,7 +3,8 @@ import { Injectable, type MessageEvent, type OnApplicationShutdown } from '@nest
 import type { SSE, Topic } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { Observable, Subject, type Subscription, interval, merge } from 'rxjs';
-import { map } from 'rxjs/operators';
+import { map, startWith } from 'rxjs/operators';
+import { ConfigurationService } from '../config/configuration.service';
 import { LoggerService } from '../logger/logger.service';
 
 @Injectable()
@@ -13,6 +14,7 @@ export class SSEService implements OnApplicationShutdown {
   constructor(
     private readonly logger: LoggerService,
     private readonly dockerService: DockerService,
+    private readonly config: ConfigurationService,
   ) {
     this.cleanupSubscription = interval(1000 * 60).subscribe(() => {
       this.topics.forEach((topic, key) => {
@@ -78,6 +80,20 @@ export class SSEService implements OnApplicationShutdown {
     const heartbeat = interval(30_000).pipe(map(() => ({ type: 'heartbeat', data: 'ping' }) satisfies MessageEvent));
 
     return merge(currentTopic.asObservable(), heartbeat);
+  }
+
+  /**
+   * The `app` topic with a `hub_hello` prelude: the first message every subscriber gets
+   * is this Hub's version. See `hubHelloEventSchema` in `@ci-hub/common/schemas` for why
+   * it exists. It is built per subscription, not emitted on the topic, because a Hub
+   * that has just started has no subscribers to emit to — the clients are all mid-reconnect.
+   */
+  getAppEventsObservable(): Observable<MessageEvent> {
+    const hello: MessageEvent = {
+      type: 'message',
+      data: JSON.stringify({ event: 'hub_hello', version: this.config.getConfig().version }),
+    };
+    return this.getTopicObservable('app').pipe(startWith(hello));
   }
 
   /**

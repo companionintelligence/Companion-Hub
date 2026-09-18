@@ -348,8 +348,24 @@ export class HardwareInspectorService {
     };
   }
 
+  /**
+   * Whether inference can actually reach this GPU.
+   *
+   * `runtimeAvailable` is the CONTAINER's view: `/dev/kfd` + `/dev/dri` visible to the Hub
+   * process. On a Linux host the Hub container is started without device passthrough, so that
+   * is false on every AMD box — while Ollama, which is what runs the models, sits on the host
+   * (or in its own container with the nodes bind-mounted) and uses the card fine. The host
+   * probe (`/data/state/hardware/rocm.json`, `source: host-dev-kfd`) records exactly that.
+   * Measured 2026-09-17 on an RX 7900 XTX: `runtimeAvailable=false`, `hostRocmKfdAvailable=true`,
+   * tier computed as `cpu-only`, so the 27B the operator had pinned was rejected as "not
+   * runnable" and every app was handed a 4B model. The tier must follow the host probe.
+   */
+  private gpuRuntimeReady(gpu: HardwareProfile['gpu']): boolean {
+    return gpu.runtimeAvailable || (gpu.vendor === 'amd' && gpu.hostRocmKfdAvailable === true);
+  }
+
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {
-    if (gpu.available && gpu.runtimeAvailable) {
+    if (gpu.available && this.gpuRuntimeReady(gpu)) {
       const effectiveVram = gpu.unifiedMemory ? ram.totalMb : gpu.vramMb;
       if (effectiveVram >= 16384) return 'high';
       if (effectiveVram >= 8192) return 'medium';
@@ -477,8 +493,20 @@ export class HardwareInspectorService {
             return fromSmi;
           }
         }
-      } else if (best.vendor === 'amd' && vramMb <= 0) {
-        vramMb = await this.detectAmdVram();
+      } else if (best.vendor === 'amd') {
+        // systeminformation derives a Linux AMD card's VRAM from its lspci BAR, which is the
+        // PCIe aperture, not the memory: a 24 GB RX 7900 XTX reads 32768 with resizable BAR on
+        // and 256 with it off. The amdgpu driver publishes the real total in sysfs, which the
+        // Hub container can read without any device passthrough.
+        const sysfsVramMb = await this.detectAmdVramFromSysfs();
+        if (sysfsVramMb >= MIN_PLAUSIBLE_DISCRETE_VRAM_MB) {
+          if (sysfsVramMb !== vramMb) {
+            this.logger.info(`[HardwareInspector] AMD VRAM from sysfs: ${sysfsVramMb} MB (systeminformation reported ${vramMb} MB).`);
+          }
+          vramMb = sysfsVramMb;
+        } else if (vramMb <= 0) {
+          vramMb = await this.detectAmdVram();
+        }
       }
 
       return {
@@ -812,6 +840,30 @@ export class HardwareInspectorService {
   }
 
   /** Detect AMD VRAM using rocm-smi */
+  /**
+   * Largest `mem_info_vram_total` across `/sys/class/drm/card*` — the amdgpu driver's own
+   * figure, in bytes. 0 when sysfs is unavailable or no card publishes one. An iGPU (a
+   * Raphael die reports 512 MB) never wins over a discrete card because the largest is taken.
+   */
+  private async detectAmdVramFromSysfs(): Promise<number> {
+    try {
+      const entries = (await this.filesystem.listFiles('/sys/class/drm')) ?? [];
+      const cards = entries.filter((name) => /^card\d+$/.test(name));
+      let largestVramMb = 0;
+      for (const card of cards) {
+        const raw = await this.filesystem.readTextFile(`/sys/class/drm/${card}/device/mem_info_vram_total`);
+        const vramBytes = Number.parseInt(raw?.trim() ?? '', 10);
+        if (!Number.isFinite(vramBytes) || vramBytes <= 0) {
+          continue;
+        }
+        largestVramMb = Math.max(largestVramMb, Math.round(vramBytes / (1024 * 1024)));
+      }
+      return largestVramMb;
+    } catch {
+      return 0;
+    }
+  }
+
   private async detectAmdVram(): Promise<number> {
     try {
       const { stdout } = await execAsync('rocm-smi --showmeminfo vram --csv', { timeout: 5000 });
