@@ -845,8 +845,41 @@ describe('AppHelpers', () => {
       // Act
       await appHelpers.generateEnvFile(hermesUrn, {});
 
-      // Assert — the resolver is asked to floor at Hermes' 64K minimum.
-      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ minContextLength: 64_000 });
+      // Assert — the resolver is asked to floor at Hermes' 64K minimum, and told which app it is
+      // resolving for so a model Hermes would refuse is never baked into its app.env.
+      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ appSlug: 'hermes-agent', minContextLength: 64_000 });
+    });
+
+    it('applies the same 64K floor to ci-hermes, the first-party listing the fleet actually installs', async () => {
+      // core-4 runs `ci-hermes`, not `hermes-agent`. A floor keyed only by the bootstrap slug left
+      // its app.env with HERMES_NUM_CTX=32000, which Hermes refuses at startup.
+      const ciHermesUrn = createAppUrn('ci-hermes', 'ci-marketplace');
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        id: 'ci-hermes',
+        urn: ciHermesUrn,
+        hub_integration: { inference: { num_ctx: 'HERMES_NUM_CTX' } },
+      } as unknown as AppInfo);
+      inferenceEnv.resolve.mockResolvedValue({ CI_LLM_NUM_CTX: '64000' });
+
+      await appHelpers.generateEnvFile(ciHermesUrn, {});
+
+      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ appSlug: 'ci-hermes', minContextLength: 64_000 });
+    });
+
+    it('writes CI_INFERENCE_ERROR into app.env when the resolver has no model the app can use', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: { inference: { chat_model: 'APP_CHAT_MODEL' } },
+      } as unknown as AppInfo);
+      inferenceEnv.resolve.mockResolvedValue({ CI_INFERENCE_ERROR: 'No chat model served by this Hub pool meets the app.' });
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.get('CI_INFERENCE_ERROR')).toBe('No chat model served by this Hub pool meets the app.');
+      expect(envMap.has('APP_CHAT_MODEL')).toBe(false);
     });
 
     it('passes no context floor for apps without a declared minimum', async () => {
@@ -861,7 +894,7 @@ describe('AppHelpers', () => {
       await appHelpers.generateEnvFile(testAppUrn, {});
 
       // Assert
-      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ minContextLength: undefined });
+      expect(inferenceEnv.resolve).toHaveBeenCalledWith({ appSlug: 'test-app', minContextLength: undefined });
     });
 
     it('injects llm_base_url and sets dual-provider env to ollama when Hub backend is Ollama', async () => {

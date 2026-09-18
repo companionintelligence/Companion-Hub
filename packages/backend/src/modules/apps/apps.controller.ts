@@ -8,6 +8,7 @@ import { ObservabilityRead, ObservabilityReadGuard } from '../auth/observability
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { AppsReadService } from './apps-read.service';
 import { AppsService } from './apps.service';
+import { InferenceEnvStalenessService } from './inference-env-staleness.service';
 import {
   AppDataListingDto,
   GetAppDto,
@@ -33,6 +34,7 @@ export class AppsController {
     private readonly runtimeMonitor: AppRuntimeMonitorService,
     private readonly moduleRef: ModuleRef,
     private readonly whois: MarketplaceWhoIsService,
+    private readonly inferenceEnvStaleness: InferenceEnvStalenessService,
   ) {}
 
   @Get('installed')
@@ -196,6 +198,19 @@ export class AppsController {
     const appUrn = castAppUrn(urn);
     await this.whois.assertSessionAction(req, appUrn, 'configure');
     return this.appsService.unignoreAppVersion(appUrn);
+  }
+
+  /**
+   * Whether the app's inference config is out of date: `stale: true` when regenerating it now would
+   * change its routing (direct vs pool), its chat model, or any other inference key. Read-only — it
+   * never regenerates, restarts, or starts a model pull.
+   */
+  @Get(':urn/inference-env')
+  @UseGuards(AuthGuard)
+  async getInferenceEnvStaleness(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    return this.inferenceEnvStaleness.check(appUrn);
   }
 
   @Get(':urn/check-availability')

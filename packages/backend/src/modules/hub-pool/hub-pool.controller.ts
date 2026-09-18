@@ -4,6 +4,7 @@ import {
   Delete,
   ForbiddenException,
   Get,
+  Optional,
   Param,
   Patch,
   Post,
@@ -14,6 +15,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { ModuleRef } from '@nestjs/core';
 import { ApiTags } from '@nestjs/swagger';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { AuthGuard } from '@/modules/auth/auth.guard';
@@ -22,6 +24,7 @@ import { ObservabilityRead, ObservabilityReadGuard } from '@/modules/auth/observ
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { callerSourceIp, describeHubPoolDisabled, describeHubPoolInboundRefused } from '@/common/helpers/hub-pool';
+import { INFERENCE_ENV_REFRESHER, type InferenceEnvRefresher } from '@/common/helpers/inference-env-refresh';
 import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
@@ -75,6 +78,9 @@ export class HubPoolController {
     // Appended after `discoveryService` for the same reason it was: every pool test file constructs
     // this controller positionally.
     private readonly pinService: HubPoolPinService,
+    // Appended last for the same reason. Only used to reach INFERENCE_ENV_REFRESHER, and optional so
+    // those positional harnesses keep constructing this controller.
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   // ── Discovery / identification ──────────────────────────────────────────
@@ -126,14 +132,38 @@ export class HubPoolController {
   }
 
   /**
-   * Persisted pool tuning. No app restart is scheduled, unlike the inference preferences: every
-   * value here is read on the Hub's own request/poll path, so it takes effect on the next request
-   * without an app's environment changing.
+   * Persisted pool tuning. Almost every value here is read on the Hub's own request/poll path, so it
+   * takes effect on the next request without an app's environment changing.
+   *
+   * The master and outbound switches are the exception. AI apps are handed their chat model from
+   * what the pool serves, so switching either one changes that answer: master off repoints apps at
+   * a direct backend, and outbound off drops every peer's models from the inventory. This is the
+   * route Settings > Network > Hub Pool saves those switches through, so it asks for the same AI app
+   * refresh the inference preference routes do. Without it the change reached apps only through the
+   * membership watcher, a minute later, and as an automatic refresh that declines to restart an app
+   * into a config with no model, which is exactly what switching the pool off can produce.
    */
   @UseGuards(AuthGuard)
   @Patch('settings')
   async updatePoolSettings(@Body() body: UpdateHubPoolPreferencesBody) {
-    return this.configuration.setHubPoolPreferences(body);
+    const before = this.configuration.getHubPoolPreferences();
+    const after = await this.configuration.setHubPoolPreferences(body);
+    const moved = (['poolEnabled', 'poolOutboundEnabled'] as const).filter((key) => body[key] !== undefined && before?.[key] !== after?.[key]);
+    if (moved.length > 0) {
+      this.requestInferenceRefresh(`pool settings changed: ${moved.join(', ')}`);
+    }
+    return after;
+  }
+
+  private requestInferenceRefresh(reason: string): void {
+    let refresher: InferenceEnvRefresher | undefined;
+    try {
+      refresher = this.moduleRef?.get<InferenceEnvRefresher>(INFERENCE_ENV_REFRESHER, { strict: false });
+    } catch {
+      // ModuleRef.get throws on an unresolvable token. The membership watcher still sees the switch
+      // on its next two polls, so apps are refreshed later rather than never.
+    }
+    refresher?.requestRefresh(reason);
   }
 
   /**

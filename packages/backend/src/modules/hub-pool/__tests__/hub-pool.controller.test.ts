@@ -12,6 +12,8 @@ import { PoolProxyService } from '../hub-pool-proxy.service';
 import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
 import { HubPoolPinService } from '../hub-pool-pin.service';
 import { HubPoolController } from '../hub-pool.controller';
+import type { ModuleRef } from '@nestjs/core';
+import { INFERENCE_ENV_REFRESHER } from '@/common/helpers/inference-env-refresh';
 import type { PoolStatus } from '../hub-pool.types';
 
 function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
@@ -202,6 +204,53 @@ describe('HubPoolController', () => {
       await controller.updatePoolSettings({ poolInboundEnabled: false });
 
       expect(configuration.setHubPoolPreferences).toHaveBeenCalledWith({ poolInboundEnabled: false });
+    });
+
+    describe('AI app refresh', () => {
+      const prefs = {
+        poolEnabled: true,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: true,
+        poolLocalAffinity: 1,
+        poolHealthPollSeconds: 30,
+        poolPressureWeight: 0,
+      };
+      let refresher: { requestRefresh: ReturnType<typeof vi.fn> };
+
+      beforeEach(() => {
+        refresher = { requestRefresh: vi.fn() };
+        const moduleRef = { get: vi.fn((token: string) => (token === INFERENCE_ENV_REFRESHER ? refresher : undefined)) } as unknown as ModuleRef;
+        controller = new HubPoolController(
+          peerService,
+          proxyService,
+          mock<TailscaleService>(),
+          configuration,
+          routingLog,
+          discoveryService,
+          pinService,
+          moduleRef,
+        );
+        configuration.getHubPoolPreferences.mockReturnValue(prefs as never);
+      });
+
+      it('refreshes AI apps when the master or outbound switch moves, since apps are handed models from what the pool serves', async () => {
+        // This is the route Settings > Network > Hub Pool saves the switches through.
+        configuration.setHubPoolPreferences.mockResolvedValue({ ...prefs, poolOutboundEnabled: false } as never);
+
+        await controller.updatePoolSettings({ poolOutboundEnabled: false });
+
+        expect(refresher.requestRefresh).toHaveBeenCalledWith('pool settings changed: poolOutboundEnabled');
+      });
+
+      it('leaves AI apps alone for tuning that only reorders candidates, the inbound switch, or a switch resubmitted unchanged', async () => {
+        configuration.setHubPoolPreferences.mockResolvedValue({ ...prefs, poolLocalAffinity: 3, poolInboundEnabled: false } as never);
+        await controller.updatePoolSettings({ poolLocalAffinity: 3, poolInboundEnabled: false });
+
+        configuration.setHubPoolPreferences.mockResolvedValue(prefs as never);
+        await controller.updatePoolSettings({ poolEnabled: true });
+
+        expect(refresher.requestRefresh).not.toHaveBeenCalled();
+      });
     });
   });
 

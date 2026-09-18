@@ -2320,6 +2320,29 @@
         ]
       }
     },
+    "/api/apps/{urn}/inference-env": {
+      "get": {
+        "operationId": "getInferenceEnvStaleness",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/{urn}/check-availability": {
       "get": {
         "operationId": "checkAvailability",
