@@ -19,13 +19,13 @@ export interface RegistrationStateDrift {
   hasStaleTunnelToken: boolean;
 }
 
-export type RegistrationDriftChoice = 'fresh' | 'restore';
+export type RegistrationDriftChoice = 'fresh' | 'restore' | 'move';
 
 const DRIFT_CHOICE_KEY = 'ci-hub-registration-drift-choice';
 
 export function getStoredDriftChoice(): RegistrationDriftChoice | null {
   const value = sessionStorage.getItem(DRIFT_CHOICE_KEY);
-  if (value === 'fresh' || value === 'restore') {
+  if (value === 'fresh' || value === 'restore' || value === 'move') {
     return value;
   }
   return null;

@@ -35,10 +35,11 @@ export function RegistrationMoveDialog({ open, organizationName, isPairing, onMo
     >
       <DialogContent size="md" data-testid="registration-move-dialog">
         <DialogHeader className="space-y-2 text-left">
-          <div className="flex items-center gap-2 text-primary">
-            <ArrowRightLeft className="h-5 w-5 shrink-0" aria-hidden />
-          </div>
-          <DialogTitle>{t('DEVICE_REGISTRATION_MOVE_TITLE', { organization })}</DialogTitle>
+          {/* `pr-6` keeps a long organization name clear of the close button. */}
+          <DialogTitle className="flex items-start gap-2 pr-6 leading-snug">
+            <ArrowRightLeft className="mt-0.5 h-5 w-5 shrink-0 text-primary" aria-hidden />
+            <span>{t('DEVICE_REGISTRATION_MOVE_TITLE', { organization })}</span>
+          </DialogTitle>
           <DialogDescription>{t('DEVICE_REGISTRATION_MOVE_BODY', { organization })}</DialogDescription>
         </DialogHeader>
         <DialogFooter>

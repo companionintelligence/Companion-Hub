@@ -27,9 +27,10 @@ import {
 } from '@/components/hub-status/hub-status-tooltips';
 import { forgetPendingPairingCode, normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
 import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
-import { getStoredDriftChoice, storeDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
+import { getStoredDriftChoice, storeDriftChoice, type RegistrationDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
 import {
   RegistrationFreshBanner,
+  RegistrationMoveBanner,
   RegistrationRestoreBanner,
   RegistrationStateDriftDialog,
 } from '@/modules/auth/components/registration-state-drift-dialog';
@@ -197,7 +198,7 @@ export default function DeviceRegistrationPage() {
   const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
   const [driftDialogOpen, setDriftDialogOpen] = useState(false);
   const [portalHasDevice, setPortalHasDevice] = useState(false);
-  const [driftChoice, setDriftChoice] = useState<'fresh' | 'restore' | null>(() => getStoredDriftChoice());
+  const [driftChoice, setDriftChoice] = useState<RegistrationDriftChoice | null>(() => getStoredDriftChoice());
   const [isPreparingFresh, setIsPreparingFresh] = useState(false);
   const isTauri = '__TAURI_INTERNALS__' in window;
   const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
@@ -634,6 +635,18 @@ export default function DeviceRegistrationPage() {
     setPairingError(null);
   };
 
+  /**
+   * Keeps this Hub's key, which is what lets a code from another organization move it, and restores no
+   * apps: the organization it moves to has none for it yet. The move itself is confirmed once the
+   * Portal names that organization.
+   */
+  const handleMoveToAnotherOrganization = () => {
+    storeDriftChoice('move');
+    setDriftChoice('move');
+    setDriftDialogOpen(false);
+    setPairingError(null);
+  };
+
   const handleRetryStatus = async () => {
     setStatusError(null);
     await refreshRegistrationStatus();
@@ -665,7 +678,7 @@ export default function DeviceRegistrationPage() {
   // Restoration uses an existing Companion Portal device, so link to Portal Home
   // where the user can retrieve or regenerate its pairing code. The device-scoped
   // registration URL starts Add Device and would create another device. Fresh
-  // setup uses that scoped URL intentionally.
+  // setup and a move to another organization use that scoped URL intentionally.
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
   const redirectStatus = t(redirectStatusKey);
@@ -789,6 +802,7 @@ export default function DeviceRegistrationPage() {
         isPreparing={isPreparingFresh}
         onSetupNew={() => void handleSetupNewDevice()}
         onRestore={handleRestoreExistingDevice}
+        onMove={handleMoveToAnotherOrganization}
       />
 
       {registrationStatus && requiresPortalRePairing(registrationStatus) && (
@@ -803,6 +817,7 @@ export default function DeviceRegistrationPage() {
       )}
 
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
+      {driftChoice === 'move' ? <RegistrationMoveBanner /> : null}
       {driftChoice === 'fresh' && (portalHasDevice || stateDrift?.portalDeviceActive === true) ? <RegistrationFreshBanner /> : null}
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">

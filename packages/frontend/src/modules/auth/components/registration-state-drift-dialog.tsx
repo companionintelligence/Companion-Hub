@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import type { RegistrationStateDrift, StateDriftSignal } from '@/lib/registration-state-drift';
 import { cn } from '@/lib/utils';
-import { Laptop, PlusCircle, RefreshCw } from 'lucide-react';
+import { ArrowRightLeft, Laptop, PlusCircle, RefreshCw } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -100,6 +100,7 @@ type RegistrationStateDriftDialogProps = {
   isPreparing: boolean;
   onSetupNew: () => void;
   onRestore: () => void;
+  onMove: () => void;
 };
 
 export function RegistrationStateDriftDialog({
@@ -109,16 +110,21 @@ export function RegistrationStateDriftDialog({
   isPreparing,
   onSetupNew,
   onRestore,
+  onMove,
 }: RegistrationStateDriftDialogProps) {
   const { t } = useTranslation();
   const recommendRestore = portalHasDevice || drift?.portalDeviceActive === true;
+  // Pairing with another organization's code moves this Hub only when it proves it is the device, with
+  // the key it still holds. `portalDeviceActive` is the Portal accepting that key; after a refused proof
+  // there is no key that works, so a move could only fail.
+  const canMove = drift?.portalDeviceActive === true && !portalHasDevice;
   const extraSignals = drift ? secondarySignals(drift) : [];
 
   return (
     <Dialog open={open} onOpenChange={() => undefined}>
       <DialogContent
         size="lg"
-        className="gap-0 overflow-hidden p-0 sm:max-w-2xl"
+        className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-2xl"
         showCloseButton={false}
         onPointerDownOutside={(event) => event.preventDefault()}
         onEscapeKeyDown={(event) => event.preventDefault()}
@@ -170,6 +176,18 @@ export function RegistrationStateDriftDialog({
             testId="drift-restore"
           />
 
+          {canMove ? (
+            <DriftOptionCard
+              icon={ArrowRightLeft}
+              title={t('DEVICE_REGISTRATION_STATE_DRIFT_MOVE')}
+              description={t('DEVICE_REGISTRATION_STATE_DRIFT_MOVE_HINT')}
+              actionLabel={t('DEVICE_REGISTRATION_STATE_DRIFT_MOVE_ACTION')}
+              onClick={onMove}
+              disabled={isPreparing}
+              testId="drift-move"
+            />
+          ) : null}
+
           <DriftOptionCard
             icon={PlusCircle}
             title={t('DEVICE_REGISTRATION_STATE_DRIFT_SETUP_NEW')}
@@ -199,6 +217,17 @@ export function RegistrationFreshBanner() {
   return (
     <Alert variant="info">
       <AlertDescription className="text-sm leading-relaxed">{t('DEVICE_REGISTRATION_STATE_DRIFT_FRESH_BANNER')}</AlertDescription>
+    </Alert>
+  );
+}
+
+/** Shown after Move to another organization: where the code comes from, and that the move is confirmed here. */
+export function RegistrationMoveBanner() {
+  const { t } = useTranslation();
+
+  return (
+    <Alert variant="info">
+      <AlertDescription className="text-sm leading-relaxed">{t('DEVICE_REGISTRATION_STATE_DRIFT_MOVE_BANNER')}</AlertDescription>
     </Alert>
   );
 }
