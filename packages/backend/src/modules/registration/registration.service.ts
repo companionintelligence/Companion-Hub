@@ -49,6 +49,15 @@ import {
   isDeviceNotActiveResponse,
 } from './check-in-response';
 import { resolveDeviceId } from './device-id.resolver';
+import {
+  hasTunnelLeftoverMarker,
+  removeTunnelLeftoverMarker,
+  removeTunnelRegistrationMarker,
+  tunnelIdFromToken,
+  tunnelTokenPath,
+  writeTunnelLeftoverMarker,
+  writeTunnelRegistrationMarker,
+} from './tunnel-markers';
 import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
 
@@ -130,6 +139,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private registrationGeneration = 0;
   private phaseReadCachedAt = 0;
   private phaseRefreshInFlight: Promise<void> | null = null;
+  /** The tunnel check could not finish, so the next registration check runs it again. */
+  private tunnelCheckPending = false;
+  /** An unregistered Hub still needs its `cloudflared` container removed. */
+  private tunnelStopPending = false;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -193,18 +206,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async runDeferredBootstrap() {
-    // Restore the tunnel token before checking registration. `isRegistered()`
-    // requires both a database row and the on-disk token.
-    const tunnelRecovered = await this.recoverTunnelTokenFromDb();
-
-    // Reload the token into `CloudflareClientService` because the file survives a
-    // restart while its in-memory `getTunnelToken()` state does not.
-    await this.ensureCloudflareClientHasTunnelToken();
-
-    // `recoverTunnelTokenFromDb` starts `cloudflared` only when the token file is
-    // missing. Ensure it also runs after a registered Hub restarts with an existing
-    // file, or the public hostname could resolve while its tunnel remains down.
-    await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: tunnelRecovered });
+    // Read the registration before anything touches the tunnel. `isRegistered()`
+    // requires both a database row and the on-disk token, so a registered Hub
+    // restores its token here first.
+    await this.syncTunnelWithRegistration();
 
     // Restore the Traefik route so Cloudflare Tunnel requests for the public
     // hostname reach Companion Hub.
@@ -499,6 +504,152 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
+   * Makes the tunnel connector follow the registration in the database.
+   *
+   * A token file proves nothing by itself. It survives an uninstall, so a
+   * reinstalled Hub would otherwise connect to the previous Hub's tunnel before
+   * anyone pairs it. A registered Hub gets its marker, its token, and a running
+   * connector. An unregistered Hub has its connector stopped and any leftover
+   * token removed. If the database cannot be read, nothing is started or
+   * stopped, and the next registration check tries again.
+   */
+  private async syncTunnelWithRegistration(): Promise<void> {
+    let registration: Awaited<ReturnType<DeviceRegistrationRepository['getFirstDeviceRegistration']>>;
+    try {
+      registration = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+    } catch (error) {
+      this.tunnelCheckPending = true;
+      this.logger.warn(`Could not read the registration; leaving the tunnel as it is until the next check: ${describeRegistrationError(error)}`);
+      return;
+    }
+
+    if (!registration) {
+      await this.stopUnregisteredTunnel();
+      return;
+    }
+
+    this.tunnelCheckPending = false;
+    this.tunnelStopPending = false;
+
+    // Existing installs predate the marker, so boot writes it for them.
+    await this.markTunnelRegistered(registration.tunnelId);
+
+    const tunnelRecovered = await this.recoverTunnelTokenFromDb();
+
+    // Reload the token into `CloudflareClientService` because the file survives a
+    // restart while its in-memory `getTunnelToken()` state does not.
+    await this.ensureCloudflareClientHasTunnelToken();
+
+    // `recoverTunnelTokenFromDb` starts `cloudflared` only when the token file is
+    // missing. Ensure it also runs after a registered Hub restarts with an existing
+    // file, or the public hostname could resolve while its tunnel remains down.
+    await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: tunnelRecovered });
+  }
+
+  /** Runs the tunnel check again when an earlier one could not finish. */
+  private async retryPendingTunnelCheck(): Promise<void> {
+    if (this.tunnelCheckPending) {
+      await this.syncTunnelWithRegistration();
+    }
+  }
+
+  /**
+   * Stops `cloudflared` on a Hub with no registration, and moves a leftover token
+   * out of reach of the desktop app, the CLI, and this backend.
+   *
+   * `leftover.json` keeps the tunnel ID so the registration page can still offer
+   * to reconnect this Hub after the token is gone.
+   */
+  private async stopUnregisteredTunnel(): Promise<void> {
+    // A pairing writes its token before its registration row exists, and it can
+    // start or finish while this check waits on Docker. Act only while the Hub
+    // is still unregistered, or the new token would be deleted as a leftover.
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+
+    // `registration.json` without a registration is stale. Beside a token that
+    // comes back later, it would let the desktop app and CLI start that token's
+    // tunnel before this check runs again.
+    await this.unmarkTunnelRegistered();
+
+    const token = await this.readTunnelToken();
+    if (this._currentPhase !== 'unregistered') {
+      return;
+    }
+    if (!token && !this.tunnelStopPending) {
+      this.tunnelCheckPending = false;
+      return;
+    }
+
+    const stopped = await this.cloudflareClientService.stopTunnel();
+    this.tunnelStopPending = !stopped;
+    this.tunnelCheckPending = !stopped;
+
+    if (!token || this._currentPhase !== 'unregistered') {
+      return;
+    }
+
+    this.logger.warn('Found a tunnel token with no registration; stopped cloudflared and removed the token. Pair this Hub to connect it again.');
+
+    try {
+      await writeTunnelLeftoverMarker(tunnelIdFromToken(token));
+    } catch (error) {
+      this.logger.warn(`Could not record the leftover tunnel: ${describeRegistrationError(error)}`);
+    }
+
+    // Remove the token even without the marker: a token left behind is what lets
+    // an unregistered Hub start the previous Hub's tunnel.
+    try {
+      await fs.promises.unlink(tunnelTokenPath());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        this.logger.warn(`Could not remove the leftover tunnel token: ${describeRegistrationError(error)}`);
+      }
+    }
+  }
+
+  /** Records that the tunnel token belongs to a registration. Boot rewrites a marker that failed to write. */
+  private async markTunnelRegistered(tunnelId: string | null | undefined): Promise<void> {
+    try {
+      await writeTunnelRegistrationMarker(tunnelId ?? null);
+    } catch (error) {
+      this.logger.warn(`Could not write the tunnel registration marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
+  /** Removes `registration.json`, so the desktop app and CLI no longer start the tunnel from the token. */
+  private async unmarkTunnelRegistered(): Promise<void> {
+    try {
+      await removeTunnelRegistrationMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the tunnel registration marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
+  /**
+   * Marks the saved registration's token as registered and forgets any earlier
+   * leftover tunnel. A stale `leftover.json` would otherwise offer "Reconnect
+   * this Hub" again the next time this registration is reset.
+   */
+  private async markRegistrationSaved(tunnelId: string | null | undefined): Promise<void> {
+    await this.markTunnelRegistered(tunnelId);
+    try {
+      await removeTunnelLeftoverMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the leftover tunnel marker: ${describeRegistrationError(error)}`);
+    }
+  }
+
+  private async readTunnelToken(): Promise<string | null> {
+    try {
+      return (await fs.promises.readFile(tunnelTokenPath(), 'utf-8')).trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Restores a missing tunnel-token file from a registered organization row.
    *
    * Container restarts, volume resets, and development environments can preserve
@@ -620,6 +771,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
   private async checkInWithCloud(): Promise<CheckInOutcome> {
     if (!isOperational(this._currentPhase)) return 'skipped';
+
+    // A registered Hub whose boot-time registration read failed starts its tunnel here.
+    await this.retryPendingTunnelCheck();
 
     if (!this.hasTunnelToken()) {
       this.logger.warn('Registration validation: tunnel token missing — transitioning to degraded');
@@ -843,6 +997,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // A missing token already satisfies the reset.
     }
 
+    // Deleting the token does not disconnect a running `cloudflared`, which keeps
+    // serving this Hub's hostname until its container stops. A failed stop is
+    // retried by the registration check that starts below.
+    if (!(await this.cloudflareClientService.stopTunnel())) {
+      this.tunnelStopPending = true;
+      this.tunnelCheckPending = true;
+    }
+    await this.unmarkTunnelRegistered();
+
     // Remove the resolved environment so the next startup regenerates it.
     const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');
     try {
@@ -983,7 +1146,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     const localRegistered = status.registered;
 
     const staleAppEnvDeviceIds = collectStaleHubDeviceIds(APP_DATA_DIR, hardwareDeviceId);
-    const hasStaleTunnelToken = !localRegistered && this.hasTunnelToken();
+    // Boot removes a leftover token and records it in `leftover.json`, which must
+    // still offer to reconnect this Hub.
+    const hasStaleTunnelToken = !localRegistered && (this.hasTunnelToken() || hasTunnelLeftoverMarker());
 
     let portalDeviceActive: boolean | null = null;
     const { ciCloudUrl } = this.config.getConfig();
@@ -1135,6 +1300,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.resetRegistration();
     const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
     await clearRegistrationRecoveryArtifacts();
+    try {
+      await removeTunnelLeftoverMarker();
+    } catch (error) {
+      this.logger.warn(`Could not remove the leftover tunnel marker: ${describeRegistrationError(error)}`);
+    }
 
     this.logger.info(`Prepared fresh device setup (cleared registration keys from ${clearedAppEnvFiles} app.env file(s))`);
 
@@ -1251,6 +1421,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       try {
+        await this.retryPendingTunnelCheck();
+
         const registered = await this.checkRegistrationWithCloud();
         if (registered) {
           this.logger.info('Device successfully registered!');
@@ -1370,6 +1542,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (Object.keys(updates).length > 0) {
         await this.deviceRegistrationRepository.updateDeviceRegistration(organizationId, updates);
       }
+      await this.markRegistrationSaved(updates.tunnelId ?? existingOrg.tunnelId);
 
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         await this.cloudflareClientService.initializeTunnel(organizationId, {
@@ -1489,6 +1662,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnelToken: tunnelToken,
         provisioningPhase: 'locally_ready',
       });
+      await this.markRegistrationSaved(tunnelId);
 
       // The persisted organization makes the Hub locally operational.
       await this.setPhase('locally_ready', [], organizationId);
