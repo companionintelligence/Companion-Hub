@@ -182,6 +182,47 @@ describe('SSEProvider', () => {
     expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
   });
 
+  describe('public_dns_error', () => {
+    const firePublicDnsError = (errorCode?: string) => {
+      const getOnEvent = renderProvider();
+      act(() => {
+        getOnEvent()?.({ event: 'public_dns_error', appUrn: 'n8n:ci-marketplace', error: 'n8n-laptop-acme.companionintelligence.com', errorCode });
+      });
+      expect(mockToastError).toHaveBeenCalledTimes(1);
+      return mockToastError.mock.calls[0]?.[0];
+    };
+
+    it('names the plan when the Portal refuses an app over the quota', () => {
+      const message = firePublicDnsError('subdomain_quota_exceeded');
+
+      expect(message).toBe(
+        "n8n can't get a public address: your organization's plan includes no more. Remove another app's public address, or upgrade the plan in the Portal.",
+      );
+      // Waiting does not help and the domain is fine, so the toast must say neither.
+      expect(message).not.toMatch(/retr|clears on its own|domain/i);
+    });
+
+    it.each([
+      [
+        'duplicate_subdomain',
+        "n8n can't get a public address: another app on this Hub already uses the same subdomain. Give n8n a different subdomain.",
+      ],
+      [
+        'release_pending',
+        "n8n keeps its current public address for now: its previous address hasn't been released yet. The Hub retries the change automatically.",
+      ],
+      ['write_failed', "Couldn't create a public address for n8n just now. This usually clears on its own — it will be retried automatically."],
+    ])('shows the copy for %s', (errorCode, expected) => {
+      expect(firePublicDnsError(errorCode)).toBe(expected);
+    });
+
+    it('falls back to the generic copy for a class it does not know', () => {
+      expect(firePublicDnsError('not_yet_invented')).toBe(
+        "Couldn't create a public address for n8n. Verify the selected domain is available for this device.",
+      );
+    });
+  });
+
   describe('hub_hello', () => {
     const mountWithHandler = () => {
       let onEvent: ((data: unknown) => void) | undefined;

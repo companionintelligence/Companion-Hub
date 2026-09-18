@@ -65,8 +65,26 @@ export interface AppInfo {
  * - `api_error`: Cloudflare rejected the write, usually because of a transient error.
  * - `invalid_subdomain`: The requested subdomain contains no valid DNS label, so
  *   Companion Portal rejected it before Cloudflare was ever involved.
+ * - `subdomain_quota_exceeded`: The organization's plan includes no more public
+ *   app addresses. Companion Portal refuses every retry the same way until
+ *   another app's address is removed or the plan is upgraded.
+ * - `duplicate_subdomain`: Another app in the same sync claimed this subdomain
+ *   first, and Companion Portal kept that app's address.
+ * - `release_pending`: The app's previous address has not been released yet, so
+ *   Companion Portal refused the change and the app keeps its current address.
+ *   A later sync applies the change once the old record is gone.
+ * - `write_failed`: Companion Portal could not record the app and changed nothing
+ *   about it. The next sync retries.
  */
-export type PublicDnsFailureReason = 'conflict' | 'zone_unreachable' | 'api_error' | 'invalid_subdomain';
+export type PublicDnsFailureReason =
+  | 'conflict'
+  | 'zone_unreachable'
+  | 'api_error'
+  | 'invalid_subdomain'
+  | 'subdomain_quota_exceeded'
+  | 'duplicate_subdomain'
+  | 'release_pending'
+  | 'write_failed';
 
 export interface PublicDnsFailure {
   app: string;
