@@ -200,6 +200,13 @@ WORKDIR /app
 RUN --mount=type=cache,target=/root/.npm \
     npm install --no-save --omit=dev argon2 class-transformer @nestjs/mapped-types @opentelemetry/api drizzle-orm pg ssh2 i18next-fs-backend
 
+# docker-compose is also registered as a docker CLI plugin under /usr/local/libexec, a system
+# directory the CLI always searches (one of the four compiled into Alpine's docker-cli 27.3.1).
+# The CMD's link into $DOCKER_CONFIG/cli-plugins fails silently when that directory does not
+# exist, and on beta-ms-a2, beta-red, and beta-max (2026-09-17) it did not: `docker compose` was
+# "not a docker command", and every Hub compose call without a docker-compose fallback failed
+# with "unknown flag: --env-file", including the one that creates cloudflared. The
+# `docker compose version` below fails the build instead.
 RUN set -eux; \
     echo "Installing docker-compose for ${TARGETARCH:-amd64}"; \
     if [ "${TARGETARCH}" = "arm64" ]; then \
@@ -213,6 +220,9 @@ RUN set -eux; \
     fi; \
     chmod +x /usr/local/bin/docker-compose; \
     /usr/local/bin/docker-compose version; \
+    mkdir -p /usr/local/libexec/docker/cli-plugins; \
+    ln -sf /usr/local/bin/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose; \
+    docker compose version; \
     if [ "${BUILDPLATFORM}" = "${TARGETPLATFORM}" ]; then \
       node -p "process.arch" | grep -E '^(arm64|x64)$'; \
       case "${TARGETARCH:-amd64}" in \
