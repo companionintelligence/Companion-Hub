@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@/tests/test-utils';
+import { act, fireEvent, render, screen, waitFor, within } from '@/tests/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RegistrationStatus } from '@/lib/registration-status';
 import DeviceRegistrationPage from './device-registration-page';
@@ -293,6 +293,152 @@ describe('DeviceRegistrationPage', () => {
     expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
     expect(screen.getByTestId('drift-setup-new')).toBeInTheDocument();
     expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
+  });
+
+  it('offers no close button on Reconnect this Hub, which only a choice can close', async () => {
+    fetchRegistrationStateDrift.mockResolvedValue({
+      detected: true,
+      hardwareDeviceId: 'device-123',
+      localRegistered: false,
+      portalDeviceActive: null,
+      staleAppEnvDeviceIds: [],
+      hasStaleTunnelToken: true,
+      signals: [{ reason: 'stale_tunnel_token' }],
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Close' })).not.toBeInTheDocument();
+  });
+
+  describe('when the Portal refuses the pairing', () => {
+    const PORTAL_PROOF_TEXT =
+      'That device is already paired. Send its current device key to re-pair it, or ask an owner or admin to re-register it first.';
+
+    async function submitRefusedPairing(data: Record<string, unknown>) {
+      pairWithCode.mockResolvedValue({ ok: true, status: 201, data: { success: false, ...data } });
+
+      render(<DeviceRegistrationPage />);
+      fireEvent.change(await screen.findByLabelText('Enter Pairing Code:'), { target: { value: 'ABC123' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+
+      await waitFor(() => {
+        expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+      });
+    }
+
+    it('opens Reconnect this Hub over a stored choice and recommends Restore when the Portal already has this device', async () => {
+      // The earlier choice led to this refusal, so it must not keep the dialog closed.
+      sessionStorage.setItem('ci-hub-registration-drift-choice', 'restore');
+
+      await submitRefusedPairing({ message: PORTAL_PROOF_TEXT, code: 'DEVICE_PROOF_REQUIRED' });
+
+      expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Your CI Account already has a device for this computer, but this Hub no longer has the key that links it to that device. Choose how to reconnect.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('drift-restore')).toHaveAttribute('data-recommended', 'true');
+      expect(screen.getByTestId('drift-setup-new')).toHaveAttribute('data-recommended', 'false');
+      expect(
+        screen.getByText(
+          'Clear local setup data and add this Hub as a new device. First, an owner or admin must delete the old device in your CI Account. Deleting it removes its web addresses and apps.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(PORTAL_PROOF_TEXT)).not.toBeInTheDocument();
+      expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it('explains how to get a restore code once Restore is chosen', async () => {
+      await submitRefusedPairing({ message: PORTAL_PROOF_TEXT, code: 'DEVICE_PROOF_REQUIRED' });
+
+      fireEvent.click(await screen.findByTestId('drift-restore'));
+
+      expect(
+        await screen.findByText("In your CI Account, open this computer's device menu, choose Regenerate pairing code, and enter the code below."),
+      ).toBeInTheDocument();
+      expect(markRegistrationRestoreIntentDetailed).toHaveBeenCalled();
+      expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Your CI Account already has a device for this computer. Choose how to reconnect it.')).not.toBeInTheDocument();
+    });
+
+    it('tells the person to delete the old device first once Start fresh is chosen', async () => {
+      await submitRefusedPairing({ message: PORTAL_PROOF_TEXT, code: 'DEVICE_PROOF_REQUIRED' });
+
+      fireEvent.click(await screen.findByTestId('drift-setup-new'));
+
+      expect(
+        await screen.findByText(
+          "Before you pair this Hub as a new device, an owner or admin must delete this computer's old device in your CI Account. Deleting it removes its web addresses and apps.",
+        ),
+      ).toBeInTheDocument();
+      expect(prepareFreshRegistrationDetailed).toHaveBeenCalled();
+    });
+
+    it('explains that another organization has to delete the device, without opening the dialog', async () => {
+      await submitRefusedPairing({
+        message: 'That device is already registered to another organisation. It has to be removed there before it can be paired here.',
+        code: 'DEVICE_REGISTERED_ELSEWHERE',
+      });
+
+      const guidance =
+        'This computer belongs to another organization. An owner or admin in that organization must delete it before you can pair it here.';
+      expect(await screen.findByText(guidance)).toBeInTheDocument();
+      expect(toast.error).toHaveBeenCalledWith(guidance);
+      expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+    });
+
+    it('explains that the code belongs to a different device', async () => {
+      await submitRefusedPairing({ message: 'Pairing code is for another device', code: 'PAIRING_CODE_WRONG_DEVICE' });
+
+      expect(
+        await screen.findByText(
+          "This pairing code was made for a different device. In your CI Account, open this computer's device menu, choose Regenerate pairing code, and enter that code.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Pairing code is for another device')).not.toBeInTheDocument();
+    });
+
+    it('keeps the Portal message when the refusal has no code this page knows', async () => {
+      // Older Portals send no code for some refusals, and proxies in front of the Portal send none at all.
+      await submitRefusedPairing({ message: 'That pairing code is no longer valid. Ask for a new one.' });
+
+      expect(await screen.findByText('That pairing code is no longer valid. Ask for a new one.')).toBeInTheDocument();
+      expect(toast.error).toHaveBeenCalledWith('That pairing code is no longer valid. Ask for a new one.');
+      expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+    });
+
+    it('keeps the Portal message for an unknown code', async () => {
+      await submitRefusedPairing({ message: 'Something new went wrong.', code: 'SOMETHING_NEW' });
+
+      expect(await screen.findByText('Something new went wrong.')).toBeInTheDocument();
+    });
+  });
+
+  it('keeps Start fresh recommended for leftovers while the Portal cannot say whether it has this device', async () => {
+    fetchRegistrationStateDrift.mockResolvedValue({
+      detected: true,
+      hardwareDeviceId: 'device-123',
+      localRegistered: false,
+      portalDeviceActive: null,
+      staleAppEnvDeviceIds: [],
+      hasStaleTunnelToken: true,
+      signals: [{ reason: 'stale_tunnel_token' }],
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+    expect(screen.getByTestId('drift-setup-new')).toHaveAttribute('data-recommended', 'true');
+    expect(screen.getByTestId('drift-restore')).toHaveAttribute('data-recommended', 'false');
+    expect(
+      screen.getByText(
+        'Clear local setup data and add this Hub as a new device. If your CI Account still has a device for this computer, an owner or admin must delete it first. Deleting it removes its web addresses and apps.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('renders the re-pair form instead of bouncing to login when the public tunnel is degraded', async () => {

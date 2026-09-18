@@ -649,4 +649,106 @@ describe('CloudflareClientService', () => {
       expect(logSpy.mock.calls.filter(([message]) => String(message).includes('Loaded tunnel token from disk'))).toHaveLength(1);
     });
   });
+
+  describe('stopTunnel', () => {
+    beforeEach(async () => {
+      vi.mocked(fs.readFile).mockResolvedValue('tunnel-token-value\n');
+      await service.loadTunnelTokenFromDisk('tunnel-1');
+      vi.spyOn(service as any, 'runsInsideHubContainer').mockReturnValue(true);
+    });
+
+    describe('from a source checkout sharing Docker with another Hub', () => {
+      let dockerReadFacade: MockProxy<DockerReadFacade>;
+      const composeDir = () => path.dirname((service as any).getComposeFile() as string);
+
+      beforeEach(() => {
+        dockerReadFacade = mock<DockerReadFacade>();
+        moduleRef.get.mockImplementation(((token: unknown) => (token === DockerReadFacade ? dockerReadFacade : dockerService)) as any);
+        vi.spyOn(service as any, 'runsInsideHubContainer').mockReturnValue(false);
+        dockerService.removeContainer.mockResolvedValue(true);
+      });
+
+      it("leaves another Hub's cloudflared running and reports the stop as done", async () => {
+        // The reported case: a local backend paired to a Portal whose domain replaced ci.localhost,
+        // on a machine whose installed Hub runs its connector from its own data folder.
+        configService.get.mockImplementation((key) => (key === 'domain' ? 'companionintelligence.com' : null));
+        dockerReadFacade.readContainerLabel.mockResolvedValue({ found: true, value: '/home/someone/.local/share/companion-hub' });
+
+        await expect(service.stopTunnel()).resolves.toBe(true);
+
+        expect(dockerReadFacade.readContainerLabel).toHaveBeenCalledWith('cloudflared', 'com.docker.compose.project.working_dir');
+        expect(dockerService.removeContainer).not.toHaveBeenCalled();
+        expect(service.getTunnelToken()).toBeNull();
+      });
+
+      it('removes the cloudflared container Compose started from this checkout', async () => {
+        dockerReadFacade.readContainerLabel.mockResolvedValue({ found: true, value: composeDir() });
+
+        await expect(service.stopTunnel()).resolves.toBe(true);
+
+        expect(dockerService.removeContainer).toHaveBeenCalledWith('cloudflared');
+      });
+
+      it('leaves a cloudflared container that Compose did not start alone', async () => {
+        dockerReadFacade.readContainerLabel.mockResolvedValue({ found: true, value: null });
+
+        await expect(service.stopTunnel()).resolves.toBe(true);
+
+        expect(dockerService.removeContainer).not.toHaveBeenCalled();
+      });
+
+      it('has nothing to remove when there is no cloudflared container', async () => {
+        dockerReadFacade.readContainerLabel.mockResolvedValue({ found: false });
+
+        await expect(service.stopTunnel()).resolves.toBe(true);
+
+        expect(dockerService.removeContainer).toHaveBeenCalledWith('cloudflared');
+      });
+
+      it('reports a stop it could not check, so the caller tries again', async () => {
+        dockerReadFacade.readContainerLabel.mockResolvedValue(null);
+
+        await expect(service.stopTunnel()).resolves.toBe(false);
+
+        expect(dockerService.removeContainer).not.toHaveBeenCalled();
+      });
+    });
+
+    it('forgets the tunnel credentials and removes the cloudflared container', async () => {
+      dockerService.removeContainer.mockResolvedValue(true);
+
+      await expect(service.stopTunnel()).resolves.toBe(true);
+
+      expect(service.getTunnelToken()).toBeNull();
+      expect(service.getTunnelId()).toBeNull();
+      expect(dockerService.removeContainer).toHaveBeenCalledWith('cloudflared');
+    });
+
+    it('reports a container it could not remove, after forgetting the credentials', async () => {
+      dockerService.removeContainer.mockResolvedValue(false);
+
+      await expect(service.stopTunnel()).resolves.toBe(false);
+
+      expect(service.getTunnelToken()).toBeNull();
+    });
+
+    it('leaves Docker alone in local/E2E mode (ci.localhost)', async () => {
+      configService.get.mockImplementation((key) => (key === 'domain' ? 'ci.localhost' : null));
+
+      await expect(service.stopTunnel()).resolves.toBe(true);
+
+      expect(service.getTunnelToken()).toBeNull();
+      expect(dockerService.removeContainer).not.toHaveBeenCalled();
+    });
+
+    it('does not start cloudflared again once stopped', async () => {
+      dockerService.removeContainer.mockResolvedValue(true);
+      await service.stopTunnel();
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(false);
+
+      expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
+      expect(dockerService.restartContainer).not.toHaveBeenCalled();
+    });
+  });
 });

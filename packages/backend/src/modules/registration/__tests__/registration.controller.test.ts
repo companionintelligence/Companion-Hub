@@ -387,6 +387,13 @@ describe('RegistrationController', () => {
       expect(result).toEqual({ success: true });
       expect(registrationService.pairDevice).toHaveBeenCalledWith('ABCDEF');
     });
+
+    it('returns the Portal refusal code to the registration page', async () => {
+      registrationService.pairDevice.mockResolvedValue({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
+
+      const result = await controller.pairDevice({ pairing_code: 'ABCDEF' });
+      expect(result).toEqual({ success: false, message: 'Already paired', code: 'DEVICE_PROOF_REQUIRED' });
+    });
   });
 
   describe('registerDevice', () => {

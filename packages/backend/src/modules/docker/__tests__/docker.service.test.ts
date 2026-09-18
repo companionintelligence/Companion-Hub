@@ -944,6 +944,81 @@ describe('DockerService', () => {
         vi.useRealTimers();
       }
     });
+
+    describe('removeContainer', () => {
+      it('force-removes the container and reports success', async () => {
+        (child_process.spawn as any).mockImplementation(() => procClosing(0));
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(true);
+
+        expect(child_process.spawn).toHaveBeenCalledWith('docker', ['rm', '-f', 'cloudflared'], {});
+      });
+
+      it('counts a container that does not exist as removed', async () => {
+        (child_process.spawn as any).mockImplementation(() => procClosing(1, 'Error response from daemon: No such container: cloudflared'));
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(true);
+      });
+
+      it('reports failure without throwing when Docker cannot remove it', async () => {
+        (child_process.spawn as any).mockImplementation(() =>
+          procClosing(1, 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'),
+        );
+
+        await expect(service.removeContainer('cloudflared')).resolves.toBe(false);
+      });
+    });
+
+    describe('readContainerLabel', () => {
+      const LABEL = 'com.docker.compose.project.working_dir';
+      const inspectAnswer = (code: number, stdout: string, stderr = '') => {
+        const proc = createMockSpawnProcess();
+        proc.on = vi.fn().mockImplementation((event, handler) => {
+          if (event === 'close') {
+            queueMicrotask(() => {
+              if (stdout) proc.stdout.emit('data', Buffer.from(stdout));
+              if (stderr) proc.stderr.emit('data', Buffer.from(stderr));
+              handler(code);
+            });
+          }
+          return proc;
+        });
+        return proc;
+      };
+
+      it("reads the label from the container's config", async () => {
+        (child_process.spawn as any).mockImplementation(() => inspectAnswer(0, '/home/someone/.local/share/companion-hub\n'));
+
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toEqual({
+          found: true,
+          value: '/home/someone/.local/share/companion-hub',
+        });
+        expect(child_process.spawn).toHaveBeenCalledWith('docker', [
+          'inspect',
+          '--type',
+          'container',
+          '--format',
+          `{{ index .Config.Labels "${LABEL}" }}`,
+          'cloudflared',
+        ]);
+      });
+
+      it('reads a label the container does not have as null', async () => {
+        (child_process.spawn as any).mockImplementation(() => inspectAnswer(0, '<no value>\n'));
+
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toEqual({ found: true, value: null });
+      });
+
+      it('tells a missing container apart from Docker being unavailable', async () => {
+        (child_process.spawn as any).mockImplementationOnce(() => inspectAnswer(1, '', 'Error: No such container: cloudflared'));
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toEqual({ found: false });
+
+        (child_process.spawn as any).mockImplementationOnce(() =>
+          inspectAnswer(1, '', 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock.'),
+        );
+        await expect(dockerReadFacade.readContainerLabel('cloudflared', LABEL)).resolves.toBeNull();
+      });
+    });
   });
 
   describe('removeAppDataDirAsRoot (privileged uninstall-remnant cleanup)', () => {

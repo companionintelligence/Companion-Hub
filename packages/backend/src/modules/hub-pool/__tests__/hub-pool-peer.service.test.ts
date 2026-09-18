@@ -24,6 +24,7 @@ import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 import { HubPoolIdentityService } from '../hub-pool-identity.service';
 import { HubPoolPairingPinService } from '../hub-pool-pairing-pin.service';
+import { HubPoolThroughputService, THROUGHPUT_FORGET_AFTER_MS } from '../hub-pool-throughput.service';
 import { generatePoolKeyPair, privateKeyFromBase64 } from '../hub-pool-peer-auth';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
@@ -63,6 +64,8 @@ describe('HubPoolPeerService', () => {
   let pressureService: MockProxy<HubPoolPressureService>;
   let containerSampler: MockProxy<PoolContainerSampler>;
   let moduleRef: MockProxy<ModuleRef>;
+  // Real: what the status card and the advert say has to be what the proxy recorded.
+  let throughput: HubPoolThroughputService;
   let service: HubPoolPeerService;
 
   /** Repoint the persisted settings, as a settings PATCH would. */
@@ -135,6 +138,7 @@ describe('HubPoolPeerService', () => {
       // What Nest actually does with an unknown token: it throws rather than returning undefined.
       throw new Error(`Nest could not find ${String(token)}`);
     });
+    throughput = new HubPoolThroughputService();
     service = new HubPoolPeerService(
       mock<LoggerService>(),
       repo,
@@ -148,6 +152,7 @@ describe('HubPoolPeerService', () => {
       pairingPins,
       pressureService,
       moduleRef,
+      throughput,
     );
     global.fetch = vi.fn();
   });
@@ -1021,6 +1026,119 @@ describe('HubPoolPeerService', () => {
           ['old-build', null],
           ['garbled', null],
         ]);
+      });
+    });
+  });
+
+  describe('throughput on the wire and in the status payload', () => {
+    const MODEL = 'qwen3-coder:30b';
+    const LOCAL = { nodeKey: LOCAL_CANDIDATE_KEY, backend: 'ollama', model: MODEL } as const;
+
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'cpu-only',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+        models: [],
+        memoryBudget: { totalVramMb: 0, totalRamMb: 65536, systemReservedRamMb: 8192, dockerOverheadMb: 2048, availableForModelsMb: 20480 },
+      } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([] as never);
+    });
+
+    describe('getOwnCapabilities', () => {
+      it("advertises what this node's own engines were timed at, so an entry node that never sent it a long prompt still knows", async () => {
+        throughput.recordPrefill(LOCAL, { promptTokens: 46_000, ms: 922_000, deadline: true });
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.throughput).toEqual([
+          {
+            model: MODEL,
+            backend: 'ollama',
+            prefill: [expect.objectContaining({ fromTokens: 32_768, promptTokens: 46_000, deadline: true })],
+            decode: null,
+          },
+        ]);
+      });
+
+      it('OMITS the key when nothing has been timed, which is exactly what an older build sends', async () => {
+        expect(await service.getOwnCapabilities()).not.toHaveProperty('throughput');
+      });
+
+      it("never advertises what it timed about a peer — only a node's own engines", async () => {
+        throughput.recordPrefill({ ...LOCAL, nodeKey: 'peer-1' }, { promptTokens: 46_000, ms: 922_000, deadline: true });
+
+        expect(await service.getOwnCapabilities()).not.toHaveProperty('throughput');
+      });
+
+      it('keeps advertising while refusing inbound work, like the ceiling', async () => {
+        throughput.recordPrefill(LOCAL, { promptTokens: 46_000, ms: 922_000, deadline: true });
+
+        const capabilities = await service.getOwnCapabilities(false);
+
+        expect(capabilities.acceptingWork).toBe(false);
+        expect(capabilities.throughput).toHaveLength(1);
+      });
+    });
+
+    describe('getPoolStatus', () => {
+      it("shows this node's own estimates, and an empty list rather than nothing when there are none", async () => {
+        repo.listAll.mockResolvedValue([]);
+        expect((await service.getPoolStatus()).localNode.throughput).toEqual([]);
+
+        throughput.recordPrefill(LOCAL, { promptTokens: 10_600, ms: 86_000, deadline: false });
+        throughput.recordDecode(LOCAL, { tokens: 600, ms: 50_000 });
+
+        expect((await service.getPoolStatus()).localNode.throughput).toEqual([
+          {
+            model: MODEL,
+            backend: 'ollama',
+            prefill: [expect.objectContaining({ fromTokens: 8_192, promptTokens: 10_600, tokensPerSec: 123.2, deadline: false })],
+            decode: expect.objectContaining({ tokensPerSec: 12 }),
+          },
+        ]);
+      });
+
+      it('shows what this node timed of each peer beside what the peer advertised, both as routing reads them', async () => {
+        const advertised = [
+          {
+            model: MODEL,
+            backend: 'ollama',
+            prefill: [{ fromTokens: 32_768, promptTokens: 46_000, tokensPerSec: 49.8, deadline: true, ageMs: 1_000 }],
+            decode: null,
+          },
+          {
+            model: MODEL,
+            backend: 'not-an-engine',
+            prefill: [{ fromTokens: 32_768, promptTokens: 46_000, tokensPerSec: 1, deadline: true, ageMs: 0 }],
+            decode: null,
+          },
+        ];
+        repo.listAll.mockResolvedValue([
+          mockPeer({
+            id: 'fzzy',
+            status: 'connected',
+            lastSeenAt: new Date(Date.now() - 10_000).toISOString(),
+            lastCapabilities: { hardwareTier: 'cpu-only', backends: [], throughput: advertised, updatedAt: new Date().toISOString() },
+          }),
+          mockPeer({
+            id: 'stale',
+            nodeFqdn: 'stale.tailxyz.ts.net',
+            status: 'connected',
+            lastSeenAt: new Date(Date.now() - THROUGHPUT_FORGET_AFTER_MS).toISOString(),
+            lastCapabilities: { hardwareTier: 'cpu-only', backends: [], throughput: advertised, updatedAt: new Date().toISOString() },
+          }),
+        ]);
+        throughput.recordPrefill({ ...LOCAL, nodeKey: 'fzzy' }, { promptTokens: 46_000, ms: 922_000, deadline: true });
+
+        const [fzzy, stale] = (await service.getPoolStatus()).peers;
+
+        expect(fzzy?.throughput?.observed).toEqual([
+          expect.objectContaining({ model: MODEL, prefill: [expect.objectContaining({ deadline: true })] }),
+        ]);
+        // The unknown engine is dropped, and the snapshot's own age is added to the advert's.
+        expect(fzzy?.throughput?.advertised).toHaveLength(1);
+        expect(fzzy?.throughput?.advertised[0]?.prefill[0]?.ageMs).toBeGreaterThanOrEqual(11_000);
+        expect(stale?.throughput).toEqual({ observed: [], advertised: [] });
       });
     });
   });
