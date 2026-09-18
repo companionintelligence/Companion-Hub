@@ -10,6 +10,7 @@
  *   - unregistered: Hub has no registration; portal rejects status checks
  *   - delayed: Registration exists but public domain is not yet propagated
  *   - degraded: Portal returns 500 errors for most endpoints
+ *   - removed: Portal refuses the Hub's device key (401), as after a device is removed
  *
  * Usage: pnpm exec tsx e2e/mock-portal/server.ts
  * Listens on port 4444.

@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HubClaimNoDeviceKey } from '../lib/hub-claim.js';
+import { RegistrationPhaseRouteMissing, type RegistrationPhaseResponse } from '../lib/register-hub.js';
 import { HubUnreachableError } from '../public-web-cli.js';
 import { stripAnsi } from '../lib/cli-ui.js';
 
@@ -30,6 +31,15 @@ const mocks = vi.hoisted(() => ({
   })),
   runHubCleanup: vi.fn(() => ({ removedDirs: 3, skippedDirs: 0, failedDirs: 0, attemptedCommands: 2, failedCommands: 0 })),
   fetchHubClaimStatus: vi.fn(async () => ({ claimed: true, operators: 1, registered: true })),
+  fetchRegistrationPhase: vi.fn(
+    async (): Promise<RegistrationPhaseResponse> => ({
+      phase: 'publicly_ready',
+      registered: true,
+      degradedReasons: [],
+      lastCheckIn: { at: new Date().toISOString(), httpStatus: 200, code: null, error: null },
+      consecutiveCheckInFailures: 0,
+    }),
+  ),
   hubContext: {
     env: 'prod',
     appliance: true,
@@ -74,12 +84,18 @@ vi.mock('../lib/hub-claim.js', async (importOriginal) => ({
   fetchHubClaimStatus: mocks.fetchHubClaimStatus,
 }));
 
+// Mocked for the same reason as hub-claim: unmocked, doctor would read a live Hub on this machine.
+vi.mock('../lib/register-hub.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/register-hub.js')>()),
+  fetchRegistrationPhase: mocks.fetchRegistrationPhase,
+}));
+
 vi.mock('../hub-cleanup-lib.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../hub-cleanup-lib.js')>()),
   runHubCleanup: mocks.runHubCleanup,
 }));
 
-import { doctorHub, uninstallHub } from '../lib/cli-doctor.js';
+import { describeRegistrationPhase, doctorHub, uninstallHub } from '../lib/cli-doctor.js';
 
 /** A machine where every file doctor looks for is really there, so only the mocked checks decide. */
 const dataDir = mkdtempSync(join(tmpdir(), 'cihub-doctor-'));
@@ -103,6 +119,13 @@ beforeEach(() => {
     remediationCommands: [],
   });
   mocks.fetchHubClaimStatus.mockResolvedValue({ claimed: true, operators: 1, registered: true });
+  mocks.fetchRegistrationPhase.mockResolvedValue({
+    phase: 'publicly_ready',
+    registered: true,
+    degradedReasons: [],
+    lastCheckIn: { at: new Date().toISOString(), httpStatus: 200, code: null, error: null },
+    consecutiveCheckInFailures: 0,
+  });
   Object.assign(mocks.hubContext, { envFile, composeFiles: [composeFile], cwd: dataDir, dataDir });
 });
 
@@ -250,6 +273,110 @@ describe('doctorHub operator check', () => {
 
     expect(process.exitCode).toBeUndefined();
     expect(doctorText()).toContain('unknown');
+  });
+});
+
+/**
+/**
+ * The registration phase and the last Portal check-in.
+ *
+ * On 2026-09-17 five paired fleet Hubs had device keys Portal no longer accepted, for up to a week,
+ * and every one of them passed doctor: the stack ran, so nothing on the machine looked wrong. The
+ * phase comes from `GET /api/registration/phase`, which sends no check-in, so running doctor does
+ * not change the Portal `last_seen` it reports on.
+ */
+describe('doctorHub registration check', () => {
+  const doctorText = () => (log.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+  const now = Date.parse('2026-09-17T09:30:00.000Z');
+
+  it('fails a Hub whose device key Portal rejects, and says to pair again', async () => {
+    mocks.fetchRegistrationPhase.mockResolvedValue({
+      phase: 'degraded',
+      registered: true,
+      degradedReasons: ['portal_rejected'],
+      lastCheckIn: { at: '2026-09-17T09:15:00.000Z', httpStatus: 401, code: 'UNAUTHORIZED', error: 'HTTP 401: Invalid Device Key' },
+      consecutiveCheckInFailures: 0,
+    });
+
+    await doctorHub('prod');
+
+    expect(process.exitCode).toBe(1);
+    expect(doctorText()).toContain('degraded (portal_rejected)');
+    expect(doctorText()).toContain('cihub register --code');
+    expect(doctorText()).toContain('HTTP 401 UNAUTHORIZED');
+  });
+
+  it('notes, without failing, a Portal that is only failing transiently', () => {
+    const result = describeRegistrationPhase(
+      {
+        phase: 'degraded',
+        registered: true,
+        degradedReasons: ['cloud_validation_failed'],
+        lastCheckIn: { at: '2026-09-17T09:29:00.000Z', httpStatus: null, code: null, error: 'timeout of 5000ms exceeded' },
+        consecutiveCheckInFailures: 3,
+      },
+      now,
+    );
+
+    expect(result.failureCount).toBe(0);
+    expect(result.issueCount).toBe(1);
+    expect(stripAnsi(result.lines.join('\n'))).toContain('no response');
+    expect(stripAnsi(result.lines.join('\n'))).toContain('timeout of 5000ms exceeded, 60s ago');
+  });
+
+  it('names a rejected key the Hub is still confirming, since the phase does not show it yet', () => {
+    // The Hub waits ten minutes before it believes a 401, because Portal answers a D1 read error the
+    // same way; an operator running doctor straight after an update would otherwise see only a note.
+    const result = describeRegistrationPhase(
+      {
+        phase: 'degraded',
+        registered: true,
+        degradedReasons: ['cloud_validation_failed'],
+        lastCheckIn: { at: '2026-09-17T09:29:00.000Z', httpStatus: 401, code: 'UNAUTHORIZED', error: 'HTTP 401: Invalid Device Key' },
+        consecutiveCheckInFailures: 1,
+      },
+      now,
+    );
+
+    expect(result.failureCount).toBe(0);
+    expect(stripAnsi(result.lines.join('\n'))).toContain('Portal refuses the device key; if that lasts 10 min, pair again');
+  });
+
+  it('reports an accepted check-in and how long ago it was', () => {
+    const result = describeRegistrationPhase(
+      {
+        phase: 'publicly_ready',
+        registered: true,
+        degradedReasons: [],
+        lastCheckIn: { at: '2026-09-17T09:15:00.000Z', httpStatus: 200, code: null, error: null },
+        consecutiveCheckInFailures: 0,
+      },
+      now,
+    );
+
+    expect(result).toMatchObject({ failureCount: 0, issueCount: 0 });
+    expect(stripAnsi(result.lines.join('\n'))).toContain('accepted (HTTP 200)  15m ago');
+  });
+
+  it('does not fail an unregistered Hub, which is the state before setup', async () => {
+    mocks.fetchRegistrationPhase.mockResolvedValue({ phase: 'unregistered', registered: false, degradedReasons: [], lastCheckIn: null });
+
+    await doctorHub('prod');
+
+    expect(process.exitCode).toBeUndefined();
+    expect(doctorText()).toContain('unregistered');
+  });
+
+  it.each([
+    ['the Hub is not answering', new HubUnreachableError('Cannot reach the Hub at http://127.0.0.1:5002'), 'Hub not answering'],
+    ['the Hub build predates the phase route', new RegistrationPhaseRouteMissing(), 'predates /api/registration/phase'],
+  ])('says unknown rather than failing when %s', async (_label, error, why) => {
+    mocks.fetchRegistrationPhase.mockRejectedValue(error);
+
+    await doctorHub('prod');
+
+    expect(process.exitCode).toBeUndefined();
+    expect(doctorText()).toContain(why);
   });
 });
 
