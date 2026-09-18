@@ -26,6 +26,7 @@ import { confirmDestructiveAction } from './cli-prompt.js';
 import { checkDockerAvailable, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { bold, cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, STEP_ICONS } from './cli-ui.js';
+import { runDeviceIdDoctorSection } from './device-id-doctor.js';
 import { composeArgsForContext, envOverridesForContext, type HubContext, requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
@@ -210,6 +211,8 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   const dockerOk = checkDockerAvailable();
   const composeOk = runCapture('docker', ['compose', 'version']).ok;
   const composeFilesFound = composeFiles.every((file) => existsSync(resolvePath(file)));
+  // Read on the host, from the env file compose hands the Hub: a DEVICE_ID copied from another machine.
+  const deviceIdSection = runDeviceIdDoctorSection(envFileName);
   const lines = [
     `Docker               ${dockerOk ? cliOk('available') : cliFail('unavailable')}`,
     `Docker Compose       ${composeOk ? cliOk('available') : cliFail('unavailable')}`,
@@ -217,6 +220,7 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     `Root folder          ${existsSync(rootFolderHost) ? cliOk('present') : cliWarn('missing')}  ${rootFolderHost}`,
     `Compose files        ${composeFilesFound ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorTunnelTokenStatus(ctx)}`,
+    ...deviceIdSection.lines,
     ...operatorSection.lines,
     ...registrationSection.lines,
     ...networkSection.lines,
@@ -227,6 +231,7 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   // env file before setup is an answer, not a fault.
   const failureCount =
     [dockerOk, composeOk, composeFilesFound].filter((ok) => !ok).length +
+    deviceIdSection.failureCount +
     networkSection.failureCount +
     bridgeSection.failureCount +
     operatorSection.failureCount +

@@ -27,6 +27,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isHubContainerRunning, probeHostPort, resolveHubContainerName, runBridgeDoctorSection } from './bridge-diagnostics-cli';
 import { parseEnvFile } from './env-file';
+import { type PoolPeerProbeFailure, wrapWords } from './hub-pool-cli';
 import { BIND_MOUNT_DIRS } from './lib/bind-mounts';
 import { cliFail, cliOk, colorize, dim, sanitizeForBox, STEP_ICONS, type Tone } from './lib/cli-ui';
 import { allowedEnvs, type HubEnv } from './lib/cli-types';
@@ -2560,6 +2561,101 @@ export function checkNonStreamingHeadroom(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// F — paired peers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The slice of a `/pool/status` peer row F1 reads. */
+export interface PeerStatusRow {
+  nodeFqdn: string;
+  status: string;
+  /** Absent on a Hub predating probe classification, which is not the same as `null` (probes succeeding). */
+  probeFailure?: PoolPeerProbeFailure | null;
+}
+
+/** Note lines are indented seven columns inside the box, so this keeps them near 100. */
+const PEER_NOTE_WIDTH = 92;
+
+/**
+ * F1: does every paired peer still accept this node, as the Hub it paired with?
+ *
+ * Every other section asks whether peers can reach THIS node. This one asks the reverse, because the
+ * failure it exists for is invisible from here otherwise. beta-max's Hub database was recreated on
+ * 2026-09-16, which gave it a new pool identity. Every peer kept the old one pinned, got a 401 on each
+ * poll, and showed `unreachable` for 28 hours. Each of those peers passed every other check in this
+ * doctor.
+ *
+ * Read-only like the rest: it reads the classification the Hub's own health poll already made. It
+ * never probes a peer itself, which would need the node's signing key, and it never unpairs one.
+ */
+export function checkPeerIdentities(peers: PeerStatusRow[] | null, reason: string | null): PoolCheck {
+  const base = { id: 'F1', label: 'Peers accept this node' };
+  if (peers === null) {
+    return { ...base, verdict: 'unknown', detail: reason ?? 'could not read /api/inference/pool/status' };
+  }
+  const paired = peers.filter((peer) => peer.status !== 'pending');
+  if (paired.length === 0) {
+    return { ...base, verdict: 'ok', detail: 'no paired peers' };
+  }
+  if (paired.every((peer) => !('probeFailure' in peer))) {
+    return {
+      ...base,
+      verdict: 'unknown',
+      detail: 'this Hub build does not classify failed peer probes',
+      notes: ['A peer that refuses this node shows only as unreachable here. Update the Hub to tell the two apart.'],
+    };
+  }
+
+  const changed = paired.filter((peer) => peer.probeFailure?.kind === 'identity_changed');
+  const refused = paired.filter((peer) => peer.probeFailure?.kind === 'unauthorized');
+  if (changed.length === 0 && refused.length === 0) {
+    return { ...base, verdict: 'ok', detail: `${paired.length} paired peer(s), none refusing this node` };
+  }
+
+  const notes = [...changed, ...refused].flatMap((peer) => {
+    const failure = peer.probeFailure as PoolPeerProbeFailure;
+    return [
+      `${sanitizeForBox(peer.nodeFqdn)}: ${failure.kind === 'identity_changed' ? 'identity changed' : 'credentials refused'}, ${failure.attempts} probe(s) since ${sanitizeForBox(failure.since)}`,
+      ...(failure.action ? wrapWords(failure.action, PEER_NOTE_WIDTH).map((line) => `  ${line}`) : []),
+    ];
+  });
+
+  if (changed.length > 0) {
+    return {
+      ...base,
+      verdict: 'fail',
+      detail: `${changed.length} peer(s) now answer as a different Hub Pool identity: ${changed.map((peer) => sanitizeForBox(peer.nodeFqdn)).join(', ')}`,
+      notes,
+    };
+  }
+  return {
+    ...base,
+    verdict: 'warn',
+    detail: `${refused.length} peer(s) refuse this node's credentials: ${refused.map((peer) => sanitizeForBox(peer.nodeFqdn)).join(', ')}`,
+    notes,
+  };
+}
+
+async function collectSectionF(base: string, hubAnswering: boolean, apiKey: string | undefined): Promise<PoolCheck[]> {
+  if (!hubAnswering) {
+    return [checkPeerIdentities(null, 'not probed — the Hub is not answering locally (see A2)')];
+  }
+  if (!apiKey) {
+    return [checkPeerIdentities(null, 'needs the operator key from <ROOT_FOLDER_HOST>/state/settings.json to read pool status')];
+  }
+  const probe = await timedFetch(`${base}/api/inference/pool/status`, HUB_PROBE_TIMEOUT_MS, { headers: { Authorization: `Bearer ${apiKey}` } });
+  const body = parseJsonBody<{ peers?: PeerStatusRow[] }>(probe);
+  if (!probe.ok || !Array.isArray(body?.peers)) {
+    return [
+      checkPeerIdentities(
+        null,
+        probe.status === null ? sanitizeForBox(probe.error ?? 'no answer') : `/api/inference/pool/status answered ${probe.status}`,
+      ),
+    ];
+  }
+  return [checkPeerIdentities(body.peers, null)];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Orchestration
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -2922,6 +3018,7 @@ const SECTION_HEADERS: readonly { letter: string; title: string }[] = [
   { letter: 'C', title: 'Tailnet reachability — the transport peers use, which has no fallback' },
   { letter: 'D', title: 'Peer budget — what a peer measures before it decides this node is unreachable' },
   { letter: 'E', title: "Host bridge — the Hub container's path to host inference backends" },
+  { letter: 'F', title: 'Paired peers — does every peer still accept this node as the Hub it paired with?' },
 ];
 
 /**
@@ -3007,8 +3104,10 @@ async function collectPoolDoctorSection(envFileName: string, options: PoolDoctor
     };
   });
   announce('E', header('E').title);
+  const sectionF = await collectSectionSafely('F', collapsed, () => collectSectionF(base, health.ok, apiKey));
+  announce('F', header('F').title);
 
-  const checks = [...sectionA, ...sectionB, ...sectionC, ...sectionD];
+  const checks = [...sectionA, ...sectionB, ...sectionC, ...sectionD, ...sectionF];
   // A collapsed section is counted even though its line is `unknown`: the two are different claims.
   // The line says nothing was decided about the node; the count says this report is not all-clear.
   const issueCount = countPoolIssues(checks) + bridge.issueCount + collapsed.length;
@@ -3030,7 +3129,7 @@ async function collectPoolDoctorSection(envFileName: string, options: PoolDoctor
       dim(`${letter}  ${title}`),
       ...(letter === 'E'
         ? bridge.lines.map((line) => `  ${line}`)
-        : formatPoolCheckLines({ A: sectionA, B: sectionB, C: sectionC, D: sectionD }[letter] ?? [])),
+        : formatPoolCheckLines({ A: sectionA, B: sectionB, C: sectionC, D: sectionD, F: sectionF }[letter] ?? [])),
     ]),
   ];
 

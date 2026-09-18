@@ -31,6 +31,8 @@ describe('RegistrationController', () => {
     controller = moduleRef.get(RegistrationController);
     registrationService = moduleRef.get(RegistrationService);
     configService = moduleRef.get(ConfigurationService);
+    // What nearly every Hub reports: DEVICE_ID is unset and derived from this machine.
+    registrationService.getDeviceIdHostBinding.mockReturnValue({ status: 'not_set' });
   });
 
   it('should be defined', () => {
@@ -215,6 +217,34 @@ describe('RegistrationController', () => {
 
       expect(result.device_id).toBe('device-123');
       expect(result.registration_url).toBeNull();
+    });
+
+    it('withholds the Portal link for a DEVICE_ID copied from another machine, and says why', async () => {
+      // beta-red and beta-nas shared one DEVICE_ID. Following this link on the second of them would have
+      // bound the first one's device in Portal.
+      registrationService.getDeviceId.mockResolvedValue('c0ffee00c0ffee00c0ffee00c0ffee00');
+      registrationService.getDeviceIdHostBinding.mockReturnValue({
+        status: 'foreign',
+        deviceId: 'c0ffee00c0ffee00c0ffee00c0ffee00',
+        message: 'DEVICE_ID=c0ffee00c0ffee00c0ffee00c0ffee00 was not generated on this machine',
+      });
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
+
+      const result = await controller.getDeviceId({ protocol: 'https', get: () => 'localhost:3000' } as any);
+
+      expect(result.registration_url).toBeNull();
+      expect(result.device_id_host).toEqual({ status: 'foreign', message: expect.stringContaining('not generated on this machine') });
+    });
+
+    it('keeps the link, and discloses no host identifier, when DEVICE_ID belongs to this machine', async () => {
+      registrationService.getDeviceId.mockResolvedValue('5eed5eed5eed5eed5eed5eed5eed5eed');
+      registrationService.getDeviceIdHostBinding.mockReturnValue({ status: 'matches_host', deviceId: '5eed5eed5eed5eed5eed5eed5eed5eed' });
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
+
+      const result = await controller.getDeviceId({ protocol: 'https', get: () => 'localhost:3000' } as any);
+
+      expect(result.registration_url).toContain('portal.ci.com');
+      expect(result.device_id_host).toEqual({ status: 'matches_host', message: null });
     });
   });
 

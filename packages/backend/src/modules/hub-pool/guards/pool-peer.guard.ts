@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { type CanActivate, type ExecutionContext, Injectable, type OnModuleDestroy, UnauthorizedException } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { normalizePeerFqdn } from '@/common/helpers/hub-pool';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -12,6 +12,9 @@ import {
   PeerNonceCache,
   POOL_NODE_HEADER,
   POOL_NONCE_HEADER,
+  POOL_RECIPIENT_HEADER,
+  POOL_REFUSAL_HEADER,
+  POOL_REFUSAL_IDENTITY_MISMATCH,
   POOL_SIGNATURE_HEADER,
   POOL_TIMESTAMP_HEADER,
   verifyPoolSignature,
@@ -23,7 +26,11 @@ declare module 'express' {
   }
 }
 
-/** One message for every rejection. Which check failed is a log line, never a response. */
+/**
+ * One message for every rejection. Which check failed is a log line, never a response, with one
+ * exception: a request addressed to a pool identity this node does not hold also gets
+ * `X-Hub-Pool-Refusal: identity-mismatch` (see `POOL_REFUSAL_HEADER` for why that one is safe).
+ */
 const REFUSED = 'Invalid pool peer credentials';
 
 /**
@@ -82,18 +89,35 @@ export class PoolPeerGuard implements CanActivate, OnModuleDestroy {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
     const claimedNodeUuid = request.header(POOL_NODE_HEADER)?.trim();
-    const peer = claimedNodeUuid ? await this.admitSigned(request, claimedNodeUuid) : await this.admitBearer(request);
+    const peer = claimedNodeUuid
+      ? await this.admitSigned(request, claimedNodeUuid, (value) => setRefusalHeader(context, value))
+      : await this.admitBearer(request);
     request.poolPeer = peer;
     return true;
   }
 
-  private async admitSigned(request: Request, claimedNodeUuid: string): Promise<HubPoolPeer> {
+  private async admitSigned(request: Request, claimedNodeUuid: string, nameRefusal: (value: string) => void): Promise<HubPoolPeer> {
     // Only this node's own UUID is needed to verify — it is stored in the clear, so a Hub whose
     // private key has become undecryptable can still authenticate its peers even though it can no
     // longer sign. That asymmetry is what keeps a regenerated `.env` from taking a fleet down.
     const self = await this.identity.get();
     if (!self) {
       this.logger.warn('[HubPool] refusing a signed peer request: this node has no usable pool identity');
+      throw new UnauthorizedException(REFUSED);
+    }
+
+    // Checked before the row lookup, because the case this exists for has no row: a node whose
+    // database was recreated knows neither the sender nor the UUID the sender pinned for it. Without
+    // this answer the sender sees a 401 it cannot tell from clock skew, and probes a node that will
+    // never know it again. Doing that forever is what beta-max's peers did for 28 hours. Naming this
+    // one refusal discloses nothing new; see `POOL_REFUSAL_HEADER`. An absent header is an older
+    // sender and falls through to verification exactly as before.
+    const addressedTo = request.header(POOL_RECIPIENT_HEADER)?.trim();
+    if (addressedTo && addressedTo !== self.nodeUuid) {
+      this.logger.warn(
+        `[HubPool] refusing a signed request from ${normalizePeerFqdn(request.header('x-hub-pool-peer') ?? '') ?? 'an unnamed caller'}: it is addressed to pool identity ${addressedTo.slice(0, 64)}, which is not this node's. The caller paired with an earlier identity of this Hub and has to pair again.`,
+      );
+      nameRefusal(POOL_REFUSAL_IDENTITY_MISMATCH);
       throw new UnauthorizedException(REFUSED);
     }
 
@@ -196,6 +220,22 @@ export class PoolPeerGuard implements CanActivate, OnModuleDestroy {
  */
 export function bearerStillAccepted(peer: HubPoolPeer): boolean {
   return !(peer.peerPublicKey && peer.signedSeenAt);
+}
+
+/**
+ * Stamp {@link POOL_REFUSAL_HEADER} on the response before the guard throws. Headers set here
+ * survive `MainExceptionFilter`, which rebuilds the body but writes to the same response.
+ *
+ * Best-effort: a context with no HTTP response (a unit-test double, a non-HTTP transport) still
+ * refuses. It just refuses without naming why.
+ */
+function setRefusalHeader(context: ExecutionContext, value: string): void {
+  try {
+    const response = context.switchToHttp().getResponse<Response | undefined>();
+    response?.setHeader?.(POOL_REFUSAL_HEADER, value);
+  } catch {
+    // No response to annotate. The 401 itself is unchanged.
+  }
 }
 
 /** The path the sender signed: `originalUrl` where Express provides it, query stripped by {@link normalizePath}. */
