@@ -10,7 +10,15 @@ import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type Hub
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolIdentityService } from '../hub-pool-identity.service';
 import { PoolPeerGuard } from '../guards/pool-peer.guard';
-import { buildSignedPoolHeaders, generatePoolKeyPair, privateKeyFromBase64, POOL_SIGNATURE_HEADER } from '../hub-pool-peer-auth';
+import {
+  buildSignedPoolHeaders,
+  generatePoolKeyPair,
+  privateKeyFromBase64,
+  POOL_RECIPIENT_HEADER,
+  POOL_REFUSAL_HEADER,
+  POOL_REFUSAL_IDENTITY_MISMATCH,
+  POOL_SIGNATURE_HEADER,
+} from '../hub-pool-peer-auth';
 
 const PAIRED_TOKEN = 'a'.repeat(64);
 const SELF_UUID = '11111111-1111-4111-8111-111111111111';
@@ -365,6 +373,71 @@ describe('PoolPeerGuard', () => {
       // Hub's outbound pool traffic on the strength of a header.
       expect(identity.noteObservedPeerFqdn).toHaveBeenCalledWith(peer.id, 'hub-new.example-tailnet.ts.net');
       expect(repo.update).not.toHaveBeenCalledWith(peer.id, expect.objectContaining({ nodeFqdn: expect.anything() }));
+    });
+  });
+
+  describe('a request addressed to an identity this node no longer holds', () => {
+    /** A context whose HTTP response records the headers the guard sets before it throws. */
+    function contextWithResponse(headers: Record<string, string>): { context: ExecutionContext; responseHeaders: Map<string, string> } {
+      const { request } = createContext(headers);
+      const responseHeaders = new Map<string, string>();
+      const response = { setHeader: (name: string, value: string) => responseHeaders.set(name, value) };
+      const context = { switchToHttp: () => ({ getRequest: () => request, getResponse: () => response }) } as unknown as ExecutionContext;
+      return { context, responseHeaders };
+    }
+
+    it('names the mismatch, so a peer probing a recreated node can tell it from clock skew', async () => {
+      // beta-max after its database volume was recreated: a peer still signs for the UUID it pinned,
+      // and this node has neither that UUID nor a row for the sender.
+      const staleRecipient = randomUUID();
+      const { context, responseHeaders } = contextWithResponse(signedHeaders({ recipientNodeUuid: staleRecipient }));
+
+      await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+
+      expect(responseHeaders.get(POOL_REFUSAL_HEADER)).toBe(POOL_REFUSAL_IDENTITY_MISMATCH);
+      // Decided before the table is touched, because the node this is for has no row to find.
+      expect(repo.findByNodeUuid).not.toHaveBeenCalled();
+    });
+
+    it('never names this node’s actual UUID in the refusal', async () => {
+      const { context, responseHeaders } = contextWithResponse(signedHeaders({ recipientNodeUuid: randomUUID() }));
+
+      await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+
+      expect([...responseHeaders.values()].join(' ')).not.toContain(SELF_UUID);
+    });
+
+    it('names nothing for any other refusal, so the header is not an oracle for which check failed', async () => {
+      repo.findByNodeUuid.mockResolvedValue(undefined);
+      const { context, responseHeaders } = contextWithResponse(signedHeaders());
+
+      await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+
+      expect(responseHeaders.size).toBe(0);
+    });
+
+    it('still refuses a signature for another recipient when the clear header is forged to match', async () => {
+      // The header is advisory. The signature is what binds the recipient, and it must still fail.
+      repo.findByNodeUuid.mockResolvedValue(signedPeer());
+      const headers = { ...signedHeaders({ recipientNodeUuid: randomUUID() }), [POOL_RECIPIENT_HEADER.toLowerCase()]: SELF_UUID };
+      const { context, responseHeaders } = contextWithResponse(headers);
+
+      await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
+
+      expect(responseHeaders.size).toBe(0);
+    });
+
+    it('verifies a sender predating the recipient header exactly as before', async () => {
+      repo.findByNodeUuid.mockResolvedValue(signedPeer());
+      const { [POOL_RECIPIENT_HEADER.toLowerCase()]: _dropped, ...legacy } = signedHeaders();
+
+      await expect(guard.canActivate(createContext(legacy).context)).resolves.toBe(true);
+    });
+
+    it('still refuses without a response to annotate, rather than failing open', async () => {
+      await expect(guard.canActivate(createContext(signedHeaders({ recipientNodeUuid: randomUUID() })).context)).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
   });
 

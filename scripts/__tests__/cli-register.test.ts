@@ -11,7 +11,11 @@ import { stripAnsi } from '../lib/cli-ui.js';
 
 const mocks = vi.hoisted(() => ({
   hub: {
-    deviceInfo: { device_id: 'dev-1', ci_cloud_url: 'https://portal.example.com' } as { device_id?: string; ci_cloud_url?: string },
+    deviceInfo: { device_id: 'dev-1', ci_cloud_url: 'https://portal.example.com' } as {
+      device_id?: string;
+      ci_cloud_url?: string;
+      device_id_host?: { status: string; message: string | null };
+    },
     deviceInfoFails: false,
     prepareFresh: { success: true, message: 'cleared' },
     prepareFreshFails: false,
@@ -151,6 +155,33 @@ describe('cihub register exit codes', () => {
   it('exits non-zero when the Hub resolves no device id', async () => {
     mocks.hub.deviceInfo = { device_id: '' };
     await expect(registerHub('local', { code: 'AB12CD' })).rejects.toThrow('exit 1');
+  });
+
+  it('stops before asking for a pairing code when the Hub reports a DEVICE_ID from another machine', async () => {
+    // beta-red and beta-nas shared one DEVICE_ID. The Hub refuses the pairing anyway; without this the
+    // operator is first sent to Portal to generate a code for a pairing that cannot happen.
+    mocks.hub.deviceInfo = {
+      device_id: 'c0ffee00c0ffee00c0ffee00c0ffee00',
+      ci_cloud_url: 'https://portal.example.com',
+      device_id_host: { status: 'foreign', message: 'DEVICE_ID=c0ffee00c0ffee00c0ffee00c0ffee00 was not generated on this machine. Fix it first.' },
+    };
+
+    // No --code and no terminal: before this check that was exit 2, a request for the code.
+    await expect(registerHub('local')).rejects.toThrow('exit 1');
+
+    expect(output()).toContain('was not generated on this machine.');
+    expect(output()).not.toContain('Pair with Companion Portal');
+    expect(mocks.submitPairingCode).not.toHaveBeenCalled();
+  });
+
+  it('pairs as before when the Hub finds DEVICE_ID is this machine’s', async () => {
+    mocks.hub.deviceInfo = {
+      device_id: 'dev-1',
+      ci_cloud_url: 'https://portal.example.com',
+      device_id_host: { status: 'matches_host', message: null },
+    };
+    await expect(registerHub('local', { code: 'AB12CD' })).resolves.toBeUndefined();
+    expect(mocks.submitPairingCode).toHaveBeenCalledTimes(1);
   });
 });
 

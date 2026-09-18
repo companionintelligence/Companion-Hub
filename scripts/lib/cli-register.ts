@@ -215,6 +215,14 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
     process.exit(1);
   }
 
+  // The Hub refuses to pair under a DEVICE_ID that no hardware of this machine produced. Say so before
+  // the operator is sent to Portal for a pairing code, not after they type one in.
+  if (deviceInfo.device_id_host?.status === 'foreign') {
+    const why = deviceInfo.device_id_host.message ?? `DEVICE_ID=${deviceId} was not generated on this machine.`;
+    printMessageBox('Device ID is not from this machine', why.split(/(?<=\.) /), 'red');
+    process.exit(1);
+  }
+
   printMessageBox(
     'Pair with Companion Portal',
     [

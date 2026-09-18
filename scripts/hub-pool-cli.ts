@@ -32,6 +32,18 @@ export interface PoolEnabledState {
 /** How a peer authenticates to this node. `signed` is the pinned-Ed25519 path; `bearer` is the legacy token. */
 export type PoolPeerAuthMode = 'bearer' | 'signed';
 
+/** Mirrors `PoolPeerProbeFailure` in `hub-pool-probe-failure.ts`: why a peer's health probes fail, and the operator's next step. */
+export interface PoolPeerProbeFailure {
+  kind: 'unreachable' | 'unauthorized' | 'identity_changed';
+  httpStatus: number | null;
+  detail: string;
+  since: string;
+  lastAttemptAt: string;
+  attempts: number;
+  nextProbeAt: string | null;
+  action: string | null;
+}
+
 /** This node's own pool identity, as `/status` reports it. Never the private key. */
 export interface PoolIdentitySummary {
   nodeUuid: string | null;
@@ -66,6 +78,8 @@ export interface PoolPeerRow {
   consecutiveFailures: number;
   lastSeenAt: string | null;
   lastCapabilities: { hardwareTier?: string; backends?: PoolBackendCapability[]; inFlightRequests?: number; acceptingWork?: boolean } | null;
+  /** Present on `/status` rows only, and absent on a Hub predating it: why probes of this peer are failing. `null` while they succeed. */
+  probeFailure?: PoolPeerProbeFailure | null;
   /** Present on `/status` rows only: what this node currently has forwarded to the peer. */
   inFlightRequests?: number;
   /**
@@ -512,7 +526,14 @@ export function formatPoolPeerTable(peers: PoolPeerRow[]): string[] {
     // switched off exchanges no work whatever its health poll says, and printing "connected" for it
     // is the one thing this table must not do. `!== false` so a Hub predating the column reads as in.
     const lifecycle = peer.enabled === false ? `${peer.status}/off` : peer.status;
-    const status = peer.consecutiveFailures > 0 ? `${lifecycle} ${peer.consecutiveFailures}/3` : lifecycle;
+    // A changed identity replaces the strike count too. The count only runs up (it reached 3,169 on
+    // beta-max's peers), and "unreachable 3169/3" reads as a network fault on a node that answered.
+    const status =
+      peer.probeFailure?.kind === 'identity_changed'
+        ? 'identity changed'
+        : peer.consecutiveFailures > 0
+          ? `${lifecycle} ${peer.consecutiveFailures}/3`
+          : lifecycle;
     const queue = peer.inFlightRequests ?? peer.lastCapabilities?.inFlightRequests;
     lines.push(
       [
@@ -682,6 +703,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   }
 
   lines.push(...formatPeerAuthModeLines(status.peers, status.settings.poolRequireSignedPeers));
+  lines.push(...formatPeerRefusalLines(status.peers));
 
   return lines;
 }
@@ -784,6 +806,50 @@ export function formatPeerAuthModeLines(peers: PoolPeerRow[], requireSignedPeers
       ? `  ${FAIL} poolRequireSignedPeers is ON, so these peers are being refused in both directions.`
       : '  Do not set poolRequireSignedPeers until this list is empty — it would cut them off.',
   ];
+}
+
+/** Width the action text is wrapped to. The box does not wrap, and the action is the one long line an operator must read whole. */
+const ACTION_WRAP_WIDTH = 96;
+
+/** Word-wraps sanitized text. A single word longer than `width` stays whole on its own line rather than being cut mid-command. */
+export function wrapWords(text: string, width: number): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const word of sanitizeForBox(text).split(' ')) {
+    if (current && current.length + 1 + word.length > width) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = current ? `${current} ${word}` : word;
+    }
+  }
+  return current ? [...lines, current] : lines;
+}
+
+/**
+ * The peers that refuse this Hub, each with the operator's next step.
+ *
+ * Only the two refusal kinds are listed. An unreachable peer needs nothing from the operator, and the
+ * table already says so. A refusing peer used to show as `unreachable 3169/3` and nothing else, which
+ * is how beta-max's recreated identity went unexplained for 28 hours.
+ */
+export function formatPeerRefusalLines(peers: PoolPeerRow[]): string[] {
+  const refusing = peers.filter((peer) => peer.probeFailure && peer.probeFailure.kind !== 'unreachable');
+  if (refusing.length === 0) return [];
+
+  const lines = ['', 'Peers refusing this Hub'];
+  for (const peer of refusing) {
+    const failure = peer.probeFailure as PoolPeerProbeFailure;
+    const verdict = failure.kind === 'identity_changed' ? 'identity changed' : 'credentials refused';
+    const nextProbe = failure.nextProbeAt ? ` · next probe ${formatPoolTimestamp(failure.nextProbeAt)}` : '';
+    lines.push(
+      `  ${FAIL} ${sanitizeForBox(peer.nodeFqdn)}  ${verdict}${failure.httpStatus === null ? '' : ` (HTTP ${failure.httpStatus})`} · ${failure.attempts} probe(s) since ${formatPoolTimestamp(failure.since)}${nextProbe}`,
+    );
+    if (failure.action) {
+      lines.push(...wrapWords(failure.action, ACTION_WRAP_WIDTH).map((line) => `    ${line}`));
+    }
+  }
+  return lines;
 }
 
 /**
