@@ -153,7 +153,7 @@ pnpm run dev:desktop
 
 This starts the `.env.dev` appliance stack in the background, then opens Tauri with `tauri.stack-dev.json` (WebView loads the Hub in Docker, not the local Vite port).
 
-Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`) when `tunnel/token` exists next to `ROOT_FOLDER_HOST` (e.g. `ci-hub/tunnel/token` for `.internal`). Check with `cihub config dev`.
+Compose profiles: `private-vpn` (Tailscale) always; `cloudflare` (`cloudflared`) when `tunnel/token` and the backend's `tunnel/registration.json` marker both exist next to `ROOT_FOLDER_HOST` (e.g. `ci-hub/tunnel/` for `.internal`); a token without the marker is left over from an uninstalled or reset Hub and does not start the tunnel. Check with `cihub config dev`.
 
 **Classic local source-dev + Tauri:**
 
