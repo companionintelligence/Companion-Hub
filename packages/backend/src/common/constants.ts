@@ -39,6 +39,15 @@ export const TUNNEL_DIR = process.env.CI_HUB_TUNNEL_DIR || path.join(APP_DIR, 't
 /** Written when the user clears the tunnel token (tray / settings). Blocks DB auto-recovery until re-paired. */
 export const TUNNEL_USER_CLEARED_MARKER = '.user-cleared-token';
 export const tunnelUserClearedMarkerPath = () => path.join(TUNNEL_DIR, TUNNEL_USER_CLEARED_MARKER);
+/**
+ * Written beside the token while this Hub holds a registration. The desktop app and CLI start
+ * `cloudflared` only when both files exist, because a token alone can outlive its registration.
+ */
+export const TUNNEL_REGISTRATION_MARKER = 'registration.json';
+export const tunnelRegistrationMarkerPath = () => path.join(TUNNEL_DIR, TUNNEL_REGISTRATION_MARKER);
+/** Written when boot finds a token with no registration and removes it. Start fresh clears it. */
+export const TUNNEL_LEFTOVER_MARKER = 'leftover.json';
+export const tunnelLeftoverMarkerPath = () => path.join(TUNNEL_DIR, TUNNEL_LEFTOVER_MARKER);
 /** Shared secret for the desktop host update listener (written by companion-hub desktop). */
 export const UPDATE_LISTENER_TOKEN_FILENAME = 'update-listener.token';
 
