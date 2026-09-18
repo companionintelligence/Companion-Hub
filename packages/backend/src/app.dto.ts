@@ -120,6 +120,7 @@ export const settingsSchema = z.object({
   themeBase: z.string().optional(),
   themeColor: z.string().optional(),
   ciHubApiKey: z.string().trim().optional(),
+  ciHubMoveKey: z.string().trim().optional(),
   ciHubOrganizationId: z.string().trim().optional(),
   ciHubOrganizationSlug: z.string().trim().optional(),
   ciHubOrganizationLabel: z.string().trim().optional(),

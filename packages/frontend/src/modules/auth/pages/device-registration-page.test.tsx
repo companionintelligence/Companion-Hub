@@ -126,6 +126,18 @@ async function flushAsyncWork() {
   });
 }
 
+/** Reconnect this Hub after a Settings reset: the Hub kept its key, and the Portal still accepts it. */
+const PORTAL_ACCEPTS_KEY_DRIFT = {
+  detected: true,
+  hardwareDeviceId: 'device-123',
+  localRegistered: false,
+  portalDeviceActive: true,
+  hasMoveKey: true,
+  staleAppEnvDeviceIds: [],
+  hasStaleTunnelToken: false,
+  signals: [{ reason: 'local_unregistered_portal_active' }],
+};
+
 describe('DeviceRegistrationPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -242,7 +254,7 @@ describe('DeviceRegistrationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
-      expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+      expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false });
     });
 
     expect(navigate).not.toHaveBeenCalled();
@@ -271,7 +283,7 @@ describe('DeviceRegistrationPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
     await waitFor(() => {
-      expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+      expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false });
     });
 
     expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
@@ -293,6 +305,66 @@ describe('DeviceRegistrationPage', () => {
     expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
     expect(screen.getByTestId('drift-setup-new')).toBeInTheDocument();
     expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
+  });
+
+  it('offers a move to another organization while the Portal still accepts this Hub key', async () => {
+    fetchRegistrationStateDrift.mockResolvedValue({ ...PORTAL_ACCEPTS_KEY_DRIFT });
+
+    render(<DeviceRegistrationPage />);
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Move to another organization')).toBeInTheDocument();
+    expect(within(dialog).getByTestId('drift-move')).toHaveTextContent('Move this device');
+    // Restore stays the recommendation: most people reconnect where the Hub already is.
+    expect(within(dialog).getByTestId('drift-move')).toHaveAttribute('data-recommended', 'false');
+    expect(within(dialog).getByTestId('drift-restore')).toHaveAttribute('data-recommended', 'true');
+  });
+
+  it('offers no move while the Portal cannot say whether it accepts this Hub key', async () => {
+    fetchRegistrationStateDrift.mockResolvedValue({
+      ...PORTAL_ACCEPTS_KEY_DRIFT,
+      portalDeviceActive: null,
+      signals: [{ reason: 'stale_tunnel_token' }],
+    });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+    expect(screen.queryByTestId('drift-move')).not.toBeInTheDocument();
+  });
+
+  it('offers no move to a Hub paired before move keys', async () => {
+    // The Portal accepts its device key, but moving also takes the move key a later pairing hands out.
+    fetchRegistrationStateDrift.mockResolvedValue({ ...PORTAL_ACCEPTS_KEY_DRIFT, hasMoveKey: false });
+
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByTestId('drift-restore')).toBeInTheDocument();
+    expect(screen.queryByTestId('drift-move')).not.toBeInTheDocument();
+  });
+
+  it('explains where a move code comes from once Move is chosen, keeping the key and restoring no apps', async () => {
+    const registrationUrl =
+      'https://portal.example.com/device/register?device_id=device-123&callback_url=http%3A%2F%2Flocalhost%3A5002%2Fdevice-registration';
+    fetchDeviceRegistrationInfoResult.mockResolvedValue(deviceInfo({ registration_url: registrationUrl }));
+    fetchRegistrationStateDrift.mockResolvedValue({ ...PORTAL_ACCEPTS_KEY_DRIFT });
+
+    render(<DeviceRegistrationPage />);
+
+    fireEvent.click(await screen.findByTestId('drift-move'));
+
+    expect(
+      await screen.findByText(
+        "In your CI Account, switch to the organization you're moving this Hub to, choose Add Device, and enter the pairing code below. You'll be asked to confirm the move.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Reconnect this Hub' })).not.toBeInTheDocument();
+    // The code comes from Add Device in the other organization, not from this device's menu.
+    expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', registrationUrl);
+    // Start fresh would throw away the key a move needs; a restore would look for apps the new organization does not have.
+    expect(prepareFreshRegistrationDetailed).not.toHaveBeenCalled();
+    expect(markRegistrationRestoreIntentDetailed).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('ci-hub-registration-drift-choice')).toBe('move');
   });
 
   it('offers no close button on Reconnect this Hub, which only a choice can close', async () => {
@@ -325,9 +397,47 @@ describe('DeviceRegistrationPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Register' }));
 
       await waitFor(() => {
-        expect(pairWithCode).toHaveBeenCalledWith('ABC123');
+        expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false });
       });
     }
+
+    it('asks before moving a Hub another organization holds, and moves it on yes', async () => {
+      await submitRefusedPairing({
+        message: 'This Hub is registered to another organization.',
+        code: 'DEVICE_MOVE_CONFIRMATION_REQUIRED',
+        organizationName: 'Studio',
+      });
+
+      const dialog = await screen.findByTestId('registration-move-dialog');
+
+      expect(within(dialog).getByRole('heading', { name: 'Move this Hub to Studio?' })).toBeInTheDocument();
+      // Asking is not a failure: nothing changed yet.
+      expect(toast.error).not.toHaveBeenCalled();
+
+      pairWithCode.mockResolvedValue({ ok: true, status: 201, data: { success: true, domain: 'example.com', subdomain: 'hub' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Move it here' }));
+
+      await waitFor(() => {
+        expect(pairWithCode).toHaveBeenLastCalledWith('ABC123', { confirmMove: true });
+      });
+      await waitFor(() => {
+        expect(screen.queryByTestId('registration-move-dialog')).not.toBeInTheDocument();
+      });
+    });
+
+    it('moves nothing when the person cancels the move', async () => {
+      await submitRefusedPairing({ message: 'This Hub is registered to another organization.', code: 'DEVICE_MOVE_CONFIRMATION_REQUIRED' });
+
+      const dialog = await screen.findByTestId('registration-move-dialog');
+
+      expect(within(dialog).getByRole('heading', { name: 'Move this Hub to this organization?' })).toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('registration-move-dialog')).not.toBeInTheDocument();
+      });
+      expect(pairWithCode).toHaveBeenCalledTimes(1);
+    });
 
     it('opens Reconnect this Hub over a stored choice and recommends Restore when the Portal already has this device', async () => {
       // The earlier choice led to this refusal, so it must not keep the dialog closed.
@@ -350,6 +460,19 @@ describe('DeviceRegistrationPage', () => {
       ).toBeInTheDocument();
       expect(screen.queryByText(PORTAL_PROOF_TEXT)).not.toBeInTheDocument();
       expect(toast.error).not.toHaveBeenCalled();
+    });
+
+    it('offers no move once the Hub has failed to prove it is the device', async () => {
+      // Move was chosen, and the Portal then refused the key: only that key moves this Hub, so offering
+      // the move again could only fail again.
+      sessionStorage.setItem('ci-hub-registration-drift-choice', 'move');
+      fetchRegistrationStateDrift.mockResolvedValue({ ...PORTAL_ACCEPTS_KEY_DRIFT });
+
+      await submitRefusedPairing({ message: PORTAL_PROOF_TEXT, code: 'DEVICE_PROOF_REQUIRED' });
+
+      expect(await screen.findByRole('heading', { name: 'Reconnect this Hub' })).toBeInTheDocument();
+      expect(screen.getByTestId('drift-restore')).toBeInTheDocument();
+      expect(screen.queryByTestId('drift-move')).not.toBeInTheDocument();
     });
 
     it('explains how to get a restore code once Restore is chosen', async () => {
@@ -521,7 +644,7 @@ describe('DeviceRegistrationPage', () => {
 
       act(() => openPairingLink('ABC123'));
 
-      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123'));
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       await waitFor(() => expect(shell.parkedPairingCode).toBeNull());
       expect(sessionStorage.getItem(STASH_KEY)).toBeNull();
 
@@ -535,7 +658,7 @@ describe('DeviceRegistrationPage', () => {
       await waitFor(() => expect(shell.pairListeners.length).toBeGreaterThan(0));
 
       act(() => openPairingLink('ABC123'));
-      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123'));
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('ABC123', { confirmMove: false }));
       // Linux and Windows hand the app every link twice.
       act(() => openPairingLink('ABC123'));
 
@@ -554,7 +677,7 @@ describe('DeviceRegistrationPage', () => {
 
       const first = render(<DeviceRegistrationPage />);
 
-      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('DEF456'));
+      await waitFor(() => expect(pairWithCode).toHaveBeenCalledWith('DEF456', { confirmMove: false }));
       await waitFor(() => expect(sessionStorage.getItem(STASH_KEY)).toBeNull());
       expect(shell.parkedPairingCode).toBeNull();
 

@@ -34,7 +34,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} wizard [env]`, description: 'Guided first-time or re-setup wizard' },
       { command: `${BASE_COMMAND} setup [env]`, description: 'Initialize host state, Traefik, and Docker auth config' },
       {
-        command: `${BASE_COMMAND} register [env] [--fresh] [--code <code>]`,
+        command: `${BASE_COMMAND} register [env] [--fresh] [--code <code>] [--move]`,
         description: 'Pair this Hub with CI Cloud using a portal pairing code (hub must be running)',
       },
       {

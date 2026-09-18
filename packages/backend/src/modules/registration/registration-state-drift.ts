@@ -18,6 +18,12 @@ export interface RegistrationStateDrift {
   localRegistered: boolean;
   /** null when Companion Portal is unreachable or not configured */
   portalDeviceActive: boolean | null;
+  /**
+   * Whether this Hub holds a move key from its last pairing: with an accepted device key, what lets it
+   * move itself to another organization. A Hub paired before move keys has none, and is not offered
+   * the move until it has paired again where it is.
+   */
+  hasMoveKey: boolean;
   staleAppEnvDeviceIds: string[];
   signals: StateDriftSignal[];
   hasStaleTunnelToken: boolean;
@@ -160,6 +166,7 @@ export function buildStateDriftResult(input: {
   staleAppEnvDeviceIds: string[];
   hasStaleTunnelToken: boolean;
   hasOrphanedDbRegistration?: boolean;
+  hasMoveKey?: boolean;
 }): RegistrationStateDrift {
   const signals: StateDriftSignal[] = [];
 
@@ -194,6 +201,7 @@ export function buildStateDriftResult(input: {
     hardwareDeviceId: input.hardwareDeviceId,
     localRegistered: input.localRegistered,
     portalDeviceActive: input.portalDeviceActive,
+    hasMoveKey: input.hasMoveKey === true,
     staleAppEnvDeviceIds: input.staleAppEnvDeviceIds,
     signals,
     hasStaleTunnelToken: input.hasStaleTunnelToken,

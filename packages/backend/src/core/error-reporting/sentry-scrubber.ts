@@ -42,8 +42,10 @@ import { ApiKeyStoreUnavailableError, isTransientDbError } from '@/modules/api-k
 const SECRET_PATTERNS = [
   /Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi,
   // `api[-_ ]?key`, not the literals `apikey|api_key`, so the hyphenated header
-  // forms match too — `x-api-key` was previously missed entirely.
-  /(?:api[-_ ]?key|token|password|secret|jwt|auth)[\s=:"']+[^\s"',}\]]+/gi,
+  // forms match too — `x-api-key` was previously missed entirely. The Portal
+  // device and move keys go by field name only (`device_key`, `moveKey`): with a
+  // space allowed, every sentence saying "device key" would lose its next word.
+  /(?:api[-_ ]?key|device[-_]?key|move[-_]?key|token|password|secret|jwt|auth)[\s=:"']+[^\s"',}\]]+/gi,
   /tskey-[A-Za-z0-9-]+/gi,
   // Postgres/Redis/AMQP URLs carry credentials in the authority section.
   /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:[^\s@/]+@/gi,
@@ -64,7 +66,8 @@ const APPLICATION_SUPPORT_PATTERN = /Library\/Application Support\/[^\s]+/g;
 // `api[-_ ]?key` (not the literals `apikey|api_key`) so the hyphenated header
 // forms match too — the SDK ships request headers even with `sendDefaultPii`
 // disabled, so `x-api-key` arrives here whatever that flag is set to.
-const SENSITIVE_KEY_PATTERN = /password|secret|token|authorization|cookie|jwt|api[-_ ]?key|dsn|pepper|private[-_]?key|signature/i;
+const SENSITIVE_KEY_PATTERN =
+  /password|secret|token|authorization|cookie|jwt|api[-_ ]?key|device[-_]?key|move[-_]?key|dsn|pepper|private[-_]?key|signature/i;
 
 // Keys that name a PERSON rather than carrying a credential. No value pattern
 // can ever match these — a username is just a word — so the key is the only
