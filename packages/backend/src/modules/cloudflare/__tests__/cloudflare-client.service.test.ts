@@ -103,6 +103,7 @@ describe('CloudflareClientService', () => {
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: path.join(DATA_DIR, 'docker-compose.yml'),
         profile: 'cloudflare',
+        forceRecreate: true,
       });
       expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
     });
@@ -115,6 +116,7 @@ describe('CloudflareClientService', () => {
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: path.join(APP_DIR, 'docker-compose.prod.yml'),
         profile: 'cloudflare',
+        forceRecreate: true,
       });
     });
 
@@ -127,6 +129,7 @@ describe('CloudflareClientService', () => {
       expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
         composeFile: path.join(APP_DIR, 'docker-compose.local.yml'),
         profile: 'cloudflare',
+        forceRecreate: true,
       });
     });
 
@@ -568,6 +571,69 @@ describe('CloudflareClientService', () => {
       portalClient.postDeviceCustomDomainBind.mockRejectedValue(new Error('socket hang up'));
 
       await expect(service.bindCustomDomain('cd_1', 'comfyui')).resolves.toMatchObject({ ok: false, message: 'socket hang up' });
+    });
+  });
+
+  describe('ensureCloudflaredRunning', () => {
+    let dockerReadFacade: MockProxy<DockerReadFacade>;
+
+    beforeEach(() => {
+      vi.mocked(fsSync.existsSync).mockReturnValue(true);
+      (service as any).tunnelToken = 'tok';
+      dockerReadFacade = mock<DockerReadFacade>();
+      moduleRef.get.mockImplementation(((token: unknown) => (token === DockerReadFacade ? dockerReadFacade : dockerService)) as any);
+    });
+
+    it('leaves a running cloudflared alone, so a Hub boot does not drop every public hostname', async () => {
+      // A dry-run of the boot's compose up inside the Hub (2026-09-17) would have recreated a
+      // healthy tunnel on 6 of 9 fleet nodes: the Hub's compose 2.40.0 and the host's 5.x hash the
+      // same cloudflared definition differently (e65e7ff… vs 53b859b… on beta-max and core-3).
+      dockerReadFacade.isContainerRunning.mockResolvedValue(true);
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(true);
+
+      expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
+      expect(dockerService.restartContainer).not.toHaveBeenCalled();
+    });
+
+    it('sends a crash-looping cloudflared through compose up rather than docker restart (beta-max 530)', async () => {
+      // beta-max: the container's token mount predated the compose file, it sat in `restarting`,
+      // and `docker restart` reported success on every boot. Compose replaces a stale definition.
+      dockerReadFacade.isContainerRunning.mockResolvedValue(false);
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(true);
+
+      expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', {
+        composeFile: path.join(DATA_DIR, 'docker-compose.yml'),
+        profile: 'cloudflare',
+        forceRecreate: false,
+      });
+      expect(dockerService.restartContainer).not.toHaveBeenCalled();
+    });
+
+    it('recreates a running cloudflared after the token was recovered, because it reads the token only at startup', async () => {
+      dockerReadFacade.isContainerRunning.mockResolvedValue(true);
+
+      await expect(service.ensureCloudflaredRunning({ forceRestart: true })).resolves.toBe(true);
+
+      expect(dockerService.ensureContainerRunning).toHaveBeenCalledWith('cloudflared', expect.objectContaining({ forceRecreate: true }));
+    });
+
+    it('reports failure with the compose diagnosis instead of throwing into boot', async () => {
+      const errorSpy = vi.spyOn((service as any).logger, 'error').mockImplementation(() => undefined);
+      dockerService.ensureContainerRunning.mockRejectedValue(new Error('Cannot start cloudflared: no Docker Compose CLI works in this Hub.'));
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(false);
+
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('no Docker Compose CLI works in this Hub'));
+    });
+
+    it('does not touch docker without a tunnel token', async () => {
+      (service as any).tunnelToken = null;
+
+      await expect(service.ensureCloudflaredRunning()).resolves.toBe(false);
+
+      expect(dockerService.ensureContainerRunning).not.toHaveBeenCalled();
     });
   });
 
