@@ -36,6 +36,7 @@ import { HubPoolPairingPinService } from '../hub-pool-pairing-pin.service';
 import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
+import { HubPoolThroughputService } from '../hub-pool-throughput.service';
 import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
 import { HubPoolController } from '../hub-pool.controller';
 import { PoolPeerGuard } from '../guards/pool-peer.guard';
@@ -196,6 +197,8 @@ interface Node {
   setShareContainerStats(enabled: boolean): void;
   /** Set or clear this node's stored prompt ceiling, as a settings PATCH does. */
   setMaxPromptTokens(tokens: number | null): void;
+  /** What this node's proxy has timed, and what its `/capabilities` advertises from. */
+  throughput: HubPoolThroughputService;
   /** Runs one health-poll tick, as the module's own timer would. */
   poll(): Promise<void>;
   /** Give this node a new MagicDNS name, as a tailnet rename would — routing and self-report together. */
@@ -298,6 +301,7 @@ function buildNode(fqdn: string, models: string[]): Node {
   // containers at all — which is what an un-sampled Hub genuinely is.
   const containerSampler = mock<PoolContainerSampler>();
   containerSampler.containerRollup.mockReturnValue(null);
+  const throughput = new HubPoolThroughputService();
   const moduleRef = mock<ModuleRef>();
   moduleRef.get.mockImplementation((token: unknown) => {
     if (token === POOL_CONTAINER_SAMPLER) {
@@ -318,6 +322,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     pairingPins,
     pressureService,
     moduleRef,
+    throughput,
   );
   // A REAL discovery service over the real peer service: pairing by address runs the address parse,
   // the private-address check, the `/identify` probe and the PIN handshake for real, which is the
@@ -350,6 +355,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     setMaxPromptTokens(tokens: number | null) {
       preferences.poolMaxPromptTokens = tokens;
     },
+    throughput,
     /** Make this node report a measured band, as its sampler would. */
     setGpuPressure(band: number | null, source: 'host-file' | 'amd-drm' | null = band === null ? null : 'amd-drm') {
       pressureService.band.mockReturnValue(band);
@@ -1402,6 +1408,72 @@ describe('Hub Pool across two nodes', () => {
 
       expect((await proxy.buildCandidateList(SHARED_MODEL, 4_000)).map((candidate) => candidate.peerId)).toEqual([coreRowId, null]);
       expect((await proxy.buildCandidateList(SHARED_MODEL, LONG_PROMPT_BYTES)).map((candidate) => candidate.peerId)).toEqual([null, coreRowId]);
+    });
+  });
+  /**
+   * Throughput's whole path, across the real wire: core's own engine is timed missing a deadline (core
+   * stands in for fzzy), core's `/capabilities` advertises it, beta's health poll caches it, and beta's
+   * proxy — which never sent core a long prompt itself — reads it back to place one.
+   */
+  describe('throughput across the wire', () => {
+    const LONG_PROMPT_BYTES = 184_000; // ~46k tokens
+
+    function proxyOn(node: Node): PoolProxyService {
+      const ollama = mock<OllamaBackend>();
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [SHARED_MODEL] });
+      const others = [mock<VllmBackend>(), mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+      for (const backend of others) {
+        backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      }
+      const [vllm, lemonade, mtplx, dspark, lucebox] = others as [VllmBackend, LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend];
+      const pressure = mock<HubPoolPressureService>();
+      pressure.band.mockReturnValue(null);
+      const loadService = new HubPoolLoadService();
+      // Two requests queued here, so the ranker alone would hand the next one to idle core.
+      loadService.acquire('local');
+      loadService.acquire('local');
+      return new PoolProxyService(
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        node.service,
+        mock<TailscaleService>(),
+        loadService,
+        node.configuration,
+        new HubPoolRoutingLogService(),
+        pressure,
+        undefined,
+        undefined,
+        node.throughput,
+      );
+    }
+
+    it("carries core's own missed deadline into beta's snapshot and status card, and beta places a long prompt on it", async () => {
+      await pairNodes();
+      core.throughput.recordPrefill(
+        { nodeKey: 'local', backend: 'ollama', model: SHARED_MODEL },
+        { promptTokens: 46_000, ms: 922_000, deadline: true },
+      );
+
+      await beta.poll();
+
+      const cached = beta.repo.only().lastCapabilities as unknown as PoolPeerCapabilities;
+      expect(cached.throughput).toEqual([expect.objectContaining({ model: SHARED_MODEL, backend: 'ollama' })]);
+      expect((await beta.service.getPoolStatus()).peers[0]?.throughput).toMatchObject({
+        observed: [],
+        advertised: [{ model: SHARED_MODEL, prefill: [{ fromTokens: 32_768, deadline: true }] }],
+      });
+      const proxy = proxyOn(beta);
+      const coreRowId = beta.repo.only().id;
+      expect((await proxy.buildCandidateList(SHARED_MODEL, 40_000)).map((candidate) => candidate.peerId)).toEqual([coreRowId, null]);
+      expect((await proxy.buildCandidateList(SHARED_MODEL, LONG_PROMPT_BYTES)).map((candidate) => candidate.peerId)).toEqual([null, coreRowId]);
+    });
+
+    it('leaves the key off the wire until core has timed something', async () => {
+      await pairNodes();
+
+      await beta.poll();
+
+      expect(beta.repo.only().lastCapabilities).not.toHaveProperty('throughput');
+      expect((await beta.service.getPoolStatus()).peers[0]?.throughput).toEqual({ observed: [], advertised: [] });
     });
   });
 });
