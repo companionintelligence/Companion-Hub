@@ -97,7 +97,7 @@ function isHostPlatform(platform: string | undefined): platform is HostPlatform 
  * measured), so a scored model is preferred over an unscored one of any size. Remaining ties fall back
  * to the prior heuristics: q4+ before sub-q4, then bigger parameter count, then higher-fidelity quant.
  */
-function compareLlmCandidates(a: CuratedModel, b: CuratedModel): number {
+export function compareLlmCandidates(a: CuratedModel, b: CuratedModel): number {
   const intel = (b.metadata?.intelligenceIndex ?? 0) - (a.metadata?.intelligenceIndex ?? 0);
   if (intel !== 0) return intel;
   const aSubQ4 = SUB_Q4_QUANTS.has(a.runtime.quantization ?? '') ? 1 : 0;

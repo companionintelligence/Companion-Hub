@@ -2633,12 +2633,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * Restart every running app whose marketplace listing is categorized as "ai".
-   * Called after inference preferences change so AI apps pick up the new
-   * model/backend env. Fire-and-forget: restarts run in the background so the
-   * caller (e.g. the preferences endpoint) isn't blocked.
+   * Restart every running app whose marketplace listing is categorized as "ai" (or that declares an
+   * inference mapping), so it picks up a regenerated inference env. Fire-and-forget: restarts run in
+   * the background so the caller isn't blocked.
+   *
+   * With `shouldRestart`, each AI app is restarted only when it answers true — the inference refresh
+   * passes a staleness check there. Without it every AI app restarts, which is what the Hub-upgrade
+   * sync needs: a new Hub build can change the env in ways no comparison against the old one sees.
    */
-  async restartAiApps() {
+  async restartAiApps(options?: { trigger?: string; shouldRestart?: (appUrn: AppUrn) => Promise<boolean> }) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -2653,7 +2656,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           if (!info?.categories?.includes('ai') && !hasInferenceIntegration) {
             return;
           }
-          this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
+          if (options?.shouldRestart && !(await options.shouldRestart(appUrn))) {
+            return;
+          }
+          this.logger.info(`Restarting AI app ${appUrn} after ${options?.trigger ?? 'an inference preferences change'}`);
           // Awaited so a refused restart (the queue is down) is logged here for this app instead of rejecting restartAiApps as a whole.
           return await this.restartApp({ appUrn, actor: { kind: 'system', reason: 'inference-env-refresh' } });
         } catch (e) {
@@ -2663,7 +2669,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     );
 
     const prefs = this.config.getInferencePreferences();
-    if (prefs.preferredBackend) {
+    // A filtered sweep restarted only some apps, so it cannot vouch that every app matches this build.
+    if (prefs.preferredBackend && !options?.shouldRestart) {
       try {
         await this.markInferenceAppsEnvSynced();
       } catch (err) {
