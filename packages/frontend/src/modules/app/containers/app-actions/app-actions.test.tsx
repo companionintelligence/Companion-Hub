@@ -1,4 +1,5 @@
-import { render, screen, userEvent } from '@/tests/test-utils';
+import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { stashPendingInstallIntent } from '@/lib/deep-link-install';
 import type { AppDetails, AppInfo, AppMetadata } from '@/types/app.types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
@@ -37,6 +38,7 @@ const hoisted = vi.hoisted(() => ({
   },
   architecture: 'amd64' as 'amd64' | 'arm64',
   toastError: vi.fn(),
+  forgetInstallIntent: vi.fn(),
   /*
    * Props the two dialogs that carry the custom-domain state were mounted with.
    * The seeding is the whole behaviour here — what the operator is SHOWN is what
@@ -163,6 +165,11 @@ vi.mock('react-router', async () => {
 
 vi.mock('@/lib/helpers/open-external', () => ({
   openExternal: (...args: unknown[]) => hoisted.openExternal(...args),
+}));
+
+vi.mock('@/lib/deep-link-install', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/deep-link-install')>()),
+  forgetInstallIntentForApp: (...args: unknown[]) => hoisted.forgetInstallIntent(...args),
 }));
 
 vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
@@ -296,6 +303,7 @@ describe('AppActions', () => {
     });
     hoisted.architecture = 'amd64';
     hoisted.toastError.mockReset();
+    hoisted.forgetInstallIntent.mockReset();
     hoisted.updateSettingsProps = undefined;
     hoisted.installDialogProps = undefined;
     disclosureOpen.mockReset();
@@ -447,6 +455,55 @@ describe('AppActions', () => {
     expect(install).toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(install);
     expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE');
+  });
+
+  describe('a saved link to install this app', () => {
+    // A link held during setup opens the dialog from the stash while the desktop shell still has the
+    // same link parked. Left there, it brought the user back here with the dialog open on the next
+    // page load.
+    afterEach(() => {
+      sessionStorage.clear();
+    });
+
+    it('opens the install dialog and forgets every copy of the link', async () => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+      stashPendingInstallIntent({ appSlug: 'test-app', storeId: 'community' });
+
+      render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      await waitFor(() => expect(disclosureOpen).toHaveBeenCalled());
+      expect(hoisted.forgetInstallIntent).toHaveBeenCalledWith('test-app', 'community');
+    });
+
+    it('forgets the link when the app cannot run on this Hub', async () => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+      hoisted.architecture = 'arm64';
+      stashPendingInstallIntent({ appSlug: 'test-app', storeId: 'community' });
+
+      render(
+        <AppActions
+          app={null}
+          metadata={metadata}
+          info={makeInfo({ supported_architectures: ['amd64'] })}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      await waitFor(() => expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE'));
+      expect(disclosureOpen).not.toHaveBeenCalled();
+      expect(hoisted.forgetInstallIntent).toHaveBeenCalledWith('test-app', 'community');
+    });
+
+    it('leaves a saved link for another app alone', () => {
+      hoisted.queryClient.getQueryData.mockReturnValue(null);
+      stashPendingInstallIntent({ appSlug: 'other-app', storeId: 'community' });
+
+      render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      expect(disclosureOpen).not.toHaveBeenCalled();
+      expect(hoisted.forgetInstallIntent).not.toHaveBeenCalled();
+    });
   });
 
   it('shows Start (not Install) when an installed app has no containers (stopped or legacy missing)', () => {

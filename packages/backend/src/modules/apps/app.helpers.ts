@@ -131,6 +131,18 @@ export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolea
 }
 
 /**
+ * Whether an app is first-party Companion Memory as env generation sees it, which is the app that gets
+ * this Hub's Portal device key as `HUB_API_KEY`.
+ *
+ * `ci-memory` deployments and source builds of the same product both count. The OIDC fallback, Portal
+ * bearer config, device key and maps key all follow this one test, and so does the refresh that hands
+ * Memory a new key after pairing (`DeviceKeyRefreshService`).
+ */
+export function receivesPortalDeviceKey(config: Pick<AppInfo, 'id' | 'source'>): boolean {
+  return config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+}
+
+/**
  * Returns the scopes for an app's Hub-managed key.
  *
  * The `mcp` scope serves an MCP tools consumer, and the `app` scope serves a
@@ -769,8 +781,7 @@ export class AppHelpers {
     // First-party Companion Memory deployments include `ci-memory` and source
     // builds of the same product. Share this predicate across OIDC and maps-key
     // injection so the gates remain consistent.
-    const isFirstPartyCiServerApp =
-      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+    const isFirstPartyCiServerApp = receivesPortalDeviceKey(config);
 
     // Preserve values that operators pin in the Hub's `.env`, which seeds `envMap`.
     // Hub-derived defaults fill only missing values.

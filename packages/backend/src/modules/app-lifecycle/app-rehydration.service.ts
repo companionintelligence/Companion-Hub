@@ -48,6 +48,13 @@ export interface RehydrationExecuteResult {
   skipped: Array<{ name: string; reason: string }>;
 }
 
+interface RehydrateOptions {
+  force?: boolean;
+  source?: 'restore';
+  operatorUserId?: number;
+  actor: LifecycleActor;
+}
+
 /**
  * The org-grant gate's refusal. Unlike an install that fails, it is an answer about who asked — or,
  * with WhoIs unreachable, no answer at all — so another person, or a later try, may get further.
@@ -58,6 +65,9 @@ function isGrantRefusal(error: unknown): boolean {
 
 @Injectable()
 export class AppRehydrationService {
+  /** The run under way, which a second caller joins rather than queueing the same installs again. */
+  private runInFlight: Promise<RehydrationExecuteResult> | null = null;
+
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
@@ -82,22 +92,49 @@ export class AppRehydrationService {
     return this.buildPlanFromPortalApps(portalApps);
   }
 
-  async executeRehydrate(options: {
-    force?: boolean;
-    source?: 'restore';
-    operatorUserId?: number;
-    actor: LifecycleActor;
-  }): Promise<RehydrationExecuteResult> {
+  async executeRehydrate(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
     await this.assertCanRehydrate();
 
+    /*
+     * ⚠ TWO CALLERS CAN ASK AT ONCE. After a pairing the Hub restores on its own
+     * (`PairingAppRestoreService`), while the restore page, open for the person who paired, asks as
+     * well. Each run plans from app rows the other has not written yet, so both would queue the same
+     * installs. A second caller waits for the run under way and takes its result.
+     */
+    const result = await (this.runInFlight ?? this.startRun(options));
+
+    /*
+     * A person who reaches the restore page after the Hub already restored on its own still finishes the
+     * restore flow here, as they would have by running it: it used to send them to onboarding, which a
+     * restored Hub has already been through.
+     */
+    const restoreFlow = options?.source === 'restore' || (await hasRestoreIntent());
+    if (restoreFlow && options?.operatorUserId) {
+      await this.userRepository.updateUser(options.operatorUserId, { hasCompletedOnboarding: true });
+      await clearRestoreIntent();
+    }
+
+    return result;
+  }
+
+  private startRun(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
+    const run = this.runRehydrate(options).finally(() => {
+      if (this.runInFlight === run) {
+        this.runInFlight = null;
+      }
+    });
+    this.runInFlight = run;
+    return run;
+  }
+
+  private async runRehydrate(options: RehydrateOptions): Promise<RehydrationExecuteResult> {
     const existing = await this.readRehydrationState();
     if (existing?.completedAt && !options?.force) {
-      const plan = await this.buildPlan();
       return {
         success: true,
         message: 'Rehydration already completed for this registration epoch',
         alreadyCompleted: true,
-        plan,
+        plan: await this.planForCompletedRun(),
         queued: existing.queuedUrns,
         started: existing.startedUrns,
         skipped: existing.skipped,
@@ -122,9 +159,9 @@ export class AppRehydrationService {
      * Recording the run as done made the refusal final: nothing retried it without `force`, and the
      * restore page moved straight on without showing it.
      *
-     * The restore intent below is still cleared. While it stands with no finished run, Cloudflare sync
-     * stands down for the whole Hub (`ExposureSyncService.triggerCloudflareSync`), and a requester who
-     * may not install must not be able to hold that open.
+     * The restore intent is still cleared by `executeRehydrate`. While it stands with no finished run,
+     * Cloudflare sync stands down for the whole Hub (`ExposureSyncService.triggerCloudflareSync`), and a
+     * requester who may not install must not be able to hold that open.
      */
     const incomplete = refused.length > 0;
 
@@ -138,12 +175,6 @@ export class AppRehydrationService {
       await this.writeRehydrationState(state);
     }
 
-    const restoreFlow = options?.source === 'restore' || (await hasRestoreIntent());
-    if (restoreFlow && options?.operatorUserId) {
-      await this.userRepository.updateUser(options.operatorUserId, { hasCompletedOnboarding: true });
-      await clearRestoreIntent();
-    }
-
     return {
       success: true,
       message: this.summarize(queued, started, refused, plan),
@@ -153,6 +184,19 @@ export class AppRehydrationService {
       started,
       skipped,
     };
+  }
+
+  /**
+   * What a finished run reports as its plan. It is only shown, so a Portal that cannot be asked right
+   * now yields an empty plan rather than failing a restore that is already done.
+   */
+  private async planForCompletedRun(): Promise<RehydrationPlan> {
+    try {
+      return await this.buildPlanFromPortalApps(await this.fetchPortalApplications());
+    } catch (error) {
+      this.logger.warn(`Could not rebuild the plan of a finished restore: ${error instanceof Error ? error.message : String(error)}`);
+      return { items: [], portalAppCount: 0, localAppDataCount: 0 };
+    }
   }
 
   async hasRestoreIntent(): Promise<boolean> {
@@ -188,12 +232,28 @@ export class AppRehydrationService {
     }
   }
 
+  /** Throws when the Portal gives no answer (`CloudflareClientService.getDeviceApplications`). */
   private async fetchPortalApplications(): Promise<PortalDeviceApplication[]> {
     const apps = await this.cloudflareClientService.getDeviceApplications();
+    if (apps.length === 0) {
+      return [];
+    }
+
     // Precompute the set of available marketplace URNs once (one directory listing per
     // enabled store) and match in-memory, instead of an N×M per-app/per-store loop of
     // getAppInfoFromAppStore() disk reads.
     const availableUrns = new Set<string>(await this.marketplaceService.getAvailableAppUrns());
+
+    /*
+     * ⚠ AN EMPTY CATALOG MATCHES NOTHING. On a Hub that has not downloaded its app catalog yet, every
+     * app below would be skipped as unlisted, the run recorded as done with nothing installed, and the
+     * next sync would release all of them. That is not an answer about the apps, so it is not a run.
+     */
+    if (availableUrns.size === 0) {
+      throw new Error(
+        `CI Portal lists ${apps.length} app(s) for this device, but the app catalog has not been downloaded yet, so they cannot be restored`,
+      );
+    }
     const storeSlugs = await this.getStoreSlugsWithApps();
     const resolved: PortalDeviceApplication[] = [];
 

@@ -55,11 +55,13 @@ export type SystemLifecycleReason =
   | 'resume-after-restore' // a restore starts the app it stopped
   | 'hub-access-rotate' // a credential rotation restarts the app to re-provision it
   | 'sweep' // one app of an *-all sweep, which already asked `actorMay` of its own actor for that app
+  | 'restore-after-pairing' // pairing back onto a device, with a code from its organization, restores the apps Portal lists for it
   // The Hub's own upkeep:
   | 'bootstrap-restart' // a Hub starting on a new version restarts the apps that were running
   | 'inference-env-refresh' // inference settings or the Hub version changed; AI apps pick up the new env
   | 'custom-domain-revert' // an app still forwarding a removed custom domain is restarted off it
   | 'memory-connect' // a Companion Memory connection change reaches the app holding it
+  | 'device-key-refresh' // pairing issued a new Portal device key; the app that calls Portal as this device picks it up
   // The debug routes:
   | 'debug-seed'
   | 'debug-start-all'

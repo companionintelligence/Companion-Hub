@@ -70,10 +70,6 @@ vi.mock('@/context/app-context', () => ({
   }),
 }));
 
-vi.mock('@/components/ui/LoadingSpinner/loading-spinner', () => ({
-  PageLoadingSpinner: () => <div data-testid="loading" />,
-}));
-
 vi.mock('../components/app-status/app-status', () => ({
   AppStatus: () => <div data-testid="app-status" />,
 }));
@@ -123,6 +119,18 @@ describe('AppDetailsPage', () => {
         isLoading: false,
       };
     });
+  });
+
+  it('shows a skeleton of the page, not a spinner, while the app loads', () => {
+    useQuery.mockImplementation((options: { queryKey?: readonly unknown[] }) =>
+      options.queryKey?.[0] === 'app-image-size' ? { data: undefined, isLoading: true } : { data: undefined, isLoading: true, isError: false },
+    );
+
+    render(<AppDetailsPage />);
+
+    expect(screen.getByRole('status', { name: 'COMMON_LOADING' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('app-actions')).not.toBeInTheDocument();
   });
 
   it('uses the shared marketplace image URL for the details logo', () => {
