@@ -163,6 +163,8 @@ export class AppService implements OnApplicationShutdown {
       // Backfill port allocations for apps installed before the port manager
       await this.migrateExistingPortAllocations();
 
+      // Not a blanket recreate: compose replaces only the app services whose definition this
+      // version changed (see AppLifecycleService.restartRunningApps).
       if (__prod__ && (buster !== version || version === 'nightly')) {
         this.logger.info('Restarting running apps...');
         await this.appLifecycleService.restartRunningApps();

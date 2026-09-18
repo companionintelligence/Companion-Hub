@@ -87,6 +87,34 @@ function isStaleContainerNetworkError(error: unknown): boolean {
   return /network .+ not found/i.test(msg) || /failed to set up container networking/i.test(msg);
 }
 
+/**
+ * Neither `docker compose` nor the standalone `docker-compose` binary runs, so a Hub stack service
+ * can be neither created nor brought back to its compose definition.
+ */
+export class ComposeCliUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ComposeCliUnavailableError';
+  }
+}
+
+/**
+ * The operator-facing text for {@link ComposeCliUnavailableError}.
+ *
+ * It names the symptom operators actually search for. A docker CLI without the compose plugin
+ * parses `compose` as an unknown command and rejects the first flag after it, so the Hub logged
+ * `docker compose up cloudflared failed (exit 125): unknown flag: --env-file` on beta-ms-a2 and
+ * beta-red (2026-09-17), which reads like a Hub argument bug rather than a missing plugin.
+ */
+export function describeComposeCliUnavailable(input: { service: string; pluginDetail: string; standaloneDetail: string }): string {
+  return (
+    `Cannot start ${input.service}: no Docker Compose CLI works in this Hub. ` +
+    `"docker compose version" failed (${input.pluginDetail}) and "docker-compose version" failed (${input.standaloneDetail}). ` +
+    'A docker CLI without the compose plugin rejects every compose flag, which is what "unknown flag: --env-file" means. ' +
+    'Install the Docker Compose v2 plugin where the Hub runs (the Hub image ships it at /usr/local/libexec/docker/cli-plugins/docker-compose), then restart the Hub.'
+  );
+}
+
 interface DockerPullProgressDetail {
   current?: number;
   total?: number;
@@ -1233,27 +1261,44 @@ export class DockerService {
   }
 
   /**
-   * Ensures that a container is running, using Docker Compose when necessary.
+   * Brings a Hub stack service to its current compose definition and makes sure it runs.
    *
-   * Try `docker restart` first. If the container is missing or cannot start, such
-   * as after a stack recreates its network, use `compose up`. If stale networking
-   * still blocks startup, remove and force-create the container.
+   * `compose up <service>` runs first, not `docker restart`. Compose compares the container's
+   * `com.docker.compose.config-hash` label with the file, so it leaves an unchanged running
+   * container alone, starts a stopped one, and replaces one created from an older definition.
+   * `docker restart` only restarts whatever exists. On beta-max (2026-09-17) the cloudflared
+   * container had been created on 2026-09-08 with its token mount at `<data dir>/tunnel`; the
+   * compose file has since moved that mount to `<data dir>/../tunnel`, where the Hub writes the
+   * token. The Hub boot logged "Container cloudflared restarted successfully", and the container
+   * kept exiting 255 on "Failed to read token file" (restart count 46 when inspected) while the
+   * public hostname returned 530.
+   *
+   * Pass `forceRecreate` after rewriting a file the service reads only at startup, such as the
+   * tunnel token. The definition is unchanged in that case, so compose alone would keep the old
+   * process.
+   *
+   * If stale networking blocks startup, remove the container and force-create it. If no compose
+   * CLI works at all, restart the existing container so a stopped tunnel still comes back, and
+   * log why its definition could not be checked.
    */
-  public async ensureContainerRunning(containerName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
-    try {
-      await this.restartContainer(containerName);
-      return;
-    } catch (error) {
-      // Restart can fail because the container is missing or because of a runtime
-      // error. Preserve the actual reason before falling back to Compose.
-      this.logger.info(
-        `Restart of ${containerName} failed (${error instanceof Error ? error.message : String(error)}); creating via docker compose...`,
-      );
-    }
-
+  public async ensureContainerRunning(
+    containerName: string,
+    opts: { composeFile: string; profile?: string; forceRecreate?: boolean },
+  ): Promise<void> {
     try {
       await this.composeUpService(containerName, opts);
     } catch (upError) {
+      if (upError instanceof ComposeCliUnavailableError) {
+        this.logger.error(upError.message);
+        try {
+          await this.restartContainer(containerName);
+        } catch {
+          // A missing container cannot be restarted; the compose diagnosis is the useful error.
+          throw upError;
+        }
+        this.logger.warn(`Restarted the existing ${containerName} container without checking it against the compose file.`);
+        return;
+      }
       // After `compose down` recreates a network, an exited container can retain
       // the deleted network ID. Remove and force-create that container when plain
       // `compose up` fails with a stale-network error.
@@ -1411,8 +1456,61 @@ export class DockerService {
     throw lastError instanceof Error ? lastError : new Error(`${label} failed after ${total} attempts`);
   }
 
+  /**
+   * Runs `<command> <args>` to completion and reports whether it exited 0, with the first line
+   * of stderr (or the spawn error) as the reason when it did not.
+   */
+  private probeCommand(command: string, args: string[]): Promise<{ ok: boolean; detail: string }> {
+    return new Promise((resolve) => {
+      const probe = spawn(command, args, { stdio: 'pipe' });
+      let stderr = '';
+      probe.stderr?.on('data', (chunk) => {
+        stderr += String(chunk);
+      });
+      probe.on('close', (code) => {
+        const firstLine = stderr.trim().split('\n')[0]?.trim();
+        resolve({ ok: code === 0, detail: firstLine || `exit ${code}` });
+      });
+      probe.on('error', (err) => resolve({ ok: false, detail: err.message }));
+    });
+  }
+
+  /**
+   * Picks the compose CLI for a Hub stack service the same way {@link composeApp} does for apps:
+   * the `docker compose` plugin when it answers, otherwise the standalone `docker-compose` binary.
+   *
+   * The fallback is what kept apps working while cloudflared did not. The Hub image links its
+   * bundled binary into `$DOCKER_CONFIG/cli-plugins` at start, and `ln` cannot create that
+   * directory. On beta-ms-a2, beta-red, and beta-max (2026-09-17) `/data/.docker` existed without
+   * `cli-plugins`, so `docker compose version` failed while `/usr/local/bin/docker-compose` was
+   * present. Apps went through the fallback; this path hard-coded `docker compose` and failed
+   * with "unknown flag: --env-file".
+   */
+  private async resolveComposeCli(serviceName: string): Promise<{ command: string; prefix: string[] }> {
+    try {
+      await this.assertComposePluginAvailable();
+      return { command: 'docker', prefix: ['compose'] };
+    } catch (pluginError) {
+      const standalone = await this.probeCommand('docker-compose', ['version']);
+      if (standalone.ok) {
+        this.logger.warn(`docker compose plugin not available; using the docker-compose binary for ${serviceName}`);
+        return { command: 'docker-compose', prefix: [] };
+      }
+      // Probed again only to put the plugin's own error text in the message.
+      const plugin = await this.probeCommand('docker', ['compose', 'version']);
+      throw new ComposeCliUnavailableError(
+        describeComposeCliUnavailable({
+          service: serviceName,
+          pluginDetail: plugin.ok ? (pluginError instanceof Error ? pluginError.message : String(pluginError)) : plugin.detail,
+          standaloneDetail: standalone.detail,
+        }),
+      );
+    }
+  }
+
   private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string; forceRecreate?: boolean }): Promise<void> {
-    const baseArgs = ['compose'];
+    const { command, prefix } = await this.resolveComposeCli(serviceName);
+    const baseArgs = [...prefix];
     const runtimeComposeFile = path.join(this.config.get('directories').dataDir, 'docker-compose.yml');
     const spawnOptions: { cwd: string; env?: NodeJS.ProcessEnv } = { cwd: path.dirname(opts.composeFile) };
 
@@ -1452,13 +1550,14 @@ export class DockerService {
     if (opts.forceRecreate) {
       upArgs.push('--force-recreate');
     }
-    this.logger.info(`Running: docker ${upArgs.join(' ')}`);
+    const cli = [command, ...prefix].join(' ');
+    this.logger.info(`Running: ${command} ${upArgs.join(' ')}`);
     await this.retryAsync(
-      () => this.runProcessBounded('docker', upArgs, spawnOptions, COMPOSE_UP_TIMEOUT_MS, `docker compose up ${serviceName}`),
+      () => this.runProcessBounded(command, upArgs, spawnOptions, COMPOSE_UP_TIMEOUT_MS, `${cli} up ${serviceName}`),
       COMPOSE_OP_MAX_ATTEMPTS,
       `up ${serviceName}`,
     );
-    this.logger.info(`Service ${serviceName} started successfully via docker compose`);
+    this.logger.info(`Service ${serviceName} is up via ${cli}`);
   }
 
   /**

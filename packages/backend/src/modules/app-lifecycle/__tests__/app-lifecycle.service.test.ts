@@ -1944,6 +1944,20 @@ describe('AppLifecycleService', () => {
         await vi.waitFor(() => expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'start', appUrn })));
       });
 
+      it('lets compose recreate only changed services when it boots on a new version, so unchanged apps keep running', async () => {
+        // beta-max, 2026-09-17: the boot on 0.2.71 force-recreated all ten ci-memory containers and OpenClaw.
+        vi.mocked((service as any).moduleRef.get).mockReturnValue(undefined);
+        appsRepository.getApps.mockResolvedValue([{ ...installed, status: 'running' }] as any);
+
+        await service.restartRunningApps();
+
+        await vi.waitFor(() =>
+          expect(appEventsQueue.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ command: 'start', appUrn, form: expect.objectContaining({ skipPull: true, onlyRecreateChanged: true }) }),
+          ),
+        );
+      });
+
       it('stops through the single-app call only what the sweep admitted, asking WhoIs once per app', async () => {
         whois.has.mockImplementation(async (_userId: number, urn: string) => urn === appUrn);
         appsRepository.getApps.mockResolvedValue([
@@ -1971,6 +1985,25 @@ describe('AppLifecycleService', () => {
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { status: 'starting' });
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'status_change', appStatus: 'starting' }));
+    });
+
+    it('does not ask for change-only recreation on an ordinary start, even when the stored config carries the flag', async () => {
+      const appUrn = 'test-app' as any;
+      // appFormSchema passes unknown keys through, so an install or update form can store the flag.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        name: 'test-app',
+        status: 'stopped',
+        config: { onlyRecreateChanged: true, port: 8080 },
+      } as any);
+      appEventsQueue.publish.mockResolvedValue({ success: true, message: 'OK' } as any);
+
+      await service.startApp({ actor: TEST_ACTOR, appUrn });
+
+      const published = appEventsQueue.publish.mock.calls.at(-1)?.[0] as { form: Record<string, unknown> };
+      expect(published.form).not.toHaveProperty('onlyRecreateChanged');
+      // The rest of the stored config still reaches the start command.
+      expect(published.form).toMatchObject({ port: 8080 });
     });
 
     it('should throw if app not found', async () => {

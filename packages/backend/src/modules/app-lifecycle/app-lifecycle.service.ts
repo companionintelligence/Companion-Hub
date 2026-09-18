@@ -854,8 +854,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return oldJSON !== newJSON;
   }
 
-  async startApp(params: { appUrn: AppUrn; skipPull?: boolean; actor: LifecycleActor }) {
-    const { appUrn, skipPull } = params;
+  async startApp(params: { appUrn: AppUrn; skipPull?: boolean; onlyRecreateChanged?: boolean; actor: LifecycleActor }) {
+    const { appUrn, skipPull, onlyRecreateChanged } = params;
 
     // Before the app is even read — see `assertActorMay`.
     await this.assertActorMay(params.actor, appUrn, 'start');
@@ -871,8 +871,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
+    // `appFormSchema` passes unknown keys through into the stored config, so a stored
+    // `onlyRecreateChanged` would otherwise stop every dashboard start from force-recreating.
+    // Only the boot path decides it.
+    const { onlyRecreateChanged: _storedRecreateMode, ...storedConfig } = (app.config ?? {}) as Record<string, unknown>;
     this.appEventsQueue
-      .publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } })
+      .publish({ appUrn, command: 'start', requestId, form: { ...storedConfig, skipPull, ...(onlyRecreateChanged ? { onlyRecreateChanged } : {}) } })
       .then(async (raw) => {
         const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
@@ -2570,6 +2574,26 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
+  /**
+   * Brings every running app in line with what this Hub version generates, after a version change.
+   *
+   * Each app's compose file and `app.env` are regenerated, then compose runs `up` WITHOUT
+   * `--force-recreate`. Compose recreates a service only when its resolved definition differs
+   * from the container's config-hash label, and that hash covers everything the Hub regenerates
+   * here: image, labels, mounts, networks, and environment including `env_file` contents.
+   * Measured locally with compose v5.5.1: an `env_file` edit and an interpolation-variable edit
+   * each recreated the container, an unchanged `up` reported "Running" and kept the container ID,
+   * and an edited bind-mounted file did not recreate. With the bundled compose 2.40.0, a
+   * `--dry-run` of this `up` inside the Hub on beta-max (2026-09-17) recreated nothing: every
+   * long-running ci-memory service and OpenClaw reported "Running". Stopped containers are pruned
+   * while the compose directory is prepared, so they are created fresh, and containers stuck in
+   * `restarting` are removed first (see `removeRestartingAppContainers`).
+   *
+   * It used to force-recreate. On beta-max (2026-09-17) the boot on 0.2.71 ran
+   * `up --detach --force-recreate` for ci-memory (ten containers) and OpenClaw. The one input
+   * compose cannot see, a bind-mounted file whose contents changed, is not something the Hub
+   * rewrites on this path; it rewrites only the compose file and `app.env`.
+   */
   async restartRunningApps() {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
@@ -2579,7 +2603,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-          await this.startApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'bootstrap-restart' } });
+          await this.startApp({ appUrn, skipPull: true, onlyRecreateChanged: true, actor: { kind: 'system', reason: 'bootstrap-restart' } });
         } catch (e) {
           this.logger.error(`Failed to start app ${app.id}`, e);
         }
