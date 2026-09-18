@@ -69,6 +69,20 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
 type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
 
 /**
+ * Refusals that stand until the user acts. The Portal refuses every sync the same
+ * way until the user removes an app's public address, upgrades the plan, or
+ * gives the app another subdomain.
+ */
+const USER_ACTION_REFUSALS: ReadonlySet<PublicDnsFailureReason> = new Set<PublicDnsFailureReason>([
+  'subdomain_quota_exceeded',
+  'duplicate_subdomain',
+]);
+
+function isUserActionRefusal(reason: PublicDnsFailureReason | undefined): reason is PublicDnsFailureReason {
+  return reason !== undefined && USER_ACTION_REFUSALS.has(reason);
+}
+
+/**
  * Indexes entries by a string key and retains the first occurrence.
  *
  * This ordering matches a linear `find` while reducing each lookup from O(n)
@@ -166,6 +180,15 @@ export class ExposureSyncService {
   private lastPublicDnsFailureReportAt = 0;
   private readonly lastPublicDnsToastAt = new Map<string, number>();
   private static readonly PUBLIC_DNS_FAILURE_COOLDOWN_MS = 5 * 60_000;
+  /**
+   * The refusal each app's toast last reported, for refusals only the user can clear.
+   *
+   * Repeating that toast on every pass tells the user nothing new, so it is shown
+   * once. An entry goes when a sync stops refusing the app that way, because the
+   * app published, left the sync, or failed for another reason. The next such
+   * refusal is then news again.
+   */
+  private readonly toastedUserActionRefusals = new Map<AppUrn, PublicDnsFailureReason>();
 
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
@@ -475,30 +498,56 @@ export class ExposureSyncService {
    *
    * The frontend converts the SSE event into a toast. Cooldowns prevent Sentry
    * and toast floods when availability remediation repeats the sync for an app
-   * that remains unavailable.
+   * that remains unavailable. A refusal only the user can clear is toasted once
+   * instead, and `reportError: false` keeps a sync with no Hub fault out of Sentry.
    */
-  private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: PublicDnsToastTarget[] = []): void {
+  private surfacePublicDnsFailure(
+    message: string,
+    failedAppNames: string[],
+    toastTargets: PublicDnsToastTarget[] = [],
+    { reportError = true }: { reportError?: boolean } = {},
+  ): void {
     this.logger.error(message);
 
     const now = Date.now();
-    if (now - this.lastPublicDnsFailureReportAt >= ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
+    if (reportError && now - this.lastPublicDnsFailureReportAt >= ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
       this.lastPublicDnsFailureReportAt = now;
       this.errorReportingService?.captureMessage(message, 'error', { failedApps: failedAppNames });
     }
 
     for (const target of toastTargets) {
-      const lastToast = this.lastPublicDnsToastAt.get(target.appUrn) ?? 0;
-      if (now - lastToast < ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
+      const { appUrn, reason } = target;
+      if (isUserActionRefusal(reason)) {
+        if (this.toastedUserActionRefusals.get(appUrn) === reason) {
+          continue;
+        }
+      } else if (now - (this.lastPublicDnsToastAt.get(appUrn) ?? 0) < ExposureSyncService.PUBLIC_DNS_FAILURE_COOLDOWN_MS) {
         continue;
       }
-      this.lastPublicDnsToastAt.set(target.appUrn, now);
+      this.lastPublicDnsToastAt.set(appUrn, now);
       // `errorCode` lets the frontend describe the actual failure class instead
-      // of attributing every failure to the domain (CI-Portal#403).
-      this.sseService.emit(
-        'app',
-        { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname, errorCode: target.reason },
-        target.appUrn,
-      );
+      // of attributing every failure to the domain (CI-Portal#403). No `appUrn`
+      // third argument: that publishes to the `app:<urn>` topic, which nothing
+      // subscribes to, so the toast never reached the browser.
+      this.sseService.emit('app', { event: 'public_dns_error', appUrn, error: target.hostname, errorCode: reason });
+      // Count the refusal as told only if a UI was listening. The first sync
+      // after the Hub starts, or one an agent triggers with no UI open, would
+      // otherwise spend the only toast on nobody.
+      if (isUserActionRefusal(reason) && this.sseService.hasSubscribers('app')) {
+        this.toastedUserActionRefusals.set(appUrn, reason);
+      }
+    }
+  }
+
+  /**
+   * Forgets each told refusal that this sync did not repeat, so that app's next
+   * refusal is shown again.
+   */
+  private forgetSettledRefusals(stillRefused: ReadonlyMap<AppUrn, PublicDnsFailureReason>): void {
+    for (const [appUrn, reason] of this.toastedUserActionRefusals) {
+      if (stillRefused.get(appUrn) !== reason) {
+        this.toastedUserActionRefusals.delete(appUrn);
+      }
     }
   }
 
@@ -730,6 +779,9 @@ export class ExposureSyncService {
         hostname: toPublicHostname(dbApp),
       });
 
+      /** Apps this sync refused for a reason only the user can clear. */
+      const userActionRefusals = new Map<AppUrn, PublicDnsFailureReason>();
+
       if (!result.ok) {
         // A full sync failure updates none of the exposed apps, so raise a toast
         // for each one instead of limiting notifications to the partial failures
@@ -774,6 +826,12 @@ export class ExposureSyncService {
           })
           .filter((target): target is PublicDnsToastTarget => target !== null);
 
+        for (const target of toastTargets) {
+          if (isUserActionRefusal(target.reason)) {
+            userActionRefusals.set(target.appUrn, target.reason);
+          }
+        }
+
         // Name every failed app by its reconstructed hostname or the raw name from
         // Companion Portal. Apps without a toast target include entries with no
         // database row and the privileged Hub entry, which `appEntries` excludes.
@@ -785,11 +843,17 @@ export class ExposureSyncService {
           return dbApp ? toPublicHostname(dbApp) : name;
         });
 
+        // A plan limit or a duplicate subdomain is the user's to clear, not a Hub
+        // fault, so a sync refused only for those reports nothing to Sentry. Any
+        // other failure in the same sync, including one with no reason, still does.
+        const onlyUserActionRefusals = result.failed.every((name) => isUserActionRefusal(failureByApp.get(name)?.reason));
+
         this.surfacePublicDnsFailure(
           `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${failedLabels.join(', ')}. ` +
             `These apps will not resolve at their public domain — ${describePublicDnsFailures(result.failures)}`,
           result.failed,
           toastTargets,
+          { reportError: !onlyUserActionRefusals },
         );
       } else if (appEntries.length > 0) {
         // Log success only after the request and every per-app operation complete.
@@ -824,6 +888,9 @@ export class ExposureSyncService {
        * therefore retain a serving custom hostname even when its DNS write fails.
        */
       if (result.ok) {
+        // Only a sync the Portal answered says which apps it stopped refusing.
+        this.forgetSettledRefusals(userActionRefusals);
+
         let deferredRevertAppUrns: AppUrn[] = [];
         try {
           deferredRevertAppUrns = await this.reconcileCustomDomains({

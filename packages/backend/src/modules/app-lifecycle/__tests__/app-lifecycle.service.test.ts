@@ -365,11 +365,12 @@ describe('AppLifecycleService', () => {
       // The partial failure is surfaced, not swallowed.
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintel.com'));
 
-      // And a per-app event is emitted so the frontend can raise a toast.
+      // And a per-app event is emitted so the frontend can raise a toast. It goes on the
+      // shared `app` topic, the only one `/api/sse/app` streams; an `app:<urn>` topic
+      // as the third argument reaches no browser.
       expect(sseService.emit).toHaveBeenCalledWith(
         'app',
         expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
-        'anything-llm:ci-marketplace',
       );
     });
 
@@ -419,7 +420,6 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith(
         'app',
         expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace', errorCode: 'conflict' }),
-        'anything-llm:ci-marketplace',
       );
     });
 
@@ -467,7 +467,6 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith(
         'app',
         expect.objectContaining({ event: 'public_dns_error', appUrn: 'n8n:ci-marketplace', errorCode: 'subdomain_quota_exceeded' }),
-        'n8n:ci-marketplace',
       );
     });
 
@@ -591,7 +590,6 @@ describe('AppLifecycleService', () => {
       expect(sseService.emit).toHaveBeenCalledWith(
         'app',
         expect.objectContaining({ event: 'public_dns_error', appUrn: 'anything-llm:ci-marketplace' }),
-        'anything-llm:ci-marketplace',
       );
     });
 
@@ -2057,6 +2055,176 @@ describe('AppLifecycleService', () => {
     it('should throw if app not found', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(null as any);
       await expect(service.startApp({ actor: TEST_ACTOR, appUrn: 'missing' as any })).rejects.toThrow('APP_ERROR_APP_NOT_FOUND');
+    });
+  });
+
+  describe('public DNS refusal toasts and error reports', () => {
+    const N8N = 'n8n:ci-marketplace';
+    const EXCALIDRAW = 'excalidraw:ci-marketplace';
+    const QUOTA_MESSAGE = 'Your plan includes 3 public subdomains (the hub URL does not count). Remove an app or upgrade to publish more.';
+    const n8n = { appName: 'n8n', exposedLocal: true, status: 'running', localSubdomain: 'n8n', appStoreSlug: 'ci-marketplace' };
+    const excalidraw = { appName: 'excalidraw', exposedLocal: true, status: 'running', localSubdomain: 'excalidraw', appStoreSlug: 'ci-marketplace' };
+
+    let now: number;
+
+    beforeEach(() => {
+      now = Date.UTC(2026, 8, 18, 12);
+      vi.spyOn(Date, 'now').mockImplementation(() => now);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'cid',
+        name: 'CID',
+        hubSubdomain: 'hub-laptop-cid',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([n8n, excalidraw] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
+        domain: 'companionintelligence.com',
+      } as any);
+      // A UI is connected, so a toast that goes out is seen.
+      sseService.hasSubscribers.mockReturnValue(true);
+    });
+
+    /** Runs a sync `minutes` after the previous one, in which the Portal refuses `refusals` (app name → reason). */
+    const syncAfter = async (minutes: number, refusals: Record<string, string> = {}) => {
+      now += minutes * 60_000;
+      const failed = Object.keys(refusals);
+      cloudflareClientService.syncState.mockResolvedValueOnce({
+        ok: true,
+        failed,
+        failures: failed.map((app) => ({
+          app,
+          reason: refusals[app] as any,
+          message: refusals[app] === 'subdomain_quota_exceeded' ? QUOTA_MESSAGE : 'detail from the Portal',
+        })),
+        synced: 0,
+      });
+      await service.triggerCloudflareSync();
+    };
+
+    /** The failure class of every public DNS toast sent for `appUrn`, oldest first. */
+    const toastsFor = (appUrn: string) =>
+      sseService.emit.mock.calls
+        .map(([, data]) => data as { event?: string; appUrn?: string; errorCode?: string })
+        .filter((data) => data.event === 'public_dns_error' && data.appUrn === appUrn)
+        .map((data) => data.errorCode);
+
+    it.each(['subdomain_quota_exceeded', 'duplicate_subdomain'])('shows a %s refusal once, however many syncs repeat it', async (reason) => {
+      // The Portal gives the same answer on every pass until the user acts, so the
+      // five-minute cooldown alone would repeat the toast all day.
+      await syncAfter(0, { n8n: reason });
+      await syncAfter(6, { n8n: reason });
+      await syncAfter(6, { n8n: reason });
+      await syncAfter(60, { n8n: reason });
+
+      expect(toastsFor(N8N)).toEqual([reason]);
+      // The log still names the refusal on every pass, as it did before.
+      expect(logger.error).toHaveBeenCalledTimes(4);
+    });
+
+    it('shows it again when the reason changes', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      await syncAfter(6, { n8n: 'duplicate_subdomain' });
+      // On the pass where the reason changed, not a pass later.
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded', 'duplicate_subdomain']);
+
+      await syncAfter(6, { n8n: 'duplicate_subdomain' });
+      // A failure of another kind in between makes the refusal news again.
+      await syncAfter(6, { n8n: 'api_error' });
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded', 'duplicate_subdomain', 'api_error', 'subdomain_quota_exceeded']);
+    });
+
+    it('shows it again when the app fails after it published', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      await syncAfter(6);
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded', 'subdomain_quota_exceeded']);
+    });
+
+    it('shows it again when the app fails after it left the sync', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      appsRepository.getApps.mockResolvedValue([{ ...n8n, status: 'stopped' }, excalidraw] as any);
+      await syncAfter(6);
+      appsRepository.getApps.mockResolvedValue([n8n, excalidraw] as any);
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded', 'subdomain_quota_exceeded']);
+    });
+
+    it('keeps a refusal counted as shown while the Portal cannot be reached', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      now += 6 * 60_000;
+      cloudflareClientService.syncState.mockResolvedValueOnce({ ok: false, failed: [], failures: [], synced: 0 });
+      await service.triggerCloudflareSync();
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+
+      // The outage gets its own toast, as before. It says nothing new about the
+      // refusal, so the refusal is not shown again after it.
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded', undefined]);
+    });
+
+    it('does not count a refusal as shown until a UI is listening', async () => {
+      // The first sync after the Hub starts, or one an agent triggers, can run with no UI open.
+      sseService.hasSubscribers.mockReturnValue(false);
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+      sseService.hasSubscribers.mockReturnValue(true);
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+      await syncAfter(6, { n8n: 'subdomain_quota_exceeded' });
+
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded', 'subdomain_quota_exceeded', 'subdomain_quota_exceeded']);
+    });
+
+    it.each(['api_error', 'write_failed', 'release_pending'])('keeps the five-minute cooldown for %s, which clears on its own', async (reason) => {
+      await syncAfter(0, { n8n: reason });
+      await syncAfter(1, { n8n: reason });
+      await syncAfter(5, { n8n: reason });
+
+      expect(toastsFor(N8N)).toEqual([reason, reason]);
+    });
+
+    it('reports nothing to Sentry for a sync refused only for reasons the user clears', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded', excalidraw: 'duplicate_subdomain' });
+
+      expect(errorReportingService.captureMessage).not.toHaveBeenCalled();
+      // The user is still told, and the log still says why.
+      expect(toastsFor(N8N)).toEqual(['subdomain_quota_exceeded']);
+      expect(toastsFor(EXCALIDRAW)).toEqual(['duplicate_subdomain']);
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("n8n: the organization's plan includes no more public app addresses"));
+    });
+
+    it('still reports a sync that mixes a quota refusal with a real DNS failure', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded', excalidraw: 'api_error' });
+
+      expect(errorReportingService.captureMessage).toHaveBeenCalledTimes(1);
+      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(
+        expect.stringContaining('excalidraw: Cloudflare rejected the DNS write, usually transient (detail from the Portal)'),
+        'error',
+        { failedApps: ['n8n', 'excalidraw'] },
+      );
+    });
+
+    it('does not let an unreported quota refusal hold back the report of a real failure after it', async () => {
+      await syncAfter(0, { n8n: 'subdomain_quota_exceeded' });
+      await syncAfter(1, { excalidraw: 'api_error' });
+
+      expect(errorReportingService.captureMessage).toHaveBeenCalledTimes(1);
+      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('excalidraw: Cloudflare rejected'), 'error', {
+        failedApps: ['excalidraw'],
+      });
+    });
+
+    it('still reports a sync that did not complete', async () => {
+      cloudflareClientService.syncState.mockResolvedValueOnce({ ok: false, failed: [], failures: [], synced: 0, errorMessage: 'Network Error' });
+      await service.triggerCloudflareSync();
+
+      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('State sync did not complete'), 'error', {
+        failedApps: ['n8n', 'excalidraw'],
+      });
     });
   });
 
