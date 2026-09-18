@@ -13,8 +13,12 @@ declare global {
        * The grant gate reads this, and absence is a refusal: it used to exempt any
        * request without a `hubSessionId`, which widened silently as arms were added.
        * See `isGrantExemptPrincipal` in `hub-session-operator.ts`.
+       *
+       * `qa-read` is an API key carrying the `qa:read` scope. It never has a `user`: `AuthGuard`
+       * refuses it with 403, and only `ObservabilityReadGuard` admits it, on GET routes marked
+       * `@ObservabilityRead()`.
        */
-      hubPrincipal?: 'session' | 'portal-device' | 'cli';
+      hubPrincipal?: 'session' | 'portal-device' | 'cli' | 'qa-read';
       /**
        * A host-local credential (device key or CLI JWT) authenticated, but this Hub has no
        * operator row for it to speak as — it was registered with Portal and never claimed.

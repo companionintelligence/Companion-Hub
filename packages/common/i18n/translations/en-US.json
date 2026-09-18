@@ -515,6 +515,7 @@
   "AUTH_ERROR_HUB_NOT_CLAIMED": "This Hub is registered but has no operator yet. Claim it with `cihub claim --email <you@example.com>` on the Hub itself, or sign in once through CI Portal.",
   "AUTH_ERROR_HUB_ALREADY_CLAIMED": "This Hub already has an operator. Additional people sign in through CI Portal.",
   "AUTH_ERROR_HUB_NOT_REGISTERED": "This Hub is not registered with CI Portal yet. Run `cihub register` before claiming it.",
+  "AUTH_ERROR_QA_READ_KEY_ROUTE_NOT_ALLOWED": "This API key has the qa:read scope, which only reads pool status, the pool routing log, app status and the install queue. Use an operator session or the device key for anything else.",
   "AUTH_ERROR_HUB_CLAIM_REQUIRES_DEVICE_KEY": "Claiming a Hub requires its device key, which is readable only on the Hub itself.",
   "AUTH_ERROR_SIGNED_IN_PERSON_REQUIRED": "Only a person signed in to this Hub can do this. Device keys, app keys and the CLI cannot.",
   "AUTH_FORM_EMAIL": "Email address",
