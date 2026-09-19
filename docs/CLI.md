@@ -346,9 +346,10 @@ carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_K
 **not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
 
 ```bash
-cihub api-key create --name "laptop"                     # operator keys carry the 'mcp' scope
-cihub api-key create --name "fleet-qa" --scope qa:read   # read-only test key (see below)
-cihub api-key list                                       # id, name, scopes, capability, prefix
+cihub api-key create --name "laptop"                        # MCP key (the default scope)
+cihub api-key create --name "fleet-qa" --scope qa:read      # read-only test key (see below)
+cihub api-key create --name "laptop-zed" --scope inference  # editor or SDK key (see below)
+cihub api-key list                                          # id, name, scopes, capability, prefix
 ```
 
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
@@ -362,6 +363,14 @@ scope on its key, and it is stored as `read`. A Hub built before `qa:read` exist
 but authenticates nothing with it. See
 [Reading these without an operator credential](hub-pool.md#reading-these-without-an-operator-credential).
 
+An `inference` key opens the OpenAI-compatible routes under `/api/inference/v1` and the app-facing
+pool proxy under `/api/inference/pool`, and nothing else. The Hub reads it only when a request
+arrives from outside the appliance network — through the Cloudflare tunnel, or from a public
+address — so an editor on the LAN or tailnet is admitted by origin and the key is never looked up.
+It must be the only scope on its key and is stored as `read`; capability gates MCP tools only, so
+`--capability write|full` is refused. A Hub built before `inference` existed accepts the row but
+authenticates nothing with it. See [Use your Hub from your editor](editor-inference.md).
+
 `create` also accepts `--capability read|write|full`, which decides what the key may do on the
 surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
 **Settings → Security**; the CLI has `create` and `list` only.
@@ -371,10 +380,10 @@ reach on every app, and it can't change an app's custom domain. **Settings → S
 "Creator unknown". A key created in **Settings → Security** acts with the grants and role of the
 person who created it, so create a key there to limit it to one person's access.
 
-Operator keys carry `mcp` only. The `app` scope belongs to **managed** keys the Hub provisions to
-installed apps and revokes on uninstall — the callback guard resolves the key's owning app, so an
-operator key carrying `app` would authenticate nothing. Names beginning `app:` are reserved for the
-same reason.
+Operator keys carry `mcp`, `qa:read`, or `inference` — the last two alone on their key. The `app`
+scope belongs to **managed** keys the Hub provisions to installed apps and revokes on uninstall —
+the callback guard resolves the key's owning app, so an operator key carrying `app` would
+authenticate nothing. Names beginning `app:` are reserved for the same reason.
 
 Connect an external MCP client with:
 
@@ -499,8 +508,9 @@ received it**.
 
 **It needs the Portal device key**, the same credential the dashboard uses, read from
 `state/settings.json`. A Hub that has never run `cihub register` has none, and the command says so
-instead of returning a bare 401. A key from `cihub api-key create` is MCP-scoped and is *not* accepted
-here.
+instead of returning a bare 401. A key from `cihub api-key create` is *not* accepted here whatever
+its scope: `mcp` opens the MCP endpoint, `qa:read` reads status and the routing log, and
+`inference` opens the [inference routes](editor-inference.md); none of them is an operator credential.
 
 ### `cihub pool status`
 

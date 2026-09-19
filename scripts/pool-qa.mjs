@@ -81,10 +81,18 @@ const MIN_PAIR_BY_ADDRESS_PROTOCOL = 2;
 const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'];
 /** LOCAL_CANDIDATE_KEY (hub-pool-load.service.ts:4) — the literal `node` value for this Hub. */
 const LOCAL_NODE = 'local';
-/** PoolAppGuard's refusal (guards/pool-app.guard.ts:36,48). Distinct from InternalNetworkGuard's. */
-const POOL_APP_GUARD_MESSAGE = 'The pool proxy is only available to apps on the local appliance network';
-/** InternalNetworkGuard's refusal (modules/auth/internal-network.guard.ts:22). Near-identical wording, different guard. */
-const INTERNAL_GUARD_MESSAGE = 'This endpoint is only available on the local appliance network';
+/**
+ * InferenceAccessGuard's refusal on every app-facing route (modules/auth/inference-access.guard.ts).
+ * OpenAI-shaped, `{ error: { message, type, code } }`, HTTP 401 with this `WWW-Authenticate` realm.
+ * `missing_api_key` is the code for "your origin is not inside the appliance and you sent no key" —
+ * the guard's leg 1 refused (tunnel marker, public forwarded hop, or a public resolved address) and
+ * leg 2 found no `Authorization`. The body does not say WHICH origin rule refused, so a runner whose
+ * own source address is public sees exactly this on every app-facing route; 9.0 is what tells that
+ * apart from a marker the runner injected on purpose.
+ */
+const INFERENCE_AUTH_TYPE = 'authentication_error';
+const MISSING_KEY_CODE = 'missing_api_key';
+const INFERENCE_REALM = 'Bearer realm="ci-hub-inference"';
 /** proxyToPool's guard clause (hub-pool.controller.ts:492). */
 const NO_MODEL_MESSAGE = 'Request body must include a "model" field';
 /** PIN_FAILURE_MESSAGE (hub-pool-pairing-pin.service.ts:18) — uniform for wrong / expired / already-used / none. */
@@ -344,8 +352,10 @@ let runAbort = null;
 
 /**
  * One request, with the two rules every app-facing call on this runner must obey:
- * no tunnel-marker header and no `X-Forwarded-For` (guards/pool-app.guard.ts:34-50). Nothing here
- * ever sets them except the steps in 9.1 that are deliberately testing the refusal.
+ * no tunnel-marker header and no `X-Forwarded-For` (common/helpers/request-origin.ts — either one
+ * moves the request outside the appliance and InferenceAccessGuard then wants an `inference` key
+ * this runner does not carry). Nothing here ever sets them except the steps in 9.1 that are
+ * deliberately testing the refusal.
  */
 async function rawFetch(url, options = {}) {
   const { method = 'GET', body, headers = {}, timeoutMs = TIMEOUT_MS } = options;
@@ -404,7 +414,10 @@ async function call(node, path, options = {}) {
   return rawFetch(`${node.base}${path}`, { ...rest, headers: requestHeaders });
 }
 
-/** The message a Nest exception filter put in the body, when there is one. */
+/**
+ * The message a Nest exception filter put in the body, when there is one — or, for the OpenAI-shaped
+ * `{ error: { message } }` that InferenceAccessGuard and the v1 handlers write, that inner message.
+ */
 function errorText(res) {
   if (!res) return 'no response';
   if (res.error) return res.error;
@@ -413,12 +426,22 @@ function errorText(res) {
     if (typeof body.message === 'string') return body.message;
     if (Array.isArray(body.message)) return body.message.join('; ');
     if (typeof body.error === 'string') return body.error;
+    if (body.error && typeof body.error === 'object' && typeof body.error.message === 'string') return body.error.message;
   }
   return res.text ? res.text.slice(0, 160) : `HTTP ${res.status}`;
 }
 
 /** `HTTP 409 Already paired…` — the one-line form every FAIL reason uses. */
 const httpSummary = (res) => (res.error ? `transport error: ${res.error}` : `HTTP ${res.status} ${errorText(res)}`.trim());
+
+/**
+ * Did InferenceAccessGuard turn this runner away for where it came from? True on the exact refusal
+ * the guard writes when leg 1 (origin) said no and leg 2 found no `Authorization`: 401 with
+ * `error.code === 'missing_api_key'`. On a clean-headed request that is a runner-configuration fact
+ * (its source address is not private/CGNAT, or a proxy header leaked in) and never a product failure,
+ * which is why every app-facing step maps it to BLOCKED rather than FAIL.
+ */
+const refusedByOrigin = (res) => res?.status === 401 && res.json?.error?.code === MISSING_KEY_CODE;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -701,9 +724,10 @@ async function releaseHeldStreams(ctx) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * A pooled request on an app-facing route. No `Authorization` — these carry
- * `InternalNetworkGuard + PoolAppGuard` only (hub-pool.controller.ts:415-419) — and never a tunnel
- * marker or an `X-Forwarded-For`, or PoolAppGuard 403s and the step would be testing the runner.
+ * A pooled request on an app-facing route. No `Authorization` — these carry `InferenceAccessGuard`
+ * only (hub-pool.controller.ts), which admits the runner by origin and never reads the header on
+ * that leg — and never a tunnel marker or an `X-Forwarded-For`, or the guard falls through to its
+ * key leg, answers 401 `missing_api_key`, and the step would be testing the runner.
  */
 const poolInfer = (node, path, body, timeoutMs = INFER_TIMEOUT_MS) => call(node, `${POOL}${path}`, { method: 'POST', body, auth: 'none', timeoutMs });
 
@@ -907,9 +931,9 @@ const SECTION_1 = [
           lines.push(`${node.label}: ${res.json.models.length} model(s)`);
           continue;
         }
-        if (res.status === 403) {
+        if (refusedByOrigin(res)) {
           // A guard refusal is a runner-configuration fact, not a product failure.
-          lines.push(`${node.label}: 403 ${errorText(res)} — runner source is not private/CGNAT, or a proxy header leaked`);
+          lines.push(`${node.label}: 401 ${MISSING_KEY_CODE} — runner source is not private/CGNAT, or a proxy header leaked`);
           continue;
         }
         failed = true;
@@ -2209,7 +2233,8 @@ const SECTION_3 = [
           kind === 'no-candidates' ? '502 no candidates — beta’s cached capabilities do not list the model (see 3.1.1)' : `502 ${errorText(res)}`,
         );
       }
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration, not a routing result`);
+      if (refusedByOrigin(res))
+        return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration, not a routing result`);
       return fail(httpSummary(res));
     },
   },
@@ -2308,7 +2333,7 @@ const SECTION_3 = [
       ctx.state.marks['3.2'] = Date.now();
       const res = await poolInfer(ctx.core, '/v1/chat/completions', shortChat(ctx.state.models.both));
       if (res.status === 200) return looksOpenAi(res.json) ? pass('HTTP 200 with an OpenAI-shaped completion') : fail('HTTP 200 but no choices[]');
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+      if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
       return fail(httpSummary(res));
     },
   },
@@ -2413,7 +2438,7 @@ const SECTION_3 = [
       ctx.state.marks['3.3'] = Date.now();
       const res = await poolInfer(ctx.core, '/v1/chat/completions', shortChat(ctx.state.models.both));
       if (res.status === 200) return looksOpenAi(res.json) ? pass('HTTP 200 at depth 1') : fail('HTTP 200 but no choices[]');
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+      if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
       return fail(httpSummary(res));
     },
   },
@@ -2565,7 +2590,7 @@ const SECTION_4 = [
       ctx.state.marks['4.1'] = Date.now();
       const res = await poolInfer(ctx.core, '/v1/chat/completions', shortChat(ctx.state.models.both));
       if (res.status === 200) return looksOpenAi(res.json) ? pass('HTTP 200 at depth 2') : fail('HTTP 200 but no choices[]');
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+      if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
       return fail(httpSummary(res));
     },
   },
@@ -2878,7 +2903,8 @@ const SECTION_5 = [
           ? fail('502 no-candidates — core’s own engine is also not serving <model-both>, so 5.1.1 was wrong')
           : fail('502 all-unreachable — candidates existed, every one was tried and failed');
       }
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration, not a step failure`);
+      if (refusedByOrigin(res))
+        return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration, not a step failure`);
       if (res.status === 400) return blocked(`400 ${errorText(res)} — malformed body from the runner`);
       return fail(httpSummary(res));
     },
@@ -2964,7 +2990,7 @@ const SECTION_5 = [
             )
           : fail('502 all-unreachable — beta WAS ranked and the forward to it failed');
       }
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+      if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
       return fail(httpSummary(res));
     },
   },
@@ -3474,7 +3500,7 @@ async function expect502NoCandidates(ctx, path, model) {
   const res = await poolInfer(ctx.core, path, { model, messages: [{ role: 'user', content: 'hi' }], stream: false });
   if (res.status === 400)
     return blocked(`400 ${errorText(res)} — the runner sent a malformed body (the doc's curl for this step omits Content-Type)`);
-  if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+  if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
   if (res.status === 200) return fail('HTTP 200 — core still routed to a node that is out of the pool');
   if (res.status !== 502) return fail(httpSummary(res));
   const kind = classify502(res, model);
@@ -4160,7 +4186,7 @@ function routedEndpoint(id, title, path, bodyFor, options = {}) {
       const since = Date.now();
       const res = await poolInfer(ctx.core, path, bodyFor(model));
       if (res.status === 404) return fail('404 from the proxy — the endpoint is missing from the app-facing surface');
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+      if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
       if (!res.ok) return fail(httpSummary(res));
       if (options.check) {
         const problem = options.check(res);
@@ -4196,7 +4222,7 @@ function localEndpoint(id, title, path, method, bodyFor, check) {
       const body = bodyFor ? bodyFor(ctx.state.coreLocalModel) : undefined;
       const res = await call(ctx.core, `${POOL}${path}`, { method, body, auth: 'none' });
       if (res.status === 404) return fail('404 from the proxy — an app pointed at OLLAMA_HOST gets a 404 rather than a fallback');
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+      if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
       if (!res.ok) return fail(httpSummary(res));
       const problem = check ? check(res) : null;
       // Cross-node merging of the listing endpoints is a recorded v1 limitation, so seeing a peer's
@@ -4339,7 +4365,7 @@ const SECTION_8 = [
       // narrows this step rather than blocking it.
       const before = ctx.core.token ? await getRoutingLog(ctx.core, 1) : null;
       const res = await poolInfer(ctx.core, '/v1/chat/completions', { messages: [] }, TIMEOUT_MS);
-      if (res.status === 403) return blocked(`403 ${errorText(res)} — runner configuration`);
+      if (refusedByOrigin(res)) return blocked(`401 ${MISSING_KEY_CODE} — the guard refused the runner’s own origin; runner configuration`);
       if (res.status !== 400)
         return fail(
           `HTTP ${res.status}, expected 400${res.status === 502 ? ' — a 502 would mean the request reached candidate selection with an undefined model' : ''}`,
@@ -4365,14 +4391,18 @@ const SECTION_8 = [
 // ─────────────────────────────────────────────────────────────────────────────
 // Steps — section 9: security spot-checks
 //
-// 9.1's 403 is ambiguous by status code alone: InternalNetworkGuard runs FIRST and also throws 403,
-// with near-identical wording. A runner whose source IP is rejected would see 403 for everything and
-// pass 9.1 vacuously. Two mitigations, both required: the 9.0 baseline, and matching the exact
-// PoolAppGuard message.
+// 9.1's 401 is ambiguous on its own: InferenceAccessGuard writes the same `missing_api_key` body
+// whether the origin rule that refused was the injected tunnel marker, the injected forwarded hop,
+// or the runner's OWN public source address — the body names no rule. A runner whose source address
+// is rejected would see this 401 on every app-facing route and pass 9.1 vacuously. The one
+// mitigation, required: the 9.0 baseline, which proves the runner's clean-headed origin is admitted
+// before 9.1 adds the header that must flip it. The probe still pins the guard's full fingerprint
+// (status, `error.type`, `error.code`, the `WWW-Authenticate` realm) so a 401 from anything else —
+// an operator-session refusal, a proxy in front of the Hub — cannot pass as the guard's.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** One 9.1 probe: the same request, plus one header that must get it refused. */
-async function refusedByPoolAppGuard(ctx, headers) {
+async function refusedByInferenceAccessGuard(ctx, headers) {
   const res = await call(ctx.core, `${POOL}/v1/chat/completions`, {
     method: 'POST',
     auth: 'none',
@@ -4384,17 +4414,27 @@ async function refusedByPoolAppGuard(ctx, headers) {
     return {
       ok: false,
       detail:
-        'HTTP 200 — these routes spend GPU on every paired node, so anything carrying reverse-proxy provenance must be refused whatever the source IP says',
+        'HTTP 200 — these routes spend GPU on every paired node, so anything carrying reverse-proxy provenance must be refused, or must carry an inference key, whatever the source IP says',
     };
-  if (res.status !== 403) return { ok: false, detail: httpSummary(res) };
-  const message = typeof res.json?.error === 'string' ? res.json.error : errorText(res);
-  if (message === INTERNAL_GUARD_MESSAGE)
+  if (res.status !== 401) return { ok: false, detail: httpSummary(res) };
+  const error = res.json?.error;
+  if (!error || typeof error !== 'object')
     return {
       ok: false,
-      detail: 'refused by InternalNetworkGuard, not PoolAppGuard — the runner’s own source IP is the reason, so this proves nothing',
+      detail: `401 without the OpenAI-shaped body (${res.text ? res.text.slice(0, 120) : 'empty'}) — not InferenceAccessGuard’s refusal`,
     };
-  if (message !== POOL_APP_GUARD_MESSAGE) return { ok: false, detail: `403 with an unexpected message: "${message}"` };
-  return { ok: true, detail: '403 with PoolAppGuard’s exact message' };
+  if (error.type !== INFERENCE_AUTH_TYPE || error.code !== MISSING_KEY_CODE)
+    return {
+      ok: false,
+      detail: `401 with type="${error.type}" code="${error.code}", expected type="${INFERENCE_AUTH_TYPE}" code="${MISSING_KEY_CODE}"`,
+    };
+  const realm = res.headers?.get?.('www-authenticate') ?? null;
+  if (realm !== INFERENCE_REALM)
+    return {
+      ok: false,
+      detail: `401 ${MISSING_KEY_CODE} but WWW-Authenticate was ${realm === null ? 'absent' : `"${realm}"`}, expected "${INFERENCE_REALM}"`,
+    };
+  return { ok: true, detail: `401 ${MISSING_KEY_CODE} with InferenceAccessGuard’s realm` };
 }
 
 /** One 9.2 probe against a peer-facing route, with the operator credential deliberately stripped. */
@@ -4406,27 +4446,28 @@ async function peerFacing401(ctx, path, method, headers, body) {
 const SECTION_9 = [
   {
     id: '9.0',
-    title: 'PRECONDITION for 9.1: the same route WITHOUT tunnel headers gets past both guards',
+    title: 'PRECONDITION for 9.1: the same route WITHOUT tunnel headers is admitted by origin',
     on: 'core',
     wire: `POST ${POOL}/v1/chat/completions (clean headers)`,
     // Deliberately read-only. The doc's control is a real 200, which costs GPU and so would sit
     // behind --execute — and 9.1 would then be unreachable in a safe run, which is the wrong way
     // round for a security check. A clean-headed body with NO `model` is a strictly better control:
-    // it reaches proxyToPool's guard clause, so a 400 proves BOTH guards admitted the caller, and it
-    // spends nothing. The 200 form still runs on top under --execute.
+    // it reaches proxyToPool's guard clause, so a 400 proves InferenceAccessGuard admitted the
+    // caller on its origin leg, and it spends nothing. The 200 form still runs on top under --execute.
     tier: 'readonly',
     async run(ctx) {
       const stop = gate(poolGate(ctx.core));
       if (stop) return stop;
       const probe = await poolInfer(ctx.core, '/v1/chat/completions', { messages: [] }, TIMEOUT_MS);
-      if (probe.status === 403) {
+      if (refusedByOrigin(probe)) {
         ctx.state.guardBaseline = false;
-        const message = typeof probe.json?.error === 'string' ? probe.json.error : errorText(probe);
         return blocked(
-          message === INTERNAL_GUARD_MESSAGE
-            ? 'InternalNetworkGuard rejected the runner’s own source IP — 9.1’s 403s would prove nothing, so 9.1 is reported INCONCLUSIVE rather than PASS'
-            : `403 "${message}" with clean headers — the runner cannot establish a baseline`,
+          `InferenceAccessGuard refused the runner’s own origin (401 ${MISSING_KEY_CODE}) with clean headers — 9.1’s 401s would prove nothing, so 9.1 is reported INCONCLUSIVE rather than PASS`,
         );
+      }
+      if (probe.status === 401) {
+        ctx.state.guardBaseline = false;
+        return blocked(`401 "${errorText(probe)}" with clean headers — the runner cannot establish a baseline`);
       }
       if (probe.status !== 400 || probe.json?.error !== NO_MODEL_MESSAGE) {
         ctx.state.guardBaseline = false;
@@ -4434,12 +4475,14 @@ const SECTION_9 = [
       }
       ctx.state.guardBaseline = true;
       if (!ctx.opts.execute || !ctx.state.models.both) {
-        return pass('clean headers reach proxyToPool (400 "must include a model") — both guards admitted the caller, so 9.1’s 403s mean something');
+        return pass(
+          'clean headers reach proxyToPool (400 "must include a model") — the guard admitted the caller by origin, so 9.1’s 401s mean something',
+        );
       }
       const served = await poolInfer(ctx.core, '/v1/chat/completions', shortChat(ctx.state.models.both));
       return served.status === 200
         ? pass('clean headers reach proxyToPool AND a real request returns 200 — the strongest form of the control')
-        : fail(`the guards admitted the caller but a clean real request failed: ${httpSummary(served)}`);
+        : fail(`the guard admitted the caller but a clean real request failed: ${httpSummary(served)}`);
     },
   },
   {
@@ -4455,14 +4498,14 @@ const SECTION_9 = [
       const results = [];
       for (const header of TUNNEL_MARKER_HEADERS) {
         const value = header === 'cf-ray' ? '0000000000000000-TEST' : header === 'cf-visitor' ? '{"scheme":"https"}' : '203.0.113.10';
-        const probe = await refusedByPoolAppGuard(ctx, { [header]: value });
+        const probe = await refusedByInferenceAccessGuard(ctx, { [header]: value });
         results.push({ header, ...probe });
       }
       const bad = results.filter((row) => !row.ok);
-      const rendered = results.map((row) => `${row.header}: ${row.ok ? '403' : row.detail}`).join(' | ');
+      const rendered = results.map((row) => `${row.header}: ${row.ok ? '401' : row.detail}`).join(' | ');
       if (bad.length === 0) {
         return ctx.state.guardBaseline === true
-          ? pass(`all ${results.length} markers refused with PoolAppGuard’s exact message`)
+          ? pass(`all ${results.length} markers refused with InferenceAccessGuard’s ${MISSING_KEY_CODE} body and realm`)
           : blocked(`all markers refused, but 9.0 established no clean baseline — INCONCLUSIVE: ${rendered}`);
       }
       return fail(rendered);
@@ -4479,7 +4522,7 @@ const SECTION_9 = [
       if (stop) return stop;
       // x-forwarded-for is deliberately NOT a tunnel marker (it is caller-controlled), so this is a
       // distinct code path from 9.1a and both must be run.
-      const probe = await refusedByPoolAppGuard(ctx, { 'x-forwarded-for': '203.0.113.10, 172.18.0.2' });
+      const probe = await refusedByInferenceAccessGuard(ctx, { 'x-forwarded-for': '203.0.113.10, 172.18.0.2' });
       if (!probe.ok) return fail(probe.detail);
       return ctx.state.guardBaseline === true ? pass(probe.detail) : blocked(`${probe.detail}, but 9.0 established no clean baseline — INCONCLUSIVE`);
     },
@@ -4495,8 +4538,8 @@ const SECTION_9 = [
       if (stop) return stop;
       const before = await getRoutingLog(ctx.core, 200);
       if (!before.ok) return fail(httpSummary(before));
-      await refusedByPoolAppGuard(ctx, { 'cf-ray': '0000000000000000-TEST' });
-      await refusedByPoolAppGuard(ctx, { 'x-forwarded-for': '203.0.113.10, 172.18.0.2' });
+      await refusedByInferenceAccessGuard(ctx, { 'cf-ray': '0000000000000000-TEST' });
+      await refusedByInferenceAccessGuard(ctx, { 'x-forwarded-for': '203.0.113.10, 172.18.0.2' });
       const after = await getRoutingLog(ctx.core, 200);
       if (!after.ok) return fail(httpSummary(after));
       // `summary.recorded` cannot answer this — it is a capacity-capped gauge, so on a Hub that has
@@ -4504,7 +4547,7 @@ const SECTION_9 = [
       // point of this step is that a guard threw, so it has to watch the entries themselves.
       const fresh = rowsAfter(before.json, after.json, (entry) => entry.direction === 'outbound' && entry.path === '/v1/chat/completions');
       return fresh.length === 0
-        ? pass('no new /v1/chat/completions row in the routing log — the guards threw before the handler')
+        ? pass('no new /v1/chat/completions row in the routing log — the guard threw before the handler')
         : fail(`${fresh.length} new routing-log row(s) (${describeEntry(fresh[0])}) — the request got past the guard far enough to be routed`);
     },
   },

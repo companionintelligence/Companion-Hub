@@ -568,8 +568,9 @@ export function normalizePeerFqdn(raw: string): string | null {
  * `cf-ray` is already the Hub's established "arrived through the Cloudflare tunnel" signal (see
  * `AuthController.isTunnelRequest`); the rest are the same marker under Cloudflare's other names.
  * `x-forwarded-for` is deliberately NOT in this list — it is caller-controlled, so its presence
- * proves nothing on its own and callers handle it with their own rules ({@link PoolAppGuard} walks
- * every hop; {@link callerSourceIp} treats it as one more reason not to trust `req.ip`).
+ * proves nothing on its own and callers handle it with their own rules (`internalOriginRefusal` in
+ * `request-origin.ts` walks every hop; {@link callerSourceIp} treats it as one more reason not to
+ * trust `req.ip`).
  */
 export const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'] as const;
 
@@ -578,7 +579,7 @@ export const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor'
  *
  * `request.ip` is NOT the caller behind Traefik or the Cloudflare tunnel: it is the proxy's own
  * private address, because Express `trust proxy` is left unset by default (`HUB_TRUST_PROXY`, see
- * main.ts, and the same caveat is written on `InternalNetworkGuard` and `PoolAppGuard`). A
+ * main.ts, and the same caveat is written on `InternalNetworkGuard` and `internalOriginRefusal`). A
  * "per-source" rate limit keyed on that value is keyed on ONE value for every caller in the world —
  * a global limit wearing a per-source costume. For the pairing PIN that is worse than useless: the
  * PIN's real defence is its own attempt ceiling, and a global lockout would hand any caller that

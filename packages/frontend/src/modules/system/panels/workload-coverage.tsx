@@ -23,8 +23,9 @@ import { useTranslation } from 'react-i18next';
  *     reports one (`response-usage-tap.ts`, wired through `HubPoolRoutingLogService.attachUsage`)
  *     — see the per-model breakdown in `pool-activity.tsx`. But that is tokens per MODEL/NODE, not
  *     per WORKLOAD, and the two are not interchangeable: every inference route apps call
- *     (`v1/chat/completions` etc.) is guarded only by `InternalNetworkGuard`, which checks that the
- *     caller's source IP is private — it has no concept of which APP is calling at all.
+ *     (`v1/chat/completions` etc.) is admitted by `InferenceAccessGuard` on network origin alone
+ *     (an `inference` API key is read only for callers outside the appliance, and apps are never
+ *     issued one) — it has no concept of which APP is calling at all.
  *     `HUB_INFERENCE_URL` is one shared address every app is configured with the same value for.
  *     Attributing a request to a workload needs caller identity added to that path first; nothing
  *     here estimates one from which model or node happened to serve it.
