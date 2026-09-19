@@ -375,7 +375,7 @@
   "APP_RUNTIME_DEGRADED_SUBTITLE": "This app is unresponsive while consuming sustained high CPU. Use Force Stop if normal stop does not recover the Hub.",
   "SETTINGS_LOGS_DOWNLOAD": "Download full logs",
   "SETTINGS_LOGS_DOWNLOAD_ERROR": "Failed to download logs.",
-  "SETTINGS_LOGS_POWERED_BY": "Powered by Docker, Node, React, TypeScript, PostgreSQL, Ubuntu, Debian, and many other OSS projects we love. See release notes for details.",
+  "SETTINGS_LOGS_POWERED_BY": "Powered by Docker, Node, React, TypeScript, PostgreSQL, Ubuntu, Debian, and many other OSS projects we love. See <link>release notes</link> for details.",
   "USER_CONFIG_WARNING_DESCRIPTION": "By editing the user config, you may break the app. Make sure you know what you are doing. If your app fails to start after editing the user config, look for the logs in the browser console or in the CI Hub settings page.",
   "USER_CONFIG_ENABLE": "Enable user config",
   "USER_CONFIG_DOCKER_COMPOSE_FILE_LABEL": "docker-compose.yml",

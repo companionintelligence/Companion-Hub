@@ -79,7 +79,9 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     if (path === '/home') return 0;
     if (path.startsWith('/apps') || path.startsWith('/store') || path.startsWith('/settings') || path.startsWith('/resource-monitor')) {
       const parts = path.split('/').filter(Boolean);
-      if (parts.length > 1 && (parts[0] === 'apps' || parts[0] === 'app-store')) return 2;
+      // `store`, not `app-store`: the store moved to /store and the old prefix matched nothing,
+      // so app details opened from the store slid as a sibling instead of a child.
+      if (parts.length > 1 && (parts[0] === 'apps' || parts[0] === 'store')) return 2;
       return 1;
     }
     return 1;
