@@ -167,6 +167,12 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
     { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir, ...envOverrides },
     dataDir,
   );
+  // `state/traefik/config/traefik.yml` and `acme_storage.json` are FILE bind mounts, so on a data dir
+  // that has never had them compose stops at "bind source path does not exist" before `ci-hub`
+  // starts. The checkout path has always run this (see startHub); the appliance path never did,
+  // which is why a fresh headless `cihub up` could not bring traefik up — measured 2026-09-18 on
+  // fifteen fleet nodes reinstalled from scratch, every one of them.
+  await runScript('scripts/init-traefik.ts', () => initTraefik(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir, ...envOverrides }, dataDir);
   await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
   await runScript('scripts/init-host-probe.ts', () => initHostProbe(), { ENV_FILE: ctx.envFile, ...envOverrides }, dataDir);
 
