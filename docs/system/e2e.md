@@ -76,9 +76,22 @@ including the Docker-heavy install layer.
 - **Seed baselines on Linux, not on a Mac.** `agent-gates.yml` is `runs-on: ubuntu-latest`, and
   Chromium's font rasterization differs enough between macOS and Linux to diff well past the 0.02–0.03
   thresholds on text-heavy screens. A macOS-generated baseline turns a decorative gate into a
-  permanently red one, which is worse than no gate. Generate them in the CI container (or a Linux
-  box) with `UPDATE_VISUAL_BASELINES=1 pnpm run test:visual`, then commit
-  `e2e/screenshots/baselines/`.
+  permanently red one, which is worse than no gate. `e2e.yml` seeds them on its own runner:
+
+  ```bash
+  gh workflow run e2e.yml --ref <branch> -f seed_visual_baselines=true
+  gh run download <run-id> -n visual-baselines -D e2e/screenshots/baselines/
+  git add e2e/screenshots/baselines/*.png
+  ```
+
+  The run writes `e2e/screenshots/baselines/` with `UPDATE_VISUAL_BASELINES=1` after the e2e suite
+  and uploads it as the `visual-baselines` artifact. A Linux box with Docker can do the same with
+  `pnpm run test:visual:update`.
+- **`agent-gates.yml` cannot run `test:visual` as written.** The job installs dependencies and nothing
+  else: no Postgres, no RabbitMQ, no `playwright install`. The spec drives the real login form against
+  the real backend, so once baselines exist that step will fail on the missing stack, not on a diff.
+  Give it the `services:` and Playwright steps from `e2e.yml` — or move the comparison into `e2e.yml`
+  behind a step of its own — before committing baselines.
 - Actual/diff: `e2e/screenshots/actual/`, `diff/` (gitignored)
 - Helper: `e2e/helpers/screenshot.ts` (pixelmatch)
 - Run: `pnpm run test:visual`
