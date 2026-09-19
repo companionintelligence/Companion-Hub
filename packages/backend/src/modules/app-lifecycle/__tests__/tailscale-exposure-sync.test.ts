@@ -1,17 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ExposureSyncService } from '../exposure-sync.service';
+import { TailscaleServeOwnership } from '../tailscale-serve-ownership';
 import { TailscaleService } from '../../tailscale/tailscale.service';
 import {
   CORE_6_SERVE_STATUS,
   CORE_17_SERVE_STATUS_AFTER_MANUAL_REPAIR,
   CORE_17_SERVE_STATUS_BEFORE_REPAIR,
+  FZZY_SERVE_STATUS,
+  FZZY_SERVE_STATUS_WITH_MANUAL_3081,
   SERVE_CONFIG_DENIED_STDERR,
 } from '../../tailscale/__tests__/serve-captures';
 
 type ServeConfig = {
   TCP?: Record<string, { HTTPS?: boolean }>;
   Web?: Record<string, { Handlers: Record<string, { Proxy?: string }> }>;
+  Services?: Record<string, unknown>;
 };
+
+/** A Private VPN app as `AppsRepository.getApps` returns it, plus the container target Docker reports for it. */
+interface PrivateVpnApp {
+  appName: string;
+  appStoreSlug: string;
+  exposureMode: 'tailscale';
+  status: string;
+  port: number;
+  localSubdomain: string | null;
+  target: string;
+}
+
+function privateVpnApp(appName: string, port: number, target: string): PrivateVpnApp {
+  return { appName, appStoreSlug: 'companion', exposureMode: 'tailscale', status: 'running', port, localSubdomain: null, target };
+}
 
 /**
  * A host tailscaled, reduced to what the Private VPN sync touches.
@@ -79,6 +99,9 @@ class FakeHostTailscaled {
           });
         }
         delete this.config.Web[listener];
+        if (!Object.keys(this.config.Web).some((key) => key.endsWith(`:${port}`))) {
+          delete this.config.TCP?.[String(port)];
+        }
       } else {
         this.config.TCP = { ...this.config.TCP, [String(port)]: { HTTPS: true } };
         this.config.Web = { ...this.config.Web, [listener]: { Handlers: { '/': { Proxy: rest.at(-1) } } } };
@@ -110,7 +133,8 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     }
   });
 
-  function buildSync(tailscaled: FakeHostTailscaled): ExposureSyncService {
+  /** A fresh Hub process over `tailscaled`; `apps` is read on every pass, so tests can stop an app between passes. */
+  function buildSync(tailscaled: FakeHostTailscaled, apps: PrivateVpnApp[] = []): ExposureSyncService {
     const tailscale = new TailscaleService();
     vi.spyOn(tailscale, 'isInstalled').mockResolvedValue(true);
     vi.spyOn(tailscale, 'isSocketAvailable').mockResolvedValue(true);
@@ -119,7 +143,13 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     );
 
     const moduleRef = { get: vi.fn((token: unknown) => (token === TailscaleService ? tailscale : null)) };
-    const appRepository = { getApps: vi.fn().mockResolvedValue([]) };
+    const appRepository = { getApps: vi.fn(async () => apps) };
+    const dockerReadFacade = {
+      getAppNetworkTarget: vi.fn(async (appUrn: string) => {
+        const app = apps.find((candidate) => createAppUrn(candidate.appName, candidate.appStoreSlug) === appUrn);
+        return app ? { url: app.target } : null;
+      }),
+    };
 
     return new ExposureSyncService(
       logger as never,
@@ -128,7 +158,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
       { emit: vi.fn() } as never,
       {} as never,
       {} as never,
-      {} as never,
+      dockerReadFacade as never,
       moduleRef as never,
     );
   }
@@ -254,6 +284,10 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
     config.Web = { ...config.Web, 'core-6.capybara-ulmer.ts.net:3001': { Handlers: { '/': { Proxy: 'http://172.18.0.10:3001' } } } };
     const tailscaled = new FakeHostTailscaled('core-6.capybara-ulmer.ts.net', JSON.stringify(config));
     tailscaled.deniesServeWrites = true;
+    // The Hub published :3001 for an app that has since stopped, so the listener is its to remove.
+    const ownership = await new TailscaleServeOwnership().load();
+    ownership.record(3001, 'http://172.18.0.10:3001');
+    await ownership.save();
     const sync = buildSync(tailscaled);
 
     await sync.syncTailscaleExposurePublic();
@@ -292,5 +326,131 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
 
     // Trying would fail with `handler does not exist` on every pass and change nothing.
     expect(tailscaled.writes).toEqual([]);
+  });
+
+  describe('removes only the listeners the Hub published', () => {
+    const FZZY = 'fzzy.capybara-ulmer.ts.net';
+    const UNSERVE_3001 = ['serve', '--https=3001', 'off'];
+
+    it("leaves someone else's listener in place (fzzy, where a manual :3081 was gone 84 seconds later)", async () => {
+      const tailscaled = new FakeHostTailscaled(FZZY, FZZY_SERVE_STATUS_WITH_MANUAL_3081);
+      const sync = buildSync(tailscaled);
+
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toEqual([]);
+      expect(tailscaled.serveConfig()).toEqual(JSON.parse(FZZY_SERVE_STATUS_WITH_MANUAL_3081));
+    });
+
+    it('leaves Tailscale Services in place, since the Hub no longer creates any', async () => {
+      // Hand-written in the shape of ipn.ServiceConfig; not captured from a host.
+      const config = JSON.parse(FZZY_SERVE_STATUS) as ServeConfig;
+      config.Services = {
+        'svc:grafana': {
+          TCP: { '443': { HTTPS: true } },
+          Web: { 'grafana.capybara-ulmer.ts.net:443': { Handlers: { '/': { Proxy: 'http://localhost:3000' } } } },
+        },
+      };
+      const tailscaled = new FakeHostTailscaled(FZZY, JSON.stringify(config));
+      const sync = buildSync(tailscaled);
+
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toEqual([]);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('removes the listener it published for an app once the app stops, and nothing else', async () => {
+      const app = privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001');
+      const tailscaled = new FakeHostTailscaled(FZZY, FZZY_SERVE_STATUS_WITH_MANUAL_3081);
+      const sync = buildSync(tailscaled, [app]);
+
+      await sync.syncTailscaleExposurePublic();
+      expect(tailscaled.writes).toEqual([['serve', '--bg', '--yes', '--https=3001', 'http://172.18.0.10:3001']]);
+
+      app.status = 'stopped';
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes.slice(1)).toEqual([UNSERVE_3001]);
+      expect(tailscaled.serveConfig()).toEqual(JSON.parse(FZZY_SERVE_STATUS_WITH_MANUAL_3081));
+    });
+
+    it("still removes a stopped app's listener after the Hub restarts", async () => {
+      const apps = [privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001')];
+      const tailscaled = new FakeHostTailscaled(FZZY, FZZY_SERVE_STATUS);
+      await buildSync(tailscaled, apps).syncTailscaleExposurePublic();
+
+      apps[0].status = 'stopped';
+      await buildSync(tailscaled, apps).syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes.at(-1)).toEqual(UNSERVE_3001);
+      expect(tailscaled.serveConfig()).toEqual(JSON.parse(FZZY_SERVE_STATUS));
+    });
+
+    it('lets go of a port once someone else serves something else on it', async () => {
+      const app = privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001');
+      const tailscaled = new FakeHostTailscaled(FZZY, FZZY_SERVE_STATUS);
+      const sync = buildSync(tailscaled, [app]);
+      await sync.syncTailscaleExposurePublic();
+
+      app.status = 'stopped';
+      tailscaled.run(['serve', '--bg', '--yes', '--https=3001', 'http://127.0.0.1:9000']);
+      const writesBefore = tailscaled.writes.length;
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes.slice(writesBefore)).toEqual([]);
+      expect(tailscaled.serveConfig().Web?.[`${FZZY}:3001`]).toEqual({ Handlers: { '/': { Proxy: 'http://127.0.0.1:9000' } } });
+    });
+
+    it('keeps retrying the removal while tailscaled fails it', async () => {
+      const app = privateVpnApp('anything-llm', 3001, 'http://172.18.0.10:3001');
+      const tailscaled = new FakeHostTailscaled(FZZY, FZZY_SERVE_STATUS);
+      const sync = buildSync(tailscaled, [app]);
+      await sync.syncTailscaleExposurePublic();
+
+      app.status = 'stopped';
+      const run = tailscaled.run.bind(tailscaled);
+      const failOff = vi.spyOn(tailscaled, 'run').mockImplementation((args) => {
+        if (args.at(-1) === 'off') {
+          tailscaled.calls.push(args);
+          throw new Error('Command failed: tailscale serve --https=3001 off\ncontext deadline exceeded');
+        }
+        return run(args);
+      });
+      await sync.syncTailscaleExposurePublic();
+      failOff.mockRestore();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.calls.filter((args) => args.join(' ') === UNSERVE_3001.join(' '))).toHaveLength(2);
+      expect(tailscaled.serveConfig()).toEqual(JSON.parse(FZZY_SERVE_STATUS));
+    });
+
+    it('still takes back :443 for the Hub when someone points it elsewhere', async () => {
+      const config = JSON.parse(FZZY_SERVE_STATUS) as ServeConfig;
+      config.Web = { [`${FZZY}:443`]: { Handlers: { '/': { Proxy: 'http://127.0.0.1:8080' } } } };
+      const tailscaled = new FakeHostTailscaled(FZZY, JSON.stringify(config));
+      const sync = buildSync(tailscaled);
+
+      await sync.syncTailscaleExposurePublic();
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toEqual([HUB_PUBLISH]);
+      expect(tailscaled.serveConfig()).toEqual(JSON.parse(FZZY_SERVE_STATUS));
+    });
+
+    it("still keeps an app configured on :443 off the Hub's entry", async () => {
+      const tailscaled = new FakeHostTailscaled(FZZY, '{}');
+      const sync = buildSync(tailscaled, [privateVpnApp('clashing-app', 443, 'http://172.18.0.10:443')]);
+
+      await sync.syncTailscaleExposurePublic();
+
+      expect(tailscaled.writes).toEqual([HUB_PUBLISH]);
+      expect(tailscaled.serveConfig()).toEqual(JSON.parse(FZZY_SERVE_STATUS));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('port 443 is reserved'));
+    });
   });
 });

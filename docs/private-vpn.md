@@ -113,6 +113,13 @@ For example, an app assigned port `8138` is available at
 `https://hub-demo.example.ts.net:8138/`. Open the generated URL shown by CI-Hub
 and test it from another device signed in to the same tailnet.
 
+When an app stops, CI-Hub removes the Serve entry it published for that app.
+CI-Hub removes only entries it published, and records them in
+`state/tailscale-serve-ownership.json` under its data directory. If you run your
+own `tailscale serve` on the same host, CI-Hub leaves that entry in place unless
+it uses port 443, which the Hub keeps for its dashboard, or the port of a running
+app with **Tailscale** exposure.
+
 ## Remote administration workflow
 
 Recommended operator workflow:
