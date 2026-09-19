@@ -261,4 +261,34 @@ describe('McpSettingsContainer', () => {
       ),
     );
   });
+  it('links each installed MCP app to /apps/:storeId/:appId, with the URN segments swapped', async () => {
+    // An installed app's URN is `appName:appStoreId`; the installed-app route is
+    // `/apps/:storeId/:appId`. The link used to be `/app-store/<appName>/<appStoreId>` — a
+    // route that does not exist, with the segments in URN order — so every row landed on the
+    // 404 page. Assert the href, not just that a link renders.
+    mockApiFetch.mockImplementation((url: string) => {
+      if (url === '/api/apps/installed') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            installed: [
+              { app: { status: 'running' }, info: { urn: 'openclaw:ci-marketplace', name: 'OpenClaw', mcp: { enabled: true } } },
+              // No `mcp` block: not an MCP app, must not be listed.
+              { app: { status: 'running' }, info: { urn: 'plain:ci-marketplace', name: 'Plain', mcp: undefined } },
+            ],
+          }),
+        });
+      }
+      if (url === '/api/apps/openclaw%3Aci-marketplace/mcp/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ connected: true, toolCount: 3, containerStatus: 'running' }) });
+      }
+      return mockGet(url);
+    });
+
+    renderContainer();
+
+    const link = await screen.findByRole('link', { name: 'OpenClaw' });
+    expect(link.getAttribute('href')).toBe('/apps/ci-marketplace/openclaw');
+    expect(screen.queryByText('Plain')).toBeNull();
+  });
 });
