@@ -10,6 +10,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { Link } from 'react-router';
+import { extractAppUrn } from '@/utils/app-helpers';
+import type { AppUrn } from '@ci-hub/common/types';
 
 // ENH-MCP-4: operator screen for the Hub's MCP server. Talks to the session-authed /api/mcp-admin
 // surface (never the Bearer /api/mcp endpoint), so the browser never holds the agent key and the
@@ -60,6 +62,12 @@ interface InstalledAppsResponse {
 }
 
 type ToolCallResponse = { ok: true; result: unknown } | { ok: false; error: string };
+
+/** `/apps/:storeId/:appId` for an installed app's `appName:appStoreId` URN. */
+const installedAppPath = (urn: string) => {
+  const { appName, appStoreId } = extractAppUrn(urn as AppUrn);
+  return `/apps/${appStoreId}/${appName}`;
+};
 
 export const McpSettingsContainer = () => {
   const { t } = useTranslation();
@@ -295,12 +303,9 @@ export const McpSettingsContainer = () => {
                           just joined. This was `/app-store/${urn.replace(':', '/')}`, which
                           is wrong twice over: there is no `/app-store` route (the store lives
                           at `/store`) and the order was reversed, so every row here landed on
-                          the 404 page. Same split as horizontal-app-list.tsx.
+                          the 404 page.
                         */}
-                        <Link
-                          to={`/apps/${entry.urn.split(':')[1]}/${entry.urn.split(':')[0]}`}
-                          className="text-primary underline-offset-2 hover:underline"
-                        >
+                        <Link to={installedAppPath(entry.urn)} className="text-primary underline-offset-2 hover:underline">
                           {entry.name}
                         </Link>
                       </td>

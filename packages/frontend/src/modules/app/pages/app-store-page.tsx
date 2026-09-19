@@ -23,7 +23,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClie
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
-import { Navigate, useParams, useSearchParams } from 'react-router';
+import { Navigate, useLocation, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
@@ -50,6 +50,10 @@ export default () => {
   const { t } = useTranslation();
   const params = useParams<{ storeId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
+  // The page is still mounted for the length of the dashboard layout's exit animation after
+  // the route has already changed, and `setSearchParams` writes relative to wherever the
+  // router is NOW. Only the store index owns these params.
+  const isStoreIndex = useLocation().pathname === '/store';
   const { setCategory, category, storeId, setStoreId, search, setSearch, setSearchImmediate } = useAppStoreState();
   const [localSearch, setLocalSearch] = useState(search);
   const hasInitializedDefaultCategory = useRef(false);
@@ -69,6 +73,15 @@ export default () => {
     const parsed = parseStoreBrowseParams(searchParams);
 
     setSearchImmediate(parsed.q ?? '');
+    // `store` too, not only `q` and `category`. On a cold load Zustand's storeId is undefined,
+    // and the state-to-URL effect below runs in this same commit with that closure — so a
+    // `?store=` that was never copied into state had nothing to be written back from, and
+    // the effect that honours it (further down) could not, because the enabled-stores query
+    // had not resolved yet. Deep links to any store but the default always landed on the
+    // default. The validity check against the enabled stores still happens below.
+    if (parsed.store) {
+      setStoreId(parsed.store);
+    }
 
     if (parsed.category !== undefined) {
       hasInitializedDefaultCategory.current = true;
@@ -80,15 +93,24 @@ export default () => {
       hasInitializedDefaultCategory.current = true;
       setCategory(DEFAULT_STORE_CATEGORY);
     }
-  }, [searchParams, setCategory, setSearchImmediate]);
+  }, [searchParams, setCategory, setSearchImmediate, setStoreId]);
 
   useEffect(() => {
+    // Not on the store index: nothing to write, and writing would be wrong. On a route change
+    // `setSearchParams` takes a new identity (it closes over the new location's params), which
+    // re-ran this effect during the exit animation and put `?category=featured&store=…` on the
+    // URL of whichever page the user had just navigated TO — Settings, usually.
+    if (!isStoreIndex) return;
     setSearchParams(
       (prev) => {
         const next = applyStoreBrowseParams(prev, {
           q: search.trim() ? search : undefined,
           category,
-          store: storeId,
+          // No store chosen yet is not "no store": keep whatever the URL says until state
+          // catches up, or the first write of a cold load drops the deep link on the floor.
+          // An invalid `?store=` is removed on purpose by the fallback effect below, which
+          // is the only place `store` should ever be deleted.
+          store: storeId ?? parseStoreBrowseParams(prev).store,
         });
 
         if (next.toString() === prev.toString()) {
@@ -100,7 +122,7 @@ export default () => {
       },
       { replace: true },
     );
-  }, [search, category, storeId, setSearchParams]);
+  }, [search, category, storeId, setSearchParams, isStoreIndex]);
 
   const queryClient = useQueryClient();
 

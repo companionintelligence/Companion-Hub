@@ -87,9 +87,18 @@ const settle = async (page: Page, marker: string | null) => {
   await page.waitForTimeout(1500);
 };
 
+/**
+ * Every file THIS run wrote. The report below counts this set, not the directory: the PNGs are
+ * committed, so `readdirSync(OUT_DIR)` is always at least the last run's output and a count of it
+ * could never fall — a walk that silently wrote nothing would still have "passed".
+ */
+const written = new Set<string>();
+
 const shoot = async (page: Page, name: string, theme: string, suffix = '') => {
   if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
-  await page.screenshot({ path: join(OUT_DIR, `${name}-${theme}${suffix}.png`), fullPage: true });
+  const file = `${name}-${theme}${suffix}.png`;
+  await page.screenshot({ path: join(OUT_DIR, file), fullPage: true });
+  written.add(file);
 };
 
 for (const theme of THEMES) {
@@ -156,12 +165,18 @@ test('capture mobile-width screens (dark)', async ({ page }) => {
 });
 
 test('report what was captured and what could not be', async () => {
-  const captured = existsSync(OUT_DIR) ? readdirSync(OUT_DIR).filter((f) => f.endsWith('.png')) : [];
   // register + login + reset-password + AUTHENTICATED, per theme, plus 4 mobile.
   const expectedCount = (AUTHENTICATED.length + 3) * THEMES.length + 4;
+  // Files in the directory that this run did not touch: a renamed screen leaves its old
+  // capture behind, and nothing else would ever say so.
+  const stale = existsSync(OUT_DIR) ? readdirSync(OUT_DIR).filter((f) => f.endsWith('.png') && !written.has(f)) : [];
 
   // biome-ignore lint/suspicious/noConsole: the coverage report IS this test's output
-  console.log(`\n[capture-screens] wrote ${captured.length} PNGs to docs/images/screens/`);
+  console.log(`\n[capture-screens] wrote ${written.size} PNGs to docs/images/screens/`);
+  if (stale.length > 0) {
+    // biome-ignore lint/suspicious/noConsole: the coverage report IS this test's output
+    console.log(`[capture-screens] ${stale.length} PNGs in the directory were NOT written by this run: ${stale.join(', ')}`);
+  }
   // biome-ignore lint/suspicious/noConsole: the coverage report IS this test's output
   console.log(`[capture-screens] ${Object.keys(SKIPPED).length} screens have no fixture path:`);
   for (const [name, why] of Object.entries(SKIPPED)) {
@@ -169,7 +184,7 @@ test('report what was captured and what could not be', async () => {
     console.log(`  - ${name}: ${why}`);
   }
 
-  // A silent drop reads as "we covered everything". Fail loudly if the walk above
-  // stopped producing files.
-  expect(captured.length, `expected ${expectedCount} screenshots, found ${captured.length}`).toBeGreaterThanOrEqual(expectedCount);
+  // Exact, and over what THIS run wrote. A silent drop would otherwise read as full
+  // coverage, and a surplus means a screen list and this arithmetic have drifted apart.
+  expect(written.size, `expected ${expectedCount} screenshots this run, wrote ${written.size}`).toBe(expectedCount);
 });

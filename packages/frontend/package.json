@@ -12,6 +12,7 @@
     "test": "vitest run",
     "tsc": "react-router typegen && tsc --noEmit",
     "lint:canon": "ci-lint-canon .",
+    "lint:palette": "node scripts/check-palette-classes.mjs",
     "brand:sync": "node scripts/sync-brand.mjs",
     "brand:check": "node scripts/sync-brand.mjs --check"
   },

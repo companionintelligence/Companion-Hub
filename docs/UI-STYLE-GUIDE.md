@@ -53,6 +53,14 @@ also packaged as a Tauri 2 desktop app.
 - ✅ `cn()` is canonical (`twMerge(clsx(inputs))`).
 - ✅ Radius, font, custom font-sizes, `.dark` theming, lucide sizing all match canon.
 - ✅ Primitives via Radix UI; `glass-container` present.
+- ⚠ **142 raw Tailwind palette classes** (`text-yellow-500`, `bg-gray-800`, …) remain across 23
+  files, none of which follow the theme. They are pinned per file in
+  `packages/frontend/scripts/palette-baseline.json` and `pnpm --filter frontend lint:palette`
+  (run in `ci.yml`) fails any file that grows. Convert a file to tokens, then
+  `lint:palette --update` to ratchet the baseline down. The two largest —
+  `onboarding/components/recommendations-step.tsx` (40) and `onboarding/helpers/hardware-display.ts`
+  (30) — are the hardware-tier badge the GUI review flagged; `success` / `warning` / `destructive` /
+  `muted` cover every colour they use.
 
 ### Sanctioned local extensions (Hub-only, not canon)
 

@@ -172,7 +172,7 @@ describe('AppStorePage — multi-store UX', () => {
     setupQueries();
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -187,7 +187,7 @@ describe('AppStorePage — multi-store UX', () => {
     setupQueries([STORE_A]);
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -201,7 +201,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockUseParams.mockReturnValue({ storeId: 'community' });
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -231,7 +231,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.storeId = 'ci-marketplace';
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -262,7 +262,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.storeId = 'ci-marketplace';
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -277,7 +277,7 @@ describe('AppStorePage — multi-store UX', () => {
     setupQueries();
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -285,11 +285,69 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockStoreState.setStoreId).toHaveBeenCalledWith('community');
   });
 
+  it('keeps ?store= on a cold load, before the enabled-stores query has resolved', () => {
+    // The previous case could not catch the real defect: with the stores query already
+    // resolved on the first render, the fallback effect honoured the param before anything
+    // could remove it. A cold load is different — Zustand has no storeId yet, the stores query
+    // is still in flight, and the state-to-URL effect runs in the very first commit. It used to
+    // write the URL from `store: undefined`, which applyStoreBrowseParams treats as "delete",
+    // so by the time the stores resolved there was no `?store=` left to read and every deep
+    // link to a secondary store landed on the default.
+    capturedSearchParams = new URLSearchParams('store=community');
+    mockStoreState.storeId = undefined as unknown as string;
+    mockUseQuery.mockImplementation((opts: { queryKey: readonly unknown[] }) => {
+      if (opts.queryKey[0] === 'enabledStores') {
+        return { data: undefined, isLoading: true } as ReturnType<typeof useQuery>;
+      }
+      return { data: undefined, isLoading: false } as ReturnType<typeof useQuery>;
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/store']}>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    // 1. The param reaches state on mount, not only once the stores have resolved.
+    expect(mockStoreState.setStoreId).toHaveBeenCalledWith('community');
+
+    // 2. No URL write in that first commit drops it. Replay every write in order.
+    const updaters = mockSetSearchParams.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is (prev: URLSearchParams) => URLSearchParams => typeof arg === 'function');
+    expect(updaters.length).toBeGreaterThan(0);
+    const finalUrl = updaters.reduce((prev, updater) => updater(prev), new URLSearchParams('store=community'));
+    expect(finalUrl.get('store')).toBe('community');
+  });
+
+  it('does not write browse params to the URL once the route has left the store index', () => {
+    // The dashboard layout animates page exits, so this component stays mounted for a beat
+    // after the user has clicked Settings. `setSearchParams` writes relative to the current
+    // location, and it takes a new identity on every location change, which re-fired the
+    // state-to-URL effect — so Settings opened as /settings?category=featured&store=ci-apps.
+    mockStoreState.category = 'featured';
+    mockStoreState.storeId = 'ci-apps';
+    setupQueries();
+
+    render(
+      <MemoryRouter initialEntries={['/settings']}>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const updaters = mockSetSearchParams.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is (prev: URLSearchParams) => URLSearchParams => typeof arg === 'function');
+    const finalUrl = updaters.reduce((prev, updater) => updater(prev), new URLSearchParams());
+    expect(finalUrl.get('category')).toBeNull();
+    expect(finalUrl.get('store')).toBeNull();
+  });
+
   it('calls setSearchParams when switching stores', () => {
     setupQueries();
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -304,7 +362,7 @@ describe('AppStorePage — multi-store UX', () => {
     setupQueries();
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -317,7 +375,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.search = 'sidebar term';
 
     const { rerender } = render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -330,7 +388,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.search = 'updated elsewhere';
 
     rerender(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -352,7 +410,7 @@ describe('AppStorePage — multi-store UX', () => {
     } as unknown as ReturnType<typeof useInfiniteQuery>);
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -372,7 +430,7 @@ describe('AppStorePage — multi-store UX', () => {
     } as unknown as ReturnType<typeof useInfiniteQuery>);
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -387,7 +445,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.category = 'featured';
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -403,7 +461,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.category = 'featured';
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -419,7 +477,7 @@ describe('AppStorePage — multi-store UX', () => {
     setupQueries();
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );
@@ -435,7 +493,7 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.storeId = 'ci-apps';
 
     render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={['/store']}>
         <AppStorePage />
       </MemoryRouter>,
     );

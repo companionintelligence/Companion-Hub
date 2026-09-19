@@ -17,6 +17,11 @@
 at its eight most significant. The cap makes this list a floor rather than a ceiling — most visibly for accessibility
 and copy, where several reviewers spent the cap on functional defects first.
 
+Every screen group is tracked as a GitHub issue (right-hand column below, label `gui-review-2026-09`); the eight
+`high` findings that are single-file, self-contained fixes are collected in #1527, and the installed-app e2e
+fixture that would unlock four untestable screens is #1528. Tick a finding there when it lands; this file stays
+as written.
+
 Findings are derived from source, not from a live appliance. Any operator address, tailnet hostname or CGNAT address a
 reviewer quoted has been redacted, per the tip-scrub policy in `docs/README.md`.
 
@@ -32,24 +37,24 @@ this and is blocked or misled", not "ship-blocking".
 | design-system | 8 | |  |  |
 | docs-tests | 1 | |  |  |
 
-| Screen group | Key | Findings |
-|---|---|---|
-| Sign-in, register, reset password | `auth` | 7 |
-| Device registration | `device-reg` | 4 |
-| Onboarding wizard | `onboarding-wizard` | 7 |
-| Onboarding install and interstitials | `onboarding-install` | 6 |
-| Dashboard and guest dashboard | `dashboard` | 7 |
-| App store browse | `app-store` | 8 |
-| App details and update | `app-details` | 6 |
-| Custom apps and port expose | `custom-apps` | 6 |
-| Settings: general and security | `settings-core` | 7 |
-| Settings: network and pool | `settings-network` | 7 |
-| Settings: AI and MCP | `settings-ai-mcp` | 8 |
-| Settings: system and logs | `settings-system` | 6 |
-| Resource monitor | `resource-monitor` | 8 |
-| App shell and shared states | `shell` | 7 |
-| Mobile surfaces | `mobile` | 6 |
-| Desktop bootstrap and tray | `desktop-shell` | 8 |
+| Screen group | Key | Findings | Issue |
+|---|---|---|---|
+| Sign-in, register, reset password | `auth` | 7 | #1511 |
+| Device registration | `device-reg` | 4 | #1512 |
+| Onboarding wizard | `onboarding-wizard` | 7 | #1513 |
+| Onboarding install and interstitials | `onboarding-install` | 6 | #1514 |
+| Dashboard and guest dashboard | `dashboard` | 7 | #1515 |
+| App store browse | `app-store` | 8 | #1516 |
+| App details and update | `app-details` | 6 | #1517 |
+| Custom apps and port expose | `custom-apps` | 6 | #1518 |
+| Settings: general and security | `settings-core` | 7 | #1519 |
+| Settings: network and pool | `settings-network` | 7 | #1520 |
+| Settings: AI and MCP | `settings-ai-mcp` | 8 | #1521 |
+| Settings: system and logs | `settings-system` | 6 | #1522 |
+| Resource monitor | `resource-monitor` | 8 | #1523 |
+| App shell and shared states | `shell` | 7 | #1524 |
+| Mobile surfaces | `mobile` | 6 | #1525 |
+| Desktop bootstrap and tray | `desktop-shell` | 8 | #1526 |
 
 ---
 

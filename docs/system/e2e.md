@@ -38,10 +38,16 @@ That gating is deliberate cost control, not rot — but the effect is that a cha
 lane produces no signal at all until someone dispatches a run by hand. The `if:` guards inside `e2e-extended.yml`
 still test for `schedule` and `pull_request` events that can no longer arrive.
 
-Run them by hand:
+The same three workflows are also **disabled in the repository's Actions settings** (`gh workflow list --all`
+shows `disabled_manually`), which is a second, independent switch: a disabled workflow refuses
+`workflow_dispatch` with HTTP 422 even though the file declares it. The last run of `e2e.yml` of any kind
+was 2026-07-28. Enabling one is a repository setting, not a commit — do it deliberately, and expect to
+pay the runner minutes the gating exists to save:
 
 ```bash
+gh workflow enable e2e.yml
 gh workflow run e2e.yml --ref <branch>
+gh workflow disable e2e.yml   # when you are done, if the cost control still applies
 ```
 
 ## The fixture contract
@@ -61,6 +67,24 @@ things about that path are load-bearing, and each one silently killed every auth
   denies with `503 AUTH_ERROR_ORG_CHECK_UNAVAILABLE`. The route's `organizationId` has to match the registration
   `seedOrganization()` writes, or membership resolves to `not-member` — which *revokes* the seeded operator.
 
+## Known red in the default lane
+
+The fixture repair above took the lane from 1 passing to 15, with 5 left red. The workflow being disabled
+means none of this has been confirmed by a CI run; the first four were found by reading the specs against
+the code and fixed on that basis, the fifth is the PR author's local observation. Dispatch the lane and
+edit this list to what it actually reports.
+
+| Spec › test | Why it was red | Status |
+|---|---|---|
+| `multi-store-context` › loads the app store inside explicit query-param store context | Asserted an "App Store" heading the store no longer has; then asserted `?store=ci-apps` survives, which `app-store-page.tsx` used to drop on a cold load | Both fixed — anchor changed, deep link kept (see `app-store-page.test.tsx` "cold load") |
+| `multi-store-context` › redirects store-specific path routing into explicit query-param context | Same stale heading | Fixed |
+| `navigation` › should navigate to all main pages | `getByRole('link', { name: 'Home' })` resolves to two links since `80cf93aa0` gave the brand mark `aria-label="Home"` — strict-mode violation | Fixed — links scoped to the header `<nav>` |
+| `navigation` › should have working logo link to dashboard | Looked for a link named "Companion Intelligence Logo"; the brand mark's name has been "Home" since `80cf93aa0` | Fixed — selected by the logo `<img>` it wraps |
+| `settings` › should navigate to settings *(probable)* | Reported as tablist timing on a local run; the tablist renders fine live and nothing in the spec is stale by reading | Not changed — needs a run |
+
+`app-store-browsing` › should filter by category clicks the category buttons with `force: true` because "they
+may be transiently covered"; it was not reported red, but it is the next most fragile assertion in the lane.
+
 `e2e-mcp.yml` is dispatch-only on purpose: it boots a backend, so it earns its runner minutes only
 when the MCP surface, its auth, or the connect docs change. Run it with
 `gh workflow run e2e-mcp.yml --ref <branch>`, or `pnpm e2e:mcp` locally for the full 18-test lane
@@ -76,9 +100,22 @@ including the Docker-heavy install layer.
 - **Seed baselines on Linux, not on a Mac.** `agent-gates.yml` is `runs-on: ubuntu-latest`, and
   Chromium's font rasterization differs enough between macOS and Linux to diff well past the 0.02–0.03
   thresholds on text-heavy screens. A macOS-generated baseline turns a decorative gate into a
-  permanently red one, which is worse than no gate. Generate them in the CI container (or a Linux
-  box) with `UPDATE_VISUAL_BASELINES=1 pnpm run test:visual`, then commit
-  `e2e/screenshots/baselines/`.
+  permanently red one, which is worse than no gate. `e2e.yml` seeds them on its own runner:
+
+  ```bash
+  gh workflow run e2e.yml --ref <branch> -f seed_visual_baselines=true
+  gh run download <run-id> -n visual-baselines -D e2e/screenshots/baselines/
+  git add e2e/screenshots/baselines/*.png
+  ```
+
+  The run writes `e2e/screenshots/baselines/` with `UPDATE_VISUAL_BASELINES=1` after the e2e suite
+  and uploads it as the `visual-baselines` artifact. A Linux box with Docker can do the same with
+  `pnpm run test:visual:update`.
+- **`agent-gates.yml` cannot run `test:visual` as written.** The job installs dependencies and nothing
+  else: no Postgres, no RabbitMQ, no `playwright install`. The spec drives the real login form against
+  the real backend, so once baselines exist that step will fail on the missing stack, not on a diff.
+  Give it the `services:` and Playwright steps from `e2e.yml` — or move the comparison into `e2e.yml`
+  behind a step of its own — before committing baselines.
 - Actual/diff: `e2e/screenshots/actual/`, `diff/` (gitignored)
 - Helper: `e2e/helpers/screenshot.ts` (pixelmatch)
 - Run: `pnpm run test:visual`
@@ -93,9 +130,10 @@ Separate from visual regression, and for humans rather than diffing:
 - Output: `docs/images/screens/<screen>-<theme>[-mobile].png`
 - Run: `pnpm run docs:screens`
 
-The spec carries a `SKIPPED` map naming every screen no fixture can reach and why, and it fails if
-the capture count drops — a silent shortfall would otherwise read as full coverage. See
-`docs/system/ui-screens.md`.
+The spec carries a `SKIPPED` map naming every screen no fixture can reach and why, and it fails unless
+the number of PNGs *that run wrote* is exactly what the screen lists imply — it counts its own writes, not
+the directory, which always holds the last committed set. A silent shortfall would otherwise read as full
+coverage. See `docs/system/ui-screens.md`.
 
 ## Performance benchmarks
 

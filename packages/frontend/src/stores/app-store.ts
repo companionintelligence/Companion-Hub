@@ -31,6 +31,8 @@ export const useAppStoreState = create<Store>((set) => ({
   setSearchImmediate: (search) => set({ search }),
   setCategory: (category) => set({ category }),
   storeId: undefined,
-  setStoreId: (storeId) => set({ storeId }),
+  // Same value, same state object: Zustand then notifies nobody. The store page re-applies the
+  // URL's `?store=` on every URL change, and the page subscribes to the whole store.
+  setStoreId: (storeId) => set((state) => (state.storeId === storeId ? state : { storeId })),
   resetBrowseToFeatured: () => set({ search: '', category: 'featured' }),
 }));
