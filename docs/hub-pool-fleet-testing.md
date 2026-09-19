@@ -789,11 +789,17 @@ core$ curl -s -o /dev/null -w '%{http_code}\n' $HUB/v1/chat/completions \
   -d '{"model":"<model-both>","messages":[{"role":"user","content":"hi"}],"stream":false}'
 ```
 
-**Expected** — `403` for both. The same request without those headers returns 200 (that is step 3.2).
+**Expected** — `401` for both. Either header moves the request outside the appliance, so
+`InferenceAccessGuard` wants an `inference` API key and none was sent (see
+[`hub-pool.md`](hub-pool.md#what-guards-what)). The refusal body is OpenAI-shaped
+(`"type":"authentication_error"`, `"code":"missing_api_key"`) under a
+`WWW-Authenticate: Bearer realm="ci-hub-inference"` header; the commands above print the status
+only — swap `-o /dev/null -w '%{http_code}\n'` for `-i` to see both, and `pool-qa.mjs` 9.1 pins
+all three. The same request without those headers returns 200 (that is step 3.2).
 
-**PASS** both print `403`, and no new row appears in `cihub pool log`.
+**PASS** both print `401`, and no new row appears in `cihub pool log`.
 **FAIL** either returns 200. These routes spend GPU time on every paired node, so anything carrying
-reverse-proxy provenance must be refused whatever the source IP says.
+reverse-proxy provenance must be refused, or must carry an `inference` key, whatever the source IP says.
 
 ### 9.2 An unpaired tailnet device cannot call a peer-facing route
 

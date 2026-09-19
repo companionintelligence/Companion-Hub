@@ -1068,8 +1068,15 @@ describe('api-key scope parsing', () => {
     expect(parseApiKeyScopes('qa:read')).toEqual({ scopes: ['qa:read'], invalid: [], managedOnly: [] });
   });
 
+  it('accepts inference as an operator scope rather than reporting it unknown', () => {
+    expect(parseApiKeyScopes('inference')).toEqual({ scopes: ['inference'], invalid: [], managedOnly: [] });
+  });
+
   it('dedupes and orders like ApiKeyService.normalizeScopes', () => {
     expect(parseApiKeyScopes('mcp,mcp').scopes).toEqual(['mcp']);
+    // The backend list is ['mcp', 'app', 'qa:read', 'inference']; the operator subset must sort the
+    // same way, or a row this command writes would differ from one the service wrote for the same grant.
+    expect(parseApiKeyScopes('inference,qa:read,mcp').scopes).toEqual(['mcp', 'qa:read', 'inference']);
   });
 
   it('returns no scopes for an empty value so the caller can reject it', () => {

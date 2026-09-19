@@ -1830,6 +1830,7 @@
   "API_KEYS_MANAGED_BADGE": "Managed",
   "API_KEYS_SCOPE_MCP": "MCP",
   "API_KEYS_SCOPE_APP": "App",
+  "API_KEYS_SCOPE_INFERENCE": "Inference",
   "API_KEYS_LAST_USED": "Last used {{when}}",
   "API_KEYS_NEVER_USED": "Never used",
   "API_KEYS_CREATED_BY": "Created by {{name}}",

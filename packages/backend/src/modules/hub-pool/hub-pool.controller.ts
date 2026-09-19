@@ -19,13 +19,12 @@ import { ModuleRef } from '@nestjs/core';
 import { ApiTags } from '@nestjs/swagger';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { AuthGuard } from '@/modules/auth/auth.guard';
-import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
+import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { ObservabilityRead, ObservabilityReadGuard } from '@/modules/auth/observability-read.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { callerSourceIp, describeHubPoolDisabled, describeHubPoolInboundRefused } from '@/common/helpers/hub-pool';
 import { INFERENCE_ENV_REFRESHER, type InferenceEnvRefresher } from '@/common/helpers/inference-env-refresh';
-import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
@@ -51,9 +50,10 @@ import { isPairingIncomplete, toPublicPeer } from './hub-pool.types';
  *
  * `peers/*` and `pair/*` are the pairing lifecycle (see `HubPoolPeerService`
  * doc comment for the token model). `v1/*` and `api/*` are app-facing —
- * guarded by {@link InternalNetworkGuard} plus {@link PoolAppGuard}, which
- * rejects requests that reached the Hub through the public tunnel — and run
- * full candidate selection + failover. `local/*` are peer-facing — guarded by
+ * guarded by {@link InferenceAccessGuard}, which admits a request that
+ * originated inside the appliance by origin alone and one that reached the Hub
+ * through the public tunnel only with an `inference` API key — and run full
+ * candidate selection + failover. `local/*` are peer-facing — guarded by
  * {@link PoolPeerGuard} — and forward straight to this node's own backend with
  * NO candidate selection, which is what stops a request being relayed through a
  * third node.
@@ -476,57 +476,57 @@ export class HubPoolController {
     return this.peerService.getOwnCapabilities(this.peerService.inboundRefusal(peer) === null);
   }
 
-  // ── App-facing proxy (local Docker network apps only; PoolAppGuard additionally rejects tunnel-forwarded traffic) ──
+  // ── App-facing proxy (InferenceAccessGuard: apps inside the appliance by origin; editors and SDKs anywhere with an `inference` key) ──
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/chat/completions')
   async proxyChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/v1/chat/completions', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/completions')
   async proxyCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/v1/completions', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/embeddings')
   async proxyEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/v1/embeddings', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('api/generate')
   async proxyOllamaGenerate(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/generate', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('api/chat')
   async proxyOllamaChat(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/chat', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('api/embeddings')
   async proxyOllamaEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/embeddings', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('api/embed')
   async proxyOllamaEmbed(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/embed', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Get('v1/models')
   async proxyOpenAiModelsList(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Get('api/tags')
   async proxyOllamaTags(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
@@ -536,19 +536,19 @@ export class HubPoolController {
   // by this node's own engine so an app pointed at OLLAMA_HOST doesn't get a 404 from the proxy.
   // /api/show falls back to a peer that holds the model when no local engine does — see
   // `PoolProxyService.describeFromPeer`.
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Get('api/ps')
   async proxyOllamaPs(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/ps', 'GET', undefined, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Get('api/version')
   async proxyOllamaVersion(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
   }
 
-  @UseGuards(InternalNetworkGuard, PoolAppGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('api/show')
   async proxyOllamaShow(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/show', 'POST', body, res);

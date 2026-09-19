@@ -1,5 +1,5 @@
 import { HttpStatus } from '@nestjs/common';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import type { ArgumentsHost } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -72,5 +72,25 @@ describe('MainExceptionFilter', () => {
     expect(response.redirect).not.toHaveBeenCalled();
     expect(response.status).not.toHaveBeenCalled();
     expect(response.json).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The case the portal test above never reaches: an ordinary route, where the only thing between a
+   * body a guard already wrote and this filter's `{statusCode, message}` envelope is the generic
+   * `headersSent` return. `InferenceAccessGuard` writes its OpenAI-shaped 401 and then throws on the
+   * strength of it; a filter that wrote anyway would raise `ERR_HTTP_HEADERS_SENT` on every refusal.
+   */
+  it('leaves a body a guard already wrote alone on an ordinary route', () => {
+    request.method = 'POST';
+    request.path = '/api/inference/v1/chat/completions';
+    request.url = '/api/inference/v1/chat/completions';
+    response.headersSent = true;
+
+    filter.catch(new UnauthorizedException('missing key'), createHost());
+
+    expect(response.redirect).not.toHaveBeenCalled();
+    expect(response.status).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 });

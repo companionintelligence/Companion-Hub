@@ -393,11 +393,11 @@ const GENERATION_PATHS = new Set([
 // residency on the far side. The decision is stated on the response instead. The values are chosen so
 // nothing crosses a boundary it has not already crossed:
 //   - the peer's tailnet FQDN is what this Hub holds in its peer row, and the routes carrying it are
-//     `PoolAppGuard`-gated to apps inside this appliance, which are already trusted to spend that
-//     peer's GPU time;
+//     `InferenceAccessGuard`-gated to apps inside this appliance and to holders of an `inference`
+//     key, both of which are already trusted to spend that peer's GPU time;
 //   - a request this node served itself says `local`, never this node's own MagicDNS name. `identify`
-//     deliberately stopped disclosing that name to unauthenticated callers, and the proxy is an
-//     unauthenticated (origin-checked) surface, so the local case keeps the routing log's `NODE local`
+//     deliberately stopped disclosing that name to unauthenticated callers, and the proxy admits an
+//     internal caller by origin alone, so the local case keeps the routing log's `NODE local`
 //     rather than opening a second door to the same datum;
 //   - the backend is the engine TYPE (`ollama`, `vllm`, …), never a container name; the model is the
 //     one the caller asked for. The peer's node UUID is a durable correlator and is never here — which
