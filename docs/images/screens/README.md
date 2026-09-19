@@ -20,8 +20,8 @@ and MCP screens all print them on a real appliance.
 
 The two screenshot pipelines that came before this one — `scripts/build-ftue-gif.ts` and
 `scripts/capture-ci-portal-screenshots.ts` — were deleted as collateral in an unrelated feature PR. Their output
-(`docs/ftue.gif`, `docs/ci-portal/*.png`) is still committed, is now months stale, and is referenced by no
-document, so nothing ever failed and nobody noticed. Naming the generator next to its output is the cheapest
+(`docs/ftue.gif`, `docs/ci-portal/*`) stayed committed for months, stale and referenced by no document, so nothing
+ever failed and nobody noticed; it has since been removed. Naming the generator next to its output is the cheapest
 guard against that happening a third time.
 
 ## What is not here, and why
