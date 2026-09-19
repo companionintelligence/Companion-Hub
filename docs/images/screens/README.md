@@ -32,5 +32,10 @@ real Docker, a `CI-Marketplace` checkout, Traefik and wildcard DNS. An "installe
 details, app update, custom app details and custom app edit in one go; it is the single highest-leverage addition
 to UI coverage.
 
-The spec also fails if the capture count drops below what the screen lists imply. A silent shortfall would
-otherwise read as full coverage.
+The spec also fails if the number of PNGs **written by that run** is not exactly what the screen lists imply.
+It counts what it wrote, not what is in the directory — the directory always holds the last committed set, so a
+directory count could never fall. A silent shortfall would otherwise read as full coverage. Any PNG in the directory
+that the run did not write is named in the report, so a renamed screen's old capture does not linger unnoticed.
+
+`pnpm run docs:screens` starts the `db` and `queue` containers from `e2e/docker-compose.e2e.yml` and leaves them
+running, as `test:e2e` does. Stop them with `docker compose -f e2e/docker-compose.e2e.yml stop db queue`.

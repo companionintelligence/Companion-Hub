@@ -93,9 +93,10 @@ Separate from visual regression, and for humans rather than diffing:
 - Output: `docs/images/screens/<screen>-<theme>[-mobile].png`
 - Run: `pnpm run docs:screens`
 
-The spec carries a `SKIPPED` map naming every screen no fixture can reach and why, and it fails if
-the capture count drops — a silent shortfall would otherwise read as full coverage. See
-`docs/system/ui-screens.md`.
+The spec carries a `SKIPPED` map naming every screen no fixture can reach and why, and it fails unless
+the number of PNGs *that run wrote* is exactly what the screen lists imply — it counts its own writes, not
+the directory, which always holds the last committed set. A silent shortfall would otherwise read as full
+coverage. See `docs/system/ui-screens.md`.
 
 ## Performance benchmarks
 

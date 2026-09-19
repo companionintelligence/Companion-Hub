@@ -13,7 +13,9 @@ import baseConfig from './playwright.config.ts';
 export default {
   ...baseConfig,
   testMatch: '**/screens/capture-screens.spec.ts',
-  testIgnore: ['**/generated/**', '**/cross-domain/**', '**/platform/**', '**/mcp-openclaw-integration.spec.ts', '**/app-store-lifecycle.spec.ts'],
+  // The base list minus the one entry that exists to keep THIS spec out of the default lane.
+  // Derived rather than copied, so an ignore added to the base config applies here too.
+  testIgnore: (baseConfig.testIgnore as string[]).filter((glob) => glob !== '**/screens/**'),
   // Each capture test walks a dozen screens in one browser session.
   timeout: 300000,
   // Screenshots are the artifact; a retry would double-write them.
