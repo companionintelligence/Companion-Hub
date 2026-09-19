@@ -11,6 +11,20 @@ const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
 const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
 
 /**
+ * The raw form of a key {@link ApiKeyService.create} mints: `KEY_BYTES` random bytes as lowercase
+ * hex. The one definition every auth surface screens a bearer token against before it costs a
+ * key-store lookup — `AuthMiddleware` for `qa:read`, `InferenceAccessGuard` for `inference` — so
+ * a token that could never be a Hub key (a session, a JWT, an app's placeholder bearer) is turned
+ * away with no SELECT, and the two surfaces cannot drift on what "looks like a key" means.
+ */
+export const HUB_API_KEY_SHAPE = /^[0-9a-f]{64}$/;
+
+/** Whether a bearer token is shaped like a key this Hub mints. See {@link HUB_API_KEY_SHAPE}. */
+export function isHubApiKeyShaped(token: string): boolean {
+  return HUB_API_KEY_SHAPE.test(token);
+}
+
+/**
  * Backoff for transient key-store failures on the auth path (#933). Short and bounded: a client
  * mid-MCP-initialize should ride out a Docker DNS hiccup (`EAI_AGAIN ci-hub-db`), but a genuinely
  * down database must fail fast into a 503, not hold requests hostage.

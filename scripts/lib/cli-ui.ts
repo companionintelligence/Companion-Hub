@@ -216,7 +216,8 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} mcp config [env]`, description: 'Show current MCP settings' },
       {
         command: `${BASE_COMMAND} api-key create --name <label>`,
-        description: "Mint an API key (default scope 'mcp'; --scope qa:read for a read-only test key); shown once",
+        description:
+          "Mint an API key (default scope 'mcp'; --scope qa:read for a read-only test key; --scope inference for an editor or SDK); shown once",
       },
       { command: `${BASE_COMMAND} api-key list`, description: 'List API keys (id, name, scopes, prefix)' },
     ],

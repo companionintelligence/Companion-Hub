@@ -3,7 +3,7 @@ import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
-import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { ApiKeyService, isHubApiKeyShaped } from '@/modules/api-keys/api-key.service';
 import { QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
 import { Injectable, type NestMiddleware, ServiceUnavailableException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
@@ -26,9 +26,6 @@ function secretEquals(presented: string, expected: string): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
-
-/** The raw form of a key `ApiKeyService.create` mints: 32 random bytes as hex. */
-const HUB_API_KEY_SHAPE = /^[0-9a-f]{64}$/;
 
 /** The MCP endpoint, whose own guard resolves the key it is sent. `originalUrl`, because `url` is rewritten under a mount. */
 function isMcpRoute(req: Request): boolean {
@@ -171,8 +168,8 @@ export class AuthMiddleware implements NestMiddleware {
    * exempt and not a person.
    *
    * Reached only after the device key and the CLI JWT have both failed to match, and only for a token
-   * shaped like a key this Hub mints (64 hex characters — `KEY_BYTES` in `ApiKeyService`), so a session
-   * or a JWT never costs a key-store lookup here. `/api/mcp` is skipped too: every MCP call presents an
+   * shaped like a key this Hub mints (`HUB_API_KEY_SHAPE` in `ApiKeyService`), so a session or a JWT
+   * never costs a key-store lookup here. `/api/mcp` is skipped too: every MCP call presents an
    * `mcp` key, `McpAuthGuard` already looks it up, and a second SELECT per tool call on the one
    * high-frequency key surface would buy nothing — a `qa:read` key has no business there and gets that
    * guard's 401.
@@ -189,7 +186,7 @@ export class AuthMiddleware implements NestMiddleware {
    * runs on every route, and a database blip must not turn an unrelated caller's request into a 503.
    */
   private async attachQaReadKey(req: Request, token: string): Promise<void> {
-    if (!this.apiKeys || !OBSERVABILITY_READ_METHODS.has(req.method) || !HUB_API_KEY_SHAPE.test(token) || isMcpRoute(req)) {
+    if (!this.apiKeys || !OBSERVABILITY_READ_METHODS.has(req.method) || !isHubApiKeyShaped(token) || isMcpRoute(req)) {
       return;
     }
     try {

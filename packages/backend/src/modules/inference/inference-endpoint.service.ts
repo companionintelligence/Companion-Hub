@@ -166,8 +166,9 @@ export class InferenceEndpointService {
    * Rewrite an app's inference URLs to this Hub's pool proxy when `routing` says to.
    *
    * Apps need no extra credential for this: the pool's app-facing routes are guarded by
-   * `InternalNetworkGuard` + `PoolAppGuard`, which is an origin check (is this request from inside
-   * the appliance?), not caller authentication.
+   * `InferenceAccessGuard`, whose first leg is an origin check (is this request from inside the
+   * appliance?), not caller authentication — the `inference` API key it also accepts is for editors
+   * and SDKs arriving from outside, and is never read for a container-to-container call.
    */
   applyPoolRouting<T extends PoolRoutableEndpoints>(endpoints: T, routing: Pick<PoolRouting, 'baseUrl' | 'reason'> | null, context: string): T {
     if (!routing) {

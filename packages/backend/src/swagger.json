@@ -3546,6 +3546,110 @@
         ]
       }
     },
+    "/api/api-keys": {
+      "get": {
+        "operationId": "listKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/grantable": {
+      "get": {
+        "operationId": "grantableCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/{id}": {
+      "patch": {
+        "operationId": "updateKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "delete": {
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
     "/api/inference/pool/identify": {
       "get": {
         "operationId": "identify",
@@ -4377,110 +4481,6 @@
         },
         "tags": [
           "Hub Pool"
-        ]
-      }
-    },
-    "/api/api-keys": {
-      "get": {
-        "operationId": "listKeys",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      },
-      "post": {
-        "operationId": "createKey",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateApiKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      }
-    },
-    "/api/api-keys/grantable": {
-      "get": {
-        "operationId": "grantableCapabilities",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      }
-    },
-    "/api/api-keys/{id}": {
-      "patch": {
-        "operationId": "updateKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateApiKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      },
-      "delete": {
-        "operationId": "revokeKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
         ]
       }
     },
@@ -12684,6 +12684,47 @@
         ],
         "additionalProperties": false
       },
+      "CreateApiKeyBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "capability": {
+            "default": "write",
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "capability"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateApiKeyBody": {
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "capability"
+        ],
+        "additionalProperties": false
+      },
       "UpdateHubPoolPreferencesBody": {
         "type": "object",
         "properties": {
@@ -12812,47 +12853,6 @@
         "required": [
           "nodeUuid",
           "publicKey"
-        ],
-        "additionalProperties": false
-      },
-      "CreateApiKeyBody": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "capability": {
-            "default": "write",
-            "type": "string",
-            "enum": [
-              "read",
-              "write",
-              "full"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "capability"
-        ],
-        "additionalProperties": false
-      },
-      "UpdateApiKeyBody": {
-        "type": "object",
-        "properties": {
-          "capability": {
-            "type": "string",
-            "enum": [
-              "read",
-              "write",
-              "full"
-            ]
-          }
-        },
-        "required": [
-          "capability"
         ],
         "additionalProperties": false
       },

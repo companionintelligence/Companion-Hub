@@ -37,6 +37,7 @@ import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 
 describe('InferenceController — preferences', () => {
   let controller: InferenceController;
@@ -79,6 +80,10 @@ describe('InferenceController — preferences', () => {
         { provide: PoolProxyService, useValue: mock<PoolProxyService>() },
         { provide: HubPoolPeerService, useValue: mock<HubPoolPeerService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
+        // `@UseGuards(InferenceAccessGuard)` on the v1 routes registers the guard as an injectable
+        // of this module, and its key leg takes ApiKeyService. Mocked here: nothing in these suites
+        // dispatches through a guard.
+        { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
       ],
     }).compile();
 

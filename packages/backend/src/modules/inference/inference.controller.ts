@@ -19,6 +19,7 @@ import { AppCredentialsService } from './app-credentials.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
+import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
@@ -43,7 +44,8 @@ import { BackendObserverService } from './supervision/backend-observer.service';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management,
- * and OpenAI-compatible `/v1` proxy routes for Hub-managed apps.
+ * and OpenAI-compatible `/v1` proxy routes for Hub-managed apps and, with an
+ * `inference` API key, for editors and SDKs (see `InferenceAccessGuard`).
  *
  * When the Hub has connected pool peers, `/v1` routes delegate to
  * `PoolProxyService.proxyRequest()` for cross-node pooled inference.
@@ -143,12 +145,19 @@ export class InferenceController {
   }
 
   // ─── OpenAI-compatible v1 proxy ─────────────────────────────────────
-  // Apps set HUB_INFERENCE_URL to http://<hub>:<port>/api/inference/v1.
-  // When pool peers are connected, requests auto-upgrade to cross-node
-  // pooled routing via PoolProxyService. Otherwise, the local
-  // InferenceRouterService handles them directly.
+  // Two audiences, one guard. Apps set HUB_INFERENCE_URL to
+  // http://<hub>:<port>/api/inference/v1 and reach it container-to-container,
+  // which InferenceAccessGuard admits by origin with no credential read. An
+  // editor or SDK (Continue, Zed, Aider, the OpenAI Python client) points its
+  // base URL here from anywhere — LAN, tailnet, or the public hostname — and
+  // is admitted by origin where it can be placed inside, and by an `inference`
+  // API key everywhere else. When pool peers are connected, requests
+  // auto-upgrade to cross-node pooled routing via PoolProxyService. Otherwise,
+  // the local InferenceRouterService handles them directly. Refusals are
+  // OpenAI-shaped (`{ error: { message, type, code } }`) like every error these
+  // handlers emit themselves, so a client shows the reason, not a Nest envelope.
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/chat/completions')
   async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     const model = (body.model as string) || 'auto';
@@ -176,7 +185,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/completions')
   v1Completions(@Res() res: Response) {
     res.status(400).json({
@@ -184,7 +193,7 @@ export class InferenceController {
     });
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/embeddings')
   async v1Embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     const model = (body.model as string) || '';
@@ -200,7 +209,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Get('v1/models')
   async v1Models(@Res() res: Response) {
     try {
@@ -212,7 +221,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/audio/speech')
   async v1AudioSpeech(@Body() body: Record<string, unknown>, @Res() res: Response) {
     try {
@@ -225,7 +234,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/audio/transcriptions')
   async v1AudioTranscriptions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     try {

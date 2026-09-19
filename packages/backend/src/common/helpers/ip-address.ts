@@ -33,8 +33,10 @@ export function isPrivateOrLocalIp(ip: string, options?: { includeUnspecified?: 
   if (!normalized) return false;
 
   if (normalized === '::1' || normalized === '127.0.0.1') return true;
-  if (normalized.startsWith('fe80:') || normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+  // Validate before the prefix tests: `normalizeIpLiteral` hands back the raw string when it is not
+  // an address, and `fdxyz` must not read as ULA on the strength of its first two characters.
   if (!isIP(normalized)) return false;
+  if (normalized.startsWith('fe80:') || normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
 
   const parts = normalized.split('.').map(Number);
   if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return false;
