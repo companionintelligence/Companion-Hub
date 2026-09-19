@@ -9,14 +9,15 @@ import { isPrivateOrLocalIp, normalizeIpLiteral } from '@/common/helpers/ip-addr
  * NOT a real trust boundary on its own. Behind Traefik / the Cloudflare tunnel,
  * `request.ip` is the proxy's own (private) address unless Express `trust proxy`
  * is configured (see `HUB_TRUST_PROXY` in main.ts), so by default this guard
- * PASSES for public tunnel traffic. Two kinds of route carry it, and each has
- * its own authoritative check: the memory-connect app callbacks pair it with
- * `ManagedAppKeyGuard` (which binds the presented managed key to the target
- * app's URN), and `GET /api/inference/apps/:slug/credentials*` has nothing
- * else yet — the same exposure class the inference proxy had before
- * `InferenceAccessGuard` (which adds tunnel-marker and forwarded-hop checks
- * through `internalOriginRefusal`, then falls back to an `inference` key)
- * replaced this guard there. Do not rely on this one alone.
+ * PASSES for public tunnel traffic. The one route group that still carries it,
+ * the memory-connect app callbacks, pairs it with `ManagedAppKeyGuard` (which
+ * binds the presented managed key to the target app's URN), and that is the
+ * authoritative check there. Every other app-facing route moved to an origin
+ * check that also refuses tunnel markers and public forwarded hops
+ * (`internalOriginRefusal`): `InferenceAccessGuard` where an `inference` API
+ * key is an acceptable alternative, and {@link InternalOriginGuard} where no
+ * credential is, such as the app credentials handout. Do not rely on this one
+ * alone.
  */
 @Injectable()
 export class InternalNetworkGuard implements CanActivate {

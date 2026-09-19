@@ -44,6 +44,8 @@ export type InternalOriginRefusal = 'public-address' | 'tunnel-marker' | 'forwar
  * This is an origin check, not caller authentication: it answers "did this arrive from inside",
  * never "who sent it". `InferenceAccessGuard` uses it as the leg that needs no credential, and
  * refuses a request it cannot place inside unless that request carries an `inference` API key.
+ * `InternalOriginGuard` is its guard form for routes that are app-only and take no credential at
+ * all, such as the app credentials handout.
  */
 export function internalOriginRefusal(request: OriginCheckedRequest): InternalOriginRefusal | null {
   const ip = normalizeIpLiteral(request.ip ?? request.socket?.remoteAddress);

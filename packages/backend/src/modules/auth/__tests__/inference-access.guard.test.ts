@@ -301,8 +301,9 @@ describe('InferenceAccessGuard', () => {
  * row lists both in that order: a guard added to the class changes every row of that controller,
  * not none of them. A new `/v1` route added without a guard, a guard dropped in a refactor, or a
  * peer route quietly moved onto the app-facing guard, all have to change this test, which is the
- * review point. `apps/:slug/credentials*` stays on `InternalNetworkGuard` on purpose: the same
- * exposure class, a separate change.
+ * review point. `apps/:slug/credentials*` carries `InternalOriginGuard`, not this guard, on
+ * purpose: the handout is app-only and its body can carry a cloud provider's key, so it takes the
+ * origin leg alone with no API-key alternative.
  */
 describe('the inference route table', () => {
   it('carries InferenceAccessGuard on exactly the OpenAI- and Ollama-compatible routes, and nothing else moved', () => {
@@ -364,8 +365,8 @@ describe('the inference route table', () => {
       'InferenceController.getMtplxStatus': 'GET mtplx/status → AuthGuard',
       'InferenceController.getLuceboxStatus': 'GET lucebox/status → AuthGuard',
       'InferenceController.installOllama': 'POST ollama/install → AuthGuard',
-      'InferenceController.getAppCredentials': 'GET apps/:slug/credentials → InternalNetworkGuard',
-      'InferenceController.getAppCredentialsEnv': 'GET apps/:slug/credentials.env|apps/:slug/bootstrap.env → InternalNetworkGuard',
+      'InferenceController.getAppCredentials': 'GET apps/:slug/credentials → InternalOriginGuard',
+      'InferenceController.getAppCredentialsEnv': 'GET apps/:slug/credentials.env|apps/:slug/bootstrap.env → InternalOriginGuard',
       // ── HubPoolController: app-facing proxy on the same guard; peers, pairing and operators untouched ──
       'HubPoolController.identify': 'GET identify → (none)',
       'HubPoolController.poolStatus': 'GET status → ObservabilityReadGuard',
