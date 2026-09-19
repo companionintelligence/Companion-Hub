@@ -54,7 +54,7 @@
     "docs:cli-svgs": "pnpm exec tsx scripts/render-cli-svgs.ts",
     "benchmark:gate": "pnpm exec tsx scripts/agent/benchmark-gate.ts",
     "agent:validate": "bin/agent-validate-shift",
-    "lint:canon": "pnpm --filter frontend lint:canon && pnpm --filter frontend brand:check"
+    "lint:canon": "pnpm --filter frontend lint:canon && pnpm --filter frontend brand:check && pnpm --filter frontend lint:palette"
   },
   "lint-staged": {
     "*": [

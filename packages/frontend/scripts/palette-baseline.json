@@ -1,0 +1,28 @@
+{
+  "total": 142,
+  "files": {
+    "components/capability-badge/capability-badge.tsx": 4,
+    "components/header/header.tsx": 1,
+    "components/ui/Button/Button.tsx": 2,
+    "modules/app/components/app-card/app-card.tsx": 4,
+    "modules/app/components/app-status/app-status.tsx": 5,
+    "modules/app/components/app-store-sidebar/app-store-sidebar.tsx": 1,
+    "modules/app/components/app-tile/app-tile.tsx": 2,
+    "modules/app/components/install-form/custom-domain-field.tsx": 4,
+    "modules/app/components/install-form/install-form.tsx": 8,
+    "modules/app/components/mcp-access-card/mcp-access-card.tsx": 1,
+    "modules/app/components/mcp-setup-panel/mcp-setup-panel.tsx": 3,
+    "modules/app/components/port-expose-settings-dialog/port-expose-settings-dialog.tsx": 8,
+    "modules/app/pages/app-details-page.tsx": 6,
+    "modules/app/pages/app-update-page.tsx": 2,
+    "modules/app/pages/port-expose-create-page.tsx": 8,
+    "modules/dashboard/components/compact-system-stat.tsx": 1,
+    "modules/dashboard/components/simple-app-tile.tsx": 1,
+    "modules/mobile-connect/pages/connect-page.tsx": 3,
+    "modules/onboarding/components/recommendations-step.tsx": 40,
+    "modules/onboarding/helpers/hardware-display.ts": 30,
+    "modules/settings/components/app-stores-table/app-stores-table.tsx": 1,
+    "modules/settings/containers/general-actions.tsx": 1,
+    "modules/settings/containers/system-inspector.tsx": 6
+  }
+}
