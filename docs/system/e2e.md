@@ -38,10 +38,16 @@ That gating is deliberate cost control, not rot — but the effect is that a cha
 lane produces no signal at all until someone dispatches a run by hand. The `if:` guards inside `e2e-extended.yml`
 still test for `schedule` and `pull_request` events that can no longer arrive.
 
-Run them by hand:
+The same three workflows are also **disabled in the repository's Actions settings** (`gh workflow list --all`
+shows `disabled_manually`), which is a second, independent switch: a disabled workflow refuses
+`workflow_dispatch` with HTTP 422 even though the file declares it. The last run of `e2e.yml` of any kind
+was 2026-07-28. Enabling one is a repository setting, not a commit — do it deliberately, and expect to
+pay the runner minutes the gating exists to save:
 
 ```bash
+gh workflow enable e2e.yml
 gh workflow run e2e.yml --ref <branch>
+gh workflow disable e2e.yml   # when you are done, if the cost control still applies
 ```
 
 ## The fixture contract
@@ -60,6 +66,24 @@ things about that path are load-bearing, and each one silently killed every auth
   then resolves organisation membership through WhoIs and treats "could not ask" as a three-state `unknown`, which
   denies with `503 AUTH_ERROR_ORG_CHECK_UNAVAILABLE`. The route's `organizationId` has to match the registration
   `seedOrganization()` writes, or membership resolves to `not-member` — which *revokes* the seeded operator.
+
+## Known red in the default lane
+
+The fixture repair above took the lane from 1 passing to 15, with 5 left red. The workflow being disabled
+means none of this has been confirmed by a CI run; the first four were found by reading the specs against
+the code and fixed on that basis, the fifth is the PR author's local observation. Dispatch the lane and
+edit this list to what it actually reports.
+
+| Spec › test | Why it was red | Status |
+|---|---|---|
+| `multi-store-context` › loads the app store inside explicit query-param store context | Asserted an "App Store" heading the store no longer has; then asserted `?store=ci-apps` survives, which `app-store-page.tsx` used to drop on a cold load | Both fixed — anchor changed, deep link kept (see `app-store-page.test.tsx` "cold load") |
+| `multi-store-context` › redirects store-specific path routing into explicit query-param context | Same stale heading | Fixed |
+| `navigation` › should navigate to all main pages | `getByRole('link', { name: 'Home' })` resolves to two links since `80cf93aa0` gave the brand mark `aria-label="Home"` — strict-mode violation | Fixed — links scoped to the header `<nav>` |
+| `navigation` › should have working logo link to dashboard | Looked for a link named "Companion Intelligence Logo"; the brand mark's name has been "Home" since `80cf93aa0` | Fixed — selected by the logo `<img>` it wraps |
+| `settings` › should navigate to settings *(probable)* | Reported as tablist timing on a local run; the tablist renders fine live and nothing in the spec is stale by reading | Not changed — needs a run |
+
+`app-store-browsing` › should filter by category clicks the category buttons with `force: true` because "they
+may be transiently covered"; it was not reported red, but it is the next most fragile assertion in the lane.
 
 `e2e-mcp.yml` is dispatch-only on purpose: it boots a backend, so it earns its runner minutes only
 when the MCP surface, its auth, or the connect docs change. Run it with
