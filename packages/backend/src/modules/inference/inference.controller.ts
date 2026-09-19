@@ -20,7 +20,7 @@ import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
-import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
+import { InternalOriginGuard } from '@/modules/auth/internal-origin.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import {
@@ -808,8 +808,14 @@ export class InferenceController {
   // same override the generated app.env carries (both go through
   // InferenceEndpointService). Apps can also use the v1 proxy routes above
   // (mounted at /api/inference/v1), which pool the same way.
+  //
+  // App-only, no credential accepted. Apps fetch these container-to-container,
+  // which traverses no proxy, so InternalOriginGuard refuses anything carrying
+  // tunnel or forwarded-hop provenance: InternalNetworkGuard alone answered
+  // them from the public internet through a registered Hub's tunnel, and the
+  // body can carry a configured cloud provider's API key.
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalOriginGuard)
   @Get('apps/:slug/credentials')
   async getAppCredentials(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);
@@ -822,7 +828,7 @@ export class InferenceController {
 
   // `bootstrap.env` is an alias of `credentials.env`: the CI-OpenClaw / CI-Hermes bootstrap-from-hub.sh
   // scripts fetch `/api/inference/apps/:slug/bootstrap.env`, so both paths must serve the dotenv body.
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalOriginGuard)
   @Get(['apps/:slug/credentials.env', 'apps/:slug/bootstrap.env'])
   async getAppCredentialsEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);

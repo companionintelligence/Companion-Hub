@@ -1,5 +1,6 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
+import { InternalOriginGuard } from '@/modules/auth/internal-origin.guard';
 import { FilesystemModule } from '@/core/filesystem/filesystem.module';
 import { SystemModule } from '@/modules/system/system.module';
 import { DockerModule } from '@/modules/docker/docker.module';
@@ -59,6 +60,7 @@ import { InferenceController } from './inference.controller';
     LuceboxBackend,
     InferenceBackendRegistry,
     BackendObserverService,
+    InternalOriginGuard,
   ],
   exports: [
     HardwareInspectorService,
