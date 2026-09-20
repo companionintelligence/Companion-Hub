@@ -709,25 +709,20 @@ export class TailscaleService {
 
   /**
    * Remove a served app from a dedicated HTTPS port.
+   *
+   * Resolves `false` when the removal failed, so the caller keeps treating the listener as its own
+   * and retries on the next pass.
    */
-  async unservePort(httpsPort: number): Promise<void> {
+  async unservePort(httpsPort: number): Promise<boolean> {
     try {
       await this.execTailscale(['serve', `--https=${httpsPort}`, 'off']);
       this.logger.log(`Tailscale Serve removed from :${httpsPort}`);
+      return true;
     } catch (error) {
       // The operator refusal goes back to the sync, which reports it once instead of every pass.
       if (isServePermissionDenied(error)) throw error;
       this.logger.warn(`Failed to remove Tailscale serve for :${httpsPort}: ${error}`);
-    }
-  }
-
-  async clearService(serviceName: string): Promise<void> {
-    try {
-      await this.execTailscale(['serve', 'clear', serviceName]);
-      this.logger.log(`Tailscale Service removed: ${serviceName}`);
-    } catch (error) {
-      if (isServePermissionDenied(error)) throw error;
-      this.logger.warn(`Failed to remove Tailscale Service ${serviceName}: ${error}`);
+      return false;
     }
   }
 
