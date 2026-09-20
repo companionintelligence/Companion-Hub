@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,8 +9,10 @@ import {
   downloadReleaseAsset,
   installCihubFromStdinScript,
   parseCihubVersionOutput,
+  pinCihubReleaseSource,
   resolveCihubBinarySource,
 } from '../lib/fleet-cihub-binary.js';
+import { stdinScriptCommand } from '../lib/fleet-ssh.js';
 
 /**
  * The release is in a private repository. Every case here is a way the first installer got that
@@ -47,6 +50,71 @@ describe('resolveCihubBinarySource', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('lets --cihub-version name a file that will not run here, but never lets `latest` stand in for a version', () => {
+    // An arm64 asset on an x64 operator machine has a version; the operator can say what it is.
+    const dir = mkdtempSync(join(tmpdir(), 'cihub-bin-'));
+    try {
+      const file = join(dir, 'cihub-linux-arm64');
+      writeFileSync(file, 'x');
+      const unreadable = () => undefined;
+      expect(resolveCihubBinarySource({ binaryPath: file, env: {}, readVersion: unreadable, version: '0.2.72' })).toMatchObject({
+        version: '0.2.72',
+      });
+      const fromLatest = resolveCihubBinarySource({ binaryPath: file, env: {}, readVersion: unreadable, version: 'latest' });
+      expect(fromLatest.kind).toBe('local');
+      expect(fromLatest.kind === 'local' && fromLatest.version).toBeUndefined();
+      // The file's own answer wins over the flag.
+      expect(resolveCihubBinarySource({ binaryPath: file, env: {}, readVersion: () => '0.2.80', version: '0.2.72' })).toMatchObject({
+        version: '0.2.80',
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('pinCihubReleaseSource', () => {
+  /**
+   * `latest` is what the flag says, not a version. Handed to the adopt-or-replace decision on each
+   * node it could only ever adopt: on 2026-09-20 a July 0.2.36 in ~/.local/bin was kept, with a
+   * current release in hand, and its `cihub up` did not know the headless seed path.
+   */
+  const release = (tag: string) =>
+    vi.fn(async (url: string | URL) => {
+      expect(String(url)).toMatch(/\/releases\/(latest|tags\/v0\.2\.72)$/);
+      return new Response(JSON.stringify({ tag_name: tag, assets: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+  it('turns `latest` into the tag GitHub names right now, and remembers it was `latest`', async () => {
+    const pinned = await pinCihubReleaseSource({ kind: 'release', token: 'ghp_x', version: 'latest' }, release('v0.2.72'));
+    expect(pinned).toEqual({ kind: 'release', token: 'ghp_x', version: 'v0.2.72', resolvedFrom: 'latest' });
+  });
+
+  it('keeps an explicit tag as the tag, once GitHub has confirmed it exists', async () => {
+    const pinned = await pinCihubReleaseSource({ kind: 'release', token: 'ghp_x', version: '0.2.72' }, release('v0.2.72'));
+    expect(pinned).toEqual({ kind: 'release', token: 'ghp_x', version: 'v0.2.72' });
+  });
+
+  it('makes a lookup the token cannot do into "nothing to install", with the fix, before any node is dialled', async () => {
+    const denied = vi.fn(async () => new Response('{"message":"Not Found"}', { status: 404 })) as unknown as typeof fetch;
+    const pinned = await pinCihubReleaseSource({ kind: 'release', token: 'ghp_x', version: 'latest' }, denied);
+    expect(pinned.kind).toBe('unavailable');
+    if (pinned.kind === 'unavailable') {
+      expect(pinned.why).toMatch(/HTTP 404/);
+      expect(pinned.why).toMatch(/private repo/);
+      expect(pinned.fix.join(' ')).toMatch(/GH_TOKEN/);
+    }
+  });
+
+  it('leaves a local file and an unavailable source alone, and touches no network for them', async () => {
+    const never = vi.fn() as unknown as typeof fetch;
+    const local = { kind: 'local' as const, path: '/tmp/cihub', version: '0.2.72' };
+    expect(await pinCihubReleaseSource(local, never)).toBe(local);
+    const unavailable = { kind: 'unavailable' as const, why: 'no token', fix: [] };
+    expect(await pinCihubReleaseSource(unavailable, never)).toBe(unavailable);
+    expect(never).not.toHaveBeenCalled();
   });
 });
 
@@ -143,5 +211,33 @@ describe('installCihubFromStdinScript', () => {
     expect(script).not.toMatch(/rm -f? "\$other"/);
     expect(script).toContain('command -v cihub');
     expect(script).toContain('cihub-installed v0.2.72');
+  });
+
+  it('is valid bash once wrapped for the stream, quotes and all', () => {
+    // The wrapper puts the script in argv with every quote escaped; `bash -n` parses the whole
+    // command the way the node's login shell will, without running it.
+    expect(() => execFileSync('bash', ['-n', '-c', stdinScriptCommand(script)], { stdio: 'pipe' })).not.toThrow();
+    expect(() => execFileSync('bash', ['-n', '-c', script], { stdio: 'pipe' })).not.toThrow();
+  });
+});
+
+describe('stdinScriptCommand', () => {
+  /**
+   * The install script reads the binary from stdin. Wrapped in a heredoc — the form every other
+   * remote step uses — the heredoc IS bash's stdin, so `cat` read the rest of the script instead of
+   * the binary and the step came back exit 0, silent, and without its marker. Run the wrapper the way
+   * sshd does (`$SHELL -c "<command>"`) with bytes on stdin, and they must reach the script's `cat`.
+   */
+  const script = ['set -e', 'tmp="$(mktemp)"', 'cat > "$tmp"', 'echo "received $(cat "$tmp")"', 'rm -f "$tmp"', "echo 'stream-done'"].join('\n');
+
+  it('leaves stdin to the script, so a streamed file reaches its cat', () => {
+    const out = execFileSync('sh', ['-c', stdinScriptCommand(script)], { input: 'BINARY BYTES', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    expect(out).toContain('received BINARY BYTES');
+    expect(out).toContain('stream-done');
+  });
+
+  it('is not a heredoc', () => {
+    expect(stdinScriptCommand(script)).not.toContain('<<');
+    expect(stdinScriptCommand(script).startsWith('bash -c ')).toBe(true);
   });
 });
