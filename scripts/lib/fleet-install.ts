@@ -22,7 +22,7 @@
  */
 
 import { classifyStatusTimerOutput, describeStatusTimerOutcome, installStatusTimerScript } from './status-timer.js';
-import { sshCapture, sshStreamFile, type SshTarget } from './fleet-ssh.js';
+import { sshCapture, sshStreamFile, type SshTarget, stdinScriptCommand } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
 import {
   assetNameForArch,
@@ -77,15 +77,23 @@ export async function detectCihub(target: SshTarget): Promise<{ present: boolean
  * what is here is not older than what would replace it. Without that gate a node keeps whatever
  * happened to be on PATH: a 0.2.55 from August drove a fresh install on 2026-09-18 and ran a compose
  * command against service names that no longer exist.
+ *
+ * `wantedVersion` must be a version. `latest` is what the flag says before the release is looked up,
+ * and treating it as comparable adopted a July 0.2.36 on 2026-09-20 with a current release in hand;
+ * it is unknown here, like `undefined`, and the answer says the two were not compared so the caller
+ * can put the reason on the node's line.
  */
-export function shouldAdoptExistingCihub(existing: { present: boolean; version?: string }, wantedVersion?: string): { adopt: boolean; why: string } {
-  if (!existing.present) return { adopt: false, why: 'no cihub on this node' };
+export function shouldAdoptExistingCihub(
+  existing: { present: boolean; version?: string },
+  wantedVersion?: string,
+): { adopt: boolean; why: string; compared: boolean } {
+  if (!existing.present) return { adopt: false, why: 'no cihub on this node', compared: false };
   if (!wantedVersion || wantedVersion === 'latest')
-    return { adopt: true, why: existing.version ? `already installed (${existing.version})` : 'already installed' };
-  if (!existing.version) return { adopt: false, why: 'a cihub is present but its version could not be read; replacing it' };
+    return { adopt: true, why: existing.version ? `already installed (${existing.version})` : 'already installed', compared: false };
+  if (!existing.version) return { adopt: false, why: 'a cihub is present but its version could not be read; replacing it', compared: false };
   if (compareCihubVersions(existing.version, wantedVersion) >= 0)
-    return { adopt: true, why: `already installed (${existing.version}, not older than ${wantedVersion})` };
-  return { adopt: false, why: `${existing.version} is older than ${wantedVersion}; replacing it` };
+    return { adopt: true, why: `already installed (${existing.version}, not older than ${wantedVersion})`, compared: true };
+  return { adopt: false, why: `${existing.version} is older than ${wantedVersion}; replacing it`, compared: true };
 }
 
 /**
@@ -221,8 +229,12 @@ export function pullModelScript(model: string): string {
  * What a failed step should say. The last line of stdout is usually compose noise ("Container
  * traefik Started") while the line that explains the failure — a Portal 403, a `cihub register`
  * refusal, a `hub-up-failed:` marker — sits a few lines up or on stderr. Prefer those.
+ *
+ * Never empty when `outcome` is given. `✗ install cihub (0s) —` with nothing after the dash is what a
+ * script that exited 0 before its first `echo` produced on 2026-09-20; the exit code is always
+ * something to say, and an exit 0 that never printed its marker is its own diagnosis.
  */
-export function describeStepFailure(out: string, err: string): string {
+export function describeStepFailure(out: string, err: string, outcome?: { code: number | null; marker: string }): string {
   const lines = `${err}\n${out}`
     .split('\n')
     .map((line) => line.replace(/[│┌┐└┘─]+/g, ' ').trim())
@@ -231,7 +243,12 @@ export function describeStepFailure(out: string, err: string): string {
     /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out/i.test(line),
   );
   const chosen = telling.length > 0 ? telling.slice(-3) : lines.slice(-3);
-  return chosen.join(' | ').slice(0, 300);
+  const quoted = chosen.join(' | ');
+  if (!outcome) return quoted.slice(0, 300);
+  const output = quoted || 'nothing on stdout or stderr';
+  if (outcome.code === 0) return `exited 0 without printing ${outcome.marker}: ${output}`.slice(0, 300);
+  if (quoted) return quoted.slice(0, 300);
+  return outcome.code === null ? 'killed before it printed anything' : `exited ${outcome.code} with nothing on stdout or stderr`;
 }
 
 async function step(name: string, target: SshTarget, script: string, marker: string, timeoutMs: number): Promise<InstallStep> {
@@ -240,7 +257,7 @@ async function step(name: string, target: SshTarget, script: string, marker: str
   const res = await sshCapture(target, heredoc, timeoutMs);
   const ms = Date.now() - started;
   if (res.ok && res.out.includes(marker)) return { name, ok: true, detail: tail(res.out, 1), ms };
-  return { name, ok: false, detail: describeStepFailure(res.out, res.err), ms };
+  return { name, ok: false, detail: describeStepFailure(res.out, res.err, { code: res.code, marker }), ms };
 }
 
 export interface InstallOptions {
@@ -286,7 +303,7 @@ export interface InstallOptions {
   touchesBoot?: boolean;
 }
 
-type ResolvedBinary = { path: string; sha256: string; label: string; version?: string } | { why: string; fix: string[] };
+export type ResolvedBinary = { path: string; sha256: string; label: string; version?: string } | { why: string; fix: string[] };
 
 /**
  * The file to stream to this node, for its architecture. Downloads happen at most once per asset
@@ -316,6 +333,23 @@ async function resolveBinaryForNode(opts: InstallOptions, arch: string): Promise
       fix: ['Check GH_TOKEN can read the private repository, or pass --cihub-binary.'],
     };
   }
+}
+
+/**
+ * The version this run can put on a node, or why it cannot name one.
+ *
+ * The version a download came back with is the release's own answer; a download that failed still
+ * has the tag the source was pinned to, so a node whose copy is older than that tag is not adopted
+ * but reported as needing the download that failed. `latest` is not a version — it means the source
+ * was never pinned — and a `--cihub-binary` that would not run here has no version to offer.
+ */
+export function offeredCihubVersion(source: CihubBinarySource | undefined, binary: ResolvedBinary | undefined): { version?: string; why: string } {
+  if (!source) return { why: 'no cihub binary source was given' };
+  if (source.kind === 'unavailable') return { why: source.why };
+  if (binary && !('why' in binary) && binary.version) return { version: binary.version, why: '' };
+  if (source.kind === 'local') return { why: `${source.path} would not run here, so its version could not be read` };
+  if (source.version !== 'latest') return { version: source.version, why: '' };
+  return { why: binary && 'why' in binary ? binary.why : "release 'latest' was not resolved to a tag" };
 }
 
 /**
@@ -364,25 +398,32 @@ export async function installNode(
 
   const binary = await resolveBinaryForNode(opts, facts.arch);
   const existing = await detectCihub(target);
-  const adopt = shouldAdoptExistingCihub(existing, binary?.version);
+  const offered = offeredCihubVersion(opts.cihubBinary, binary);
+  const adopt = shouldAdoptExistingCihub(existing, offered.version);
   if (adopt.adopt) {
-    steps.push({ name: 'cihub', ok: true, skipped: true, detail: `${adopt.why} at ${existing.path}` });
+    // Adopted without a compare is still adopted — there is nothing to replace it with — but the
+    // line says so, and why, rather than reading like a version check that passed.
+    const uncompared = adopt.compared ? '' : ` — version not compared: ${offered.why}`;
+    steps.push({ name: 'cihub', ok: true, skipped: true, detail: `${adopt.why} at ${existing.path}${uncompared}` });
   } else if (!binary || 'why' in binary) {
-    steps.push({ name: 'install cihub', ok: false, detail: binary ? `${binary.why} — ${binary.fix.join(' ')}` : adopt.why });
+    const source = opts.cihubBinary;
+    const fix = binary ? binary.fix : source?.kind === 'unavailable' ? source.fix : [];
+    steps.push({
+      name: 'install cihub',
+      ok: false,
+      detail: `${binary ? binary.why : `${adopt.why}; ${offered.why}`}${fix.length ? ` — ${fix.join(' ')}` : ''}`,
+    });
     return { node: node.name, ok: false, steps };
   } else {
     const started = Date.now();
-    const res = await sshStreamFile(
-      target,
-      `bash <<'CIHUB_STEP_EOF'\n${installCihubFromStdinScript(binary.sha256, binary.label)}\nCIHUB_STEP_EOF`,
-      binary.path,
-      10 * 60_000,
-    );
+    const marker = 'cihub-installed';
+    // Not `step()`: its heredoc would be the script's stdin, and this script's stdin is the binary.
+    const res = await sshStreamFile(target, stdinScriptCommand(installCihubFromStdinScript(binary.sha256, binary.label)), binary.path, 10 * 60_000);
     const ms = Date.now() - started;
     const s: InstallStep =
-      res.ok && res.out.includes('cihub-installed')
+      res.ok && res.out.includes(marker)
         ? { name: 'install cihub', ok: true, detail: `${existing.present ? `${adopt.why}; ` : ''}${tail(res.out, 2)}`, ms }
-        : { name: 'install cihub', ok: false, detail: describeStepFailure(res.out, res.err), ms };
+        : { name: 'install cihub', ok: false, detail: describeStepFailure(res.out, res.err, { code: res.code, marker }), ms };
     steps.push(s);
     if (!s.ok) return { node: node.name, ok: false, steps };
   }
