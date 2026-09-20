@@ -82,6 +82,20 @@ describe('LuceboxBackend', () => {
       expect(health.error).toMatch(/no loaded model/i);
     });
 
+    it('yields the server to vLLM when /v1/models says it is vLLM — vLLM answers /health too, on the same default port', async () => {
+      (axios.get as any) = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/health')) return Promise.resolve({ status: 200 });
+        return Promise.resolve({ data: { data: [{ id: 'Qwen/Qwen3.5-9B', owned_by: 'vllm' }] } });
+      });
+
+      const health = await backend.healthCheck();
+
+      expect(health).toMatchObject({ running: true, healthy: false, modelsLoaded: [] });
+      expect(health.error).toContain("the vllm backend's server, not lucebox's");
+      expect(health.error).toContain('SPECULATIVE_INFERENCE_URL');
+      await expect(backend.listModels()).resolves.toEqual([]);
+    });
+
     it('reports an unavailable server when the health probe fails', async () => {
       (axios.get as any) = vi.fn().mockRejectedValue(new Error('Connection refused'));
 

@@ -54,6 +54,19 @@ describe('MtplxBackend', () => {
       expect(health.modelsLoaded).toContain('Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed');
     });
 
+    it('yields the server to vLLM when /v1/models says it is vLLM — the two default to the same host port', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({
+        data: { data: [{ id: 'Qwen/Qwen3.5-9B', owned_by: 'vllm' }] },
+      });
+
+      const health = await backend.healthCheck();
+
+      expect(health).toMatchObject({ running: true, healthy: false, modelsLoaded: [] });
+      expect(health.error).toContain("the vllm backend's server, not mtplx's");
+      expect(health.error).toContain('MTPLX_URL');
+      await expect(backend.listModels()).resolves.toEqual([]);
+    });
+
     it('should report unhealthy on failure', async () => {
       (axios.get as any) = vi.fn().mockRejectedValue(new Error('Connection refused'));
 
