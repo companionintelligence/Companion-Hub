@@ -22,7 +22,8 @@
       "!**/packages/frontend/src/styles/globals.css",
       "!**/videos",
       "!**/e2e/generated",
-      "!**/src-tauri/gen"
+      "!**/src-tauri/gen",
+      "!**/*.generated.ts"
     ]
   },
   "formatter": {

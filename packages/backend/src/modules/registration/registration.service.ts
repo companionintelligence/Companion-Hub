@@ -54,7 +54,7 @@ import {
   isCheckInForCurrentRegistration,
   isDeviceNotActiveResponse,
 } from './check-in-response';
-import { resolveDeviceId } from './device-id.resolver';
+import { resolveDeviceId, clearRegisteredDeviceId, persistRegisteredDeviceId } from './device-id.resolver';
 import { ALLOW_FOREIGN_DEVICE_ID_ENV, checkDeviceIdHostBinding, type DeviceIdHostBinding } from './device-id-host-check';
 import {
   hasTunnelLeftoverMarker,
@@ -1466,6 +1466,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.resetRegistration();
     const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
     await clearRegistrationRecoveryArtifacts();
+    // A fresh setup pairs as a new device; the identity it registered under before goes with the
+    // registration, and the resolver derives one from the host again.
+    clearRegisteredDeviceId(DATA_DIR);
+    this.deviceIdPromise = undefined;
     try {
       await removeTunnelLeftoverMarker();
     } catch (error) {
@@ -2400,6 +2404,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }).catch((err) => {
         this.logger.error('Background infrastructure setup failed:', err);
       });
+
+      // What this Hub registered as is now its identity, whatever a later image can read from the
+      // host: the next image may run as a different user and derive a different hardware ID, and
+      // Portal answers that with 403 on every check-in.
+      persistRegisteredDeviceId(DATA_DIR, await this.getDeviceId(), this.logger);
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
 

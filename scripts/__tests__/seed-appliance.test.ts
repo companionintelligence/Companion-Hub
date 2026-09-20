@@ -75,6 +75,14 @@ describe('resolveApplianceHubImage', () => {
     });
   });
 
+  it('names a digest pin as a digest, not as the 64 hex characters after the last colon', () => {
+    const digest = 'sha256:90f8eda420682b7c2879d50de1b8f589c963deb6b116f1d3536564f8b7bf8166';
+    expect(resolveApplianceHubImage({ CI_HUB_IMAGE: `${HUB_STACK_IMAGE_REPO}@${digest}` })).toEqual({
+      image: `${HUB_STACK_IMAGE_REPO}@${digest}`,
+      version: 'digest-90f8eda42068',
+    });
+  });
+
   it('falls back to the public latest tag when nothing is pinned', () => {
     const resolved = resolveApplianceHubImage({ CI_HUB_IMAGE: undefined });
     expect(resolved.image.startsWith(`${HUB_STACK_IMAGE_REPO}:`)).toBe(true);

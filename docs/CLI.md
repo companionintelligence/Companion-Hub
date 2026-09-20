@@ -767,7 +767,7 @@ cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
-cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
+cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
@@ -1024,14 +1024,33 @@ canonical file) without changing anything.
 
 ### `cihub fleet install`
 
-Per node, in order: probe hardware → **load gate** → Linux and Docker check → install `cihub` →
-`hub up` and register → **claim** → install the status-file timer → **tailscale cert** → optionally
-join a pool. Each step
 Per node, in order: probe hardware → **load gate** → Linux and Docker check → **preflight** →
-install `cihub` → `hub up` and register → **claim** → install the status-file timer → optionally join
-a pool. Each step
-re-checks the state it claims to have produced, because a step that trusts an exit code is how a fleet
-ends up believing it registered machines it never reached.
+install `cihub` → **portal device** → `hub up` and register → **claim** → install the status-file
+timer → **tailscale cert** → optionally join a pool. Each step re-checks the state it claims to have
+produced, because a step that trusts an exit code is how a fleet ends up believing it registered
+machines it never reached. `hub up` reads the port the Hub was actually given (`API_PORT`, which a
+port heal can move) and fails when nothing answers there or the answer does not say `registered`.
+
+The **`cihub` binary** comes from this machine, not from the node. The release assets live in a
+private repository, so a node cannot fetch them; the first installer had each node try and every
+node got a 404. Either set `GH_TOKEN` (for example `GH_TOKEN="$(gh auth token)"`) and the run
+fetches the release asset here — once per architecture, verified to be an ELF binary — and streams
+it down the SSH session it already holds, or pass `--cihub-binary <path>` to a `cihub-linux-x64` /
+`cihub-linux-arm64` asset already on disk (`--cihub-version <tag>` pins which release the token
+fetches; default `latest`). The token never reaches a node. A `cihub` already on the node is adopted
+only when it is not older than the one on offer — a forgotten `~/.local/bin/cihub` from months ago
+once drove a fresh install and ran `up` against service names that no longer existed — and a copy
+that would shadow `/usr/local/bin/cihub` on the login shell's PATH is moved aside (renamed, never
+deleted) so the node runs the one that was just installed.
+
+The **portal device** step mints the node's pairing code as late as possible: after every gate and
+after the binary is on the node, immediately before `register`. A code is one device's credential
+and Portal refuses a second device by the same name, so minting first meant one failed download
+left an orphan device in Portal and a name the next attempt could not use. A minted code is kept
+in `~/.config/cihub/fleet-pending-pairing-codes.json` (owner-readable only, scoped to the org of the
+login that minted it) until the Hub reports registered, and a retry reuses it. A `409` on mint names
+the two things it can mean — an orphan from an earlier attempt, or a node registered under another
+org — because only a person in Portal can tell which.
 
 The **claim** step is the one this list used to be missing. Registering a node does not give it an
 operator, and a Hub with no operator answers `409 AUTH_ERROR_HUB_NOT_CLAIMED` to its own device key —

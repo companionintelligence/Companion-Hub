@@ -8,6 +8,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { BUNDLED_HUB_COMPOSE } from './bundled-hub-assets.generated.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stdin as input, stdout as output } from 'node:process';
@@ -36,6 +37,8 @@ export type SeedApplianceOptions = {
   hubVersion?: string;
   composeSource?: string;
   execPath?: string;
+  /** Tests only: stand in for the on-disk search, e.g. `() => undefined` for a headless box. */
+  findCompose?: (execPath?: string) => string | undefined;
 };
 
 export type SeedApplianceResult = {
@@ -203,6 +206,10 @@ function installedCompanionHubVersion(): string | undefined {
 export function resolveApplianceHubImage(env: NodeJS.ProcessEnv = process.env): { image: string; version: string } {
   const pinned = env.CI_HUB_IMAGE?.trim();
   if (pinned) {
+    // `repo@sha256:<64 hex>` is a pin, not a version: the 64 hex characters after the last colon
+    // ended up as CI_HUB_VERSION on every digest-pinned node. Name it for what it is.
+    const at = pinned.indexOf('@sha256:');
+    if (at >= 0) return { image: pinned, version: `digest-${pinned.slice(at + '@sha256:'.length, at + '@sha256:'.length + 12)}` };
     const tag = pinned.includes(':') ? pinned.slice(pinned.lastIndexOf(':') + 1) : 'latest';
     return { image: pinned, version: tag || 'latest' };
   }
@@ -248,9 +255,9 @@ export function renderApplianceEnvContent(input: {
 
 export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplianceResult {
   const dataDir = path.resolve(options.dataDir);
-  const composeSource = options.composeSource || findBundledCompose(options.execPath);
-  if (!composeSource || !existsSync(composeSource)) {
-    throw new Error('Could not find docker-compose.prod.yml. Install the Companion Hub desktop package, or run cihub from a CI-Hub checkout.');
+  const composeSource = options.composeSource || (options.findCompose ?? findBundledCompose)(options.execPath);
+  if (options.composeSource && !existsSync(options.composeSource)) {
+    throw new Error(`Could not find docker-compose.prod.yml at ${options.composeSource}.`);
   }
 
   for (const sub of APPLIANCE_SUBDIRS) {
@@ -258,7 +265,14 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
   }
 
   const composePath = path.join(dataDir, HUB_COMPOSE_FILENAME);
-  copyFileSync(composeSource, composePath);
+  if (composeSource && existsSync(composeSource)) {
+    copyFileSync(composeSource, composePath);
+  } else {
+    // No checkout, no desktop package, nothing next to the binary: a headless box. The compose is
+    // baked into the CLI at build time (scripts/generate-bundled-hub-assets.ts) for exactly this
+    // machine — which, on 2026-09-18, was twelve of fifteen fleet nodes.
+    writeFileSync(composePath, BUNDLED_HUB_COMPOSE, 'utf8');
+  }
 
   const resolvedImage = options.hubImage
     ? { image: options.hubImage, version: options.hubVersion || options.hubImage.split(':').pop() || 'latest' }
