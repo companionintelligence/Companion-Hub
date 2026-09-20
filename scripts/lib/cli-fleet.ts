@@ -17,7 +17,7 @@
  * library (see `docs/CLI.md`).
  */
 
-import { DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readStoredLogin } from './catalog-submit.js';
+import { DEVICE_MANAGE_SCOPE, DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readStoredLogin } from './catalog-submit.js';
 import {
   loadFleetRoster,
   mergeFleetRoster,
@@ -63,6 +63,15 @@ import {
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { type CihubBinarySource, parseCihubVersionOutput, resolveCihubBinarySource } from './fleet-cihub-binary.js';
 import { clearPendingPairingCode, describeDeviceNameConflict, readPendingPairingCode, savePendingPairingCode } from './fleet-pairing-codes.js';
+import {
+  deletePortalDevice,
+  findPortalDevice,
+  listPortalDevices,
+  type PortalDevice,
+  reRegisterPortalDevice,
+  requireManageLogin,
+} from './fleet-devices.js';
+import { confirmDestructiveAction } from './cli-prompt.js';
 import { execFileSync } from 'node:child_process';
 import { gatePreflight, PREFLIGHT_CHECKS, type PreflightFinding, type PreflightNodeReport, preflightNode } from './fleet-preflight.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
@@ -125,6 +134,7 @@ export const FLEET_SUBCOMMANDS = [
   'preflight',
   'cert',
   'rdp',
+  'devices',
 ] as const;
 
 import { describeBind as describeRdpBind, runRdpOnNode, type RdpNodeReport } from './fleet-rdp.js';
@@ -157,6 +167,13 @@ export interface FleetArgs {
   dataDir: string;
   /** Portal pairing code for `install`. Six characters. */
   code?: string;
+  /** `devices <action> [target]`: list, release (delete) or re-register a Portal device. */
+  devicesAction?: 'list' | 'release' | 're-register';
+  devicesTarget?: string;
+  /** Portal organization id to act in; default: the stored login's. */
+  org?: string;
+  /** Skip the confirmation on `devices release`. */
+  yes: boolean;
   /** A cihub-linux-* release asset on this machine, streamed to every node that needs one. */
   cihubBinary?: string;
   /** Release tag to fetch with GH_TOKEN when no --cihub-binary is given. Default: latest. */
@@ -248,6 +265,10 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     backends: [],
     dataDir: '/var/lib/companion-hub',
     code: undefined,
+    devicesAction: undefined,
+    devicesTarget: undefined,
+    org: undefined,
+    yes: false,
     cihubBinary: process.env.CIHUB_BINARY || undefined,
     cihubVersion: undefined,
     claimEmail: process.env.CIHUB_CLAIM_EMAIL || undefined,
@@ -281,6 +302,21 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     rest.shift();
   }
 
+  // `devices` takes positionals — an action and, for release/re-register, the device — before
+  // its flags. Nothing else in `fleet` does, so it is read here and not in the flag chain.
+  if (args.subcommand === 'devices') {
+    const action = rest[0] && !rest[0].startsWith('-') ? rest.shift() : undefined;
+    if (action !== 'list' && action !== 'release' && action !== 're-register') {
+      throw new FleetArgError(`fleet devices needs an action: list, release <device>, or re-register <device>${action ? ` (got '${action}')` : ''}.`);
+    }
+    args.devicesAction = action;
+    if (action !== 'list') {
+      const target = rest[0] && !rest[0].startsWith('-') ? rest.shift() : undefined;
+      if (!target) throw new FleetArgError(`fleet devices ${action} needs a device: its name, slug or Portal id.`);
+      args.devicesTarget = target;
+    }
+  }
+
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i] ?? '';
     const readValue = (flag: string): string => {
@@ -308,6 +344,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--user')) args.user = readValue('--user');
     else if (isFlag('--data-dir')) args.dataDir = readValue('--data-dir');
     else if (isFlag('--code')) args.code = readValue('--code');
+    else if (isFlag('--org')) args.org = readValue('--org');
+    else if (arg === '--yes') args.yes = true;
     else if (isFlag('--cihub-binary')) args.cihubBinary = readValue('--cihub-binary');
     else if (isFlag('--cihub-version')) args.cihubVersion = readValue('--cihub-version');
     else if (isFlag('--claim-email')) args.claimEmail = readValue('--claim-email');
@@ -1227,7 +1265,8 @@ async function runInstall(args: FleetArgs): Promise<void> {
   // multi-node install is unattended: one `--code` is one device, so passing it
   // for a fleet would enroll the first node and fail the rest on a used code.
   const storedLogin = readStoredLogin();
-  const canMint = loginScope(storedLogin) === DEVICE_PAIR_SCOPE;
+  const storedScope = loginScope(storedLogin);
+  const canMint = storedScope === DEVICE_PAIR_SCOPE || storedScope === DEVICE_MANAGE_SCOPE;
 
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
@@ -2044,5 +2083,102 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
     case 'rdp':
       await runRdp(args);
       return;
+    case 'devices':
+      await runDevices(args);
+      return;
+  }
+}
+
+/**
+ * `cihub fleet devices` — what Portal knows about this org's devices, and the two changes to it a
+ * fleet operator needs without a browser.
+ *
+ * `release` deletes the Portal record, and with it the device's tunnel, DNS, apps and OAuth client
+ * — the same thing the browser's delete does. It is for a device this org no longer owns (a node
+ * reinstalled into another org, an orphan from a failed install), so it asks first. `re-register`
+ * keeps the record and mints a replacement pairing code, for a node that is staying but has lost
+ * its key. Neither dials a node.
+ */
+async function runDevices(args: FleetArgs): Promise<void> {
+  const login = readStoredLogin();
+  let resolved: PortalLogin;
+  try {
+    resolved = requireManageLogin(login);
+  } catch (error) {
+    console.error(colorize(error instanceof Error ? error.message : String(error), 'red'));
+    process.exit(2);
+  }
+  const organizationId = args.org ?? resolved.orgId;
+  const orgLabel = args.org ?? resolved.orgSlug ?? resolved.orgId;
+
+  let devices: PortalDevice[];
+  try {
+    devices = await listPortalDevices({ login: resolved, organizationId });
+  } catch (error) {
+    console.error(colorize(`Could not list devices in ${orgLabel}: ${error instanceof Error ? error.message : String(error)}`, 'red'));
+    process.exitCode = 1;
+    return;
+  }
+
+  if (args.devicesAction === 'list') {
+    if (args.json) {
+      console.log(JSON.stringify({ organization: organizationId, devices }, null, 2));
+      return;
+    }
+    console.log(colorize(`${devices.length} device(s) in ${orgLabel} (${resolved.portalOrigin})`, 'dim'));
+    if (devices.length) {
+      console.log(
+        renderTable(
+          devices.map((d) => [d.name, d.slug ?? '—', d.status ?? '—', d.id, d.lastSeenAt ?? '—']),
+          ['NAME', 'SLUG', 'STATUS', 'PORTAL ID', 'LAST SEEN'],
+        ),
+      );
+    }
+    return;
+  }
+
+  const found = findPortalDevice(devices, args.devicesTarget as string);
+  if (!found.device) {
+    console.error(colorize(found.why ?? 'not found', 'red'));
+    process.exitCode = 1;
+    return;
+  }
+  const device = found.device;
+
+  if (args.devicesAction === 're-register') {
+    try {
+      const minted = await reRegisterPortalDevice({ login: resolved, deviceId: device.id });
+      console.log(`${colorize('✓', 'green')} ${device.name} — replacement pairing code minted; the device is inactive until it pairs again`);
+      console.log(colorize(`  on the node: cihub register --code ${minted.pairingCode}`, 'dim'));
+      if (args.json) console.log(JSON.stringify({ device: device.id, pairingCode: minted.pairingCode }, null, 2));
+    } catch (error) {
+      console.error(colorize(`${device.name}: ${error instanceof Error ? error.message : String(error)}`, 'red'));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const confirmed = await confirmDestructiveAction(
+    `Releasing ${device.name} (${device.id}) from ${orgLabel}`,
+    args.yes,
+    `Release ${device.name} from ${orgLabel}? This deletes the Portal record and everything under it — tunnel, DNS, installed apps' registrations, OAuth client. [y/N] `,
+    'irreversible',
+  );
+  if (!confirmed) {
+    console.log(colorize('Not released.', 'dim'));
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const result = await deletePortalDevice({ login: resolved, deviceId: device.id });
+    console.log(
+      `${colorize('✓', 'green')} ${device.name} — released from ${orgLabel}${result.warnings?.length ? ` (${result.warnings.join('; ')})` : ''}`,
+    );
+    console.log(
+      colorize(`  a fresh '${BASE_COMMAND} fleet install --nodes ${device.name}' can now enrol it into the org this login belongs to`, 'dim'),
+    );
+  } catch (error) {
+    console.error(colorize(`${device.name}: ${error instanceof Error ? error.message : String(error)}`, 'red'));
+    process.exitCode = 1;
   }
 }

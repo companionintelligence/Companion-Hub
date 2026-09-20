@@ -198,6 +198,7 @@ later commands present.
 ```bash
 cihub login                            # catalog:write, for cihub submit
 cihub login --scope device:pair        # register devices without a browser
+cihub login --scope device:manage      # …and list, re-register or release them (cihub fleet devices)
 cihub login --device                   # device-code flow; automatic over SSH
 ```
 
@@ -205,10 +206,13 @@ cihub login --device                   # device-code flow; automatic over SSH
 | --- | --- |
 | `catalog:write` (default) | Submit apps to the marketplace catalog (`cihub submit`) |
 | `device:pair` | Register devices into the organization, which is what mints pairing codes |
+| `device:manage` | Everything `device:pair` may, plus list the organization's devices, mint a replacement pairing code for one, and delete one — what [`cihub fleet devices`](#cihub-fleet-devices) needs |
 
-**The two do not overlap.** A `catalog:write` token cannot register a device and a `device:pair`
-token cannot publish an app; each is refused with `401` by the other's routes. Both are org-scoped
-and revocable from Portal, and neither is a device key — pairing is what mints one of those.
+**They do not overlap upward.** A `catalog:write` token cannot register a device and a `device:pair`
+token cannot publish an app or delete a device; each is refused with `401` by the other's routes.
+`device:manage` is its own scope rather than a widening of `device:pair` so that a fleet install,
+which only needs to enrol machines, never holds a token that can destroy their records. All are
+org-scoped and revocable from Portal, and none is a device key — pairing is what mints one of those.
 
 A token reaches exactly the organizations its holder is a member of. Portal runs the same membership
 check it runs for a browser session, so signing in headlessly removes the human, not the
@@ -780,6 +784,7 @@ cihub fleet rdp [--nodes a,b] [--execute]              # remote desktop on each 
 `backends`, `install`, `update` and `rdp` require `--execute`; without it they print the plan they
 would run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
 cihub fleet cert [--nodes a,b] [--execute]             # the tailscale TLS cert each node needs to pool
+cihub fleet devices list | release <d> | re-register <d>  # what Portal knows about the org's devices; fix it without a browser
 ```
 
 **`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
@@ -1168,6 +1173,36 @@ would print the private key into the SSH session's captured output.
 Non-Linux nodes, nodes without tailscale, and nodes where this session has neither root nor
 passwordless sudo are skipped with the reason on their line. The local node is never dialled; run
 `sudo tailscale cert` on it by hand.
+
+### `cihub fleet devices`
+
+```bash
+cihub fleet devices list [--org <id>] [--json]
+cihub fleet devices release <name|slug|id> [--org <id>] [--yes]
+cihub fleet devices re-register <name|slug|id> [--org <id>]
+```
+
+What Portal knows about the organization's devices, and the two changes to it a fleet operator
+needs without a browser. None of these dials a node; they talk to Portal with a stored
+`cihub login --scope device:manage`, and refuse — naming that command — with anything less.
+
+`release` deletes the Portal record and everything under it (tunnel, DNS, installed apps'
+registrations, OAuth client), exactly as the browser's delete does, and asks first unless `--yes`.
+It is for a device this organization no longer owns. Reinstalling fifteen nodes from scratch on
+2026-09-18 left three that Portal still knew under their old organization — `cihub register`
+answered `403 DEVICE_PROOF_REQUIRED` on every attempt, because Portal keys devices globally by
+device ID and the wipe had destroyed the key that would prove ownership — and one whose name an
+earlier failed attempt had taken. Each needed a person in Portal; now `release` from a login in the
+old organization frees it, and `fleet install` enrols it into the new one.
+
+`re-register` keeps the record and mints a replacement pairing code, marking the device inactive
+until it pairs again: for a node that is staying in this organization but has lost its key. The
+code is printed with the `cihub register --code` line to run on the node.
+
+Targets must match exactly one device by name, slug or Portal id — `core-1` never matches
+`core-17` — and an ambiguous name is refused with the candidates listed, because this precedes a
+delete. `--org` names another organization the login's holder belongs to; the default is the one
+the login was minted for.
 ### `cihub fleet boot-params`
 
 Brings AMD Strix Halo (gfx1151) nodes up to the kernel parameters CI-OS now sets at first boot —
