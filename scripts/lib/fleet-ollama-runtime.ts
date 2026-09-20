@@ -17,8 +17,16 @@
  * The whole file is rendered from the four flags every time: a key the operator did not pass (or
  * passed as `unset`) is simply not in it, and falls back to whatever Ollama or another drop-in
  * decides. That makes a run reproducible from its command line, and makes "revert" a run with the
- * keys left out. The daemon is restarted only when the rendered bytes differ from what is on disk —
- * a restart unloads every resident model, and a fleet command WILL be re-run.
+ * keys left out. The daemon is restarted only when the rendered bytes differ from what is on disk,
+ * or when systemd has not loaded the bytes that are there — a restart unloads every resident model,
+ * and a fleet command WILL be re-run.
+ *
+ * "Nothing to do" is decided on what the daemon runs, not on the file alone. A file whose bytes
+ * already match while `systemctl show` resolves a managed key to something else — a drop-in sorting
+ * after ours, or an earlier run cut off between `install` and `daemon-reload` — is not a no-op: the
+ * apply step runs, and its read-back fails the node with the reason. The file being there while the
+ * daemon runs something else is the state the bind module exists to make impossible, and skipping
+ * the apply because the bytes matched would report exactly that state as adopted.
  *
  * NOTHING HERE RUNS ANYTHING. The shell is executed by `cihub fleet backends --execute`.
  */
@@ -161,13 +169,16 @@ export function describeRuntimeTransition(
 
 export interface OllamaRuntimePlan {
   file: { name: string; path: string; content: string; action: 'write' | 'unchanged' };
-  /** The daemon is restarted only when the file changes. */
+  /** The daemon is restarted only when the file changes (or, found by the apply shell, when systemd never loaded it). */
   restart: boolean;
   /** Effective values now, from `systemctl show`. */
   current: Partial<Record<OllamaRuntimeKey, string>>;
   target: Partial<Record<OllamaRuntimeKey, string>>;
   /** A drop-in sorting after ours that assigns a managed key: our value would lose. Named so nobody hunts for it. */
   outranked: Array<{ key: OllamaRuntimeKey; by: string }>;
+  /** Managed keys whose effective value is not the one requested, file bytes notwithstanding. */
+  unresolved: OllamaRuntimeKey[];
+  /** True only when the file matches AND every managed key already resolves to its value: nothing to run. */
   noop: boolean;
   summary: string[];
 }
@@ -197,18 +208,24 @@ export function planOllamaRuntime(
     }
   }
 
+  // The file's bytes are not the daemon's environment. Both must agree before this is a no-op.
+  const unresolved = OLLAMA_RUNTIME_KEYS.filter((key) => target[key] !== undefined && current[key] !== target[key]);
+  const noop = unchanged && unresolved.length === 0;
+
   const summary: string[] = [];
   const keys = Object.keys(target);
   summary.push(
-    unchanged
+    noop
       ? `${RUNTIME_DROPIN} already carries ${keys.length ? keys.join(', ') : 'no keys'}; ollama not restarted`
-      : `write ${RUNTIME_DROPIN} with ${
-          keys.length
-            ? ollamaRuntimeEnvironment(settings)
-                .map(([k, v]) => `${k}=${v}`)
-                .join(' ')
-            : 'no keys (every managed key left out)'
-        }, then daemon-reload and restart ollama`,
+      : unchanged
+        ? `re-read ${RUNTIME_DROPIN} (already carries ${keys.join(', ')}) — systemd resolves ${unresolved.map((k) => `${k}=${current[k] ?? '<unset>'}`).join(' ')}: restart ollama if it never loaded the file, otherwise fail naming what overrides it`
+        : `write ${RUNTIME_DROPIN} with ${
+            keys.length
+              ? ollamaRuntimeEnvironment(settings)
+                  .map(([k, v]) => `${k}=${v}`)
+                  .join(' ')
+              : 'no keys (every managed key left out)'
+          }, then daemon-reload and restart ollama`,
   );
   for (const o of outranked) summary.push(`CANNOT WIN ${o.key}: ${o.by} sorts after ${RUNTIME_DROPIN} and sets it too — move that line by hand`);
 
@@ -218,7 +235,8 @@ export function planOllamaRuntime(
     current,
     target,
     outranked,
-    noop: unchanged,
+    unresolved,
+    noop,
     summary,
   };
 }
@@ -238,10 +256,15 @@ export const RUNTIME_MARKERS = {
  *
  * In order: refuse if something other than the system unit owns the port (same guard as the bind —
  * a drop-in under `ollama.service.d/` configures nothing on beta-1 or core-2); read the merged
- * environment; render the file to a temp path and compare bytes with what is on disk; if identical,
- * touch nothing and say so; otherwise install it, `daemon-reload`, `restart`; then re-read the
- * merged environment. Both readings are printed so the caller can report `was → is` per key and
- * check that every managed key resolved to the value requested.
+ * environment; render the file to a temp path and compare bytes with what is on disk; if identical
+ * and systemd has loaded it, touch nothing and say so; if identical but systemd reports
+ * `NeedDaemonReload=yes` and a managed key is not in effect — a previous run stopped between
+ * `install` and `daemon-reload`, and the daemon runs the old environment — `daemon-reload` and
+ * `restart` after all (a pending reload with every key already in effect is not worth unloading
+ * the models over); otherwise install it,
+ * `daemon-reload`, `restart`; then re-read the merged environment. Both readings are printed so the
+ * caller can report `was → is` per key and check that every managed key resolved to the value
+ * requested — which is the check that catches a later drop-in outranking the file.
  *
  * `CIHUB_BIND_DIR` is honoured for the same reason the bind shell honours it: so a sandbox can run
  * this for real. `sudo` resets the environment, so on a node the default always applies.
@@ -254,6 +277,8 @@ export function ollamaRuntimeApplyShell(settings: OllamaRuntimeSettings): string
     `cihub_rt_dir="\${CIHUB_BIND_DIR:-${OLLAMA_DROPIN_DIR}}"`,
     `cihub_rt_file='${RUNTIME_DROPIN}'`,
     "cihub_rt_show() { systemctl show ollama -p Environment 2>/dev/null | sed 's/^Environment=//'; }",
+    // Every managed K=V is a word of the merged environment (no managed value carries a space).
+    `cihub_rt_in_effect() { cihub_rt_env=" $(cihub_rt_show) "; for kv in ${keys.join(' ')}; do case "$cihub_rt_env" in *" $kv "*) ;; *) return 1 ;; esac; done; return 0; }`,
     `echo "${RUNTIME_MARKERS.before} $(cihub_rt_show)"`,
     'install -d -m 0755 "$cihub_rt_dir"',
     'cihub_rt_tmp="$(mktemp)"',
@@ -262,7 +287,13 @@ export function ollamaRuntimeApplyShell(settings: OllamaRuntimeSettings): string
     'CIHUB_RUNTIME_EOF',
     'if [ -f "$cihub_rt_dir/$cihub_rt_file" ] && cmp -s "$cihub_rt_tmp" "$cihub_rt_dir/$cihub_rt_file"; then',
     '  rm -f "$cihub_rt_tmp"',
-    `  echo "${RUNTIME_MARKERS.unchanged} $cihub_rt_file already carries ${keys.length ? keys.join(' ') : 'no keys'}; ollama not restarted"`,
+    '  if [ "$(systemctl show ollama -p NeedDaemonReload --value 2>/dev/null)" = yes ] && ! cihub_rt_in_effect; then',
+    '    systemctl daemon-reload',
+    '    systemctl restart ollama',
+    `    echo "${RUNTIME_MARKERS.written} $cihub_rt_file already carried ${keys.length ? keys.join(' ') : 'no keys'} but systemd had not loaded it; ollama restarted"`,
+    '  else',
+    `    echo "${RUNTIME_MARKERS.unchanged} $cihub_rt_file already carries ${keys.length ? keys.join(' ') : 'no keys'}; ollama not restarted"`,
+    '  fi',
     'else',
     '  install -m 0644 "$cihub_rt_tmp" "$cihub_rt_dir/$cihub_rt_file"',
     '  rm -f "$cihub_rt_tmp"',

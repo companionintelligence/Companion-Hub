@@ -229,6 +229,41 @@ describe('fleet backends --execute', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it('runs the runtime step on a node whose file matches but whose daemon does not, and fails it when the read-back is wrong', async () => {
+    // The file is on disk, byte for byte, and `systemctl show` has no OLLAMA_NUM_PARALLEL: a run cut
+    // off before daemon-reload, or a later drop-in. "unchanged, not restarted" here would be a lie.
+    hosts['10.0.0.2'] = { bind: bindProbe({ runtime: ollamaRuntimeDropinContent({ parallel: 4 }).trimEnd() }), ufw: firewallProbe(UFW_FULL) };
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF'))
+        return ok(
+          [
+            'ollama-runtime-before: OLLAMA_HOST=0.0.0.0:11434 OLLAMA_NUM_PARALLEL=1',
+            `ollama-runtime-unchanged: ${RUNTIME_DROPIN} already carries OLLAMA_NUM_PARALLEL=4; ollama not restarted`,
+            'ollama-runtime-after: OLLAMA_HOST=0.0.0.0:11434 OLLAMA_NUM_PARALLEL=1',
+            'ollama-runtime-complete',
+          ].join('\n'),
+        );
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'core-2']);
+    expect(runtimeCalls().map((c) => c.host)).toEqual(['10.0.0.2']);
+    expect(printed()).toMatch(/ollama\s+failed.*requested OLLAMA_NUM_PARALLEL=4 but systemd resolved OLLAMA_NUM_PARALLEL=1/);
+    expect(process.exitCode).toBe(1);
+
+    // The dry run says what it would do about it, rather than "already carries; not restarted".
+    output = [];
+    process.exitCode = undefined;
+    const sudoBefore = sudoCalls().length;
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--nodes', 'core-2']);
+    expect(printed()).toContain(
+      `runtime: would re-read ${RUNTIME_DROPIN} (already carries OLLAMA_NUM_PARALLEL) — systemd resolves OLLAMA_NUM_PARALLEL=<unset>`,
+    );
+    expect(sudoCalls()).toHaveLength(sudoBefore);
+  });
+
   it('skips a node whose :11434 belongs to a user-scope unit, with the reason, and never edits it', async () => {
     await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'beta-1']);
     const text = printed();
@@ -250,6 +285,83 @@ describe('fleet backends --execute', () => {
     expect(text).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8080, :8216/);
     expect(text).toMatch(/firewall\s+present — ufw active; bridge → :8000, :8080, :13305, :8216 already allowed/);
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('leaves a reject the operator placed ahead of the allow alone, and adds only the ports nothing decides', async () => {
+    // beta-1 after the audit's O1: `ufw reject … port 8000,8080,13305` sits above the ollama allow,
+    // and the audit asked for reject rather than allow on its :8000. Appending an allow behind it
+    // would never fire; the step must say the port fails fast and add nothing for it.
+    hosts['10.0.0.1'] = {
+      bind: bindProbe({}),
+      ufw: firewallProbe(
+        [
+          'Status: active',
+          '',
+          'To                         Action      From',
+          '--                         ------      ----',
+          '8000,8080,13305/tcp        REJECT      172.16.0.0/12              # ci-hub probe: fail fast',
+          '11434/tcp                  ALLOW       172.16.0.0/12',
+        ].join('\n'),
+      ),
+    };
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
+        return ok(
+          [
+            'ufw-probe-added: 8216 (Rule added)',
+            'ufw-status-begin',
+            '8000,8080,13305/tcp        REJECT      172.16.0.0/12',
+            '11434/tcp                  ALLOW       172.16.0.0/12',
+            '8216/tcp                   ALLOW       172.16.0.0/12',
+            'ufw-status-end',
+            'ufw-probe-complete',
+          ].join('\n'),
+        );
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-1']);
+    expect(printed()).toContain(
+      'firewall: ufw active and dropping the bridge on :8216 (:8000, :8080, :13305 refused by a rule of its own, which fails fast and is left alone)',
+    );
+    expect(printed()).toContain('would run ufw allow from 172.16.0.0/12 to any port 8216 proto tcp');
+    expect(printed()).not.toContain('to any port 8000 proto tcp');
+
+    output = [];
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute', '--nodes', 'core-1']);
+    const script = firewallCalls()[0]?.command ?? '';
+    expect(script).toContain('to any port 8216 proto tcp');
+    for (const port of [8000, 8080, 13305]) expect(script).not.toContain(`to any port ${port} proto tcp`);
+    expect(printed()).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8216/);
+    expect(printed()).not.toMatch(/→ :8000/);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails the node when an allow it added sits below a reject that still takes the packet first', async () => {
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
+        return ok(
+          [
+            'ufw-probe-added: 8080 (Rule added)',
+            'ufw-probe-added: 8216 (Rule added)',
+            'ufw-status-begin',
+            '8080/tcp                   REJECT      172.16.0.0/12',
+            '8080/tcp                   ALLOW       172.16.0.0/12',
+            '8216/tcp                   ALLOW       172.16.0.0/12',
+            'ufw-status-end',
+            'ufw-probe-complete',
+          ].join('\n'),
+        );
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--execute', '--nodes', 'core-1']);
+    expect(printed()).toMatch(/firewall\s+failed.*rule for :8080 but its table still does not admit 172\.16\.0\.0\/12/);
+    expect(process.exitCode).toBe(1);
   });
 
   it('fails the node when ufw is enabled but its table needs root the account does not have', async () => {

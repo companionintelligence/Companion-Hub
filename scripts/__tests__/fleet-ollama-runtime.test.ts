@@ -122,6 +122,33 @@ describe('planOllamaRuntime', () => {
     expect(plan.summary[0]).toContain('ollama not restarted');
   });
 
+  it('is not a no-op when the file matches but the daemon runs something else', () => {
+    // The reviewer's shape: the file is on disk and byte-identical, and `systemctl show` has no
+    // OLLAMA_NUM_PARALLEL at all — a run cut off before daemon-reload. Skipping the apply because the
+    // bytes match would report a node that serves one sequence as adopted.
+    const onDisk: DropinFile = { name: RUNTIME_DROPIN, content: ollamaRuntimeDropinContent({ parallel: 4 }).trimEnd() };
+    const plan = planOllamaRuntime([onDisk], 'OLLAMA_HOST=0.0.0.0:11434', { parallel: 4 });
+    expect(plan.file.action).toBe('unchanged');
+    expect(plan.noop).toBe(false);
+    expect(plan.unresolved).toEqual(['OLLAMA_NUM_PARALLEL']);
+    expect(plan.summary[0]).toBe(
+      `re-read ${RUNTIME_DROPIN} (already carries OLLAMA_NUM_PARALLEL) — systemd resolves OLLAMA_NUM_PARALLEL=<unset>: restart ollama if it never loaded the file, otherwise fail naming what overrides it`,
+    );
+    // A later drop-in that wins with a different value: same verdict, and the file is named too.
+    const outranked = planOllamaRuntime([onDisk, file('zzzzzz-manual.conf', 'Environment="OLLAMA_NUM_PARALLEL=1"')], 'OLLAMA_NUM_PARALLEL=1', {
+      parallel: 4,
+    });
+    expect(outranked.noop).toBe(false);
+    expect(outranked.unresolved).toEqual(['OLLAMA_NUM_PARALLEL']);
+    expect(outranked.outranked).toEqual([{ key: 'OLLAMA_NUM_PARALLEL', by: 'zzzzzz-manual.conf' }]);
+    // A later drop-in that happens to set the same value: the daemon runs what was asked, so nothing to run — still named.
+    const agrees = planOllamaRuntime([onDisk, file('zzzzzz-manual.conf', 'Environment="OLLAMA_NUM_PARALLEL=4"')], 'OLLAMA_NUM_PARALLEL=4', {
+      parallel: 4,
+    });
+    expect(agrees.noop).toBe(true);
+    expect(agrees.outranked).toHaveLength(1);
+  });
+
   it('rewrites when a flag changed, even by one key', () => {
     const onDisk: DropinFile = { name: RUNTIME_DROPIN, content: ollamaRuntimeDropinContent({ parallel: 4 }) };
     expect(planOllamaRuntime([onDisk], undefined, { parallel: 4, keepAlive: '24h' }).restart).toBe(true);
@@ -246,18 +273,21 @@ describe.skipIf(!bash)('ollamaRuntimeApplyShell (sandboxed bash)', () => {
     };
     // `show` answers whatever the test last wrote to the environment file; `daemon-reload` "merges"
     // the drop-in by appending its Environment= lines, which is what a real reload would resolve.
+    // `NeedDaemonReload` is `yes` while the test's flag file exists, and a reload clears it.
+    const needReload = path.join(root, 'need-daemon-reload');
     stub(
       'systemctl',
       [
         'case "$*" in',
         `  *"-p Environment"*) echo "Environment=$(cat "${shown}")" ;;`,
-        `  daemon-reload) for f in "${dropins}"/*.conf; do [ -f "$f" ] || continue; sed -n 's/^Environment="\\(.*\\)"$/\\1/p' "$f"; done | tr '\\n' ' ' | sed "s#^#$(cat "${shown}") #" > "${shown}.new"; mv "${shown}.new" "${shown}" ;;`,
+        `  *"-p NeedDaemonReload"*) [ -f "${needReload}" ] && echo yes || echo no ;;`,
+        `  daemon-reload) rm -f "${needReload}"; for f in "${dropins}"/*.conf; do [ -f "$f" ] || continue; sed -n 's/^Environment="\\(.*\\)"$/\\1/p' "$f"; done | tr '\\n' ' ' | sed "s#^#$(cat "${shown}") #" > "${shown}.new"; mv "${shown}.new" "${shown}" ;;`,
         'esac',
       ].join('\n'),
     );
     stub('ss', 'echo "LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:*"');
     stub('loginctl', ':');
-    return { root, bin, dropins, log, shown, calls: () => readFileSync(log, 'utf-8') };
+    return { root, bin, dropins, log, shown, needReload, calls: () => readFileSync(log, 'utf-8') };
   }
 
   function run(script: string, box: { bin: string; dropins: string }) {
@@ -301,6 +331,41 @@ describe.skipIf(!bash)('ollamaRuntimeApplyShell (sandboxed bash)', () => {
     expect(outcome.outcome).toBe('applied');
     expect(readFileSync(path.join(box.dropins, RUNTIME_DROPIN), 'utf-8')).not.toContain('OLLAMA_KEEP_ALIVE');
     expect((box.calls().match(/systemctl restart ollama\n/g) ?? []).length).toBe(2);
+  });
+
+  it('reloads and restarts an unchanged file systemd never loaded, and fails one a later drop-in overrides', () => {
+    const box = sandbox();
+    // A run cut off between `install` and `daemon-reload`: the file is there, the daemon runs the old
+    // environment, and systemd says so.
+    writeFileSync(path.join(box.dropins, RUNTIME_DROPIN), ollamaRuntimeDropinContent({ parallel: 4 }));
+    writeFileSync(box.needReload, '');
+    const cut = run(ollamaRuntimeApplyShell({ parallel: 4 }), box);
+    expect(cut.status, cut.stderr).toBe(0);
+    const recovered = classifyRuntimeApplyOutput(cut.stdout, cut.stderr, { parallel: 4 });
+    expect(recovered.outcome).toBe('applied');
+    expect(recovered.why).toContain('systemd had not loaded it; ollama restarted');
+    expect(recovered.transition).toBe('OLLAMA_NUM_PARALLEL <unset> → 4');
+    expect(box.calls()).toMatch(/systemctl daemon-reload\n[\s\S]*systemctl restart ollama\n/);
+    expect(existsSync(box.needReload)).toBe(false);
+
+    // A reload pending for some other reason while every managed key is already in effect: not
+    // worth unloading the models over.
+    writeFileSync(box.needReload, '');
+    const pending = run(ollamaRuntimeApplyShell({ parallel: 4 }), box);
+    expect(pending.status, pending.stderr).toBe(0);
+    expect(classifyRuntimeApplyOutput(pending.stdout, pending.stderr, { parallel: 4 }).outcome).toBe('unchanged');
+    expect((box.calls().match(/systemctl restart ollama\n/g) ?? []).length).toBe(1);
+    rmSync(box.needReload);
+
+    // Same file, loaded, and now something after it resolves the key to 1: no restart helps, so the
+    // node fails with the reason rather than reading as adopted because the bytes matched.
+    writeFileSync(box.shown, 'OLLAMA_HOST=0.0.0.0:11434 OLLAMA_NUM_PARALLEL=1');
+    const lost = run(ollamaRuntimeApplyShell({ parallel: 4 }), box);
+    expect(lost.status, lost.stderr).toBe(0);
+    const outcome = classifyRuntimeApplyOutput(lost.stdout, lost.stderr, { parallel: 4 });
+    expect(outcome.outcome).toBe('mismatch');
+    expect(outcome.why).toContain('requested OLLAMA_NUM_PARALLEL=4 but systemd resolved OLLAMA_NUM_PARALLEL=1');
+    expect((box.calls().match(/systemctl restart ollama\n/g) ?? []).length).toBe(1);
   });
 
   it('refuses, touching nothing, when a user-scope unit owns the port', () => {

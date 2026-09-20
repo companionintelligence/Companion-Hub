@@ -610,14 +610,17 @@ export interface ProbeFirewallResult {
   outcome: 'applied' | 'present' | 'skipped' | 'failed';
   why: string;
   added: number[];
+  /** Ports a DENY/REJECT of the table's own already refuses: they fail fast, and nothing was appended behind it. */
+  blocked: number[];
   ms?: number;
 }
 
 /**
  * Allow the Docker bridges through ufw to the ports the Hub probes, on one node.
  *
- * `ports` is what the plan found missing; the shell re-checks each against `ufw status` anyway and
- * proves the table admits the bridge afterwards, so "Rule added" alone is never reported as done.
+ * `ports` is what the plan found missing; the shell re-checks each against `ufw status` anyway — in
+ * table order, so a reject that arrived since the probe gets nothing appended behind it — and proves
+ * the table admits the bridge afterwards, so "Rule added" alone is never reported as done.
  */
 export async function applyProbeFirewall(target: SshTarget, ports: readonly number[], timeoutMs = 60_000): Promise<ProbeFirewallResult> {
   const script = ['set -e', probeFirewallApplyShell(ports)].join('\n');
@@ -630,6 +633,7 @@ export async function applyProbeFirewall(target: SshTarget, ports: readonly numb
       outcome: 'failed',
       why: 'passwordless sudo is not available for this account, so the firewall rules cannot be added unattended',
       added: [],
+      blocked: [],
       ms,
     };
   }
@@ -639,7 +643,7 @@ export async function applyProbeFirewall(target: SshTarget, ports: readonly numb
     case 'present':
     case 'skipped':
     case 'failed':
-      return { outcome: outcome.outcome, why: outcome.why, added: outcome.added, ms };
+      return { outcome: outcome.outcome, why: outcome.why, added: outcome.added, blocked: outcome.blocked, ms };
     case 'incomplete':
       return {
         outcome: 'failed',
@@ -648,6 +652,7 @@ export async function applyProbeFirewall(target: SshTarget, ports: readonly numb
             ? `no completion marker within ${Math.round(timeoutMs / 1000)} s`
             : `firewall step exited ${result.code} without a completion marker`,
         added: outcome.added,
+        blocked: outcome.blocked,
         ms,
       };
   }

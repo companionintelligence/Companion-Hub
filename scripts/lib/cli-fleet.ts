@@ -1271,8 +1271,10 @@ async function runBackends(args: FleetArgs): Promise<void> {
         }
       }
       // The runtime drop-in, after the bind and only on a unit this run may edit: a node refused
-      // above (user-scope unit, container) is not touched, and its skip already says why. A plan that
-      // read back unchanged runs nothing — the file is the same bytes and a restart is the cost.
+      // above (user-scope unit, container) is not touched, and its skip already says why. A plan
+      // runs nothing only when the file is the same bytes AND the daemon already resolves every
+      // managed key to its value — a matching file the daemon does not run (cut-off run, later
+      // drop-in) goes through the apply shell so its read-back can fail the node.
       if (plan.backend === 'ollama' && args.ollamaRuntime && bindPlan?.runtime && (result.outcome === 'installed' || result.outcome === 'adopted')) {
         const settings = args.ollamaRuntime;
         if (bindPlan.runtime.noop) {
@@ -1311,6 +1313,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
               outcome: firewallPlan.state === 'present' ? 'present' : firewallPlan.state === 'unreadable' ? 'failed' : 'skipped',
               why: firewallPlan.why,
               added: [],
+              blocked: firewallPlan.blocked,
             };
       if (applied.outcome === 'failed') failed += 1;
       const tone =
@@ -1323,7 +1326,13 @@ async function runBackends(args: FleetArgs): Promise<void> {
       for (const line of described.lines) console.log(colorize(`  ${line}`, described.tone));
       report.push({
         node: node.name,
-        firewall: { state: firewallPlan.state, why: firewallPlan.why, missing: firewallPlan.missing, present: firewallPlan.present },
+        firewall: {
+          state: firewallPlan.state,
+          why: firewallPlan.why,
+          missing: firewallPlan.missing,
+          present: firewallPlan.present,
+          blocked: firewallPlan.blocked,
+        },
       });
     }
     console.log('');

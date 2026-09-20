@@ -1055,8 +1055,12 @@ runs `daemon-reload` and `restart` — a restart unloads every resident model, a
 will be re-run. Whatever it did, it re-reads `systemctl show ollama -p Environment` and prints the
 previous and new effective value of every managed key (`runtime OLLAMA_NUM_PARALLEL <unset> → 4`);
 a managed key that reads back with a different value fails the node, naming the later drop-in that
-must be overriding it. The dry run prints the same plan — what is in effect now, whether the file
-would change — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
+must be overriding it. "Nothing to do" is judged on what the daemon runs, not on the file alone: a
+file whose bytes already match while `systemctl show` resolves a managed key to something else is
+still applied — if systemd reports it never loaded the file (a previous run cut off before
+`daemon-reload`), it is reloaded and Ollama restarted; otherwise the read-back fails the node as
+above. The dry run prints the same plan — what is in effect now, whether the file would change, or
+what the daemon resolves instead — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
 `ollama-local.service`, core-2's `ollama-tunnel.service`) is skipped with the reason: a drop-in
 under `ollama.service.d/` configures nothing there, and those units carry their own environment.
 
@@ -1078,10 +1082,15 @@ So `backends` also plans, for every node where ufw is active,
 `ufw allow from 172.16.0.0/12 to any port <p> proto tcp` for each port the Hub probes — **8000**
 (vllm/mtplx/lucebox), **8080** (dspark), **13305** (lemonade) and **8216** (the lucebox-hub stack) —
 next to the existing bridge → `:11434` rule. `172.16.0.0/12` is Docker's whole default address
-pool, so compose networks are covered without enumerating them. It is idempotent on `ufw status`:
-a port the table already admits (from that CIDR or from `Anywhere`) is reported as present, not
-re-added, and after adding the step re-reads the table and fails the node if a rule ufw reported
-is not in it. Nothing is planned where ufw is inactive or absent — nothing drops the probes there
+pool, so compose networks are covered without enumerating them. It reads `ufw status` the way ufw
+does — top down, first match wins, and `ufw allow` appends — so a port the table already decides
+for the bridge gets nothing added: an `ALLOW` (from that CIDR or wider, or from `Anywhere`, alone
+or in a list such as `8000,8080,13305/tcp`) is reported as present, and a `DENY` or `REJECT` the
+operator placed (the audit's `ufw reject … port 8000,8080,13305` on beta-1, beta-nas, core-6 and
+core-5, kept as reject on beta-1's `:8000` on purpose) is reported as failing fast and left alone —
+an allow appended behind it would never fire. After adding, the step re-reads the whole table and
+fails the node if the first rule matching a planned port is still not an allow, however many allow
+rows sit below. Nothing is planned where ufw is inactive or absent — nothing drops the probes there
 — and a node whose `ufw status` needs root the account does not have says so rather than guessing.
 `--execute` only, like everything else here; the dry run prints the exact commands per node.
 
