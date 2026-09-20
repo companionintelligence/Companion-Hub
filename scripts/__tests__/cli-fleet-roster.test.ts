@@ -263,7 +263,10 @@ describe('fleet scan on a shared tailnet', () => {
       savedRows()
         .map((n) => `${n.name}|${n.skip ?? ''}|${n.note ?? ''}`)
         .sort(),
-    ).toEqual(["Bennett's MacBook Pro||", 'Quest 3||', 'core-1||', 'core-2||tailnet reports offline']);
+    ).toEqual(["Bennett's MacBook Pro||", 'Quest 3||', 'core-1||', 'core-2||']);
+    // core-2 is offline in this fixture. That is the scan's observation, printed in the report and
+    // never written into the roster as a note — a note is an operator's, and one the scan wrote
+    // once outlived the outage on thirty rows.
     expect(logged()).toContain('4 tailnet peer(s) are not in the roster and are being added as targets:');
     expect(logged()).toContain('Roster written');
   });

@@ -20,6 +20,8 @@ import {
   parsePinDigest,
   renderImageCell,
   renderImageFooter,
+  imageIdentity,
+  type NodeImageState,
   renderImageTransition,
   resolveMajorityPin,
   shortImageId,
@@ -29,7 +31,9 @@ import {
 
 /** A full 64-hex image ID from the short prefix an operator would recognise. */
 const id = (prefix: string) => `sha256:${prefix.padEnd(64, '0')}`;
-const digestOf = (prefix: string) => `${HUB_IMAGE_REPO}@sha256:${`d16e57${prefix}`.padEnd(64, 'a')}`;
+// The registry digest of the fixture image IS its identity (see imageIdentity), so the fixture keeps
+// the two the same; the one test that needs them to differ builds its own.
+const digestOf = (prefix: string) => `${HUB_IMAGE_REPO}@${id(prefix)}`;
 const DEV_TAG = `${HUB_IMAGE_REPO}:dev`;
 
 /** What the probe script prints on a node that has a Hub. Shape taken from a real engine's output. */
@@ -278,6 +282,28 @@ describe('parseHubImageProbe', () => {
 });
 
 // ─── Majority and drift ─────────────────────────────────────────────────────
+
+describe('imageIdentity', () => {
+  it('is the registry digest when the node has one, else the local image ID', () => {
+    expect(imageIdentity({ imageId: id('aaaa'), repoDigest: `${HUB_IMAGE_REPO}@${id('bbbb')}` })).toBe(id('bbbb'));
+    expect(imageIdentity({ imageId: id('aaaa'), repoDigest: null })).toBe(id('aaaa'));
+  });
+
+  it('calls two nodes on the same pulled image the same, whatever their image store reports as the ID', () => {
+    // Docker's classic store reports the config digest as the ID, the containerd store the manifest
+    // digest. beta-1 (classic) and fourteen containerd nodes had pulled the identical image and
+    // `status` called beta-1 drifted.
+    const pulled = `${HUB_IMAGE_REPO}@${id('90f8eda42068')}`;
+    const summary = summariseFleetImages([
+      { node: 'beta-1', probe: parseHubImageProbe({ ok: true, out: probeOutput(id('2f4689babd38'), pulled), err: '', code: 0 }) },
+      { node: 'core-2', probe: parseHubImageProbe({ ok: true, out: probeOutput(id('90f8eda42068'), pulled), err: '', code: 0 }) },
+      { node: 'core-4', probe: parseHubImageProbe({ ok: true, out: probeOutput(id('90f8eda42068'), pulled), err: '', code: 0 }) },
+    ]);
+    expect(summary.nodes.map((n) => n.state)).toEqual(['same', 'same', 'same']);
+    expect(summary.majority).toMatchObject({ imageId: id('90f8eda42068'), count: 3, strict: true });
+    expect(renderImageCell(summary.nodes[0] as NodeImageState)).toBe('90f8eda4');
+  });
+});
 
 describe('summariseFleetImages', () => {
   it('finds the majority on the measured fleet and labels every node', () => {

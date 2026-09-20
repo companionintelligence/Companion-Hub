@@ -13,6 +13,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { isDirectScriptRun } from './lib/is-direct-run';
 import { resolveRootFolderHostForRuntime } from './lib/paths';
+import { BUNDLED_TRAEFIK_DYNAMIC_YML, BUNDLED_TRAEFIK_YML } from './lib/bundled-hub-assets.generated';
 import { findTraefikAssets } from './lib/seed-appliance';
 
 /**
@@ -25,7 +26,11 @@ function resolveTraefikDir(): string {
   return path.join(resolveRootFolderHostForRuntime(), 'state', 'traefik');
 }
 
-export async function initTraefik() {
+/**
+ * @param options.assetsDir where to copy traefik.yml/dynamic.yml from; `null` means "nothing on disk"
+ *   (the bundled copies are written), `undefined` means search the usual places. Tests only.
+ */
+export async function initTraefik(options: { assetsDir?: string | null } = {}) {
   console.log('Initializing Traefik configuration...');
   const TRAEFIK_DIR = resolveTraefikDir();
 
@@ -42,7 +47,7 @@ export async function initTraefik() {
   // Copy config files. `process.cwd()` only resolves this inside a CI-Hub checkout — a
   // packaged/standalone `cihub` (no checkout, no desktop install) needs the same
   // execPath-relative search `findBundledCompose` already does for docker-compose.prod.yml.
-  const assetsDir = findTraefikAssets();
+  const assetsDir = options.assetsDir === undefined ? findTraefikAssets() : (options.assetsDir ?? undefined);
 
   // traefik.yml
   const traefikSrc = assetsDir ? path.join(assetsDir, 'traefik.yml') : undefined;
@@ -72,9 +77,18 @@ export async function initTraefik() {
   } else if (traefikSrc) {
     console.warn(`Warning: Source traefik.yml not found at ${traefikSrc}`);
   } else {
-    console.warn(
-      'Warning: no bundled Traefik assets found (checked next to the executable, its resources/ dir, the desktop install paths, and packages/backend/assets/traefik relative to cwd). traefik.yml and acme_storage.json below still get created so the container can start.',
-    );
+    // Nothing on disk to copy from: a standalone binary on a headless box. The files are baked into
+    // the CLI at build time (scripts/generate-bundled-hub-assets.ts); write them when they are
+    // absent, and leave an operator's edited copy alone.
+    if (!existsSync(traefikDest)) {
+      console.log(`Writing bundled traefik.yml to ${traefikDest}`);
+      await writeFile(traefikDest, BUNDLED_TRAEFIK_YML.replace('{{ACME_EMAIL}}', 'admin@localhost'));
+    }
+    const dynamicDest = path.join(TRAEFIK_DIR, 'dynamic', 'dynamic.yml');
+    if (!existsSync(dynamicDest)) {
+      console.log(`Writing bundled dynamic.yml to ${dynamicDest}`);
+      await writeFile(dynamicDest, BUNDLED_TRAEFIK_DYNAMIC_YML);
+    }
   }
 
   // dynamic.yml

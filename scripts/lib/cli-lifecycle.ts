@@ -19,7 +19,8 @@ import { syncPostgresPasswordFromEnv } from '../sync-postgres-password.js';
 import { syncRabbitmqPasswordFromEnv } from '../sync-rabbitmq-password.js';
 import { usageAndExit } from './cli-args.js';
 import { buildEnvOverrides, ensureLocalDevRuntimeEnv, getComposeFiles, getEnvFileOrExit, renderConfigLines } from './cli-compose-env.js';
-import { ensureLocalDevPortsAvailable, run, runScript } from './cli-proc.js';
+import { ensureLocalDevPortsAvailable, run, runBestEffort, runScript } from './cli-proc.js';
+import { parseEnvFile } from '../env-file.js';
 import { isApplianceMode, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv, type StartMode } from './cli-types.js';
 import { printMessageBox } from './cli-ui.js';
@@ -196,7 +197,37 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
     'green',
   );
   await ensurePostgresInfraAndSyncPassword(ctx.envFile, ctx.composeFiles, envOverrides, dataDir);
+  refreshFloatingHubImage(ctx, envOverrides, dataDir);
   await runDockerComposeUp(ctx.envFile, ctx.composeFiles, detached, envOverrides, dataDir);
+}
+
+/** A reference that names a build rather than a moving tag: `repo@sha256:…`. */
+export function isDigestPinnedImage(ref: string | undefined): boolean {
+  return typeof ref === 'string' && ref.includes('@sha256:');
+}
+
+/**
+ * Pull the Hub image before compose looks for it, when CI_HUB_IMAGE is a tag.
+ *
+ * The seeded compose says `pull_policy: if_not_present` for `ci-hub`, which is right for a digest
+ * (it cannot change) and wrong for `:latest` or `:dev`: a node that ever pulled the tag before
+ * keeps that copy, whatever the tag points at now. A freshly reinstalled node ran a release image
+ * seven days old that way on 2026-09-18, and the CLI that had just installed it called an API
+ * route the old image did not have. `pool update` already pulls before it starts; a first `up`
+ * on a floating tag has to as well. Best-effort: a node that cannot reach the registry starts
+ * what it has, and says so.
+ */
+export function refreshFloatingHubImage(ctx: HubContext, envOverrides: Record<string, string | undefined>, cwd?: string): void {
+  const image = envOverrides.CI_HUB_IMAGE ?? parseEnvFile(ctx.envFile).CI_HUB_IMAGE;
+  if (isDigestPinnedImage(image)) return;
+  const pulled = runBestEffort('docker', [...buildComposeBaseArgs(ctx.envFile, ctx.composeFiles), 'pull', 'ci-hub'], envOverrides, cwd);
+  if (!pulled) {
+    printMessageBox(
+      'Image not refreshed',
+      [`Could not pull ${image ?? 'the Hub image'}; starting the copy already on this machine.`, 'That copy may be older than the tag it carries.'],
+      'yellow',
+    );
+  }
 }
 
 export async function setupHub(env: HubEnv) {

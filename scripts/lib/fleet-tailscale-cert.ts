@@ -312,11 +312,14 @@ export async function probeTailscaleCert(target: SshTarget, timeoutMs = 30_000):
 /**
  * Ask tailscaled for the certificate, as root.
  *
- * `--cert-file /dev/null --key-file /dev/null` is load-bearing. What this step wants is tailscaled
- * populating its own store at `/var/lib/tailscale/certs`, which it does on any successful fetch.
- * Without those flags the CLI ALSO writes `<fqdn>.crt` and `<fqdn>.key` into the current directory —
- * a private key dropped into `$HOME` on every node — and with `-` it would print the key into this
- * SSH session's captured output, which becomes a log line.
+ * What this step wants is tailscaled populating its own store at `/var/lib/tailscale/certs`, which
+ * it does on any successful fetch. The CLI ALSO writes `<fqdn>.crt` and `<fqdn>.key` — into the
+ * current directory by default (a private key dropped into `$HOME` on every node), to stdout with
+ * `-` (a private key in this session's captured output, which becomes a log line), and it refuses
+ * `/dev/null` outright: "already exists and is not a regular file", which is how this step silently
+ * did nothing on fifteen nodes on 2026-09-18 and reported success because the store already had a
+ * certificate. So the files go to a root-owned `mktemp -d` (mode 0700) that is removed on the way
+ * out, whatever happened.
  *
  * Idempotent: tailscaled returns the cached certificate while it is valid and only goes to the CA
  * when it needs to, so running this on the fourteen nodes that already have one costs a local call.
@@ -329,7 +332,9 @@ export function tailscaleCertIssueScript(fqdn: string): string {
     'if [ -z "$ts" ]; then for c in /usr/bin/tailscale /usr/local/bin/tailscale /usr/sbin/tailscale; do if [ -x "$c" ]; then ts="$c"; break; fi; done; fi',
     '[ -n "$ts" ] || { echo "cert-issue-no-tailscale"; exit 0; }',
     'if [ "$(id -u)" = 0 ]; then SUDO=""; elif sudo -n true >/dev/null 2>&1; then SUDO="sudo -n"; else echo "cert-issue-no-sudo"; exit 0; fi',
-    `if $SUDO "$ts" cert --cert-file /dev/null --key-file /dev/null '${safe}'; then echo "cert-issue-complete"; else echo "cert-issue-failed"; fi`,
+    'scratch="$($SUDO mktemp -d)"',
+    'trap \'$SUDO rm -rf "$scratch"\' EXIT',
+    `if $SUDO "$ts" cert --cert-file "$scratch/cert.crt" --key-file "$scratch/cert.key" '${safe}'; then echo "cert-issue-complete"; else echo "cert-issue-failed"; fi`,
   ].join('\n');
 }
 
