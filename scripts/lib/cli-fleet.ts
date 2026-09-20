@@ -41,6 +41,8 @@ import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } fr
 import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
   applyOllamaBindPolicy,
+  applyOllamaRuntimeSettings,
+  applyProbeFirewall,
   DEFAULT_OLLAMA_BIND,
   describeBind,
   executeBackendPlan,
@@ -48,7 +50,18 @@ import {
   ollamaManagedEnvironment,
   planAllBackends,
   type InstallableBackend,
+  type ProbeFirewallResult,
 } from './fleet-backends.js';
+import {
+  describeRuntimeTransition,
+  OllamaRuntimeFlagError,
+  type OllamaRuntimePlan,
+  type OllamaRuntimeSettings,
+  parseOllamaRuntimeValue,
+  planOllamaRuntime,
+  RUNTIME_DROPIN,
+} from './fleet-ollama-runtime.js';
+import { firewallProbeScript, HUB_PROBE_PORTS, parseFirewallProbe, planProbeFirewall, type ProbeFirewallPlan } from './fleet-probe-firewall.js';
 import {
   assessOllamaBind,
   bindAddressFor,
@@ -240,6 +253,13 @@ export interface FleetArgs {
    * result, the file that set it, and EXPOSED for a 0.0.0.0 whose guard is not active.
    */
   bind: OllamaBindMode;
+  /**
+   * `backends` only: Ollama's runtime environment, from `--ollama-parallel`, `--ollama-keep-alive`,
+   * `--ollama-context` and `--ollama-igpu`. Absent when none of the four was given, and then the
+   * runtime drop-in is not touched at all; present (possibly with every field `unset`) as soon as one
+   * is, and then the whole file is rendered from these four values — see `fleet-ollama-runtime.ts`.
+   */
+  ollamaRuntime?: OllamaRuntimeSettings;
 }
 
 export class FleetArgError extends Error {}
@@ -290,6 +310,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     force: false,
     touchesBoot: false,
     bind: DEFAULT_OLLAMA_BIND,
+    ollamaRuntime: undefined,
   };
 
   const rest = [...argv];
@@ -370,6 +391,21 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         if (error instanceof OllamaVersionError) throw new FleetArgError(error.message);
         throw error;
       }
+    } else if (isFlag('--ollama-parallel') || isFlag('--ollama-keep-alive') || isFlag('--ollama-context') || isFlag('--ollama-igpu')) {
+      // Validated here, like --ollama-version: a typo is refused before any machine is dialled. The
+      // first of the four to appear is what turns the runtime step on for this run.
+      const flag = arg.split('=')[0] as '--ollama-parallel' | '--ollama-keep-alive' | '--ollama-context' | '--ollama-igpu';
+      const runtime = args.ollamaRuntime ?? {};
+      try {
+        if (flag === '--ollama-parallel') runtime.parallel = parseOllamaRuntimeValue(flag, readValue(flag));
+        else if (flag === '--ollama-keep-alive') runtime.keepAlive = parseOllamaRuntimeValue(flag, readValue(flag));
+        else if (flag === '--ollama-context') runtime.contextLength = parseOllamaRuntimeValue(flag, readValue(flag));
+        else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
+      } catch (error) {
+        if (error instanceof OllamaRuntimeFlagError) throw new FleetArgError(error.message);
+        throw error;
+      }
+      args.ollamaRuntime = runtime;
     } else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
@@ -447,6 +483,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   }
   if (args.pinDigest && args.toMajority) {
     throw new FleetArgError('--pin-digest names an image and --to-majority asks the fleet for one. Pass one or the other.');
+  }
+  if (args.ollamaRuntime && args.subcommand !== 'backends') {
+    throw new FleetArgError('--ollama-parallel, --ollama-keep-alive, --ollama-context and --ollama-igpu only apply to `fleet backends`.');
   }
 
   return args;
@@ -994,6 +1033,8 @@ interface OllamaBindPlanOnNode {
   refused?: string;
   effective: string;
   json: Record<string, unknown>;
+  /** The runtime drop-in's plan, from the same probe, when a runtime flag was given and the unit is ours to edit. */
+  runtime?: OllamaRuntimePlan;
 }
 
 /**
@@ -1003,7 +1044,12 @@ interface OllamaBindPlanOnNode {
  * name, with their new names — before anything moves. Also what decides, on `--execute`, whether an
  * adopted Ollama needs touching at all.
  */
-async function planOllamaBindOnNode(target: { host: string; user?: string }, bind: OllamaBindMode, facts: HostFacts): Promise<OllamaBindPlanOnNode> {
+async function planOllamaBindOnNode(
+  target: { host: string; user?: string },
+  bind: OllamaBindMode,
+  facts: HostFacts,
+  runtime?: OllamaRuntimeSettings,
+): Promise<OllamaBindPlanOnNode> {
   const res = await sshCapture(target, ollamaBindProbeScript(), 20_000);
   const probe = parseOllamaBindProbe(res.out);
   const assessment = assessOllamaBind(probe);
@@ -1054,9 +1100,21 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
     lines.push(`bind: would set OLLAMA_HOST=${target_.address} (${bind}) and verify it after restart`);
     for (const line of plan.summary) lines.push(`bind:   ${line}`);
   }
+  // The runtime drop-in is planned from the same probe: the dump already carries every *.conf and the
+  // merged environment, which is all "would the file change, and what is in effect now" needs.
+  const runtimePlan = runtime ? planOllamaRuntime(probe.dropins, probe.show.Environment, runtime) : undefined;
+  if (runtimePlan) {
+    lines.push(`runtime: now ${describeRuntimeTransition(runtimePlan.current, runtimePlan.current, runtime ?? {})}`);
+    for (const line of runtimePlan.summary) lines.push(`runtime: ${runtimePlan.noop ? '' : 'would '}${line}`);
+  }
   return {
     lines,
-    tone: plan.unfixable.length || assessment.status === 'conflict' ? 'yellow' : plan.noop ? 'dim' : 'green',
+    tone:
+      plan.unfixable.length || runtimePlan?.outranked.length || assessment.status === 'conflict'
+        ? 'yellow'
+        : plan.noop && (runtimePlan?.noop ?? true)
+          ? 'dim'
+          : 'green',
     noop: plan.noop,
     effective: assessment.resolution.effective.address,
     json: {
@@ -1067,8 +1125,45 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
       shadowed: plan.shadowed,
       unfixable: plan.unfixable,
       guard: plan.guard,
+      ...(runtimePlan
+        ? {
+            runtime: {
+              now: runtimePlan.current,
+              target: runtimePlan.target,
+              file: runtimePlan.file.action,
+              restart: runtimePlan.restart,
+              outranked: runtimePlan.outranked,
+            },
+          }
+        : {}),
     },
+    runtime: runtimePlan,
   };
+}
+
+/**
+ * What the firewall step would do on this node: the Hub's engine probes must not hang on a ufw
+ * DROP. Read-only; `ufw status` is read under `sudo -n` when the account allows it.
+ */
+async function planProbeFirewallOnNode(target: { host: string; user?: string }): Promise<ProbeFirewallPlan> {
+  const res = await sshCapture(target, firewallProbeScript(), 20_000);
+  return planProbeFirewall(parseFirewallProbe(res.out));
+}
+
+function describeFirewallPlan(plan: ProbeFirewallPlan): { lines: string[]; tone: 'dim' | 'yellow' | 'green' } {
+  switch (plan.state) {
+    case 'unknown':
+    case 'unreadable':
+      return { lines: [`firewall: ${plan.why}`], tone: 'yellow' };
+    case 'inactive':
+    case 'present':
+      return { lines: [`firewall: ${plan.why}`], tone: 'dim' };
+    case 'add':
+      return {
+        lines: [`firewall: ${plan.why}`, ...plan.commands.map((c) => `firewall:   would run ${c}`)],
+        tone: 'green',
+      };
+  }
 }
 
 /**
@@ -1151,7 +1246,8 @@ async function runBackends(args: FleetArgs): Promise<void> {
       // Ollama's bind is part of its plan, install or adopt: the same policy, read from the node
       // first so the dry run names the files it would move and the adopt path knows when there is
       // nothing to do.
-      const bindPlan = plan.backend === 'ollama' && plan.action !== 'skip' ? await planOllamaBindOnNode(target, args.bind, facts) : undefined;
+      const bindPlan =
+        plan.backend === 'ollama' && plan.action !== 'skip' ? await planOllamaBindOnNode(target, args.bind, facts, args.ollamaRuntime) : undefined;
 
       if (!args.execute) {
         const tag = plan.action === 'install' ? colorize('would install', 'green') : plan.action;
@@ -1174,12 +1270,61 @@ async function runBackends(args: FleetArgs): Promise<void> {
           result = { ...applied, outcome: applied.outcome === 'installed' ? 'adopted' : applied.outcome, why: `${result.why}; ${applied.why}` };
         }
       }
+      // The runtime drop-in, after the bind and only on a unit this run may edit: a node refused
+      // above (user-scope unit, container) is not touched, and its skip already says why. A plan that
+      // read back unchanged runs nothing — the file is the same bytes and a restart is the cost.
+      if (plan.backend === 'ollama' && args.ollamaRuntime && bindPlan?.runtime && (result.outcome === 'installed' || result.outcome === 'adopted')) {
+        const settings = args.ollamaRuntime;
+        if (bindPlan.runtime.noop) {
+          const now = describeRuntimeTransition(bindPlan.runtime.current, bindPlan.runtime.current, settings);
+          result = { ...result, why: `${result.why}; runtime ${now} — ${RUNTIME_DROPIN} unchanged, not restarted` };
+        } else {
+          const applied = await applyOllamaRuntimeSettings(target, settings);
+          result = {
+            ...result,
+            outcome: applied.outcome === 'installed' || applied.outcome === 'adopted' ? result.outcome : applied.outcome,
+            why: `${result.why}; ${applied.why}`,
+            detail: applied.detail ?? result.detail,
+            ms: (result.ms ?? 0) + (applied.ms ?? 0),
+          };
+        }
+      }
       if (result.outcome === 'failed') failed += 1;
       const tone = result.outcome === 'failed' ? 'red' : result.outcome === 'installed' ? 'green' : 'dim';
       const took = result.ms ? ` (${Math.round(result.ms / 1000)}s)` : '';
       console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
       if (result.detail && (result.outcome === 'failed' || plan.backend === 'ollama')) console.log(colorize(`    ${result.detail}`, 'dim'));
       report.push({ node: node.name, ...result });
+    }
+
+    // The Hub's engine probes, whatever backends this run touched: on a ufw node that drops the
+    // Docker bridge, every pooled request pays a 5 s timeout per unreachable port before ranking.
+    const firewallPlan = await planProbeFirewallOnNode(target);
+    if (args.execute) {
+      // ufw enabled but its table needs root this account lacks: a failure with a fix, not a skip —
+      // the rules may well be missing, and "done" on that node would leave the 5 s stall unmentioned.
+      // A probe that produced nothing at all is reported as unread, like the bind's, and not counted.
+      const applied: ProbeFirewallResult =
+        firewallPlan.state === 'add'
+          ? await applyProbeFirewall(target, firewallPlan.missing)
+          : {
+              outcome: firewallPlan.state === 'present' ? 'present' : firewallPlan.state === 'unreadable' ? 'failed' : 'skipped',
+              why: firewallPlan.why,
+              added: [],
+            };
+      if (applied.outcome === 'failed') failed += 1;
+      const tone =
+        applied.outcome === 'failed' ? 'red' : applied.outcome === 'applied' ? 'green' : firewallPlan.state === 'unknown' ? 'yellow' : 'dim';
+      const took = applied.ms ? ` (${Math.round(applied.ms / 1000)}s)` : '';
+      console.log(`  ${'firewall'.padEnd(9)} ${colorize(applied.outcome, tone)}${took} — ${applied.why}`);
+      report.push({ node: node.name, firewall: { ...applied, ports: HUB_PROBE_PORTS } });
+    } else {
+      const described = describeFirewallPlan(firewallPlan);
+      for (const line of described.lines) console.log(colorize(`  ${line}`, described.tone));
+      report.push({
+        node: node.name,
+        firewall: { state: firewallPlan.state, why: firewallPlan.why, missing: firewallPlan.missing, present: firewallPlan.present },
+      });
     }
     console.log('');
   }
