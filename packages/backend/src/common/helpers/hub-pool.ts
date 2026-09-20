@@ -714,7 +714,7 @@ function withLatestTag(id: string): string {
  * A model pin wins over the default pin and they never stack: two pins for one request would need a
  * precedence rule between two operator decisions that both say "this node", and the model-specific
  * one is unambiguously the more specific intent. Comparison is verbatim and case-sensitive, because
- * candidate matching is `modelsLoaded.includes(model)` in both `localCandidates` and
+ * candidate matching is `modelsLoaded.includes(model)` in both `probeLocalCandidates` and
  * `peerCandidates` — normalizing here would make pins that look right silently never match.
  */
 export function resolvePinFor(pins: readonly HubPoolPin[] | undefined, model: string): HubPoolPin | null {

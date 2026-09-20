@@ -172,7 +172,9 @@ export class LuceboxBackend implements InferenceBackend {
    * "readiness, not reachability" posture the vLLM and mlx-dspark backends use.
    */
   async healthCheck(): Promise<BackendHealthStatus> {
-    const status = await this.api.healthCheck(this.getBaseUrl(), { healthPath: '/health', timeout: 5000 });
+    // `claimedBy`: vLLM and mtplx default to this same host port, and vLLM's `/health` answers
+    // too. Whoever is listening says so in `owned_by`, and only that backend offers its models.
+    const status = await this.api.healthCheck(this.getBaseUrl(), { healthPath: '/health', timeout: 5000, claimedBy: 'lucebox' });
     if (!status.healthy) return status;
 
     if (status.modelsLoaded.length === 0) {
@@ -191,7 +193,7 @@ export class LuceboxBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      return await this.api.listModels(this.getBaseUrl());
+      return await this.api.listModels(this.getBaseUrl(), { claimedBy: 'lucebox' });
     } catch {
       return [];
     }

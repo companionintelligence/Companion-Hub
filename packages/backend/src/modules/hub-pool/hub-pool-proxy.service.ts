@@ -770,16 +770,67 @@ const MODEL_METADATA_PATHS = new Set(['/api/show']);
  */
 const PEER_MODEL_METADATA_HEADERS_TIMEOUT_MS = 15_000;
 
-export function describeNoCandidates(model: string, pin: HubPoolPin | null): string {
+/**
+ * What one of this node's own backends said when asked about a model — kept for the 502 that has
+ * no candidate to name, because "no pool node has it" was, on a fleet node, most often "this
+ * node has it and the Hub container cannot reach the engine": vLLM behind a firewall rule that
+ * only allowed Ollama's port, Lemonade published on the tailscale address only. Every one of
+ * those read as an inventory problem until someone probed from inside the container by hand.
+ */
+export interface LocalBackendProbe {
+  type: InferenceBackendType;
+  /** The URL the Hub probed — the container's view, which is the one that matters. */
+  url: string;
+  running: boolean;
+  healthy: boolean;
+  /** Whether the inventory named the requested model (regardless of health). */
+  listsModel: boolean;
+  error?: string;
+}
+
+export function describeNoCandidates(model: string, pin: HubPoolPin | null, probes: LocalBackendProbe[] = []): string {
   const base = `No pool node currently has model "${model}" available.`;
+  const local = describeLocalProbes(probes);
   if (!pin) {
-    return base;
+    return local ? `${base} ${local}` : base;
   }
   const target = pin.targetKind === 'local' ? 'this Hub' : 'a peer';
   const scope = pin.scope === 'model' ? `"${model}" is pinned` : 'Routing is pinned';
   // "either" is load-bearing: a prefer pin never removes a candidate, so the pinned node not being
   // able to serve the model is one fact about an empty list, not the cause of it.
-  return `${base} ${scope} to ${target}, which cannot serve it either — the pin only reorders candidates, so this is an inventory problem, not a pin one.`;
+  const pinned = `${base} ${scope} to ${target}, which cannot serve it either — the pin only reorders candidates, so this is an inventory problem, not a pin one.`;
+  return local ? `${pinned} ${local}` : pinned;
+}
+
+/**
+ * The local half of a no-candidate 502, in prose only where it is precise: a backend that answered
+ * but was left out (a foreign engine on a shared port, a server without weights, a model it has
+ * been failing to serve) is named with its reason; the unreachable ones are pointed at, not
+ * listed, because six "connection refused" lines say less than one probe from inside the container.
+ */
+/** A backend's probe URL for the 502 body; never lets a URL resolver's own failure mask the health answer. */
+function safeBaseUrl(backend: { getBaseUrl(): string }): string {
+  try {
+    return backend.getBaseUrl();
+  } catch {
+    return '';
+  }
+}
+
+function describeLocalProbes(probes: LocalBackendProbe[]): string {
+  if (probes.length === 0) return '';
+  const excluded = probes
+    .filter((probe) => probe.running && (!probe.healthy || probe.listsModel) && probe.error)
+    .map((probe) => `local ${probe.type} at ${probe.url} answered but was left out: ${probe.error}`);
+  const unreachable = probes.filter((probe) => !probe.running).map((probe) => probe.type);
+  const parts = [...excluded];
+  if (unreachable.length > 0) {
+    parts.push(
+      `local ${unreachable.join(', ')} not reachable from inside the Hub container — if one of them serves this model on the host, ` +
+        'it must listen on an address the container can reach (see `localBackends` in this response for each URL and error)',
+    );
+  }
+  return parts.length ? `${parts.join('; ')}.` : '';
 }
 
 /**
@@ -875,7 +926,7 @@ export class PoolProxyService {
   }
 
   /**
-   * This node's models as {@link localCandidates} would offer them: healthy, running backends only,
+   * This node's models as {@link probeLocalCandidates} would offer them: healthy, running backends only,
    * minus anything a backend has withheld. The two must agree, or `auto` could resolve to a model
    * that then has no local candidate.
    */
@@ -991,8 +1042,10 @@ export class PoolProxyService {
     throughput: PoolRoutingThroughput | null;
     /** The peer rows ranking read, so placement-time checks see the same snapshot the order came from. */
     peers: HubPoolPeer[];
+    /** What each local backend said — the no-candidate 502 reports these. */
+    localProbes: LocalBackendProbe[];
   }> {
-    const [local, peers] = await Promise.all([this.localCandidates(model), this.usablePeers()]);
+    const [{ candidates: local, probes: localProbes }, peers] = await Promise.all([this.probeLocalCandidates(model), this.usablePeers()]);
     const weight = this.pressureWeight();
     const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
     const localScore = this.loadService.localInFlight() + weight * localPressure;
@@ -1031,6 +1084,7 @@ export class PoolProxyService {
       promptCeiling: ceiling.decision,
       throughput: throughput.decision,
       peers,
+      localProbes,
     };
   }
 
@@ -1180,7 +1234,7 @@ export class PoolProxyService {
     const judged = PROMPT_CEILING_PATHS.has(path);
     // Serialised once for ranking and every attempt, rather than once per forward.
     const payload = memoize(() => forwardedPayload(method, body));
-    const { candidates, pin, promptCeiling, throughput, peers } = await this.rankCandidates(
+    const { candidates, pin, promptCeiling, throughput, peers, localProbes } = await this.rankCandidates(
       model,
       judged ? { bytes: () => payload()?.length ?? 0, streaming } : undefined,
     );
@@ -1210,7 +1264,10 @@ export class PoolProxyService {
         ...describeRequestShape(method, body),
       });
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
-      res.status(502).json({ error: describeNoCandidates(model, pin) });
+      // `localBackends` is the container's-eye view of every local engine: the operator reading
+      // this on a node that plainly runs the model needs the probed URL and the error, not a
+      // second look at the inventory.
+      res.status(502).json({ error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes });
       return;
     }
 
@@ -1461,7 +1518,7 @@ export class PoolProxyService {
 
   /**
    * Feed a local engine's own answer back into its serving-capability signal, so the next
-   * `localCandidates` knows something this request found out and no health poll could.
+   * `probeLocalCandidates` knows something this request found out and no health poll could.
    *
    * Only 5xx counts as a failure. 408 and 429 fail over too, but they are the engine saying "not
    * now" about its queue, not "not ever" about the model — withholding a model because the node
@@ -1830,26 +1887,40 @@ export class PoolProxyService {
    * has withheld (see `BackendHealthStatus.unservableModels`) is dropped here even though it is
    * sitting right there in the inventory.
    */
-  private async localCandidates(model: string): Promise<PoolCandidate[]> {
+  /**
+   * This node's candidates for `model`, plus what every local backend said on the way — the
+   * probes are what a no-candidate 502 reports, so the same health check answers both.
+   */
+  private async probeLocalCandidates(model: string): Promise<{ candidates: PoolCandidate[]; probes: LocalBackendProbe[] }> {
     const results = await Promise.all(
-      this.backends.entries().map(async ([type, backend]): Promise<PoolCandidate | null> => {
+      this.backends.entries().map(async ([type, backend]): Promise<{ candidate: PoolCandidate | null; probe: LocalBackendProbe }> => {
+        const url = safeBaseUrl(backend);
         try {
           const health = await backend.healthCheck();
-          if (!health.running || !health.healthy || !inventoryListsModel(health.modelsLoaded, model)) {
-            return null;
+          const listsModel = inventoryListsModel(health.modelsLoaded, model);
+          const probe: LocalBackendProbe = { type, url, running: health.running, healthy: health.healthy, listsModel, error: health.error };
+          if (!health.running || !health.healthy || !listsModel) {
+            return { candidate: null, probe };
           }
           if (inventoryListsModel(health.unservableModels, model)) {
             this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
-            return null;
+            return {
+              candidate: null,
+              probe: { ...probe, error: probe.error ?? 'lists the model but has been unable to serve it; withheld until that observation decays' },
+            };
           }
-          return { peerId: null, nodeFqdn: null, backend: type };
+          return { candidate: { peerId: null, nodeFqdn: null, backend: type }, probe };
         } catch (error) {
-          this.logger.debug(`[PoolProxy] local ${type} health check failed: ${error instanceof Error ? error.message : String(error)}`);
+          const message = error instanceof Error ? error.message : String(error);
+          this.logger.debug(`[PoolProxy] local ${type} health check failed: ${message}`);
+          return { candidate: null, probe: { type, url, running: false, healthy: false, listsModel: false, error: message } };
         }
-        return null;
       }),
     );
-    return results.filter((c): c is PoolCandidate => c !== null);
+    return {
+      candidates: results.map((entry) => entry.candidate).filter((c): c is PoolCandidate => c !== null),
+      probes: results.map((entry) => entry.probe),
+    };
   }
 
   /**

@@ -12,7 +12,7 @@ vi.mock('../port-availability', () => ({
 }));
 
 import { spawnSync } from 'node:child_process';
-import { healHubPortsBeforeStartup, parseBindConflictPort, resolveHubPorts } from '../heal-hub-ports';
+import { configuredPort, healHubPortsBeforeStartup, parseBindConflictPort, resolveHubPorts } from '../heal-hub-ports';
 import { isPortAvailable } from '../port-availability';
 
 const mockedSpawnSync = vi.mocked(spawnSync);
@@ -71,6 +71,48 @@ describe('heal-hub-ports', () => {
     expect(result.assignments.TRAEFIK_DASHBOARD_PORT).toBe(8080);
 
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('falls back to the default when a configured port is not a port, and repairs the file', () => {
+    // A key appended to an env file with no trailing newline lands on the previous line:
+    // `TRAEFIK_DASHBOARD_PORT=8080LEMONADE_URL=…`. Number() of that is NaN, a bind probe on
+    // NaN is a bind on port 0 (always free), and `NaN` was written back — compose then refused
+    // the file with `invalid hostPort: NaN`.
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'ci-hub-ports-'));
+    const envFile = path.join(tempDir, '.env.dev');
+    writeFileSync(
+      envFile,
+      [
+        'HTTP_PORT=80',
+        'HTTPS_PORT=443',
+        'API_PORT=5002',
+        'POSTGRES_PORT=6543',
+        'RABBITMQ_PORT=5001',
+        'TRAEFIK_DASHBOARD_PORT=8080LEMONADE_URL=http://100.67.181.7:13305',
+        '',
+      ].join('\n'),
+    );
+
+    const result = resolveHubPorts(envFile);
+
+    expect(result.assignments.TRAEFIK_DASHBOARD_PORT).toBe(8080);
+    expect(result.info).toEqual([expect.stringContaining('TRAEFIK_DASHBOARD_PORT=8080LEMONADE_URL=http://100.67.181.7:13305 is not a TCP port')]);
+    expect(mockedIsPortAvailable).not.toHaveBeenCalledWith(Number.NaN);
+    const written = readFileSync(envFile, 'utf-8');
+    expect(written).toContain('TRAEFIK_DASHBOARD_PORT=8080\n');
+    expect(written).not.toContain('NaN');
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['', 8080],
+    ['0', 8080],
+    ['65536', 8080],
+    ['8o8o', 8080],
+    ['9090', 9090],
+  ])('configuredPort(%j) → %i', (raw, expected) => {
+    expect(configuredPort({ TRAEFIK_DASHBOARD_PORT: raw }, 'TRAEFIK_DASHBOARD_PORT', 8080)).toBe(expected);
   });
 
   it('does not throw when the env file does not exist yet, and creates it with resolved ports', () => {

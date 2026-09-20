@@ -151,6 +151,62 @@ describe('describeNoCandidates', () => {
     // Never the peer's name: this runs on an error path and must not need a database read.
     expect(message).not.toContain('peer-a');
   });
+  it('names a local backend that answered but was left out, with its reason', () => {
+    const message = describeNoCandidates('Qwen/Qwen3.5-9B', null, [
+      { type: 'ollama', url: 'http://host.docker.internal:11434', running: true, healthy: true, listsModel: false },
+      {
+        type: 'mtplx',
+        url: 'http://host.docker.internal:8000',
+        running: true,
+        healthy: false,
+        listsModel: false,
+        error: 'The server at http://host.docker.internal:8000 names itself "vllm"',
+      },
+    ]);
+    expect(message).toBe(
+      'No pool node currently has model "Qwen/Qwen3.5-9B" available. ' +
+        'local mtplx at http://host.docker.internal:8000 answered but was left out: The server at http://host.docker.internal:8000 names itself "vllm".',
+    );
+  });
+
+  it('points at the unreachable local backends instead of listing six connection errors', () => {
+    // beta-nas, 2026-09-20: vLLM served the model on the host and ufw dropped the container's
+    // probe. "No pool node has it" sent the operator to the peers; the truth was one firewall rule.
+    const message = describeNoCandidates('Qwen/Qwen2.5-3B-Instruct-AWQ', null, [
+      { type: 'ollama', url: 'http://host.docker.internal:11434', running: true, healthy: true, listsModel: false },
+      {
+        type: 'vllm',
+        url: 'http://host.docker.internal:8000',
+        running: false,
+        healthy: false,
+        listsModel: false,
+        error: 'timeout of 5000ms exceeded',
+      },
+      {
+        type: 'lemonade',
+        url: 'http://host.docker.internal:13305',
+        running: false,
+        healthy: false,
+        listsModel: false,
+        error: 'timeout of 5000ms exceeded',
+      },
+    ]);
+    expect(message).toContain('local vllm, lemonade not reachable from inside the Hub container');
+    expect(message).toContain('`localBackends`');
+    expect(message).not.toContain('timeout of 5000ms');
+  });
+
+  it('keeps the pin sentence and appends the local view after it', () => {
+    const message = describeNoCandidates('a:1b', pin({ targetKind: 'local' }), [
+      { type: 'ollama', url: 'http://host.docker.internal:11434', running: false, healthy: false, listsModel: false, error: 'ECONNREFUSED' },
+    ]);
+    expect(message).toMatch(/^No pool node currently has model "a:1b" available\. Routing is pinned to this Hub, which cannot serve it either/);
+    expect(message).toMatch(/local ollama not reachable from inside the Hub container/);
+  });
+
+  it('says nothing about local backends when there are no probes (the pre-existing message)', () => {
+    expect(describeNoCandidates('a:1b', null, [])).toBe('No pool node currently has model "a:1b" available.');
+  });
 });
 
 describe('resolveStatusPins', () => {

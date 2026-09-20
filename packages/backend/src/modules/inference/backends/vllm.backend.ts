@@ -5,6 +5,7 @@ import type { InferenceBackend } from './backend.interface';
 import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+import { foreignEngineHealth, openAiModelIds } from './engine-identity';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
 
 /** Candidate API key for a Re-check probe — header, not query, so it stays out of access logs. */
@@ -83,14 +84,18 @@ export class VllmBackend implements InferenceBackend {
   async healthCheck(baseUrlOverride?: string, apiKeyOverride?: string): Promise<BackendHealthStatus> {
     const baseUrl = baseUrlOverride ? resolveVllmProbeUrl(baseUrlOverride) : this.getBaseUrl();
     try {
-      const models = await this.api.listModelIds(baseUrl, {
+      const body = await this.api.fetchModels(baseUrl, {
         timeout: 5000,
         apiKey: this.vllmAuthKey(apiKeyOverride),
       });
+      // mtplx and lucebox default to this same host port; whoever is actually listening there
+      // says so in `owned_by`, and only that backend gets to offer its models.
+      const foreign = foreignEngineHealth('vllm', body, baseUrl);
+      if (foreign) return foreign;
       return {
         running: true,
         healthy: true,
-        modelsLoaded: models,
+        modelsLoaded: openAiModelIds(body),
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -110,6 +115,7 @@ export class VllmBackend implements InferenceBackend {
       return await this.api.listModels(this.getBaseUrl(), {
         timeout: 10000,
         apiKey: this.vllmAuthKey(),
+        claimedBy: 'vllm',
       });
     } catch {
       return [];

@@ -16,7 +16,7 @@
  * actually driven through.
  */
 
-import type { InferenceBackendType } from '@ci-hub/common/types';
+import { OWNED_BY_ENGINE, openAiModelIds, openAiModelOwner, type SharedPortEngine } from '../backends/engine-identity';
 
 /**
  * The three backends that share :8000. Ollama, lemonade and dspark have ports of their own.
@@ -24,7 +24,7 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
  * Narrowed from the canonical backend tuple rather than spelled out, so renaming a backend there is
  * a compile error here instead of a fingerprint that can never match.
  */
-export type SharedPortBackend = Extract<InferenceBackendType, 'vllm' | 'mtplx' | 'lucebox'>;
+export type SharedPortBackend = SharedPortEngine;
 
 /** One probe response, reduced to what the verdict depends on. `null` = the request never landed. */
 export interface ProbeResponse {
@@ -68,35 +68,12 @@ function hasOpenAiModelRoute(models: ProbeResponse | null): boolean {
   return models.status === 200 && Array.isArray((models.body as { data?: unknown } | null)?.data);
 }
 
-/** Extract model ids from an OpenAI `/v1/models` body. Shared with the caller so both agree on shape. */
-export function openAiModelIds(body: unknown): string[] {
-  const data = (body as { data?: { id?: string }[] } | null)?.data;
-  return Array.isArray(data) ? data.map((m) => String(m?.id ?? '')).filter(Boolean) : [];
-}
-
 /**
- * Who each of the three NAMES ITSELF as, in `data[0].owned_by` of its own `/v1/models` body.
- *
- * Measured against live servers, not guessed: lucebox returns `owned_by:dflash` (its runtime's name,
- * not the product's — which is exactly why this table exists rather than a string match on the
- * backend id), mtplx returns `owned_by:mtplx`, vLLM returns `owned_by:vllm`. It is the only field the
- * three actually disagree on, so when it is present it beats every route-shape heuristic below —
- * those exist because this field may be absent.
+ * The `owned_by` → engine table and its reader live in `backends/engine-identity.ts` now: the
+ * health checks of the three shared-port backends read the same field, so a server that names
+ * itself is claimed by exactly one of them. Re-exported so the sweep's callers keep their import.
  */
-const OWNED_BY_BACKEND: Record<string, SharedPortBackend> = {
-  dflash: 'lucebox',
-  lucebox: 'lucebox',
-  mtplx: 'mtplx',
-  vllm: 'vllm',
-};
-
-/** `data[0].owned_by` from an OpenAI `/v1/models` body, lowercased. Empty string when absent. */
-export function openAiModelOwner(body: unknown): string {
-  const data = (body as { data?: { owned_by?: unknown }[] } | null)?.data;
-  if (!Array.isArray(data) || !data.length) return '';
-  const owner = data[0]?.owned_by;
-  return typeof owner === 'string' ? owner.trim().toLowerCase() : '';
-}
+export { openAiModelIds, openAiModelOwner };
 
 /**
  * Order is by signature specificity: vLLM is the only one of the three with `/version`; lucebox is
@@ -113,7 +90,7 @@ export function fingerprintSharedPort(probe: SharedPortProbe): SharedPortVerdict
 
   // The server's own claim first. A backend that names itself needs no fingerprinting, and the
   // heuristics below cannot tell lucebox from mtplx when both answer only /v1/models.
-  const owner = OWNED_BY_BACKEND[openAiModelOwner(models?.body)];
+  const owner = OWNED_BY_ENGINE[openAiModelOwner(models?.body)];
   if (models?.status === 200 && owner) {
     return { kind: 'match', backend: owner, via: `GET /v1/models (owned_by=${openAiModelOwner(models.body)})` };
   }

@@ -1,18 +1,21 @@
 import axios from 'axios';
 import type { BackendHealthStatus, BackendModelInfo } from '@ci-hub/common/types';
+import { foreignEngineHealth, openAiModelIds, type SharedPortEngine } from './engine-identity';
 
 export interface OpenAiCompatibleRequestOptions {
   apiKey?: string;
   timeout?: number;
+  /**
+   * The engine the caller IS. When the server's `/v1/models` names a different one (see
+   * `engine-identity.ts`), health reports it unhealthy and the model list is empty — the server
+   * belongs to another backend that will offer it.
+   */
+  claimedBy?: SharedPortEngine;
 }
 
 export interface OpenAiCompatibleHealthOptions extends OpenAiCompatibleRequestOptions {
   /** Optional provider health path. Model discovery always uses `/v1/models`. */
   healthPath?: string;
-}
-
-interface OpenAiCompatibleModel {
-  id?: unknown;
 }
 
 /**
@@ -28,13 +31,19 @@ export class OpenAiCompatibleClient {
     return trimmed ? { Authorization: `Bearer ${trimmed}` } : undefined;
   }
 
-  async listModelIds(baseUrl: string, options: OpenAiCompatibleRequestOptions = {}): Promise<string[]> {
+  /** The raw `/v1/models` body, for callers that need more than the ids (the `owned_by` claim). */
+  async fetchModels(baseUrl: string, options: OpenAiCompatibleRequestOptions = {}): Promise<unknown> {
     const response = await axios.get(`${baseUrl}/v1/models`, {
       timeout: options.timeout ?? 10000,
       headers: this.authHeaders(options.apiKey),
     });
-    const models = response.data?.data ?? [];
-    return models.map((model: OpenAiCompatibleModel) => model.id).filter((id: unknown): id is string => typeof id === 'string' && id.length > 0);
+    return response.data;
+  }
+
+  async listModelIds(baseUrl: string, options: OpenAiCompatibleRequestOptions = {}): Promise<string[]> {
+    const body = await this.fetchModels(baseUrl, options);
+    if (options.claimedBy && foreignEngineHealth(options.claimedBy, body, baseUrl)) return [];
+    return openAiModelIds(body);
   }
 
   async listModels(baseUrl: string, options: OpenAiCompatibleRequestOptions = {}): Promise<BackendModelInfo[]> {
@@ -51,11 +60,13 @@ export class OpenAiCompatibleClient {
         });
       }
 
-      const modelsLoaded = await this.listModelIds(baseUrl, {
+      const body = await this.fetchModels(baseUrl, {
         apiKey: options.apiKey,
         timeout: options.timeout ?? 5000,
       });
-      return { running: true, healthy: true, modelsLoaded };
+      const foreign = options.claimedBy ? foreignEngineHealth(options.claimedBy, body, baseUrl) : null;
+      if (foreign) return foreign;
+      return { running: true, healthy: true, modelsLoaded: openAiModelIds(body) };
     } catch (err) {
       return {
         running: false,
