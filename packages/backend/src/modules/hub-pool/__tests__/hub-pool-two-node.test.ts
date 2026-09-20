@@ -22,6 +22,7 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
   type PoolContainerRollup,
@@ -221,6 +222,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolShareContainerStats: true,
     poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
     poolMaxPromptTokens: null,
+    poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
 
@@ -1710,7 +1712,9 @@ describe('Hub Pool across two nodes', () => {
         node.configuration,
         new HubPoolRoutingLogService(),
         pressure,
-        undefined,
+        // One `undefined` (the model registry) and then the throughput slot: the two `undefined`s
+        // this used to pass landed `node.throughput` on the router's slot instead, and the proxy
+        // quietly built a store of its own. The local-health slot after it is left to its default.
         undefined,
         node.throughput,
       );

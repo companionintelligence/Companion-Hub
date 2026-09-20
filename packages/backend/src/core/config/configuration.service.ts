@@ -7,6 +7,7 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   type HubPoolPin,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
@@ -131,6 +132,7 @@ type PersistedSettingsValues = {
   hubPoolShareContainerStats: boolean | undefined;
   hubPoolPressureWeight: number | undefined;
   hubPoolMaxPromptTokens: number | undefined;
+  hubPoolProbeSnapshotTtlMs: number | undefined;
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
   hubPoolPins: HubPoolPin[] | undefined;
@@ -163,6 +165,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolShareContainerStats: undefined,
   hubPoolPressureWeight: undefined,
   hubPoolMaxPromptTokens: undefined,
+  hubPoolProbeSnapshotTtlMs: undefined,
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
   hubPoolPins: undefined,
@@ -253,6 +256,7 @@ export class ConfigurationService {
       hubPoolShareContainerStats: settings.hubPoolShareContainerStats,
       hubPoolPressureWeight: settings.hubPoolPressureWeight,
       hubPoolMaxPromptTokens: settings.hubPoolMaxPromptTokens,
+      hubPoolProbeSnapshotTtlMs: settings.hubPoolProbeSnapshotTtlMs,
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
       hubPoolPins: settings.hubPoolPins,
@@ -354,6 +358,7 @@ export class ConfigurationService {
         hubPoolShareContainerStats: settingsValues.hubPoolShareContainerStats,
         hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
         hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
+        hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         hubPoolPins: settingsValues.hubPoolPins,
@@ -568,6 +573,7 @@ export class ConfigurationService {
       // `?? null`: no ceiling is the default, and a cleared ceiling is an absent key rather than a
       // stored null — see `setHubPoolPreferences`.
       poolMaxPromptTokens: this.config.userSettings.hubPoolMaxPromptTokens ?? null,
+      poolProbeSnapshotTtlMs: this.config.userSettings.hubPoolProbeSnapshotTtlMs ?? DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
       // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
       // in-memory settings the next request will rank against.
       poolPins: [...(this.config.userSettings.hubPoolPins ?? [])],
@@ -593,6 +599,7 @@ export class ConfigurationService {
       hubPoolShareContainerStats?: boolean;
       hubPoolPressureWeight?: number;
       hubPoolMaxPromptTokens?: number;
+      hubPoolProbeSnapshotTtlMs?: number;
       hubPoolPins?: HubPoolPin[];
       hubPoolRouteAppsAlways?: boolean;
     } = {};
@@ -625,6 +632,9 @@ export class ConfigurationService {
     // a change for the no-op guard below.
     if (preferences.poolMaxPromptTokens !== undefined) {
       settings.hubPoolMaxPromptTokens = preferences.poolMaxPromptTokens ?? undefined;
+    }
+    if (preferences.poolProbeSnapshotTtlMs !== undefined) {
+      settings.hubPoolProbeSnapshotTtlMs = preferences.poolProbeSnapshotTtlMs;
     }
     // The whole list, never a delta: pins have no per-row identity in settings.json, so the pin
     // service computes the next array and this persists it. `undefined` still means "leave alone",

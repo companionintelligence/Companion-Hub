@@ -13,6 +13,7 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
   type PoolContainerSampler,
@@ -81,6 +82,7 @@ describe('HubPoolPeerService', () => {
       poolShareContainerStats: true,
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       poolMaxPromptTokens: null,
+      poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
       ...overrides,
     });
   }
