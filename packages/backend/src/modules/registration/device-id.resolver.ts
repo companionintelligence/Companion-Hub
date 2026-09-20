@@ -185,6 +185,41 @@ async function readSystemInformationUuid(
   return null;
 }
 
+/**
+ * The device ID this Hub registered with Portal under, kept beside the other state files.
+ *
+ * The hardware chain below is not stable across images. `/sys/class/dmi/id/product_uuid` is
+ * root-readable only; the 0.2.61 release image ran the backend as root and registered a Hub as its
+ * product UUID, and the next image ran it as uid 1000, read `/etc/machine-id` instead, and Portal
+ * answered every check-in with `403 Device ID does not match authenticated device`. Once a Hub has
+ * registered, what it registered as is its identity, whatever the next image can or cannot read.
+ * Written on registration, cleared by prepare-fresh, and never by an upgrade.
+ */
+const REGISTERED_DEVICE_ID_FILE = 'registered-device-id';
+
+export function registeredDeviceIdPath(dataDir: string): string {
+  return path.join(dataDir, 'state', REGISTERED_DEVICE_ID_FILE);
+}
+
+export function readRegisteredDeviceId(dataDir: string, logger?: DeviceIdLogger): string | null {
+  return readFileDeviceId(registeredDeviceIdPath(dataDir), logger);
+}
+
+export function persistRegisteredDeviceId(dataDir: string, deviceId: string, logger?: DeviceIdLogger): void {
+  const filePath = registeredDeviceIdPath(dataDir);
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${deviceId}\n`, { encoding: 'utf-8', mode: 0o644 });
+  } catch (error) {
+    logger?.warn(`Unable to persist the registered device ID at ${filePath}; the next image may derive a different one`);
+    logger?.debug('Failed to write registered device ID file', error);
+  }
+}
+
+export function clearRegisteredDeviceId(dataDir: string): void {
+  fs.rmSync(registeredDeviceIdPath(dataDir), { force: true });
+}
+
 function getOrCreateGeneratedDeviceId(dataDir: string, logger?: DeviceIdLogger): string {
   const stateDir = path.join(dataDir, 'state');
   const filePath = path.join(stateDir, 'generated-device-id');
@@ -220,6 +255,12 @@ export async function resolveDeviceId(options: ResolveDeviceIdOptions): Promise<
   if (envDeviceId) {
     logger?.debug(`Device ID from DEVICE_ID env var: ${envDeviceId}`);
     return envDeviceId;
+  }
+
+  const registered = readRegisteredDeviceId(dataDir, logger);
+  if (registered) {
+    logger?.debug(`Device ID from the registration record: ${registered}`);
+    return registered;
   }
 
   const platformHostId = readPlatformHostDeviceId(execCommand, logger);
