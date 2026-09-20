@@ -4,21 +4,30 @@
  * Usage:
  *   pnpm exec tsx scripts/init-traefik.ts
  *
- * Environment variables:
- *   CI_HUB_STATE_PATH - State directory path (default: .internal)
+ * Writes under `${ROOT_FOLDER_HOST}/state/traefik` — the path the compose file bind-mounts — resolved
+ * the same way init-hub-data-dirs resolves it: the env file's ROOT_FOLDER_HOST, then the process env,
+ * then CI_HUB_STATE_PATH / STATE_PATH, then `.internal` under the cwd.
  */
 import { mkdir, copyFile, writeFile, chmod, rm, stat, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { isDirectScriptRun } from './lib/is-direct-run';
+import { resolveRootFolderHostForRuntime } from './lib/paths';
 import { findTraefikAssets } from './lib/seed-appliance';
 
-const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
-const STATE_DIR = path.join(INTERNAL_DIR, 'state');
-const TRAEFIK_DIR = path.join(STATE_DIR, 'traefik');
+/**
+ * Resolved at call time, not import time. `cihub up` imports this module at startup and only later
+ * runs it under `runScript` with ENV_FILE / ROOT_FOLDER_HOST set for the target install; a
+ * module-level constant would have read the env before those overrides existed. On an appliance
+ * (`~/.local/share/companion-hub`) that difference is the whole traefik directory.
+ */
+function resolveTraefikDir(): string {
+  return path.join(resolveRootFolderHostForRuntime(), 'state', 'traefik');
+}
 
 export async function initTraefik() {
   console.log('Initializing Traefik configuration...');
+  const TRAEFIK_DIR = resolveTraefikDir();
 
   // Create directory structure
   const dirs = [path.join(TRAEFIK_DIR, 'config'), path.join(TRAEFIK_DIR, 'dynamic'), path.join(TRAEFIK_DIR, 'tls')];
