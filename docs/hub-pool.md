@@ -100,6 +100,58 @@ ceiling skipped that node" can be told apart from "the ranker preferred another"
 nodes moved to the back. `overridden` is `true` when the request was placed on one of them anyway.
 `cihub pool log` marks the requests the ceiling changed.
 
+## Context caps: the window an app asks for is the window the engine runs
+
+A per-node preference about the context window (`num_ctx`) the Hub hands its apps:
+`PATCH /api/user-settings {"inferenceMaxNumCtx": 16384}` on a node, or `maxNumCtx` on
+`PATCH /api/inference/preferences`. Absent (the default) is no cap. It exists because the handout and
+the engine's runtime environment never knew about each other.
+
+The Hub sizes `CI_LLM_NUM_CTX` (`HERMES_NUM_CTX` for Hermes) from the model's window and the memory
+left after its weights, so an app never inherits Ollama's memory-based default of a full 262144
+window. Ollama, meanwhile, runs the context its own environment sets — `OLLAMA_CONTEXT_LENGTH`,
+written by [`cihub fleet backends --ollama-context`](./CLI.md#ollamas-runtime-environment-a-second-file-restarted-only-on-change)
+next to `OLLAMA_NUM_PARALLEL` — and it multiplies that window by the parallel slots. A request whose
+`num_ctx` differs from the window a model is loaded at reloads the model. Measured on core-2,
+2026-09-20: Ollama ran `OLLAMA_NUM_PARALLEL=4` at `OLLAMA_CONTEXT_LENGTH=16384`, and its apps were
+handed 65536. OpenClaw's first turn (44,340 prompt tokens) reloaded `qwen3-coder:30b` with a 65536
+window: `ollama ps` went from 25 GB to 44 GB (four slots of 64k KV cache) over a ~40 s reload, and
+every later request at another size — the harness's 16k default, Hermes — flipped it back, each flip
+a full reload of a 30B model. On beta-red (10 GB VRAM) the same handout spilled the model to CPU.
+
+**What the cap does.** Every handout is `min(model window, memory-sized recommendation, cap)`, on
+both paths (`app.env` generation and `credentials.env`). Set the cap to the node's
+`OLLAMA_CONTEXT_LENGTH` and every app asks for the window the engine already runs, so nothing
+reloads. The cap wins over an app's declared floor: the floor is what the app would like, the cap is
+what the engine serves without reloading, and handing out the floor anyway is the 44 GB reload
+above. When a cap is below an app's floor the Hub logs a warning naming both (Hermes refuses to start
+below 64000) — the fix is to raise `--ollama-context` and the cap together, or to keep that app off
+that node. Changing the cap sweeps the AI apps whose env it changes, like every other inference
+preference.
+
+**Why it is a setting and not a probe.** Ollama's API does not expose `OLLAMA_CONTEXT_LENGTH`. The
+`context_length` that `GET /api/ps` reports for a loaded model is whatever the last request asked
+for — after one oversized handout it is the oversized value — so it cannot size a handout. The Hub
+reads it to warn: when the local engine holds the chat model at a window other than the one being
+handed out, the log says so, names both numbers, and points at the cap.
+
+**Through the pool.** A node advertises its cap in `GET /capabilities` as `maxNumCtx`, omitting the
+key when it has none, which is also what every older build sends. A pooled request may be placed on
+any node serving the model, so the entry node caps its apps at the **smallest cap among the nodes
+that serve the chosen model**; a node that serves a different model does not count, and neither does
+one that advertises no cap. When no serving node advertises a cap, the entry node's own cap applies.
+A peer on an older build routes and serves as before; only what its apps ask for changes, and only
+if that peer sets a cap itself.
+
+**Seeing it.** `GET /api/inference/pool/status` reports `localNode.maxNumCtx` and
+`peers[].maxNumCtx` (`null` for none, through the same clamp a handout reads). The handout log lines
+(`[InferenceEnvResolver]`, `[AppCredentials]`) carry the two warnings above.
+
+**Sizing the engine.** Size `OLLAMA_CONTEXT_LENGTH` for the largest prompt the node's agents send —
+OpenClaw's first turn on core-2 was 44k tokens, which does not fit a 16k window — and remember that
+the KV cache is `OLLAMA_NUM_PARALLEL` times that window. A 30B at 4 × 64k is the 44 GB above;
+4 × 16k is 25 GB. Then set the cap to the same number on that node.
+
 ## Throughput-aware placement
 
 The automatic counterpart to a prompt ceiling. The ranker weighs queue depth and hardware tier, and

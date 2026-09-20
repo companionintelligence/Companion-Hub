@@ -85,6 +85,17 @@ export interface PoolPeerCapabilities {
    */
   maxPromptTokens?: number;
   /**
+   * The answering node's ceiling on the context window it hands its apps (`inferenceMaxNumCtx`),
+   * which its operator set to the engine's own context (`OLLAMA_CONTEXT_LENGTH`). An entry node
+   * whose app may be served here caps the app's `num_ctx` at the smallest cap among the candidates
+   * that serve the model — see `poolContextCap` — so a pooled request never asks a peer's engine for
+   * a window that reloads its model.
+   *
+   * ABSENT means no cap, and that is the only encoding of it: a node with none omits the key, and
+   * so does every build predating the field. Read through `clampContextCap`, never raw.
+   */
+  maxNumCtx?: number;
+  /**
    * How fast the answering node's own engines have been reading prompts and writing tokens, per
    * (backend, model), as it measured them serving its apps and its peers. A caller treats it as a
    * second opinion next to what it timed itself, and believes whichever is slower — see
@@ -413,6 +424,8 @@ export interface PoolStatusPeer extends PublicHubPoolPeer {
    * ranker applies it for as long as it still trusts the same snapshot's inventory.
    */
   maxPromptTokens?: number | null;
+  /** The context cap the peer advertised, clamped the way a handout reads it, or `null` for none. Policy, like the ceiling; not freshness-gated. */
+  maxNumCtx?: number | null;
   /** The peer's prefill and decode rates, timed here and self-reported, after the same validation and decay the ranker applies. */
   throughput?: PoolStatusPeerThroughput;
 }
@@ -439,6 +452,8 @@ export interface PoolStatusLocalNode {
   maxPromptTokens?: number | null;
   /** Which source set {@link maxPromptTokens}: `'env'` is `HUB_POOL_MAX_PROMPT_TOKENS`, which a settings PATCH cannot change. */
   maxPromptTokensSetBy?: 'env' | 'setting' | null;
+  /** This node's context cap (`inferenceMaxNumCtx`), or `null` for none. What peers are told, and what caps this node's own handouts. */
+  maxNumCtx?: number | null;
   /** This node's own engines' measured rates: exactly what it advertises to peers. */
   throughput?: PoolThroughputEstimate[];
 }

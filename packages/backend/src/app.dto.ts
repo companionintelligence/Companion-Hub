@@ -21,6 +21,7 @@ import {
   POOL_PIN_TARGET_KINDS,
 } from '@/common/helpers/hub-pool';
 import { INFERENCE_SUPERVISION_MODES, MAX_SUPERVISION_POLL_SECONDS, MIN_SUPERVISION_POLL_SECONDS } from '@/common/helpers/inference-supervision';
+import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
 
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { userSchema } from './modules/user/dto/user.dto';
@@ -65,6 +66,14 @@ const poolProbeSnapshotTtlMsSchema = z
 const poolMaxPromptTokensSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_MAX_PROMPT_TOKENS).max(MAX_POOL_MAX_PROMPT_TOKENS));
+/**
+ * The handout context cap as persisted: a number or nothing, encoded like the prompt ceiling above.
+ * Clearing it removes the key, and an out-of-range value degrades to "no cap" on the read path —
+ * the sizing the build before the cap did — rather than failing the parse boot depends on.
+ */
+const inferenceMaxNumCtxSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_INFERENCE_MAX_NUM_CTX).max(MAX_INFERENCE_MAX_NUM_CTX));
 /** Same read/write split as the two pool knobs above, for the inference observation interval. */
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -140,6 +149,10 @@ export const settingsSchema = z.object({
   inferenceVllmUrl: z.string().trim().optional(),
   inferenceMtplxUrl: z.string().trim().optional(),
   inferenceDsparkUrl: z.string().trim().optional(),
+  // Ceiling on the `num_ctx` handed to apps, matched to the engine's own context
+  // (`OLLAMA_CONTEXT_LENGTH`). Absent means no cap, which sizes exactly as the build before it.
+  // `.catch(undefined)` on the read path for the reason the pool knobs below give.
+  inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional().catch(undefined),
   // Multi-Hub inference pooling. `hubPoolEnabled` is opt-out (absent = on) and is the in-product
   // half of the kill switch; `HUB_POOL_USER_DISABLED=true` in the environment still overrides it
   // (see resolveHubPoolEnabled). Absent numeric values fall back to the DEFAULT_POOL_* constants.
@@ -351,6 +364,7 @@ export class UserSettingsBody extends createZodDto(
     hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional(),
     hubPoolProbeSnapshotTtlMs: poolProbeSnapshotTtlMsSchema.optional(),
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
+    inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional(),
     hubPoolPins: poolPinsSchema.optional(),
   }),
 ) {}

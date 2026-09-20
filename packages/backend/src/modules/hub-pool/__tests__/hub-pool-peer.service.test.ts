@@ -1158,6 +1158,16 @@ describe('HubPoolPeerService', () => {
         expect(capabilities.maxPromptTokens).toBe(16_000);
       });
 
+      it('advertises the handout context cap, and omits the key when there is none, like the ceiling', async () => {
+        configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: 16_384 } as never);
+        expect((await service.getOwnCapabilities()).maxNumCtx).toBe(16_384);
+        // Refusing inbound work does not blank it: it describes the engine, not an offer of work.
+        expect((await service.getOwnCapabilities(false)).maxNumCtx).toBe(16_384);
+
+        configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: null } as never);
+        expect(await service.getOwnCapabilities()).not.toHaveProperty('maxNumCtx');
+      });
+
       it('picks up a settings change on the next poll, not the next restart', async () => {
         const before = await service.getOwnCapabilities();
         setPoolPreferences({ poolMaxPromptTokens: 16_000 });

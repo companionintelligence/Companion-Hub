@@ -6912,6 +6912,11 @@
               "inferenceDsparkUrl": {
                 "type": "string"
               },
+              "inferenceMaxNumCtx": {
+                "type": "integer",
+                "minimum": 2048,
+                "maximum": 1048576
+              },
               "hubPoolEnabled": {
                 "type": "boolean"
               },
@@ -7424,6 +7429,11 @@
           },
           "inferenceDsparkUrl": {
             "type": "string"
+          },
+          "inferenceMaxNumCtx": {
+            "type": "integer",
+            "minimum": 2048,
+            "maximum": 1048576
           },
           "hubPoolEnabled": {
             "type": "boolean"
@@ -12664,6 +12674,12 @@
             "nullable": true,
             "type": "string",
             "format": "uri"
+          },
+          "maxNumCtx": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": 2048,
+            "maximum": 1048576
           }
         },
         "required": [

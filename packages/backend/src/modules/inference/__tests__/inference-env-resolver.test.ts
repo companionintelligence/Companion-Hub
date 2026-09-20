@@ -67,14 +67,14 @@ const makeCapableLlm = (id: string, backendModelId: string, options: { tools: bo
 
 const POOL_DIRECTIONS_ON = { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } };
 
-const makePeer = (name: string, modelsLoaded: string[]): HubPoolPeer =>
+const makePeer = (name: string, modelsLoaded: string[], capabilities: Record<string, unknown> = {}): HubPoolPeer =>
   ({
     id: `peer-${name}`,
     nodeFqdn: `${name}.tailnet.ts.net`,
     displayName: name,
     status: 'connected',
     enabled: true,
-    lastCapabilities: { hardwareTier: 'high', backends: [{ type: 'ollama', healthy: true, modelsLoaded }] },
+    lastCapabilities: { hardwareTier: 'high', backends: [{ type: 'ollama', healthy: true, modelsLoaded }], ...capabilities },
   }) as unknown as HubPoolPeer;
 
 const makeEmbedding = (id: string, backendModelId: string): CuratedModel =>
@@ -155,7 +155,8 @@ describe('InferenceEnvResolver', () => {
       preferredModel: null,
       preferredEmbeddingModel: null,
       preferredVisionModel: null,
-    });
+      maxNumCtx: null,
+    } as never);
     hardwareInspector.getProfile.mockResolvedValue(baseProfile);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
     ollamaBackend.getBaseUrl.mockReturnValue(OLLAMA_BASE_URL);
@@ -652,6 +653,136 @@ describe('InferenceEnvResolver', () => {
       const env = await service.resolve();
 
       expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+    });
+  });
+
+  describe('the engine-runtime context cap (core-2, 2026-09-20)', () => {
+    // core-2's Ollama runs OLLAMA_NUM_PARALLEL=4 at OLLAMA_CONTEXT_LENGTH=16384; the memory ladder
+    // alone hands apps 65536, and the first app turn reloaded qwen3-coder:30b at 4 x 64k.
+    const qwenCoder = makeCapableLlm('qwen3-coder-30b', 'qwen3-coder:30b', { tools: true, contextWindow: 262144 });
+    const setCap = (maxNumCtx: number | null) =>
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: null,
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        maxNumCtx,
+      } as never);
+
+    beforeEach(() => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3-coder:30b'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([qwenCoder]);
+      modelRegistry.getCatalog.mockReturnValue([qwenCoder]);
+    });
+
+    it('caps CI_LLM_NUM_CTX at the configured cap on the direct path', async () => {
+      setCap(16_384);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_LLM_NUM_CTX).toBe('16384');
+    });
+
+    it('lets the cap win over an app floor, and warns that the app may refuse to start', async () => {
+      setCap(16_384);
+
+      const env = await service.resolve({ appSlug: 'hermes-agent' });
+
+      expect(env.CI_LLM_NUM_CTX).toBe('16384');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('hermes-agent: the context cap (16384) is below its 64000-token floor'));
+    });
+
+    it('sizes exactly as before when no cap is set — the default is the old behaviour', async () => {
+      setCap(null);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_LLM_NUM_CTX).toBe('65536');
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('context cap'));
+    });
+
+    it('warns, without changing the handout, when Ollama holds the model at a different window than it hands out', async () => {
+      // No cap set: the ladder says 65536, /api/ps says the model is loaded at the daemon's 16384.
+      // Handing out 65536 reloads it, and the next 16384 request reloads it back — the flip.
+      ollamaBackend.residentContextLength.mockResolvedValue(16_384);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_LLM_NUM_CTX).toBe('65536');
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('openclaw: ollama holds qwen3-coder:30b at a 16384-token window and the handout is 65536'),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('OLLAMA_CONTEXT_LENGTH'));
+    });
+
+    it('is quiet once the cap matches what the engine holds the model at', async () => {
+      setCap(16_384);
+      ollamaBackend.residentContextLength.mockResolvedValue(16_384);
+
+      const env = await service.resolve({ appSlug: 'openclaw' });
+
+      expect(env.CI_LLM_NUM_CTX).toBe('16384');
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('does not ask Ollama about residency for a model only a peer serves', async () => {
+      hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b'])]);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+
+      await service.resolve({ appSlug: 'openclaw' });
+
+      expect(ollamaBackend.residentContextLength).not.toHaveBeenCalled();
+      expect(ollamaBackend.contextCostForModel).not.toHaveBeenCalled();
+    });
+
+    describe('through the pool', () => {
+      beforeEach(() => {
+        hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+        hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      });
+
+      it('caps at the smallest cap among the nodes serving the model, since the proxy may place the request on any of them', async () => {
+        setCap(65_536);
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([
+          makePeer('core-2', ['qwen3-coder:30b'], { maxNumCtx: 16_384 }),
+          makePeer('core-6', ['qwen3-coder:30b'], { maxNumCtx: 32_768 }),
+        ]);
+
+        const env = await service.resolve({ appSlug: 'openclaw' });
+
+        expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+        expect(env.CI_LLM_NUM_CTX).toBe('16384');
+      });
+
+      it('ignores the cap of a node that serves a different model', async () => {
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('beta-red', ['gemma3:1b'], { maxNumCtx: 4096 })]);
+
+        const env = await service.resolve({ appSlug: 'openclaw' });
+
+        expect(env.CI_LLM_NUM_CTX).toBe('65536');
+      });
+
+      it('falls back to this node cap when no serving node advertises one (peers on an older build)', async () => {
+        setCap(16_384);
+        ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b'])]);
+
+        const env = await service.resolve({ appSlug: 'openclaw' });
+
+        // Peer-served: 32768 before the cap, 16384 after it.
+        expect(env.CI_LLM_NUM_CTX).toBe('16384');
+      });
+
+      it('reads a peer cap the way the wire is read: an unbelievable value is no cap', async () => {
+        ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b'], { maxNumCtx: '16384' })]);
+
+        const env = await service.resolve({ appSlug: 'openclaw' });
+
+        expect(env.CI_LLM_NUM_CTX).toBe('32768');
+      });
     });
   });
 
