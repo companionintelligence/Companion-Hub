@@ -143,7 +143,7 @@ beforeEach(() => {
   mocks.executeBackendPlan.mockReset();
   mocks.planAllBackends.mockReset().mockReturnValue([{ backend: 'ollama', action: 'install', why: 'no engine answering' }]);
   mocks.checkAppOnNode.mockReset();
-  mocks.probeNode.mockReset().mockResolvedValue({ ssh: true, sshFailure: 'ok', hub: true, hubDetail: 'tier a', engines: [] });
+  mocks.probeNode.mockReset().mockResolvedValue({ ssh: true, sshFailure: 'ok', hub: true, hubProbe: 'ok', hubDetail: 'tier a', engines: [] });
   mocks.ensureTailscaleCert.mockReset();
   mocks.probeTailscaleCert.mockReset();
   mocks.preflightNode
@@ -943,13 +943,55 @@ describe('fleet status image column', () => {
   it('marks a node SSH could not reach as unknown with that reason, without dialling it again', async () => {
     mocks.probeNode.mockImplementation(async (node: { ip: string }) =>
       node.ip === '10.0.0.2'
-        ? { ssh: false, sshFailure: 'acl-denied', hub: true, hubDetail: 'tier a', engines: ['ollama:11434'] }
-        : { ssh: true, sshFailure: 'ok', hub: true, hubDetail: 'tier a', engines: [] },
+        ? { ssh: false, sshFailure: 'acl-denied', hub: true, hubProbe: 'ok', hubDetail: 'tier a', engines: ['ollama:11434'] }
+        : { ssh: true, sshFailure: 'ok', hub: true, hubProbe: 'ok', hubDetail: 'tier a', engines: [] },
     );
     routeSsh({ before: { '10.0.0.1': probeOutput('d5ff45d90203') } });
     await runFleetCommand(['status']);
     expect(probeCalls().map((call) => (call[0] as { host: string }).host)).toEqual(['10.0.0.1']);
     expect(logged()).toContain('hub image d5ff45d9 on 1/2; unknown: core-2 (acl-denied)');
+  });
+
+  // 2026-09-20: four Hubs under inference load printed `—` under HUB and PORTAL, the same glyphs a
+  // node with no Hub prints. The phase route had answered; only the backend summary had not.
+  const underLoad = () =>
+    mocks.probeNode.mockImplementation(async (node: { ip: string }) =>
+      node.ip === '10.0.0.2'
+        ? {
+            ssh: true,
+            sshFailure: 'ok',
+            hub: true,
+            hubProbe: 'slow',
+            portal: { phase: 'locally_ready', registered: true, checkIn: 200 },
+            engines: ['ollama:11434'],
+          }
+        : { ssh: true, sshFailure: 'ok', hub: false, hubProbe: 'timeout', engines: [] },
+    );
+
+  it('shows a Hub whose summary timed out as slow with its Portal standing, and a silent port as timeout', async () => {
+    underLoad();
+    routeSsh({ before: { '10.0.0.1': probeOutput('d5ff45d90203'), '10.0.0.2': probeOutput('d5ff45d90203') } });
+    await runFleetCommand(['status', '--timeout', '250']);
+    const row = (name: string) =>
+      logged()
+        .split('\n')
+        .find((line) => line.startsWith(name)) ?? '';
+    expect(row('core-2')).toMatch(/^core-2\s+yes\s+yes, slow\s+ok 200\s+d5ff45d9/);
+    expect(row('core-1')).toMatch(/^core-1\s+yes\s+timeout\s+—\s+d5ff45d9/);
+    expect(logged()).toContain('1 Hub(s) answered their phase route but not their backend summary within 10000 ms');
+    expect(logged()).toContain('1 node(s) answered nothing on the Hub port within 250 ms');
+    expect(logged()).toContain('Re-run with a longer --timeout (phase route: 250 ms, summary: 10000 ms)');
+  });
+
+  it('carries the Hub probe outcome in --json', async () => {
+    underLoad();
+    routeSsh({ before: { '10.0.0.1': probeOutput('d5ff45d90203'), '10.0.0.2': probeOutput('d5ff45d90203') } });
+    await runFleetCommand(['status', '--json', '--timeout', '250']);
+    const doc = JSON.parse(logged()) as { nodes: { name: string; probe: { hubProbe: string } }[] };
+    expect(doc.nodes.map((n) => [n.name, n.probe.hubProbe])).toEqual([
+      ['core-1', 'timeout'],
+      ['core-2', 'slow'],
+    ]);
   });
 
   it('carries the image and the fleet summary in --json', async () => {

@@ -876,7 +876,7 @@ while believing it was twenty is the worse failure.
 | `--all-tailnet` | `scan` only: enumerate every tailnet peer as a candidate. Off by default, because the tailnet is shared and a probe is an SSH attempt in each peer's auth log. With `--write-roster`, everything it finds becomes a target — see [`cihub fleet scan`](#cihub-fleet-scan) |
 | `--lan` | `scan` only: also sweep the local subnet. Off by default, because touching every address on the operator's subnet is a more intrusive act than listing a tailnet they already belong to |
 | `--write-roster` | `scan` only: save the result to `fleet.json` |
-| `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000) |
+| `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000). The Hub's backend-summary route (`/api/inference/health`) gets a 10 s floor on top of this, because it health-checks each backend with a 5 s timeout of its own and a busy engine puts it past 4 s on a healthy Hub; see the **HUB** column under [`cihub fleet scan`](#cihub-fleet-scan) |
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
 | `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
 | `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
@@ -911,6 +911,25 @@ It writes nothing unless `--write-roster` is passed, and says so at the end rath
 to wonder. With no Tailscale CLI it says that too, and enumerates nothing — set `TAILSCALE_CLI` if
 yours is somewhere unusual.
 
+The **HUB** column is a probe outcome, not a yes/no, because a probe that ran out of time once looked
+identical to a port with nothing on it. On 2026-09-20 four Hubs under inference load read `—` under
+HUB and PORTAL while each was serving, registered, and answering `/api/registration/phase` within a
+second; it was `/api/inference/health` — which health-checks every backend the Hub fronts, each with
+its own 5 s timeout — that had outrun the 4 s budget. The cell now says which:
+
+| HUB | Meaning |
+|---|---|
+| `tier high, 6 backends` (`status`) / `yes` (`scan`) | Both routes answered |
+| `yes, slow` | A Hub is there — the phase route answered, so PORTAL is filled in — but its backend summary did not arrive in time. Usually inference load |
+| `timeout` | Nothing answered on the Hub port within `--timeout`, and nothing refused the connection either. A Hub may be listening; the probe cannot say, and the verdict does not nominate the node for an install |
+| `error` | The port answered, but not as a Hub: a non-2xx status or a body that is not JSON |
+| `—` | The connection was refused (or the host unreachable). Nothing is listening. The only outcome that means "no Hub" |
+
+The summary route gets a floor of 10 s regardless of `--timeout`, the way SSH gets 8 s; the phase
+route keeps the flag's budget. `--json` carries the outcome as `probe.hubProbe`
+(`ok` · `slow` · `timeout` · `refused` · `error`). A footer names every `timeout` and `yes, slow`
+node and the flag that separates a busy Hub from an absent one.
+
 **`--all-tailnet` is how a machine gets into the roster, and it is asked for by name** because the
 tailnet is shared: its peers are colleagues' laptops, phones and headsets alongside the appliances,
 and no ACL tag tells them apart (`tag:ci-server` is an internal test tag, not an inventory). The
@@ -928,6 +947,12 @@ administrable, running a Hub, serving engines, and which Ollama each is serving 
 the node resolves for itself, marked when behind the pin, with a one-line fleet summary
 (`0.34.0 on 17/18; behind: localhost-0 (0.30.9)`). A node that cannot be read shows `—` and the
 reason. Neither touches a node beyond the probe.
+
+The **HUB** column reads `tier high, 6 backends` when both Hub routes answered, `yes, slow` when the
+Hub is there but its backend summary outran the budget (PORTAL is still filled in), `timeout` when
+nothing answered and nothing refused, and `—` only when the port refused the connection — the
+outcomes are listed under [`cihub fleet scan`](#cihub-fleet-scan). Before 2026-09-20 a Hub busy
+with inference and a node with no Hub printed the same `—`.
 administrable, running a Hub, serving engines — and which **Hub image** each is actually running,
 as a short image ID, with a footer naming the fleet's majority and every node off it:
 
