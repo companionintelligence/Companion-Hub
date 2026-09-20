@@ -101,7 +101,7 @@ beforeEach(() => {
   mocks.tailnetPeers.mockReset().mockImplementation(() => ({ peers: mocks.peers }));
   mocks.saveFleetRoster.mockReset();
   mocks.sshCapture.mockReset().mockResolvedValue({ ok: false, out: '', err: '', code: 255, ms: 1 });
-  mocks.probeNode.mockReset().mockResolvedValue({ ssh: true, sshFailure: 'ok', hub: false, engines: [] });
+  mocks.probeNode.mockReset().mockResolvedValue({ ssh: true, sshFailure: 'ok', hub: false, hubProbe: 'refused', engines: [] });
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
@@ -303,5 +303,43 @@ describe('fleet scan on a shared tailnet', () => {
     await runFleetCommand(['scan']);
     expect(mocks.probeNode).not.toHaveBeenCalled();
     expect(logged()).toContain('every rostered node is marked excluded');
+  });
+
+  // 2026-09-20: beta-1, beta-nas, core-5 and core-6 read `—` under HUB while serving a Hub under
+  // load. A probe that ran out of budget must not print the glyph that means "nothing listening".
+  it('renders a timed-out Hub probe as timeout and a slow Hub as slow, and keeps — for a refused port', async () => {
+    mocks.roster = {
+      nodes: [
+        { name: 'beta-1', ip: '192.0.2.11' },
+        { name: 'core-5', ip: '192.0.2.5' },
+        { name: 'core-9', ip: '192.0.2.9' },
+      ],
+      source: ROSTER_PATH,
+      dropped: [],
+    };
+    const portal = { phase: 'locally_ready', registered: true, checkIn: 200 };
+    mocks.probeNode.mockImplementation(async (node: { name: string }) => {
+      if (node.name === 'beta-1') return { ssh: true, sshFailure: 'ok', hub: false, hubProbe: 'timeout', engines: ['ollama:11434'] };
+      if (node.name === 'core-5') return { ssh: true, sshFailure: 'ok', hub: true, hubProbe: 'slow', portal, engines: ['ollama:11434'] };
+      return { ssh: true, sshFailure: 'ok', hub: false, hubProbe: 'refused', engines: [] };
+    });
+    await runFleetCommand(['scan']);
+    const row = (name: string) =>
+      logged()
+        .split('\n')
+        .find((line) => line.startsWith(name)) ?? '';
+    expect(row('beta-1')).toMatch(/^beta-1\s+192\.0\.2\.11\s+yes\s+timeout\s+1\s+reachable, but the Hub probe timed out/);
+    expect(row('core-5')).toMatch(/^core-5\s+192\.0\.2\.5\s+yes\s+yes, slow\s+1\s+Hub reachable and administrable/);
+    expect(row('core-9')).toMatch(/^core-9\s+192\.0\.2\.9\s+yes\s+—\s+—\s+reachable, no Hub and no engine yet/);
+    expect(logged()).toContain('1 node(s) answered nothing on the Hub port within 4000 ms — not the same as no Hub:');
+    expect(logged()).toContain('1 Hub(s) answered their phase route but not their backend summary within 10000 ms');
+    expect(logged()).toContain('Re-run with a longer --timeout (phase route: 4000 ms, summary: 10000 ms)');
+
+    logSpy.mockClear();
+    await runFleetCommand(['scan', '--json']);
+    const byName = Object.fromEntries(
+      (scanJson().nodes as unknown as { name: string; probe: { hubProbe: string } }[]).map((n) => [n.name, n.probe.hubProbe]),
+    );
+    expect(byName).toEqual({ 'beta-1': 'timeout', 'core-5': 'slow', 'core-9': 'refused' });
   });
 });
