@@ -36,6 +36,7 @@ import { createAppUrn } from '@/common/helpers/app-helpers';
 import { isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
 import { hasPairingAppCheck, hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 import { customDomainAuditLine } from './custom-domain-audit';
+import { TailscaleServeOwnership } from './tailscale-serve-ownership';
 
 /** Options shared by every entry point into an exposure sync. */
 export interface ExposureSyncOptions {
@@ -218,6 +219,8 @@ export class ExposureSyncService {
   private readonly reportedRenames = new Set<string>();
   /** The node name last warned about as unpublished while opted out; cleared once it is served. */
   private optedOutUnpublishedReportedFor: string | null = null;
+  /** The only listeners the Tailscale cleanup may remove; see {@link TailscaleServeOwnership}. */
+  private readonly tailscaleServeOwnership = new TailscaleServeOwnership();
 
   private readonly lastCustomDomainRestartAt = new Map<AppUrn, number>();
   /**
@@ -366,8 +369,8 @@ export class ExposureSyncService {
       const apps = await this.appRepository.getApps();
 
       // Publish only apps whose lifecycle state can accept traffic. Stopped apps
-      // remain absent from the desired map so the cleanup loop removes their
-      // obsolete Serve entries.
+      // remain absent from the desired map so the cleanup loop removes the
+      // Serve entries the Hub published for them.
       const shouldServe = apps.filter(
         (app) => (app as Record<string, unknown>).exposureMode === 'tailscale' && ['running', 'starting', 'restarting'].includes(app.status),
       );
@@ -436,9 +439,12 @@ export class ExposureSyncService {
       });
 
       const selfHost = status.nodeFqdn?.toLowerCase() ?? null;
+      const ownership = await this.tailscaleServeOwnership.load();
 
       for (const desired of desiredPorts.values()) {
         if (isServedUnderCurrentName(serveStatus.entries, desired.port, desired.upstreamUrl, selfHost)) {
+          // Adopts what an older Hub, which kept no record, already published.
+          ownership.record(desired.port, desired.upstreamUrl);
           continue;
         }
 
@@ -461,6 +467,7 @@ export class ExposureSyncService {
             httpsPort: desired.port,
             upstreamUrl: desired.upstreamUrl,
           });
+          ownership.record(desired.port, desired.upstreamUrl);
           this.servePermissionDeniedReported = false;
         } catch (e) {
           if (isServePermissionDenied(e)) {
@@ -476,19 +483,17 @@ export class ExposureSyncService {
         }
       }
 
-      // `clearService` and `unservePort` log and swallow every failure except the operator
-      // refusal, which they rethrow so a Hub whose own entry is already correct does not repeat
-      // tailscaled's refusal for a leftover listener on every pass.
-      const unservedPorts = new Set<number>();
+      // Removes a listener only while it still carries the target the Hub wrote there. Tailscale
+      // Services have no listen port and are left alone: the Hub stopped creating them in
+      // CI-Hub#766 and has cleared its own on every pass since, so any left are someone else's.
+      // `unservePort` logs and swallows every failure except the operator refusal, which it
+      // rethrows so a Hub whose own entry is already correct does not repeat tailscaled's refusal
+      // for a leftover listener on every pass.
+      const checkedPorts = new Set<number>();
       try {
         for (const served of serveStatus.entries) {
-          if (served.rawServiceName) {
-            await tailscaleService.clearService(served.rawServiceName);
-            continue;
-          }
-
           const listenPort = served.listenPort;
-          if (!listenPort || desiredPorts.has(listenPort) || unservedPorts.has(listenPort)) {
+          if (!listenPort || desiredPorts.has(listenPort) || checkedPorts.has(listenPort)) {
             continue;
           }
           // `serve --https=<port> off` acts only on the node's current name, so a listener left
@@ -496,9 +501,19 @@ export class ExposureSyncService {
           if (selfHost && served.host && served.host !== selfHost) {
             continue;
           }
+          checkedPorts.add(listenPort);
 
-          unservedPorts.add(listenPort);
-          await tailscaleService.unservePort(listenPort);
+          const target = ownership.targetFor(listenPort);
+          if (!target || !isServedUnderCurrentName(serveStatus.entries, listenPort, target, selfHost)) {
+            // Someone else's listener, or one that replaced the Hub's, so the port is no longer the Hub's.
+            ownership.release(listenPort);
+            this.logger.debug(`[Tailscale] Leaving :${listenPort} in place: the Hub did not publish what it serves`);
+            continue;
+          }
+
+          if (await tailscaleService.unservePort(listenPort)) {
+            ownership.release(listenPort);
+          }
         }
       } catch (e) {
         if (!isServePermissionDenied(e)) throw e;
@@ -509,6 +524,14 @@ export class ExposureSyncService {
       this.logger.debug(`[Tailscale] Sync complete: ${desiredPorts.size} apps served`);
     } catch (error) {
       this.logger.error(`[Tailscale] Sync failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      await this.tailscaleServeOwnership
+        .save()
+        .catch((error) =>
+          this.logger.warn(
+            `[Tailscale] Failed to record which Tailscale Serve listeners the Hub published: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
     }
   }
 
