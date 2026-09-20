@@ -375,11 +375,14 @@ describe('describeCertFinding', () => {
 describe('tailscaleCertIssueScript', () => {
   const script = tailscaleCertIssueScript(FQDN);
 
-  it('sends both output files to /dev/null: never the CWD, never stdout', () => {
-    // Without the flags the CLI writes <fqdn>.crt AND <fqdn>.key into the current directory — a
-    // private key in $HOME on every node. With `-` it prints the key into our captured output.
-    expect(script).toContain('--cert-file /dev/null --key-file /dev/null');
-    expect(script).not.toMatch(/--key-file -\b/);
+  it('writes the files to a root-owned scratch dir that is removed afterwards: never the CWD, never stdout, never /dev/null', () => {
+    // `/dev/null` is refused by the CLI ("already exists and is not a regular file") — the step
+    // silently did nothing on fifteen nodes and reported success off the existing store.
+    expect(script).not.toContain('--cert-file /dev/null');
+    expect(script).toContain('mktemp -d');
+    expect(script).toContain('--cert-file "$scratch/cert.crt" --key-file "$scratch/cert.key"');
+    expect(script).toMatch(/trap '\$SUDO rm -rf "\$scratch"' EXIT/);
+    expect(script).not.toMatch(/--cert-file - /);
   });
 
   it('escalates with sudo -n and reports rather than prompting when it cannot', () => {
@@ -412,7 +415,7 @@ describe('classifyCertIssueOutput', () => {
 // ─── ensureTailscaleCert: probe → issue → re-probe ───────────────────────────
 
 const isProbe = (cmd: string) => cmd.includes('CIHUB_TS_STATUS_BEGIN');
-const isIssue = (cmd: string) => cmd.includes('cert --cert-file /dev/null');
+const isIssue = (cmd: string) => cmd.includes('cert --cert-file "$scratch/cert.crt"');
 
 /** Answer probes from a queue and the issue from a fixed result, recording which ran. */
 function scriptSsh(probes: string[], issue = ssh('cert-issue-complete')) {
@@ -595,7 +598,7 @@ describe('installNode runs the cert step', () => {
         calls.push('probe');
         return ssh(probes.shift() ?? '');
       }
-      if (cmd.includes('command -v cihub')) return ssh('/usr/local/bin/cihub\ncihub 0.2.70');
+      if (cmd.includes('command -v cihub')) return ssh('path=/usr/local/bin/cihub\ncihub 0.2.70');
       if (cmd.includes('cihub up --detached')) return ssh('hub-up-complete');
       if (cmd.includes('systemd/user')) return ssh('status-timer-installed');
       if (cmd.includes('cihub pool pair')) return ssh('pool-join-attempted');

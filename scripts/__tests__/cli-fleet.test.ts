@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { FleetArgError, parseFleetArgs, resolvePairingCodeStrategy } from '../lib/cli-fleet.js';
-import { mergeFleetRoster, parseFleetRoster, partitionForRun, type FleetNode } from '../lib/fleet-roster.js';
+import { mergeFleetRoster, parseFleetRoster, partitionForRun, type FleetNode, SCAN_OFFLINE_NOTE } from '../lib/fleet-roster.js';
 import { classifySshFailure, sshDestination, type SshResult } from '../lib/fleet-ssh.js';
 
 const sshResult = (over: Partial<SshResult> = {}): SshResult => ({ ok: false, out: '', err: '', code: 255, ms: 10, ...over });
@@ -299,6 +299,23 @@ describe('mergeFleetRoster', () => {
   it('does fill in facts about the network', () => {
     const merged = mergeFleetRoster(existing, [{ name: 'x', ip: '10.0.0.1', tailnetName: 'box.tail.ts.net' }]);
     expect(merged.nodes[0]?.tailnetName).toBe('box.tail.ts.net');
+  });
+
+  it('clears the one note earlier scans wrote themselves, and no other', () => {
+    // "tailnet reports offline" was written by the scan, then preserved as if an operator had
+    // written it, on thirty rows that were all online again.
+    const merged = mergeFleetRoster(
+      [
+        { name: 'a', ip: '10.0.0.1', note: SCAN_OFFLINE_NOTE },
+        { name: 'b', ip: '10.0.0.2', note: 'ACL gap, see #242' },
+      ],
+      [
+        { name: 'a', ip: '10.0.0.1' },
+        { name: 'b', ip: '10.0.0.2' },
+      ],
+    );
+    expect(merged.nodes.find((n) => n.ip === '10.0.0.1')?.note).toBeUndefined();
+    expect(merged.nodes.find((n) => n.ip === '10.0.0.2')?.note).toBe('ACL gap, see #242');
   });
 
   it('adds genuinely new nodes and reports them', () => {

@@ -232,6 +232,7 @@ export async function probeHubImage(target: SshTarget, timeoutMs = 30_000): Prom
 // ─── Majority and drift ─────────────────────────────────────────────────────
 
 export type NodeImageState =
+  /** `imageId` here is the image's identity (see {@link imageIdentity}): the registry digest when there is one. */
   | { node: string; state: 'same'; imageId: string; facts: HubImageFacts }
   | { node: string; state: 'drifted'; imageId: string; facts: HubImageFacts }
   | { node: string; state: 'unknown'; reason: string };
@@ -267,11 +268,26 @@ export interface FleetImageSummary {
  * On a tie nothing is canonical, so nothing is `same`: every known node is `drifted` and `tie` names
  * the contenders. That is the honest shape of a fleet split down the middle.
  */
+/**
+ * What makes two nodes "the same image": the registry manifest digest when the node has one, else
+ * the local image ID.
+ *
+ * Docker's classic image store reports the config digest as the image ID; the containerd store
+ * reports the manifest digest. Two nodes that pulled the identical image print different IDs, and
+ * comparing those called one of fifteen freshly reinstalled nodes "drifted" on 2026-09-18. The
+ * registry digest is the same on both — it is what was pulled.
+ */
+export function imageIdentity(facts: Pick<HubImageFacts, 'imageId' | 'repoDigest'>): string {
+  const at = facts.repoDigest?.indexOf('@') ?? -1;
+  return at >= 0 ? (facts.repoDigest as string).slice(at + 1) : facts.imageId;
+}
+
 export function summariseFleetImages(probes: readonly { node: string; probe: HubImageProbe }[]): FleetImageSummary {
   const counts = new Map<string, number>();
   for (const { probe } of probes) {
     if (probe.kind !== 'known') continue;
-    counts.set(probe.facts.imageId, (counts.get(probe.facts.imageId) ?? 0) + 1);
+    const identity = imageIdentity(probe.facts);
+    counts.set(identity, (counts.get(identity) ?? 0) + 1);
   }
   const total = probes.length;
   const known = [...counts.values()].reduce((sum, n) => sum + n, 0);
@@ -283,13 +299,14 @@ export function summariseFleetImages(probes: readonly { node: string; probe: Hub
 
   const nodes: NodeImageState[] = probes.map(({ node, probe }) => {
     if (probe.kind !== 'known') return { node, state: 'unknown', reason: probe.reason };
-    const state = majorityId !== null && probe.facts.imageId === majorityId ? 'same' : 'drifted';
-    return { node, state, imageId: probe.facts.imageId, facts: probe.facts };
+    const identity = imageIdentity(probe.facts);
+    const state = majorityId !== null && identity === majorityId ? 'same' : 'drifted';
+    return { node, state, imageId: identity, facts: probe.facts };
   });
 
   let majority: FleetImageMajority | null = null;
   if (majorityId !== null) {
-    const holder = probes.find((p) => p.probe.kind === 'known' && p.probe.facts.imageId === majorityId && p.probe.facts.repoDigest);
+    const holder = probes.find((p) => p.probe.kind === 'known' && imageIdentity(p.probe.facts) === majorityId && p.probe.facts.repoDigest);
     majority = {
       imageId: majorityId,
       count: top,
@@ -439,9 +456,12 @@ export function renderImageFooter(summary: FleetImageSummary): string {
 
 /** `d5ff45d9 → 7370f6f3`, or the reason a side could not be read. */
 export function renderImageTransition(before: HubImageProbe, after: HubImageProbe): string {
-  const side = (p: HubImageProbe) => (p.kind === 'known' ? shortImageId(p.facts.imageId) : `? (${p.reason})`);
-  if (before.kind === 'known' && after.kind === 'known' && before.facts.imageId === after.facts.imageId) {
-    return `${side(before)} → ${side(after)} (unchanged)`;
+  const side = (p: HubImageProbe) => (p.kind === 'known' ? shortImageId(imageIdentity(p.facts)) : `? (${p.reason})`);
+  if (before.kind === 'known' && after.kind === 'known' && imageIdentity(before.facts) === imageIdentity(after.facts)) {
+    // Same image, but a container created since the run began was still replaced — say so rather
+    // than "unchanged", which once described a Hub that had just been recreated.
+    const recreated = before.facts.created !== after.facts.created || before.facts.containerStatus !== after.facts.containerStatus;
+    return `${side(before)} → ${side(after)} ${recreated ? '(same image, container recreated)' : '(unchanged)'}`;
   }
   return `${side(before)} → ${side(after)}`;
 }

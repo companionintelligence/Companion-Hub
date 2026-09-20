@@ -118,7 +118,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'What inference backends a node can run, from its hardware; prints the plan unless --execute',
       },
       {
-        command: `${BASE_COMMAND} fleet install [--user <account>] [--claim-email <addr>] [--execute]`,
+        command: `${BASE_COMMAND} fleet install [--user <account>] [--claim-email <addr>] [--cihub-binary <path>] [--execute]`,
         description: 'Stand a Hub up on each node, register it, and claim it; prints the plan unless --execute',
       },
       {
