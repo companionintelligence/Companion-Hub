@@ -75,7 +75,11 @@ export const CORE_17_SERVE_STATUS_BEFORE_REPAIR = `{
   }
 }`;
 
-/** `tailscale serve status --json` on fzzy (Tailscale 1.102.4) on 2026-09-19: the host-mode Hub alone. */
+/**
+ * `tailscale serve status --json` on fzzy (Tailscale 1.102.4) on 2026-09-19: the host-mode Hub
+ * alone. The tailnet suffix is replaced with `example.ts.net`, which the tip scrub policy in
+ * [`docs/README.md`](../../../../../../docs/README.md) requires of a real MagicDNS suffix.
+ */
 export const FZZY_SERVE_STATUS = `{
   "TCP": {
     "443": {
@@ -83,7 +87,7 @@ export const FZZY_SERVE_STATUS = `{
     }
   },
   "Web": {
-    "fzzy.capybara-ulmer.ts.net:443": {
+    "fzzy.example.ts.net:443": {
       "Handlers": {
         "/": {
           "Proxy": "http://localhost:5002"
@@ -94,8 +98,9 @@ export const FZZY_SERVE_STATUS = `{
 }`;
 
 /**
- * Derived: fzzy after `sudo tailscale serve --bg --https 3081 http://127.0.0.1:3081` for a game
- * container the Hub does not manage. The Hub's sync removed that listener 84 seconds later.
+ * Derived from {@link FZZY_SERVE_STATUS}: fzzy after `sudo tailscale serve --bg --https 3081
+ * http://127.0.0.1:3081` for a game container the Hub does not manage. The Hub's sync removed that
+ * listener 84 seconds later.
  */
 export const FZZY_SERVE_STATUS_WITH_MANUAL_3081 = `{
   "TCP": {
@@ -107,14 +112,14 @@ export const FZZY_SERVE_STATUS_WITH_MANUAL_3081 = `{
     }
   },
   "Web": {
-    "fzzy.capybara-ulmer.ts.net:443": {
+    "fzzy.example.ts.net:443": {
       "Handlers": {
         "/": {
           "Proxy": "http://localhost:5002"
         }
       }
     },
-    "fzzy.capybara-ulmer.ts.net:3081": {
+    "fzzy.example.ts.net:3081": {
       "Handlers": {
         "/": {
           "Proxy": "http://127.0.0.1:3081"

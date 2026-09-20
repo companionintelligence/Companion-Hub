@@ -329,7 +329,7 @@ describe('Private VPN exposure sync against real tailscale serve output', () => 
   });
 
   describe('removes only the listeners the Hub published', () => {
-    const FZZY = 'fzzy.capybara-ulmer.ts.net';
+    const FZZY = 'fzzy.example.ts.net';
     const UNSERVE_3001 = ['serve', '--https=3001', 'off'];
 
     it("leaves someone else's listener in place (fzzy, where a manual :3081 was gone 84 seconds later)", async () => {

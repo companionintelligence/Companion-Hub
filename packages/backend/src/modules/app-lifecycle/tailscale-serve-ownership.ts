@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
@@ -22,6 +23,7 @@ interface OwnershipFile {
  * removing someone else's.
  */
 export class TailscaleServeOwnership {
+  private readonly logger = new Logger(TailscaleServeOwnership.name);
   private readonly ports = new Map<number, string>();
   private loading: Promise<void> | null = null;
   private dirty = false;
@@ -62,17 +64,30 @@ export class TailscaleServeOwnership {
   }
 
   private async read(): Promise<void> {
-    let parsed: Partial<OwnershipFile>;
+    let raw: string;
     try {
-      parsed = JSON.parse(await fs.promises.readFile(this.filePath, 'utf-8')) as Partial<OwnershipFile>;
-    } catch {
+      raw = await fs.promises.readFile(this.filePath, 'utf-8');
+    } catch (error) {
+      // No file is the normal first run. Anything else loses the record, and the only visible
+      // symptom is listeners that stop being cleaned up, so name it here.
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        this.logger.warn(`Cannot read ${this.filePath}: ${error}. The Hub owns no Tailscale Serve listener until it publishes one again.`);
+      }
       return;
     }
-    for (const [key, target] of Object.entries(parsed?.ports ?? {})) {
-      const port = Number(key);
-      if (Number.isInteger(port) && port > 0 && port <= 65_535 && typeof target === 'string' && target) {
-        this.ports.set(port, target);
+
+    try {
+      const parsed = JSON.parse(raw) as Partial<OwnershipFile>;
+      for (const [key, target] of Object.entries(parsed?.ports ?? {})) {
+        const port = Number(key);
+        if (Number.isInteger(port) && port > 0 && port <= 65_535 && typeof target === 'string' && target) {
+          this.ports.set(port, target);
+        }
       }
+    } catch (error) {
+      // Keeping whatever parsed before the failure would own listeners on a half-read record.
+      this.ports.clear();
+      this.logger.warn(`Cannot parse ${this.filePath}: ${error}. The Hub owns no Tailscale Serve listener until it publishes one again.`);
     }
   }
 
