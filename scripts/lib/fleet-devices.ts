@@ -12,7 +12,10 @@
 import { DEVICE_MANAGE_SCOPE, loginScope, type PortalLogin } from './catalog-submit.js';
 
 export interface PortalDevice {
+  /** The device's own id — `inactive-<uuid>` until it pairs, the appliance's device_id after. What `/api/devices/:deviceId` keys on. */
   id: string;
+  /** Portal's registration row for the device in this organization. Shown, never used to address the device. */
+  registrationId?: string;
   name: string;
   slug?: string;
   status?: string;
@@ -52,7 +55,11 @@ function toDevice(raw: Record<string, unknown>): PortalDevice {
     return undefined;
   };
   return {
-    id: pick('id', 'deviceId') ?? '',
+    // ListDevices answers `id` = the registration row and `deviceId` = the device; the
+    // `/api/devices/:deviceId` routes take the device. The first version of this picked `id` and
+    // every release and re-register answered 404.
+    id: pick('deviceId', 'device_id') ?? pick('id') ?? '',
+    registrationId: pick('id'),
     name: pick('name', 'displayName') ?? '',
     slug: pick('slug'),
     status: pick('status'),
@@ -80,7 +87,7 @@ export async function listPortalDevices(params: { login: PortalLogin; organizati
  */
 export function findPortalDevice(devices: readonly PortalDevice[], target: string): { device?: PortalDevice; why?: string } {
   const needle = target.trim().toLowerCase();
-  const matches = devices.filter((d) => [d.id, d.name, d.slug].some((v) => v && v.toLowerCase() === needle));
+  const matches = devices.filter((d) => [d.id, d.registrationId, d.name, d.slug].some((v) => v && v.toLowerCase() === needle));
   if (matches.length === 1) return { device: matches[0] };
   if (matches.length === 0) return { why: `no device named or identified '${target}' in this organization (${devices.length} listed)` };
   return { why: `'${target}' matches ${matches.length} devices: ${matches.map((d) => `${d.name} (${d.id})`).join(', ')} — use the id` };
