@@ -433,6 +433,37 @@ export function resolvePoolMaxPromptTokens(
   return fromSetting === null ? { maxPromptTokens: null, setBy: null } : { maxPromptTokens: fromSetting, setBy: 'setting' };
 }
 
+/**
+ * How long a local engine's health answer is reused for placement before the next pooled request
+ * triggers a fresh probe.
+ *
+ * Every pooled request used to run six live health probes before ranking, each with a 5 s
+ * transport timeout. On a node whose firewall drops (rather than refuses) the Hub container's SYN
+ * to an engine port, that put a flat 5.0 s in front of every request entering the node — measured
+ * pool TTFT 5035–5200 ms on four of fifteen fleet nodes against 22–100 ms once the port answered —
+ * for engines that were never going to be candidates. The snapshot moves that wait off the request
+ * path: a request reads the last answer, and the probe that refreshes it runs behind the caller.
+ *
+ * The value only changes WHEN an engine's answer is read, never what the answer means: with every
+ * probe answering, the candidate list is the one the live probes produced, in the same order. The
+ * cost is that an engine coming up, going down, or clearing a quarantine on its own is seen up to
+ * one TTL late — failover already covers the second, and the first two are rare next to a request.
+ *
+ * Zero, deliberately, the same way `DEFAULT_POOL_PRESSURE_WEIGHT` is: at 0 the snapshot is not
+ * consulted at all and every request probes live, so a node that takes this image without an
+ * operator touching the setting ranks byte for byte as the build before the snapshot existed — the
+ * 5 s stall included. The snapshot is validated one node at a time: PATCH
+ * `poolProbeSnapshotTtlMs` to 10000 on the canary, measure it against a node still at 0, and flip
+ * this default once the fleet has seen it. 10 s sits under the 20 s this node's own inventory is
+ * already cached for when it answers a peer's health poll, so a local candidate is never staler
+ * than the same node's advertisement to the rest of the pool.
+ */
+export const DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS = 0;
+/** `0` disables the snapshot; there is no shorter TTL worth having, because a request would then pay the probe anyway. */
+export const MIN_POOL_PROBE_SNAPSHOT_TTL_MS = 0;
+/** Five minutes: past this an engine that came up is invisible to the pool for longer than an operator will wait before restarting things. */
+export const MAX_POOL_PROBE_SNAPSHOT_TTL_MS = 300_000;
+
 /** How often each `connected`/`unreachable` peer is probed for capabilities. */
 export const DEFAULT_POOL_HEALTH_POLL_SECONDS = 30;
 /** Below this the probes cost more than the routing accuracy they buy, and an 8s probe timeout would start overlapping ticks. */
@@ -493,6 +524,8 @@ export interface HubPoolPreferences {
    * resolve the two through {@link resolvePoolMaxPromptTokens} rather than reading this as effective.
    */
   poolMaxPromptTokens: number | null;
+  /** How long a local engine's health answer is reused for placement; `0` (the default) probes live on every request. See {@link DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS}. */
+  poolProbeSnapshotTtlMs: number;
   /**
    * Operator routing overrides, newest last. Empty (the default) means the ranker decides alone and
    * routing is byte-identical to a build without pinning — see {@link resolvePinFor}.

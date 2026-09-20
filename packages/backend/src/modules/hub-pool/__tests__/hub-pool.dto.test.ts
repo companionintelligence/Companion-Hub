@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_POOL_MAX_PROMPT_TOKENS, MIN_POOL_MAX_PROMPT_TOKENS } from '@/common/helpers/hub-pool';
+import { MAX_POOL_MAX_PROMPT_TOKENS, MAX_POOL_PROBE_SNAPSHOT_TTL_MS, MIN_POOL_MAX_PROMPT_TOKENS } from '@/common/helpers/hub-pool';
 import { UpdateHubPoolPreferencesBody } from '../hub-pool.dto';
 
 describe('UpdateHubPoolPreferencesBody — poolMaxPromptTokens', () => {
@@ -35,5 +35,28 @@ describe('UpdateHubPoolPreferencesBody — poolMaxPromptTokens', () => {
     ['a boolean', false],
   ])('rejects %s with a 400 rather than storing a ceiling that excludes the node from everything', (_label, value) => {
     expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolMaxPromptTokens: value }).success).toBe(false);
+  });
+});
+
+describe('UpdateHubPoolPreferencesBody — poolProbeSnapshotTtlMs', () => {
+  it('accepts 0, which is the way back to live probes on every request', () => {
+    const result = UpdateHubPoolPreferencesBody.schema.safeParse({ poolProbeSnapshotTtlMs: 0 });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ poolProbeSnapshotTtlMs: 0 });
+  });
+
+  it('accepts the upper bound', () => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolProbeSnapshotTtlMs: MAX_POOL_PROBE_SNAPSHOT_TTL_MS }).success).toBe(true);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['above the bound', MAX_POOL_PROBE_SNAPSHOT_TTL_MS + 1],
+    ['fractional', 10_000.5],
+    ['a string', '10000'],
+    ['null', null],
+  ])('rejects %s with a 400', (_label, value) => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolProbeSnapshotTtlMs: value }).success).toBe(false);
   });
 });

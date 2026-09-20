@@ -40,6 +40,7 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 | `poolShareContainerStats` | `true` | — | Publish this node's aggregate container counts and resource totals to paired peers — counts and totals only, never a container name. **Default on**, so an upgraded Hub starts reporting to the peers its operator already approved; off omits the key entirely, which reads on the far side as "not reported" and never as an idle machine. See [Container counts](#container-counts-what-the-rest-of-the-fleet-is-running). |
 | `poolPressureWeight` | `0` | 0–3 | How heavily the 0–3 GPU-pressure band counts in ranking. `0` (the default) removes it from the comparator entirely, so ranking is byte-identical to the build before pressure existed; `1` is `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but whose GPU is busy. See [GPU pressure](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). |
 | `poolMaxPromptTokens` | `null` | 1024–1048576, or `null` | The largest estimated prompt this node should serve for the pool while another node can take it. `null` (the default) is no ceiling. `HUB_POOL_MAX_PROMPT_TOKENS` in the environment overrides it. See [Prompt ceilings](#prompt-ceilings). |
+| `poolProbeSnapshotTtlMs` | `0` | 0–300000 | How long, in milliseconds, a local engine's health answer is reused for placement before a pooled request triggers a fresh probe behind itself. `0` (the default) probes every local engine live on every request, which is the pre-snapshot build, stall included; `10000` is the value the snapshot is being validated at. See [Placement reads a snapshot](#placement-reads-a-snapshot-not-a-live-probe). |
 
 ## Manual routing pins
 
@@ -755,7 +756,27 @@ The other way a listed model earns a 502 is that the Hub never saw it listed. Th
 - **A firewall that only knows Ollama.** ufw allowed the Docker bridge to reach `:11434` and nothing else, so vLLM on `:8000` timed out from the container and worked from everywhere else.
 - **An engine published on the tailnet address only.** Lemonade and Lucebox containers published on `100.x.y.z:13305` and `:8216` refuse `host.docker.internal`; the fix is to point the env var at the tailnet address, which the Hub container can reach.
 
-The 502 for that case used to read `No pool node currently has model "X" available.` — true of the pool's view, and wrong about where to look. It now carries the container's-eye view of every local backend: `localBackends` in the body lists each backend's probed URL, whether it answered, and the error, and the message names any backend that answered but was left out (the shared-port case below) and points at the unreachable ones.
+The 502 for that case used to read `No pool node currently has model "X" available.` — true of the pool's view, and wrong about where to look. It now carries the container's-eye view of every local backend: `localBackends` in the body lists each backend's probed URL, whether it answered, the error, and `probedMsAgo` — how old that answer was when the request read it, because placement can read a snapshot rather than a live probe (next section). An operator who has just fixed a firewall rule and still sees `running: false` with a `probedMsAgo` of 8000 is looking at the answer from before the fix; one with `probedMsAgo: 0` is not.
+
+### Placement reads a snapshot, not a live probe
+
+An unreachable engine used to cost more than a missing candidate. Every pooled request ran a live health check on all six local backends before it could rank, each with a 5 s transport timeout, and a firewall that **drops** the container's SYN rather than refusing it holds that probe for the full 5 s. On the September 2026 fleet four of fifteen nodes did exactly that, and every pooled request entering them measured a flat 5.0 s to first byte (5035–5200 ms) against 22–100 ms once the port answered — for engines that were never going to serve the request.
+
+Placement can now rank from a per-backend health snapshot, refreshed stale-while-revalidate the way this node's own inventory already is for peers' health polls. It is **off by default** (`poolProbeSnapshotTtlMs: 0`), the same way `poolPressureWeight` is: a node that takes this image with its settings untouched probes live on every request exactly as before, so it is a valid control for the one node where the snapshot is switched on. Turn it on per node:
+
+```bash
+curl -X PATCH .../api/inference/pool/settings -d '{"poolProbeSnapshotTtlMs": 10000}'
+```
+
+With a TTL set, each backend's answer is in one of three states:
+
+- **Fresh** (younger than `poolProbeSnapshotTtlMs`): served as is. A request costs no probe.
+- **Stale** (past the TTL, within a further 60 s): served as is, and a refresh runs behind the caller. The request after that reads what it found.
+- **Cold** (nothing cached, or older than that): the request starts the probe and waits for it — but only up to a placement budget of **500 ms**, shared across every cold backend in the read. A backend that has not answered by then is ranked `running: false` with an error saying so, and the probe keeps running in the background; when it lands, the next request reads the real answer. The next request never waits the budget again for the same engine — a dropped port costs one half-second read per TTL, not 5 s per request.
+
+The snapshot changes **when** an engine's answer is read, never what an answered probe means: with every probe answering, the candidate list is the one live probes produced, in the same order. What it costs is lag on three events, each bounded by one TTL: an engine coming up is offered after the next refresh; an engine going down is offered until then (the per-request failover already covers a candidate that fails on contact); and a [serving quarantine](#when-a-node-lists-a-model-it-cannot-actually-serve) that the engine clears on its own — the `/api/ps` check inside its health poll, a direct `loadModel` — is seen one refresh late. A quarantine the proxy itself records is not late at all: the 5xx that withholds a model, and the success that releases one, drop that backend's snapshot on the spot, so the very next request re-probes it rather than offering a model the node just failed.
+
+`poolProbeSnapshotTtlMs: 0` is the build before the snapshot existed, stall included. 10 s is the value to validate at: it sits under the 20 s this node's own inventory is cached for when it answers a peer's health poll, so a local candidate is never staler than the same node's advertisement to the rest of the pool. Raise it on a node whose engines rarely change and whose requests are frequent; there is little reason to go lower once it is on, since a request arriving inside the TTL pays nothing either way.
 
 ### Three backends on one port
 

@@ -94,6 +94,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolHealthPollSeconds: number;
         poolPressureWeight: number;
         poolMaxPromptTokens: number | null;
+        poolProbeSnapshotTtlMs: number;
         poolPins: unknown[];
       };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
@@ -128,6 +129,10 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // No prompt ceiling: every node serves any prompt size until an operator says otherwise, which
       // is what the build before the ceiling did.
       poolMaxPromptTokens: null,
+      // 0 is the pre-snapshot build: placement probes every local engine live on each request,
+      // stall included, until an operator PATCHes a TTL onto a canary node. Off by default so the
+      // canary can be measured against a node that took the same image and nothing else.
+      poolProbeSnapshotTtlMs: 0,
       // No pins until an operator sets one, so the ranker alone decides — which is the whole
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],
@@ -231,6 +236,16 @@ describe('ConfigurationService Hub Pool preferences', () => {
 
     expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolMaxPromptTokens: 16_000 });
     expect(svc.getHubPoolPreferences().poolMaxPromptTokens).toBe(16_000);
+  });
+
+  it('persists the probe snapshot TTL and reads it back, including 0 for live probes', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolProbeSnapshotTtlMs: 0 });
+
+    // `?? DEFAULT` must not swallow a 0: it is the operator's way back to the pre-snapshot build.
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolProbeSnapshotTtlMs: 0 });
+    expect(svc.getHubPoolPreferences().poolProbeSnapshotTtlMs).toBe(0);
   });
 
   it('clears a prompt ceiling by removing the key, and reads the cleared value as no ceiling', async () => {
