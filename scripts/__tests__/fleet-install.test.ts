@@ -18,22 +18,25 @@ import {
 } from '../lib/fleet-install.js';
 
 describe('shouldAdoptExistingCihub', () => {
-  it('adopts a present cihub when nothing better is on offer', () => {
-    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.55' })).toMatchObject({ adopt: true });
-    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.55' }, 'latest')).toMatchObject({ adopt: true });
+  it('adopts a present cihub when nothing better is on offer, and says the versions were not compared', () => {
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.55' })).toMatchObject({ adopt: true, compared: false });
+    // `latest` is the flag's default, not a version: a July 0.2.36 was adopted against it on
+    // 2026-09-20 with a current release in hand. It must read as "unknown", never as "newer".
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.36' }, 'latest')).toMatchObject({ adopt: true, compared: false });
+    expect(shouldAdoptExistingCihub({ present: true }, 'latest')).toMatchObject({ adopt: true, compared: false, why: 'already installed' });
   });
 
   it('replaces one that is older than what this run would install', () => {
     // A 0.2.55 from August drove a fresh install on 2026-09-18 and ran `up` against service names
     // that no longer existed. "Present" is not "usable".
-    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.55' }, 'v0.2.72')).toMatchObject({ adopt: false });
-    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.72' }, 'v0.2.72')).toMatchObject({ adopt: true });
-    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.80' }, 'v0.2.72')).toMatchObject({ adopt: true });
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.55' }, 'v0.2.72')).toMatchObject({ adopt: false, compared: true });
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.72' }, 'v0.2.72')).toMatchObject({ adopt: true, compared: true });
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.80' }, 'v0.2.72')).toMatchObject({ adopt: true, compared: true });
   });
 
   it('replaces one whose version cannot be read, rather than guessing', () => {
-    expect(shouldAdoptExistingCihub({ present: true }, 'v0.2.72')).toMatchObject({ adopt: false });
-    expect(shouldAdoptExistingCihub({ present: false }, 'v0.2.72')).toMatchObject({ adopt: false });
+    expect(shouldAdoptExistingCihub({ present: true }, 'v0.2.72')).toMatchObject({ adopt: false, compared: false });
+    expect(shouldAdoptExistingCihub({ present: false }, 'v0.2.72')).toMatchObject({ adopt: false, compared: false });
   });
 });
 
@@ -60,6 +63,24 @@ describe('describeStepFailure', () => {
     expect(
       describeStepFailure('Container traefik Started', 'hub-up-failed: nothing answered http://127.0.0.1:5003/api/registration/phase after cihub up'),
     ).toContain('hub-up-failed');
+  });
+
+  it('never returns an empty reason when it knows how the step ended', () => {
+    // `✗ install cihub (0s) — ` on 2026-09-20: the script exited 0 before its first echo, so there was
+    // nothing to quote and the line said nothing. The exit code is always something to say.
+    expect(describeStepFailure('', '', { code: 0, marker: 'cihub-installed' })).toBe(
+      'exited 0 without printing cihub-installed: nothing on stdout or stderr',
+    );
+    expect(describeStepFailure('', '', { code: 1, marker: 'cihub-installed' })).toBe('exited 1 with nothing on stdout or stderr');
+    expect(describeStepFailure('', '', { code: null, marker: 'cihub-installed' })).toBe('killed before it printed anything');
+    // Output but no marker on an exit 0 is the same shape with more to show; the shape is still named.
+    expect(describeStepFailure('Container traefik Started', '', { code: 0, marker: 'hub-up-complete' })).toBe(
+      'exited 0 without printing hub-up-complete: Container traefik Started',
+    );
+    // A non-zero exit with something to quote quotes it, as before.
+    expect(describeStepFailure('', 'no passwordless sudo to install into /usr/local/bin', { code: 1, marker: 'cihub-installed' })).toBe(
+      'no passwordless sudo to install into /usr/local/bin',
+    );
   });
 });
 

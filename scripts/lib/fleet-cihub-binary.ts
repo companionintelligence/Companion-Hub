@@ -19,10 +19,17 @@ export const CIHUB_RELEASES_REPO = 'companionintelligence/CI-Hub';
 export const GITHUB_TOKEN_ENV_VARS = ['GH_TOKEN', 'GITHUB_TOKEN'] as const;
 
 export type CihubBinarySource =
-  /** A file the operator named. Streamed as-is; its version is read by running it when that is possible. */
+  /**
+   * A file the operator named. Streamed as-is; its version is read by running it when that is
+   * possible, else taken from `--cihub-version` when one was given, else unknown.
+   */
   | { kind: 'local'; path: string; version?: string }
-  /** Fetched from the GitHub release on the operator machine with a token, once per architecture. */
-  | { kind: 'release'; token: string; version: string }
+  /**
+   * Fetched from the GitHub release on the operator machine with a token, once per architecture.
+   * `version` is a tag once `pinCihubReleaseSource` has run; `resolvedFrom` then keeps what the flag
+   * said (`latest`) for the run's own summary line.
+   */
+  | { kind: 'release'; token: string; version: string; resolvedFrom?: string }
   /** Nothing to install from. `why` and `fix` are what the node's line will say. */
   | { kind: 'unavailable'; why: string; fix: string[] };
 
@@ -58,7 +65,11 @@ export function resolveCihubBinarySource(input: {
         fix: ['Point --cihub-binary at a cihub-linux-x64 or cihub-linux-arm64 release asset.'],
       };
     }
-    return { kind: 'local', path: input.binaryPath, version: input.readVersion?.(input.binaryPath) };
+    // The file's own answer first. When it will not run here — an arm64 asset on an x64 operator
+    // machine — an explicit --cihub-version is the operator saying what it is; `latest` is not a
+    // version and names nothing.
+    const declared = input.version && input.version !== 'latest' ? input.version : undefined;
+    return { kind: 'local', path: input.binaryPath, version: input.readVersion?.(input.binaryPath) ?? declared };
   }
   const token = GITHUB_TOKEN_ENV_VARS.map((name) => env[name]?.trim()).find(Boolean);
   if (token) return { kind: 'release', token, version: input.version ?? 'latest' };
@@ -90,15 +101,57 @@ export function compareCihubVersions(a: string, b: string): number {
   return a1 - b1 || a2 - b2 || a3 - b3;
 }
 
-interface ReleaseAsset {
+export interface ReleaseAsset {
   name: string;
   url: string;
   size?: number;
 }
 
-interface ReleaseInfo {
+export interface ReleaseInfo {
   tag_name: string;
   assets: ReleaseAsset[];
+}
+
+const githubHeaders = (token: string) => ({ Authorization: `Bearer ${token}`, 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'cihub-fleet' });
+
+/** The release a version names: `latest` as GitHub resolves it right now, or one tag, `v` or not. */
+export async function lookupRelease(input: { token: string; version: string; fetchImpl?: typeof fetch }): Promise<ReleaseInfo> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const releaseUrl =
+    input.version === 'latest'
+      ? `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/latest`
+      : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
+  const releaseRes = await fetchImpl(releaseUrl, { headers: { ...githubHeaders(input.token), Accept: 'application/vnd.github+json' } });
+  if (!releaseRes.ok) {
+    throw new Error(
+      `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseRes.status === 404 ? ' — does the token see the private repo?' : ''}`,
+    );
+  }
+  return (await releaseRes.json()) as ReleaseInfo;
+}
+
+/**
+ * Turn `latest` into the tag it names, before any node is dialled.
+ *
+ * `latest` is what the flag says, not a version, and the adopt-or-replace decision on each node
+ * compares versions: handed `latest`, it could only adopt whatever was on PATH. On 2026-09-20 that
+ * was a July 0.2.36 in `~/.local/bin`, kept on a node the run had a current release for, and its
+ * `cihub up` did not know the headless seed path. Resolving here also means fourteen nodes install
+ * the one tag this run saw, not whichever release lands mid-pass, and a token that cannot see the
+ * repository is reported once on the summary line rather than adopted around on every node.
+ */
+export async function pinCihubReleaseSource(source: CihubBinarySource, fetchImpl?: typeof fetch): Promise<CihubBinarySource> {
+  if (source.kind !== 'release') return source;
+  try {
+    const release = await lookupRelease({ token: source.token, version: source.version, fetchImpl });
+    return { ...source, version: release.tag_name, ...(source.version === 'latest' ? { resolvedFrom: 'latest' } : {}) };
+  } catch (error) {
+    return {
+      kind: 'unavailable',
+      why: error instanceof Error ? error.message : String(error),
+      fix: ['Check GH_TOKEN can read the private repository, or pass --cihub-binary.'],
+    };
+  }
 }
 
 /**
@@ -116,19 +169,8 @@ export async function downloadReleaseAsset(input: {
   fetchImpl?: typeof fetch;
 }): Promise<{ path: string; tag: string; sha256: string }> {
   const fetchImpl = input.fetchImpl ?? fetch;
-  const headers = { Authorization: `Bearer ${input.token}`, 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'cihub-fleet' };
-  const releaseUrl =
-    input.version === 'latest'
-      ? `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/latest`
-      : `https://api.github.com/repos/${CIHUB_RELEASES_REPO}/releases/tags/${input.version.startsWith('v') ? input.version : `v${input.version}`}`;
-
-  const releaseRes = await fetchImpl(releaseUrl, { headers: { ...headers, Accept: 'application/vnd.github+json' } });
-  if (!releaseRes.ok) {
-    throw new Error(
-      `GitHub release lookup failed: HTTP ${releaseRes.status} for ${releaseUrl}${releaseRes.status === 404 ? ' — does the token see the private repo?' : ''}`,
-    );
-  }
-  const release = (await releaseRes.json()) as ReleaseInfo;
+  const headers = githubHeaders(input.token);
+  const release = await lookupRelease({ token: input.token, version: input.version, fetchImpl });
   const asset = release.assets.find((a) => a.name === input.assetName);
   if (!asset)
     throw new Error(`release ${release.tag_name} has no asset named ${input.assetName} (has: ${release.assets.map((a) => a.name).join(', ')})`);

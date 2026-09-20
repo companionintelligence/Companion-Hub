@@ -1134,11 +1134,19 @@ node got a 404. Either set `GH_TOKEN` (for example `GH_TOKEN="$(gh auth token)"`
 fetches the release asset here — once per architecture, verified to be an ELF binary — and streams
 it down the SSH session it already holds, or pass `--cihub-binary <path>` to a `cihub-linux-x64` /
 `cihub-linux-arm64` asset already on disk (`--cihub-version <tag>` pins which release the token
-fetches; default `latest`). The token never reaches a node. A `cihub` already on the node is adopted
-only when it is not older than the one on offer — a forgotten `~/.local/bin/cihub` from months ago
-once drove a fresh install and ran `up` against service names that no longer existed — and a copy
-that would shadow `/usr/local/bin/cihub` on the login shell's PATH is moved aside (renamed, never
-deleted) so the node runs the one that was just installed.
+fetches; default `latest`). The token never reaches a node. Before any node is dialled, the run
+resolves what it has to a version: `latest` becomes the tag GitHub names right now, printed on the
+summary line as `release v0.2.72 (latest)`, and a `--cihub-binary` is run here with `version`. Every
+node then compares against that one real version, never the word `latest`. A `cihub` already on the
+node is adopted only when it is not older than it — a forgotten `~/.local/bin/cihub` from months ago
+once drove a fresh install and ran `up` against service names that no longer existed, and a July
+build adopted against `latest`, with a current release in hand, did not know how to seed a headless
+Hub — and a copy that would shadow `/usr/local/bin/cihub` on the login shell's PATH is moved aside
+(renamed, never deleted) so the node runs the one that was just installed. When nothing comparable is
+on offer — no token and no file, a release lookup the token cannot do, or a `--cihub-binary` that
+will not run on this machine (an arm64 asset on an x64 laptop; `--cihub-version` then names what it
+is) — an existing `cihub` is still adopted, and the node's line says `version not compared` and why,
+rather than reading like a check that passed.
 
 The **portal device** step mints the node's pairing code as late as possible: after every gate and
 after the binary is on the node, immediately before `register`. A code is one device's credential

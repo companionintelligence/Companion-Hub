@@ -37,12 +37,16 @@ const { runFleetCommand } = await import('../lib/cli-fleet.js');
 
 let configHome: string;
 const savedXdg = process.env.XDG_CONFIG_HOME;
+// A GitHub token in the environment would make the run look the release up; none of this needs one.
+const savedTokens = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
 const storePath = () => join(configHome, 'cihub', 'fleet-pending-pairing-codes.json');
 
 beforeEach(() => {
   configHome = mkdtempSync(join(tmpdir(), 'cihub-xdg-'));
   process.env.XDG_CONFIG_HOME = configHome;
   process.env.CIHUB_POSTGRES_PASSWORD = 'a-long-enough-password';
+  delete process.env.GH_TOKEN;
+  delete process.env.GITHUB_TOKEN;
   process.exitCode = undefined;
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -55,6 +59,10 @@ afterEach(() => {
   delete process.env.CIHUB_POSTGRES_PASSWORD;
   if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = savedXdg;
+  for (const [name, value] of Object.entries(savedTokens)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
   rmSync(configHome, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
