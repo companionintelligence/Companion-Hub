@@ -4,10 +4,12 @@ import {
   MAX_POOL_LOCAL_AFFINITY,
   MAX_POOL_MAX_PROMPT_TOKENS,
   MAX_POOL_PRESSURE_WEIGHT,
+  MAX_POOL_PROBE_SNAPSHOT_TTL_MS,
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_MAX_PROMPT_TOKENS,
   MIN_POOL_PRESSURE_WEIGHT,
+  MIN_POOL_PROBE_SNAPSHOT_TTL_MS,
   MAX_PINNED_MODEL_LENGTH,
   POOL_PIN_MODES,
   POOL_PIN_SCOPES,
@@ -191,6 +193,12 @@ const hubPoolPreferencesSchema = z.object({
    * tiny ceiling is refused rather than stored.
    */
   poolMaxPromptTokens: z.number().int().min(MIN_POOL_MAX_PROMPT_TOKENS).max(MAX_POOL_MAX_PROMPT_TOKENS).nullable().optional(),
+  /**
+   * How long, in milliseconds, a local engine's health answer is reused for placement before a
+   * pooled request triggers a fresh probe behind itself. `0` probes live on every request, which is
+   * the pre-snapshot build. The default is applied in the service, like every knob above.
+   */
+  poolProbeSnapshotTtlMs: z.number().int().min(MIN_POOL_PROBE_SNAPSHOT_TTL_MS).max(MAX_POOL_PROBE_SNAPSHOT_TTL_MS).optional(),
   /**
    * Point every app at this Hub's proxy even with no peer paired, so one place sees all inference
    * on the node and can keep the resident model resident. On by default; off returns apps to the

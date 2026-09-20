@@ -58,11 +58,19 @@ export interface InferenceBackend {
    * and one that does not simply keeps offering the model. The alternative — proving serveability
    * from the health check itself — means generating on every poll, which would load every listed
    * model into VRAM on the poll cadence.
+   *
+   * Returns true when this observation is the one that withheld the model — that is, when the
+   * next `healthCheck()` will report it in `unservableModels` and the last one did not — so a
+   * caller holding a cached health answer knows it is now wrong. The pool proxy ranks from such a
+   * cache.
    */
-  noteServingFailure?(modelId: string, reason: string): void;
+  noteServingFailure?(modelId: string, reason: string): boolean;
 
-  /** The counterpart: `modelId` was served, so clear whatever {@link noteServingFailure} accumulated. */
-  noteServingSuccess?(modelId: string): void;
+  /**
+   * The counterpart: `modelId` was served, so clear whatever {@link noteServingFailure}
+   * accumulated. Returns true when the model was withheld until now, for the same caller.
+   */
+  noteServingSuccess?(modelId: string): boolean;
 
   /**
    * Get the Docker image for this backend. Some implementations accept additional GPU-runtime

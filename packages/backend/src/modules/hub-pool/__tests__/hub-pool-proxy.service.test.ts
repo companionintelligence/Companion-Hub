@@ -18,12 +18,14 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   MIN_POOL_MAX_PROMPT_TOKENS,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
+import { PLACEMENT_PROBE_BUDGET_MS } from '../hub-pool-local-health.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { HubPoolThroughputService, THROUGHPUT_FORGET_AFTER_MS, THROUGHPUT_HALF_LIFE_MS, THROUGHPUT_HOLD_MS } from '../hub-pool-throughput.service';
 import {
@@ -164,6 +166,7 @@ describe('PoolProxyService', () => {
       poolPins: [],
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       poolMaxPromptTokens: null,
+      poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
       ...overrides,
     });
   }
@@ -834,7 +837,15 @@ describe('PoolProxyService', () => {
       expect(body.error).toContain('local vllm, lemonade, dspark, lucebox not reachable from inside the Hub container');
       expect(body.localBackends).toEqual(
         expect.arrayContaining([
-          { type: 'ollama', url: 'http://local-ollama:11434', running: true, healthy: true, listsModel: false, error: undefined },
+          {
+            type: 'ollama',
+            url: 'http://local-ollama:11434',
+            running: true,
+            healthy: true,
+            listsModel: false,
+            error: undefined,
+            probedMsAgo: expect.any(Number),
+          },
           {
             type: 'vllm',
             url: 'http://host.docker.internal:8000',
@@ -842,6 +853,7 @@ describe('PoolProxyService', () => {
             healthy: false,
             listsModel: false,
             error: 'timeout of 5000ms exceeded',
+            probedMsAgo: expect.any(Number),
           },
           {
             type: 'mtplx',
@@ -850,6 +862,7 @@ describe('PoolProxyService', () => {
             healthy: false,
             listsModel: false,
             error: 'The server names itself "vllm"',
+            probedMsAgo: expect.any(Number),
           },
         ]),
       );
@@ -1775,6 +1788,9 @@ describe('PoolProxyService', () => {
     });
 
     it('applies a model pin over the default pin, and only to that model', async () => {
+      // Both models on disk from the start: the local inventory is read from a snapshot, so a
+      // second `healthCheck` mock between the two rankings below would not be seen inside the TTL.
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, 'other:1b'] });
       peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
       setPoolPreferences({
         poolPins: [
@@ -1788,7 +1804,6 @@ describe('PoolProxyService', () => {
       expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, 'peer-a']);
 
       // ...and the default pin still governs a model it does not name.
-      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
       peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'other:1b', { inFlightRequests: 0 })]);
       expect((await service.buildCandidateList('other:1b')).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
     });
@@ -3348,6 +3363,147 @@ describe('PoolProxyService', () => {
     });
   });
 
+  // The fleet measurement behind these: on four of fifteen nodes ufw DROPped the Hub container's
+  // SYN to an engine port, so every pooled request entering the node waited out a 5 s health probe
+  // for an engine that was never going to be a candidate — 5035–5200 ms pool TTFT against 22–100 ms
+  // once the port answered. The proxy now ranks from a per-backend snapshot; the request path pays
+  // at most PLACEMENT_PROBE_BUDGET_MS, and only on a cold read.
+  describe('local health snapshot', () => {
+    const MODEL = 'llama3.2:3b';
+    /** The TTL the canary runs at. The default is 0 — the live-probe path — and one test below pins that. */
+    const SNAPSHOT_TTL_MS = 10_000;
+
+    beforeEach(() => {
+      setPoolPreferences({ poolProbeSnapshotTtlMs: SNAPSHOT_TTL_MS });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A backend whose probe never answers — what a DROP rule looks like until axios's 5 s timeout. */
+    function hangs(backend: MockProxy<OllamaBackend> | MockProxy<VllmBackend>): void {
+      backend.healthCheck.mockImplementation(() => new Promise(() => {}));
+    }
+
+    it('ranks within the placement budget when a local probe hangs, instead of waiting out its 5 s timeout', async () => {
+      vi.useFakeTimers();
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      hangs(vllm);
+
+      const ranking = service.buildCandidateList(MODEL);
+      // Nothing settles before the budget: the hung probe holds the cold read...
+      let settled = false;
+      void ranking.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS - 1);
+      expect(settled).toBe(false);
+      // ...and the budget, not the 5 s transport timeout, is what releases it.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await ranking).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('does not make the next request wait for a probe the last one gave up on', async () => {
+      vi.useFakeTimers();
+      hangs(vllm);
+      const first = service.buildCandidateList(MODEL);
+      await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS);
+      await first;
+      vllm.healthCheck.mockClear();
+
+      // Settles without the clock moving: the hung engine is on record as not answering, and it is
+      // the background refresh that will ask again, not this request.
+      const second = service.buildCandidateList(MODEL);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await second).toEqual([]);
+      expect(vllm.healthCheck).not.toHaveBeenCalled();
+    });
+
+    it('reports how old each probe was on the no-candidate 502', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
+      // Warm the snapshot, then ask again 4 s later: the second body must say it is reading a
+      // 4 s-old answer, which is what tells an operator who just fixed a firewall rule that the
+      // `running: false` they are looking at predates the fix.
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+      vi.setSystemTime(Date.now() + 4_000);
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      const body = vi.mocked(res.json).mock.calls[0]?.[0] as { localBackends: Array<{ type: string; probedMsAgo: number }> };
+      expect(body.localBackends.find((probe) => probe.type === 'ollama')?.probedMsAgo).toBe(4_000);
+      expect(ollama.healthCheck).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers a backend that came up once the snapshot has been refreshed, and not before', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+
+      // Inside the TTL the snapshot is served as is: the engine coming up is not yet visible.
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+
+      // Past it the stale answer is served once more while the refresh runs behind the caller...
+      vi.setSystemTime(Date.now() + SNAPSHOT_TTL_MS + 1);
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+      // ...and the request after that reads what the refresh found.
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('drops a model the node just failed on the very next request, not on the next TTL', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+
+      // The 500 is the strike that withholds the model; the backend says so, and its next
+      // healthCheck reports the quarantine.
+      ollama.noteServingFailure.mockReturnValue(true);
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL], unservableModels: [MODEL] });
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+    });
+
+    it('keeps the snapshot across a serving verdict that changed nothing', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      await service.buildCandidateList(MODEL);
+      // A first strike, or a success on a model that was never withheld: `unservableModels` is
+      // what it was, so re-probing would only spend the request on a health check for nothing.
+      ollama.noteServingFailure.mockReturnValue(false);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+      ollama.healthCheck.mockClear();
+
+      await service.buildCandidateList(MODEL);
+
+      expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+
+    it('probes live on every request at the default, which is 0 — the pre-snapshot build', async () => {
+      expect(DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS).toBe(0);
+      setPoolPreferences({ poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      await service.buildCandidateList(MODEL);
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+      expect(ollama.healthCheck).toHaveBeenCalledTimes(2);
+    });
+
+    it('resolves the auto alias from the same snapshot placement ranks on', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      await service.buildCandidateList(MODEL);
+      ollama.healthCheck.mockClear();
+
+      expect(await service.resolveModelAlias(AUTO_MODEL)).toBe(MODEL);
+      // Twelve probes per request used to be the cost of `auto`; the snapshot answers both reads.
+      expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+  });
+
   // The socket-level half of these lives in hub-pool-proxy-client-abort.test.ts; these cover the
   // routing decisions around a hang-up, which a real socket cannot make deterministic.
   describe('a client that hangs up', () => {
@@ -3417,9 +3573,11 @@ describe('PoolProxyService', () => {
         configuration,
         routingLog,
         pressureService,
-        // Two `undefined`s: `router` is appended after `modelRegistry` and `throughput`, because
-        // #1483 dropped the old router slot that used to sit before them (see the note in
-        // `makeService`). Passing it positionally here would land it in the model-registry slot.
+        // Three `undefined`s: `router` is appended after `modelRegistry`, `throughput` and the
+        // local-health snapshot, because #1483 dropped the old router slot that used to sit before
+        // them (see the note in `makeService`). Passing it positionally here would land it in the
+        // model-registry slot.
+        undefined,
         undefined,
         undefined,
         router,

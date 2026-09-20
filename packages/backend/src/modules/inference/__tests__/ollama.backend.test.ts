@@ -192,6 +192,22 @@ describe('OllamaBackend', () => {
       expect((await backend.healthCheck()).unservableModels).toBeUndefined();
     });
 
+    // The pool proxy ranks from a cached copy of `healthCheck()` and drops it on a true here — so a
+    // true must mean `unservableModels` changed, and a false must mean it did not, or the cache is
+    // either wrong or pointless.
+    it('says which verdict changed the withheld state, and only that one', () => {
+      expect(backend.noteServingFailure(MODEL, 'HTTP 500')).toBe(false);
+      expect(backend.noteServingFailure(MODEL, 'HTTP 500')).toBe(true);
+      // A further strike on an already-withheld model changes nothing routing can see.
+      expect(backend.noteServingFailure(MODEL, 'HTTP 500')).toBe(false);
+
+      expect(backend.noteServingSuccess(MODEL)).toBe(true);
+      // Served again while never withheld: strikes cleared, but nothing the pool was told about.
+      expect(backend.noteServingSuccess(MODEL)).toBe(false);
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      expect(backend.noteServingSuccess(MODEL)).toBe(false);
+    });
+
     it('withholds immediately when the engine rejects an explicit load', async () => {
       mockOllamaGet({ tags: [MODEL] });
       (axios.post as any) = vi
