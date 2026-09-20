@@ -92,7 +92,7 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   // #1480: the per-node prompt ceiling. A key added to the schema without a fixture here fails the
   // first test in this file, which is how this one was caught when #1480 landed first.
   hubPoolMaxPromptTokens: 16000,
-  // Non-default, like the rest: the default is 10_000.
+  // Non-default, like the rest: the default is 0.
   hubPoolProbeSnapshotTtlMs: 2500,
   inferenceSupervisionMode: 'observe',
   inferenceSupervisionPollSeconds: 45,

@@ -6947,6 +6947,11 @@
                 "minimum": 1024,
                 "maximum": 1048576
               },
+              "hubPoolProbeSnapshotTtlMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 300000
+              },
               "hubPoolRouteAppsAlways": {
                 "type": "boolean"
               },
@@ -7454,6 +7459,11 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 1048576
+          },
+          "hubPoolProbeSnapshotTtlMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300000
           },
           "hubPoolRouteAppsAlways": {
             "type": "boolean"
@@ -12763,6 +12773,11 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 1048576
+          },
+          "poolProbeSnapshotTtlMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300000
           },
           "poolRouteAppsAlways": {
             "type": "boolean"

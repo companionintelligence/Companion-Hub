@@ -3370,6 +3370,12 @@ describe('PoolProxyService', () => {
   // at most PLACEMENT_PROBE_BUDGET_MS, and only on a cold read.
   describe('local health snapshot', () => {
     const MODEL = 'llama3.2:3b';
+    /** The TTL the canary runs at. The default is 0 — the live-probe path — and one test below pins that. */
+    const SNAPSHOT_TTL_MS = 10_000;
+
+    beforeEach(() => {
+      setPoolPreferences({ poolProbeSnapshotTtlMs: SNAPSHOT_TTL_MS });
+    });
 
     afterEach(() => {
       vi.useRealTimers();
@@ -3441,7 +3447,7 @@ describe('PoolProxyService', () => {
       expect(await service.buildCandidateList(MODEL)).toEqual([]);
 
       // Past it the stale answer is served once more while the refresh runs behind the caller...
-      vi.setSystemTime(Date.now() + DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS + 1);
+      vi.setSystemTime(Date.now() + SNAPSHOT_TTL_MS + 1);
       expect(await service.buildCandidateList(MODEL)).toEqual([]);
       // ...and the request after that reads what the refresh found.
       expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
@@ -3476,8 +3482,9 @@ describe('PoolProxyService', () => {
       expect(ollama.healthCheck).not.toHaveBeenCalled();
     });
 
-    it('probes live on every request at poolProbeSnapshotTtlMs = 0, as the pre-snapshot build did', async () => {
-      setPoolPreferences({ poolProbeSnapshotTtlMs: 0 });
+    it('probes live on every request at the default, which is 0 — the pre-snapshot build', async () => {
+      expect(DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS).toBe(0);
+      setPoolPreferences({ poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS });
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
       await service.buildCandidateList(MODEL);
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });

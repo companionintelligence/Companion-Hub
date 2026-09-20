@@ -449,12 +449,16 @@ export function resolvePoolMaxPromptTokens(
  * cost is that an engine coming up, going down, or clearing a quarantine on its own is seen up to
  * one TTL late — failover already covers the second, and the first two are rare next to a request.
  *
- * `0` turns the snapshot off and probes live on every request, which is exactly the pre-snapshot
- * build. The default is under the 20 s this node's own inventory is already cached for when it
- * answers a peer's health poll, so a local candidate is never staler than the same node's
- * advertisement to the rest of the pool.
+ * Zero, deliberately, the same way `DEFAULT_POOL_PRESSURE_WEIGHT` is: at 0 the snapshot is not
+ * consulted at all and every request probes live, so a node that takes this image without an
+ * operator touching the setting ranks byte for byte as the build before the snapshot existed — the
+ * 5 s stall included. The snapshot is validated one node at a time: PATCH
+ * `poolProbeSnapshotTtlMs` to 10000 on the canary, measure it against a node still at 0, and flip
+ * this default once the fleet has seen it. 10 s sits under the 20 s this node's own inventory is
+ * already cached for when it answers a peer's health poll, so a local candidate is never staler
+ * than the same node's advertisement to the rest of the pool.
  */
-export const DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS = 10_000;
+export const DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS = 0;
 /** `0` disables the snapshot; there is no shorter TTL worth having, because a request would then pay the probe anyway. */
 export const MIN_POOL_PROBE_SNAPSHOT_TTL_MS = 0;
 /** Five minutes: past this an engine that came up is invisible to the pool for longer than an operator will wait before restarting things. */
@@ -520,7 +524,7 @@ export interface HubPoolPreferences {
    * resolve the two through {@link resolvePoolMaxPromptTokens} rather than reading this as effective.
    */
   poolMaxPromptTokens: number | null;
-  /** How long a local engine's health answer is reused for placement; `0` probes live on every request. See {@link DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS}. */
+  /** How long a local engine's health answer is reused for placement; `0` (the default) probes live on every request. See {@link DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS}. */
   poolProbeSnapshotTtlMs: number;
   /**
    * Operator routing overrides, newest last. Empty (the default) means the ranker decides alone and

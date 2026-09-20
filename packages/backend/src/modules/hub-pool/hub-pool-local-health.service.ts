@@ -69,8 +69,8 @@ interface SnapshotEntry {
  * dropped by the next request rather than the next TTL. A quarantine the engine clears on its own
  * (the `/api/ps` reconciliation inside `healthCheck`, a direct `loadModel`) is seen one TTL late.
  *
- * `poolProbeSnapshotTtlMs = 0` bypasses all of this and probes live per request, which is the
- * pre-snapshot build byte for byte.
+ * `poolProbeSnapshotTtlMs = 0` — the default, until the snapshot has been measured on a canary —
+ * bypasses all of this and probes live per request, which is the pre-snapshot build byte for byte.
  */
 @Injectable()
 export class HubPoolLocalHealthService {

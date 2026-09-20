@@ -129,10 +129,10 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // No prompt ceiling: every node serves any prompt size until an operator says otherwise, which
       // is what the build before the ceiling did.
       poolMaxPromptTokens: null,
-      // Ten seconds: placement ranks from a local health snapshot rather than six live probes per
-      // request. The snapshot changes when an engine's answer is read, never which candidates an
-      // answered probe produces; 0 is the pre-snapshot build.
-      poolProbeSnapshotTtlMs: 10_000,
+      // 0 is the pre-snapshot build: placement probes every local engine live on each request,
+      // stall included, until an operator PATCHes a TTL onto a canary node. Off by default so the
+      // canary can be measured against a node that took the same image and nothing else.
+      poolProbeSnapshotTtlMs: 0,
       // No pins until an operator sets one, so the ranker alone decides — which is the whole
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],

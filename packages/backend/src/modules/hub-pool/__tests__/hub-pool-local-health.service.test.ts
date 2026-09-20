@@ -20,6 +20,8 @@ import { HubPoolLocalHealthService, PLACEMENT_PROBE_BUDGET_MS, PROBE_SNAPSHOT_MA
 
 const DOWN: BackendHealthStatus = { running: false, healthy: false, modelsLoaded: [] };
 const UP: BackendHealthStatus = { running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] };
+/** The TTL the canary runs at; the default is 0, which is the live-probe path the last test covers. */
+const SNAPSHOT_TTL_MS = 10_000;
 
 describe('HubPoolLocalHealthService', () => {
   let ollama: MockProxy<OllamaBackend>;
@@ -38,7 +40,7 @@ describe('HubPoolLocalHealthService', () => {
       poolShareContainerStats: true,
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       poolMaxPromptTokens: null,
-      poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+      poolProbeSnapshotTtlMs: SNAPSHOT_TTL_MS,
       poolPins: [],
       poolRouteAppsAlways: true,
       ...overrides,
@@ -121,7 +123,7 @@ describe('HubPoolLocalHealthService', () => {
     const { probedAt } = await healthOf('ollama');
     ollama.healthCheck.mockResolvedValue(DOWN);
 
-    vi.setSystemTime(Date.now() + DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS + 1);
+    vi.setSystemTime(Date.now() + SNAPSHOT_TTL_MS + 1);
     const stale = await healthOf('ollama');
     expect(stale).toEqual({ health: UP, probedAt });
 
@@ -134,7 +136,7 @@ describe('HubPoolLocalHealthService', () => {
     await healthOf('ollama');
     ollama.healthCheck.mockResolvedValue(DOWN);
 
-    vi.setSystemTime(Date.now() + DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS + PROBE_SNAPSHOT_MAX_STALE_MS + 1);
+    vi.setSystemTime(Date.now() + SNAPSHOT_TTL_MS + PROBE_SNAPSHOT_MAX_STALE_MS + 1);
 
     // Blocking, not stale-served: an answer this old is not evidence of anything any more.
     expect((await healthOf('ollama')).health).toEqual(DOWN);
@@ -159,5 +161,17 @@ describe('HubPoolLocalHealthService', () => {
     ollama.healthCheck.mockResolvedValue(DOWN);
 
     expect((await healthOf('ollama')).health).toEqual(DOWN);
+  });
+
+  it('probes live on every read at the default, which is 0 until the snapshot has been measured on a canary', async () => {
+    // The default is not a short TTL — it is the pre-snapshot request path, so a node that takes
+    // this image with its settings untouched is a valid control for the one that PATCHes a TTL.
+    expect(DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS).toBe(0);
+    setPoolPreferences({ poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS });
+    ollama.healthCheck.mockResolvedValue(UP);
+    await healthOf('ollama');
+    await healthOf('ollama');
+
+    expect(ollama.healthCheck).toHaveBeenCalledTimes(2);
   });
 });
