@@ -28,8 +28,10 @@ import {
   type LoadedFleetRoster,
 } from './fleet-roster.js';
 import {
+  HUB_SUMMARY_TIMEOUT_FLOOR_MS,
   portalStanding,
   probeNode,
+  renderHubCell,
   renderPortalCell,
   resolveTailscaleCli,
   scanLan,
@@ -119,7 +121,7 @@ import {
   summariseOllamaVersions,
   upgradeOllamaOnNode,
 } from './fleet-ollama-version.js';
-import { colorize } from './cli-ui.js';
+import { colorize, stripAnsi } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
 export const FLEET_SUBCOMMANDS = [
@@ -519,15 +521,59 @@ function loadRosterForRun(args: FleetArgs): LoadedFleetRoster | null {
   return roster;
 }
 
-/** Fixed-width table, so a 20-node listing is scannable rather than a wall of prose. */
+/**
+ * Fixed-width table, so a 20-node listing is scannable rather than a wall of prose. Widths are
+ * measured on the visible text, so a coloured cell in a middle column does not shove the columns
+ * after it.
+ */
 function renderTable(rows: string[][], headers: string[]): string {
-  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
+  const visible = (c: string) => stripAnsi(c ?? '').length;
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => visible(r[i] ?? ''))));
   const line = (cells: string[]) =>
     cells
-      .map((c, i) => (c ?? '').padEnd(widths[i] ?? 0))
+      .map((c, i) => `${c ?? ''}${' '.repeat(Math.max((widths[i] ?? 0) - visible(c), 0))}`)
       .join('  ')
       .trimEnd();
   return [colorize(line(headers), 'dim'), ...rows.map(line)].join('\n');
+}
+
+/** The HUB cell, coloured when the probe did not get a plain answer. */
+function hubCell(probe: Parameters<typeof renderHubCell>[0]): string {
+  const cell = renderHubCell(probe);
+  return cell.tone ? colorize(cell.text, cell.tone) : cell.text;
+}
+
+/**
+ * Name the nodes whose HUB cell is a probe outcome rather than a verdict. `timeout` and `yes, slow`
+ * are both the budget running out, and the flag that changes them is the same one.
+ */
+function printHubProbeFooter(probed: readonly DiscoveredNode[], args: FleetArgs): void {
+  const timedOut = probed.filter((n) => n.probe.hubProbe === 'timeout');
+  const slow = probed.filter((n) => n.probe.hubProbe === 'slow');
+  if (!timedOut.length && !slow.length) return;
+  if (timedOut.length) {
+    console.log(
+      colorize(`${timedOut.length} node(s) answered nothing on the Hub port within ${args.timeoutMs} ms — not the same as no Hub:`, 'yellow'),
+    );
+    console.log(`  ${timedOut.map((n) => n.name).join(', ')}`);
+  }
+  const summaryBudget = Math.max(args.timeoutMs, HUB_SUMMARY_TIMEOUT_FLOOR_MS);
+  if (slow.length) {
+    console.log(
+      colorize(
+        `${slow.length} Hub(s) answered their phase route but not their backend summary within ${summaryBudget} ms — usually inference load:`,
+        'yellow',
+      ),
+    );
+    console.log(`  ${slow.map((n) => n.name).join(', ')}`);
+  }
+  console.log(
+    colorize(
+      `  Re-run with a longer --timeout (phase route: ${args.timeoutMs} ms, summary: ${summaryBudget} ms) to tell a busy Hub from an absent one.`,
+      'dim',
+    ),
+  );
+  console.log('');
 }
 
 async function probeAll(nodes: readonly FleetNode[], args: FleetArgs, source: DiscoveredNode['source']): Promise<DiscoveredNode[]> {
@@ -641,12 +687,13 @@ async function runScan(args: FleetArgs): Promise<void> {
     n.name,
     n.ip,
     n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
-    n.probe.hub ? 'yes' : '—',
+    hubCell({ hub: n.probe.hub, hubProbe: n.probe.hubProbe }),
     n.probe.engines.length ? String(n.probe.engines.length) : '—',
     summariseNode(n),
   ]);
   console.log(renderTable(rows, ['NODE', 'ADDRESS', 'SSH', 'HUB', 'ENGINES', 'VERDICT']));
   console.log('');
+  printHubProbeFooter(probed, args);
 
   const wrongUser = probed.filter((n) => n.probe.sshFailure === 'acl-wrong-user');
   if (wrongUser.length) {
@@ -779,7 +826,9 @@ async function runStatus(args: FleetArgs): Promise<void> {
         return [
           n.name,
           n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
-          n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
+          // `—` only when the port refused the connection. A probe that ran out of budget under
+          // inference load says `timeout` or `yes, slow`, because it looked identical to no Hub once.
+          hubCell(n.probe),
           // A Hub that answers its health route and a Hub Portal will talk to are different things;
           // this column is the difference.
           colorize(portal.text, portal.tone),
@@ -787,8 +836,6 @@ async function runStatus(args: FleetArgs): Promise<void> {
           n.probe.engines.join(' ') || '—',
           describeBindCell(binds.get(n.ip), n),
           colorize(cert.text, cert.tone),
-          // Last column on purpose: colour codes count toward the padding width, so a coloured cell
-          // would misalign whatever followed it.
           colorize(cell.text, tone),
         ];
       }),
@@ -816,6 +863,7 @@ async function runStatus(args: FleetArgs): Promise<void> {
     );
   }
   console.log('');
+  printHubProbeFooter(probed, args);
   printImageFooter(summary);
   const notOk = probed.filter((n) => n.probe.hub && portalStanding(n.probe.portal) !== 'ok');
   if (notOk.length) {
