@@ -406,11 +406,13 @@ describe('fleet backends', () => {
       ms: 1,
     });
     await runFleetCommand(['backends', '--backends', 'ollama']);
-    // One probe per node, nothing else: no sudo, no apply script.
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    // Two probes per node (the bind, then the firewall), nothing else: no apply script under sudo.
+    // The firewall probe elevates to read `ufw status`, which is root-only, and reads nothing else.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(4);
     for (const call of mocks.sshCapture.mock.calls) {
-      expect(String(call[1])).not.toContain('sudo');
+      expect(String(call[1])).not.toContain('sudo -n bash');
       expect(String(call[1])).not.toContain('systemctl restart');
+      expect(String(call[1])).not.toContain('ufw allow');
     }
     const printed = vi
       .mocked(console.log)
@@ -436,8 +438,9 @@ describe('fleet backends', () => {
       await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'beta-max']);
       expect(mocks.readHostFacts).toHaveBeenCalledTimes(1);
       expect(mocks.readHostFacts.mock.calls[0]?.[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
-      expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
-      expect(mocks.sshCapture.mock.calls[0]?.[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
+      // The bind probe and the firewall probe, both as that account.
+      expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+      for (const call of mocks.sshCapture.mock.calls) expect(call[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
       expect(process.exitCode).toBeUndefined();
     });
 
@@ -511,8 +514,9 @@ describe('fleet backends --execute on an adopted ollama', () => {
       ms: 1,
     });
     await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
-    // The probe, and nothing under sudo.
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    // The two probes, and nothing under sudo.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    for (const call of mocks.sshCapture.mock.calls) expect(String(call[1])).not.toContain('sudo -n bash');
     const printed = vi
       .mocked(console.log)
       .mock.calls.map((c) => String(c[0]))
@@ -531,7 +535,8 @@ describe('fleet backends --execute on an adopted ollama', () => {
       ms: 1,
     });
     await runFleetCommand(['backends', '--backends', 'ollama', '--bind', 'tailnet', '--execute']);
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    for (const call of mocks.sshCapture.mock.calls) expect(String(call[1])).not.toContain('sudo -n bash');
     const printed = vi
       .mocked(console.log)
       .mock.calls.map((c) => String(c[0]))
@@ -557,7 +562,8 @@ describe('fleet backends --execute on an adopted ollama', () => {
         ms: 1,
       });
     await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    // Bind probe, the apply under sudo, then the firewall probe.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(3);
     expect(String(mocks.sshCapture.mock.calls[1]?.[1])).toContain('sudo -n bash');
     const printed = vi
       .mocked(console.log)
