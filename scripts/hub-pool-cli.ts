@@ -147,6 +147,8 @@ export interface PoolStatusResponse {
     poolPressureWeight?: number;
     /** The STORED ceiling. Absent on a Hub predating ceilings, which is how `pool ceiling` detects one. */
     poolMaxPromptTokens?: number | null;
+    /** Absent on a Hub predating the local health snapshot; `0` there would have meant live probes anyway. */
+    poolProbeSnapshotTtlMs?: number;
   };
   tailscaleAdminApiConfigured: boolean;
   localNode: {

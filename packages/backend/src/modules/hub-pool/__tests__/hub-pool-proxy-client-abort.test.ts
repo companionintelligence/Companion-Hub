@@ -28,7 +28,12 @@ import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, DEFAULT_POOL_PRESSURE_WEIGHT } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+} from '@/common/helpers/hub-pool';
 import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
@@ -142,6 +147,7 @@ describe('client disconnects propagate to the engine', () => {
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
       poolPins: [],
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
+      poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
     });
     const peerService = mock<HubPoolPeerService>();
     peerService.listConnectedPeers.mockResolvedValue([]);

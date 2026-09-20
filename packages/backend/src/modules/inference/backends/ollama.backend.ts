@@ -191,26 +191,35 @@ export class OllamaBackend implements InferenceBackend {
    * server-side rejections: a connection error means the whole daemon is unreachable, which
    * `healthCheck` already reports, and holding a model responsible for it would outlive the outage.
    */
-  noteServingFailure(modelId: string, reason: string): void {
-    this.recordServingFailure(modelId, reason);
+  noteServingFailure(modelId: string, reason: string): boolean {
+    return this.recordServingFailure(modelId, reason);
   }
 
-  /** Record that `modelId` was served. Clears its strikes and its backoff — recovery must not have to wait out a penalty. */
-  noteServingSuccess(modelId: string): void {
+  /**
+   * Record that `modelId` was served. Clears its strikes and its backoff — recovery must not have
+   * to wait out a penalty. True when the model was withheld until this call, which is the only
+   * case a routing-side cache of `healthCheck()` has to be told about; clearing strikes that had
+   * not reached the threshold changes nothing routing could see.
+   */
+  noteServingSuccess(modelId: string): boolean {
+    const wasWithheld = this.quarantine.isWithheld(modelId);
     if (this.quarantine.recordSuccess(modelId)) {
       this.logger.info(`[Ollama] Model ${modelId} served again — no longer withheld from routing`);
     }
+    return wasWithheld;
   }
 
-  private recordServingFailure(modelId: string, reason: string, weight?: number): void {
+  /** True on the observation that withheld the model, false for a strike that did not reach the threshold. */
+  private recordServingFailure(modelId: string, reason: string, weight?: number): boolean {
     const decision = this.quarantine.recordFailure(modelId, reason, weight);
     if (decision.withheld) {
       this.logger.warn(
         `[Ollama] Model ${modelId} is listed by /api/tags but failed to serve (${reason}); withholding it from routing for ${Math.round(decision.forMs / 1000)}s`,
       );
-      return;
+      return true;
     }
     this.logger.debug(`[Ollama] Model ${modelId} failed to serve (${reason}); strike ${decision.strikes} of ${QUARANTINE_STRIKES}`);
+    return false;
   }
 
   /**

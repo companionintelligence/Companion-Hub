@@ -15,6 +15,7 @@ import { HubPoolIdentityService } from './hub-pool-identity.service';
 import { HubPoolPairingPinService } from './hub-pool-pairing-pin.service';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService } from './hub-pool-load.service';
+import { HubPoolLocalHealthService } from './hub-pool-local-health.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import { PoolProxyService } from './hub-pool-proxy.service';
 import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
@@ -48,6 +49,7 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
     HubPoolIdentityService,
     HubPoolPairingPinService,
     HubPoolLoadService,
+    HubPoolLocalHealthService,
     HubPoolRoutingLogService,
     HubPoolPressureService,
     HubPoolThroughputService,

@@ -37,6 +37,7 @@ import {
   type PoolRoutingUsage,
 } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
+import { HubPoolLocalHealthService, type LocalBackendHealth } from './hub-pool-local-health.service';
 import {
   HubPoolThroughputService,
   missesBudget,
@@ -786,6 +787,12 @@ export interface LocalBackendProbe {
   /** Whether the inventory named the requested model (regardless of health). */
   listsModel: boolean;
   error?: string;
+  /**
+   * How old this answer was when the request read it. Placement reads a snapshot (see
+   * `HubPoolLocalHealthService`), so an operator comparing this body with an engine they just
+   * fixed needs to know whether they are looking at a live probe or one from before the fix.
+   */
+  probedMsAgo: number;
 }
 
 export function describeNoCandidates(model: string, pin: HubPoolPin | null, probes: LocalBackendProbe[] = []): string {
@@ -877,6 +884,10 @@ export class PoolProxyService {
     // against a store of its own; Nest always injects the module's one, which the peer service
     // advertises and reports from.
     @Optional() throughput?: HubPoolThroughputService,
+    // Optional for the same positional reason, and before the router so that one keeps the last
+    // slot the constructor-shape test pins. A harness that passes none gets a snapshot of its own
+    // over the same registry and settings, which is all Nest's would be.
+    @Optional() localHealth?: HubPoolLocalHealthService,
     // Appended last and optional for the same positional reason. #1483 took the router out of
     // `auto` resolution, which now runs against the whole pool; residency arbitration
     // (`prepareTrackedModel`) is a separate job and is the only thing left that reads it. Without
@@ -884,9 +895,11 @@ export class PoolProxyService {
     @Optional() @Inject(forwardRef(() => InferenceRouterService)) private readonly router?: InferenceRouterService,
   ) {
     this.throughput = throughput ?? new HubPoolThroughputService();
+    this.localHealth = localHealth ?? new HubPoolLocalHealthService(backends, configuration);
   }
 
   private readonly throughput: HubPoolThroughputService;
+  private readonly localHealth: HubPoolLocalHealthService;
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -931,18 +944,10 @@ export class PoolProxyService {
    * that then has no local candidate.
    */
   private async localServableInventory(): Promise<NodeModelInventory> {
-    const backends = await Promise.all(
-      this.backends.entries().map(async ([type, backend]) => {
-        try {
-          const health = await backend.healthCheck();
-          if (!health.running || !health.healthy) return null;
-          return { type, models: health.modelsLoaded.filter((id) => !inventoryListsModel(health.unservableModels, id)) };
-        } catch {
-          return null;
-        }
-      }),
-    );
-    return { local: true, backends: backends.filter((entry): entry is NonNullable<typeof entry> => entry !== null) };
+    const backends = (await this.localHealth.read())
+      .filter(({ health }) => health.running && health.healthy)
+      .map(({ type, health }) => ({ type, models: health.modelsLoaded.filter((id) => !inventoryListsModel(health.unservableModels, id)) }));
+    return { local: true, backends };
   }
 
   /** A peer's models as {@link peerCandidates} would offer them: a snapshot that exists, a peer accepting work, healthy backends. */
@@ -1542,14 +1547,22 @@ export class PoolProxyService {
       return;
     }
     const backend = this.backends.tryGet(backendType);
+    // A verdict that flipped the model's withheld state has changed what `healthCheck()` will
+    // report as `unservableModels`, and the snapshot placement reads is a copy of the last one.
+    // Dropping it here is what keeps quarantine request-accurate rather than TTL-accurate: the
+    // next request re-probes this backend instead of offering a model the node just failed.
     if (status >= 500) {
-      backend?.noteServingFailure?.(model, `HTTP ${status}`);
+      if (backend?.noteServingFailure?.(model, `HTTP ${status}`)) {
+        this.localHealth.invalidate(backendType);
+      }
       return;
     }
     if (status < 400) {
       // A 4xx is the engine's verdict on the *request*, not proof the model can run, so only a
       // clean response clears the record.
-      backend?.noteServingSuccess?.(model);
+      if (backend?.noteServingSuccess?.(model)) {
+        this.localHealth.invalidate(backendType);
+      }
     }
   }
 
@@ -1889,33 +1902,41 @@ export class PoolProxyService {
    */
   /**
    * This node's candidates for `model`, plus what every local backend said on the way — the
-   * probes are what a no-candidate 502 reports, so the same health check answers both.
+   * probes are what a no-candidate 502 reports, so the same health answer serves both.
+   *
+   * "Said" is the snapshot's word, not a live probe's: `HubPoolLocalHealthService` is what keeps
+   * a DROPped engine port from costing every request its 5 s transport timeout. The order is the
+   * registry's, not whichever engine answered first, because the ranker's stable sort turns it
+   * into the local tie-break.
    */
   private async probeLocalCandidates(model: string): Promise<{ candidates: PoolCandidate[]; probes: LocalBackendProbe[] }> {
-    const results = await Promise.all(
-      this.backends.entries().map(async ([type, backend]): Promise<{ candidate: PoolCandidate | null; probe: LocalBackendProbe }> => {
-        const url = safeBaseUrl(backend);
-        try {
-          const health = await backend.healthCheck();
-          const listsModel = inventoryListsModel(health.modelsLoaded, model);
-          const probe: LocalBackendProbe = { type, url, running: health.running, healthy: health.healthy, listsModel, error: health.error };
-          if (!health.running || !health.healthy || !listsModel) {
-            return { candidate: null, probe };
-          }
-          if (inventoryListsModel(health.unservableModels, model)) {
-            this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
-            return {
-              candidate: null,
-              probe: { ...probe, error: probe.error ?? 'lists the model but has been unable to serve it; withheld until that observation decays' },
-            };
-          }
-          return { candidate: { peerId: null, nodeFqdn: null, backend: type }, probe };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.logger.debug(`[PoolProxy] local ${type} health check failed: ${message}`);
-          return { candidate: null, probe: { type, url, running: false, healthy: false, listsModel: false, error: message } };
+    const snapshot = await this.localHealth.read();
+    // Taken after the read, which can hold a cold request for the placement budget.
+    const now = Date.now();
+    const results = snapshot.map(
+      ({ type, backend, health, probedAt }: LocalBackendHealth): { candidate: PoolCandidate | null; probe: LocalBackendProbe } => {
+        const listsModel = inventoryListsModel(health.modelsLoaded, model);
+        const probe: LocalBackendProbe = {
+          type,
+          url: safeBaseUrl(backend),
+          running: health.running,
+          healthy: health.healthy,
+          listsModel,
+          error: health.error,
+          probedMsAgo: Math.max(0, now - probedAt),
+        };
+        if (!health.running || !health.healthy || !listsModel) {
+          return { candidate: null, probe };
         }
-      }),
+        if (inventoryListsModel(health.unservableModels, model)) {
+          this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
+          return {
+            candidate: null,
+            probe: { ...probe, error: probe.error ?? 'lists the model but has been unable to serve it; withheld until that observation decays' },
+          };
+        }
+        return { candidate: { peerId: null, nodeFqdn: null, backend: type }, probe };
+      },
     );
     return {
       candidates: results.map((entry) => entry.candidate).filter((c): c is PoolCandidate => c !== null),
