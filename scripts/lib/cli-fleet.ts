@@ -52,6 +52,9 @@ import {
   planBindConsolidation,
 } from './fleet-ollama-bind.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { type CihubBinarySource, parseCihubVersionOutput, resolveCihubBinarySource } from './fleet-cihub-binary.js';
+import { clearPendingPairingCode, describeDeviceNameConflict, readPendingPairingCode, savePendingPairingCode } from './fleet-pairing-codes.js';
+import { execFileSync } from 'node:child_process';
 import { gatePreflight, PREFLIGHT_CHECKS, type PreflightFinding, type PreflightNodeReport, preflightNode } from './fleet-preflight.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
 import { applyBootParams, assessNode, decideGttTarget, readBootParamState, type NodeBootParamAssessment } from './fleet-boot-params.js';
@@ -145,6 +148,10 @@ export interface FleetArgs {
   dataDir: string;
   /** Portal pairing code for `install`. Six characters. */
   code?: string;
+  /** A cihub-linux-* release asset on this machine, streamed to every node that needs one. */
+  cihubBinary?: string;
+  /** Release tag to fetch with GH_TOKEN when no --cihub-binary is given. Default: latest. */
+  cihubVersion?: string;
   /**
    * CI Account address each installed Hub is claimed for, creating its first operator.
    *
@@ -232,6 +239,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     backends: [],
     dataDir: '/var/lib/companion-hub',
     code: undefined,
+    cihubBinary: process.env.CIHUB_BINARY || undefined,
+    cihubVersion: undefined,
     claimEmail: process.env.CIHUB_CLAIM_EMAIL || undefined,
     postgresPassword: process.env.CIHUB_POSTGRES_PASSWORD || undefined,
     joinPool: undefined,
@@ -290,6 +299,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--user')) args.user = readValue('--user');
     else if (isFlag('--data-dir')) args.dataDir = readValue('--data-dir');
     else if (isFlag('--code')) args.code = readValue('--code');
+    else if (isFlag('--cihub-binary')) args.cihubBinary = readValue('--cihub-binary');
+    else if (isFlag('--cihub-version')) args.cihubVersion = readValue('--cihub-version');
     else if (isFlag('--claim-email')) args.claimEmail = readValue('--claim-email');
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
@@ -1135,6 +1146,26 @@ export function resolvePairingCodeStrategy(input: { code?: string; canMint: bool
   };
 }
 
+/** Version of a local cihub asset, when this machine can run it (same OS and architecture). */
+function readLocalCihubVersion(binaryPath: string): string | undefined {
+  try {
+    return parseCihubVersionOutput(execFileSync(binaryPath, ['version'], { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    return undefined;
+  }
+}
+
+function describeBinarySource(source: CihubBinarySource): string {
+  switch (source.kind) {
+    case 'local':
+      return `cihub binary: ${source.path}${source.version ? ` (${source.version})` : ''}, streamed to nodes that need one`;
+    case 'release':
+      return `cihub binary: release ${source.version}, fetched here with the GitHub token and streamed to nodes that need one`;
+    case 'unavailable':
+      return `${source.why} — nodes that already have a cihub are adopted; the rest fail at 'install cihub'. ${source.fix.join(' ')}`;
+  }
+}
+
 /**
  * `cihub fleet install` — stand a Hub up on every selected node.
  *
@@ -1175,6 +1206,8 @@ async function runInstall(args: FleetArgs): Promise<void> {
       console.log(colorize(`  needs 'cihub login --scope ${DEVICE_PAIR_SCOPE}', or --code for one node`, 'dim'));
     }
     console.log(colorize('  requires a Postgres password', 'dim'));
+    const binarySource = resolveCihubBinarySource({ binaryPath: args.cihubBinary, version: args.cihubVersion, readVersion: readLocalCihubVersion });
+    console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
     console.log(
       colorize(
         `  each node is preflighted first (sudo, dpkg, grub, boot recovery, apt lock) — '${BASE_COMMAND} fleet preflight' shows it now`,
@@ -1198,33 +1231,53 @@ async function runInstall(args: FleetArgs): Promise<void> {
     process.exit(2);
   }
 
+  // Where a node that has no `cihub` gets one. Decided once, here, so a run with no way to get the
+  // binary says so on its first node rather than after that node's Portal device exists.
+  const binarySource = resolveCihubBinarySource({ binaryPath: args.cihubBinary, version: args.cihubVersion, readVersion: readLocalCihubVersion });
+  console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
+  const binaryCache = new Map<string, { path: string; sha256: string; label: string }>();
+
   const reports = [];
   for (const node of run) {
     console.log(`\n${node.name}`);
 
-    let pairingCode: string;
-
-    if (strategy.kind === 'given') {
-      pairingCode = args.code as string;
-    } else {
-      try {
-        const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
-        pairingCode = minted.pairingCode;
-        console.log(`  ${colorize('✓', 'green')} portal device — registered as ${minted.slug}`);
-      } catch (error) {
-        // Registering is the first step; without a code the rest cannot run, so
-        // this node is reported and the fleet continues rather than aborting.
-        console.log(`  ${colorize('✗', 'red')} portal device — ${error instanceof Error ? error.message : String(error)}`);
-        reports.push({ node: node.name, ok: false, steps: [] });
-        continue;
-      }
-    }
+    // The code is minted (or reused) INSIDE installNode, after every gate and after the binary is on
+    // the node — the last step before `register`. A kept code survives a failed attempt; a spent one
+    // is forgotten once the Hub reports registered.
+    const orgId = storedLogin?.orgId ?? '';
+    const mint =
+      strategy.kind === 'given'
+        ? undefined
+        : async () => {
+            const pending = readPendingPairingCode(node.ip, orgId);
+            if (pending) return { code: pending.pairingCode, detail: `reusing the code minted ${pending.mintedAt.slice(0, 16)} for ${pending.slug}` };
+            try {
+              const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
+              savePendingPairingCode({
+                ip: node.ip,
+                name: node.name,
+                slug: minted.slug,
+                deviceId: minted.deviceId,
+                pairingCode: minted.pairingCode,
+                orgId,
+                mintedAt: new Date().toISOString(),
+              });
+              return { code: minted.pairingCode, detail: `registered as ${minted.slug}` };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(/already exists/.test(message) ? describeDeviceNameConflict(node.name) : message);
+            }
+          };
 
     const report = await installNode(
       node,
       {
         postgresPassword: args.postgresPassword,
-        pairingCode,
+        pairingCode: strategy.kind === 'given' ? args.code : undefined,
+        mintPairingCode: mint,
+        onRegistered: () => clearPendingPairingCode(node.ip),
+        cihubBinary: binarySource,
+        binaryCache,
         claimEmail: args.claimEmail,
         joinPool: args.joinPool,
         poolPin: args.poolPin,

@@ -39,7 +39,7 @@
     "version": "echo $npm_package_version",
     "dev:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts --stack-dev",
     "local:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts",
-    "build:cli": "node scripts/build-standalone-cli.cjs",
+    "build:cli": "pnpm exec tsx scripts/generate-bundled-hub-assets.ts && node scripts/build-standalone-cli.cjs",
     "build:desktop": "node -e \"const { execSync } = require('node:child_process'); const command = process.platform === 'win32' ? 'cargo tauri build' : 'pnpm run build'; execSync(command, { cwd: 'packages/desktop', stdio: 'inherit', shell: true });\"",
     "build:mobile:android": "pnpm --filter frontend build && pnpm --filter mobile android:build",
     "build:mobile:ios": "pnpm --filter frontend build && pnpm --filter mobile ios:build",
