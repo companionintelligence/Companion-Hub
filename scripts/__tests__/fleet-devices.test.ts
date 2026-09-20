@@ -26,15 +26,27 @@ describe('requireManageLogin', () => {
 
 describe('listPortalDevices', () => {
   it("asks for the login's organization by default, with the token, and normalises the rows", async () => {
+    // Portal answers `id` = the registration row and `deviceId` = the device; the device is what
+    // its routes key on, and what a never-paired device is called (`inactive-<uuid>`). Picking `id`
+    // made every release and re-register answer 404.
     const fetchImpl = fetchAnswering(200, {
-      devices: [{ id: 'd1', name: 'core-7', slug: 'core-7', status: 'active', lastSeenAt: '2026-09-20T00:00:00Z' }],
+      devices: [{ id: 'reg-1', deviceId: 'inactive-7', name: 'core-7', slug: 'core-7', status: 'inactive', lastSeenAt: null }],
     });
     const devices = await listPortalDevices({ login: manage, fetchImpl });
     const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [URL, RequestInit];
     expect(url.toString()).toBe('https://portal.test/api/devices?organizationId=org-1');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer cio_manage');
     expect(devices).toEqual([
-      { id: 'd1', name: 'core-7', slug: 'core-7', status: 'active', organizationId: undefined, lastSeenAt: '2026-09-20T00:00:00Z', createdAt: null },
+      {
+        id: 'inactive-7',
+        registrationId: 'reg-1',
+        name: 'core-7',
+        slug: 'core-7',
+        status: 'inactive',
+        organizationId: undefined,
+        lastSeenAt: null,
+        createdAt: null,
+      },
     ]);
   });
 
