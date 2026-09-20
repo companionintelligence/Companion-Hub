@@ -51,6 +51,19 @@ describe('VllmBackend', () => {
       expect(health.modelsLoaded).toContain('llama-70b');
     });
 
+    it('yields the server to lucebox or mtplx when /v1/models says it is theirs — three backends share host port 8000', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({
+        data: { data: [{ id: 'dflash', owned_by: 'dflash' }] },
+      });
+
+      const health = await backend.healthCheck();
+
+      expect(health).toMatchObject({ running: true, healthy: false, modelsLoaded: [] });
+      expect(health.error).toContain("the lucebox backend's server, not vllm's");
+      expect(health.error).toContain('VLLM_URL');
+      await expect(backend.listModels()).resolves.toEqual([]);
+    });
+
     it('should report unhealthy on failure', async () => {
       (axios.get as any) = vi.fn().mockRejectedValue(new Error('Connection refused'));
 

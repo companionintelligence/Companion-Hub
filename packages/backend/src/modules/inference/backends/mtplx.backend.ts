@@ -5,6 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+import { foreignEngineHealth, openAiModelIds } from './engine-identity';
 import { bearerHeaders, readManagedRunnerApiKey } from '../managed-runner-auth';
 
 /** Accept `http://host:8000`, `http://host:8000/` or `http://host:8000/v1` and store the bare origin. */
@@ -99,11 +100,14 @@ export class MtplxBackend implements InferenceBackend {
     const baseUrl = baseUrlOverride ? resolveMtplxProbeUrl(baseUrlOverride) : this.getBaseUrl();
     try {
       const response = await axios.get(`${baseUrl}/v1/models`, this.requestConfig(5000));
-      const models = response.data?.data ?? [];
+      // vLLM and lucebox default to this same host port; whoever is actually listening there
+      // says so in `owned_by`, and only that backend gets to offer its models.
+      const foreign = foreignEngineHealth('mtplx', response.data, baseUrl);
+      if (foreign) return foreign;
       return {
         running: true,
         healthy: true,
-        modelsLoaded: models.map((m: { id: string }) => m.id),
+        modelsLoaded: openAiModelIds(response.data),
       };
     } catch (err) {
       return {
@@ -118,6 +122,7 @@ export class MtplxBackend implements InferenceBackend {
   async listModels(): Promise<BackendModelInfo[]> {
     try {
       const response = await axios.get(`${this.getBaseUrl()}/v1/models`, this.requestConfig(10000));
+      if (foreignEngineHealth('mtplx', response.data, this.getBaseUrl())) return [];
       const models = response.data?.data ?? [];
       return models.map((m: { id: string }) => ({
         id: m.id,
