@@ -31,7 +31,16 @@ import {
   ollamaBindPreflightShell,
   ollamaOwnershipGuardShell,
 } from './fleet-ollama-bind.js';
-import { classifyRuntimeApplyOutput, type OllamaRuntimeSettings, ollamaRuntimeApplyShell, RUNTIME_DROPIN } from './fleet-ollama-runtime.js';
+import {
+  classifyHubContextCapOutput,
+  classifyRuntimeApplyOutput,
+  type HubContextCap,
+  type HubContextCapOutcome,
+  hubContextCapShell,
+  type OllamaRuntimeSettings,
+  ollamaRuntimeApplyShell,
+  RUNTIME_DROPIN,
+} from './fleet-ollama-runtime.js';
 import { classifyProbeFirewallOutput, probeFirewallApplyShell } from './fleet-probe-firewall.js';
 
 export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade'] as const;
@@ -382,7 +391,7 @@ export function describeBind(bind: OllamaBindMode): string {
 
 // ─── Execution ───────────────────────────────────────────────────────────────
 
-import { sshCapture, type SshTarget } from './fleet-ssh.js';
+import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } from './fleet-ssh.js';
 
 export interface BackendInstallResult {
   backend: InstallableBackend;
@@ -602,6 +611,39 @@ export async function applyOllamaRuntimeSettings(
         transition,
       };
   }
+}
+
+// ─── The Hub's context cap, after the runtime drop-in ───────────────────────
+
+export type HubContextCapResult = HubContextCapOutcome & { ms?: number };
+
+/**
+ * Tell the node's Hub the context cap `--ollama-context` just wrote into Ollama's environment.
+ *
+ * Runs after the runtime step, and only on a node where that step applied or was already in
+ * effect: the cap is the Hub's half of `OLLAMA_CONTEXT_LENGTH`, and telling a Hub about a context
+ * the daemon does not run would make the handout wrong in the other direction. Unprivileged — the
+ * device key is read on the node and used on its loopback, never printed, never carried back here.
+ * The classifier's `applied` is a cap that read back as requested; nothing else is reported as done.
+ */
+export async function applyHubContextCap(target: SshTarget, cap: HubContextCap, dataDir: string, timeoutMs = 90_000): Promise<HubContextCapResult> {
+  const command = `bash <<'CIHUB_HUB_CONTEXT_CAP_EOF'\n${hubContextCapShell(cap, dataDir)}\nCIHUB_HUB_CONTEXT_CAP_EOF`;
+  const started = Date.now();
+  const result = await sshCapture(target, command, timeoutMs);
+  const ms = Date.now() - started;
+  // The script ends in `true`, so a non-zero exit with no marker is SSH itself failing — and that
+  // failure has a vocabulary already; use it rather than "no completion marker".
+  if (!result.ok && !result.out.includes('hub-context-cap-')) {
+    return {
+      outcome: 'failed',
+      why:
+        result.code === null
+          ? `no answer from the node within ${Math.round(timeoutMs / 1000)} s`
+          : describeSshFailure(classifySshFailure(result), target.host),
+      ms,
+    };
+  }
+  return { ...classifyHubContextCapOutput(result.out, result.err, cap), ms };
 }
 
 // ─── Firewall rules for the Hub's engine probes ─────────────────────────────

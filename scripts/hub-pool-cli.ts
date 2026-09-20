@@ -165,6 +165,8 @@ export interface PoolStatusResponse {
     maxPromptTokens?: number | null;
     /** `'env'` when `HUB_POOL_MAX_PROMPT_TOKENS` set it, which no settings write can change. */
     maxPromptTokensSetBy?: 'env' | 'setting' | null;
+    /** This node's context cap (`inferenceMaxNumCtx`), or `null` for none. Absent on a Hub predating caps. */
+    maxNumCtx?: number | null;
     /** This node's own measured rates, as it advertises them. Absent on a Hub predating throughput. */
     throughput?: PoolThroughputEstimate[];
   };
@@ -456,6 +458,37 @@ export async function setPoolMaxPromptTokens(envFileName: string, maxPromptToken
   });
 }
 
+/**
+ * `GET /api/inference/preferences`, the two fields `pool context-cap` reads. `maxNumCtx` is the
+ * stored cap on the `num_ctx` handed to apps (`null` for none); the key is absent on a Hub predating
+ * caps, which is how the command tells one apart from a Hub with no cap set.
+ */
+export interface InferencePreferencesResponse {
+  preferredBackend: string | null;
+  maxNumCtx?: number | null;
+}
+
+export async function fetchInferencePreferences(envFileName: string): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
+}
+
+/**
+ * Set this node's context cap, or clear it with `null`, through `PATCH /api/inference/preferences`.
+ *
+ * That route — not `/api/user-settings` — because it is the one that can REMOVE the key, and it
+ * answers with the preferences as stored. It requires `backend`, so the caller passes the one the
+ * Hub already has (or Ollama, which an absent preference resolves to on the Hub). Every write here
+ * sweeps the AI apps whose env it changes; the caller skips the write when the cap already reads as
+ * requested.
+ */
+export async function setInferenceContextCap(envFileName: string, backend: string, maxNumCtx: number | null): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify({ backend, maxNumCtx }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
 /** Per-peer kill switch. Reversible and symmetric: the pairing and both tokens survive. */
 export async function setPoolPeerEnabled(envFileName: string, id: string, enabled: boolean): Promise<PoolPeerRow> {
   return hubApiFetch<PoolPeerRow>(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, {
@@ -688,6 +721,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
 
   lines.push(...formatPairingPinStateLines(status.pairingPin));
   lines.push(...formatLocalPromptCeilingLines(status.localNode));
+  lines.push(...formatLocalContextCapLines(status.localNode));
 
   // An unreachable backend and a node with no models both show an empty inventory; only this says which.
   if (status.localNode.capabilitiesError) {
@@ -721,6 +755,15 @@ export function formatLocalPromptCeilingLines(localNode: PoolStatusResponse['loc
       ? '  — HUB_POOL_MAX_PROMPT_TOKENS in .env, which `pool ceiling` cannot change'
       : '  — clear with: cihub pool ceiling clear';
   return [`  Ceiling    prompts over ~${localNode.maxPromptTokens} tokens go to another node when one can serve them${source}`];
+}
+
+/**
+ * This node's context cap, under "This node" in `pool status`. Nothing when there is none, like the
+ * ceiling above, so a node that never set one — or a Hub predating caps — reads exactly as before.
+ */
+export function formatLocalContextCapLines(localNode: PoolStatusResponse['localNode']): string[] {
+  if (typeof localNode.maxNumCtx !== 'number') return [];
+  return [`  Context    apps are handed a num_ctx of at most ${localNode.maxNumCtx} tokens  — clear with: cihub pool context-cap clear`];
 }
 
 /** The peers advertising a ceiling, since the peer table has no column for it. Nothing when none does. */
@@ -935,6 +978,81 @@ export function formatPromptCeilingResultLines(
       'and the routing log marks that request as placed over the ceiling.',
       '',
       'See the decisions: cihub pool log',
+    ],
+  };
+}
+
+/**
+ * The box `cihub pool context-cap` prints.
+ *
+ * `before` is what the Hub reported before the write, and decides two of the outcomes on its own: a
+ * Hub whose preferences carry no `maxNumCtx` at all predates the cap (nothing is written to it), and
+ * a cap that already reads as requested is left alone (`written` false), because the write route
+ * restarts every AI app whose env it changes. `after` is the read-back — the box reports the cap in
+ * force, not the one requested.
+ */
+export function formatContextCapResultLines(
+  requested: number | null,
+  before: InferencePreferencesResponse,
+  after: InferencePreferencesResponse | null,
+  written: boolean,
+): { title: string; lines: string[]; tone: 'green' | 'yellow' | 'red' | 'cyan' } {
+  if (!('maxNumCtx' in before)) {
+    return {
+      title: 'Context cap not supported',
+      tone: 'red',
+      lines: [
+        `${FAIL} This Hub's build predates the context cap, so nothing was written and the handout is unchanged.`,
+        'Update it first: cihub pool update',
+      ],
+    };
+  }
+  if (!written) {
+    return {
+      title: 'Context cap unchanged',
+      tone: 'cyan',
+      lines:
+        requested === null
+          ? ['No context cap is set on this node; nothing to clear, and no app was restarted.']
+          : [`The cap is already ${requested} tokens; nothing was written, and no app was restarted.`],
+    };
+  }
+  const inForce = after?.maxNumCtx;
+  if (after && inForce !== requested) {
+    return {
+      title: 'Context cap not in force',
+      tone: 'red',
+      lines: [
+        `${FAIL} Asked for ${requested === null ? 'no cap' : `${requested} tokens`}, but the Hub reads back ${inForce === null || inForce === undefined ? 'no cap' : `${inForce} tokens`}.`,
+        'Read the Hub log around the write: cihub logs',
+      ],
+    };
+  }
+  if (requested === null) {
+    return {
+      title: 'Context cap cleared',
+      tone: 'yellow',
+      lines: [
+        "Apps on this node are sized from the model window and this node's memory alone again —",
+        'the sizing before the cap existed, which can hand out a window larger than the engine runs.',
+        '',
+        'AI apps whose env changed are restarting now; peers learn it on their next health poll.',
+      ],
+    };
+  }
+  return {
+    title: 'Context cap set',
+    tone: 'green',
+    lines: [
+      `Apps on this node are handed a num_ctx of at most ${requested} tokens: min(model window, memory sizing, ${requested}).`,
+      '',
+      'AI apps whose env changed are restarting now; peers learn the cap on their next health poll, and a',
+      'pooled request is capped at the smallest cap among the nodes serving its model.',
+      '',
+      `Match it to the engine: OLLAMA_CONTEXT_LENGTH on this node should be ${requested} too —`,
+      `cihub fleet backends --ollama-context ${requested} --execute sets both, on every node.`,
+      '',
+      'Check it: cihub pool status',
     ],
   };
 }

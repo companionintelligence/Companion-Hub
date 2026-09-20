@@ -6,6 +6,9 @@ import {
   type PoolRoutingLogResponse,
   type PoolStatusResponse,
   cancelPairingPin,
+  fetchInferencePreferences,
+  formatContextCapResultLines,
+  formatLocalContextCapLines,
   formatPairingPinCancelledLines,
   formatPairingPinLines,
   formatPairingPinStateLines,
@@ -26,6 +29,7 @@ import {
   mintPairingPin,
   resolvePoolPeerTarget,
   runPoolDiscover,
+  setInferenceContextCap,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
   unpairPoolPeer,
@@ -653,6 +657,76 @@ describe('hub-pool-cli prompt ceiling', () => {
 
       expect(result.tone).toBe('red');
       expect(result.lines.join('\n')).toContain('predates prompt ceilings');
+    });
+  });
+});
+
+describe('hub-pool-cli context cap', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('reads the preferences, and PATCHes the cap with the backend it was given — null to clear', async () => {
+    hubApiFetch.mockResolvedValue({ preferredBackend: 'ollama', maxNumCtx: null });
+
+    await fetchInferencePreferences('.env.local');
+    await setInferenceContextCap('.env.local', 'ollama', 16_384);
+    await setInferenceContextCap('.env.local', 'vllm', null);
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/preferences');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBeUndefined();
+    // The preferences route, not /api/user-settings: it is the one that can remove the key, and it
+    // requires `backend`, so the stored one is sent back.
+    expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/preferences');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"backend":"ollama","maxNumCtx":16384}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    // Omitting the field would leave the old cap in place: null is the "clear".
+    expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit).body).toBe('{"backend":"vllm","maxNumCtx":null}');
+  });
+
+  it('shows this node’s cap in status, and nothing on a node without one or a Hub predating caps', () => {
+    const base = status();
+    const capped = formatPoolStatusLines({ ...base, localNode: { ...base.localNode, maxNumCtx: 16_384 } }).join('\n');
+    expect(capped).toContain('Context    apps are handed a num_ctx of at most 16384 tokens');
+    expect(capped).toContain('cihub pool context-cap clear');
+    expect(formatLocalContextCapLines({ ...base.localNode, maxNumCtx: null })).toEqual([]);
+    expect(formatLocalContextCapLines(base.localNode)).toEqual([]);
+    expect(formatPoolStatusLines(base).join('\n')).not.toContain('Context    ');
+  });
+
+  describe('formatContextCapResultLines', () => {
+    const prefs = (maxNumCtx: number | null) => ({ preferredBackend: 'ollama', maxNumCtx });
+
+    it('confirms a cap that read back as requested, and names the engine setting it must match', () => {
+      const result = formatContextCapResultLines(16_384, prefs(null), prefs(16_384), true);
+      expect(result.tone).toBe('green');
+      expect(result.title).toBe('Context cap set');
+      expect(result.lines.join('\n')).toContain('at most 16384 tokens');
+      expect(result.lines.join('\n')).toContain('OLLAMA_CONTEXT_LENGTH on this node should be 16384');
+    });
+
+    it('confirms a clear, saying what the sizing goes back to', () => {
+      const result = formatContextCapResultLines(null, prefs(65_536), prefs(null), true);
+      expect(result).toMatchObject({ title: 'Context cap cleared', tone: 'yellow' });
+      expect(result.lines.join('\n')).toContain('model window');
+    });
+
+    it('says nothing was written when the cap already read as requested', () => {
+      expect(formatContextCapResultLines(16_384, prefs(16_384), null, false)).toMatchObject({ title: 'Context cap unchanged' });
+      expect(formatContextCapResultLines(null, prefs(null), null, false).lines.join('\n')).toContain('nothing to clear');
+    });
+
+    it('does not report success when the read-back disagrees with the request', () => {
+      const result = formatContextCapResultLines(16_384, prefs(null), prefs(null), true);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('reads back no cap');
+    });
+
+    it('says an older Hub stored nothing', () => {
+      const result = formatContextCapResultLines(16_384, { preferredBackend: 'ollama' }, null, false);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('predates the context cap');
     });
   });
 });

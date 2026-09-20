@@ -352,3 +352,238 @@ export function classifyRuntimeApplyOutput(out: string, err: string, settings: O
   if (unchanged) return { outcome: 'unchanged', why: unchanged, before, after, transition };
   return { outcome: 'applied', why: pick(RUNTIME_MARKERS.written) ?? 'runtime settings applied', before, after, transition };
 }
+
+// ─── The Hub's side of --ollama-context ──────────────────────────────────────
+
+/**
+ * `OLLAMA_CONTEXT_LENGTH` is half of a setting. The Hub sizes the `num_ctx` it hands its apps from
+ * the model window and the node's memory, and Ollama's API does not expose the context its daemon
+ * runs — so a node whose drop-in says 16384 while its Hub hands out 65536 reloads a 30B on every
+ * request that disagrees (core-2, 2026-09-20: `ollama ps` 25 GB → 44 GB, a ~40 s reload, then back).
+ * The Hub setting that closes the gap is `inferenceMaxNumCtx`, and this is how `--ollama-context`
+ * writes it on every node in the same run, over the node's own loopback API with the node's own
+ * device key, so the key never crosses the wire.
+ *
+ * `null` clears the cap. `/api/user-settings` cannot remove a key, so the clearing route is
+ * `PATCH /api/inference/preferences {"backend": <current>, "maxNumCtx": null}` — `backend` is
+ * required there, so the current preference is read first; a Hub with none stored resolves to
+ * Ollama already (`resolveActiveBackend`), and that is what is sent.
+ *
+ * The write is skipped when the cap already reads as requested: `/api/inference/preferences` sweeps
+ * every AI app on any write, and clearing a cap that is not there would restart apps for nothing.
+ */
+export type HubContextCap = number | null;
+
+export const HUB_CONTEXT_CAP_MARKERS = {
+  key: 'hub-context-cap-key:',
+  get: 'hub-context-cap-get:',
+  now: 'hub-context-cap-now:',
+  backend: 'hub-context-cap-backend:',
+  write: 'hub-context-cap-write:',
+  after: 'hub-context-cap-after:',
+  complete: 'hub-context-cap-complete',
+} as const;
+
+/** Where the write goes, by direction: a set needs no `backend`; a clear needs the route that removes the key. */
+export function hubContextCapRoute(cap: HubContextCap): string {
+  return cap === null ? 'PATCH /api/inference/preferences' : 'PATCH /api/user-settings';
+}
+
+/** `16384` or `none`, for report lines. */
+const showCap = (cap: HubContextCap | undefined): string => (cap === undefined ? 'unknown' : cap === null ? 'none' : String(cap));
+
+/** The dry-run line under a node's runtime plan. */
+export function describeHubContextCapPlan(cap: HubContextCap): string {
+  return cap === null
+    ? `hub: would clear the context cap on this node's Hub (${hubContextCapRoute(cap)} maxNumCtx=null) unless none is set`
+    : `hub: would set inferenceMaxNumCtx=${cap} on this node's Hub (${hubContextCapRoute(cap)}) unless already ${cap}`;
+}
+
+/**
+ * Tell the node's Hub the context cap. Runs on the node, unprivileged; never echoes the key.
+ *
+ * Same key lookup as `hubRecommendationScript`: the `ci-hub` container's `/data/state/settings.json`
+ * first (`node -e`, because a JSON value can carry escapes a regex would truncate), then the host
+ * data dir. `GET /api/inference/preferences` first, always: it says whether this Hub knows the cap
+ * at all (`maxNumCtx` absent from the body is a build predating it), what it is now, and — for a
+ * clear — which backend to send back. Then the write, then a read-back, so the caller never reports
+ * a cap nobody read. Every finding is a marker line; the exit status is always 0.
+ */
+export function hubContextCapShell(cap: HubContextCap, dataDir = '/var/lib/companion-hub'): string {
+  const hostSettings = `${dataDir.replace(/'/g, "'\\''")}/state/settings.json`;
+  const m = HUB_CONTEXT_CAP_MARKERS;
+  const finish = [`echo "${m.complete}"`, 'rm -f "$cihub_cap_body"', 'unset cihub_cap_key', 'exit 0'];
+  const write =
+    cap === null
+      ? [
+          `if [ "$cihub_cap_now" = none ] || [ "$cihub_cap_now" = absent ]; then`,
+          '  cihub_cap_code=skipped',
+          `  echo "${m.write} skipped"`,
+          'else',
+          // The stored preference, or Ollama — the Hub-managed default an absent preference already resolves to.
+          `  cihub_cap_backend="$(sed -n 's/.*"preferredBackend"[[:space:]]*:[[:space:]]*"\\([a-z]*\\)".*/\\1/p' "$cihub_cap_body" | head -1)"`,
+          '  case "$cihub_cap_backend" in ollama|vllm|lemonade|mtplx|dspark|lucebox) ;; *) cihub_cap_backend=ollama ;; esac',
+          `  echo "${m.backend} $cihub_cap_backend"`,
+          `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d "{\\"backend\\":\\"$cihub_cap_backend\\",\\"maxNumCtx\\":null}" "$cihub_cap_url/inference/preferences")"`,
+          '  [ -n "$cihub_cap_code" ] || cihub_cap_code=000',
+          `  echo "${m.write} $cihub_cap_code"`,
+          'fi',
+        ]
+      : [
+          `if [ "$cihub_cap_now" = ${cap} ] || [ "$cihub_cap_now" = absent ]; then`,
+          '  cihub_cap_code=skipped',
+          `  echo "${m.write} skipped"`,
+          'else',
+          `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d '{"inferenceMaxNumCtx":${cap}}' "$cihub_cap_url/user-settings")"`,
+          '  [ -n "$cihub_cap_code" ] || cihub_cap_code=000',
+          `  echo "${m.write} $cihub_cap_code"`,
+          'fi',
+        ];
+  return [
+    'set +e',
+    'cihub_cap_key=""',
+    "if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx ci-hub; then",
+    `  cihub_cap_key="$(docker exec ci-hub node -e 'try{const s=require("/data/state/settings.json");process.stdout.write(String(s.ciHubApiKey||""))}catch{}' 2>/dev/null)"`,
+    'fi',
+    `if [ -z "$cihub_cap_key" ] && [ -r '${hostSettings}' ]; then`,
+    `  cihub_cap_key="$(sed -n 's/.*"ciHubApiKey"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' '${hostSettings}' | head -1)"`,
+    'fi',
+    'cihub_cap_body="$(mktemp)"',
+    'if [ -z "$cihub_cap_key" ]; then',
+    `  echo "${m.key} missing"`,
+    ...finish.map((l) => `  ${l}`),
+    'fi',
+    `echo "${m.key} present"`,
+    "cihub_cap_url='http://127.0.0.1:5002/api'",
+    // `-w '%{http_code}'` prints `000` itself on a refused connection; only an empty string (no curl) needs the fallback.
+    `cihub_cap_curl() { curl -s -o "$cihub_cap_body" -w '%{http_code}' --max-time 30 -H "Authorization: Bearer $cihub_cap_key" -H 'Content-Type: application/json' "$@" 2>/dev/null; }`,
+    // `maxNumCtx` as the body carries it: digits, `none` for null, `absent` when the key is not there (a build predating the cap).
+    'cihub_cap_read() {',
+    '  if grep -q \'"maxNumCtx"\' "$cihub_cap_body" 2>/dev/null; then',
+    `    cihub_cap_v="$(sed -n 's/.*"maxNumCtx"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$cihub_cap_body" | head -1)"`,
+    '    if [ -n "$cihub_cap_v" ]; then echo "$cihub_cap_v"; else echo none; fi',
+    '  else',
+    '    echo absent',
+    '  fi',
+    '}',
+    'cihub_cap_code="$(cihub_cap_curl "$cihub_cap_url/inference/preferences")"',
+    '[ -n "$cihub_cap_code" ] || cihub_cap_code=000',
+    `echo "${m.get} $cihub_cap_code"`,
+    'if [ "$cihub_cap_code" != 200 ]; then',
+    ...finish.map((l) => `  ${l}`),
+    'fi',
+    'cihub_cap_now="$(cihub_cap_read)"',
+    `echo "${m.now} $cihub_cap_now"`,
+    ...write,
+    'case "$cihub_cap_code" in',
+    '  2??)',
+    '    if [ "$(cihub_cap_curl "$cihub_cap_url/inference/preferences")" = 200 ]; then',
+    `      echo "${m.after} $(cihub_cap_read)"`,
+    '    fi',
+    '    ;;',
+    'esac',
+    ...finish.slice(0, -1),
+    'true',
+  ].join('\n');
+}
+
+export interface HubContextCapOutcome {
+  outcome: 'applied' | 'unchanged' | 'failed';
+  why: string;
+  /** The cap `GET /api/inference/preferences` reported before the write; absent when it could not be read. */
+  before?: HubContextCap;
+  /** The cap read back after the write; absent when nothing was written or the read-back failed. */
+  after?: HubContextCap;
+  httpStatus?: number;
+}
+
+/** `16384` → 16384, `none` → null, anything else → undefined. */
+function parseCapMarker(raw: string | undefined): HubContextCap | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'none') return null;
+  return /^\d+$/.test(raw) ? Number(raw) : undefined;
+}
+
+/**
+ * Classify the output of {@link hubContextCapShell}. Markers, not exit codes.
+ *
+ * `applied` is printed only for a cap that read back as requested: an older Hub's `user-settings`
+ * schema strips a key it does not know and answers 200 having written nothing, and the read-back is
+ * what tells that apart from a write that took. A build that predates the cap is caught one step
+ * earlier — `maxNumCtx` missing from the preferences body — and named, with the fix.
+ */
+export function classifyHubContextCapOutput(out: string, err: string, cap: HubContextCap): HubContextCapOutcome {
+  const lines = `${out}\n${err}`.split('\n').map((l) => l.trim());
+  const pick = (marker: string) =>
+    lines
+      .find((l) => l.startsWith(marker))
+      ?.slice(marker.length)
+      .trim();
+  const m = HUB_CONTEXT_CAP_MARKERS;
+  const route = hubContextCapRoute(cap);
+  if (pick(m.key) === 'missing') {
+    return {
+      outcome: 'failed',
+      why: 'no device key on the node (neither in the ci-hub container nor in the host data dir) — is a Hub installed there?',
+    };
+  }
+  if (!lines.includes(m.complete)) return { outcome: 'failed', why: 'the Hub step produced no completion marker' };
+  const get = pick(m.get);
+  if (get === undefined) return { outcome: 'failed', why: 'the Hub step produced no HTTP status' };
+  const getStatus = Number(get.slice(0, 3));
+  if (getStatus === 0) return { outcome: 'failed', why: 'nothing answered on 127.0.0.1:5002 — is the Hub running?', httpStatus: 0 };
+  if (getStatus === 401) return { outcome: 'failed', why: "the Hub did not accept the node's device key (HTTP 401)", httpStatus: 401 };
+  if (getStatus === 409) return { outcome: 'failed', why: 'the Hub is not claimed (HTTP 409) — run cihub claim there first', httpStatus: 409 };
+  if (getStatus !== 200) return { outcome: 'failed', why: `GET /api/inference/preferences answered HTTP ${getStatus}`, httpStatus: getStatus };
+
+  const nowRaw = pick(m.now);
+  if (nowRaw === 'absent') {
+    return cap === null
+      ? { outcome: 'unchanged', why: "this Hub's build predates the context cap; nothing to clear" }
+      : {
+          outcome: 'failed',
+          why: "this Hub's build predates the context cap (GET /api/inference/preferences has no maxNumCtx) — update it first: cihub fleet update --hub",
+        };
+  }
+  const before = parseCapMarker(nowRaw);
+  const write = pick(m.write);
+  if (write === 'skipped') {
+    return { outcome: 'unchanged', why: cap === null ? 'no context cap set; nothing to clear' : `context cap already ${cap}`, before };
+  }
+  if (write === undefined) return { outcome: 'failed', why: 'the Hub step printed no write status', before };
+  const writeStatus = Number(write.slice(0, 3));
+  if (writeStatus < 200 || writeStatus >= 300) {
+    const hint =
+      writeStatus === 400 && cap !== null
+        ? ' — the Hub accepts a cap from 2048 to 1048576'
+        : writeStatus === 0
+          ? ' — nothing answered on 127.0.0.1:5002'
+          : '';
+    return { outcome: 'failed', why: `${route} answered HTTP ${writeStatus}${hint}`, before, httpStatus: writeStatus };
+  }
+  const after = parseCapMarker(pick(m.after));
+  if (after === undefined) {
+    return {
+      outcome: 'failed',
+      why: `${route} answered HTTP ${writeStatus} but the read-back of GET /api/inference/preferences failed`,
+      before,
+      httpStatus: writeStatus,
+    };
+  }
+  if (after !== cap) {
+    return {
+      outcome: 'failed',
+      why: `${route} answered HTTP ${writeStatus} but the Hub reads back ${showCap(after)}, not ${showCap(cap)}`,
+      before,
+      after,
+      httpStatus: writeStatus,
+    };
+  }
+  return {
+    outcome: 'applied',
+    why: `context cap ${showCap(before)} → ${showCap(cap)} (${route} ${writeStatus})`,
+    before,
+    after,
+    httpStatus: writeStatus,
+  };
+}

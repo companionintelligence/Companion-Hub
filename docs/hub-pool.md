@@ -103,9 +103,13 @@ nodes moved to the back. `overridden` is `true` when the request was placed on o
 ## Context caps: the window an app asks for is the window the engine runs
 
 A per-node preference about the context window (`num_ctx`) the Hub hands its apps:
-`PATCH /api/user-settings {"inferenceMaxNumCtx": 16384}` on a node, or `maxNumCtx` on
-`PATCH /api/inference/preferences`. Absent (the default) is no cap. It exists because the handout and
-the engine's runtime environment never knew about each other.
+`cihub pool context-cap 16384` on a node (`clear` removes it), or across the fleet
+`cihub fleet backends --ollama-context 16384 --execute`, which writes the engine's context and every
+node's cap in one run — see
+[`cihub pool context-cap`](./CLI.md#cihub-pool-context-cap). Over the API it is
+`PATCH /api/user-settings {"inferenceMaxNumCtx": 16384}`, or `maxNumCtx` on
+`PATCH /api/inference/preferences` (the route that can clear it). Absent (the default) is no cap. It
+exists because the handout and the engine's runtime environment never knew about each other.
 
 The Hub sizes `CI_LLM_NUM_CTX` (`HERMES_NUM_CTX` for Hermes) from the model's window and the memory
 left after its weights, so an app never inherits Ollama's memory-based default of a full 262144
@@ -144,13 +148,15 @@ A peer on an older build routes and serves as before; only what its apps ask for
 if that peer sets a cap itself.
 
 **Seeing it.** `GET /api/inference/pool/status` reports `localNode.maxNumCtx` and
-`peers[].maxNumCtx` (`null` for none, through the same clamp a handout reads). The handout log lines
-(`[InferenceEnvResolver]`, `[AppCredentials]`) carry the two warnings above.
+`peers[].maxNumCtx` (`null` for none, through the same clamp a handout reads); `cihub pool status`
+shows this node's under **This node**. The handout log lines (`[InferenceEnvResolver]`,
+`[AppCredentials]`) carry the two warnings above.
 
 **Sizing the engine.** Size `OLLAMA_CONTEXT_LENGTH` for the largest prompt the node's agents send —
 OpenClaw's first turn on core-2 was 44k tokens, which does not fit a 16k window — and remember that
 the KV cache is `OLLAMA_NUM_PARALLEL` times that window. A 30B at 4 × 64k is the 44 GB above;
-4 × 16k is 25 GB. Then set the cap to the same number on that node.
+4 × 16k is 25 GB. Then set the cap to the same number on that node — `cihub fleet backends
+--ollama-context N --execute` does both on every node it manages.
 
 ## Throughput-aware placement
 
