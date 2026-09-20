@@ -771,6 +771,7 @@ cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
+cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
@@ -1051,6 +1052,72 @@ canonical file) without changing anything.
 > the guard admits `lo`, `tailscale0`, `docker0` and `br-+` and resets the rest. `fleet status`
 > marks a `0.0.0.0` bind whose guard is not active as **EXPOSED**. Use `--bind tailnet` only on a
 > node that runs no Hub container.
+
+#### Ollama's runtime environment: a second file, restarted only on change
+
+Measured on 2026-09-20: no node on the fleet set `OLLAMA_NUM_PARALLEL`, so every Ollama served one
+sequence at a time and the pool's ceiling was the sum of fifteen single streams. Four flags manage
+the settings that change that, and they write **one separate drop-in**,
+`/etc/systemd/system/ollama.service.d/zzzzz-cihub-runtime.conf` — never the bind file, and never a
+file that mentions `OLLAMA_HOST`, so the bind step's "move aside anything that sets the bind" rule
+can never touch it:
+
+| flag | key | value |
+|---|---|---|
+| `--ollama-parallel N` | `OLLAMA_NUM_PARALLEL` | 1–64 |
+| `--ollama-keep-alive D` | `OLLAMA_KEEP_ALIVE` | a duration: `24h`, `30m`, `1h30m`, `-1` (forever) |
+| `--ollama-context N` | `OLLAMA_CONTEXT_LENGTH` | 512–1048576 |
+| `--ollama-igpu on\|off` | `OLLAMA_IGPU_ENABLE` | `1` or `0` |
+
+Every flag also accepts **`unset`**, which leaves that key out of the file. The file is rendered
+whole from the four values on every run: a key you did not pass is not in it, and falls back to
+Ollama's default or to whatever another drop-in sets — so a run is reproducible from its command
+line, and `--ollama-parallel unset` is how you revert. With none of the four flags the runtime file
+is not touched at all.
+
+On `--execute` the step writes the file only if its bytes differ from what is on disk, and only then
+runs `daemon-reload` and `restart` — a restart unloads every resident model, and a fleet command
+will be re-run. Whatever it did, it re-reads `systemctl show ollama -p Environment` and prints the
+previous and new effective value of every managed key (`runtime OLLAMA_NUM_PARALLEL <unset> → 4`);
+a managed key that reads back with a different value fails the node, naming the later drop-in that
+must be overriding it. "Nothing to do" is judged on what the daemon runs, not on the file alone: a
+file whose bytes already match while `systemctl show` resolves a managed key to something else is
+still applied — if systemd reports it never loaded the file (a previous run cut off before
+`daemon-reload`), it is reloaded and Ollama restarted; otherwise the read-back fails the node as
+above. The dry run prints the same plan — what is in effect now, whether the file would change, or
+what the daemon resolves instead — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
+`ollama-local.service`, core-2's `ollama-tunnel.service`) is skipped with the reason: a drop-in
+under `ollama.service.d/` configures nothing there, and those units carry their own environment.
+
+```bash
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h            # plan
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # apply, restart where changed
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # again: unchanged, no restart
+```
+
+#### Firewall rules for the Hub's engine probes
+
+Every pooled request runs a live health probe against each local engine port before it ranks
+candidates — six probes, each with a 5 s timeout. On a node whose `ufw` silently **drops** the
+Docker-bridge SYN to an engine port, the probe cannot get a reset and waits out the whole timeout:
+measured 2026-09-20 as a flat 5.0 s pool TTFT on beta-nas, beta-1, core-6 and core-5, against
+22–100 ms once the port answered. Only `:11434` had ever been allowed through.
+
+So `backends` also plans, for every node where ufw is active,
+`ufw allow from 172.16.0.0/12 to any port <p> proto tcp` for each port the Hub probes — **8000**
+(vllm/mtplx/lucebox), **8080** (dspark), **13305** (lemonade) and **8216** (the lucebox-hub stack) —
+next to the existing bridge → `:11434` rule. `172.16.0.0/12` is Docker's whole default address
+pool, so compose networks are covered without enumerating them. It reads `ufw status` the way ufw
+does — top down, first match wins, and `ufw allow` appends — so a port the table already decides
+for the bridge gets nothing added: an `ALLOW` (from that CIDR or wider, or from `Anywhere`, alone
+or in a list such as `8000,8080,13305/tcp`) is reported as present, and a `DENY` or `REJECT` the
+operator placed (the audit's `ufw reject … port 8000,8080,13305` on beta-1, beta-nas, core-6 and
+core-5, kept as reject on beta-1's `:8000` on purpose) is reported as failing fast and left alone —
+an allow appended behind it would never fire. After adding, the step re-reads the whole table and
+fails the node if the first rule matching a planned port is still not an allow, however many allow
+rows sit below. Nothing is planned where ufw is inactive or absent — nothing drops the probes there
+— and a node whose `ufw status` needs root the account does not have says so rather than guessing.
+`--execute` only, like everything else here; the dry run prints the exact commands per node.
 
 ### `cihub fleet install`
 
