@@ -594,7 +594,7 @@ describe('TailscaleService', () => {
       },
     );
 
-    await service.unservePort(3001);
+    await expect(service.unservePort(3001)).resolves.toBe(true);
 
     expect(execFileMock).toHaveBeenCalledWith(
       'docker',
@@ -602,6 +602,20 @@ describe('TailscaleService', () => {
       expect.any(Object),
       expect.any(Function),
     );
+  });
+
+  it('unservePort reports a failed removal instead of throwing, so the sync keeps the port as its own', async () => {
+    execFileMock.mockImplementation(
+      (cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string, stderr?: string) => void) => {
+        if (cmd === 'docker' && args[1] === 'hub-tailscale' && args[3] === 'version') {
+          process.nextTick(() => cb(null, '1.98.0', ''));
+          return;
+        }
+        process.nextTick(() => cb(new Error('Command failed: tailscale serve --https=3001 off'), '', 'error: handler does not exist\n'));
+      },
+    );
+
+    await expect(service.unservePort(3001)).resolves.toBe(false);
   });
 
   /** Answers `serve status --json` from the sidecar with `stdout`; anything else is unexpected. */
@@ -652,7 +666,7 @@ describe('TailscaleService', () => {
     ]);
   });
 
-  it('getServeStatus still lists Tailscale Services so the sync can clear them', async () => {
+  it('getServeStatus lists Tailscale Services apart from port listeners', async () => {
     mockSidecarServeStatus(JSON.stringify({ Services: { 'svc:bitboard': { Dest: 'http://172.18.0.11:3711' } } }));
 
     await expect(service.getServeStatus()).resolves.toEqual({
