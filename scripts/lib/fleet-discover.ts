@@ -34,8 +34,66 @@ export interface ProbeAxes {
   /** A CI-Hub API answered on :5002. */
   hub: boolean;
   hubDetail?: string;
+  /**
+   * Whether Portal knows this Hub — the axis a healthy-looking Hub hides. On 2026-09-18 twelve of
+   * fifteen Hubs answered `/api/inference/health` with a tier and six backends while seven were
+   * unregistered and five had a device key Portal rejected; nothing in the table said so.
+   * Undefined when no Hub answered.
+   */
+  portal?: PortalAxis;
   /** At least one inference engine answered. */
   engines: string[];
+}
+
+/** Read from `GET /api/registration/phase`, the route that reports without sending a check-in. */
+export interface PortalAxis {
+  /** `unregistered`, `locally_ready`, `publicly_ready`, `degraded`, … as the Hub names its phase. */
+  phase: string;
+  registered: boolean;
+  /** HTTP status of the Hub's last check-in with Portal, or null when it has not made one. */
+  checkIn: number | null;
+  /** The Hub's own wording for a failed check-in or a degraded phase. */
+  error?: string;
+}
+
+export type PortalStanding = 'ok' | 'rejected' | 'unregistered' | 'pending' | 'none';
+
+/** One word for the column, from the phase and the last check-in together. */
+export function portalStanding(axis: PortalAxis | undefined): PortalStanding {
+  if (!axis) return 'none';
+  if (!axis.registered || axis.phase === 'unregistered') return 'unregistered';
+  if (axis.checkIn === null) return 'pending';
+  return axis.checkIn >= 200 && axis.checkIn < 300 ? 'ok' : 'rejected';
+}
+
+export function renderPortalCell(axis: PortalAxis | undefined): { text: string; tone: 'green' | 'yellow' | 'dim' } {
+  switch (portalStanding(axis)) {
+    case 'ok':
+      return { text: `ok ${axis?.checkIn}`, tone: 'green' };
+    case 'rejected':
+      return { text: `${axis?.checkIn} rejected`, tone: 'yellow' };
+    case 'unregistered':
+      return { text: 'unregistered', tone: 'yellow' };
+    case 'pending':
+      return { text: `${axis?.phase}, no check-in yet`, tone: 'dim' };
+    case 'none':
+      return { text: '—', tone: 'dim' };
+  }
+}
+
+export function parsePortalPhase(body: unknown): PortalAxis | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  const doc = body as {
+    phase?: unknown;
+    registered?: unknown;
+    lastCheckIn?: { httpStatus?: unknown; error?: unknown } | null;
+    degradedReasons?: unknown;
+  };
+  if (typeof doc.phase !== 'string') return undefined;
+  const checkIn = typeof doc.lastCheckIn?.httpStatus === 'number' ? doc.lastCheckIn.httpStatus : null;
+  const reasons = Array.isArray(doc.degradedReasons) ? doc.degradedReasons.filter((r): r is string => typeof r === 'string') : [];
+  const error = typeof doc.lastCheckIn?.error === 'string' ? doc.lastCheckIn.error : reasons.length ? reasons.join(', ') : undefined;
+  return { phase: doc.phase, registered: doc.registered === true, checkIn, error };
 }
 
 export interface DiscoveredNode extends FleetNode {
@@ -254,11 +312,12 @@ export async function probeNode(node: FleetNode, opts: { timeoutMs?: number; ski
     ),
   );
   const hubPromise = getJson(`http://${node.ip}:${HUB_API_PORT}/api/inference/health`, httpTimeout);
+  const portalPromise = getJson(`http://${node.ip}:${HUB_API_PORT}/api/registration/phase`, httpTimeout);
   const sshPromise = opts.skipSsh
     ? Promise.resolve(null)
     : sshCapture({ host: node.ip, user: node.user ?? opts.user }, 'true', Math.max(httpTimeout, 8_000));
 
-  const [engineHits, hubBody, sshResult] = await Promise.all([enginePromise, hubPromise, sshPromise]);
+  const [engineHits, hubBody, portalBody, sshResult] = await Promise.all([enginePromise, hubPromise, portalPromise, sshPromise]);
 
   const engines = engineHits.filter((e): e is string => Boolean(e));
   const hub = hubBody !== null;
@@ -272,6 +331,7 @@ export async function probeNode(node: FleetNode, opts: { timeoutMs?: number; ski
     hubDetail: hub
       ? [tier ? `tier ${tier}` : null, Array.isArray(backends) ? `${backends.length} backends` : null].filter(Boolean).join(', ')
       : undefined,
+    portal: hub ? parsePortalPhase(portalBody) : undefined,
     engines,
   };
 }
@@ -291,6 +351,15 @@ export function summariseNode(node: DiscoveredNode): string {
   }
   if (probe.ssh && !probe.hub && probe.engines.length === 0) return 'reachable, no Hub and no engine yet — a candidate for install';
   if (probe.ssh && !probe.hub) return 'reachable and serving an engine, but no CI-Hub — a candidate for install';
-  if (probe.ssh && probe.hub) return 'Hub reachable and administrable';
+  if (probe.ssh && probe.hub) {
+    switch (portalStanding(probe.portal)) {
+      case 'unregistered':
+        return 'Hub reachable and administrable, but not registered with Portal';
+      case 'rejected':
+        return `Hub reachable and administrable, but Portal rejects it (${probe.portal?.checkIn})`;
+      default:
+        return 'Hub reachable and administrable';
+    }
+  }
   return `nothing answered (${probe.sshFailure})`;
 }

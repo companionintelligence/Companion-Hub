@@ -27,7 +27,16 @@ import {
   type FleetNode,
   type LoadedFleetRoster,
 } from './fleet-roster.js';
-import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
+import {
+  portalStanding,
+  probeNode,
+  renderPortalCell,
+  resolveTailscaleCli,
+  scanLan,
+  summariseNode,
+  tailnetPeers,
+  type DiscoveredNode,
+} from './fleet-discover.js';
 import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
@@ -523,9 +532,21 @@ async function runScan(args: FleetArgs): Promise<void> {
     if (cli) {
       const { peers, error } = tailnetPeers(cli);
       if (error) notes.push(`tailnet: ${error}`);
+      const hostnameOf = new Map(peers.map((peer) => [peer.ip, peer.name]));
+      const ipOfHostname = new Map(peers.map((peer) => [peer.name, peer.ip]));
+      const renamed: string[] = [];
       for (const peer of peers) {
         const existing = candidates.get(peer.ip);
         if (!existing) fromTailnet.push(peer.name);
+        // A roster name is the operator's label and is kept; but when the machine now answers to a
+        // different hostname — and worse, when the roster's name is what a DIFFERENT machine is now
+        // called — `--nodes <name>` dials the wrong box. Say so, every scan, until the roster is fixed.
+        if (existing && existing.name !== peer.name) {
+          const collides = ipOfHostname.get(existing.name);
+          renamed.push(
+            `${existing.name} (${peer.ip}) is now ${peer.name}${collides && collides !== peer.ip ? ` — and ${existing.name} is what ${collides} is called now` : ''}`,
+          );
+        }
         candidates.set(peer.ip, {
           name: existing?.name ?? peer.name,
           ip: peer.ip,
@@ -533,10 +554,17 @@ async function runScan(args: FleetArgs): Promise<void> {
           user: existing?.user,
           local: existing?.local,
           skip: existing?.skip,
-          note: existing?.note ?? (peer.online ? undefined : 'tailnet reports offline'),
+          oob: existing?.oob,
+          // Operator notes only. The scan's own observation ("offline right now") goes in the
+          // report, not the roster: written there once, it outlived the outage on thirty rows.
+          note: existing?.note,
         });
       }
-      notes.push(`tailnet: ${peers.length} peer(s) enumerated, ${fromTailnet.length} not in the roster`);
+      const gone = roster.nodes.filter((n) => !n.local && !hostnameOf.has(n.ip));
+      notes.push(
+        `tailnet: ${peers.length} peer(s) enumerated, ${fromTailnet.length} not in the roster${gone.length ? `, ${gone.length} roster row(s) no longer on the tailnet: ${gone.map((n) => n.name).join(', ')}` : ''}`,
+      );
+      if (renamed.length) notes.push(`tailnet: ${renamed.length} roster name(s) no longer match the peer's hostname — ${renamed.join('; ')}`);
     } else {
       notes.push('tailscale CLI not found — skipping tailnet enumeration (set TAILSCALE_CLI to override)');
     }
@@ -709,10 +737,14 @@ async function runStatus(args: FleetArgs): Promise<void> {
         const image = imageOf.get(n.name);
         const cell = renderOllamaCell(v, pin);
         const tone = cell.standing === 'behind' ? 'yellow' : cell.standing === 'at-pin' ? 'green' : 'dim';
+        const portal = renderPortalCell(n.probe.portal);
         return [
           n.name,
           n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
           n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
+          // A Hub that answers its health route and a Hub Portal will talk to are different things;
+          // this column is the difference.
+          colorize(portal.text, portal.tone),
           image ? colorImageCell(image) : colorize('?', 'dim'),
           n.probe.engines.join(' ') || '—',
           describeBindCell(binds.get(n.ip), n),
@@ -722,7 +754,7 @@ async function runStatus(args: FleetArgs): Promise<void> {
           colorize(cell.text, tone),
         ];
       }),
-      ['NODE', 'SSH', 'HUB', 'IMAGE', 'ENGINES', 'OLLAMA BIND', 'TLS CERT', 'OLLAMA'],
+      ['NODE', 'SSH', 'HUB', 'PORTAL', 'IMAGE', 'ENGINES', 'OLLAMA BIND', 'TLS CERT', 'OLLAMA'],
     ),
   );
   const conflicts = probed.filter((n) => binds.get(n.ip)?.status === 'conflict');
@@ -747,6 +779,15 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
   console.log('');
   printImageFooter(summary);
+  const notOk = probed.filter((n) => n.probe.hub && portalStanding(n.probe.portal) !== 'ok');
+  if (notOk.length) {
+    console.log('');
+    console.log(colorize(`Portal: ${notOk.length} Hub(s) answer their health route but are not in good standing with Portal:`, 'yellow'));
+    for (const n of notOk) {
+      const p = n.probe.portal;
+      console.log(colorize(`  ${n.name}: ${renderPortalCell(p).text}${p?.error ? ` — ${p.error}` : ''}`, 'dim'));
+    }
+  }
   const unmeasured = versions.filter((v) => !v.version);
   if (unmeasured.length) {
     console.log('');
@@ -1826,6 +1867,12 @@ async function resolveHubPin(
  */
 async function updateHubImageOnNode(target: SshTarget, pin: string | undefined): Promise<{ ok: boolean; after: HubImageProbe }> {
   const before = await probeHubImage(target);
+  if (before.kind === 'unknown' && before.reason === 'no ci-hub container') {
+    // Nothing to update. `status` already says "no ci-hub container" for this node; running
+    // `pool update` here would only fail more slowly and count as a fleet failure.
+    console.log(`  ${colorize('·', 'dim')} hub image — no Hub on this node; nothing to update (${BASE_COMMAND} fleet install puts one here)`);
+    return { ok: true, after: before };
+  }
   const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript(pin)}\nEOF`, 20 * 60_000);
   const after = await probeHubImage(target);
   let ok = res.ok && res.out.includes('hub-update-complete');

@@ -206,6 +206,10 @@ function installedCompanionHubVersion(): string | undefined {
 export function resolveApplianceHubImage(env: NodeJS.ProcessEnv = process.env): { image: string; version: string } {
   const pinned = env.CI_HUB_IMAGE?.trim();
   if (pinned) {
+    // `repo@sha256:<64 hex>` is a pin, not a version: the 64 hex characters after the last colon
+    // ended up as CI_HUB_VERSION on every digest-pinned node. Name it for what it is.
+    const at = pinned.indexOf('@sha256:');
+    if (at >= 0) return { image: pinned, version: `digest-${pinned.slice(at + '@sha256:'.length, at + '@sha256:'.length + 12)}` };
     const tag = pinned.includes(':') ? pinned.slice(pinned.lastIndexOf(':') + 1) : 'latest';
     return { image: pinned, version: tag || 'latest' };
   }

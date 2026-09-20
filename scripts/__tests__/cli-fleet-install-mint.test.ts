@@ -69,7 +69,7 @@ describe('fleet install and the pairing code', () => {
       steps: [{ name: 'preflight', ok: false, detail: 'blocked' }],
     }));
     await runFleetCommand(['install', '--execute']);
-    const opts = mocks.installNode.mock.calls[0][1] as InstallOpts;
+    const opts = mocks.installNode.mock.calls[0]?.[1] as InstallOpts;
     expect(opts.pairingCode).toBeUndefined();
     expect(typeof opts.mintPairingCode).toBe('function');
     expect(mocks.mintPairingCode).not.toHaveBeenCalled();
