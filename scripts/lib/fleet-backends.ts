@@ -31,6 +31,8 @@ import {
   ollamaBindPreflightShell,
   ollamaOwnershipGuardShell,
 } from './fleet-ollama-bind.js';
+import { classifyRuntimeApplyOutput, type OllamaRuntimeSettings, ollamaRuntimeApplyShell, RUNTIME_DROPIN } from './fleet-ollama-runtime.js';
+import { classifyProbeFirewallOutput, probeFirewallApplyShell } from './fleet-probe-firewall.js';
 
 export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade'] as const;
 export type InstallableBackend = (typeof INSTALLABLE_BACKENDS)[number];
@@ -99,6 +101,10 @@ const PORTS: Record<InstallableBackend, number> = {
  *
  * Exported because the adopt path writes the same canonical file as the install path, and the two
  * must agree on its contents or a re-run would strip a setting the previous run added.
+ *
+ * Deliberately NOT where `OLLAMA_NUM_PARALLEL`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_CONTEXT_LENGTH` or
+ * `OLLAMA_IGPU_ENABLE` live: those are per-run operator choices, written to their own drop-in by
+ * `fleet-ollama-runtime.ts` so that changing one never rewrites (or restarts over) the bind.
  */
 export function ollamaManagedEnvironment(facts: HostFacts): string[] {
   const gfx = facts.gpus.find((g) => g.vendor === 'amd')?.gfx;
@@ -538,6 +544,115 @@ export async function applyOllamaBindPolicy(
             ? `no completion marker within ${Math.round(timeoutMs / 60_000)} minutes`
             : `bind step exited ${result.code} without a ${BIND_MARKERS.complete} marker`,
         detail: detail ?? (result.err || result.out).split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400),
+        ms,
+      };
+  }
+}
+
+// ─── Runtime settings on an Ollama the system unit owns ─────────────────────
+
+/**
+ * Write the runtime drop-in and restart Ollama only if it changed.
+ *
+ * Runs after the bind step, whether that installed or adopted: the runtime file is separate from the
+ * bind file by design (see `fleet-ollama-runtime.ts`), so on a node where both change the daemon
+ * restarts twice on the first run and never again — the second run compares bytes and touches
+ * nothing. The caller reports the `was → is` transition this returns whatever the outcome.
+ */
+export async function applyOllamaRuntimeSettings(
+  target: SshTarget,
+  settings: OllamaRuntimeSettings,
+  timeoutMs = 3 * 60_000,
+): Promise<BackendInstallResult & { transition: string }> {
+  const script = ['set -e', ollamaRuntimeApplyShell(settings)].join('\n');
+  const command = `sudo -n bash <<'CIHUB_OLLAMA_RUNTIME_EOF'\n${script}\nCIHUB_OLLAMA_RUNTIME_EOF`;
+  const started = Date.now();
+  const result = await sshCapture(target, command, timeoutMs);
+  const ms = Date.now() - started;
+  const outcome = classifyRuntimeApplyOutput(result.out, result.err, settings);
+  const transition = outcome.transition;
+  if (/sudo:.*password is required|a terminal is required/i.test(`${result.err}${result.out}`)) {
+    return {
+      backend: 'ollama',
+      outcome: 'failed',
+      why: 'passwordless sudo is not available for this account, so the runtime settings cannot be applied unattended',
+      ms,
+      transition,
+    };
+  }
+  switch (outcome.outcome) {
+    case 'applied':
+      return { backend: 'ollama', outcome: 'installed', why: `runtime ${transition} — ${outcome.why}`, ms, transition };
+    case 'unchanged':
+      return { backend: 'ollama', outcome: 'adopted', why: `runtime ${transition} — ${outcome.why}`, ms, transition };
+    case 'refused':
+      return { backend: 'ollama', outcome: 'skipped', why: outcome.why, ms, transition };
+    case 'mismatch':
+      return { backend: 'ollama', outcome: 'failed', why: `runtime ${transition} — ${outcome.why}`, ms, transition };
+    case 'incomplete':
+      return {
+        backend: 'ollama',
+        outcome: 'failed',
+        why:
+          result.code === null
+            ? `no completion marker within ${Math.round(timeoutMs / 60_000)} minutes`
+            : `runtime step exited ${result.code} without writing ${RUNTIME_DROPIN}`,
+        detail: (result.err || result.out).split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400) || undefined,
+        ms,
+        transition,
+      };
+  }
+}
+
+// ─── Firewall rules for the Hub's engine probes ─────────────────────────────
+
+export interface ProbeFirewallResult {
+  outcome: 'applied' | 'present' | 'skipped' | 'failed';
+  why: string;
+  added: number[];
+  /** Ports a DENY/REJECT of the table's own already refuses: they fail fast, and nothing was appended behind it. */
+  blocked: number[];
+  ms?: number;
+}
+
+/**
+ * Allow the Docker bridges through ufw to the ports the Hub probes, on one node.
+ *
+ * `ports` is what the plan found missing; the shell re-checks each against `ufw status` anyway — in
+ * table order, so a reject that arrived since the probe gets nothing appended behind it — and proves
+ * the table admits the bridge afterwards, so "Rule added" alone is never reported as done.
+ */
+export async function applyProbeFirewall(target: SshTarget, ports: readonly number[], timeoutMs = 60_000): Promise<ProbeFirewallResult> {
+  const script = ['set -e', probeFirewallApplyShell(ports)].join('\n');
+  const command = `sudo -n bash <<'CIHUB_PROBE_FIREWALL_EOF'\n${script}\nCIHUB_PROBE_FIREWALL_EOF`;
+  const started = Date.now();
+  const result = await sshCapture(target, command, timeoutMs);
+  const ms = Date.now() - started;
+  if (/sudo:.*password is required|a terminal is required/i.test(`${result.err}${result.out}`)) {
+    return {
+      outcome: 'failed',
+      why: 'passwordless sudo is not available for this account, so the firewall rules cannot be added unattended',
+      added: [],
+      blocked: [],
+      ms,
+    };
+  }
+  const outcome = classifyProbeFirewallOutput(result.out, result.err, ports);
+  switch (outcome.outcome) {
+    case 'applied':
+    case 'present':
+    case 'skipped':
+    case 'failed':
+      return { outcome: outcome.outcome, why: outcome.why, added: outcome.added, blocked: outcome.blocked, ms };
+    case 'incomplete':
+      return {
+        outcome: 'failed',
+        why:
+          result.code === null
+            ? `no completion marker within ${Math.round(timeoutMs / 1000)} s`
+            : `firewall step exited ${result.code} without a completion marker`,
+        added: outcome.added,
+        blocked: outcome.blocked,
         ms,
       };
   }

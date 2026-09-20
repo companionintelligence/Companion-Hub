@@ -50,6 +50,27 @@ describe('parseFleetArgs', () => {
     expect(() => parseFleetArgs(['backends', '--bind', 'everywhere'])).toThrow(/--bind must be one of tailnet, all, local/);
   });
 
+  it('takes the four Ollama runtime flags on backends only, validated before any machine is dialled', () => {
+    // No runtime flag: the runtime drop-in is not touched at all — a run's existing behaviour.
+    expect(parseFleetArgs(['backends']).ollamaRuntime).toBeUndefined();
+    expect(
+      parseFleetArgs(['backends', '--ollama-parallel', '4', '--ollama-keep-alive=24h', '--ollama-context', '16384', '--ollama-igpu', 'on'])
+        .ollamaRuntime,
+    ).toEqual({
+      parallel: 4,
+      keepAlive: '24h',
+      contextLength: 16384,
+      igpu: true,
+    });
+    // `unset` leaves the key out; naming it still turns the runtime step on for the run.
+    expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset']).ollamaRuntime).toEqual({ parallel: undefined });
+    expect(parseFleetArgs(['backends', '--ollama-igpu', 'off']).ollamaRuntime).toEqual({ igpu: false });
+    expect(() => parseFleetArgs(['backends', '--ollama-parallel', 'many'])).toThrow(/--ollama-parallel must be an integer between 1 and 64/);
+    expect(() => parseFleetArgs(['backends', '--ollama-keep-alive', 'forever'])).toThrow(/duration such as 24h/);
+    expect(() => parseFleetArgs(['backends', '--ollama-igpu', 'maybe'])).toThrow(/on, off or 'unset'/);
+    expect(() => parseFleetArgs(['update', '--ollama-parallel', '4'])).toThrow(/only apply to `fleet backends`/);
+  });
+
   it('refuses a flag that swallows the next flag as its value', () => {
     // `--user --json` must not silently set user to "--json" and drop the json flag.
     expect(() => parseFleetArgs(['scan', '--user', '--json'])).toThrow(/--user needs a value/);
