@@ -57,7 +57,14 @@ describe('portalStanding and the cell', () => {
 
   it('the scan verdict names the Portal problem instead of calling the Hub administrable and done', () => {
     const base = { name: 'core-4', ip: '10.0.0.4', source: 'roster' as const };
-    const probe = { ssh: true, sshFailure: 'ok' as const, hub: true, hubDetail: 'tier high, 6 backends', engines: ['ollama:11434'] };
+    const probe = {
+      ssh: true,
+      sshFailure: 'ok' as const,
+      hub: true,
+      hubProbe: 'ok' as const,
+      hubDetail: 'tier high, 6 backends',
+      engines: ['ollama:11434'],
+    };
     expect(summariseNode({ ...base, probe: { ...probe, portal: ok } } as DiscoveredNode)).toBe('Hub reachable and administrable');
     expect(summariseNode({ ...base, probe: { ...probe, portal: rejected } } as DiscoveredNode)).toMatch(/Portal rejects it \(401\)/);
     expect(summariseNode({ ...base, probe: { ...probe, portal: unregistered } } as DiscoveredNode)).toMatch(/not registered with Portal/);
