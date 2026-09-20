@@ -30,6 +30,23 @@ const DYNAMIC_PORTS: Array<{ defaultPort: number; var: string }> = [
   { defaultPort: 8080, var: 'TRAEFIK_DASHBOARD_PORT' },
 ];
 
+/**
+ * The port an env file configures for `varName`, or `defaultPort` when the value is not a TCP
+ * port. `Number(parsed[varName] || defaultPort)` was the previous reading, and it let a mangled
+ * line through: `TRAEFIK_DASHBOARD_PORT=8080LEMONADE_URL=http://…` (a key appended to a file
+ * with no trailing newline) became `NaN`, `isPortAvailable(NaN)` said yes — a bind to port NaN
+ * is a bind to port 0 — and `NaN` was written straight back into the env file, where compose
+ * refused it with `invalid hostPort: NaN` and the whole stack stayed down until someone edited
+ * the file by hand. Two fleet nodes, 2026-09-20.
+ */
+export function configuredPort(parsed: Record<string, string>, varName: string, defaultPort: number): number {
+  const raw = parsed[varName]?.trim();
+  if (!raw) return defaultPort;
+  if (!/^\d{1,5}$/.test(raw)) return defaultPort;
+  const port = Number(raw);
+  return port >= 1 && port <= 65535 ? port : defaultPort;
+}
+
 function docker(args: string[]): { ok: boolean; out: string; err: string } {
   const result = spawnSync('docker', args, { encoding: 'utf-8' });
   return {
@@ -133,16 +150,16 @@ function configuredPortsFromEnv(envFilePath: string): number[] {
   const ports = new Set<number>();
 
   for (const { defaultPort, var: varName, fallbackStart } of FIXED_PORTS) {
-    ports.add(Number(parsed[varName] || defaultPort));
+    ports.add(configuredPort(parsed, varName, defaultPort));
     ports.add(defaultPort);
     ports.add(fallbackStart);
   }
   for (const { defaultPort, var: varName } of DYNAMIC_PORTS) {
-    ports.add(Number(parsed[varName] || defaultPort));
+    ports.add(configuredPort(parsed, varName, defaultPort));
     ports.add(defaultPort);
   }
 
-  return [...ports].filter((port) => Number.isFinite(port));
+  return [...ports];
 }
 
 /** Stop any running Hub stack containers before a fresh `cihub up`. */
@@ -166,6 +183,13 @@ function upsertEnvPorts(envFilePath: string, assignments: Record<string, number>
   }
 }
 
+function noteInvalidPort(parsed: Record<string, string>, varName: string, resolved: number, info: string[]): void {
+  const raw = parsed[varName]?.trim();
+  if (raw && raw !== String(resolved)) {
+    info.push(`${varName}=${raw} is not a TCP port — using ${resolved}. Check the env file for a line that lost its newline.`);
+  }
+}
+
 export interface PortHealResult {
   assignments: Record<string, number>;
   info: string[];
@@ -183,7 +207,8 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
   const info: string[] = [];
 
   for (const { defaultPort, var: varName, fallbackStart } of FIXED_PORTS) {
-    const current = Number(parsed[varName] || defaultPort);
+    const current = configuredPort(parsed, varName, defaultPort);
+    noteInvalidPort(parsed, varName, current, info);
     if (canAssignPort(current, ourPorts, assignedPorts)) {
       assignments[varName] = current;
       assignedPorts.add(current);
@@ -209,7 +234,8 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
   }
 
   for (const { defaultPort, var: varName } of DYNAMIC_PORTS) {
-    const current = Number(parsed[varName] || defaultPort);
+    const current = configuredPort(parsed, varName, defaultPort);
+    noteInvalidPort(parsed, varName, current, info);
     if (canAssignPort(current, ourPorts, assignedPorts)) {
       assignments[varName] = current;
       assignedPorts.add(current);
@@ -224,9 +250,12 @@ export function resolveHubPorts(envFilePath: string): PortHealResult {
     assignedPorts.add(reassigned);
   }
 
+  // An invalid value counts as changed even when it resolves to the default: the file still
+  // holds the garbage, and the whole point is to write a port compose will accept over it.
   const changed = [...FIXED_PORTS, ...DYNAMIC_PORTS].some(({ var: varName, defaultPort }) => {
-    const previous = Number(parsed[varName] || defaultPort);
-    return assignments[varName] !== previous;
+    const raw = parsed[varName]?.trim();
+    if (raw && String(configuredPort(parsed, varName, defaultPort)) !== raw) return true;
+    return assignments[varName] !== configuredPort(parsed, varName, defaultPort);
   });
 
   if (changed || !existing.includes('HTTP_PORT=')) {

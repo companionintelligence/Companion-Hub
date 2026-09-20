@@ -747,3 +747,18 @@ Nothing cheap distinguishes that node from a healthy one. The only proof a model
 - Anything proving the model runs — a completed request, a successful load, or Ollama reporting it resident in `/api/ps` — clears the record and the backoff outright. `/api/ps` is read only while something is withheld, so an untroubled node's health poll is still a single request.
 
 Only routing reads this. `modelsLoaded` keeps its meaning as the on-disk inventory, so the installed badge and the model puller still see a model that is present but currently unloadable — the same distinction, exposed to the pool as `unservableModels`.
+
+## When a node runs the model and the Hub cannot see the engine
+
+The other way a listed model earns a 502 is that the Hub never saw it listed. The Hub probes its engines **from inside its container**, at `VLLM_URL`, `LEMONADE_URL`, `SPECULATIVE_INFERENCE_URL`, `MTPLX_URL`, `DSPARK_URL` (defaults: `http://host.docker.internal:<port>`), and an engine the operator started on the host is only a candidate if that probe answers. On the September 2026 fleet it did not, on six of fifteen nodes, for two reasons that look identical from the outside:
+
+- **A firewall that only knows Ollama.** ufw allowed the Docker bridge to reach `:11434` and nothing else, so vLLM on `:8000` timed out from the container and worked from everywhere else.
+- **An engine published on the tailnet address only.** Lemonade and Lucebox containers published on `100.x.y.z:13305` and `:8216` refuse `host.docker.internal`; the fix is to point the env var at the tailnet address, which the Hub container can reach.
+
+The 502 for that case used to read `No pool node currently has model "X" available.` — true of the pool's view, and wrong about where to look. It now carries the container's-eye view of every local backend: `localBackends` in the body lists each backend's probed URL, whether it answered, and the error, and the message names any backend that answered but was left out (the shared-port case below) and points at the unreachable ones.
+
+### Three backends on one port
+
+`vllm`, `mtplx` and `lucebox` all default to host port 8000, and every OpenAI-compatible server answers `GET /v1/models`, so a health check built on that route cannot tell whose server it reached. A node serving vLLM there reported all three backends healthy with vLLM's model: three local candidates for one process (each failover hop re-hit the same engine), the model advertised three times to peers, and a status page claiming two engines the node has never run.
+
+Each of the three names itself in `data[0].owned_by` of its own `/v1/models` body — `vllm`, `mtplx`, and `dflash` for Lucebox — so the backends now honour that claim: a server that names another engine is reported `running: true, healthy: false` with an error that says which env var points the backend at a server of its own. A server that does not name itself is left alone; absent evidence is not evidence of a foreign engine.

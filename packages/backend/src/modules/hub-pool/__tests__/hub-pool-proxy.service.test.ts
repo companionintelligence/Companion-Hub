@@ -809,6 +809,53 @@ describe('PoolProxyService', () => {
       expect(res.status).toHaveBeenCalledWith(502);
     });
 
+    it("reports every local backend's probe on the 502, from the container's point of view", async () => {
+      // The node runs the model on vLLM; the Hub container cannot reach it (a firewall rule that
+      // only allowed Ollama's port). The old body said "no pool node has it", and it was wrong
+      // about where to look.
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      vllm.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      vllm.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [], error: 'timeout of 5000ms exceeded' });
+      mtplx.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      mtplx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
+      const res = createMockResponse();
+
+      await service.proxyRequest({
+        path: '/v1/chat/completions',
+        method: 'POST',
+        body: { model: 'Qwen/Qwen2.5-3B-Instruct-AWQ' },
+        model: 'Qwen/Qwen2.5-3B-Instruct-AWQ',
+        res,
+      });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string; localBackends: unknown[] };
+      expect(body.error).toContain('local mtplx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
+      expect(body.error).toContain('local vllm, lemonade, dspark, lucebox not reachable from inside the Hub container');
+      expect(body.localBackends).toEqual(
+        expect.arrayContaining([
+          { type: 'ollama', url: 'http://local-ollama:11434', running: true, healthy: true, listsModel: false, error: undefined },
+          {
+            type: 'vllm',
+            url: 'http://host.docker.internal:8000',
+            running: false,
+            healthy: false,
+            listsModel: false,
+            error: 'timeout of 5000ms exceeded',
+          },
+          {
+            type: 'mtplx',
+            url: 'http://host.docker.internal:8000',
+            running: true,
+            healthy: false,
+            listsModel: false,
+            error: 'The server names itself "vllm"',
+          },
+        ]),
+      );
+      expect(body.localBackends).toHaveLength(6);
+    });
+
     it('fails over to a connected peer when the local candidate 5xxs', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
       const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
