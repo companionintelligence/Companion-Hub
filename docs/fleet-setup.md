@@ -450,6 +450,47 @@ Record the console on the node's `fleet.json` entry (`"oob": "nanokvm 192.168.0.
 `GRUB_CMDLINE_LINUX_DEFAULT` line that is not plainly double-quoted are CI-OS's own, so a node it
 provisions and a node this catches up end on a byte-identical line. Full detail in
 [`CLI.md` → `cihub fleet boot-params`](CLI.md#cihub-fleet-boot-params).
+## Per-process GPU VRAM: a host timer the Hub reads
+
+The Hub container is an Alpine image with no `nvidia-smi` or `rocm-smi` and no GPU device access,
+so it cannot see which process holds how much VRAM. Two dashboard figures depend on that reading:
+the per-workload GPU chart on the resource monitor, and the model memory budget's measured
+"used" figure. Without it the budget falls back to what the engines report about themselves and
+marks an engine it cannot size as *not measured*, so the used figure reads as a floor (`≥`).
+
+The reading comes from the host instead, through the same seam the GPU-pressure band uses: a
+timer on the node runs the vendor query and writes
+`<ROOT_FOLDER_HOST>/state/hardware/gpu_processes.json`, which the Hub reads as
+`/data/state/hardware/gpu_processes.json`. A file older than 60 seconds, or absent, reads as
+*not measured*, never as zero — a writer that dies must not leave a stale "nothing is loaded"
+behind it.
+
+Install it as a user unit on the node (the Hub's state directory belongs to the same user, so
+no root is needed; the user must be lingering, which `cihub fleet install` nodes are):
+
+```bash
+scp scripts/host-probes/cihub-gpu-processes.{sh,service,timer} ci@<node>:/tmp/
+ssh ci@<node> 'install -m 0755 /tmp/cihub-gpu-processes.sh ~/.local/bin/ \
+  && install -m 0644 /tmp/cihub-gpu-processes.{service,timer} ~/.config/systemd/user/ \
+  && systemctl --user daemon-reload && systemctl --user enable --now cihub-gpu-processes.timer'
+```
+
+Check it with `systemctl --user list-timers cihub-gpu-processes.timer` and
+`docker exec ci-hub cat /data/state/hardware/gpu_processes.json`. On a node whose
+`ROOT_FOLDER_HOST` is not `~/.local/share/companion-hub`, set `CI_HUB_STATE_PATH` in a drop-in for
+the service. The file is:
+
+```json
+{"schemaVersion":1,"sampledAt":"2026-09-21T05:30:53Z","source":"nvidia-smi","vendor":"nvidia",
+ "processes":[{"pid":6975,"processName":"VLLM::EngineCore","vramMb":6104},
+              {"pid":3161051,"processName":"/usr/local/lib/ollama/llama-server","vramMb":2926}]}
+```
+
+`processName` is the vendor tool's own column, verbatim — a full path or process title from
+`nvidia-smi`, the 15-character kernel `comm` from `rocm-smi` — because that is what the Hub matches
+engines on. Per-process compute *utilization* is not in the file and not coming from these tools:
+both report it blank on this fleet's hardware.
+
 ## Before touching a node: preflight
 
 Run this before a fleet install, update, or anything that will install a kernel, a driver or a
