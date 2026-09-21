@@ -1154,6 +1154,11 @@ interface OllamaBindPlanOnNode {
   noop: boolean;
   /** The one-sentence reason the system-unit path must not be taken here, when it must not. */
   refused?: string;
+  /**
+   * A user-scope `ollama*` unit is active on the node and is NOT what serves :11434 (core-2's
+   * `ollama-tunnel.service`). The system unit is managed; this says why the unit was not a reason to stop.
+   */
+  note?: string;
   effective: string;
   json: Record<string, unknown>;
   /** The runtime drop-in's plan, from the same probe, when a runtime flag was given and the unit is ours to edit. */
@@ -1221,6 +1226,8 @@ async function planOllamaBindOnNode(
     { date: new Date().toISOString().slice(0, 10), extraEnv: ollamaManagedEnvironment(facts), guardUnit: probe.guard.unit },
   );
   const lines = [`bind: now ${current}`];
+  const note = assessment.ownership.refuse ? undefined : assessment.ownership.note;
+  if (note) lines.push(`bind: ${note}`);
   if (plan.noop) {
     // For `all`, "nothing to change" includes the guard: the plan only reads as a no-op when it is up.
     const guard = plan.guard.action === 'install' ? `, ${plan.guard.unit} active` : '';
@@ -1249,11 +1256,13 @@ async function planOllamaBindOnNode(
           ? 'dim'
           : 'green',
     noop: plan.noop,
+    note,
     effective: assessment.resolution.effective.address,
     json: {
       now: assessment.summary,
       target: target_.address,
       noop: plan.noop,
+      ...(note ? { note } : {}),
       disable: plan.disable,
       shadowed: plan.shadowed,
       unfixable: plan.unfixable,
@@ -1415,6 +1424,9 @@ async function runBackends(args: FleetArgs): Promise<void> {
           const applied = await applyOllamaBindPolicy(target, args.bind, facts);
           result = { ...applied, outcome: applied.outcome === 'installed' ? 'adopted' : applied.outcome, why: `${result.why}; ${applied.why}` };
         }
+        // The unit the operator can see in `systemctl --user` and why it did not stop this run.
+        if (bindPlan.note && result.outcome !== 'skipped' && result.outcome !== 'failed')
+          result = { ...result, why: `${result.why}; ${bindPlan.note}` };
       }
       // The runtime drop-in, after the bind and only on a unit this run may edit: a node refused
       // above (user-scope unit, container) is not touched, and its skip already says why. A plan
