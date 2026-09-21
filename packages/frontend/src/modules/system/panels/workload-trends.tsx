@@ -1,6 +1,6 @@
 import { DASH, humanBytes, Panel, PanelBody, StepAreaChart } from '@/components/ui/dense/dense';
 import type { AppRuntimeHealth, AppRuntimeHistorySample } from '@/lib/app-runtime-monitor';
-import { computeCpuChartScale, computeMemoryChartScale } from '@/modules/system/resource-monitor-chart';
+import { computeCpuChartScale, computeMemoryChartScale, computeVramChartScale } from '@/modules/system/resource-monitor-chart';
 import type { LoadState } from '@/modules/system/use-dashboard-data';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -57,6 +57,17 @@ const CHART_SLOTS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--char
 
 const ROW_HEIGHT = 38;
 
+/*
+ * `gpuVramMb` is MEGABYTES; `memoryUsageBytes` is bytes, and so is everything this tile draws,
+ * scales and formats. The conversion happens ONCE, in `valueForApp`, so the series, each row's
+ * current and peak, the axis ceiling and `humanBytes` all see the same unit. It used to happen at
+ * render instead, which is how the axis label read "scale to 256 TB" above a 10 GB card: the
+ * ceiling was computed from raw megabytes by a byte-denominated scale, whose 256 MiB floor is
+ * 268,435,456, and that number was then multiplied by 1024² a second time as if it were megabytes.
+ * Every Hub whose workloads held no VRAM hit the floor, so every node printed it.
+ */
+const MIB = 1024 ** 2;
+
 type Metric = 'cpu' | 'memory' | 'gpu';
 
 /**
@@ -77,7 +88,7 @@ function valueForApp(sample: AppRuntimeHistorySample, appUrn: string, metric: Me
   if (!point) return null;
 
   if (metric === 'cpu') return point.cpuPercent;
-  if (metric === 'gpu') return point.gpuVramMb;
+  if (metric === 'gpu') return point.gpuVramMb === null ? null : point.gpuVramMb * MIB;
   return point.memoryUsageBytes;
 }
 
@@ -103,11 +114,13 @@ export function WorkloadTrend({
   const { t } = useTranslation();
   const title =
     metric === 'cpu' ? t('DASHBOARD_TRENDS_CPU_TITLE') : metric === 'gpu' ? t('DASHBOARD_TRENDS_GPU_TITLE') : t('DASHBOARD_TRENDS_MEM_TITLE');
-  // gpuVramMb is megabytes, not bytes — `humanBytes` expects bytes, same as memoryUsageBytes.
-  const format = (value: number) => (metric === 'cpu' ? `${value.toFixed(1)}%` : humanBytes(metric === 'gpu' ? value * 1024 * 1024 : value));
+  // Both byte-denominated metrics arrive here already in bytes — see `MIB` above. No unit
+  // arithmetic at render, on purpose: it is the one place a value and its axis could be converted
+  // a different number of times.
+  const format = (value: number) => (metric === 'cpu' ? `${value.toFixed(1)}%` : humanBytes(value));
   // The axis ceiling is a round number by construction, so it is printed as one. `100.0%` reads
   // as a measurement that happened to land on the ceiling rather than as the ceiling itself.
-  const formatAxis = (value: number) => (metric === 'cpu' ? `${Math.round(value)}%` : humanBytes(metric === 'gpu' ? value * 1024 * 1024 : value));
+  const formatAxis = (value: number) => (metric === 'cpu' ? `${Math.round(value)}%` : humanBytes(value));
 
   const rows = useMemo(() => {
     const labels = new Map(apps.map((app) => [app.appUrn, app.appName]));
@@ -164,7 +177,9 @@ export function WorkloadTrend({
   const axisMax = useMemo(() => {
     const values = rows.flatMap((row) => row.series.filter((value): value is number => value !== null && Number.isFinite(value)));
 
-    return metric === 'cpu' ? computeCpuChartScale(values).max : computeMemoryChartScale(values).max;
+    if (metric === 'cpu') return computeCpuChartScale(values).max;
+    // Bytes in both cases; the VRAM scale differs only in where it floors an empty tile.
+    return metric === 'gpu' ? computeVramChartScale(values).max : computeMemoryChartScale(values).max;
   }, [metric, rows]);
 
   return (
