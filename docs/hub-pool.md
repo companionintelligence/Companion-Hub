@@ -142,17 +142,49 @@ reads it to warn: when the local engine holds the chat model at a window other t
 handed out, the log says so, names both numbers, and points at the cap.
 
 **Through the pool.** A node advertises its cap in `GET /capabilities` as `maxNumCtx`, omitting the
-key when it has none, which is also what every older build sends. A pooled request may be placed on
-any node serving the model, so the entry node caps its apps at the **smallest cap among the nodes
-that serve the chosen model**; a node that serves a different model does not count, and neither does
-one that advertises no cap. When no serving node advertises a cap, the entry node's own cap applies.
-A peer on an older build routes and serves as before; only what its apps ask for changes, and only
-if that peer sets a cap itself.
+key when it has none, which is also what every older build sends. The entry node reads it twice.
+
+*Placing a request*, a candidate takes it only if its cap is unset or at least the window the
+request asks for. That window is `options.num_ctx` on the native Ollama dialect (`/api/chat`,
+`/api/generate` — what both agents on the fleet send), and otherwise the prompt estimate, the same
+`bytes / 4` the [ceiling](#prompt-ceilings) judges: a request that carries no `num_ctx` — every
+OpenAI-compatible `/v1` call — runs at the serving engine's own default window, which is exactly what
+the cap records, and a prompt over that window is truncated there. A candidate capped below the
+window is moved behind every candidate that can take it, the way a ceiling moves a node back: never
+removed, so the request still has somewhere to go when every node that can take the window fails,
+and when every candidate is capped below it nothing moves at all. The cap is the outermost split —
+before the ceiling, then [slots](#slot-aware-placement), then throughput, then
+[pins](#manual-routing-pins) within each group — because a node over its cap reloads or truncates
+where a node over its ceiling is merely slow, and a pin at a capped node cannot bring a large window
+back to the front. Only the chat and completion routes are
+judged, as for the ceiling; embeddings and the peer `POST /api/show` lookup are not.
+
+*Handing an app its window*, the entry node caps `CI_LLM_NUM_CTX` at the **largest cap among the
+nodes that serve the chosen model** — and not at all when any of them advertises none, since that
+node takes any window. A node that serves a different model does not count. It used to be the
+smallest cap, "what fits everywhere", and on 2026-09-21 that let one small node cap the whole
+fleet's agents: core-17, a 4×16384 batch node whose prompt ceiling already kept agent turns off it,
+advertised 16384, and ci-hermes on core-2 — an uncapped agent-tier node serving `qwen3-coder:30b`
+at 65536 — was handed `HERMES_NUM_CTX=16384`. Hermes refuses tool use below 64,000; set to 65536 by
+hand, the same task succeeded in 54 s, served entirely on core-2. Now core-2 hands 65536, and the
+placement rule above keeps that request off core-17 while anything else can take it. The direct
+(peerless) path is unchanged: this node's own cap applies. A handout above this node's own cap is
+not a reload here — the log says the pool places those requests on nodes whose cap can take the
+window, and this node's engine serves them only on failover.
+
+Because an uncapped node reads as "takes any window" in both rules, a peer on a build predating the
+field, or one whose operator never set a cap, is where large windows go. Cap every node at its
+engine's context (`cihub fleet backends --ollama-context N --execute` writes them all), and the
+handout is bound by the largest of them. A peer on an older build routes and serves as before.
 
 **Seeing it.** `GET /api/inference/pool/status` reports `localNode.maxNumCtx` and
 `peers[].maxNumCtx` (`null` for none, through the same clamp a handout reads); `cihub pool status`
-shows this node's under **This node**. The handout log lines (`[InferenceEnvResolver]`,
-`[AppCredentials]`) carry the two warnings above.
+shows this node's under **This node**. Each routing-log entry carries `contextCap`: `null` when no
+candidate had a cap, otherwise `{ numCtx, source, excluded: [{ node, maxNumCtx }], overridden }` —
+`source` is `request` when the body carried `options.num_ctx` and `estimated` when the prompt estimate
+stood in — so "its cap skipped that node" can be told apart from "the ranker preferred another".
+`cihub pool log` marks the requests a cap changed. The handout log lines (`[InferenceEnvResolver]`,
+`[AppCredentials]`) carry the warnings above.
 
 **Sizing the engine.** Size `OLLAMA_CONTEXT_LENGTH` for the largest prompt the node's agents send —
 OpenClaw's first turn on core-2 was 44k tokens, which does not fit a 16k window — and remember that
@@ -200,8 +232,9 @@ the prompt ceiling's and the throughput placement's, because the risk is the sam
   is for the [prompt ceiling](#prompt-ceilings): it occupies no slot — the daemon answers it from
   metadata on disk, busy or not — so a full node the ranker chose is still asked first.
 
-In the ranking order it sits inside the [prompt ceiling](#prompt-ceilings) split — the ceiling is an
-operator's statement about a prompt, this is an inference about a queue — and outside
+In the ranking order it sits inside the [context cap](#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs)
+and [prompt ceiling](#prompt-ceilings) splits — both are operator statements, this is an inference
+about a queue — and outside
 [throughput](#throughput-aware-placement), because a full engine queues the request whole where a
 slow one merely reads it slowly; a [pin](#manual-routing-pins) is applied last, within each group,
 so a pin at a full node cannot put it back in front of a free one. The Hub counts in flight per
