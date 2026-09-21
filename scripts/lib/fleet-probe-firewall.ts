@@ -130,7 +130,10 @@ export function ufwBridgeVerdict(rules: readonly UfwRule[], port: number): UfwRu
     (r) =>
       !r.v6 &&
       r.direction !== 'OUT' &&
-      r.ports.some(([low, high]) => port >= low && port <= high) &&
+      // A `To` of `Anywhere` names no port because it names every port — the shape of the
+      // "docker bridge -> host" rule two fleet nodes already carry (`Anywhere ALLOW IN 172.16.0.0/12`).
+      // Reading its empty port list as "not this port" planned a redundant allow behind it.
+      (r.ports.length === 0 ? r.to === 'Anywhere' : r.ports.some(([low, high]) => port >= low && port <= high)) &&
       (r.proto === undefined || r.proto === 'tcp') &&
       ufwSourceCoversBridge(r.from),
   )?.action;
@@ -299,6 +302,12 @@ export function ufwVerdictShellFunction(): string {
     '      return int(ip2n(cidr[1]) / span) == int(ip2n(bridge) / span)',
     '    }',
     '    /\\(v6\\)/ { next }',
+    // `Anywhere ALLOW IN 172.16.0.0/12` names every port: the same rule the planner reads above.
+    '    $1 == "Anywhere" && $2 ~ /^(ALLOW|DENY|REJECT|LIMIT)$/ {',
+    '      from = $3; if ($3 == "OUT") next; if ($3 == "IN") from = $4',
+    '      if (covers(from)) { print $2; exit }',
+    '      next',
+    '    }',
     '    $1 ~ /^[0-9][0-9,:]*(\\/(tcp|udp))?$/ && $2 ~ /^(ALLOW|DENY|REJECT|LIMIT)$/ {',
     '      spec = $1; proto = ""',
     '      if (index(spec, "/")) { proto = substr(spec, index(spec, "/") + 1); spec = substr(spec, 1, index(spec, "/") - 1) }',
