@@ -62,11 +62,21 @@ export interface UnattributedGpuProcess {
   vramMb: number;
 }
 
+/**
+ * Where a tick's per-process VRAM came from. `host-file` is the probe on the host
+ * (`docs/fleet-setup.md`, "Per-process GPU VRAM"); `tool` is `nvidia-smi` / `rocm-smi` run by the Hub
+ * itself, which only works outside Docker; `absent` means nothing on this node could answer, so
+ * every `gpuVramMb` in the snapshot is `null` for want of a measurement, not for want of a workload.
+ */
+export type GpuVramSource = 'host-file' | 'tool' | 'absent';
+
 export interface AppRuntimeMonitorSnapshot {
   sampledAt: string;
   apps: AppRuntimeHealth[];
   history: AppRuntimeHistorySample[];
   unattributedGpu: UnattributedGpuProcess[] | null;
+  /** `null` only when the backend's collection did not happen at all (its empty snapshot). */
+  gpuVramSource: GpuVramSource | null;
 }
 
 export async function fetchAppRuntimeHealth(appUrn: string): Promise<AppRuntimeHealth> {

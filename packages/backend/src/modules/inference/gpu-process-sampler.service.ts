@@ -54,6 +54,24 @@ export const hostGpuProcessesFileSchema = z.object({
 export type HostGpuProcessesFile = z.infer<typeof hostGpuProcessesFileSchema>;
 
 /**
+ * Who answered. `host-file` is the probe on the host (`scripts/host-probes/cihub-gpu-processes.sh`,
+ * rolled by `cihub fleet update --gpu-probe`); `tool` is the vendor CLI run by this process, which
+ * only works for a Hub running outside Docker.
+ */
+export type GpuProcessSampleSource = 'host-file' | 'tool';
+
+export type GpuProcessObservation = {
+  samples: GpuProcessVramSample[];
+  /**
+   * Which source answered, or `null` when nothing on this node could. `null` with `[]` is "the
+   * reading is absent here"; `'host-file'` or `'tool'` with `[]` is "measured, and nothing holds
+   * VRAM". The runtime monitor puts this on its snapshot as `gpuVramSource`, and the dashboard
+   * says the first in words rather than drawing it as the second.
+   */
+  source: GpuProcessSampleSource | null;
+};
+
+/**
  * Per-process GPU VRAM, sampled live — VRAM only, deliberately. See the doc comment on
  * {@link GpuProcessSamplerService.sampleVramByProcess} for why compute utilization is not here and
  * is not coming later without different hardware or driver support than this fleet has today.
@@ -64,6 +82,22 @@ export class GpuProcessSamplerService {
     private readonly logger: LoggerService,
     private readonly filesystem: FilesystemService,
   ) {}
+
+  /** {@link sampleVramByProcess}, plus which source answered — for a consumer that reports provenance. */
+  async observeVramByProcess(vendor: string | undefined): Promise<GpuProcessObservation> {
+    const fromHost = await this.sampleHostFile();
+    if (fromHost !== null) {
+      return { samples: fromHost, source: 'host-file' };
+    }
+    const fromTool = vendor === 'amd' ? await this.sampleAmd() : vendor === 'nvidia' ? await this.sampleNvidia() : null;
+    if (fromTool === null) {
+      this.logger.debug(
+        `Per-process GPU VRAM is absent on this node: no fresh ${HOST_GPU_PROCESSES_FILE_PATH} and no vendor tool answered for '${vendor ?? 'no GPU'}'`,
+      );
+      return { samples: [], source: null };
+    }
+    return { samples: fromTool, source: 'tool' };
+  }
 
   /**
    * Per-process VRAM in use right now, or `[]` when nothing can measure it. Never throws: this
@@ -85,17 +119,7 @@ export class GpuProcessSamplerService {
    * nothing here estimates one, and `workload-coverage.tsx` says so in the dashboard.
    */
   async sampleVramByProcess(vendor: string | undefined): Promise<GpuProcessVramSample[]> {
-    const fromHost = await this.sampleHostFile();
-    if (fromHost !== null) {
-      return fromHost;
-    }
-    if (vendor === 'amd') {
-      return this.sampleAmd();
-    }
-    if (vendor === 'nvidia') {
-      return this.sampleNvidia();
-    }
-    return [];
+    return (await this.observeVramByProcess(vendor)).samples;
   }
 
   /**
@@ -119,26 +143,42 @@ export class GpuProcessSamplerService {
     }
   }
 
-  private async sampleAmd(): Promise<GpuProcessVramSample[]> {
+  /** The tool's rows, or `null` for every way it can fail to answer — absent, timed out, non-zero. */
+  private async sampleAmd(): Promise<GpuProcessVramSample[] | null> {
     try {
       const { stdout } = await execAsync('rocm-smi --showpids', { timeout: SAMPLE_TIMEOUT_MS });
       return parseRocmSmiShowPids(stdout);
     } catch (error) {
-      this.logger.debug(`rocm-smi --showpids failed: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+      this.logToolFailure('rocm-smi --showpids', error);
+      return null;
     }
   }
 
-  private async sampleNvidia(): Promise<GpuProcessVramSample[]> {
+  private async sampleNvidia(): Promise<GpuProcessVramSample[] | null> {
     try {
       const { stdout } = await execAsync('nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits', {
         timeout: SAMPLE_TIMEOUT_MS,
       });
       return parseNvidiaSmiComputeApps(stdout);
     } catch (error) {
-      this.logger.debug(`nvidia-smi --query-compute-apps failed: ${error instanceof Error ? error.message : String(error)}`);
-      return [];
+      this.logToolFailure('nvidia-smi --query-compute-apps', error);
+      return null;
     }
+  }
+
+  /**
+   * A missing binary is the expected case inside the Hub container (`sh` exits 127), and is logged
+   * as the absence it is — with the fix named — so the log does not read like a broken tool.
+   */
+  private logToolFailure(command: string, error: unknown): void {
+    const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+    if (code === 127 || code === 'ENOENT') {
+      this.logger.debug(
+        `${command}: not on this Hub's PATH and no fresh ${HOST_GPU_PROCESSES_FILE_PATH} — per-process GPU VRAM is absent on this node until the host probe timer is installed (cihub fleet update --gpu-probe)`,
+      );
+      return;
+    }
+    this.logger.debug(`${command} failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

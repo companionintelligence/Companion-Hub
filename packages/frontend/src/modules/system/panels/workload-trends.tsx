@@ -1,5 +1,5 @@
 import { DASH, humanBytes, Panel, PanelBody, StepAreaChart } from '@/components/ui/dense/dense';
-import type { AppRuntimeHealth, AppRuntimeHistorySample } from '@/lib/app-runtime-monitor';
+import type { AppRuntimeHealth, AppRuntimeHistorySample, GpuVramSource } from '@/lib/app-runtime-monitor';
 import { computeCpuChartScale, computeMemoryChartScale, computeVramChartScale } from '@/modules/system/resource-monitor-chart';
 import type { LoadState } from '@/modules/system/use-dashboard-data';
 import { useMemo } from 'react';
@@ -17,6 +17,16 @@ import { useTranslation } from 'react-i18next';
  * workload are not in this payload, not anywhere behind it, and are not drawn ANYWHERE — the
  * proxy has no concept of which app a request came from at all, only which model and node served
  * it (see `pool-activity.tsx`'s per-model token breakdown, the nearest real signal there is).
+ *
+ * ── GPU VRAM is real WHERE IT IS READ, and the tile says where that is ───────────────────────
+ *
+ * The sampler has two sources: a file the host's probe timer writes (the only one that answers on
+ * a Docker-deployed Hub, whose container has neither `nvidia-smi` nor `rocm-smi`), and the tool
+ * itself for a Hub running outside Docker. The snapshot's `gpuVramSource` says which answered this
+ * tick, or `absent` when neither could. On `absent` every `gpuVramMb` is `null` for want of a
+ * measurement, and the GPU tile prints that in words below its rows. Without the line, five rows
+ * of dashes over empty traces read as "nothing holds VRAM" — a measurement nobody took, which is
+ * the same error as drawing an unmeasured value at zero.
  *
  * ── Why five small charts and not one five-series overlay ────────────────────────────────────
  *
@@ -103,15 +113,23 @@ export function WorkloadTrend({
   history,
   apps,
   state,
+  gpuVramSource,
   className,
 }: {
   metric: Metric;
   history: AppRuntimeHistorySample[];
   apps: AppRuntimeHealth[];
   state: LoadState;
+  /**
+   * Only read for `metric="gpu"`. `undefined` (the snapshot has not answered) and `null` (the
+   * backend's empty snapshot) both say nothing about this node and print nothing; only `absent`
+   * — a collection that ran and found no source — earns the line.
+   */
+  gpuVramSource?: GpuVramSource | null;
   className?: string;
 }) {
   const { t } = useTranslation();
+  const gpuAbsent = metric === 'gpu' && gpuVramSource === 'absent';
   const title =
     metric === 'cpu' ? t('DASHBOARD_TRENDS_CPU_TITLE') : metric === 'gpu' ? t('DASHBOARD_TRENDS_GPU_TITLE') : t('DASHBOARD_TRENDS_MEM_TITLE');
   // Both byte-denominated metrics arrive here already in bytes — see `MIB` above. No unit
@@ -232,6 +250,13 @@ export function WorkloadTrend({
             </ul>
           </div>
         )}
+        {gpuAbsent ? (
+          // Outside the three-way branch on purpose: the reading is absent whether there are rows,
+          // one sample, or no workloads at all, and the fix is the same in every case.
+          <p data-testid="workload-trend-gpu-absent" className="mt-2 border-t border-border pt-2 text-[11px] leading-snug text-muted-foreground">
+            {t('DASHBOARD_TRENDS_GPU_ABSENT')}
+          </p>
+        ) : null}
       </PanelBody>
     </Panel>
   );

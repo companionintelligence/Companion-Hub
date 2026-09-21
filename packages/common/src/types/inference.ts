@@ -94,7 +94,12 @@ export interface MemoryBudget {
  * preference: `process` is the only measurement, and the others stand in when there is none.
  */
 export type ModelMemoryUsageSource =
-  /** The engine's process as the vendor tool sees it (`nvidia-smi` / `rocm-smi` per-process VRAM). */
+  /**
+   * The engine's process as the vendor tool sees it (`nvidia-smi` / `rocm-smi` per-process VRAM),
+   * whether the Hub ran the tool itself or read the host probe's file of its output — on a
+   * Docker-deployed Hub only the file can answer, and without one every engine is `engine` or
+   * `unmeasured` here.
+   */
   | 'process'
   /**
    * The engine's own accounting — Ollama `/api/ps` (`size_vram` on a discrete GPU, `size`
