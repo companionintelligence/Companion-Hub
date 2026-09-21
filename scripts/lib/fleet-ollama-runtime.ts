@@ -191,6 +191,30 @@ export function describeRuntimeTransition(
   return cells.join(', ') || 'no runtime keys managed';
 }
 
+/**
+ * Every managed key as the daemon currently resolves it, `<unset>` included.
+ *
+ * {@link describeRuntimeTransition} deliberately prints only the keys a run manages or changes, so a
+ * read-only run — `cihub fleet backends` with no runtime flag — said nothing at all about the
+ * environment its probe had just read. That is how `OLLAMA_CONTEXT_LENGTH` came to run from 8192 to
+ * 65536 across seventeen nodes, and the only way to find out was to ssh to each box and grep its
+ * drop-ins — which is itself the wrong answer, see below.
+ *
+ * Every key is listed, in the fixed key order, so two nodes' lines line up and a missing key is a
+ * word rather than an absence. Reads nothing and changes nothing: the caller already has the
+ * merged environment from the bind probe.
+ *
+ * MERGED, and that word is load-bearing. The input is `systemctl show ollama -p Environment`, i.e.
+ * what the daemon actually resolved. A node may carry several drop-ins assigning the same key —
+ * core-14 has a `10-ci-tuning.conf` at 8192 under `zzzzz-cihub-runtime.conf` at 32768 — and systemd
+ * merges them in lexical filename order with the last assignment winning. Reading the files instead
+ * and taking the first match misreported seven of sixteen nodes the one time it was tried. Never
+ * report a key from a drop-in's contents; report it from here.
+ */
+export function describeRuntimeEnvironment(env: Partial<Record<OllamaRuntimeKey, string>>): string {
+  return OLLAMA_RUNTIME_KEYS.map((key) => `${key}=${env[key] ?? '<unset>'}`).join(' ');
+}
+
 export interface OllamaRuntimePlan {
   file: { name: string; path: string; content: string; action: 'write' | 'unchanged' };
   /** The daemon is restarted only when the file changes (or, found by the apply shell, when systemd never loaded it). */

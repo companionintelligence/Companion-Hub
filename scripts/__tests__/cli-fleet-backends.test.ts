@@ -208,7 +208,10 @@ describe('fleet backends (dry run)', () => {
     for (const [, command] of mocks.sshCapture.mock.calls) expect(String(command)).toMatch(/bind_probe=1|firewall_probe=1/);
 
     // core-1: no runtime file yet → would write and restart; two probe ports still dropped.
-    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL <unset>');
+    // The `now` line lists all five managed keys, set or not, so two nodes' lines line up.
+    expect(text).toContain(
+      'runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
+    );
     expect(text).toContain(`runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4, then daemon-reload and restart ollama`);
     expect(text).toContain('firewall: ufw active and dropping the bridge on :8080, :8216 (:8000, :13305 already allowed)');
     expect(text).toContain(
@@ -223,9 +226,21 @@ describe('fleet backends (dry run)', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('plans nothing about the runtime when no runtime flag was given, exactly as before', async () => {
+  it("reports every node's runtime environment with no runtime flag at all, and plans nothing", async () => {
+    // The whole point of the read-only line: `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536 across
+    // this fleet with one node unset, and a run that had just read the merged environment said
+    // nothing about it. An inventory pass must not need a flag that would also rewrite the file.
     await runFleetCommand(['backends', '--backends', 'ollama']);
-    expect(printed()).not.toContain('runtime:');
+    const text = printed();
+    expect(text).toContain(
+      'runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
+    );
+    // core-2's daemon already runs a parallelism; it is reported, not planned.
+    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset>');
+    // Read-only: nothing would be written, and a node this run may not touch still reports its env.
+    expect(text).not.toContain('would write');
+    expect(text).not.toContain('already carries');
+    expect(text.match(/runtime: now /g)).toHaveLength(3);
     expect(sudoCalls()).toHaveLength(0);
   });
 
@@ -241,11 +256,13 @@ describe('fleet backends (dry run)', () => {
     await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--ollama-max-loaded', '2', '--nodes', 'core-1,core-2']);
     const text = printed();
     expect(sudoCalls()).toHaveLength(0);
-    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL <unset>, OLLAMA_MAX_LOADED_MODELS <unset>');
+    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset>');
     expect(text).toContain(
       `runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2, then daemon-reload and restart ollama`,
     );
-    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL 4, OLLAMA_MAX_LOADED_MODELS 2');
+    expect(text).toContain(
+      'runtime: now OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2',
+    );
     expect(text).toContain(`runtime: ${RUNTIME_DROPIN} already carries OLLAMA_NUM_PARALLEL, OLLAMA_MAX_LOADED_MODELS; ollama not restarted`);
     expect(process.exitCode).toBeUndefined();
   });

@@ -530,7 +530,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         containers: this.peerContainers(peer),
         // Through the same clamp the ranker reads it with, so a value routing ignores shows as none.
         maxPromptTokens: clampPromptCeiling((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxPromptTokens),
-        maxNumCtx: clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx),
+        maxNumCtx: this.peerContextCap(peer),
         ollamaSlots: clampOllamaSlots((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.ollamaSlots),
         throughput: this.peerThroughput(peer),
       })),
@@ -1322,6 +1322,22 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
     return clampContainerRollup(capabilities?.containers);
+  }
+
+  /**
+   * A peer's context cap as this node's routing reads it, or `null` for "no cap advertised".
+   *
+   * Shared by `/pool/status` and `/pool/peers` for the same reason {@link peerContainers} is: the
+   * column is free-form jsonb the peer writes, so the clamped value is the only one a caller may
+   * render, and both surfaces must show the number that actually excludes the peer.
+   *
+   * Deliberately NOT freshness-gated, unlike the rollup above: a cap is the far operator's policy,
+   * not a measurement of this second, and `applyContextCap` keeps applying it for as long as it
+   * still trusts the same snapshot's inventory. Gating it here would draw a capped node as uncapped
+   * — "takes any window" — which is the one reading that sends a 64k request at a 16k engine.
+   */
+  peerContextCap(peer: HubPoolPeer): number | null {
+    return clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx);
   }
 
   /**
