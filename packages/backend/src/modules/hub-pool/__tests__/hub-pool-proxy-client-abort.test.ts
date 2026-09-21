@@ -32,6 +32,7 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
 } from '@/common/helpers/hub-pool';
 import { HubPoolLoadService } from '../hub-pool-load.service';
@@ -148,6 +149,7 @@ describe('client disconnects propagate to the engine', () => {
       poolPins: [],
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+      poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
     });
     const peerService = mock<HubPoolPeerService>();
     peerService.listConnectedPeers.mockResolvedValue([]);

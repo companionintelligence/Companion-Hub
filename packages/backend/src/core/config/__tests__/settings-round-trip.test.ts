@@ -96,6 +96,7 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   hubPoolMaxPromptTokens: 16000,
   // Non-default, like the rest: the default is 0.
   hubPoolProbeSnapshotTtlMs: 2500,
+  hubPoolPrefixAffinityMaxInFlight: 3,
   inferenceSupervisionMode: 'observe',
   inferenceSupervisionPollSeconds: 45,
   hubPoolPins: [{ scope: 'model', model: 'qwen3.6:27b', targetKind: 'peer', peerId: 'peer-1', mode: 'prefer' }],

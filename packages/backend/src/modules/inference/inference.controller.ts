@@ -3,6 +3,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
 import { ApiHeader, ApiTags } from '@nestjs/swagger';
 import { PoolProxyService } from '@/modules/hub-pool/hub-pool-proxy.service';
+import { POOL_SESSION_HEADER } from '@/modules/hub-pool/hub-pool-prefix-affinity';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
@@ -159,10 +160,12 @@ export class InferenceController {
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/chat/completions')
-  async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
+  async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     const model = (body.model as string) || 'auto';
     if (await this.poolPeers.hasConnectedPeers()) {
-      return this.poolProxy.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model, res });
+      // The session header rides through so an app on this route gets prefix affinity too — see
+      // `hub-pool-prefix-affinity.ts`. The peerless path below serves locally and needs no hint.
+      return this.poolProxy.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model, res, sessionHeader: session });
     }
     try {
       const result = await this.router.routeChatCompletion(body);

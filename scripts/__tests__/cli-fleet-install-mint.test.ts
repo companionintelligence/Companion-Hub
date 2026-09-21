@@ -4,7 +4,8 @@
  * The first fleet run minted first. Its first node then failed to download the binary, and the
  * retry got `409 a device named "beta-red" already exists` — the code was gone and the name was
  * taken. Nothing the CLI could do; a person had to delete the orphan in Portal. These tests pin the
- * three behaviours that make a retry possible.
+ * three behaviours that make a retry possible — and the one that makes a kept code unusable: a
+ * `fleet devices re-register`, which Portal answers with a newer code and honours alone.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,6 +41,7 @@ const savedXdg = process.env.XDG_CONFIG_HOME;
 // A GitHub token in the environment would make the run look the release up; none of this needs one.
 const savedTokens = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
 const storePath = () => join(configHome, 'cihub', 'fleet-pending-pairing-codes.json');
+const readStore = () => JSON.parse(readFileSync(storePath(), 'utf8')) as { codes: Record<string, unknown>; reRegistered: Record<string, unknown> };
 
 beforeEach(() => {
   configHome = mkdtempSync(join(tmpdir(), 'cihub-xdg-'));
@@ -93,8 +95,7 @@ describe('fleet install and the pairing code', () => {
     });
     await runFleetCommand(['install', '--execute']);
     expect(mocks.mintPairingCode).toHaveBeenCalledTimes(1);
-    const kept = JSON.parse(readFileSync(storePath(), 'utf8'));
-    expect(kept['10.0.0.7']).toMatchObject({ name: 'core-7', pairingCode: 'ABC123', orgId: 'org-1', deviceId: 'dev-1' });
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ name: 'core-7', pairingCode: 'ABC123', orgId: 'org-1', deviceId: 'dev-1' });
 
     // Attempt 2: the same code comes back without a second mint, and is forgotten once registered.
     mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
@@ -106,7 +107,7 @@ describe('fleet install and the pairing code', () => {
     });
     await runFleetCommand(['install', '--execute']);
     expect(mocks.mintPairingCode).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(readFileSync(storePath(), 'utf8'))).toEqual({});
+    expect(readStore().codes).toEqual({});
   });
 
   it('turns a 409 into the two things it can mean', async () => {
@@ -141,5 +142,126 @@ describe('fleet install and the pairing code', () => {
     });
     await runFleetCommand(['install', '--execute']);
     expect(mocks.mintPairingCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('still reads the first store format, a bare map keyed by address', async () => {
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(join(configHome, 'cihub'), { recursive: true });
+    const legacy = {
+      ip: '10.0.0.7',
+      name: 'core-7',
+      slug: 'core-7',
+      deviceId: 'dev-0',
+      pairingCode: 'LEGACY1',
+      orgId: 'org-1',
+      mintedAt: '2026-09-18T00:00:00Z',
+    };
+    writeFileSync(storePath(), JSON.stringify({ '10.0.0.7': legacy }));
+    mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+      const minted = await opts.mintPairingCode?.();
+      expect(minted?.code).toBe('LEGACY1');
+      return { node: node.name, ok: false, steps: [] };
+    });
+    await runFleetCommand(['install', '--execute']);
+    expect(mocks.mintPairingCode).not.toHaveBeenCalled();
+  });
+
+  describe('after a fleet devices re-register', () => {
+    const rosterNode = { name: 'core-7', ip: '10.0.0.7' };
+
+    it('reuses the code re-register kept for the node, not the one install had kept', async () => {
+      const { recordReRegisteredPairingCode, savePendingPairingCode } = await import('../lib/fleet-pairing-codes.js');
+      // What core-1 looked like on 2026-09-20: install kept a code the day before, then re-register
+      // minted a newer one through Portal, which killed the kept one.
+      savePendingPairingCode({
+        ip: '10.0.0.7',
+        name: 'core-7',
+        slug: 'core-7',
+        deviceId: 'inactive-7',
+        pairingCode: 'STALE00',
+        orgId: 'org-1',
+        mintedAt: '2026-09-19T17:19:00Z',
+      });
+      const kept = recordReRegisteredPairingCode({
+        device: { id: 'inactive-7', name: 'core-7', slug: 'core-7' },
+        deviceId: 'inactive-7',
+        pairingCode: 'CGXKUR',
+        orgId: 'org-1',
+        roster: [rosterNode],
+        at: '2026-09-20T18:02:00Z',
+      });
+      expect(kept).toMatchObject({ ip: '10.0.0.7', node: 'core-7', replaced: expect.objectContaining({ pairingCode: 'STALE00' }) });
+
+      mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+        const minted = await opts.mintPairingCode?.();
+        expect(minted?.code).toBe('CGXKUR');
+        expect(minted?.detail).toMatch(/reusing the code re-registered 2026-09-20T18:02 for core-7/);
+        opts.onRegistered?.();
+        return { node: node.name, ok: true, steps: [] };
+      });
+      await runFleetCommand(['install', '--execute']);
+      expect(mocks.mintPairingCode).not.toHaveBeenCalled();
+      expect(readStore().codes).toEqual({});
+    });
+
+    it('refuses, naming the re-register, a kept code older than one the roster could not place', async () => {
+      const { recordReRegisteredPairingCode, savePendingPairingCode } = await import('../lib/fleet-pairing-codes.js');
+      // The re-register ran when the roster had no such node, so it could replace nothing; the
+      // stale code then reappears (a roster row added later, a restored file). It must not be sent.
+      recordReRegisteredPairingCode({
+        device: { id: 'inactive-7', name: 'core-7', slug: 'core-7' },
+        deviceId: 'inactive-7',
+        pairingCode: 'CGXKUR',
+        orgId: 'org-1',
+        roster: [],
+        at: '2026-09-20T18:02:00Z',
+      });
+      savePendingPairingCode({
+        ip: '10.0.0.7',
+        name: 'core-7',
+        slug: 'core-7',
+        deviceId: 'inactive-7',
+        pairingCode: 'STALE00',
+        orgId: 'org-1',
+        mintedAt: '2026-09-19T17:19:00Z',
+      });
+
+      let seen = '';
+      mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+        await opts.mintPairingCode?.().catch((error: Error) => {
+          seen = error.message;
+        });
+        return { node: node.name, ok: false, steps: [] };
+      });
+      await runFleetCommand(['install', '--execute']);
+      expect(seen).toMatch(/kept for core-7 was minted 2026-09-19T17:19/);
+      expect(seen).toMatch(/re-register' at 2026-09-20T18:02 replaced it/);
+      expect(seen).toMatch(/--code/);
+      expect(mocks.mintPairingCode).not.toHaveBeenCalled();
+    });
+
+    it('explains a 409 by the re-register when nothing was kept for the node', async () => {
+      const { recordReRegisteredPairingCode } = await import('../lib/fleet-pairing-codes.js');
+      recordReRegisteredPairingCode({
+        device: { id: 'inactive-7', name: 'core-7', slug: 'core-7' },
+        deviceId: 'inactive-7',
+        pairingCode: 'CGXKUR',
+        orgId: 'org-1',
+        roster: [],
+        at: '2026-09-20T18:02:00Z',
+      });
+      mocks.mintPairingCode.mockRejectedValue(new Error('a device named "core-7" already exists in this org'));
+      let seen = '';
+      mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+        await opts.mintPairingCode?.().catch((error: Error) => {
+          seen = error.message;
+        });
+        return { node: node.name, ok: false, steps: [] };
+      });
+      await runFleetCommand(['install', '--execute']);
+      expect(seen).toMatch(/re-register' minted it a replacement code at 2026-09-20T18:02/);
+      expect(seen).toMatch(/--code/);
+      expect(seen).not.toMatch(/delete it in Portal/);
+    });
   });
 });

@@ -6957,6 +6957,11 @@
                 "minimum": 0,
                 "maximum": 300000
               },
+              "hubPoolPrefixAffinityMaxInFlight": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20
+              },
               "hubPoolRouteAppsAlways": {
                 "type": "boolean"
               },
@@ -7474,6 +7479,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 300000
+          },
+          "hubPoolPrefixAffinityMaxInFlight": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
           },
           "hubPoolRouteAppsAlways": {
             "type": "boolean"
@@ -12794,6 +12804,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 300000
+          },
+          "poolPrefixAffinityMaxInFlight": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
           },
           "poolRouteAppsAlways": {
             "type": "boolean"

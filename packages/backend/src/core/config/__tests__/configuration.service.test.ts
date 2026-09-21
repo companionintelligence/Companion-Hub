@@ -95,6 +95,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolPressureWeight: number;
         poolMaxPromptTokens: number | null;
         poolProbeSnapshotTtlMs: number;
+        poolPrefixAffinityMaxInFlight: number;
         poolPins: unknown[];
       };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
@@ -133,6 +134,10 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // stall included, until an operator PATCHes a TTL onto a canary node. Off by default so the
       // canary can be measured against a node that took the same image and nothing else.
       poolProbeSnapshotTtlMs: 0,
+      // 0 is the pre-affinity build: no prefix is hashed or remembered and the ranker alone decides,
+      // until an operator PATCHes a limit onto a canary node. Off by default for the same reason as
+      // the snapshot TTL above: the canary is measured against a node that took the same image.
+      poolPrefixAffinityMaxInFlight: 0,
       // No pins until an operator sets one, so the ranker alone decides — which is the whole
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],
@@ -246,6 +251,20 @@ describe('ConfigurationService Hub Pool preferences', () => {
     // `?? DEFAULT` must not swallow a 0: it is the operator's way back to the pre-snapshot build.
     expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolProbeSnapshotTtlMs: 0 });
     expect(svc.getHubPoolPreferences().poolProbeSnapshotTtlMs).toBe(0);
+  });
+
+  it('persists the prefix-affinity limit and reads it back, including 0 for off', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolPrefixAffinityMaxInFlight: 2 });
+    expect(svc.getHubPoolPreferences().poolPrefixAffinityMaxInFlight).toBe(2);
+
+    await svc.setHubPoolPreferences({ poolPrefixAffinityMaxInFlight: 0 });
+
+    // `?? DEFAULT` must not swallow a 0: it is the operator's way back to the pre-affinity build.
+    expect(svc.mergeSettingsToDisk.mock.calls[1][0]).toEqual({ hubPoolPrefixAffinityMaxInFlight: 0 });
+    expect(svc.getHubPoolPreferences().poolPrefixAffinityMaxInFlight).toBe(0);
   });
 
   it('clears a prompt ceiling by removing the key, and reads the cleared value as no ceiling', async () => {
