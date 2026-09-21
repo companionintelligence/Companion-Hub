@@ -31,6 +31,23 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
+  it('labels the app network as Hub-managed and leaves the shared Hub networks unlabelled', async () => {
+    // The Hub's boot-time `docker network prune` is filtered on this label. Without it the
+    // prune reclaims every idle network on the host, including other compose stacks'.
+    const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image' }], {}, urn, subnet);
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.networks['nginx_store-id_network'].labels).toMatchObject({
+      'ci-hub.managed': true,
+      'ci-hub.appurn': urn,
+    });
+    for (const [name, network] of Object.entries<{ external?: boolean; labels?: unknown }>(parsed.networks)) {
+      if (name === 'nginx_store-id_network') continue;
+      expect(network.external).toBe(true);
+      expect(network.labels).toBeUndefined();
+    }
+  });
+
   it('attaches main services to both Hub networks during canonical migration', async () => {
     const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
     process.env.HUB_CONTAINER_NAME = 'ci-hub';
