@@ -2,13 +2,14 @@ import { DASH, humanBytes, humanCount, KpiRail, type RailStatData, StatusBadge }
 import { cn } from '@/lib/utils';
 import type { NodeContainers, RoutingActivity, RoutingBucket } from '@/modules/system/pool-node-series';
 import type { Verdict } from '@/modules/system/triage';
-import type {
-  HardwareSummary,
-  LoadState,
-  PoolNodeSummary,
-  PoolReach,
-  PoolStatusSummary,
-  ResidencyReportSummary,
+import {
+  type HardwareSummary,
+  hostRamUsedMb,
+  type LoadState,
+  type PoolNodeSummary,
+  type PoolReach,
+  type PoolStatusSummary,
+  type ResidencyReportSummary,
 } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
 
@@ -142,8 +143,8 @@ export function DashboardRail({
   const { t } = useTranslation();
 
   const ramTotal = hardware?.ram?.totalMb ?? null;
-  const ramAvail = hardware?.ram?.availableMb ?? null;
-  const ramPercent = ramTotal !== null && ramAvail !== null && ramTotal > 0 ? Math.round(((ramTotal - ramAvail) / ramTotal) * 100) : null;
+  const ramUsed = hostRamUsedMb(hardware);
+  const ramPercent = ramTotal !== null && ramUsed !== null && ramTotal > 0 ? Math.round((ramUsed / ramTotal) * 100) : null;
 
   const routed = buckets.reduce((sum, bucket) => sum + bucket.served + bucket.failed, 0);
   const failed = buckets.reduce((sum, bucket) => sum + bucket.failed, 0);

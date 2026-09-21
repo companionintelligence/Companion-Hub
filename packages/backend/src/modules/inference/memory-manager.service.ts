@@ -65,13 +65,36 @@ export class MemoryManagerService {
     };
   }
 
+  /**
+   * RAM a new model may take right now: the registry's view of the budget (total minus reserve,
+   * app overhead and the models it knows it loaded) capped by what the host actually has free.
+   *
+   * The registry only knows about models the Hub loaded. On a unified-memory node everything
+   * else that lives in the same pool — vLLM holding 96 GB of GTT out-of-band, a model Ollama
+   * kept resident past the registry's record, the apps themselves — is invisible to it, and the
+   * budget alone admitted a load the host could not take (Ollama OOM-killed on `ci`).
+   * `profile.ram.availableMb` is MemAvailable read live by the hardware inspector on a Linux
+   * host (`ram.sampledAt` says so), so the cap follows the host; the system reserve comes off
+   * it the same as off the total. On macOS/Windows the figure is the desktop probe's snapshot
+   * from app start — `vm_stat` free+inactive, routinely a fraction of RAM the OS would hand
+   * over on demand — and it never recovers, so it must not cap anything.
+   */
+  private ramHeadroomMb(profile: HardwareProfile, budget: MemoryBudget): number {
+    const budgeted = budget.modelBudgetRamMb - budget.modelUsedRamMb;
+    if (!profile.ram.sampledAt) {
+      return budgeted;
+    }
+    const live = Math.max(0, profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB);
+    return Math.min(budgeted, live);
+  }
+
   /** Check if a model can fit in the current memory budget */
   canFitModel(profile: HardwareProfile, memoryFootprintMb: number): { fits: boolean; availableMb: number; requiredMb: number } {
     const budget = this.calculateBudget(profile);
 
     let availableMb: number;
     if (profile.gpu.unifiedMemory || !profile.gpu.available) {
-      availableMb = budget.modelBudgetRamMb - budget.modelUsedRamMb;
+      availableMb = this.ramHeadroomMb(profile, budget);
     } else {
       availableMb = budget.modelBudgetVramMb - budget.modelUsedVramMb;
     }
@@ -105,7 +128,7 @@ export class MemoryManagerService {
   /** Check if an app can start given the current memory state */
   canStartApp(profile: HardwareProfile, appMemoryMb: number): { canStart: boolean; modelsToEvict: string[]; warning?: string } {
     const budget = this.calculateBudget(profile);
-    const remainingRam = budget.modelBudgetRamMb - budget.modelUsedRamMb;
+    const remainingRam = this.ramHeadroomMb(profile, budget);
 
     if (remainingRam >= appMemoryMb) {
       return { canStart: true, modelsToEvict: [] };

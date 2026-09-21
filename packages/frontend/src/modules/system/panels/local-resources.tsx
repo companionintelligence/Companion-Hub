@@ -19,6 +19,7 @@ import type { AppRuntimeHealth, AppRuntimeHistorySample } from '@/lib/app-runtim
 import {
   budgetPercent,
   type HardwareSummary,
+  hostRamUsedMb,
   type InferenceBackendStatus,
   type LoadState,
   memoryBudgetRows,
@@ -58,8 +59,7 @@ export function HostCapacity({
 }) {
   const { t } = useTranslation();
   const ramTotal = hardware?.ram?.totalMb ?? null;
-  const ramAvail = hardware?.ram?.availableMb ?? null;
-  const ramUsed = ramTotal !== null && ramAvail !== null ? ramTotal - ramAvail : null;
+  const ramUsed = hostRamUsedMb(hardware);
 
   return (
     <Panel title={t('DASHBOARD_HOST_TITLE')} density="compact" className={className}>

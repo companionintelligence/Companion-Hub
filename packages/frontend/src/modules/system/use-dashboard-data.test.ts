@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   budgetPercent,
   combineLoadState,
+  hostRamUsedMb,
   loadState,
   memoryBudgetRows,
   type MemoryBudgetSummary,
@@ -114,6 +115,22 @@ describe('memoryBudgetRows', () => {
 
   it('returns nothing at all when the budget never arrived, so a caller cannot render zeros', () => {
     expect(memoryBudgetRows(undefined)).toEqual([]);
+  });
+});
+
+describe('hostRamUsedMb', () => {
+  it('takes the measured usedMb when the Hub sends one', () => {
+    // core-2 as `free -m` sees it: 128085 total, 53052 available, 75033 used.
+    expect(hostRamUsedMb({ ram: { totalMb: 128_085, availableMb: 53_052, usedMb: 75_033, sampledAt: '2026-09-20T12:00:00.000Z' } })).toBe(75_033);
+  });
+
+  it('derives it from total and available on a Hub that predates usedMb', () => {
+    expect(hostRamUsedMb({ ram: { totalMb: 128_085, availableMb: 124_547 } })).toBe(3538);
+  });
+
+  it('is null, not zero, when the profile has no RAM figures to speak of', () => {
+    expect(hostRamUsedMb(undefined)).toBeNull();
+    expect(hostRamUsedMb({ ram: { totalMb: 128_085 } })).toBeNull();
   });
 });
 

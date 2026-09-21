@@ -232,6 +232,124 @@ describe('MemoryManagerService', () => {
     });
   });
 
+  // ─── Live host RAM on a unified node ──────────────────────────────
+  //
+  // The registry only knows about models the Hub loaded. On `ci` (Strix Halo) vLLM held 96 GB
+  // of GTT out-of-band; the budget — total minus reserve minus the registry's models — still
+  // said the whole machine was free, and the load it admitted got Ollama OOM-killed. The
+  // hardware inspector now serves `ram.availableMb` live (marked by `ram.sampledAt`), and that
+  // is what a load on a unified node must be admitted against.
+
+  describe('live host RAM cap (unified memory)', () => {
+    const STRIX_HALO_TOTAL_MB = 128085;
+    const unified = (ram: HardwareProfile['ram']): HardwareProfile =>
+      makeProfile({
+        gpu: {
+          available: true,
+          vendor: 'amd',
+          model: 'Radeon 8060S',
+          vramMb: STRIX_HALO_TOTAL_MB,
+          unifiedMemory: true,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostRocmKfdAvailable: true,
+        },
+        ram,
+        effectiveInferenceMemoryMb: ram.availableMb,
+      });
+    const live = (availableMb: number): HardwareProfile['ram'] => ({
+      totalMb: STRIX_HALO_TOTAL_MB,
+      availableMb,
+      usedMb: STRIX_HALO_TOTAL_MB - availableMb,
+      sampledAt: '2026-09-20T12:00:00.000Z',
+    });
+
+    it('admits against what the host has free now, not the registry budget alone', () => {
+      // Registry: nothing loaded, so the budget is total − 2 GB reserve = 126037 MB.
+      // Host: vLLM has 96 GB of GTT; MemAvailable says 20 GB.
+      const profile = unified(live(20480));
+
+      const fit = service.canFitModel(profile, 24000);
+
+      expect(fit.fits).toBe(false);
+      expect(fit.availableMb).toBe(20480 - 2048);
+      expect(fit.requiredMb).toBe(24000);
+      // The same load fits once the host actually has the room.
+      expect(service.canFitModel(unified(live(53052)), 24000).fits).toBe(true);
+    });
+
+    it('still honours the registry budget when the host has more free than the registry allows', () => {
+      modelRegistry.getLoadedModels.mockReturnValue([
+        {
+          catalogId: 'a',
+          backend: 'ollama',
+          backendModelId: 'a',
+          state: 'pinned',
+          pinned: true,
+          memoryUsedMb: 100000,
+          lastUsedAt: 1,
+          requestCount: 1,
+        },
+      ]);
+      // Registry: 128085 − 2048 − 100000 = 26037 MB; host (page cache reclaimable) says 60 GB.
+      const fit = service.canFitModel(unified(live(61440)), 24000);
+      expect(fit.availableMb).toBe(26037);
+      expect(fit.fits).toBe(true);
+      expect(service.canFitModel(unified(live(61440)), 30000).fits).toBe(false);
+    });
+
+    it('does not cap on a host-probe snapshot (no sampledAt): macOS/Windows keep the registry budget', () => {
+      // The desktop probe's vm_stat free+inactive at app start on a busy Mac; it never refreshes,
+      // and macOS would hand the memory over on demand. Capping on it would refuse loads that
+      // were admitted before.
+      const profile = unified({ totalMb: 98304, availableMb: 12288 });
+
+      const fit = service.canFitModel(profile, 24000);
+
+      expect(fit.availableMb).toBe(98304 - 2048);
+      expect(fit.fits).toBe(true);
+    });
+
+    it('discrete node: VRAM admission is untouched by the live RAM figure', () => {
+      const profile = makeProfile({ ram: { totalMb: 65536, availableMb: 4096, usedMb: 61440, sampledAt: '2026-09-20T12:00:00.000Z' } });
+
+      const fit = service.canFitModel(profile, 20000);
+
+      expect(fit.availableMb).toBe(24576 - 512);
+      expect(fit.fits).toBe(true);
+    });
+
+    it('a host with less free than the reserve has no headroom, and says 0 rather than a negative number', () => {
+      const fit = service.canFitModel(unified(live(1024)), 100);
+      expect(fit.availableMb).toBe(0);
+      expect(fit.fits).toBe(false);
+    });
+
+    it('canStartApp evicts against the live figure', () => {
+      const candidates: TrackedModel[] = [
+        {
+          catalogId: 'model-a',
+          backend: 'ollama',
+          backendModelId: 'a',
+          state: 'loaded',
+          pinned: false,
+          memoryUsedMb: 20000,
+          lastUsedAt: 100,
+          requestCount: 1,
+        },
+      ];
+      modelRegistry.getEvictionCandidates.mockReturnValue(candidates);
+      modelRegistry.getLoadedModels.mockReturnValue(candidates);
+
+      // Registry headroom 106037 MB; host says 8 GB free. A 10 GB app needs the model gone.
+      const result = service.canStartApp(unified(live(8192)), 10240);
+
+      expect(result.canStart).toBe(true);
+      expect(result.modelsToEvict).toEqual(['model-a']);
+      expect(result.warning).toContain('evict');
+    });
+  });
+
   // ─── canPinModel ──────────────────────────────────────────────────
 
   describe('canPinModel', () => {
