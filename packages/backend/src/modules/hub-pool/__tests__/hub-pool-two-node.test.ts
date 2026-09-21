@@ -1,3 +1,4 @@
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { createHash, randomUUID } from 'node:crypto';
 import { Writable } from 'node:stream';
 import { HttpException } from '@nestjs/common';
@@ -14,6 +15,8 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
@@ -1462,7 +1465,7 @@ describe('Hub Pool across two nodes', () => {
     /** Bodies beta's engine received, to prove the work really ran there. */
     let betaEngineCalls: string[];
 
-    /** Ollama present and serving `models` at `host`; the other five engines absent. */
+    /** Ollama present and serving `models` at `host`; every other engine absent. */
     function registryServing(host: string, models: string[]): InferenceBackendRegistry {
       const engine = (running: boolean) => {
         const backend = mock<OllamaBackend>();
@@ -1470,7 +1473,11 @@ describe('Hub Pool across two nodes', () => {
         backend.getBaseUrl.mockReturnValue(`http://${host}`);
         return backend as never;
       };
-      return new InferenceBackendRegistry(engine(true), engine(false), engine(false), engine(false), engine(false), engine(false));
+      // One stand-in per declared type, derived from the tuple: a hand-counted argument list left a
+      // newly added backend unwired, and `entries()` then threw UnknownInferenceBackendError from
+      // inside candidate selection rather than failing anywhere near this line.
+      const absent = INFERENCE_BACKEND_TYPES.slice(1).map(() => engine(false));
+      return new InferenceBackendRegistry(engine(true), ...(absent as [never, never, never, never, never, never, never]));
     }
 
     function realProxy(node: Node, registry: InferenceBackendRegistry, log: HubPoolRoutingLogService): PoolProxyService {
@@ -1638,11 +1645,27 @@ describe('Hub Pool across two nodes', () => {
     function proxyOn(node: Node): PoolProxyService {
       const ollama = mock<OllamaBackend>();
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [SHARED_MODEL] });
-      const others = [mock<VllmBackend>(), mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+      const others = [
+        mock<VllmBackend>(),
+        mock<LemonadeBackend>(),
+        mock<MtplxBackend>(),
+        mock<DsparkBackend>(),
+        mock<LuceboxBackend>(),
+        mock<LlamacppBackend>(),
+        mock<LmStudioBackend>(),
+      ];
       for (const backend of others) {
         backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       }
-      const [vllm, lemonade, mtplx, dspark, lucebox] = others as [VllmBackend, LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend];
+      const [vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio] = others as [
+        VllmBackend,
+        LemonadeBackend,
+        MtplxBackend,
+        DsparkBackend,
+        LuceboxBackend,
+        LlamacppBackend,
+        LmStudioBackend,
+      ];
       const pressure = mock<HubPoolPressureService>();
       pressure.band.mockReturnValue(null);
       const loadService = new HubPoolLoadService();
@@ -1650,7 +1673,7 @@ describe('Hub Pool across two nodes', () => {
       loadService.acquire('local');
       loadService.acquire('local');
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         node.service,
         mock<TailscaleService>(),
         loadService,
@@ -1747,11 +1770,27 @@ describe('Hub Pool across two nodes', () => {
     function proxyOn(node: Node): PoolProxyService {
       const ollama = mock<OllamaBackend>();
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [SHARED_MODEL] });
-      const others = [mock<VllmBackend>(), mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+      const others = [
+        mock<VllmBackend>(),
+        mock<LemonadeBackend>(),
+        mock<MtplxBackend>(),
+        mock<DsparkBackend>(),
+        mock<LuceboxBackend>(),
+        mock<LlamacppBackend>(),
+        mock<LmStudioBackend>(),
+      ];
       for (const backend of others) {
         backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       }
-      const [vllm, lemonade, mtplx, dspark, lucebox] = others as [VllmBackend, LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend];
+      const [vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio] = others as [
+        VllmBackend,
+        LemonadeBackend,
+        MtplxBackend,
+        DsparkBackend,
+        LuceboxBackend,
+        LlamacppBackend,
+        LmStudioBackend,
+      ];
       const pressure = mock<HubPoolPressureService>();
       pressure.band.mockReturnValue(null);
       const loadService = new HubPoolLoadService();
@@ -1759,7 +1798,7 @@ describe('Hub Pool across two nodes', () => {
       loadService.acquire('local');
       loadService.acquire('local');
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         node.service,
         mock<TailscaleService>(),
         loadService,

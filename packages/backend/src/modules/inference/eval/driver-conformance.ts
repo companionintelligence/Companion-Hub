@@ -221,8 +221,17 @@ export type SpecToggleReach =
 
 export interface SpecDecodeCapability {
   backend: InferenceBackendType;
-  /** `true` where it has been measured working; 'version-gated' where the build decides. */
-  capable: true | 'version-gated';
+  /**
+   * `true` where it has been measured working; 'version-gated' where the build decides;
+   * 'unmeasured' where this fleet has never run the engine and nothing here may be asserted.
+   *
+   * 'unmeasured' is a third state rather than a missing row on purpose. A backend absent from this
+   * table would read as "nothing to say about speculation", which is a claim; an explicit
+   * 'unmeasured' says the engine exists and nobody has looked. The invariants every other row must
+   * satisfy — a named toggle, sourced evidence — do not apply to it, and the tests exempt it by
+   * name so that filling the row in is what removes the exemption.
+   */
+  capable: true | 'version-gated' | 'unmeasured';
   reach: SpecToggleReach;
   /** The exact spelling that turns speculation ON, or null where nothing in the API does. */
   toggleOn: string | null;
@@ -328,6 +337,28 @@ export const SPEC_DECODE: Record<InferenceBackendType, SpecDecodeCapability> = {
     evidence:
       'The capability table is compiled into the binary (one model family at speculation level 2, another at level 0), drafters must come from the vendor\'s own model org, and the container entrypoint ends with an exec that has NO argument passthrough, so appended docker run flags are dropped with no error. The response fields were found by running a plain completion against a live build: GET /health returns {"status":"ok"} and nothing else, but the completion returned usage {accept_rate, spec_decode_ran: true, timings: {decode_ms}}. That CORRECTS an earlier claim that nothing read-only reports this engine\'s speculative state — /health does not, the inference response does.',
   },
+  llamacpp: {
+    backend: 'llamacpp',
+    capable: 'unmeasured',
+    reach: 'launch-flag',
+    toggleOn: null,
+    offArm: null,
+    falseOffArm: null,
+    observable: null,
+    evidence:
+      "Not measured. No bare llama-server has been driven on this fleet — every llama.cpp measurement in this table was taken THROUGH lemonade, which loads it over its own write endpoint, so what those rows establish is lemonade's control surface and not this one's. `reach` is the one field stated, and only because it follows from the backend rather than from the engine: the Hub never starts llama-server, so whatever this engine does about speculation was decided by the operator's command line before the Hub saw it.",
+  },
+  lmstudio: {
+    backend: 'lmstudio',
+    capable: 'unmeasured',
+    reach: 'launch-flag',
+    toggleOn: null,
+    offArm: null,
+    falseOffArm: null,
+    observable: null,
+    evidence:
+      "Not measured. No LM Studio instance has been driven on this fleet. `reach` is stated for the same reason as llamacpp's and with the same weakness: the Hub does not start LM Studio, so any speculative configuration is made in its UI before the Hub connects. Nothing about what its API accepts, reports, or silently ignores is asserted here.",
+  },
 };
 
 // ─── Hidden reasoning: the per-driver spelling of "stop thinking" ────────────
@@ -401,6 +432,20 @@ export const THINKING_SUPPRESSION: Record<InferenceBackendType, ThinkingSuppress
     silentNoOp: null,
     evidence:
       'Not established. The build measured returned usage.completion_tokens_details.reasoning_tokens 0 on every conformance row, so no suppression was needed and none has been tested.',
+  },
+  llamacpp: {
+    backend: 'llamacpp',
+    works: "reasoning_effort: 'none', accepted natively by llama-server; chat_template_kwargs: {enable_thinking: false} also works",
+    silentNoOp: null,
+    evidence:
+      'Inherited from the lemonade row above, which is the same engine: those three nodes ran llama-server b10707 and lemonade only passed the request through. What lemonade adds is its load endpoint, which this dimension does not touch — the two overrides were sent on an ordinary /v1/chat/completions. A bare llama-server has not been driven directly on this fleet, so the claim is as strong as that indirection and no stronger.',
+  },
+  lmstudio: {
+    backend: 'lmstudio',
+    works: null,
+    silentNoOp: null,
+    evidence:
+      'Not established. No LM Studio instance has been driven on this fleet. It fronts llama.cpp and MLX runtimes, so the llamacpp row above is a reasonable first thing to try — but which of the two is serving is an LM Studio decision the Hub does not see, and an untested spelling copied between engines is exactly what the mtplx row of this table exists to warn about.',
   },
 };
 
@@ -491,6 +536,10 @@ export const DIMENSION_SKIPS: Partial<Record<ConformanceDimensionId, Partial<Rec
     dspark:
       "has no /v1/embeddings at all. Stated in CI-Hub's own dspark.backend.ts and covered by a regression test there, so this is a documented absence rather than an untested one.",
     lucebox: 'fronts one chat GGUF and exposes no embedding route — its /v1/models advertises a single chat entry and no embedding model.',
+    llamacpp:
+      "Not verified. llama-server can be started with an embedding model and then answers /v1/embeddings, but WHETHER it was is a property of the operator's command line that the Hub cannot read, and no instance has been driven here. An embeddings request would measure that command line rather than the route.",
+    lmstudio:
+      'Not verified. LM Studio serves embedding models and tags them in its native listing, but no instance has been driven on this fleet, and whether one is loaded is a choice made in its UI.',
   },
   'native-chat': nonOllama(),
   'native-generate': nonOllama(),
@@ -504,6 +553,10 @@ export const DIMENSION_SKIPS: Partial<Record<ConformanceDimensionId, Partial<Rec
     'response_format is unverified on this engine — only ollama/vllm/lemonade have been seen implementing it. Ollama maps the field onto its native `format`, vLLM implements guided decoding and lemonade is model/runtime dependent; for these three nobody has seen it accepted or refused, and a guessed red row means nothing.',
   ),
   'spec-decode-capability': {
+    llamacpp:
+      "Not measured, which is a weaker claim than vLLM's below: vLLM was driven and reports nothing read-only, whereas no bare llama-server has been driven on this fleet at all. Every llama.cpp figure in SPEC_DECODE was taken THROUGH lemonade and describes lemonade's control surface. Filling this in means running the engine, not reading its flags.",
+    lmstudio:
+      'Not measured. No LM Studio instance has been driven on this fleet, so nothing is asserted about what its API accepts, reports, or silently ignores.',
     vllm: 'speculative decoding is configured with --speculative-config at server launch and no read-only route reports it — /v1/models carries the model id, max_model_len and permissions and nothing about drafting. Reading the state needs the launch argv from the host, which is outside a read-only HTTP surface. It has been measured (~1.4x, 42.8% acceptance) by reading that argv, not by asking the server.',
   },
 };
@@ -516,10 +569,18 @@ function nonOllama(): Partial<Record<InferenceBackendType, string>> {
   >;
 }
 
+/**
+ * The engines excused from a dimension that only the verified-capable ones are asked.
+ *
+ * `mtplx`, `dspark` and `lucebox` are here because they were driven and found to be chat-shaped.
+ * `llamacpp` and `lmstudio` are here for a weaker reason — neither has been driven on this fleet at
+ * all — and the reason strings passed in say "no verified route", which is true of both kinds. The
+ * two are not the same finding, and a run that establishes either capability should take that engine
+ * out of this list rather than widen the prose.
+ */
 function chatOnly(reason: string): Partial<Record<InferenceBackendType, string>> {
-  return Object.fromEntries((['mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]).map((b) => [b, reason])) as Partial<
-    Record<InferenceBackendType, string>
-  >;
+  const unverified: InferenceBackendType[] = ['mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'];
+  return Object.fromEntries(unverified.map((b) => [b, reason])) as Partial<Record<InferenceBackendType, string>>;
 }
 
 export interface ConformanceCell {

@@ -5,6 +5,8 @@ import type { InferenceBackend } from './backend.interface';
 // emitDecoratorMetadata's design:paramtypes, and a type-only import erases them to undefined.
 import { DsparkBackend } from './dspark.backend';
 import { LemonadeBackend } from './lemonade.backend';
+import { LlamacppBackend } from './llamacpp.backend';
+import { LmStudioBackend } from './lmstudio.backend';
 import { LuceboxBackend } from './lucebox.backend';
 import { MtplxBackend } from './mtplx.backend';
 import { OllamaBackend } from './ollama.backend';
@@ -59,6 +61,8 @@ export class InferenceBackendRegistry {
     mtplx: MtplxBackend,
     dspark: DsparkBackend,
     lucebox: LuceboxBackend,
+    llamacpp: LlamacppBackend,
+    lmstudio: LmStudioBackend,
   ) {
     this.byType = {
       ollama,
@@ -67,6 +71,8 @@ export class InferenceBackendRegistry {
       mtplx,
       dspark,
       lucebox,
+      llamacpp,
+      lmstudio,
     };
   }
 

@@ -990,9 +990,29 @@ Apps using `hub_integration.inference` get `CI_LLM_BASE_URL`, `OLLAMA_HOST` and 
 
 `POST /api/pull` and the other model-management natives are deliberately absent — pulling a model is a node-local administrative action, not something the pool should silently perform on whichever machine answered.
 
+## What the listing endpoints answer for
+
+`GET /v1/models` and `GET /api/tags` answer for the **pool**, not for this node: what this node's own
+backends list, plus every model a connected peer reports in its cached capabilities. A model the
+listing names is a model the ranker can place, because both read the same snapshot — the one the
+health poll refreshes every `poolHealthPollSeconds`. Merging costs no extra network call.
+
+A peer publishes model *names* and nothing else, so a model no local engine holds has no size,
+digest, or modified time to report. Those fields are emitted empty or zero rather than invented, and
+`owned_by` is `hub-pool` on the OpenAI side, so a client that reads the field can tell the two apart.
+
+A Hub whose own engines are down or absent now answers these two routes from its peers instead of
+`502`. The 502 remains for the case where neither this node nor any peer has anything.
+
+Ranking is not consulted here. The listing answers "what may I ask for", not "where would it run" —
+`X-Hub-Pool-Served-By` on the response to the actual request answers the second.
+
+`/api/ps`, `/api/version`, and `/api/show` are still local-only, and deliberately: the first two are
+questions about *this machine*, so another node's answer would not be an addition to them, and
+`/api/show` already falls back to a peer wholesale rather than blending.
+
 ## Known limitations (v1)
 
-- `GET /v1/models` and `GET /api/tags` through the pool proxy list only this node's own local backends — they do not yet merge in what connected peers report. Chat/completion/embedding requests do use the full pool, including peers; only the *listing* endpoints are local-only for now.
 - Peer health is polled on an interval (`poolHealthPollSeconds`, 30s by default) rather than pushed, so a peer that just went down may still be offered as a candidate until the next poll — the per-request failover is what actually protects a live request in that gap.
 - The routing log holds the last 200 decisions (up to 10,000 with `HUB_POOL_ROUTING_LOG_SIZE`) in memory and is gone on restart; `summary.bootId` says when that happened. Per-request attribution no longer depends on it — the [`X-Hub-Pool-Served-By` response header](#operator-status-and-routing-log) names the serving node to the caller — but there is still no persisted history of *anything* else: no pairing lifecycle (rejected and expired rows are hard-deleted), no per-peer request totals, and no record of why a peer became unreachable beyond the current strike count.
 - Time-to-headers is the only latency figure recorded. Token counts and tokens-per-second are not available: the response body is piped through untouched, and counting tokens would mean parsing the stream the proxy deliberately never reads.

@@ -7,6 +7,8 @@ import { InferenceBackendRegistry } from '../backends/backend-registry';
 import type { DsparkBackend } from '../backends/dspark.backend';
 import type { LemonadeBackend } from '../backends/lemonade.backend';
 import type { LuceboxBackend } from '../backends/lucebox.backend';
+import type { LlamacppBackend } from '../backends/llamacpp.backend';
+import type { LmStudioBackend } from '../backends/lmstudio.backend';
 import type { MtplxBackend } from '../backends/mtplx.backend';
 import type { OllamaBackend } from '../backends/ollama.backend';
 import type { VllmBackend } from '../backends/vllm.backend';
@@ -41,7 +43,14 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
     peers = mock<HubPoolPeerService>();
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
-    const others = [mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+    const others = [
+      mock<LemonadeBackend>(),
+      mock<MtplxBackend>(),
+      mock<DsparkBackend>(),
+      mock<LuceboxBackend>(),
+      mock<LlamacppBackend>(),
+      mock<LmStudioBackend>(),
+    ];
     for (const backend of others) backend.healthCheck.mockResolvedValue(DOWN);
     ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
     vllm.healthCheck.mockResolvedValue(DOWN);
@@ -52,6 +61,8 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
       others[1] as MtplxBackend,
       others[2] as DsparkBackend,
       others[3] as LuceboxBackend,
+      others[4] as LlamacppBackend,
+      others[5] as LmStudioBackend,
     );
     service = new InferenceEndpointService(logger, registry, ollama, peers, config);
 

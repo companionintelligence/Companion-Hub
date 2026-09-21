@@ -14,6 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { GENERATED_BANK_DEFAULT, buildGeneratedPrompts, generatedPromptIds, generatedVariantCapacity } from '../prompt-bank-generated';
 import {
+  LLM_BACKENDS,
   LLM_DEFAULT_PRESET,
   LLM_PROMPT_BANK,
   LLM_PROMPT_PRESETS,
@@ -155,7 +156,7 @@ describe('preset integrity', () => {
 
 describe('backend selection', () => {
   it('null or empty means every backend, and an unknown name is reported', () => {
-    expect(resolveBackendSelection(null).backends).toHaveLength(6);
+    expect(resolveBackendSelection(null).backends).toEqual(LLM_BACKENDS);
     expect(resolveBackendSelection([]).unknown).toEqual([]);
     const picked = resolveBackendSelection(['ollama', 'nope']);
     expect(picked.backends).toEqual(['ollama']);
