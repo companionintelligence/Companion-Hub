@@ -14,8 +14,12 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  classifyHubContextCapOutput,
   classifyRuntimeApplyOutput,
+  describeHubContextCapPlan,
   describeRuntimeTransition,
+  HUB_CONTEXT_CAP_MARKERS,
+  hubContextCapShell,
   OLLAMA_RUNTIME_KEYS,
   OllamaRuntimeFlagError,
   ollamaRuntimeApplyShell,
@@ -399,5 +403,230 @@ describe.skipIf(!bash)('ollamaRuntimeApplyShell (sandboxed bash)', () => {
 describe('OLLAMA_RUNTIME_KEYS', () => {
   it('are the four the audit asked for, and nothing about the bind', () => {
     expect([...OLLAMA_RUNTIME_KEYS]).toEqual(['OLLAMA_NUM_PARALLEL', 'OLLAMA_KEEP_ALIVE', 'OLLAMA_CONTEXT_LENGTH', 'OLLAMA_IGPU_ENABLE']);
+  });
+});
+
+// ─── The Hub's half of --ollama-context ────────────────────────────────────────────────────────────
+
+describe('hubContextCapShell', () => {
+  const set = hubContextCapShell(16384, '/srv/hub');
+  const clear = hubContextCapShell(null, '/srv/hub');
+
+  it('reads the key inside the ci-hub container first, then the host data dir it was given', () => {
+    for (const script of [set, clear]) {
+      expect(script.indexOf('docker exec ci-hub')).toBeLessThan(script.indexOf("'/srv/hub/state/settings.json'"));
+      expect(script).toContain('-H "Authorization: Bearer $cihub_cap_key"');
+    }
+  });
+
+  it('never echoes the key, and unsets it before the script ends', () => {
+    for (const script of [set, clear]) {
+      expect(script).not.toMatch(/echo[^\n]*\$cihub_cap_key/);
+      expect(script).toContain('unset cihub_cap_key');
+      // The response body is parsed, never dumped: a Hub error page cannot carry anything back either.
+      expect(script).not.toMatch(/cat\s+"\$cihub_cap_body"/);
+      for (const line of script.split('\n').filter((l) => l.trim().startsWith('echo '))) expect(line).not.toMatch(/\$cihub_cap_(key|body)/);
+    }
+  });
+
+  it('sets through /api/user-settings with the one key, and clears through /api/inference/preferences with the current backend', () => {
+    // `/api/user-settings` cannot remove a key, so the clear goes through the preferences route,
+    // which requires `backend` — read from the same GET that says what the cap is now.
+    expect(set).toContain(`-X PATCH -d '{"inferenceMaxNumCtx":16384}' "$cihub_cap_url/user-settings"`);
+    expect(set).not.toContain('"maxNumCtx":null');
+    expect(clear).toContain('"preferredBackend"');
+    expect(clear).toContain('{\\"backend\\":\\"$cihub_cap_backend\\",\\"maxNumCtx\\":null}');
+    expect(clear).toContain('"$cihub_cap_url/inference/preferences"');
+    expect(clear).not.toContain('user-settings');
+    // A stored preference the script does not recognise — or none — is sent as Ollama, which is
+    // what an absent preference already resolves to on the Hub.
+    expect(clear).toContain('*) cihub_cap_backend=ollama ;;');
+  });
+
+  it('reads the cap before writing, and skips the write when it already reads as requested', () => {
+    expect(set.indexOf('"$cihub_cap_url/inference/preferences"')).toBeLessThan(set.indexOf('-X PATCH'));
+    expect(set).toContain('if [ "$cihub_cap_now" = 16384 ] || [ "$cihub_cap_now" = absent ]; then');
+    expect(clear).toContain('if [ "$cihub_cap_now" = none ] || [ "$cihub_cap_now" = absent ]; then');
+    expect(set).toContain(`${HUB_CONTEXT_CAP_MARKERS.write} skipped`);
+  });
+
+  it('exits 0 whatever it found, so the caller judges the markers rather than the exit status', () => {
+    expect(set.trimEnd().endsWith('true')).toBe(true);
+    expect(set).not.toContain('|| echo 000');
+    expect(set).toContain('[ -n "$cihub_cap_code" ] || cihub_cap_code=000');
+  });
+
+  it('names the route in the dry-run line', () => {
+    expect(describeHubContextCapPlan(16384)).toContain('inferenceMaxNumCtx=16384');
+    expect(describeHubContextCapPlan(16384)).toContain('PATCH /api/user-settings');
+    expect(describeHubContextCapPlan(null)).toContain('clear the context cap');
+    expect(describeHubContextCapPlan(null)).toContain('PATCH /api/inference/preferences');
+  });
+});
+
+describe('classifyHubContextCapOutput', () => {
+  const m = HUB_CONTEXT_CAP_MARKERS;
+  const out = (...lines: string[]) => lines.join('\n');
+  const okRun = (now: string, write: string, after?: string) =>
+    out(
+      `${m.key} present`,
+      `${m.get} 200`,
+      `${m.now} ${now}`,
+      `${m.write} ${write}`,
+      ...(after === undefined ? [] : [`${m.after} ${after}`]),
+      m.complete,
+    );
+
+  it('reports applied only for a cap that read back as requested, with was → is and the route', () => {
+    const applied = classifyHubContextCapOutput(okRun('none', '200', '16384'), '', 16384);
+    expect(applied).toMatchObject({ outcome: 'applied', before: null, after: 16384, httpStatus: 200 });
+    expect(applied.why).toBe('context cap none → 16384 (PATCH /api/user-settings 200)');
+    const cleared = classifyHubContextCapOutput(okRun('65536', '200', 'none'), '', null);
+    expect(cleared).toMatchObject({ outcome: 'applied', before: 65536, after: null });
+    expect(cleared.why).toBe('context cap 65536 → none (PATCH /api/inference/preferences 200)');
+  });
+
+  it('is unchanged — nothing written, no app swept — when the cap already reads as requested', () => {
+    expect(classifyHubContextCapOutput(okRun('16384', 'skipped'), '', 16384)).toMatchObject({
+      outcome: 'unchanged',
+      why: 'context cap already 16384',
+    });
+    expect(classifyHubContextCapOutput(okRun('none', 'skipped'), '', null)).toMatchObject({
+      outcome: 'unchanged',
+      why: 'no context cap set; nothing to clear',
+    });
+  });
+
+  it('fails a non-2xx write with the code, and hints at the bounds on a 400', () => {
+    const bad = classifyHubContextCapOutput(okRun('none', '400'), '', 1024);
+    expect(bad.outcome).toBe('failed');
+    expect(bad.why).toContain('PATCH /api/user-settings answered HTTP 400');
+    expect(bad.why).toContain('2048 to 1048576');
+    expect(classifyHubContextCapOutput(okRun('65536', '500'), '', null).why).toBe('PATCH /api/inference/preferences answered HTTP 500');
+  });
+
+  it('does not trust a 200 the read-back contradicts — an older user-settings schema strips the key and answers 200', () => {
+    const stripped = classifyHubContextCapOutput(okRun('none', '200', 'none'), '', 16384);
+    expect(stripped.outcome).toBe('failed');
+    expect(stripped.why).toContain('reads back none, not 16384');
+    const unread = classifyHubContextCapOutput(okRun('none', '200'), '', 16384);
+    expect(unread.outcome).toBe('failed');
+    expect(unread.why).toContain('read-back');
+  });
+
+  it('names a Hub whose build predates the cap, and treats clearing one as nothing to do', () => {
+    const tooOld = classifyHubContextCapOutput(okRun('absent', 'skipped'), '', 16384);
+    expect(tooOld.outcome).toBe('failed');
+    expect(tooOld.why).toContain('predates the context cap');
+    expect(tooOld.why).toContain('cihub fleet update --hub');
+    expect(classifyHubContextCapOutput(okRun('absent', 'skipped'), '', null)).toMatchObject({ outcome: 'unchanged' });
+  });
+
+  it('tells no key, no Hub, a rejected key and an unclaimed Hub apart — they need different fixes', () => {
+    expect(classifyHubContextCapOutput(out(`${m.key} missing`, m.complete), '', 16384).why).toContain('no device key');
+    expect(classifyHubContextCapOutput(out(`${m.key} present`, `${m.get} 000`, m.complete), '', 16384).why).toContain('127.0.0.1:5002');
+    expect(classifyHubContextCapOutput(out(`${m.key} present`, `${m.get} 401`, m.complete), '', 16384).why).toContain('HTTP 401');
+    expect(classifyHubContextCapOutput(out(`${m.key} present`, `${m.get} 409`, m.complete), '', 16384).why).toContain('cihub claim');
+    // A run cut off before its marker is a failure with that reason, never a silent success.
+    expect(classifyHubContextCapOutput(out(`${m.key} present`, `${m.get} 200`), '', 16384).why).toContain('no completion marker');
+  });
+});
+
+describe.skipIf(!bash)('hubContextCapShell (sandboxed bash)', () => {
+  const sandboxes: string[] = [];
+  afterEach(() => {
+    for (const dir of sandboxes.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * A stub Hub: `curl` answers the two routes the script drives from a JSON file, and records every
+   * call. `docker` reports no container, so the key comes from the host data dir.
+   */
+  function sandbox(preferences: Record<string, unknown>) {
+    const root = mkdtempSync(path.join(tmpdir(), 'cihub-cap-'));
+    sandboxes.push(root);
+    const bin = path.join(root, 'bin');
+    const data = path.join(root, 'data', 'state');
+    mkdirSync(bin);
+    mkdirSync(data, { recursive: true });
+    writeFileSync(path.join(data, 'settings.json'), JSON.stringify({ ciHubApiKey: 'k-secret-123' }));
+    const state = path.join(root, 'hub.json');
+    const log = path.join(root, 'calls.log');
+    writeFileSync(state, JSON.stringify(preferences));
+    const stub = (name: string, body: string) => {
+      const p = path.join(bin, name);
+      writeFileSync(p, `#!/bin/sh\n${body}\n`);
+      chmodSync(p, 0o755);
+    };
+    stub('docker', 'exit 1');
+    stub(
+      'curl',
+      [
+        'out=""; method=GET; data=""; url=""',
+        'while [ $# -gt 0 ]; do case "$1" in',
+        '  -o) out="$2"; shift 2;; -X) method="$2"; shift 2;; -d) data="$2"; shift 2;;',
+        '  -w|--max-time|-H) shift 2;; -s) shift;; *) url="$1"; shift;;',
+        'esac; done',
+        `echo "$method $url $data" >> '${log}'`,
+        'case "$method $url" in',
+        `  "GET "*inference/preferences) cat '${state}' > "$out"; printf 200;;`,
+        // The Hub's user-settings route writes the key and answers with no body.
+        `  "PATCH "*user-settings) n=$(echo "$data" | sed -n 's/.*"inferenceMaxNumCtx":\\([0-9]*\\).*/\\1/p'); sed -i "s/\\"maxNumCtx\\":[^,}]*/\\"maxNumCtx\\":$n/" '${state}'; : > "$out"; printf 200;;`,
+        `  "PATCH "*inference/preferences) sed -i 's/"maxNumCtx":[^,}]*/"maxNumCtx":null/' '${state}'; cat '${state}' > "$out"; printf 200;;`,
+        '  *) printf 404;;',
+        'esac',
+      ].join('\n'),
+    );
+    const run = (cap: number | null) =>
+      spawnSync(bash as string, ['-c', hubContextCapShell(cap, path.join(root, 'data'))], {
+        env: { PATH: `${bin}:/usr/bin:/bin`, HOME: '/tmp' },
+        encoding: 'utf-8',
+      });
+    return {
+      run,
+      calls: () => readFileSync(log, 'utf-8').trim().split('\n'),
+      state: () => JSON.parse(readFileSync(state, 'utf-8')) as Record<string, unknown>,
+    };
+  }
+
+  it('sets, then skips the write on a second run; clears, then skips again — and never prints the key', () => {
+    const box = sandbox({ preferredBackend: 'ollama', preferredModel: null, maxNumCtx: null });
+
+    const first = box.run(16384);
+    expect(first.status).toBe(0);
+    expect(first.stdout).not.toContain('k-secret');
+    expect(classifyHubContextCapOutput(first.stdout, first.stderr, 16384)).toMatchObject({ outcome: 'applied', before: null, after: 16384 });
+    expect(box.state().maxNumCtx).toBe(16384);
+    expect(box.calls().filter((c) => c.startsWith('PATCH'))).toEqual(['PATCH http://127.0.0.1:5002/api/user-settings {"inferenceMaxNumCtx":16384}']);
+
+    const again = box.run(16384);
+    expect(classifyHubContextCapOutput(again.stdout, again.stderr, 16384)).toMatchObject({ outcome: 'unchanged' });
+    expect(box.calls().filter((c) => c.startsWith('PATCH'))).toHaveLength(1);
+
+    const cleared = box.run(null);
+    expect(classifyHubContextCapOutput(cleared.stdout, cleared.stderr, null)).toMatchObject({ outcome: 'applied', before: 16384, after: null });
+    expect(box.calls().filter((c) => c.startsWith('PATCH'))[1]).toBe(
+      'PATCH http://127.0.0.1:5002/api/inference/preferences {"backend":"ollama","maxNumCtx":null}',
+    );
+
+    const clearedAgain = box.run(null);
+    expect(classifyHubContextCapOutput(clearedAgain.stdout, clearedAgain.stderr, null)).toMatchObject({ outcome: 'unchanged' });
+    expect(box.calls().filter((c) => c.startsWith('PATCH'))).toHaveLength(2);
+  });
+
+  it('sends the stored backend back on a clear, and Ollama when none is stored', () => {
+    const vllm = sandbox({ preferredBackend: 'vllm', maxNumCtx: 32768 });
+    vllm.run(null);
+    expect(vllm.calls().filter((c) => c.startsWith('PATCH'))[0]).toContain('{"backend":"vllm","maxNumCtx":null}');
+    const none = sandbox({ preferredBackend: null, maxNumCtx: 32768 });
+    none.run(null);
+    expect(none.calls().filter((c) => c.startsWith('PATCH'))[0]).toContain('{"backend":"ollama","maxNumCtx":null}');
+  });
+
+  it('fails a Hub whose preferences carry no maxNumCtx before writing anything', () => {
+    const old = sandbox({ preferredBackend: 'ollama', preferredModel: null });
+    const result = old.run(16384);
+    expect(classifyHubContextCapOutput(result.stdout, result.stderr, 16384).why).toContain('predates the context cap');
+    expect(old.calls().filter((c) => c.startsWith('PATCH'))).toHaveLength(0);
   });
 });

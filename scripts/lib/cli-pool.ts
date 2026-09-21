@@ -12,7 +12,9 @@ import {
   deletePoolPin,
   fetchPoolPeers,
   fetchPoolRoutingLog,
+  fetchInferencePreferences,
   fetchPoolStatus,
+  formatContextCapResultLines,
   formatPoolPeersLines,
   formatPoolProbeLines,
   formatPairingPinCancelledLines,
@@ -26,11 +28,13 @@ import {
   rejectPoolPeer,
   resolvePoolPeerTarget,
   runPoolDiscover,
+  setInferenceContextCap,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
   setPoolPeerEnabled,
   setPoolPin,
   unpairPoolPeer,
+  type InferencePreferencesResponse,
   type PoolEnableAxis,
 } from '../hub-pool-cli.js';
 import { readRunningImageIdentity, runPoolDoctorSection } from '../pool-diagnostics-cli.js';
@@ -69,6 +73,7 @@ export const POOL_SUBCOMMANDS = [
   'pin',
   'unpin',
   'ceiling',
+  'context-cap',
   // Four places in this repo and two in docs/CLI.md already tell the operator to run
   // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
   'pairing-pin',
@@ -88,6 +93,7 @@ const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = [
   'pin',
   // The token count (or `clear`) sits where a peer reference would, so `ceiling 16000 dev` reads the env.
   'ceiling',
+  'context-cap',
 ];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
@@ -244,6 +250,24 @@ export function parsePromptCeilingArg(raw: string | undefined): number | null | 
   if (!/^\d+$/.test(value)) return undefined;
   const tokens = Number(value);
   return tokens >= MIN_PROMPT_CEILING && tokens <= MAX_PROMPT_CEILING ? tokens : undefined;
+}
+
+/** Matches `MIN_INFERENCE_MAX_NUM_CTX` / `MAX_INFERENCE_MAX_NUM_CTX` on the backend (`inference-context-cap.ts`). */
+const MIN_CONTEXT_CAP = 2048;
+const MAX_CONTEXT_CAP = 1_048_576;
+
+/**
+ * `clear` → `null`; a plain integer within the backend's bounds → that number; anything else →
+ * `undefined`, which the caller turns into a usage error. Digits only, for the reason the ceiling
+ * gives: `16k` is 16000 to one operator and 16384 to the next, and this number is compared against
+ * `OLLAMA_CONTEXT_LENGTH`, which is exact. The floor is the Hub's: below 2048 no agent turn fits.
+ */
+export function parseContextCapArg(raw: string | undefined): number | null | undefined {
+  const value = raw?.trim() ?? '';
+  if (value.toLowerCase() === 'clear') return null;
+  if (!/^\d+$/.test(value)) return undefined;
+  const tokens = Number(value);
+  return tokens >= MIN_CONTEXT_CAP && tokens <= MAX_CONTEXT_CAP ? tokens : undefined;
 }
 
 /** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
@@ -468,6 +492,11 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'ceiling') {
       await runPoolCeilingCommand(ctx, parsed);
+      return;
+    }
+
+    if (parsed.subcommand === 'context-cap') {
+      await runPoolContextCapCommand(ctx, parsed);
       return;
     }
 
@@ -769,6 +798,56 @@ async function runPoolCeilingCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
   const status = await fetchPoolStatus(envFile).catch(() => null);
   const result = formatPromptCeilingResultLines(requested, settings, status);
   printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+}
+
+/**
+ * `cihub pool context-cap <tokens>|clear` — the largest `num_ctx` this node's Hub hands its apps, to
+ * be set to the context the engine runs (`OLLAMA_CONTEXT_LENGTH`) so no app asks for a window that
+ * reloads the model. See `docs/hub-pool.md` → Context caps for the 25 GB → 44 GB reload behind it.
+ *
+ * Confirmed like the ceiling — a state change, and one that restarts the AI apps whose env it
+ * changes. Preferences are read BEFORE the write, because the write route needs the stored backend
+ * and because a cap that already reads as requested is not worth an app sweep; and read AFTER it, so
+ * the box reports the cap in force rather than the one requested. A Hub whose preferences carry no
+ * `maxNumCtx` predates the cap and is told so without a write: its schema would strip the field and
+ * answer 200 having stored nothing.
+ */
+async function runPoolContextCapCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const requested = parseContextCapArg(parsed.target);
+  if (requested === undefined) {
+    usageAndExit(
+      `Usage: ${BASE_COMMAND} pool context-cap <tokens>|clear [env] [--yes] — tokens is a whole number from ${MIN_CONTEXT_CAP} to ${MAX_CONTEXT_CAP}, e.g. 16384 (the node's OLLAMA_CONTEXT_LENGTH)`,
+    );
+  }
+
+  const describe = requested === null ? 'Clear the context cap' : `Cap the context handout at ${requested} tokens`;
+  const confirmed = await confirmDestructiveAction(
+    `${describe} on this node`,
+    parsed.yes,
+    `${describe} on this node (AI apps whose env changes will restart)? [y/N]: `,
+    'a state change',
+  );
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left the context cap untouched.'], 'yellow');
+    return;
+  }
+
+  const before = await fetchInferencePreferences(envFile);
+  const supported = 'maxNumCtx' in before;
+  const alreadyInForce = supported && (before.maxNumCtx ?? null) === requested;
+  const written = supported && !alreadyInForce;
+  let after: InferencePreferencesResponse | null = null;
+  if (written) {
+    // An absent preference resolves to Ollama on the Hub already, so sending it back changes nothing.
+    const patched = await setInferenceContextCap(envFile, before.preferredBackend ?? 'ollama', requested);
+    // Best-effort: the PATCH already answered with the stored preferences; a read-back that fails
+    // falls back to that answer rather than reporting a write that did happen as unknown.
+    after = await fetchInferencePreferences(envFile).catch(() => patched);
+  }
+  const result = formatContextCapResultLines(requested, before, after, written);
+  printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+  if (result.tone === 'red') process.exitCode = 1;
 }
 
 async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
