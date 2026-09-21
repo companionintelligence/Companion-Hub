@@ -199,6 +199,45 @@ export const hubIntegrationSchema = z
       })
       .optional(),
     /**
+     * Opt-in readiness endpoint the Hub probes while the app is running (CI-Hub#1556).
+     *
+     * App status stays what Docker says; this is a second axis — an agent whose process is
+     * up but whose state DB, session store, or model endpoint is broken is `running` with a
+     * green badge and the only signal is in the container log. Declared the way
+     * `memory.provider` is: a compose service the Hub can reach by DNS name on the shared
+     * network, a port, and a path. `bearer_env` names a variable from the app's generated
+     * env (the Hub wrote it, so it holds the value; the manifest never does). Absent → no
+     * probe, nothing changes.
+     *
+     * Example (ci-hermes):
+     * ```json
+     * "hub_integration": {
+     *   "readiness": { "service": "ci-hermes-gateway", "port": 8642, "path": "/health/detailed", "bearer_env": "APP_SEED" }
+     * }
+     * ```
+     */
+    readiness: z
+      .object({
+        /** Compose service name the endpoint listens on; must be on the Hub's main network. */
+        service: z.string().min(1),
+        port: z.number().int().min(1).max(65535),
+        /**
+         * Absolute path of the endpoint. No whitespace: it is interpolated verbatim into the
+         * probe URL, and a bare `/health` is what most apps expose unauthenticated.
+         */
+        path: z
+          .string()
+          .regex(/^\/\S*$/, 'path must be an absolute path without whitespace')
+          .default('/health'),
+        /** Env var whose value is sent as `Authorization: Bearer` (must be a valid env name). */
+        bearer_env: z
+          .string()
+          .min(1)
+          .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'bearer_env must be a valid environment variable name')
+          .optional(),
+      })
+      .optional(),
+    /**
      * Edge-auth posture the app ships with (CI-Engineering#74).
      *
      * `default: true` asks the Hub to default the install/expose "Require Auth" toggle ON for

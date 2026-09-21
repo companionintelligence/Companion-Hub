@@ -10,6 +10,8 @@ import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { HostTelemetryService } from '@/modules/system/host-telemetry.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
 import { GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
+import { AppFilesManager } from '../app-files-manager';
+import { EnvUtils } from '@/modules/env/env.utils';
 import si from 'systeminformation';
 
 vi.mock('systeminformation');
@@ -23,6 +25,8 @@ describe('AppRuntimeMonitorService', () => {
   let dockerReadFacade: MockProxy<DockerReadFacade>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
   let gpuSampler: MockProxy<GpuProcessSamplerService>;
+  let appFilesManager: MockProxy<AppFilesManager>;
+  let envUtils: MockProxy<EnvUtils>;
   let service: AppRuntimeMonitorService;
 
   beforeEach(() => {
@@ -34,6 +38,11 @@ describe('AppRuntimeMonitorService', () => {
     dockerReadFacade = mock<DockerReadFacade>();
     hardwareInspector = mock<HardwareInspectorService>();
     gpuSampler = mock<GpuProcessSamplerService>();
+    appFilesManager = mock<AppFilesManager>();
+    envUtils = mock<EnvUtils>();
+    // No manifest on disk, so no readiness endpoint: every test that predates the probe must
+    // never see a fetch. The readiness block below declares one explicitly.
+    appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
 
     config.get.mockImplementation((key: string) => {
       if (key === 'userSettings') {
@@ -59,7 +68,17 @@ describe('AppRuntimeMonitorService', () => {
     hardwareInspector.getProfile.mockResolvedValue({} as any);
     gpuSampler.observeVramByProcess.mockResolvedValue({ samples: [], source: null });
 
-    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade, hardwareInspector, gpuSampler);
+    service = new AppRuntimeMonitorService(
+      logger,
+      config,
+      appsRepository,
+      appsService,
+      dockerReadFacade,
+      hardwareInspector,
+      gpuSampler,
+      appFilesManager,
+      envUtils,
+    );
   });
 
   afterEach(() => {
@@ -508,7 +527,18 @@ describe('AppRuntimeMonitorService', () => {
     dockerReadFacade.getHubRuntimeStats.mockResolvedValue([]);
     (si.processes as any).mockResolvedValue({ list: [] });
 
-    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade, hardwareInspector, gpuSampler, telemetry);
+    service = new AppRuntimeMonitorService(
+      logger,
+      config,
+      appsRepository,
+      appsService,
+      dockerReadFacade,
+      hardwareInspector,
+      gpuSampler,
+      appFilesManager,
+      envUtils,
+      telemetry,
+    );
     const snapshot = await service.getRuntimeMonitorSnapshot();
 
     expect(snapshot.history[0]).toMatchObject({
@@ -617,6 +647,176 @@ describe('AppRuntimeMonitorService', () => {
       expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ cpuPercent: 5, gpuVramMb: null });
       expect(snapshot.gpuVramSource).toBe('absent');
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('GPU VRAM attribution failed'));
+    });
+  });
+  describe('readiness probe (hub_integration.readiness, CI-Hub#1556)', () => {
+    const descriptor = { service: 'ci-hermes-gateway', port: 8642, path: '/health/detailed', bearer_env: 'APP_SEED' };
+    const runningContainer = {
+      containerId: 'abc',
+      name: 'svc',
+      state: 'running',
+      status: 'Up',
+      health: 'healthy',
+      exitCode: null,
+      cpuPercent: 3,
+      memoryUsageBytes: 100,
+      memoryLimitBytes: 1000,
+    };
+
+    function installedApp(status = 'running') {
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        appName: 'ci-hermes',
+        appStoreSlug: 'ci-marketplace',
+        status,
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any);
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([runningContainer]);
+    }
+
+    beforeEach(() => {
+      installedApp();
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ hub_integration: { readiness: descriptor } } as any);
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'APP_SEED=s3cr3t-seed\nOTHER=x\n' });
+      envUtils.envStringToMap.mockImplementation((content: string) => {
+        const map = new Map<string, string>();
+        for (const line of content.split('\n')) {
+          const [key, ...rest] = line.split('=');
+          if (key && rest.length) map.set(key, rest.join('='));
+        }
+        return map;
+      });
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        Response.json({
+          status: 'degraded',
+          readiness: { status: 'degraded', checks: { model: { status: 'degraded' }, config: { status: 'ok', detail: 'using defaults' } } },
+          gateway_busy: false,
+          gateway_drainable: true,
+        }),
+      );
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('dials http://<service>:<port><path> with the bearer from the app env, and never logs it', async () => {
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://ci-hermes-gateway:8642/health/detailed');
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer s3cr3t-seed');
+      expect(init.signal).toBeInstanceOf(AbortSignal);
+
+      expect(result.readiness).toEqual({
+        status: 'degraded',
+        checks: { model: { status: 'degraded' }, config: { status: 'ok', detail: 'using defaults' } },
+        busy: false,
+        drainable: true,
+        sampledAt: result.sampledAt,
+      });
+      // Docker-derived health is untouched: readiness is a second axis, never an input to `degraded`.
+      expect(result.degraded).toBe(false);
+      expect(result.responsive).toBe(true);
+
+      const logged = [logger.debug, logger.info, logger.warn, logger.error].flatMap((fn) => fn.mock.calls.flat().map(String));
+      expect(logged.some((line) => line.includes('s3cr3t-seed'))).toBe(false);
+    });
+
+    it('reports null, and does not fetch, when the app declares no readiness endpoint', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ hub_integration: { mcp_client: true } } as any);
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(result.readiness).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('reports null, and does not fetch, when the app is not running', async () => {
+      installedApp('stopped');
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([]);
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(result.readiness).toBeNull();
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('probes without a bearer when the manifest names none', async () => {
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        hub_integration: { readiness: { service: 'app', port: 8080, path: '/health' } },
+      } as any);
+      vi.mocked(fetch).mockResolvedValue(Response.json({ status: 'ok' }));
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://app:8080/health');
+      expect(init.headers).not.toHaveProperty('Authorization');
+      expect(appFilesManager.getAppEnv).not.toHaveBeenCalled();
+      expect(result.readiness).toMatchObject({ status: 'ok', checks: {} });
+    });
+
+    it('is unknown, never degraded, when the probe times out or throws', async () => {
+      vi.mocked(fetch).mockRejectedValue(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(result.readiness).toMatchObject({ status: 'unknown', checks: {}, busy: null, drainable: null });
+      expect(result.degraded).toBe(false);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('is unknown when the endpoint answers non-2xx (a 401 on a missing bearer, say)', async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response('unauthorized', { status: 401 }));
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(result.readiness).toMatchObject({ status: 'unknown' });
+    });
+
+    it('is unknown when the body is not JSON', async () => {
+      vi.mocked(fetch).mockResolvedValue(new Response('<html>not json</html>', { status: 200 }));
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(result.readiness).toMatchObject({ status: 'unknown' });
+    });
+
+    it("keeps an unreadable app env inside this app's own sample rather than failing the probe path", async () => {
+      appFilesManager.getAppEnv.mockRejectedValue(new Error('EACCES'));
+
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(result.readiness).toMatchObject({ status: 'unknown' });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+    it('carries readiness on the monitor snapshot and leaves the Hub entity null', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { id: 1, appName: 'ci-hermes', appStoreSlug: 'ci-marketplace', status: 'running', config: {}, updatedAt: new Date().toISOString() },
+      ] as any);
+      dockerReadFacade.getHubRuntimeStats.mockResolvedValue([
+        {
+          containerId: 'hub',
+          name: 'ci-hub',
+          state: 'running',
+          status: 'Up',
+          health: null,
+          exitCode: null,
+          cpuPercent: 1,
+          memoryUsageBytes: 1,
+          memoryLimitBytes: 1,
+        },
+      ]);
+      process.env.HOSTNAME = 'hub';
+
+      const snapshot = await service.getRuntimeMonitorSnapshot();
+
+      expect(snapshot.apps.find((app) => app.appUrn === 'ci-hermes:ci-marketplace')?.readiness).toMatchObject({ status: 'degraded' });
+      expect(snapshot.apps.find((app) => app.appUrn === 'ci-hub:system')?.readiness).toBeNull();
     });
   });
 });

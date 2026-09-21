@@ -31,6 +31,7 @@ const completedJobSnapshot = {
     },
   ],
   gpuVramMb: null,
+  readiness: null,
 };
 
 describe('runtime health DTOs', () => {
@@ -50,6 +51,18 @@ describe('runtime health DTOs', () => {
     });
 
     expect(parsed.apps[0]?.containers[0]?.exitCode).toBe(0);
+  });
+
+  it('carries a normalised readiness sample and refuses a status this build does not know', () => {
+    const readiness = {
+      status: 'degraded',
+      checks: { model: { status: 'degraded' }, config: { status: 'ok', detail: 'using defaults' } },
+      busy: false,
+      drainable: true,
+      sampledAt: completedJobSnapshot.sampledAt,
+    };
+    expect(AppRuntimeHealthDto.parse({ ...completedJobSnapshot, readiness }).readiness).toEqual(readiness);
+    expect(() => AppRuntimeHealthDto.parse({ ...completedJobSnapshot, readiness: { ...readiness, status: 'starting' } })).toThrow();
   });
 
   it('carries the GPU sample source as an enum, with absent distinct from the empty-snapshot null', () => {

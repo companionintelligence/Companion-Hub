@@ -5,8 +5,11 @@ import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, Optional 
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
+import { AppFilesManager } from './app-files-manager';
+import { type AppReadiness, normalizeReadinessBody, unknownReadiness } from './app-readiness.helpers';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
+import { EnvUtils } from '../env/env.utils';
 import { DockerReadFacade, type AppContainerRuntimeStats } from '../docker/docker-read.facade';
 import { HostTelemetryService } from '../system/host-telemetry.service';
 import type { PoolContainerRollup, PoolContainerSampler } from '@/common/helpers/hub-pool';
@@ -22,6 +25,11 @@ const SNAPSHOT_COLLECTION_DEADLINE_MS = 30_000;
 const PROCESS_SCAN_TIMEOUT_MS = 3_000;
 const STOPPING_GRACE_MS = 30_000;
 const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
+/**
+ * Upstream Hermes's own dashboard probe uses 1 s, and the first authenticated call on a cold
+ * gateway can exceed it; 2 s tolerates that without letting one slow app hold the tick.
+ */
+const READINESS_PROBE_TIMEOUT_MS = 2_000;
 /**
  * How old the last successful sample may be and still be published to pool peers.
  *
@@ -80,6 +88,14 @@ export type AppRuntimeHealth = {
    * `workload-coverage.tsx`.
    */
   gpuVramMb: number | null;
+  /**
+   * What the app's own readiness endpoint said this sample (`hub_integration.readiness`,
+   * CI-Hub#1556): per-subsystem checks the Hub has no other view of, such as whether the model
+   * endpoint it handed out is reachable from inside the agent. `null` when the app declares no
+   * endpoint, or is not `running` so nothing was probed — the badge is hidden, not "unknown".
+   * A probe that ran but produced nothing readable is `status: 'unknown'`, never `degraded`.
+   */
+  readiness: AppReadiness | null;
 };
 
 export type AppRuntimeHistoryPoint = {
@@ -147,6 +163,8 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     private readonly dockerReadFacade: DockerReadFacade,
     private readonly hardwareInspector: HardwareInspectorService,
     private readonly gpuSampler: GpuProcessSamplerService,
+    private readonly appFilesManager: AppFilesManager,
+    private readonly envUtils: EnvUtils,
     @Optional() private readonly telemetry?: HostTelemetryService,
   ) {}
 
@@ -455,6 +473,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         // attribution needs the full entity list (to match container names) and so can only run
         // once, after every entity already exists.
         gpuVramMb: null,
+        readiness: null,
       };
     } catch (error) {
       // Records that this collection did NOT reach Docker. Without it the empty result below is
@@ -567,6 +586,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       recentSamples.slice(-HIGH_CPU_SAMPLE_COUNT).every((sample) => sample.cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT);
     const degraded = sustainedHighCpu && !responsive;
 
+    // Only a running app is asked: a stopped or restarting one has nothing to say about its
+    // subsystems, and an `unknown` badge on it would read as a fault.
+    const readiness = app.status === 'running' ? await this.probeReadiness(appUrn, sampledAt) : null;
+
     const appCpuLimit = typeof app.config?.cpuLimit === 'string' && app.config.cpuLimit.trim() ? app.config.cpuLimit.trim() : null;
     const defaultCpuLimit =
       typeof (this.config.get('userSettings') as Record<string, unknown>).defaultAppCpuLimit === 'string'
@@ -592,7 +615,55 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       containers,
       // See the identical comment in `collectHubRuntimeHealth` — filled in by `attributeGpuVram`.
       gpuVramMb: null,
+      readiness,
     };
+  }
+
+  /**
+   * Dials the app's declared readiness endpoint the way `agent-notify.service.ts` dials its
+   * wake hook: `http://<compose service>:<port><path>` on the shared network, with the bearer
+   * read from the app's generated env when the manifest names one. `null` when the app declares
+   * no endpoint; `unknown` for every way the probe can fail (see `AppReadiness.status`).
+   *
+   * The bearer is the app's own API key (`APP_SEED` for Hermes). It goes into the header and
+   * nowhere else: no log line here carries the URL's response body, the header, or the env.
+   */
+  private async probeReadiness(appUrn: AppUrn, sampledAt: string): Promise<AppReadiness | null> {
+    // Never throws: an unreadable manifest is `null` from `getInstalledAppInfo`, and no endpoint.
+    const descriptor = (await this.appFilesManager.getInstalledAppInfo(appUrn))?.hub_integration?.readiness;
+    if (!descriptor) {
+      return null;
+    }
+
+    const url = `http://${descriptor.service}:${descriptor.port}${descriptor.path}`;
+    try {
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (descriptor.bearer_env) {
+        const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+        const bearer = this.envUtils.envStringToMap(appEnv.content).get(descriptor.bearer_env);
+        if (bearer) {
+          headers.Authorization = `Bearer ${bearer}`;
+        } else {
+          // Still worth asking: the endpoint may answer unauthenticated, and a 401 reads as
+          // `unknown` below either way.
+          this.logger.debug(`Readiness probe for ${appUrn}: ${descriptor.bearer_env} is not in the app env; probing without a bearer`);
+        }
+      }
+
+      const response = await fetch(url, { headers, signal: AbortSignal.timeout(READINESS_PROBE_TIMEOUT_MS) });
+      if (!response.ok) {
+        this.logger.debug(`Readiness probe for ${appUrn} returned ${response.status} from ${url}`);
+        return unknownReadiness(sampledAt);
+      }
+      return normalizeReadinessBody(await response.json(), sampledAt);
+    } catch (error) {
+      // Everything from an unreadable app env to a timeout or a non-JSON body lands here, and
+      // stays inside this one app's sample: a throw would fail the whole tick's `Promise.all`.
+      // Debug, not warn: this runs every tick and every detail-page poll, and a gateway that is
+      // down for a while must not fill the log. The badge says `unknown`; that is the signal.
+      this.logger.debug(`Readiness probe for ${appUrn} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return unknownReadiness(sampledAt);
+    }
   }
 
   private async hydrateHistoryFromDatabase() {
@@ -622,6 +693,18 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         .map((app) => `${app.appName} ${app.cpuPercent.toFixed(1)}% CPU`)
         .join(', ');
       this.logger.info(`[AppMonitor] CPU summary: ${topSummary}`);
+
+      // Once a tick, by check name only: the names are the app's subsystem vocabulary, while a
+      // check's `detail` is free text the app chose and belongs on the page, not in the log.
+      for (const app of activeApps) {
+        if (app.readiness?.status !== 'degraded') {
+          continue;
+        }
+        const failing = Object.entries(app.readiness.checks)
+          .filter(([, check]) => check.status !== 'ok')
+          .map(([name]) => name);
+        this.logger.warn(`[AppMonitor] ${app.appName} (${app.appUrn}) reports readiness degraded: ${failing.join(', ') || 'no failing check named'}`);
+      }
 
       const degradedApps = activeApps.filter((app) => app.degraded);
       for (const degradedApp of degradedApps) {

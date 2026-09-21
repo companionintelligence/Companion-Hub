@@ -64,6 +64,7 @@ const app: AppRuntimeHealth = {
   sampledAt: '2026-09-10T02:31:00Z',
   containers: [],
   gpuVramMb: null,
+  readiness: null,
 };
 
 describe('column drops', () => {
