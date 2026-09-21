@@ -12,8 +12,10 @@
 #   ~/.local/share/companion-hub/state. The file lands in STATE_DIR/hardware/.
 #
 # Runs in well under a second; install it on a timer (see cihub-gpu-processes.timer beside this file,
-# 15 s cadence). Exit 0 with no file written when neither vendor tool answers — the Hub then reads
-# "unmeasured", which is the truthful state, not "0".
+# 15 s cadence). Exit 0 with no file written when neither vendor tool is installed — the Hub then
+# reads "unmeasured", which is the truthful state, not "0". Exit 1 when a tool IS installed and its
+# query failed, so the unit shows as failed in `systemctl --user list-timers` and the journal instead
+# of the only symptom being a file that quietly went stale a minute later.
 set -euo pipefail
 
 state_dir="${1:-${CI_HUB_STATE_PATH:-${ROOT_FOLDER_HOST:+$ROOT_FOLDER_HOST/state}}}"
@@ -30,7 +32,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   # `noheader,nounits` is load-bearing: with units the memory column reads "6104 MiB".
   # Output per line: "<pid>, <process_name>, <used_memory>" — process_name is a full path or the
   # process title, never containing a comma in practice; a row that does not parse is dropped.
-  if raw="$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null)"; then
+  if raw="$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>&1)"; then
     vendor=nvidia
     source=nvidia-smi
     rows="$(printf '%s\n' "$raw" | awk -F', *' '
@@ -38,11 +40,14 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         name = $2; gsub(/\\/, "\\\\", name); gsub(/"/, "\\\"", name)
         printf "%s{\"pid\":%d,\"processName\":\"%s\",\"vramMb\":%d}", (n++ ? "," : ""), $1, name, $3
       }')"
+  else
+    echo "nvidia-smi is installed but failed: ${raw:-no output}" >&2
+    exit 1
   fi
 elif command -v rocm-smi >/dev/null 2>&1; then
   # The plain-text KFD table: PID, PROCESS NAME, GPU(s), VRAM USED (bytes), SDMA USED, CU OCCUPANCY.
   # Header and banner rows fail the numeric-PID test; a process holding no VRAM is dropped.
-  if raw="$(rocm-smi --showpids 2>/dev/null)"; then
+  if raw="$(rocm-smi --showpids 2>&1)"; then
     vendor=amd
     source=rocm-smi
     rows="$(printf '%s\n' "$raw" | awk '
@@ -50,6 +55,9 @@ elif command -v rocm-smi >/dev/null 2>&1; then
         name = $2; gsub(/\\/, "\\\\", name); gsub(/"/, "\\\"", name)
         printf "%s{\"pid\":%d,\"processName\":\"%s\",\"vramMb\":%d}", (n++ ? "," : ""), $1, name, int($4 / 1048576 + 0.5)
       }')"
+  else
+    echo "rocm-smi is installed but failed: ${raw:-no output}" >&2
+    exit 1
   fi
 fi
 

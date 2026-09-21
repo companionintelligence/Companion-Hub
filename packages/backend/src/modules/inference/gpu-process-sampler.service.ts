@@ -154,12 +154,15 @@ export function samplesFromHostGpuProcessesFile(file: HostGpuProcessesFile, now:
     return null;
   }
   const sampledAt = Date.parse(file.sampledAt);
-  if (!Number.isFinite(sampledAt) || now - sampledAt > HOST_GPU_PROCESSES_FILE_MAX_AGE_MS) {
+  // Symmetric, as gpu-pressure-sources.ts is: a writer whose clock runs ahead of ours would otherwise
+  // be believed for the skew plus the max age after it died, which is the failure this window exists
+  // to bound.
+  if (!Number.isFinite(sampledAt) || Math.abs(now - sampledAt) > HOST_GPU_PROCESSES_FILE_MAX_AGE_MS) {
     return null;
   }
   return file.processes
-    .filter((row) => Number.isFinite(row.pid) && row.pid > 0 && row.processName.trim().length > 0 && Number.isFinite(row.vramMb) && row.vramMb > 0)
-    .map((row) => ({ pid: Math.trunc(row.pid), processName: row.processName.trim(), vramMb: Math.round(row.vramMb) }));
+    .filter((row) => Number.isInteger(row.pid) && row.pid > 0 && row.processName.trim().length > 0 && Number.isFinite(row.vramMb) && row.vramMb > 0)
+    .map((row) => ({ pid: row.pid, processName: row.processName.trim(), vramMb: Math.round(row.vramMb) }));
 }
 
 /**

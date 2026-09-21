@@ -103,6 +103,11 @@ describe('samplesFromHostGpuProcessesFile', () => {
     expect(samplesFromHostGpuProcessesFile(BETA_RED_HOST_FILE, WRITTEN_AT + HOST_GPU_PROCESSES_FILE_MAX_AGE_MS)).not.toBeNull();
   });
 
+  it('ignores a file from the future the same way: a fast writer clock must not be believed past the window', () => {
+    expect(samplesFromHostGpuProcessesFile(BETA_RED_HOST_FILE, WRITTEN_AT - HOST_GPU_PROCESSES_FILE_MAX_AGE_MS - 1)).toBeNull();
+    expect(samplesFromHostGpuProcessesFile(BETA_RED_HOST_FILE, WRITTEN_AT - HOST_GPU_PROCESSES_FILE_MAX_AGE_MS)).not.toBeNull();
+  });
+
   it('ignores a schema it does not understand rather than guessing at the columns', () => {
     expect(samplesFromHostGpuProcessesFile({ ...BETA_RED_HOST_FILE, schemaVersion: 2 }, WRITTEN_AT)).toBeNull();
   });
@@ -118,6 +123,7 @@ describe('samplesFromHostGpuProcessesFile', () => {
         { pid: 6566, processName: 'vllm', vramMb: 0 },
         { pid: 0, processName: 'ghost', vramMb: 100 },
         { pid: 12, processName: '   ', vramMb: 100 },
+        { pid: 12.5, processName: 'half-a-pid', vramMb: 100 },
       ],
     };
     expect(samplesFromHostGpuProcessesFile(file, WRITTEN_AT)).toEqual([]);
