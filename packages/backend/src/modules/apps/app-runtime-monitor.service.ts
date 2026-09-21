@@ -2,6 +2,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
@@ -149,6 +150,8 @@ const HUB_RUNTIME_URN = 'ci-hub:system';
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, PoolContainerSampler {
   private readonly samples = new Map<string, RuntimeSample[]>();
   private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
+  /** Apps already warned about a readiness `service` their compose does not declare — once, not every tick. */
+  private readonly readinessServiceWarned = new Set<string>();
   private readonly history: AppRuntimeHistorySample[] = [];
   private intervalHandle: NodeJS.Timeout | null = null;
   private latestSnapshot: AppRuntimeMonitorSnapshot | null = null;
@@ -627,6 +630,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    *
    * The bearer is the app's own API key (`APP_SEED` for Hermes). It goes into the header and
    * nowhere else: no log line here carries the URL's response body, the header, or the env.
+   * And it only ever goes to the app's own containers: `service` is checked against the app's
+   * installed compose before anything is dialled, because marketplace manifests are not all
+   * first-party and a bare hostname here would otherwise hand this app's key to whatever it
+   * named — another app on the shared network, `host.docker.internal`, or the internet.
    */
   private async probeReadiness(appUrn: AppUrn, sampledAt: string): Promise<AppReadiness | null> {
     // Never throws: an unreadable manifest is `null` from `getInstalledAppInfo`, and no endpoint.
@@ -635,8 +642,20 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       return null;
     }
 
-    const url = `http://${descriptor.service}:${descriptor.port}${descriptor.path}`;
     try {
+      if (!(await this.isOwnComposeService(appUrn, descriptor.service))) {
+        if (!this.readinessServiceWarned.has(appUrn)) {
+          this.readinessServiceWarned.add(appUrn);
+          this.logger.warn(
+            `Readiness probe for ${appUrn} skipped: "${descriptor.service}" is not a service in this app's docker-compose.json, so it will not be dialled`,
+          );
+        }
+        return unknownReadiness(sampledAt);
+      }
+      // A later reinstall or edit may break it again; warn again then.
+      this.readinessServiceWarned.delete(appUrn);
+
+      const url = `http://${descriptor.service}:${descriptor.port}${descriptor.path}`;
       const headers: Record<string, string> = { Accept: 'application/json' };
       if (descriptor.bearer_env) {
         const appEnv = await this.appFilesManager.getAppEnv(appUrn);
@@ -657,13 +676,29 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       }
       return normalizeReadinessBody(await response.json(), sampledAt);
     } catch (error) {
-      // Everything from an unreadable app env to a timeout or a non-JSON body lands here, and
-      // stays inside this one app's sample: a throw would fail the whole tick's `Promise.all`.
+      // Everything from an unparseable compose or app env to a timeout or a non-JSON body lands
+      // here, and stays inside this one app's sample: a throw would fail the whole tick's
+      // `Promise.all`. An unreadable compose in particular means "not proven to be this app's
+      // service", which is the no-fetch branch above, not a reason to dial anyway.
       // Debug, not warn: this runs every tick and every detail-page poll, and a gateway that is
       // down for a while must not fill the log. The badge says `unknown`; that is the signal.
       this.logger.debug(`Readiness probe for ${appUrn} failed: ${error instanceof Error ? error.message : String(error)}`);
       return unknownReadiness(sampledAt);
     }
+  }
+
+  /**
+   * Whether `service` is one of the services in this app's installed docker-compose.json — the
+   * same compose `agent-notify.service.ts` reads to find the main service. Missing or malformed
+   * compose is `false` (or a throw the caller treats as `false`): the check exists to prove the
+   * target is this app's own container, and "could not read the compose" is not that proof.
+   */
+  private async isOwnComposeService(appUrn: AppUrn, service: string): Promise<boolean> {
+    const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
+    if (!composeJson.content) {
+      return false;
+    }
+    return parseComposeJson(composeJson.content).services.some((entry) => entry.name === service);
   }
 
   private async hydrateHistoryFromDatabase() {

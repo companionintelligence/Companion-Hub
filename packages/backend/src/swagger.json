@@ -9327,7 +9327,7 @@
                           "properties": {
                             "service": {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
                             },
                             "port": {
                               "type": "integer",
@@ -10601,7 +10601,7 @@
                           "properties": {
                             "service": {
                               "type": "string",
-                              "minLength": 1
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
                             },
                             "port": {
                               "type": "integer",
@@ -12100,7 +12100,7 @@
                     "properties": {
                       "service": {
                         "type": "string",
-                        "minLength": 1
+                        "pattern": "^[a-z0-9][a-z0-9_-]*$"
                       },
                       "port": {
                         "type": "integer",

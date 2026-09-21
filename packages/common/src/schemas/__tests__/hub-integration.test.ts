@@ -267,6 +267,17 @@ describe('hubIntegrationSchema', () => {
       expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 80.5 } }).success).toBe(false);
     });
 
+    it('should reject a service that is a hostname or an authority rather than a compose service name', () => {
+      // The bearer is sent to whatever `service` names, so only a shape that can be one of the
+      // app's own compose services is allowed; the monitor then checks it against the compose.
+      for (const service of ['evil.example.com', 'host.docker.internal', 'ci-memory:8642', 'Gateway', '-gateway', 'gate way', 'a/b', 'gateway.']) {
+        expect(hubIntegrationSchema.safeParse({ readiness: { service, port: 8642 } }).success).toBe(false);
+      }
+      for (const service of ['ci-hermes-gateway', 'gateway', 'db_1', '0api']) {
+        expect(hubIntegrationSchema.safeParse({ readiness: { service, port: 8642 } }).success).toBe(true);
+      }
+    });
+
     it('should reject a relative path or one containing whitespace (it is interpolated into the probe URL)', () => {
       expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, path: 'health' } }).success).toBe(false);
       expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, path: '/health detailed' } }).success).toBe(false);

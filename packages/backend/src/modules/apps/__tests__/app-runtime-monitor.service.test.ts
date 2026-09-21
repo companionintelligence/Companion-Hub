@@ -675,9 +675,19 @@ describe('AppRuntimeMonitorService', () => {
       dockerReadFacade.getAppRuntimeStats.mockResolvedValue([runningContainer]);
     }
 
+    /** The app's own compose, as installed: the gateway is a declared service, so the probe may dial it. */
+    const hermesCompose = {
+      schemaVersion: 2,
+      services: [
+        { name: 'ci-hermes', image: 'ghcr.io/companionintelligence/ci-hermes:latest', isMain: true },
+        { name: 'ci-hermes-gateway', image: 'ghcr.io/companionintelligence/ci-hermes-gateway:latest', isMain: false },
+      ],
+    };
+
     beforeEach(() => {
       installedApp();
       appFilesManager.getInstalledAppInfo.mockResolvedValue({ hub_integration: { readiness: descriptor } } as any);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({ path: '/apps/ci-hermes/docker-compose.json', content: hermesCompose });
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'APP_SEED=s3cr3t-seed\nOTHER=x\n' });
       envUtils.envStringToMap.mockImplementation((content: string) => {
         const map = new Map<string, string>();
@@ -748,6 +758,10 @@ describe('AppRuntimeMonitorService', () => {
       appFilesManager.getInstalledAppInfo.mockResolvedValue({
         hub_integration: { readiness: { service: 'app', port: 8080, path: '/health' } },
       } as any);
+      appFilesManager.getDockerComposeJson.mockResolvedValue({
+        path: '/apps/x/docker-compose.json',
+        content: { schemaVersion: 2, services: [{ name: 'app', image: 'app:latest', isMain: true }] },
+      });
       vi.mocked(fetch).mockResolvedValue(Response.json({ status: 'ok' }));
 
       const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
@@ -757,6 +771,47 @@ describe('AppRuntimeMonitorService', () => {
       expect(init.headers).not.toHaveProperty('Authorization');
       expect(appFilesManager.getAppEnv).not.toHaveBeenCalled();
       expect(result.readiness).toMatchObject({ status: 'ok', checks: {} });
+    });
+
+    it("never dials a service the app's own compose does not declare: unknown, no fetch, one warning", async () => {
+      // A third-party manifest could otherwise point `bearer_env` at another app on the shared
+      // network, the host, or the internet, and the Hub would hand it this app's key.
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        hub_integration: { readiness: { ...descriptor, service: 'ci-memory-gateway' } },
+      } as any);
+
+      const first = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+      const second = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(first.readiness).toMatchObject({ status: 'unknown', checks: {} });
+      expect(second.readiness).toMatchObject({ status: 'unknown' });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(appFilesManager.getAppEnv).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('"ci-memory-gateway" is not a service in this app\'s docker-compose.json'));
+      const logged = [logger.debug, logger.info, logger.warn, logger.error].flatMap((fn) => fn.mock.calls.flat().map(String));
+      expect(logged.some((line) => line.includes('s3cr3t-seed'))).toBe(false);
+    });
+
+    it("dials the service once it is declared in the app's compose", async () => {
+      // The compose is the gate, not the manifest: the same descriptor is refused above and
+      // accepted here, and the only difference is what this app's docker-compose.json says.
+      const result = await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any);
+
+      expect(appFilesManager.getDockerComposeJson).toHaveBeenCalledWith('ci-hermes:ci-marketplace');
+      expect(fetch).toHaveBeenCalledWith('http://ci-hermes-gateway:8642/health/detailed', expect.anything());
+      expect(result.readiness).toMatchObject({ status: 'degraded' });
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it("treats a missing or unparseable compose as not this app's service, and does not fetch", async () => {
+      appFilesManager.getDockerComposeJson.mockResolvedValueOnce({ path: '/apps/ci-hermes/docker-compose.json', content: null });
+      expect((await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any)).readiness).toMatchObject({ status: 'unknown' });
+
+      appFilesManager.getDockerComposeJson.mockResolvedValueOnce({ path: '/apps/ci-hermes/docker-compose.json', content: { services: 'garbage' } });
+      expect((await service.getAppRuntimeHealth('ci-hermes:ci-marketplace' as any)).readiness).toMatchObject({ status: 'unknown' });
+
+      expect(fetch).not.toHaveBeenCalled();
     });
 
     it('is unknown, never degraded, when the probe times out or throws', async () => {

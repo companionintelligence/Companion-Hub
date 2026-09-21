@@ -209,6 +209,12 @@ export const hubIntegrationSchema = z
      * env (the Hub wrote it, so it holds the value; the manifest never does). Absent → no
      * probe, nothing changes.
      *
+     * The probe only ever dials a service declared in the app's OWN compose: the monitor
+     * checks `service` against the installed docker-compose.json before it fetches, so a
+     * manifest cannot point `bearer_env` at another app, the host, or the internet. The
+     * shape rule below is the first half of that — a hostname (`host.docker.internal`,
+     * `evil.example.com`) or an authority (`ci-memory:8642`) is refused at parse time.
+     *
      * Example (ci-hermes):
      * ```json
      * "hub_integration": {
@@ -218,8 +224,13 @@ export const hubIntegrationSchema = z
      */
     readiness: z
       .object({
-        /** Compose service name the endpoint listens on; must be on the Hub's main network. */
-        service: z.string().min(1),
+        /**
+         * Compose service name the endpoint listens on; must be on the Hub's main network. Not
+         * a hostname: lowercase, no dots, no `/` or `:`, no leading `-`. Every service in the
+         * marketplace today already fits, so the rule costs nothing and refuses the shapes an
+         * off-app target would need.
+         */
+        service: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, 'service must be a compose service name, not a hostname'),
         port: z.number().int().min(1).max(65535),
         /**
          * Absolute path of the endpoint. No whitespace: it is interpolated verbatim into the

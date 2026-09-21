@@ -377,7 +377,10 @@ readiness never changes it. An app that wants the Hub to see inside its process 
 `AppRuntimeMonitorService` then dials `http://<service>:<port><path>` on the shared network, the
 way `agent-notify` dials a wake hook, on its existing cadence and only while the app is `running`,
 with a 2 s timeout and `Authorization: Bearer <value of bearer_env from the app's app.env>` when
-the manifest names one. The bearer is never logged.
+the manifest names one. The bearer is never logged. The probe only ever dials a service declared in
+the app's own installed docker-compose.json — the schema refuses hostnames, and the monitor refuses
+(with `unknown` and one warning) a name the compose does not declare — so `bearer_env` can only
+reach the app's own containers, never another app, the host, or the internet.
 
 `app-readiness.helpers.ts` normalises the body into `AppRuntimeHealthDto.readiness`:
 `status` (`ok` | `degraded` | `unknown`), `checks[name].{status, detail?}`, `busy`, `drainable`,
