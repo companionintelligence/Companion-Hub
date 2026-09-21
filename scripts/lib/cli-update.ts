@@ -5,17 +5,143 @@
  * than reimplementing the download/verify/relaunch dance: that binary owns its own replacement.
  */
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
+import { parseEnvFile } from '../env-file.js';
 import { usageAndExit } from './cli-args.js';
+import { isApplianceMode } from './cli-repo-context.js';
 import { BASE_COMMAND } from './cli-types.js';
 import { colorize, printMessageBox } from './cli-ui.js';
-import { packageVersion } from './cli-compose-env.js';
+import { envFileMap, packageVersion } from './cli-compose-env.js';
+import { resolveProdApplianceContext } from './paths.js';
 import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './connect-agent.js';
 import { promptHiddenPassword } from './seed-appliance.js';
 
 export function renderVersion(): string {
   return `${BASE_COMMAND} ${packageVersion()}`;
+}
+
+/**
+ * Build identity as `GET /api/hub/build` reports it. Mirrors `HubBuildInfo` in
+ * `packages/backend/src/core/build-info/hub-build-info.ts`; every field is optional here because
+ * this CLI talks to Hubs older than that endpoint.
+ */
+export type HubBuildInfoResponse = {
+  version?: string | null;
+  channel?: string | null;
+  gitSha?: string | null;
+  gitShaShort?: string | null;
+  builtAt?: string | null;
+  imageRef?: string | null;
+  imageDigest?: string | null;
+  source?: string | null;
+  declaredVersion?: string | null;
+  summary?: string | null;
+};
+
+/** Short: `cihub version` must answer promptly on a Hub that is down, not hang waiting for one. */
+const HUB_BUILD_TIMEOUT_MS = 2_500;
+
+/**
+ * The running Hub's build, or null when this node has none reachable.
+ *
+ * Null covers three different, equally ordinary states — no Hub running, an older Hub without the
+ * endpoint (404), a Hub still starting — and `cihub version` prints the same "not reachable" line
+ * for all of them. Distinguishing them is `cihub status`'s job, not this command's.
+ */
+export async function fetchHubBuildInfo(apiBase: string, timeoutMs = HUB_BUILD_TIMEOUT_MS): Promise<HubBuildInfoResponse | null> {
+  try {
+    const res = await fetch(`${apiBase}/api/hub/build`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return body && typeof body === 'object' ? (body as HubBuildInfoResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `hub` lines of `cihub version`.
+ *
+ * Deliberately verbose about provenance rather than printing one number. The failure this replaces
+ * was a Hub reporting a confident, wrong version: `CI_HUB_VERSION` from the install's env file, which
+ * no build writes and which was wrong on 10 of 16 fleet Hubs. So the build stamp and the env file's
+ * claim are printed as two separate facts, and when they disagree the output says so — an operator
+ * comparing a node against GHCR needs to see which of the two they have been reading.
+ */
+export function formatHubBuildLines(info: HubBuildInfoResponse | null, apiBase: string): string[] {
+  if (!info) {
+    return [`hub    not reachable at ${apiBase}`];
+  }
+
+  if (info.source === 'unstamped' || (!info.version && !info.gitSha)) {
+    // Predates the build stamp, or was built locally. Saying so is the honest answer; the env
+    // file's number is shown only as the unreliable claim it is.
+    const declared = info.declaredVersion ? ` (env file claims ${info.declaredVersion})` : '';
+    return [`hub    unidentified build — this image carries no build stamp${declared}`];
+  }
+
+  const lines = [`hub    ${info.summary?.trim() || info.version || info.gitShaShort || 'unknown'}`];
+  if (info.channel) lines.push(`       channel ${info.channel}`);
+  if (info.imageRef) lines.push(`       image   ${info.imageRef}`);
+  // The digest is the only thing that separates two images sharing a tag — the measured case was
+  // 17 appliances on one untagged index while `:latest` and `:dev` were two other indexes entirely.
+  if (info.imageDigest) lines.push(`       digest  ${info.imageDigest}`);
+  if (info.builtAt) lines.push(`       built   ${info.builtAt}`);
+  if (info.declaredVersion && info.version && normalizeVersionForCompare(info.declaredVersion) !== normalizeVersionForCompare(info.version)) {
+    lines.push(`       note    env file says CI_HUB_VERSION=${info.declaredVersion}, which does not match this build`);
+  }
+  return lines;
+}
+
+/** `v0.2.73` and `0.2.73` are the same release; only a real difference is worth warning about. */
+function normalizeVersionForCompare(value: string): string {
+  return value.trim().replace(/^v(?=\d)/, '');
+}
+
+/**
+ * `cihub version` — this binary's version, then the running Hub's build.
+ *
+ * Two artifacts, two answers, and they legitimately differ: rolling the Hub image never updates the
+ * `cihub` binary (they ship through separate channels), so printing one number for both would be
+ * wrong in the common case.
+ */
+export async function runVersionCommand(apiBase?: string): Promise<string> {
+  const lines = [renderVersion()];
+  const base = apiBase ?? resolveDefaultHubApiBase();
+  lines.push(...formatHubBuildLines(await fetchHubBuildInfo(base), base));
+  return lines.join('\n');
+}
+
+/**
+ * Where to ask.
+ *
+ * `cihub version` must answer outside a checkout, with no stack configured, and on a machine that
+ * has never run `cihub up`. So this resolves paths only — deliberately NOT through
+ * `resolveHubContext`, which in appliance mode can prompt for a Postgres password and seed a fresh
+ * install. Asking a binary its version must never write anything.
+ *
+ * `existsSync` before `parseEnvFile` because that helper is not total on a missing path, and every
+ * candidate here is allowed to be absent.
+ */
+export function resolveDefaultHubApiBase(): string {
+  const port = process.env.API_PORT?.trim() || readApiPortFromEnvFiles() || '5002';
+  return `http://127.0.0.1:${port}`;
+}
+
+function readApiPortFromEnvFiles(): string | undefined {
+  const candidates = isApplianceMode() ? [resolveProdApplianceContext().envFilePath] : [envFileMap.prod, envFileMap.dev, envFileMap.local];
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate)) continue;
+      const port = parseEnvFile(candidate).API_PORT?.trim();
+      if (port) return port;
+    } catch {
+      // An unreadable or malformed env file is not a reason to fail `cihub version`.
+    }
+  }
+  return undefined;
 }
 
 // --- Host update (delegates to companion-hub binary) ---
