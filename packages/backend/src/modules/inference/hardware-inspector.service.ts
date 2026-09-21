@@ -12,6 +12,16 @@ import { promisify } from 'node:util';
 const execAsync = promisify(exec);
 const INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS = 5 * 60 * 1000;
 const HOST_PROBE_REFRESH_CHECK_COOLDOWN_MS = 30 * 1000;
+// How much host RAM is free moves minute to minute — Ollama pulling a 20 GB model into GTT,
+// vLLM holding 96 GB — while the rest of the profile (GPU identity, totals, CPU) does not.
+// The profile is cached for the life of the process, so `ram.availableMb` used to freeze at
+// whatever the host probe recorded at boot: core-2 served "124547 MB available" while
+// `free -m` on the host said 53052. On a unified-memory node that same stale number was
+// `effectiveInferenceMemoryMb`, the budget the router admits model loads against, which is
+// how a busy Strix Halo got over-admitted into an OOM-kill. MemAvailable is one line of one
+// file, so it is re-read on demand — but no more often than this.
+const LIVE_RAM_SAMPLE_INTERVAL_MS = 5 * 1000;
+const HOST_MEMINFO_PATH = '/host/proc/meminfo';
 // systeminformation can return the PCIe BAR/framebuffer size (e.g. 32 MB) instead
 // of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
@@ -46,6 +56,7 @@ export class HardwareInspectorService {
   private lastIncompleteDiscreteGpuRefreshAt = 0;
   private hostProbeRefreshResolved = false;
   private lastHostProbeRefreshCheckAt = 0;
+  private liveRamSample: { availableMb: number; sampledAt: number } | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -53,8 +64,15 @@ export class HardwareInspectorService {
     private readonly hostMetrics: HostMetricsService,
   ) {}
 
-  /** Get the cached hardware profile, or re-detect if not available */
+  /**
+   * The cached hardware profile (re-detected if not available), with the one figure that
+   * changes between detections — free host RAM — read live. See {@link withLiveRam}.
+   */
   async getProfile(): Promise<HardwareProfile> {
+    return this.withLiveRam(await this.getCachedProfile());
+  }
+
+  private async getCachedProfile(): Promise<HardwareProfile> {
     if (!this.cachedProfile) {
       return this.updateCachedProfile(await this.detect());
     }
@@ -85,7 +103,98 @@ export class HardwareInspectorService {
 
   /** Force a re-scan of hardware */
   async rescan(): Promise<HardwareProfile> {
-    return this.updateCachedProfile(await this.detect());
+    return this.withLiveRam(this.updateCachedProfile(await this.detect()));
+  }
+
+  /**
+   * Overlay the live free-RAM reading on a cached profile: `ram.availableMb`, `ram.usedMb`, and
+   * — on a unified-memory or CPU-only node, where models load into system RAM — the
+   * `effectiveInferenceMemoryMb` the router budgets against. Totals, GPU identity and tier
+   * stay as detected.
+   *
+   * Not on a macOS/Windows host: there the Hub runs inside Docker Desktop's VM, whose
+   * `/proc/meminfo` describes the VM and not the machine Ollama runs on, so the desktop
+   * host probe (the only view of host RAM the container has) stays authoritative even
+   * though it is a snapshot. `hostProbeRefreshResolved` is exactly "such a probe backs this
+   * profile" — it is only ever set for a darwin/win32 probe.
+   */
+  private async withLiveRam(profile: HardwareProfile): Promise<HardwareProfile> {
+    if (this.hostProbeRefreshResolved) {
+      return profile;
+    }
+    const liveAvailableMb = await this.readLiveAvailableRamMb();
+    if (liveAvailableMb === null) {
+      return profile;
+    }
+    const availableMb = Math.min(liveAvailableMb.availableMb, profile.ram.totalMb);
+    const ram: HardwareProfile['ram'] = {
+      ...profile.ram,
+      availableMb,
+      usedMb: Math.max(0, profile.ram.totalMb - availableMb),
+      sampledAt: new Date(liveAvailableMb.sampledAt).toISOString(),
+    };
+    const effectiveInferenceMemoryMb = profile.gpu.unifiedMemory || !profile.gpu.available ? availableMb : profile.effectiveInferenceMemoryMb;
+    return { ...profile, ram, effectiveInferenceMemoryMb };
+  }
+
+  /**
+   * The live MemAvailable sample, at most {@link LIVE_RAM_SAMPLE_INTERVAL_MS} old. `null` when
+   * this host has no live reading to give (see {@link readRam}), in which case the caller keeps
+   * what it had.
+   */
+  private async readLiveAvailableRamMb(): Promise<{ availableMb: number; sampledAt: number } | null> {
+    const now = Date.now();
+    if (this.liveRamSample && now - this.liveRamSample.sampledAt < LIVE_RAM_SAMPLE_INTERVAL_MS) {
+      return this.liveRamSample;
+    }
+    const ram = await this.readRam();
+    if (!ram.live) {
+      return null;
+    }
+    this.liveRamSample = { availableMb: ram.availableMb, sampledAt: now };
+    return this.liveRamSample;
+  }
+
+  /**
+   * Total and available RAM as this process can see them, and whether "available" is a figure
+   * worth re-reading. It is when it is Linux MemAvailable: the `/host/proc/meminfo` bind mount
+   * (the host's own file), or `os.freemem()` on a Linux host, which libuv reads from the same
+   * line (measured on Node 22: freemem 17240 MB, MemFree 9417, MemAvailable 17240). On a
+   * native macOS/Windows run `os.freemem()` is free pages only — a few hundred MB on a busy Mac
+   * that the OS would hand over on demand — so it is reported once, as it always was, and
+   * never sampled or budgeted against.
+   */
+  private async readRam(): Promise<{ totalMb: number; availableMb: number; live: boolean }> {
+    let parsed: { totalMb: number; availableMb: number } | null = null;
+    try {
+      parsed = this.parseMeminfo(await this.filesystem.readTextFile(HOST_MEMINFO_PATH));
+    } catch {
+      parsed = null;
+    }
+    if (parsed) {
+      return { ...parsed, live: parsed.availableMb > 0 };
+    }
+    const availableMb = Math.floor(os.freemem() / (1024 * 1024));
+    return {
+      totalMb: Math.floor(os.totalmem() / (1024 * 1024)),
+      availableMb,
+      live: this.getHostPlatform() === 'linux' && availableMb > 0,
+    };
+  }
+
+  private parseMeminfo(content: string | null | undefined): { totalMb: number; availableMb: number } | null {
+    if (!content) return null;
+    let totalKb = 0;
+    let availKb = 0;
+    for (const line of content.split('\n')) {
+      if (line.startsWith('MemTotal:')) {
+        totalKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
+      } else if (line.startsWith('MemAvailable:')) {
+        availKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
+      }
+    }
+    if (!Number.isFinite(totalKb) || !Number.isFinite(availKb)) return null;
+    return { totalMb: Math.floor(totalKb / 1024), availableMb: Math.floor(availKb / 1024) };
   }
 
   private updateCachedProfile(profile: HardwareProfile): HardwareProfile {
@@ -121,7 +230,13 @@ export class HardwareInspectorService {
       this.logger.info(`[HardwareInspector] Using host probe: ${hostProbe.host.cpuModel ?? 'unknown CPU'}, totalRam=${hostProbe.host.totalRamMb} MB`);
     }
 
-    const ramInfo = hostProbe ? { totalMb: hostProbe.host.totalRamMb, availableMb: hostProbe.host.availableRamMb } : rawRamInfo;
+    // A Linux host probe (init-host-probe) is written once, before the containers start, so its
+    // `availableRamMb` is a boot-time snapshot; the meminfo bind mount is the same host, now.
+    // A macOS/Windows probe is the only view of the host past the Docker Desktop VM — keep it.
+    const ramIsLive = rawRamInfo.live && (!hostProbe || hostProbe.platform === 'linux');
+    const ramInfo = hostProbe
+      ? { totalMb: hostProbe.host.totalRamMb, availableMb: ramIsLive ? rawRamInfo.availableMb : hostProbe.host.availableRamMb }
+      : { totalMb: rawRamInfo.totalMb, availableMb: rawRamInfo.availableMb };
 
     const cpuInfo = hostProbe
       ? {
@@ -239,7 +354,11 @@ export class HardwareInspectorService {
     return {
       gpu,
       npu: { available: false, model: '' },
-      ram: ramInfo,
+      ram: {
+        ...ramInfo,
+        usedMb: Math.max(0, ramInfo.totalMb - ramInfo.availableMb),
+        ...(ramIsLive ? { sampledAt: new Date(rawRamInfo.sampledAt).toISOString() } : {}),
+      },
       cpu: cpuInfo,
       os,
       effectiveInferenceMemoryMb,
@@ -905,29 +1024,14 @@ export class HardwareInspectorService {
     }
   }
 
-  private async detectRam(): Promise<{ totalMb: number; availableMb: number }> {
-    try {
-      const content = await this.filesystem.readTextFile('/host/proc/meminfo');
-      if (!content) throw new Error('Empty meminfo');
-      const lines = content.split('\n');
-      let totalKb = 0;
-      let availKb = 0;
-      for (const line of lines) {
-        if (line.startsWith('MemTotal:')) {
-          totalKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
-        } else if (line.startsWith('MemAvailable:')) {
-          availKb = Number.parseInt(line.split(/\s+/)[1] ?? '0', 10);
-        }
-      }
-      return {
-        totalMb: Math.floor(totalKb / 1024),
-        availableMb: Math.floor(availKb / 1024),
-      };
-    } catch {
-      const totalMb = Math.floor(os.totalmem() / (1024 * 1024));
-      const availMb = Math.floor(os.freemem() / (1024 * 1024));
-      return { totalMb, availableMb: availMb };
+  private async detectRam(): Promise<{ totalMb: number; availableMb: number; live: boolean; sampledAt: number }> {
+    const ram = await this.readRam();
+    const sampledAt = Date.now();
+    // A live reading — seed the sampler so the overlay does not read it again straight away.
+    if (ram.live) {
+      this.liveRamSample = { availableMb: ram.availableMb, sampledAt };
     }
+    return { ...ram, sampledAt };
   }
 
   private async detectCpu(): Promise<{ arch: 'x86_64' | 'arm64'; cores: number; model: string }> {

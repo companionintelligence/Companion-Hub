@@ -299,7 +299,8 @@ export interface ResidencyReportSummary {
 export interface HardwareSummary {
   gpu?: { available?: boolean; vendor?: string; model?: string; vramMb?: number; unifiedMemory?: boolean; runtimeAvailable?: boolean };
   npu?: { available?: boolean; model?: string };
-  ram?: { totalMb?: number; availableMb?: number };
+  /** `usedMb`/`sampledAt` arrive with a live (Linux MemAvailable) sample; older Hubs send neither. */
+  ram?: { totalMb?: number; availableMb?: number; usedMb?: number; sampledAt?: string };
   cpu?: { arch?: string; cores?: number; model?: string };
   os?: { platform?: string; name?: string; version?: string };
   tier?: string;
@@ -566,6 +567,21 @@ export interface MemoryBudgetRow {
   incomplete: boolean;
   /** The engines whose figures `used` is built from, in the order the backend lists them. */
   engines: ModelMemoryUsageEntrySummary[];
+}
+
+/**
+ * Host RAM in use, in MB, or `null` when the profile has no RAM figures at all.
+ *
+ * `usedMb` is what the Hub measured at the same instant as `availableMb`; a Hub that predates
+ * it still sends `totalMb` and `availableMb`, so the difference is the fallback. Either way
+ * the honest denominator is "RAM in use", not "RAM not available" — the two only coincide
+ * when the sample is live, which is exactly the case `usedMb` marks.
+ */
+export function hostRamUsedMb(hardware: HardwareSummary | undefined): number | null {
+  const ram = hardware?.ram;
+  if (typeof ram?.usedMb === 'number') return Math.max(0, ram.usedMb);
+  if (typeof ram?.totalMb === 'number' && typeof ram?.availableMb === 'number') return Math.max(0, ram.totalMb - ram.availableMb);
+  return null;
 }
 
 /**
