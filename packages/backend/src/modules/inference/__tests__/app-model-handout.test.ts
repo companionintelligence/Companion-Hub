@@ -4,10 +4,12 @@ import { CURATED_MODELS } from '../catalog/curated-models';
 import { appInferenceRequirements, checkModelRequirements } from '../app-inference-requirements';
 import {
   decideModelPrePull,
+  describeContextHandout,
   handoutContextLength,
   LOCAL_POOL_NODE,
   nodesServing,
   PEER_SERVED_CONTEXT_LENGTH,
+  poolContextCap,
   selectPoolChatModel,
   type PoolInventory,
 } from '../app-model-handout';
@@ -180,6 +182,106 @@ describe('handoutContextLength', () => {
   it('still applies an app floor and the model window to a peer-served model', () => {
     expect(handoutContextLength({ model: qwenCoder30b, servedLocally: false, effectiveInferenceMemoryMb: 0, minContextLength: 64_000 })).toBe(64_000);
     expect(handoutContextLength({ model: gemma1b, servedLocally: false, effectiveInferenceMemoryMb: 0 })).toBe(32_000);
+  });
+
+  describe('the engine-runtime cap (core-2, 2026-09-20)', () => {
+    // core-2: 64 GB budget sizes qwen3-coder:30b to 65536, while its Ollama runs OLLAMA_CONTEXT_LENGTH=16384.
+    const core2 = { model: qwenCoder30b, servedLocally: true, effectiveInferenceMemoryMb: 65536 };
+
+    it('caps a locally sized window at the cap, so the app asks for what the engine already runs', () => {
+      expect(handoutContextLength({ ...core2, maxContextLength: 16_384 })).toBe(16_384);
+    });
+
+    it('caps the peer-served fallback and wins over an app floor: the floor is a wish, the cap is the engine', () => {
+      expect(handoutContextLength({ model: qwenCoder30b, servedLocally: false, effectiveInferenceMemoryMb: 0, maxContextLength: 16_384 })).toBe(
+        16_384,
+      );
+      expect(handoutContextLength({ ...core2, minContextLength: 64_000, maxContextLength: 16_384 })).toBe(16_384);
+    });
+
+    it('is a no-op when the cap is above the sized window, absent, null, or a value this build cannot believe', () => {
+      expect(handoutContextLength({ ...core2, maxContextLength: 131_072 })).toBe(65_536);
+      expect(handoutContextLength({ ...core2, maxContextLength: null })).toBe(65_536);
+      expect(handoutContextLength({ ...core2, maxContextLength: undefined })).toBe(65_536);
+      // Below the smallest believable cap (a dropped digit), fractional, and past the largest window on the fleet.
+      expect(handoutContextLength({ ...core2, maxContextLength: 128 })).toBe(65_536);
+      expect(handoutContextLength({ ...core2, maxContextLength: 16_384.5 })).toBe(65_536);
+      expect(handoutContextLength({ ...core2, maxContextLength: 2 ** 21 })).toBe(65_536);
+    });
+  });
+});
+
+describe('poolContextCap', () => {
+  const withCaps: PoolInventory = {
+    backends: [
+      { node: LOCAL_POOL_NODE, local: true, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 65_536 },
+      { node: 'core-2', local: false, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 16_384 },
+      { node: 'core-6', local: false, backend: 'ollama', models: ['qwen3-coder:30b'] },
+      { node: 'beta-red', local: false, backend: 'ollama', models: ['gemma3:1b'], maxNumCtx: 4096 },
+    ],
+  };
+
+  it('is the smallest cap among the nodes serving the model, ignoring nodes that serve something else', () => {
+    // beta-red's 4096 does not count: the proxy will never place a qwen3-coder:30b request there.
+    expect(poolContextCap(withCaps, 'qwen3-coder:30b')).toBe(16_384);
+    expect(poolContextCap(withCaps, 'gemma3:1b')).toBe(4096);
+  });
+
+  it('is null when no serving node advertises a cap, which is what an older build looks like', () => {
+    expect(poolContextCap(core4Inventory, 'qwen3-coder:30b')).toBeNull();
+    expect(poolContextCap(withCaps, 'nothing-serves:this')).toBeNull();
+  });
+
+  it('reads a cap the way the wire is read: an unbelievable value is no cap, not a tiny one', () => {
+    const inventory: PoolInventory = {
+      backends: [
+        { node: 'a', local: false, backend: 'ollama', models: ['m:1b'], maxNumCtx: 12 },
+        { node: 'b', local: false, backend: 'ollama', models: ['m:1b'], maxNumCtx: 32_768 },
+      ],
+    };
+    expect(poolContextCap(inventory, 'm:1b')).toBe(32_768);
+  });
+
+  it('is carried on the handout selectPoolChatModel returns, for the model it chose', () => {
+    const handout = selectPoolChatModel({
+      appSlug: 'openclaw',
+      inventory: withCaps,
+      catalog: CURATED_MODELS,
+      preferredId: null,
+      requirements: appInferenceRequirements('openclaw'),
+    });
+    expect(handout.engineId).toBe('qwen3-coder:30b');
+    expect(handout.contextCap).toBe(16_384);
+  });
+});
+
+describe('describeContextHandout', () => {
+  const base = { appSlug: 'openclaw', engineId: 'qwen3-coder:30b', numCtx: 16_384, maxContextLength: 16_384, residentContextLength: null };
+
+  it('says nothing when the handout matches the engine and the app has no floor above the cap', () => {
+    expect(describeContextHandout(base)).toEqual([]);
+    expect(describeContextHandout({ ...base, residentContextLength: 16_384 })).toEqual([]);
+    expect(describeContextHandout({ ...base, minContextLength: 8192 })).toEqual([]);
+  });
+
+  it('warns when the cap undercuts the app floor, since Hermes refuses to start below 64000', () => {
+    const notes = describeContextHandout({ ...base, appSlug: 'hermes-agent', minContextLength: 64_000 });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('hermes-agent: the context cap (16384) is below its 64000-token floor');
+    expect(notes[0]).toContain('--ollama-context');
+  });
+
+  it('warns that a handout differing from the loaded window reloads the model, and names the cap as the fix when none is set', () => {
+    const uncapped = describeContextHandout({ ...base, numCtx: 65_536, maxContextLength: null, residentContextLength: 16_384 });
+    expect(uncapped).toHaveLength(1);
+    expect(uncapped[0]).toContain('holds qwen3-coder:30b at a 16384-token window and the handout is 65536');
+    expect(uncapped[0]).toContain('OLLAMA_CONTEXT_LENGTH');
+
+    // With a cap set the mismatch is still worth a line (the model was loaded by something else at
+    // another size), but the fix is no longer "set the cap".
+    const capped = describeContextHandout({ ...base, residentContextLength: 65_536 });
+    expect(capped).toHaveLength(1);
+    expect(capped[0]).not.toContain('Settings > Inference');
   });
 });
 

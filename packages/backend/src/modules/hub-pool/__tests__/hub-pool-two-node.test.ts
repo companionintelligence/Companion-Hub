@@ -201,6 +201,8 @@ interface Node {
   setShareContainerStats(enabled: boolean): void;
   /** Set or clear this node's stored prompt ceiling, as a settings PATCH does. */
   setMaxPromptTokens(tokens: number | null): void;
+  /** Set or clear this node's handout context cap (`inferenceMaxNumCtx`), as a settings PATCH does. */
+  setMaxNumCtx(tokens: number | null): void;
   /** What this node's proxy has timed, and what its `/capabilities` advertises from. */
   throughput: HubPoolThroughputService;
   /** Runs one health-poll tick, as the module's own timer would. */
@@ -360,6 +362,9 @@ function buildNode(fqdn: string, models: string[]): Node {
     },
     setMaxPromptTokens(tokens: number | null) {
       preferences.poolMaxPromptTokens = tokens;
+    },
+    setMaxNumCtx(tokens: number | null) {
+      configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: tokens } as never);
     },
     throughput,
     /** Make this node report a measured band, as its sampler would. */
@@ -1657,6 +1662,25 @@ describe('Hub Pool across two nodes', () => {
       expect(cachedOn(beta).maxPromptTokens).toBe(16_000);
       expect((await beta.service.getPoolStatus()).peers[0]?.maxPromptTokens).toBe(16_000);
       expect((await core.service.getPoolStatus()).localNode).toMatchObject({ maxPromptTokens: 16_000, maxPromptTokensSetBy: 'setting' });
+    });
+
+    it('carries core’s context cap through /capabilities into beta’s cached snapshot and status card, and off the wire when cleared', async () => {
+      await pairNodes();
+      await beta.poll();
+      expect(cachedOn(beta)).not.toHaveProperty('maxNumCtx');
+
+      core.setMaxNumCtx(16_384);
+      await beta.poll();
+
+      expect(cachedOn(beta).maxNumCtx).toBe(16_384);
+      expect((await beta.service.getPoolStatus()).peers[0]?.maxNumCtx).toBe(16_384);
+      expect((await core.service.getPoolStatus()).localNode).toMatchObject({ maxNumCtx: 16_384 });
+
+      core.setMaxNumCtx(null);
+      await beta.poll();
+
+      expect(cachedOn(beta)).not.toHaveProperty('maxNumCtx');
+      expect((await beta.service.getPoolStatus()).peers[0]?.maxNumCtx).toBeNull();
     });
 
     it('leaves the key off the wire when core has no ceiling, and takes it off again when one is cleared', async () => {

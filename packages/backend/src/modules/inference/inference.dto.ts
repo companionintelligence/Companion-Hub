@@ -1,4 +1,5 @@
 import { createZodDto } from '@/common/zod-dto';
+import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { z } from 'zod';
 
@@ -35,6 +36,10 @@ export const inferencePreferencesSchema = z.object({
   // Base URL of the operator's mlx-dspark server (e.g. http://host.docker.internal:8080).
   // `null` clears the stored preference and falls back to the DSPARK_URL env default.
   dsparkUrl: z.string().trim().url().nullable().optional(),
+  // Ceiling on the `num_ctx` handed to apps, in tokens — set it to the engine's own context
+  // (`OLLAMA_CONTEXT_LENGTH`) so no app asks for a window that reloads the model. `null` clears it,
+  // which restores sizing from the model window and this node's memory alone.
+  maxNumCtx: z.number().int().min(MIN_INFERENCE_MAX_NUM_CTX).max(MAX_INFERENCE_MAX_NUM_CTX).nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}

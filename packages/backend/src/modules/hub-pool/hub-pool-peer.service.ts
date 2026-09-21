@@ -34,6 +34,7 @@ import {
   type PoolContainerRollup,
   type PoolContainerSampler,
 } from '@/common/helpers/hub-pool';
+import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -505,6 +506,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // usable, without ever putting a probe or a keygen on this path.
         identity,
         ...this.localPromptCeilingStatus(),
+        maxNumCtx: this.configuration.getInferencePreferences()?.maxNumCtx ?? null,
         throughput: this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [],
       },
       // `peerKeyFingerprint`, never the key: the fingerprint is what an operator compares across two
@@ -526,6 +528,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         containers: this.peerContainers(peer),
         // Through the same clamp the ranker reads it with, so a value routing ignores shows as none.
         maxPromptTokens: clampPromptCeiling((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxPromptTokens),
+        maxNumCtx: clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx),
         throughput: this.peerThroughput(peer),
       })),
       peerCounts: {
@@ -1199,6 +1202,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const gpuPressureSource = this.pressureService.source();
     const containers = this.ownContainerRollup();
     const promptCeiling = resolvePoolMaxPromptTokens(this.configuration.getHubPoolPreferences().poolMaxPromptTokens).maxPromptTokens;
+    const contextCap = this.configuration.getInferencePreferences()?.maxNumCtx ?? null;
     const throughput = this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [];
     return {
       hardwareTier: inventory.hardwareTier,
@@ -1237,6 +1241,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // not see it flicker with the inbound switch. Read per call, so a PATCH reaches peers on their
       // next poll rather than after a restart.
       ...(promptCeiling === null ? {} : { maxPromptTokens: promptCeiling }),
+      // Same encoding as the ceiling, for the same reasons: absent is "no cap" on every build, it
+      // describes the engine rather than an offer of work, and a PATCH reaches peers on their next
+      // poll. An entry node reads it to cap what it hands an app the pool may send here.
+      ...(contextCap === null ? {} : { maxNumCtx: contextCap }),
       // Omitted when nothing has been timed, like every other measurement here: absence is what an
       // older build sends and what a reader ranks as unmeasured. Advertised whether or not this node
       // is accepting work, like the ceiling, because it describes the hardware rather than an offer.

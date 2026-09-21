@@ -147,6 +147,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'lemonade',
@@ -196,6 +197,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'ollama',
@@ -230,6 +232,7 @@ describe('InferenceController — preferences', () => {
       'http://192.168.1.50:8000',
       undefined,
       undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -255,6 +258,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8000',
+      undefined,
       undefined,
     );
   }, 30_000);
@@ -282,6 +286,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8080',
+      undefined,
     );
   }, 30_000);
 
@@ -330,6 +335,47 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'http://host.docker.internal:8000' }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: null }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'not-a-url' }).success).toBe(false);
+  });
+
+  it('passes the context cap through, and a null to clear it', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', maxNumCtx: 16_384 } as never);
+
+    await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 16_384 });
+    await controller.updatePreferences({ backend: 'ollama', maxNumCtx: null });
+
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      1,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      16_384,
+    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      2,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      null,
+    );
+  }, 30_000);
+
+  it('bounds the context cap in the preferences schema: an integer from 2048 to 2^20, or null', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 16_384 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: null }).success).toBe(true);
+    // A dropped digit, a fraction, and past the longest window on the fleet.
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 1638 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 16_384.5 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 2 ** 21 }).success).toBe(false);
   });
 
   it('accepts the dspark backend and a valid dsparkUrl in the preferences schema', () => {

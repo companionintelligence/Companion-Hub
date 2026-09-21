@@ -284,6 +284,7 @@ export class InferenceController {
       body.vllmUrl,
       body.mtplxUrl,
       body.dsparkUrl,
+      body.maxNumCtx,
     );
 
     this.scheduleAiAppRestart('inference preferences changed');
