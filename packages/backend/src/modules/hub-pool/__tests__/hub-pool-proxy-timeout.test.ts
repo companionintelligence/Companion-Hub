@@ -120,6 +120,97 @@ describe('poolFetchDispatcher — undici must not cap the pool budgets at 300 s'
   });
 });
 
+/**
+ * The red herring, pinned so nobody "fixes" it.
+ *
+ * `main.ts` sets `httpServer.requestTimeout = 30_000` on the Hub's own inbound server. Reading a
+ * `cihub pool log` full of rows that end at ~30 s — beta-max, 2026-09-21 — that line is the first
+ * thing an investigator finds, and raising it looks like the fix. It is not: Node clears the
+ * request timer once the request has been RECEIVED, so a response that takes minutes to produce is
+ * untouched by it. Raising it would only let slow *clients* hold sockets open, which is the thing
+ * the line exists to prevent.
+ *
+ * Asserted against a real socket, with the same three settings `main.ts` applies scaled down 100x,
+ * and with `connectionsCheckingInterval` short enough that the checker genuinely runs during the
+ * stall — at Node's 30 s default it would not fire at all inside a scaled-down test, and the test
+ * would pass without ever exercising the timer.
+ */
+describe("the Hub's own requestTimeout does not cut a slow pooled response", () => {
+  /** `main.ts`: requestTimeout 30_000, headersTimeout 35_000, keepAliveTimeout 5_000. */
+  const REQUEST_TIMEOUT_MS = 300;
+  const RESPOND_AFTER_MS = REQUEST_TIMEOUT_MS * 3;
+
+  it('answers a request whose response outlasts requestTimeout by 3x', async () => {
+    const { createServer, request } = await import('node:http');
+    const server = createServer({ connectionsCheckingInterval: 50 }, (req, res) => {
+      req.resume();
+      req.on('end', () => setTimeout(() => res.writeHead(200).end('late'), RESPOND_AFTER_MS));
+    });
+    // Assigned AFTER listen, which is the shape `main.ts` uses (`app.getHttpServer()` once
+    // `app.listen` has resolved) and the only one Node honours — measured on v22.15.1, the same
+    // assignment made before `listen` never fires.
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    server.requestTimeout = REQUEST_TIMEOUT_MS;
+    server.headersTimeout = Math.round(REQUEST_TIMEOUT_MS * (35 / 30));
+    server.keepAliveTimeout = Math.round(REQUEST_TIMEOUT_MS / 6);
+    const { port } = server.address() as { port: number };
+    const body = JSON.stringify({ model: 'qwen3-coder:30b', messages: [] });
+
+    try {
+      const outcome = await new Promise<string>((resolve) => {
+        const req = request(
+          { port, host: '127.0.0.1', method: 'POST', path: '/api/chat', headers: { 'content-length': Buffer.byteLength(body) } },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(`status ${res.statusCode}`));
+          },
+        );
+        req.on('error', (error: NodeJS.ErrnoException) => resolve(`client error ${error.code ?? error.message}`));
+        req.end(body);
+      });
+
+      expect(outcome).toBe('status 200');
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+
+  it('still cuts a request whose BODY never arrives, which is what the setting is for', async () => {
+    const { createServer, request } = await import('node:http');
+    const server = createServer({ connectionsCheckingInterval: 50 }, (req, res) => {
+      req.resume();
+      req.on('end', () => res.writeHead(200).end('ok'));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    // Both, and after listen, for the same reason as above — and because `requestTimeout` alone,
+    // with `headersTimeout` left at its 60 s default, does not arm the checker at all (measured on
+    // v22.15.1). `main.ts` sets both, which is what makes this control meaningful.
+    server.requestTimeout = REQUEST_TIMEOUT_MS;
+    server.headersTimeout = Math.round(REQUEST_TIMEOUT_MS * (35 / 30));
+    const { port } = server.address() as { port: number };
+
+    try {
+      const outcome = await new Promise<string>((resolve) => {
+        // Promises 4096 bytes and sends one: without this half the test above would pass on a
+        // server whose timer was simply never armed.
+        const req = request({ port, host: '127.0.0.1', method: 'POST', path: '/api/chat', headers: { 'content-length': 4096 } }, (res) => {
+          res.resume();
+          resolve(`status ${res.statusCode}`);
+        });
+        req.on('error', (error: NodeJS.ErrnoException) => resolve(`client error ${error.code ?? error.message}`));
+        // Node answers a request timeout with 408 and closes; a client that is cut without one sees
+        // only the close, so both count as "not answered".
+        req.on('close', () => resolve('connection closed with no response'));
+        req.write('{');
+      });
+
+      expect(outcome).not.toBe('status 200');
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+});
+
 describe('a missed deadline is recognisable as one', () => {
   // Throughput placement records a missed deadline as evidence, so the proxy has to be able to tell
   // its own budget running out from a refused connection. That rests on `fetch` rejecting with the

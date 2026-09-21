@@ -144,6 +144,19 @@ export interface PoolRoutingRecord {
    */
   slots: PoolRoutingSlots | null;
   outcome: PoolRoutingOutcome;
+  /**
+   * `true` when this row stopped because the CALLER went away, not because routing failed: the app
+   * closed its connection before any candidate had answered. The proxy does not fail such a request
+   * over — nobody is left to read the answer — so it settles as `failed` with no status, exactly
+   * like a request every candidate rejected.
+   *
+   * Which is why the flag exists. The two are otherwise the same row, and an operator scanning
+   * `cihub pool log` reads "failed, no status" as the pool being unable to place the work. Beta-max,
+   * 2026-09-21: four rows reading `-` in the NODE column at ~30 s were read as placement returning
+   * no candidate and timing out, when placement had ranked fourteen and the caller had given up on
+   * the first. `node` now names the candidate that was still working — this says why it stopped.
+   */
+  clientClosed: boolean;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
   /**
@@ -196,8 +209,8 @@ export interface PoolRoutingPin {
  * given; the request-shape fields default to `null`, so a path that has no body to describe (a
  * refusal, an unresolvable alias) does not have to invent one.
  */
-export type PoolRoutingRecordInput = Omit<PoolRoutingRecord, 'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs'> &
-  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'>>;
+export type PoolRoutingRecordInput = Omit<PoolRoutingRecord, 'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed'> &
+  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed'>>;
 
 /** The prompt-ceiling half of a routing decision. Sizes and node names only — never any of the prompt it measured. */
 export interface PoolRoutingPromptCeiling {
@@ -335,6 +348,14 @@ export interface PoolRoutingSummary {
   capacity: number;
   served: number;
   failed: number;
+  /**
+   * The subset of `failed` that ended because the caller hung up — see `PoolRoutingRecord.clientClosed`.
+   * Counted inside `failed`, not beside it: the request did not get an answer, which is what `failed`
+   * has always meant, and moving it out would change a number every existing reader compares over time.
+   * It is reported separately so that "4 failed" can be read as "4 callers left", which is a caller's
+   * patience against this fleet's prefill, not a pool that cannot place work.
+   */
+  clientClosed: number;
   /** Placed on a candidate and still waiting for its first byte. */
   pending: number;
   /** Records with a non-empty `failedOverFrom`, i.e. requests that a candidate rejected before one answered. */
@@ -418,6 +439,9 @@ export class HubPoolRoutingLogService {
       stream: null,
       bodyBytes: null,
       budgetMs: null,
+      // Defaulted rather than required of every caller: a request ends this way at exactly one
+      // place in the proxy, and the other dozen record sites should not have to say "not that".
+      clientClosed: false,
       ...entry,
       id: entry.id ?? randomUUID(),
       updatedAt: new Date().toISOString(),
@@ -503,16 +527,19 @@ export class HubPoolRoutingLogService {
     let served = 0;
     let pending = 0;
     let failovers = 0;
+    let clientClosed = 0;
     for (const entry of this.entries) {
       if (entry.outcome === 'served') served += 1;
       if (entry.outcome === 'pending') pending += 1;
       if (entry.failedOverFrom.length > 0) failovers += 1;
+      if (entry.clientClosed) clientClosed += 1;
     }
     return {
       recorded: this.entries.length,
       capacity: this.capacity,
       served,
       failed: this.entries.length - served - pending,
+      clientClosed,
       pending,
       failovers,
       lastAt: this.entries[this.entries.length - 1]?.at ?? null,
