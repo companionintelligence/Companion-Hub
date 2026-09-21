@@ -111,9 +111,10 @@ const PORTS: Record<InstallableBackend, number> = {
  * Exported because the adopt path writes the same canonical file as the install path, and the two
  * must agree on its contents or a re-run would strip a setting the previous run added.
  *
- * Deliberately NOT where `OLLAMA_NUM_PARALLEL`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_CONTEXT_LENGTH` or
- * `OLLAMA_IGPU_ENABLE` live: those are per-run operator choices, written to their own drop-in by
- * `fleet-ollama-runtime.ts` so that changing one never rewrites (or restarts over) the bind.
+ * Deliberately NOT where `OLLAMA_NUM_PARALLEL`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_CONTEXT_LENGTH`,
+ * `OLLAMA_IGPU_ENABLE` or `OLLAMA_MAX_LOADED_MODELS` live: those are per-run operator choices,
+ * written to their own drop-in by `fleet-ollama-runtime.ts` so that changing one never rewrites (or
+ * restarts over) the bind.
  */
 export function ollamaManagedEnvironment(facts: HostFacts): string[] {
   const gfx = facts.gpus.find((g) => g.vendor === 'amd')?.gfx;

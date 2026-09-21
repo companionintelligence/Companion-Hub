@@ -791,7 +791,7 @@ cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
-cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--execute]  # Ollama's runtime env, one file, restart only on change
+cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
@@ -1076,7 +1076,7 @@ canonical file) without changing anything.
 #### Ollama's runtime environment: a second file, restarted only on change
 
 Measured on 2026-09-20: no node on the fleet set `OLLAMA_NUM_PARALLEL`, so every Ollama served one
-sequence at a time and the pool's ceiling was the sum of fifteen single streams. Four flags manage
+sequence at a time and the pool's ceiling was the sum of fifteen single streams. Five flags manage
 the settings that change that, and they write **one separate drop-in**,
 `/etc/systemd/system/ollama.service.d/zzzzz-cihub-runtime.conf` — never the bind file, and never a
 file that mentions `OLLAMA_HOST`, so the bind step's "move aside anything that sets the bind" rule
@@ -1088,12 +1088,21 @@ can never touch it:
 | `--ollama-keep-alive D` | `OLLAMA_KEEP_ALIVE` | a duration: `24h`, `30m`, `1h30m`, `-1` (forever) |
 | `--ollama-context N` | `OLLAMA_CONTEXT_LENGTH` | 512–1048576 |
 | `--ollama-igpu on\|off` | `OLLAMA_IGPU_ENABLE` | `1` or `0` |
+| `--ollama-max-loaded N` | `OLLAMA_MAX_LOADED_MODELS` | 1–16 (`0` is refused: Ollama reads it as 3 × GPUs, not a cap — use `unset`) |
 
 Every flag also accepts **`unset`**, which leaves that key out of the file. The file is rendered
-whole from the four values on every run: a key you did not pass is not in it, and falls back to
+whole from the five values on every run: a key you did not pass is not in it, and falls back to
 Ollama's default or to whatever another drop-in sets — so a run is reproducible from its command
-line, and `--ollama-parallel unset` is how you revert. With none of the four flags the runtime file
+line, and `--ollama-parallel unset` is how you revert. With none of the five flags the runtime file
 is not touched at all.
+
+`--ollama-max-loaded` is the other half of `--ollama-keep-alive`. A 24h keep-alive with no cap on
+resident models is a slow leak: on 2026-09-21 three 27–30B models had piled up on batch-tier Strix
+Halo nodes next to vLLM, Lucebox and Lemonade — core-7 at 122/123 GB with swap full, core-17's
+kernel OOM-killing `llama-server` and dbus. `OLLAMA_MAX_LOADED_MODELS=2`, set by hand, freed
+122 → 56 GB (core-7), 109 → 72 (core-17), 95 → 49 (core-14) and 102 → 56 (fzzy). Pass it on every
+run that manages it: a run with `--ollama-parallel` alone renders the file without the key, and
+Ollama's default (3 × GPU count) is back in force after the restart.
 
 On `--execute` the step writes the file only if its bytes differ from what is on disk, and only then
 runs `daemon-reload` and `restart` — a restart unloads every resident model, and a fleet command
@@ -1113,6 +1122,7 @@ under `ollama.service.d/` configures nothing there, and those units carry their 
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h            # plan
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # apply, restart where changed
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # again: unchanged, no restart
+cihub fleet backends --backends ollama --ollama-parallel 2 --ollama-keep-alive 24h --ollama-context 32768 --ollama-max-loaded 2 --execute  # the batch tier: 2 slots × 32k, at most 2 resident
 ```
 
 **`--ollama-context` also sets each node's Hub context cap.** The Hub does not read this file, and

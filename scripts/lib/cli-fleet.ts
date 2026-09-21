@@ -278,9 +278,10 @@ export interface FleetArgs {
   bind: OllamaBindMode;
   /**
    * `backends` only: Ollama's runtime environment, from `--ollama-parallel`, `--ollama-keep-alive`,
-   * `--ollama-context` and `--ollama-igpu`. Absent when none of the four was given, and then the
-   * runtime drop-in is not touched at all; present (possibly with every field `unset`) as soon as one
-   * is, and then the whole file is rendered from these four values — see `fleet-ollama-runtime.ts`.
+   * `--ollama-context`, `--ollama-igpu` and `--ollama-max-loaded`. Absent when none of the five was
+   * given, and then the runtime drop-in is not touched at all; present (possibly with every field
+   * `unset`) as soon as one is, and then the whole file is rendered from these five values — see
+   * `fleet-ollama-runtime.ts`.
    */
   ollamaRuntime?: OllamaRuntimeSettings;
   /**
@@ -424,10 +425,16 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         if (error instanceof OllamaVersionError) throw new FleetArgError(error.message);
         throw error;
       }
-    } else if (isFlag('--ollama-parallel') || isFlag('--ollama-keep-alive') || isFlag('--ollama-context') || isFlag('--ollama-igpu')) {
+    } else if (
+      isFlag('--ollama-parallel') ||
+      isFlag('--ollama-keep-alive') ||
+      isFlag('--ollama-context') ||
+      isFlag('--ollama-igpu') ||
+      isFlag('--ollama-max-loaded')
+    ) {
       // Validated here, like --ollama-version: a typo is refused before any machine is dialled. The
-      // first of the four to appear is what turns the runtime step on for this run.
-      const flag = arg.split('=')[0] as '--ollama-parallel' | '--ollama-keep-alive' | '--ollama-context' | '--ollama-igpu';
+      // first of the five to appear is what turns the runtime step on for this run.
+      const flag = arg.split('=')[0] as '--ollama-parallel' | '--ollama-keep-alive' | '--ollama-context' | '--ollama-igpu' | '--ollama-max-loaded';
       const runtime = args.ollamaRuntime ?? {};
       try {
         if (flag === '--ollama-parallel') runtime.parallel = parseOllamaRuntimeValue(flag, readValue(flag));
@@ -436,7 +443,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
           runtime.contextLength = parseOllamaRuntimeValue(flag, readValue(flag));
           // The same number goes to the node's Hub as `inferenceMaxNumCtx`; `unset` clears it there too.
           args.hubContextCap = runtime.contextLength ?? null;
-        } else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
+        } else if (flag === '--ollama-max-loaded') runtime.maxLoaded = parseOllamaRuntimeValue(flag, readValue(flag));
+        else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
       } catch (error) {
         if (error instanceof OllamaRuntimeFlagError) throw new FleetArgError(error.message);
         throw error;
@@ -521,7 +529,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     throw new FleetArgError('--pin-digest names an image and --to-majority asks the fleet for one. Pass one or the other.');
   }
   if (args.ollamaRuntime && args.subcommand !== 'backends') {
-    throw new FleetArgError('--ollama-parallel, --ollama-keep-alive, --ollama-context and --ollama-igpu only apply to `fleet backends`.');
+    throw new FleetArgError(
+      '--ollama-parallel, --ollama-keep-alive, --ollama-context, --ollama-igpu and --ollama-max-loaded only apply to `fleet backends`.',
+    );
   }
 
   return args;

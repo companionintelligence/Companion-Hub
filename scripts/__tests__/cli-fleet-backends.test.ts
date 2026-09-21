@@ -223,6 +223,27 @@ describe('fleet backends (dry run)', () => {
     expect(sudoCalls()).toHaveLength(0);
   });
 
+  it('plans the resident-model cap like any other runtime key: a write where the file lacks it, nothing where it already carries it', async () => {
+    // core-2's file carries the cap already and the daemon runs it; core-1 has no runtime file.
+    hosts['10.0.0.2'] = {
+      bind: bindProbe({
+        runtime: ollamaRuntimeDropinContent({ parallel: 4, maxLoaded: 2 }).trimEnd(),
+        env: 'OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2',
+      }),
+      ufw: firewallProbe(UFW_FULL),
+    };
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--ollama-max-loaded', '2', '--nodes', 'core-1,core-2']);
+    const text = printed();
+    expect(sudoCalls()).toHaveLength(0);
+    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL <unset>, OLLAMA_MAX_LOADED_MODELS <unset>');
+    expect(text).toContain(
+      `runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2, then daemon-reload and restart ollama`,
+    );
+    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL 4, OLLAMA_MAX_LOADED_MODELS 2');
+    expect(text).toContain(`runtime: ${RUNTIME_DROPIN} already carries OLLAMA_NUM_PARALLEL, OLLAMA_MAX_LOADED_MODELS; ollama not restarted`);
+    expect(process.exitCode).toBeUndefined();
+  });
+
   it('refuses a runtime flag on a subcommand it does not apply to', async () => {
     const exit = vi.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('exit');
@@ -245,6 +266,45 @@ describe('fleet backends --execute', () => {
     expect(runtimeCalls()[0]?.command).not.toContain(CANONICAL_BIND_DROPIN);
     expect(text).toContain('runtime OLLAMA_NUM_PARALLEL <unset> → 4');
     expect(text).toContain(`runtime OLLAMA_NUM_PARALLEL 4 — ${RUNTIME_DROPIN} unchanged, not restarted`);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('adds the resident-model cap to a node whose file predates it, and leaves one that already carries it unrestarted', async () => {
+    // core-2's file was written by the four-flag CLI (parallel only); core-1 has no runtime file.
+    // Both need the write; a third node that already carries the cap does not.
+    hosts['10.0.0.4'] = {
+      bind: bindProbe({
+        runtime: ollamaRuntimeDropinContent({ parallel: 4, maxLoaded: 2 }).trimEnd(),
+        env: 'OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2',
+      }),
+      ufw: firewallProbe(UFW_FULL),
+    };
+    mocks.nodes.push({ name: 'core-7', ip: '10.0.0.4' });
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand([
+      'backends',
+      '--backends',
+      'ollama',
+      '--ollama-parallel',
+      '4',
+      '--ollama-max-loaded',
+      '2',
+      '--execute',
+      '--nodes',
+      'core-1,core-2,core-7',
+    ]);
+    const text = printed();
+    expect(runtimeCalls().map((c) => c.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+    for (const call of runtimeCalls()) expect(call.command).toContain('Environment="OLLAMA_MAX_LOADED_MODELS=2"');
+    expect(text).toContain('runtime OLLAMA_NUM_PARALLEL <unset> → 4, OLLAMA_MAX_LOADED_MODELS <unset> → 2');
+    expect(text).toContain(`runtime OLLAMA_NUM_PARALLEL 4, OLLAMA_MAX_LOADED_MODELS 2 — ${RUNTIME_DROPIN} unchanged, not restarted`);
     expect(process.exitCode).toBeUndefined();
   });
 
