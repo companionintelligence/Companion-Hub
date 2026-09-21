@@ -7,6 +7,8 @@ import { useTranslation } from 'react-i18next';
 const SCOPE_BADGE_KEYS: Record<string, string> = {
   mcp: 'API_KEYS_SCOPE_MCP',
   app: 'API_KEYS_SCOPE_APP',
+  inference: 'API_KEYS_SCOPE_INFERENCE',
+  'qa:read': 'API_KEYS_SCOPE_QA_READ',
 };
 
 /** A small pill labelling one scope a key carries (e.g. "MCP", "App"). */

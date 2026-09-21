@@ -1,3 +1,5 @@
+import { OPERATOR_MINTABLE_SCOPES as SHARED_OPERATOR_MINTABLE_SCOPES, type OperatorMintableScope } from '@ci-hub/common/types';
+
 /**
  * Scopes a locally-minted API key can carry. One key row may hold several scopes — e.g. a
  * companion app that both consumes Hub MCP tools and calls the Hub's app-facing REST endpoints
@@ -77,21 +79,16 @@ export const QA_READ_SCOPE = 'qa:read' satisfies ApiKeyScope;
 export const INFERENCE_SCOPE = 'inference' satisfies ApiKeyScope;
 
 /**
- * Scopes an operator may mint for themselves, through Settings → Security or `cihub api-key create`.
+ * Scopes an operator may mint for themselves, re-exported from `@ci-hub/common` — see the docblock
+ * there for why it lives in the shared package (the Settings picker renders the same list the DTO
+ * validates) and why 'app' and 'qa:read' are not on it.
  *
- * Narrower than {@link API_KEY_SCOPES} by exactly the two that cannot work as an operator key:
- * - 'app' needs an owning app URN to satisfy the callback guard's identity check, so an
- *   operator-minted one would list as a credential and authenticate nothing.
- * - 'qa:read' stays CLI-only: it is minted over ssh on the node under test, where a browser usually
- *   is not, and putting it in the UI beside 'mcp' would invite it as a "safer MCP key", which it is
- *   not — it is a different surface.
- *
- * A tuple rather than an array so `z.enum` can consume it directly; 'mcp' is first because it is the
- * default this list's DTO applies.
+ * The `satisfies` is the tripwire that keeps the two files honest: a scope named there but removed
+ * from {@link API_KEY_SCOPES} here is a build error rather than a credential nothing accepts.
  */
-export const OPERATOR_MINTABLE_SCOPES = ['mcp', 'inference'] as const satisfies readonly ApiKeyScope[];
+export const OPERATOR_MINTABLE_SCOPES = SHARED_OPERATOR_MINTABLE_SCOPES satisfies readonly ApiKeyScope[];
 
-export type OperatorMintableScope = (typeof OPERATOR_MINTABLE_SCOPES)[number];
+export type { OperatorMintableScope };
 
 /**
  * Scopes that must be the only scope on their key.

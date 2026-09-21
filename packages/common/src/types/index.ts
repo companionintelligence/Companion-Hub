@@ -51,6 +51,8 @@ export {
 } from '../public-web/custom-domains.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export { INFERENCE_BACKEND_TYPES } from './inference.js';
+export { OPERATOR_MINTABLE_SCOPES } from './api-key-scopes.js';
+export type { OperatorMintableScope } from './api-key-scopes.js';
 export type {
   HardwareProfile,
   HardwareTier,

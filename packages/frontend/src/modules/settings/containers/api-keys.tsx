@@ -1,6 +1,7 @@
 import { type ApiKeyCapability, CapabilityBadge, isCapabilityPromotion } from '@/components/capability-badge/capability-badge';
 import { CapabilityPicker } from '@/components/capability-badge/capability-picker';
 import { ScopeBadge } from '@/components/scope-badge/scope-badge';
+import { OPERATOR_MINTABLE_SCOPES, type OperatorMintableScope } from '@ci-hub/common/types';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
@@ -104,6 +105,7 @@ export const ApiKeysContainer = () => {
   const [createKeyOpen, setCreateKeyOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyCapability, setNewKeyCapability] = useState<ApiKeyCapability>('write');
+  const [newKeyScope, setNewKeyScope] = useState<OperatorMintableScope>('mcp');
   const [creatingKey, setCreatingKey] = useState(false);
   // The raw key is returned only once, at creation — held here so the operator can copy it before it's gone.
   const [createdKey, setCreatedKey] = useState<string | null>(null);
@@ -165,6 +167,7 @@ export const ApiKeysContainer = () => {
     // Reset to the default every time: a level chosen for the last key must not silently carry over
     // into the next one, least of all 'full'.
     setNewKeyCapability('write');
+    setNewKeyScope('mcp');
     setCreateKeyOpen(true);
   }, []);
 
@@ -176,7 +179,7 @@ export const ApiKeysContainer = () => {
       const res = await apiFetch('/api/api-keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, capability: newKeyCapability }),
+        body: JSON.stringify({ name, capability: newKeyCapability, scope: newKeyScope }),
       });
       if (!res.ok) {
         // A refusal says why — only an owner or admin can give a key full capability — not just "failed".
@@ -197,7 +200,7 @@ export const ApiKeysContainer = () => {
     } finally {
       setCreatingKey(false);
     }
-  }, [newKeyName, newKeyCapability, refreshKeys, loadGrantable, t]);
+  }, [newKeyName, newKeyCapability, newKeyScope, refreshKeys, loadGrantable, t]);
 
   const openCapabilityChange = useCallback((key: ApiKeyInfo) => {
     setChangeTarget(key);
@@ -390,29 +393,52 @@ export const ApiKeysContainer = () => {
               data-testid="api-key-new-name"
             />
           </div>
-          {/* The scope is fixed, so it's stated rather than chosen: an operator-created 'app' key
-              would have no owning app URN and could never pass the callback guard's identity
-              check, so offering the choice would only mint dead credentials. Shown with the same
-              badge the list rows use, so "MCP" reads identically in both places. */}
-          <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">{t('API_KEYS_CREATE_SCOPE_LABEL')}</span>
-              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary" data-testid="api-key-create-scope">
-                {t('API_KEYS_SCOPE_MCP')}
-              </span>
+          {/* Which SURFACE the key opens. Two choices, not four: an operator-created 'app' key would
+              have no owning app URN and could never pass the callback guard's identity check, and
+              'qa:read' is minted over ssh on the node under test. Offering either here would only
+              mint a credential that authenticates nothing, or invite 'qa:read' as a "safer MCP key"
+              when it is a different surface. */}
+          {/* Native radios in a fieldset, matching CapabilityPicker below: these are two different
+              surfaces rather than interchangeable settings, and the hint under them is the sentence
+              that makes the choice an informed one. */}
+          <fieldset className="min-w-0 space-y-1" data-testid="api-key-create-scope">
+            <legend className="text-sm font-medium">{t('API_KEYS_CREATE_SCOPE_LABEL')}</legend>
+            <div className="flex flex-wrap gap-4">
+              {OPERATOR_MINTABLE_SCOPES.map((scope) => (
+                <label key={scope} className="flex cursor-pointer items-center gap-2" htmlFor={`api-key-new-scope-${scope}`}>
+                  <input
+                    id={`api-key-new-scope-${scope}`}
+                    type="radio"
+                    name="api-key-new-scope"
+                    value={scope}
+                    checked={newKeyScope === scope}
+                    disabled={creatingKey}
+                    onChange={() => setNewKeyScope(scope)}
+                    data-testid={`api-key-create-scope-${scope}`}
+                  />
+                  <span className="text-sm">{t(scope === 'mcp' ? 'API_KEYS_SCOPE_MCP' : 'API_KEYS_SCOPE_INFERENCE')}</span>
+                </label>
+              ))}
             </div>
-            <p className="text-xs text-muted-foreground">{t('API_KEYS_CREATE_SCOPE_HINT')}</p>
-          </div>
+            <p className="text-xs text-muted-foreground">
+              {t(newKeyScope === 'mcp' ? 'API_KEYS_CREATE_SCOPE_HINT' : 'API_KEYS_CREATE_SCOPE_INFERENCE_HINT')}
+            </p>
+          </fieldset>
           {/* What the key may do IS a choice, at the moment the key is minted — so a key made for a
-              third-party client that only needs to read is never wide open in between. */}
-          <CapabilityPicker
-            name="api-key-new"
-            value={newKeyCapability}
-            onChange={setNewKeyCapability}
-            disabled={creatingKey}
-            unavailable={canGrantFull ? [] : ['full']}
-            unavailableHint={t('API_KEY_FULL_ROLE_REQUIRED')}
-          />
+              third-party client that only needs to read is never wide open in between.
+              Hidden for an inference key: capability grades the MCP TOOL surface, and that key
+              reaches no tool, so every level would mean the same thing. Showing a control that
+              changes nothing is worse than showing none. */}
+          {newKeyScope === 'mcp' && (
+            <CapabilityPicker
+              name="api-key-new"
+              value={newKeyCapability}
+              onChange={setNewKeyCapability}
+              disabled={creatingKey}
+              unavailable={canGrantFull ? [] : ['full']}
+              unavailableHint={t('API_KEY_FULL_ROLE_REQUIRED')}
+            />
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateKeyOpen(false)}>
               {t('COMMON_CANCEL')}
@@ -421,7 +447,7 @@ export const ApiKeysContainer = () => {
               loading={creatingKey}
               // Never send a level the Hub has said it will refuse: after a refusal the re-read can take
               // `full` away while it is still the selected choice.
-              disabled={creatingKey || !newKeyName.trim() || (!canGrantFull && newKeyCapability === 'full')}
+              disabled={creatingKey || !newKeyName.trim() || (newKeyScope === 'mcp' && !canGrantFull && newKeyCapability === 'full')}
               onClick={() => void createKey()}
               data-testid="api-key-create-submit"
             >
