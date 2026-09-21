@@ -19,6 +19,8 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   mtplx: 'mtplx',
   dspark: 'dspark',
   lucebox: 'lucebox',
+  llamacpp: 'llamacpp',
+  lmstudio: 'lmstudio',
 };
 
 /**

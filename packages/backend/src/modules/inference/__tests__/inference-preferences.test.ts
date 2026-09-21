@@ -36,6 +36,8 @@ import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { LlamacppBackend } from '../backends/llamacpp.backend';
+import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — preferences', () => {
@@ -69,6 +71,8 @@ describe('InferenceController — preferences', () => {
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
+        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
+        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
         InferenceBackendRegistry,
         // The controller exposes GET inference/models/resident, which reads this service's
         // report. Mocked here: nothing in these suites exercises residency.

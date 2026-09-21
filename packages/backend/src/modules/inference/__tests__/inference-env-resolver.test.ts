@@ -13,6 +13,8 @@ import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { LlamacppBackend } from '../backends/llamacpp.backend';
+import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
@@ -185,6 +187,8 @@ describe('InferenceEnvResolver', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
+        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
         InferenceBackendRegistry,
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: HubPoolPeerService, useValue: hubPoolPeerService },
@@ -379,7 +383,7 @@ describe('InferenceEnvResolver', () => {
     // Every app install/start runs through here, so one bad character in a hand-edited file must
     // not stop every installed app from getting its CI_* env.
     config.getInferencePreferences.mockReturnValue({
-      preferredBackend: 'llamacpp' as InferenceBackendType,
+      preferredBackend: 'tensorrt-llm' as InferenceBackendType,
       preferredModel: null,
       preferredEmbeddingModel: null,
       preferredVisionModel: null,
@@ -389,7 +393,7 @@ describe('InferenceEnvResolver', () => {
 
     // Asserting the whole Ollama shape, not merely that it did not throw: the fallback has to move
     // the backend *type* as well as the instance. `backendType` feeds BACKEND_API_KEY, the catalog
-    // filter, and CI_INFERENCE_BACKEND, so leaving 'llamacpp' in place would hand apps an undefined
+    // filter, and CI_INFERENCE_BACKEND, so leaving 'tensorrt-llm' in place would hand apps an undefined
     // API key and a filter no curated model can match.
     expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
     expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
@@ -398,7 +402,7 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
     // The operator only finds the typo if the log names it. Error, not warn: this silently
     // re-points every installed app's inference backend, API key, and catalog filter.
-    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'llamacpp'"));
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'tensorrt-llm'"));
   });
 
   describe('vLLM backend with split-backend embeddings', () => {

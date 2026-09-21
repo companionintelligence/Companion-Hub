@@ -4,6 +4,8 @@ import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import {
   ONBOARDING_BACKEND_DSPARK_HINT,
   ONBOARDING_BACKEND_LEMONADE_HINT,
+  ONBOARDING_BACKEND_LLAMACPP_HINT,
+  ONBOARDING_BACKEND_LMSTUDIO_HINT,
   ONBOARDING_BACKEND_MTPLX_HINT,
   ONBOARDING_BACKEND_OLLAMA_HINT,
   ONBOARDING_BACKEND_SPECULATIVE_HINT,
@@ -21,6 +23,8 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   mtplx: ONBOARDING_BACKEND_MTPLX_HINT,
   dspark: ONBOARDING_BACKEND_DSPARK_HINT,
   lucebox: ONBOARDING_BACKEND_SPECULATIVE_HINT,
+  llamacpp: ONBOARDING_BACKEND_LLAMACPP_HINT,
+  lmstudio: ONBOARDING_BACKEND_LMSTUDIO_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey?: string }> = {
@@ -30,10 +34,19 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
   mtplx: { label: 'MTPLX' },
   dspark: { label: 'mlx-dspark' },
   lucebox: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_SPECULATIVE_DESC' },
+  llamacpp: { label: 'llama.cpp', descriptionKey: 'ONBOARDING_BACKEND_LLAMACPP_DESC' },
+  lmstudio: { label: 'LM Studio', descriptionKey: 'ONBOARDING_BACKEND_LMSTUDIO_DESC' },
 };
 
-/** Keep the Apple-Silicon speculative path prominent, with MTPLX as its variant. */
-const BACKEND_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox', 'ollama', 'vllm', 'lemonade'];
+/**
+ * Keep the Apple-Silicon speculative path prominent, with MTPLX as its variant.
+ *
+ * llama.cpp and LM Studio come last: neither is something the Hub can set up, so offering them
+ * above an engine it can install would send an operator with no server running to a dead end. They
+ * are here for the operator who already has one — which the picker shows by probing the default
+ * port, so a running LM Studio on this machine appears healthy with nothing configured.
+ */
+const BACKEND_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox', 'ollama', 'vllm', 'lemonade', 'lmstudio', 'llamacpp'];
 
 /** Runners that do speculative decoding, grouped under one heading in this order. */
 const SPECULATIVE_GROUP_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox'];

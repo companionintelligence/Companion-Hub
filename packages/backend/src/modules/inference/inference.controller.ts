@@ -38,6 +38,8 @@ import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
+import { LlamacppBackend } from './backends/llamacpp.backend';
+import { LmStudioBackend } from './backends/lmstudio.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
 
@@ -71,6 +73,8 @@ export class InferenceController {
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
     private readonly luceboxBackend: LuceboxBackend,
+    private readonly llamacppBackend: LlamacppBackend,
+    private readonly lmstudioBackend: LmStudioBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
     private readonly backends: InferenceBackendRegistry,
@@ -764,6 +768,57 @@ export class InferenceController {
   }
 
   @UseGuards(AuthGuard)
+  /**
+   * Both of these are servers the operator started, so the whole of the status is "can the Hub
+   * reach it". There is no install to offer and no lifecycle to report — the hint names the
+   * environment variable instead, which is the only thing an operator can change here.
+   */
+  @Get('llamacpp/status')
+  async getLlamacppStatus() {
+    const endpointUrl = this.llamacppBackend.getBaseUrl();
+    const health = await this.llamacppBackend.healthCheck().catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
+      error: ready ? undefined : health.error,
+      hint: ready
+        ? undefined
+        : `Start llama-server with a model (llama-server -m <model.gguf> --port 8080), then re-check. Hub probes ${endpointUrl}; set LLAMACPP_URL if it listens elsewhere.`,
+    };
+  }
+
+  @Get('lmstudio/status')
+  async getLmStudioStatus() {
+    const endpointUrl = this.lmstudioBackend.getBaseUrl();
+    const health = await this.lmstudioBackend.healthCheck().catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
+      error: ready ? undefined : health.error,
+      // Naming the network switch matters more here than the server switch: LM Studio binds to
+      // localhost by default, so a Hub in a container reaches nothing even with the server running.
+      hint: ready
+        ? undefined
+        : `Start LM Studio's local server (Developer → Start Server), and turn on "Serve on Local Network" if the Hub is not on that machine. Hub probes ${endpointUrl}; set LMSTUDIO_URL if it listens elsewhere.`,
+    };
+  }
+
   @Get('lucebox/status')
   async getLuceboxStatus() {
     const endpointUrl = this.luceboxBackend.getBaseUrl();

@@ -12,6 +12,8 @@ import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
@@ -141,6 +143,8 @@ describe('PoolProxyService', () => {
   let mtplx: MockProxy<MtplxBackend>;
   let dspark: MockProxy<DsparkBackend>;
   let lucebox: MockProxy<LuceboxBackend>;
+  let llamacpp: MockProxy<LlamacppBackend>;
+  let lmstudio: MockProxy<LmStudioBackend>;
   let peerService: MockProxy<HubPoolPeerService>;
   let tailscaleService: MockProxy<TailscaleService>;
   let configuration: MockProxy<ConfigurationService>;
@@ -175,12 +179,14 @@ describe('PoolProxyService', () => {
     mtplx = mock<MtplxBackend>();
     dspark = mock<DsparkBackend>();
     lucebox = mock<LuceboxBackend>();
+    llamacpp = mock<LlamacppBackend>();
+    lmstudio = mock<LmStudioBackend>();
     peerService = mock<HubPoolPeerService>();
     tailscaleService = mock<TailscaleService>();
     configuration = mock<ConfigurationService>();
     setPoolPreferences({});
 
-    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox]) {
+    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio]) {
       backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     }
     ollama.getBaseUrl.mockReturnValue('http://local-ollama:11434');
@@ -214,7 +220,7 @@ describe('PoolProxyService', () => {
     return new PoolProxyService(
       // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
       // return undefined and quietly drop every local candidate.
-      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
       peerService,
       tailscaleService,
       loadService,
@@ -3123,7 +3129,7 @@ describe('PoolProxyService', () => {
     // scores, and a mocked catalog would only prove the test's own fixture.
     function serviceWithCatalog(): PoolProxyService {
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         peerService,
         tailscaleService,
         loadService,
@@ -3458,7 +3464,7 @@ describe('PoolProxyService', () => {
       router = mock<InferenceRouterService>();
       router.prepareTrackedModel.mockResolvedValue(null);
       withRouter = new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         peerService,
         tailscaleService,
         loadService,

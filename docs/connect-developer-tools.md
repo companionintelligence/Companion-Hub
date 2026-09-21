@@ -111,6 +111,22 @@ install one in **Settings → Inference**.
 before the first token. A 47,000-token turn takes about 300 seconds to first byte on a GPU node. This
 is expected, not a hang; the Hub's own timeouts scale with prompt size.
 
+## Bringing your own engine
+
+The reverse direction works too: if you already run a model server, the Hub can use it rather than
+asking you to switch. Point it at one and the pool places work on it like any other backend.
+
+| Engine | Variable | Notes |
+|---|---|---|
+| llama.cpp (`llama-server`) | `LLAMACPP_URL` | Required. Without it the Hub does not probe — `llama-server` and mlx-dspark both default to port 8080, and probing it unasked would report one engine as two. |
+| LM Studio | `LMSTUDIO_URL` | Optional; the Hub finds a local LM Studio on its default port 1234. Turn on **Developer → Start Server**, and **Serve on Local Network** if the Hub is on another machine. |
+| vLLM | `VLLM_URL` | Also settable in **Settings → AI**. |
+| MTPLX, mlx-dspark, Lucebox | `MTPLX_URL`, `DSPARK_URL`, `SPECULATIVE_INFERENCE_URL` | See [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md). |
+
+The Hub cannot download a model for llama.cpp or LM Studio — whatever the server reports on
+`/v1/models` is what it can serve. Both appear in **Settings → AI** with their reachability, and
+their models show up in this Hub's `GET /v1/models` alongside everything else.
+
 ## Related
 
 - [`hub-pool.md`](hub-pool.md) — routing across several Hubs

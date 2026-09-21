@@ -24,6 +24,8 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
@@ -129,7 +131,14 @@ describe('client disconnects propagate to the engine', () => {
   beforeEach(async () => {
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
-    const others = [mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+    const others = [
+      mock<LemonadeBackend>(),
+      mock<MtplxBackend>(),
+      mock<DsparkBackend>(),
+      mock<LuceboxBackend>(),
+      mock<LlamacppBackend>(),
+      mock<LmStudioBackend>(),
+    ];
     for (const backend of others) {
       backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     }
@@ -150,7 +159,11 @@ describe('client disconnects propagate to the engine', () => {
     loadService = new HubPoolLoadService();
     routingLog = new HubPoolRoutingLogService();
     service = new PoolProxyService(
-      new InferenceBackendRegistry(ollama, vllm, ...(others as [LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend])),
+      new InferenceBackendRegistry(
+        ollama,
+        vllm,
+        ...(others as [LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend, LlamacppBackend, LmStudioBackend]),
+      ),
       peerService,
       mock<TailscaleService>(),
       loadService,
