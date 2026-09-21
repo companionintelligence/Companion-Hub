@@ -9322,6 +9322,36 @@
                           },
                           "additionalProperties": false
                         },
+                        "readiness": {
+                          "type": "object",
+                          "properties": {
+                            "service": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            },
+                            "port": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 65535
+                            },
+                            "path": {
+                              "default": "/health",
+                              "type": "string",
+                              "pattern": "^\\/\\S*$"
+                            },
+                            "bearer_env": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                            }
+                          },
+                          "required": [
+                            "service",
+                            "port",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
                         "edge_auth": {
                           "type": "object",
                           "properties": {
@@ -10566,6 +10596,36 @@
                           },
                           "additionalProperties": false
                         },
+                        "readiness": {
+                          "type": "object",
+                          "properties": {
+                            "service": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            },
+                            "port": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 65535
+                            },
+                            "path": {
+                              "default": "/health",
+                              "type": "string",
+                              "pattern": "^\\/\\S*$"
+                            },
+                            "bearer_env": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                            }
+                          },
+                          "required": [
+                            "service",
+                            "port",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
                         "edge_auth": {
                           "type": "object",
                           "properties": {
@@ -10780,6 +10840,57 @@
                 "gpuVramMb": {
                   "nullable": true,
                   "type": "number"
+                },
+                "readiness": {
+                  "nullable": true,
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "degraded",
+                        "unknown"
+                      ]
+                    },
+                    "checks": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "busy": {
+                      "nullable": true,
+                      "type": "boolean"
+                    },
+                    "drainable": {
+                      "nullable": true,
+                      "type": "boolean"
+                    },
+                    "sampledAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "checks",
+                    "busy",
+                    "drainable",
+                    "sampledAt"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -10799,7 +10910,8 @@
                 "usesDefaultCpuLimit",
                 "sampledAt",
                 "containers",
-                "gpuVramMb"
+                "gpuVramMb",
+                "readiness"
               ],
               "additionalProperties": false
             }
@@ -11983,6 +12095,36 @@
                     },
                     "additionalProperties": false
                   },
+                  "readiness": {
+                    "type": "object",
+                    "properties": {
+                      "service": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                      },
+                      "port": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      "path": {
+                        "default": "/health",
+                        "type": "string",
+                        "pattern": "^\\/\\S*$"
+                      },
+                      "bearer_env": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                      }
+                    },
+                    "required": [
+                      "service",
+                      "port",
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
                   "edge_auth": {
                     "type": "object",
                     "properties": {
@@ -12396,6 +12538,57 @@
           "gpuVramMb": {
             "nullable": true,
             "type": "number"
+          },
+          "readiness": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "degraded",
+                  "unknown"
+                ]
+              },
+              "checks": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "busy": {
+                "nullable": true,
+                "type": "boolean"
+              },
+              "drainable": {
+                "nullable": true,
+                "type": "boolean"
+              },
+              "sampledAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "checks",
+              "busy",
+              "drainable",
+              "sampledAt"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -12415,7 +12608,8 @@
           "usesDefaultCpuLimit",
           "sampledAt",
           "containers",
-          "gpuVramMb"
+          "gpuVramMb",
+          "readiness"
         ],
         "additionalProperties": false
       },
