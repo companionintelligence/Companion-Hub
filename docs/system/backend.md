@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-18 (`InternalOriginGuard` on the app credentials handout; `inference` API-key scope and `InferenceAccessGuard` on the OpenAI- and Ollama-compatible routes)
+> **Last updated:** 2026-09-21 (llama.cpp and LM Studio backends; pooled model listing merges peer inventories)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -279,6 +279,48 @@ and every MTPLX request, and both `InferenceEnvResolver` and `AppCredentialsServ
 credential to direct app clients. mlx-dspark `/health` remains unauthenticated by upstream design so
 an empty `--no-model` server is still a valid readiness target. Never log or return these key files.
 
+## Operator-run engines: llama.cpp and LM Studio
+
+Two backends exist only to reach a server the operator already started — `llama-server` from
+llama.cpp, and LM Studio's local server. The Hub holds a URL for each and nothing else: it cannot
+pull a model, start a container, or change what either is serving.
+
+| | llama.cpp | LM Studio |
+|---|---|---|
+| URL | `LLAMACPP_URL` — **required**, see below | `LMSTUDIO_URL`, default host port 1234 |
+| API key | `LLAMACPP_API_KEY` (`llama-server --api-key`) | `LMSTUDIO_API_KEY`, ignored by LM Studio itself |
+| Health | `/health` **and** `/v1/models` — `/health` answers 503 while the model is still loading | `/v1/models` only; LM Studio publishes no health path |
+| Residency | `implicit` — it serves the one model it was started with | `measured` from `/api/v0/models`, which reports each model's `state` |
+| Deploy | `getDockerImage`/`getComposeConfig` throw | same |
+
+Both accept a URL written with a `/v1` suffix or a trailing slash and store the bare origin, and
+both rewrite an operator's `localhost` to `host.docker.internal` when the Hub is containerized —
+`host-url.util.ts`, shared with the vLLM and mlx-dspark host paths.
+
+llama.cpp is **opt-in** and LM Studio is not, which is a deliberate asymmetry. `llama-server`
+defaults to port 8080 and so does mlx-dspark (`DSPARK_URL` in every compose file here). Probing 8080
+unasked would find dspark's server on an Apple Silicon host, get a perfectly good OpenAI-compatible
+answer from it, and report **one engine as two healthy backends** — double-counting that machine in
+pool ranking and showing an engine the operator never started. So without `LLAMACPP_URL` the backend
+makes no request at all and says so in its health error. LM Studio's 1234 collides with nothing, so
+a running LM Studio on the Hub's own machine is found with no configuration. (An explicit
+`baseUrlOverride` still probes either, so Settings can test an address before it is saved.)
+
+Why no Settings field for either URL: adding one means another positional parameter on
+`ConfigurationService.setInferencePreferences`, which already takes eight. Lucebox is environment-only
+for the same reason. Rework that signature before adding a ninth.
+
+Two things worth knowing about LM Studio specifically. Its `/v1/models` lists every model the
+operator has **downloaded**, not what is in memory — which is the right reading for
+`BackendHealthStatus.modelsLoaded` (an inventory despite its name), and the wrong one for residency,
+so `listResident` uses the native `/api/v0` listing and reports `unsupported` rather than falling
+back when that beta API is absent. And LM Studio binds to localhost by default: a Hub in a container
+reaches nothing until "Serve on Local Network" is turned on, which is what the status route's hint
+says.
+
+Neither engine has catalog rows, because the Hub cannot pull for either. Whatever the server reports
+on `/v1/models` is what the pool can place work on.
+
 ## Inference cloud providers
 
 Settings → AI saves OpenAI / Anthropic / Google / GitHub Copilot keys to `settings.json`
@@ -334,7 +376,7 @@ Installed apps get inference config two ways, and both choose the model through 
   from `selectPoolChatModel` over the pool inventory (`InferenceEndpointService.poolInventory`). The
   order is the operator's preferred model when a node serves it and it qualifies, then the best served
   catalog model that qualifies (the recommender's ranking), then a model a host-served engine (vLLM,
-  Lemonade, MTPLX, mlx-dspark, Lucebox) lists that the catalog has no row for. An uncatalogued Ollama
+  Lemonade, MTPLX, mlx-dspark, Lucebox, llama.cpp, LM Studio) lists that the catalog has no row for. An uncatalogued Ollama
   tag is never handed out unless the operator named it, because an Ollama inventory holds every tag
   ever pulled. A model only a peer serves gets `num_ctx` 32768 (raised to the app's floor) rather than
   a value sized from this node's memory. The peer filter mirrors `PoolProxyService.usablePeers`;

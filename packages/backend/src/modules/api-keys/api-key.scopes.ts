@@ -1,3 +1,5 @@
+import { OPERATOR_MINTABLE_SCOPES as SHARED_OPERATOR_MINTABLE_SCOPES, type OperatorMintableScope } from '@ci-hub/common/types';
+
 /**
  * Scopes a locally-minted API key can carry. One key row may hold several scopes — e.g. a
  * companion app that both consumes Hub MCP tools and calls the Hub's app-facing REST endpoints
@@ -60,9 +62,21 @@ export const QA_READ_SCOPE: ApiKeyScope = 'qa:read';
  * A key's `capability` is inert here: the inference routes have no verbs to gate, and
  * `api-key.capabilities.ts` says capability gates MCP tools only. The CLI stores `read` for it.
  *
- * Minted by `cihub api-key create --scope inference`; the Settings UI only mints 'mcp' keys but
- * lists this one under its own badge. Checked by `InferenceAccessGuard`, and only on its second leg:
+ * Minted by `cihub api-key create --scope inference`, or from Settings → Security, which offers it
+ * beside 'mcp' (see {@link OPERATOR_MINTABLE_SCOPES}) and lists it under its own badge. Checked by `InferenceAccessGuard`, and only on its second leg:
  * a request from inside the appliance is admitted by origin before any header is read, which is why
  * apps sending a placeholder bearer keep working with zero key-store lookups.
  */
 export const INFERENCE_SCOPE: ApiKeyScope = 'inference';
+
+/**
+ * Scopes an operator may mint for themselves, re-exported from `@ci-hub/common` — see the docblock
+ * there for why it lives in the shared package (the Settings picker renders the same list the DTO
+ * validates) and why 'app' and 'qa:read' are not on it.
+ *
+ * The `satisfies` is the tripwire that keeps the two files honest: a scope named there but removed
+ * from {@link API_KEY_SCOPES} here is a build error rather than a credential nothing accepts.
+ */
+export const OPERATOR_MINTABLE_SCOPES = SHARED_OPERATOR_MINTABLE_SCOPES satisfies readonly ApiKeyScope[];
+
+export type { OperatorMintableScope };

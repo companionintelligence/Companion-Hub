@@ -27,6 +27,8 @@ import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
+import { LlamacppBackend } from './backends/llamacpp.backend';
+import { LmStudioBackend } from './backends/lmstudio.backend';
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { InferenceController } from './inference.controller';
 
@@ -58,6 +60,8 @@ import { InferenceController } from './inference.controller';
     MtplxBackend,
     DsparkBackend,
     LuceboxBackend,
+    LlamacppBackend,
+    LmStudioBackend,
     InferenceBackendRegistry,
     BackendObserverService,
     InternalOriginGuard,
@@ -82,6 +86,8 @@ import { InferenceController } from './inference.controller';
     MtplxBackend,
     DsparkBackend,
     LuceboxBackend,
+    LlamacppBackend,
+    LmStudioBackend,
     InferenceBackendRegistry,
     BackendObserverService,
   ],

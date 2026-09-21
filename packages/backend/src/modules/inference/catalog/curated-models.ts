@@ -306,6 +306,12 @@ function defaultSupportedPlatforms(backend: InferenceBackendType): HostPlatform[
       return ['linux'];
     case 'ollama':
     case 'lemonade':
+    case 'llamacpp':
+    case 'lmstudio':
+      // Both are host-run on every desktop platform the Hub supports: llama.cpp builds everywhere,
+      // and LM Studio ships macOS, Windows, and Linux applications. Neither has catalog rows today
+      // (the Hub cannot pull for either — see their backends), so this gate decides nothing yet; it
+      // is here so that adding a row later does not silently inherit a narrower platform set.
       return [...ALL_HOST_PLATFORMS];
   }
 }

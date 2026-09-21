@@ -133,14 +133,23 @@ describe('the ledger adds up', () => {
 });
 
 describe('SPEC_DECODE', () => {
-  it('describes all six engines, each with sourced evidence', () => {
+  it('describes every engine, each with sourced evidence', () => {
     expect(Object.keys(SPEC_DECODE).sort()).toEqual([...INFERENCE_BACKEND_TYPES].sort());
     for (const backend of INFERENCE_BACKEND_TYPES) {
       const row = SPEC_DECODE[backend];
       expect(row.backend).toBe(backend);
-      // An unsourced capability claim is a guess, and this whole table exists because guesses from
-      // vendor docs got two of these rows wrong.
+      // An unsourced claim is a guess, and this whole table exists because guesses from vendor docs
+      // got two of these rows wrong. An 'unmeasured' row is held to this too: saying nobody has run
+      // the engine is itself a claim about the fleet, and it has to say so at length.
       expect(row.evidence.length, `${backend} states a capability with no evidence`).toBeGreaterThan(60);
+      // ...but only a row that claims a capability must name the switch. An 'unmeasured' row that
+      // named one would be the guess the table refuses; naming none is the whole content of it.
+      if (row.capable === 'unmeasured') {
+        expect(row.toggleOn, `${backend} is unmeasured but names a toggle anyway`).toBeNull();
+        expect(row.offArm, `${backend} is unmeasured but names an off arm anyway`).toBeNull();
+        expect(row.observable, `${backend} is unmeasured but claims something is observable`).toBeNull();
+        continue;
+      }
       expect(row.toggleOn ?? row.offArm, `${backend} names no way to change the speculative state`).toBeTruthy();
     }
   });
@@ -170,11 +179,20 @@ describe('SPEC_DECODE', () => {
     // cannot be toggled by a request can still report, per completion, whether the drafter ran.
     expect(SPEC_DECODE.lucebox.reach).toBe('launch-flag');
     expect(SPEC_DECODE.lucebox.observable).toBeTruthy();
-    // vLLM is the one engine that says nothing read-only, which is why its cell is a sourced skip.
+    // vLLM is the one engine that was DRIVEN and says nothing read-only, which is why its cell is a
+    // sourced skip. The unmeasured engines skip too, but for a weaker reason, and the two must not
+    // be allowed to read as the same finding — so they are asserted apart.
+    expect(SPEC_DECODE.vllm.capable).not.toBe('unmeasured');
     expect(SPEC_DECODE.vllm.observable).toBeNull();
     expect(conformanceCell('vllm', 'spec-decode-capability', BANK).status).toBe('skipped');
-    // Every other engine gets a probe rather than a skip, because something read-only does answer.
-    for (const backend of INFERENCE_BACKEND_TYPES.filter((b) => b !== 'vllm')) {
+    const unmeasured = INFERENCE_BACKEND_TYPES.filter((b) => SPEC_DECODE[b].capable === 'unmeasured');
+    for (const backend of unmeasured) {
+      const cell = conformanceCell(backend, 'spec-decode-capability', BANK);
+      expect(cell.status, `${backend} spec-decode cell`).toBe('skipped');
+      expect(cell.reason, `${backend} skips without saying it is unmeasured`).toMatch(/not measured/i);
+    }
+    // Every engine that was driven and does answer gets a probe rather than a skip.
+    for (const backend of INFERENCE_BACKEND_TYPES.filter((b) => b !== 'vllm' && !unmeasured.includes(b))) {
       expect(conformanceCell(backend, 'spec-decode-capability', BANK).status, `${backend} spec-decode cell`).toBe('covered');
     }
   });

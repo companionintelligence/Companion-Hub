@@ -12,10 +12,13 @@ import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { LlamacppBackend } from '../backends/llamacpp.backend';
+import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { HardwareProfile, TrackedModel, CuratedModel } from '@ci-hub/common/types';
 
 describe('InferenceRouterService', () => {
@@ -32,6 +35,8 @@ describe('InferenceRouterService', () => {
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
   let luceboxBackend: MockProxy<LuceboxBackend>;
+  let llamacppBackend: MockProxy<LlamacppBackend>;
+  let lmstudioBackend: MockProxy<LmStudioBackend>;
   let configuration: MockProxy<ConfigurationService>;
 
   const defaultProfile: HardwareProfile = {
@@ -56,6 +61,8 @@ describe('InferenceRouterService', () => {
     mtplxBackend = mock<MtplxBackend>();
     dsparkBackend = mock<DsparkBackend>();
     luceboxBackend = mock<LuceboxBackend>();
+    llamacppBackend = mock<LlamacppBackend>();
+    lmstudioBackend = mock<LmStudioBackend>();
     configuration = mock<ConfigurationService>();
     // No operator preference by default, so every existing case resolves exactly as before.
     configuration.getInferencePreferences.mockReturnValue({
@@ -89,6 +96,12 @@ describe('InferenceRouterService', () => {
     dsparkBackend.getBaseUrl.mockReturnValue('http://127.0.0.1:8080');
     luceboxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     luceboxBackend.getBaseUrl.mockReturnValue('http://ci-hub-lucebox:8000');
+    // Both host-run engines are down by default: the operator has not started one, which is the
+    // state every pre-existing case in this file was written against.
+    llamacppBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    llamacppBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
+    lmstudioBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    lmstudioBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:1234');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -105,6 +118,8 @@ describe('InferenceRouterService', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        { provide: LlamacppBackend, useValue: llamacppBackend },
+        { provide: LmStudioBackend, useValue: lmstudioBackend },
         { provide: ConfigurationService, useValue: configuration },
         InferenceBackendRegistry,
       ],
@@ -189,7 +204,7 @@ describe('InferenceRouterService', () => {
       const status = await service.getStatus();
 
       expect(status.hardwareTier).toBe('high');
-      expect(status.backends).toHaveLength(6);
+      expect(status.backends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
       expect(status.memoryBudget).toBeDefined();
     });
 
@@ -228,8 +243,17 @@ describe('InferenceRouterService', () => {
     it('health-checks each backend exactly once per getStatus(), not twice', async () => {
       const status = await service.getStatus();
 
-      expect(status.backends).toHaveLength(6);
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+      expect(status.backends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
+      for (const backend of [
+        ollamaBackend,
+        vllmBackend,
+        lemonadeBackend,
+        mtplxBackend,
+        dsparkBackend,
+        luceboxBackend,
+        llamacppBackend,
+        lmstudioBackend,
+      ]) {
         expect(backend.healthCheck).toHaveBeenCalledTimes(1);
       }
     });
@@ -238,7 +262,16 @@ describe('InferenceRouterService', () => {
       const STALL_MS = 40;
       let inFlight = 0;
       let peakInFlight = 0;
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+      for (const backend of [
+        ollamaBackend,
+        vllmBackend,
+        lemonadeBackend,
+        mtplxBackend,
+        dsparkBackend,
+        luceboxBackend,
+        llamacppBackend,
+        lmstudioBackend,
+      ]) {
         backend.healthCheck.mockImplementation(async () => {
           inFlight += 1;
           peakInFlight = Math.max(peakInFlight, inFlight);
@@ -252,9 +285,10 @@ describe('InferenceRouterService', () => {
       await service.listModels();
       const elapsed = Date.now() - startedAt;
 
-      // All six overlap. Sequential would be ~6 x STALL_MS; assert well under that rather than
-      // pinning a wall-clock figure a slow CI box would flake on.
-      expect(peakInFlight).toBe(6);
+      // Every backend overlaps. Sequential would be ~n x STALL_MS; assert well under that rather
+      // than pinning a wall-clock figure a slow CI box would flake on. Derived from the tuple
+      // rather than written as a literal, so adding a backend does not quietly assert the old count.
+      expect(peakInFlight).toBe(INFERENCE_BACKEND_TYPES.length);
       expect(elapsed).toBeLessThan(STALL_MS * 4);
     });
     /**
@@ -270,13 +304,22 @@ describe('InferenceRouterService', () => {
       // routeChatCompletion returns before step 4 — one sweep happens either way and this test
       // passes whether or not the memo works. It did exactly that until this line was added.
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['resident-model'] });
-      for (const backend of [vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+      for (const backend of [vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend, llamacppBackend, lmstudioBackend]) {
         backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       }
 
       await service.routeChatCompletion({ model: 'auto', messages: [] }).catch(() => undefined);
 
-      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+      for (const backend of [
+        ollamaBackend,
+        vllmBackend,
+        lemonadeBackend,
+        mtplxBackend,
+        dsparkBackend,
+        luceboxBackend,
+        llamacppBackend,
+        lmstudioBackend,
+      ]) {
         expect(backend.healthCheck.mock.calls.length).toBeLessThanOrEqual(1);
       }
     });
