@@ -4,6 +4,7 @@ import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO, hubContainerName } from './common/constants';
 import { withTimeout } from './common/helpers/with-timeout';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
+import { resolveHubBuildInfo } from './core/build-info/hub-build-info';
 import { ConfigurationService } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
 import { FilesystemService } from './core/filesystem/filesystem.service';
@@ -114,7 +115,13 @@ export class AppService implements OnApplicationShutdown {
       this.logger.startPeriodicFlush();
       this.logger.info('Logger flushed, daily rotation scheduled');
 
-      this.logger.info(`Running version: ${process.env.CI_HUB_VERSION}`);
+      // The build, from the image stamp — not `CI_HUB_VERSION`, which comes from the install's env
+      // file and was wrong on 10 of 16 fleet Hubs. Both are logged: when they disagree, this line is
+      // where an operator reading container logs finds out which number they have been trusting.
+      // Same facts as `GET /api/hub/build`.
+      const build = resolveHubBuildInfo();
+      this.logger.info(`Running build: ${build.summary}${build.imageRef ? ` from ${build.imageRef}` : ''}`);
+      this.logger.info(`Env file declares CI_HUB_VERSION=${build.declaredVersion ?? '(unset)'}`);
 
       const buster = this.cache.get('buster');
       if (buster !== version) {

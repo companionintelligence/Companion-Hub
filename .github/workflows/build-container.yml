@@ -131,8 +131,21 @@ jobs:
           # image says `org.opencontainers.image.version=latest`. The Hub's self-updater reads this
           # label to learn which release it runs (CI_HUB_VERSION in the env file was wrong on 10 of
           # 16 fleet Hubs), so a release build must carry its version here.
+          #
+          # `revision` is also one metadata-action sets by default, and it is restated explicitly
+          # because it is now load-bearing twice over: hub-deployment.ts identifies a channel build
+          # by it (a `dev` image has no version), and it is the only thing that tells two untagged
+          # `:dev` indexes apart. A default that silently stops being emitted would take both with
+          # it. Every label here is also passed as a build-arg below, so the SAME facts reach the
+          # running process — a label is readable only through the Docker socket, which the Hub's
+          # own `GET /api/hub/build` must not depend on.
           labels: |
             org.opencontainers.image.version=${{ steps.tags.outputs.version || steps.tags.outputs.channel_tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=CI-Hub
+            org.opencontainers.image.description=Companion Hub appliance runtime
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -154,8 +167,27 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Build identity is baked as ENV in the runner stage (see the Dockerfile block that
+          # declares the CI_HUB_BUILD_* args). Labels alone are not enough: reading a label needs
+          # the Docker socket, and "which build am I?" has to be answerable by the Hub process
+          # itself — that is what `GET /api/hub/build` serves.
+          #
+          # CI_HUB_VERSION additionally reaches the BUILDER stage, where vite.config.ts bakes it
+          # into the frontend bundle (`import.meta.env.CI_HUB_VERSION`). Until now this workflow
+          # passed nothing, so every shipped bundle was built with an empty version and
+          # `hub-hello.ts` could not tell a stale tab from a current one after a stack update.
+          #
+          # No comments inside the block scalar below: every line there is parsed as KEY=VALUE.
           build-args: |
             CI_CLOUD_URL=https://${{ steps.tags.outputs.portal_registry }}
+            CI_HUB_VERSION=${{ steps.tags.outputs.version || steps.tags.outputs.channel_tag }}
+            CI_HUB_ENVIRONMENT=${{ steps.tags.outputs.environment }}
+            CI_HUB_BUILD_VERSION=${{ steps.tags.outputs.version || steps.tags.outputs.channel_tag }}
+            CI_HUB_BUILD_CHANNEL=${{ steps.tags.outputs.channel_tag }}
+            CI_HUB_BUILD_SHA=${{ github.sha }}
+            CI_HUB_BUILD_REF=${{ github.ref }}
+            CI_HUB_BUILD_TIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            CI_HUB_BUILD_IMAGE_REF=${{ steps.tags.outputs.desktop_ref }}
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             SENTRY_RELEASE=ci-hub-backend@${{ github.sha }}
             SENTRY_ORG=${{ vars.SENTRY_ORG }}
