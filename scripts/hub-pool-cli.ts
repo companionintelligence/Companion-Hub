@@ -149,6 +149,8 @@ export interface PoolStatusResponse {
     poolMaxPromptTokens?: number | null;
     /** Absent on a Hub predating the local health snapshot; `0` there would have meant live probes anyway. */
     poolProbeSnapshotTtlMs?: number;
+    /** Absent on a Hub predating prefix affinity; `0` there would have meant off anyway. */
+    poolPrefixAffinityMaxInFlight?: number;
   };
   tailscaleAdminApiConfigured: boolean;
   localNode: {
@@ -225,6 +227,17 @@ export interface PoolRoutingRecord {
   promptCeiling?: PoolRoutingPromptCeiling | null;
   /** What measured prefill rates did to this decision, or `null` when nothing applicable was measured. Absent on a Hub predating throughput. */
   throughput?: PoolRoutingThroughput | null;
+  /** What prefix affinity did to this decision, or `null` when it was off or did not apply. Absent on a Hub predating affinity. */
+  affinity?: PoolRoutingAffinity | null;
+}
+
+/** Mirrors `PoolRoutingAffinity` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingAffinity {
+  key: 'header' | 'hashed';
+  outcome: 'hit' | 'miss' | 'skipped';
+  remembered: string | null;
+  inFlight: number | null;
+  maxInFlight: number;
 }
 
 /** Mirrors `PoolRoutingThroughput` in `hub-pool-routing-log.service.ts`. */
@@ -1120,6 +1133,22 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         throughput.overridden
           ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
           : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
+      );
+    }
+    // Only when affinity changed something or stood aside: a `hit` is the line an operator watching
+    // a session stay put needs, a `skipped` says why a turn re-prefilled cold, and a `miss` on every
+    // first turn would bury both.
+    const affinity = entry.affinity;
+    if (affinity?.outcome === 'hit') {
+      lines.push(
+        `  ↳ followed its prompt prefix to ${sanitizeForBox(affinity.remembered ?? '?')} (${affinity.inFlight ?? 0} in flight, limit ${affinity.maxInFlight})`,
+      );
+    } else if (affinity?.outcome === 'skipped') {
+      const node = sanitizeForBox(affinity.remembered ?? '?');
+      lines.push(
+        affinity.inFlight !== null && affinity.inFlight >= affinity.maxInFlight
+          ? `  ↳ ${node} holds this prompt's prefix but had ${affinity.inFlight} in flight (limit ${affinity.maxInFlight}); ranked as usual`
+          : `  ↳ ${node} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
       );
     }
     // The chain, not a count: which nodes refused is the whole point of reading this log.

@@ -22,6 +22,7 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
@@ -223,6 +224,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
     poolMaxPromptTokens: null,
     poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+    poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
 

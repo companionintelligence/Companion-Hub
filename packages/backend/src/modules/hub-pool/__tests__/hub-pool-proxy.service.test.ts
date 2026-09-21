@@ -17,6 +17,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PRESSURE_WEIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   MIN_POOL_MAX_PROMPT_TOKENS,
@@ -46,10 +47,20 @@ import {
   servedByHeaders,
   splitDemoted,
 } from '../hub-pool-proxy.service';
+import {
+  POOL_AFFINITY_HEADER,
+  PREFIX_AFFINITY_TTL_MS,
+  PREFIX_HASH_CHARS,
+  PrefixAffinityStore,
+  applyPrefixAffinity,
+  derivePrefixKey,
+  normalizePoolSessionKey,
+  promptHead,
+} from '../hub-pool-prefix-affinity';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import type { PoolPeerCapabilities, PoolThroughputEstimate } from '../hub-pool.types';
+import type { PoolCandidate, PoolPeerCapabilities, PoolThroughputEstimate } from '../hub-pool.types';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
   return {
@@ -167,6 +178,7 @@ describe('PoolProxyService', () => {
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       poolMaxPromptTokens: null,
       poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+      poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
       ...overrides,
     });
   }
@@ -1912,6 +1924,418 @@ describe('PoolProxyService', () => {
    * does everything else — short prompts, older peers, failover, a fleet with nowhere else to go —
    * still reach the nodes it reached before.
    */
+  /**
+   * Prefix affinity: the node and engine that last served a prompt prefix are preferred for its next
+   * call while their queue is under `poolPrefixAffinityMaxInFlight`. Measured on core-2, 2026-09-20:
+   * a 44k-token OpenClaw turn spent 67 s of its 100 s in prefill, and the same session's next call
+   * re-prefilled 28,672 tokens because the pool did not know which node held the prefix.
+   */
+  describe('prefix affinity', () => {
+    const MODEL = 'llama3.2:3b';
+    const PEER = 'peer-idle';
+    const PEER_FQDN = `${PEER}.tailxyz.ts.net`;
+    const SYSTEM = { role: 'system', content: 'You are an agent with these tools: …' };
+    /** Two calls of one session: the second has grown by a turn, and its head is unchanged. */
+    const turn1 = { model: MODEL, stream: false, messages: [SYSTEM, { role: 'user', content: 'read the repo' }] };
+    const turn2 = {
+      model: MODEL,
+      stream: false,
+      messages: [...turn1.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now fix it' }],
+    };
+
+    /** A peer holding the model, reachable for a forward, reporting `inFlightRequests`. */
+    function peerReporting(inFlightRequests: number): HubPoolPeer {
+      const peer = peerServing(PEER, MODEL, { inFlightRequests });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+      return peer;
+    }
+
+    /** Route one call; returns the mock response so headers can be read. */
+    async function route(body: Record<string, unknown>, options: { path?: string; sessionHeader?: string | string[] } = {}): Promise<Response> {
+      const res = createMockResponse();
+      await service.proxyRequest({
+        path: options.path ?? '/v1/chat/completions',
+        method: 'POST',
+        body,
+        model: MODEL,
+        res,
+        sessionHeader: options.sessionHeader,
+      });
+      return res;
+    }
+
+    /** Which upstream each forward went to, in order: `'local'` or the peer's FQDN. */
+    function forwardedTo(): string[] {
+      return vi
+        .mocked(global.fetch)
+        .mock.calls.map(([url]) => (String(url).includes('local-ollama') ? LOCAL_CANDIDATE_KEY : new URL(String(url)).hostname));
+    }
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      vi.mocked(global.fetch).mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    });
+
+    /** Local busy enough that the ranker sends the first call to the idle peer; then idle again, so the ranker alone would bring the next call home. */
+    async function firstCallLandsOnPeer(body: Record<string, unknown> = turn1, options: { sessionHeader?: string } = {}): Promise<void> {
+      peerReporting(0);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      await route(body, options);
+      expect(forwardedTo()).toEqual([PEER_FQDN]);
+      loadService.release(LOCAL_CANDIDATE_KEY);
+      loadService.release(LOCAL_CANDIDATE_KEY);
+    }
+
+    describe('at the default (poolPrefixAffinityMaxInFlight = 0) nothing changes', () => {
+      it('routes the next call by the ranker alone, stamps no header, and logs affinity as null', async () => {
+        await firstCallLandsOnPeer();
+
+        const res = await route(turn2);
+
+        // Local is idle again and takes the exact tie on the affinity margin, exactly as before.
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)).not.toHaveProperty(POOL_AFFINITY_HEADER.toLowerCase());
+        expect(routingLog.list().map((row) => row.affinity)).toEqual([null, null]);
+      });
+
+      it('remembers nothing while off, so switching it on later starts from a miss rather than a stale placement', async () => {
+        await firstCallLandsOnPeer();
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+      });
+    });
+
+    describe('with the limit set', () => {
+      beforeEach(() => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+      });
+
+      it('keeps the next call of a session on the node that served the last one, though the ranker would have brought it home', async () => {
+        await firstCallLandsOnPeer();
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        expect(headersSetOn(res)['x-hub-pool-served-by']).toBe(PEER_FQDN);
+        const [second, first] = routingLog.list();
+        expect(first?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+        expect(second?.affinity).toEqual({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
+      });
+
+      it('falls through to the ranker once the remembered node has the limit in flight, and says so', async () => {
+        await firstCallLandsOnPeer();
+        // Two already queued there: this request would be its third, and waiting costs more than re-prefilling.
+        peerReporting(2);
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('skipped');
+        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'skipped', remembered: PEER_FQDN, inFlight: 2, maxInFlight: 2 });
+      });
+
+      it('still follows the prefix with one other request in flight there: the limit counts the request being placed', async () => {
+        await firstCallLandsOnPeer();
+        peerReporting(1);
+
+        await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'hit', inFlight: 1 });
+      });
+
+      it('forgets a placement after the TTL, so a session that went quiet ranks fresh', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          await firstCallLandsOnPeer();
+          vi.setSystemTime(Date.now() + PREFIX_AFFINITY_TTL_MS + 1);
+
+          const res = await route(turn2);
+
+          expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+          expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+          expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'miss', remembered: null });
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('still remembers a placement just inside the TTL', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          await firstCallLandsOnPeer();
+          vi.setSystemTime(Date.now() + PREFIX_AFFINITY_TTL_MS - 1);
+
+          await route(turn2);
+
+          expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      /**
+       * The header names the session; the hash only guesses at it. Two bodies with nothing in
+       * common follow each other under one header, and one body under two headers does not.
+       */
+      it('keys on X-Hub-Pool-Session when the app sends one, over anything in the body', async () => {
+        await firstCallLandsOnPeer(turn1, { sessionHeader: 'chat-42' });
+        const unrelated = { model: MODEL, stream: false, messages: [{ role: 'user', content: 'a different conversation entirely' }] };
+
+        const followed = await route(unrelated, { sessionHeader: 'chat-42' });
+        const other = await route(turn2, { sessionHeader: 'chat-43' });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(followed)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        expect(headersSetOn(other)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(routingLog.list().map((row) => row.affinity?.key)).toEqual(['header', 'header', 'header']);
+      });
+
+      it('falls back to the hashed key when the header is malformed, rather than keying every such app together', async () => {
+        await firstCallLandsOnPeer();
+
+        // Whitespace, a control character, and Express's array form with a bad first value: none is a session id.
+        const res = await route(turn2, { sessionHeader: 'not a session id' });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit' });
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+      });
+
+      it('keys a session per model: the same session on another model is a miss, because the cache it warmed is per model', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, 'other:1b'] });
+        await firstCallLandsOnPeer(turn1, { sessionHeader: 'chat-42' });
+        const peer = peerServing(PEER, 'other:1b', { inFlightRequests: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        peerService.getPeerById.mockResolvedValue(peer);
+        const res = createMockResponse();
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { ...turn2, model: 'other:1b' },
+          model: 'other:1b',
+          res,
+          sessionHeader: 'chat-42',
+        });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+      });
+
+      it('remembers the candidate that actually took the work after a failover, not the one tried first', async () => {
+        peerReporting(0);
+        // Local first (idle, affinity margin); it 500s, the peer serves.
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(new Response('server error', { status: 500 }))
+          .mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        await route(turn1);
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, PEER_FQDN]);
+
+        await route(turn2);
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, PEER_FQDN, PEER_FQDN]);
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'hit', remembered: PEER_FQDN });
+      });
+
+      it('forgets the prefix when every candidate failed, and says what it saw on the 502', async () => {
+        await firstCallLandsOnPeer();
+        vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNREFUSED'));
+        const failed = await route(turn2);
+        expect(failed.status).toHaveBeenCalledWith(502);
+        expect(headersSetOn(failed)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        vi.mocked(global.fetch).mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+        const next = await route(turn2);
+
+        // Nothing holds the prefix now, so the ranker decides: local, idle, on the affinity margin.
+        expect(forwardedTo().at(-1)).toBe(LOCAL_CANDIDATE_KEY);
+        expect(headersSetOn(next)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+      });
+
+      it('yields to an operator pin, and records that the remembered node was under the limit but not placed first', async () => {
+        await firstCallLandsOnPeer();
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2, poolPins: [{ scope: 'default', targetKind: 'local', mode: 'prefer' }] });
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('skipped');
+        // `inFlight < maxInFlight` on a `skipped` row is how an operator tells "a pin overrode it" from "its queue was full".
+        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'skipped', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
+      });
+
+      it('leaves the failover walk intact: the remembered node first, then every other candidate in ranked order', async () => {
+        await firstCallLandsOnPeer();
+        // Local idle; a second, busier peer behind it.
+        const other = peerServing('peer-busy', MODEL, { inFlightRequests: 5 });
+        const sticky = peerServing(PEER, MODEL, { inFlightRequests: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([other, sticky]);
+        peerService.getPeerById.mockImplementation(async (id) => (id === PEER ? sticky : other));
+
+        expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, PEER, 'peer-busy']);
+        vi.mocked(global.fetch).mockClear();
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(new Response('server error', { status: 500 }))
+          .mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+        await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(routingLog.list()[0]).toMatchObject({ node: LOCAL_CANDIDATE_KEY, failedOverFrom: [PEER_FQDN], affinity: { outcome: 'hit' } });
+      });
+
+      it('does not judge an embeddings batch: no key, no header, affinity null in the log', async () => {
+        peerReporting(0);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+        const res = await route({ model: MODEL, input: ['a', 'b'] }, { path: '/v1/embeddings', sessionHeader: 'chat-42' });
+
+        expect(headersSetOn(res)).not.toHaveProperty(POOL_AFFINITY_HEADER.toLowerCase());
+        expect(routingLog.list()[0]?.affinity).toBeNull();
+      });
+
+      it('matches on the engine as well as the node: the same node offering the model from another engine is a miss', async () => {
+        await firstCallLandsOnPeer();
+        const peer = mockPeer({
+          id: PEER,
+          nodeFqdn: PEER_FQDN,
+          lastCapabilities: capabilitiesWithModel(MODEL, {
+            inFlightRequests: 0,
+            backends: [{ type: 'vllm', healthy: true, modelsLoaded: [MODEL] }],
+          }) as unknown as Record<string, unknown>,
+        });
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        peerService.getPeerById.mockResolvedValue(peer);
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'miss', remembered: PEER_FQDN, inFlight: null });
+      });
+    });
+
+    describe('the session key', () => {
+      it('prefers a well-formed header, takes the first of a repeated one, and drops one that is not an id', () => {
+        expect(normalizePoolSessionKey('chat-42')).toBe('chat-42');
+        expect(normalizePoolSessionKey(['run:7/step=3', 'other'])).toBe('run:7/step=3');
+        expect(normalizePoolSessionKey('has space')).toBeUndefined();
+        expect(normalizePoolSessionKey('-leading-punctuation')).toBeUndefined();
+        expect(normalizePoolSessionKey('x'.repeat(129))).toBeUndefined();
+        expect(normalizePoolSessionKey('')).toBeUndefined();
+        expect(normalizePoolSessionKey(undefined)).toBeUndefined();
+      });
+
+      it('hashes the head of the conversation, so a session keys the same as it grows and two sessions key apart', () => {
+        const grown = derivePrefixKey(MODEL, turn2, undefined);
+        expect(derivePrefixKey(MODEL, turn1, undefined)).toEqual(grown);
+        expect(grown?.source).toBe('hashed');
+        const other = derivePrefixKey(MODEL, { ...turn1, messages: [SYSTEM, { role: 'user', content: 'a different task' }] }, undefined);
+        expect(other).not.toEqual(grown);
+        // The model is part of the key: a cache is per loaded model.
+        expect(derivePrefixKey('other:1b', turn1, undefined)).not.toEqual(grown);
+      });
+
+      it('includes every leading system message and the first message after them, and nothing later', () => {
+        const twoSystem = [SYSTEM, { role: 'system', content: 'and also…' }, { role: 'user', content: 'go' }];
+        expect(promptHead({ messages: [...twoSystem, { role: 'assistant', content: 'later' }] })).toBe(JSON.stringify(twoSystem));
+        expect(
+          promptHead({
+            messages: [
+              { role: 'user', content: 'go' },
+              { role: 'assistant', content: 'later' },
+            ],
+          }),
+        ).toBe(JSON.stringify([{ role: 'user', content: 'go' }]));
+      });
+
+      it('keys a completion or generate body on its system and prompt fields, and nothing on a body with neither', () => {
+        expect(promptHead({ model: MODEL, prompt: 'Once upon' })).toBe(JSON.stringify([null, 'Once upon']));
+        expect(promptHead({ model: MODEL, system: 'Be brief', prompt: 'Once upon' })).toBe(JSON.stringify(['Be brief', 'Once upon']));
+        expect(promptHead({ model: MODEL, input: ['a'] })).toBeNull();
+        expect(promptHead({ model: MODEL, messages: [] })).toBeNull();
+        expect(derivePrefixKey(MODEL, { model: MODEL }, undefined)).toBeNull();
+        expect(derivePrefixKey(MODEL, 'not an object', undefined)).toBeNull();
+      });
+
+      /** Two sessions of one agent share a key once the system prompt alone fills the digest — and that is right: the shared prefix is what the cache holds. */
+      it('digests only the first PREFIX_HASH_CHARS of the head', () => {
+        const longSystem = { role: 'system', content: 'x'.repeat(PREFIX_HASH_CHARS) };
+        const a = derivePrefixKey(MODEL, { messages: [longSystem, { role: 'user', content: 'task a' }] }, undefined);
+        const b = derivePrefixKey(MODEL, { messages: [longSystem, { role: 'user', content: 'task b' }] }, undefined);
+        expect(a).toEqual(b);
+      });
+    });
+
+    describe('the store', () => {
+      it('is bounded, dropping the least recently written prefix past capacity', () => {
+        const store = new PrefixAffinityStore(60_000, 2);
+        const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+        store.remember('a', local, 1_000);
+        store.remember('b', local, 1_001);
+        // Re-writing `a` makes it the most recent, so `b` is the one to go.
+        store.remember('a', local, 1_002);
+        store.remember('c', local, 1_003);
+
+        expect(store.size).toBe(2);
+        expect(store.get('a', 1_003)).toMatchObject({ nodeKey: LOCAL_CANDIDATE_KEY, node: LOCAL_CANDIDATE_KEY, backend: 'ollama' });
+        expect(store.get('b', 1_003)).toBeNull();
+        expect(store.get('c', 1_003)).not.toBeNull();
+      });
+
+      it('drops an expired entry on the read, and forget() drops one at once', () => {
+        const store = new PrefixAffinityStore(1_000, 10);
+        store.remember('a', { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'vllm' }, 5_000);
+
+        expect(store.get('a', 6_000)).toMatchObject({ nodeKey: 'peer-1', node: 'peer-1.tailxyz.ts.net', backend: 'vllm' });
+        expect(store.get('a', 6_001)).toBeNull();
+        expect(store.size).toBe(0);
+
+        store.remember('a', { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'vllm' }, 7_000);
+        store.forget('a');
+        expect(store.get('a', 7_000)).toBeNull();
+      });
+    });
+
+    describe('applyPrefixAffinity', () => {
+      const local = { candidate: { peerId: null, nodeFqdn: null, backend: 'ollama' } as PoolCandidate, inFlight: 0 };
+      const peer = { candidate: { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate, inFlight: 1 };
+      const ranked = [local, peer];
+
+      it('is the identity with nothing remembered', () => {
+        expect(applyPrefixAffinity(ranked, null, 2)).toEqual({ ordered: ranked, sticky: null });
+      });
+
+      it('moves the remembered candidate to the front while it is under the limit, and reports it', () => {
+        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
+        expect(applyPrefixAffinity(ranked, remembered, 2)).toEqual({ ordered: [peer, local], sticky: peer });
+      });
+
+      it('leaves the order alone at or over the limit, still reporting what it saw', () => {
+        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
+        expect(applyPrefixAffinity(ranked, remembered, 1)).toEqual({ ordered: ranked, sticky: peer });
+        // 0 is the switch: nothing is ever under it.
+        expect(applyPrefixAffinity(ranked, { nodeKey: LOCAL_CANDIDATE_KEY, backend: 'ollama' }, 0)).toEqual({ ordered: ranked, sticky: local });
+      });
+
+      it('matches node and engine together, and never re-admits a node that is not a candidate', () => {
+        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-1', backend: 'vllm' }, 2)).toEqual({ ordered: ranked, sticky: null });
+        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-gone', backend: 'ollama' }, 2)).toEqual({ ordered: ranked, sticky: null });
+      });
+    });
+  });
+
   describe('prompt ceiling', () => {
     const MODEL = 'qwen3-coder:30b';
     const LONG_PROMPT_BYTES = 184_000; // ~46k tokens
