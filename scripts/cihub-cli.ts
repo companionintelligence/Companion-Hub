@@ -35,6 +35,10 @@ import {
   runHostUpdate,
   runConnectCommand,
   runSelfUpdateCommand,
+  runVersionCommand,
+  fetchHubBuildInfo,
+  formatHubBuildLines,
+  resolveDefaultHubApiBase,
 } from './lib/cli-update';
 import { parseAppRuntimeArgs, appStatusColor, runAppCommand } from './lib/cli-app';
 import {
@@ -82,6 +86,17 @@ export type { ParsedPoolArgs, PoolSubcommand };
 export { confirmDestructiveAction };
 export { resolveHubContext, isFirstRun };
 export type { HubContext };
-export { renderVersion, firstPathFromLookupOutput, resolveCompanionHubBinary, runHostUpdate, runConnectCommand, runSelfUpdateCommand };
+export {
+  renderVersion,
+  firstPathFromLookupOutput,
+  resolveCompanionHubBinary,
+  runHostUpdate,
+  runConnectCommand,
+  runSelfUpdateCommand,
+  runVersionCommand,
+  fetchHubBuildInfo,
+  formatHubBuildLines,
+  resolveDefaultHubApiBase,
+};
 export { parseAppRuntimeArgs, appStatusColor, runAppCommand };
 export { sqlQuote, isValidApiKeyName, parseApiKeyScopes, buildApiKeyInsertSql, apiKeyTableHasCapability, formatApiKeyRows, runApiKeyCommand };

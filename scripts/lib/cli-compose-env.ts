@@ -11,6 +11,21 @@ const PACKAGE_JSON_URL = new URL('../../package.json', import.meta.url);
 declare const CIHUB_BUILD_VERSION: string | undefined;
 declare const CIHUB_BUILD_REVISION: string | undefined;
 
+/**
+ * The version of THIS `cihub` binary.
+ *
+ * The release pipeline is the source of truth, not `package.json`. `scripts/build-standalone-cli.cjs`
+ * bakes the release tag in as `CIHUB_BUILD_VERSION` at compile time (fed from `CI_HUB_BUILD_VERSION`,
+ * which desktop-release.yml sets from `inputs.tag`), so a shipped binary reports the release it was
+ * cut from. `package.json` is deliberately NOT bumped per release and carries the placeholder
+ * `0.0.0-dev` — see the "Where the release version comes from" note in
+ * `scripts/release/resolve-hub-image-tags.cjs`, enforced by
+ * `scripts/__tests__/release-version-source.test.ts`, which fails if a real-looking release number
+ * is hand-edited back into it.
+ *
+ * Reaching the fallback therefore means "running from a source checkout", and the placeholder says
+ * exactly that. It used to read `0.2.61` while releases were at `0.2.73`, which said the opposite.
+ */
 export function packageVersion(): string {
   const buildVersion = typeof CIHUB_BUILD_VERSION === 'string' ? CIHUB_BUILD_VERSION.trim() : '';
   const runtimeOverride = process.env.CIHUB_BUILD_VERSION?.trim() || '';
