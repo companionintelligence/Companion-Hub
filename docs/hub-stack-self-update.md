@@ -4,6 +4,18 @@ The Hub can replace its own container with a newer release. Settings → Update,
 
 The desktop app binary has its own updater; see [`DESKTOP-AUTO-UPDATE.md`](DESKTOP-AUTO-UPDATE.md).
 
+## This is one of two channels
+
+Nothing on this page moves the `cihub` CLI. The CLI ships with the desktop package, as a Homebrew
+cask or Scoop app, or as a standalone `cihub-<os>-<arch>` release asset; the stack ships as a GHCR
+image. Rolling the image never updates the CLI, and a node can sit for weeks with a CLI that lacks
+commands the stack and the docs both have — `beta-max` on 2026-09-21 ran `cihub` 0.2.72 against an
+untagged image and answered `Unknown pool subcommand: ceiling` for a command that had shipped.
+
+`cihub doctor` now carries a `CLI vs stack` line naming both versions, and `cihub pool update`
+prints the same comparison after it redeploys. `cihub self-update` moves the CLI half on a
+standalone install. See [Keeping the CLI and the stack together](CLI.md#keeping-the-cli-and-the-stack-together).
+
 ## What the updater moves
 
 The updater only advances a **release pin**: a Hub whose running image and whose `CI_HUB_IMAGE` are both `ghcr.io/companionintelligence/ci-hub:<version>`, such as `ci-hub:0.2.70`.
@@ -18,6 +30,22 @@ It leaves every other node alone and says why:
 | A local build or another registry, such as `ci-hub-ci-hub:latest` | Refuses. |
 
 There is no override. To move a node between channels, edit `CI_HUB_IMAGE` in the Hub env file and recreate the Hub, for example with `cihub pool update`.
+
+Moving a node this way leaves its `cihub` where it was. `cihub pool update` says so on the line it
+prints after the redeploy, and `cihub self-update` is what closes the gap on a standalone install.
+
+## Whatever moves a node must record what it moved to
+
+This updater writes `CI_HUB_IMAGE` and `CI_HUB_VERSION` to the env file before it recreates the Hub,
+and puts the previous content back if the update fails. Anything else that changes the running image
+owes the same write, and `cihub pool update` now does it too.
+
+It matters because Compose reads the env file on **every** start. A node whose running image and
+whose env file disagree is one reboot away from silently reverting to the build it was moved off —
+measured across fifteen of seventeen fleet appliances on 2026-09-21, every env file naming an older
+digest than the container it sat beside, and nothing anywhere reporting it. `cihub doctor` now
+carries an `Image pin` line that fails on exactly that state, read from the env file Compose named
+rather than the one the CLI would guess.
 
 A refused manual update returns HTTP 409 with the reason. `GET /api/system/update/check` reports the same reason in `updateBlockedReason` and never offers an update to a refused node.
 

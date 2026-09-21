@@ -27,6 +27,9 @@ import { checkDockerAvailable, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { bold, cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, STEP_ICONS } from './cli-ui.js';
 import { runDeviceIdDoctorSection } from './device-id-doctor.js';
+import { cliUpdateInstructions, gatherSkew, readStackBuild, type SkewSnapshot } from './cli-version-skew.js';
+import { inspectImagePin, type PinReport } from './cli-image-pin.js';
+import { discoverComposeIdentity } from './compose-discovery.js';
 import { composeArgsForContext, envOverridesForContext, type HubContext, requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
@@ -189,6 +192,79 @@ export async function runRegistrationDoctorSection(envFileName: string): Promise
   }
 }
 
+/**
+ * Do the CLI and the Hub stack come from the same build?
+ *
+ * Doctor is where a node's state is supposed to become visible, and this was the one mismatch it
+ * could not see. On beta-max, 2026-09-21, every line of `cihub doctor` was green while the CLI was
+ * `0.2.72` and the stack an untagged image matching no published tag — so `cihub pool ceiling`, a
+ * merged and documented command, answered `Unknown pool subcommand`. A runbook is written against
+ * the repo; this line is how an operator finds out the machine is behind it.
+ *
+ * Only a *proven* mismatch fails: two builds that each name a release, and name different ones.
+ * A `dev` node whose image carries no release tag is reported as a warning — that state is normal
+ * there, and failing it would put a red line on every development machine in the fleet.
+ */
+export function describeVersionSkewSection(snapshot: SkewSnapshot): { lines: string[]; failureCount: number; issueCount: number } {
+  const [headline, ...rest] = snapshot.report.lines;
+  const label = 'CLI vs stack        ';
+  const advice = rest.map((line) => line.trim()).filter(Boolean);
+  if (snapshot.report.severity === 'ok') {
+    return { lines: [`${label} ${cliOk(headline)}`], failureCount: 0, issueCount: 0 };
+  }
+  const fix = cliUpdateInstructions(snapshot.channel, snapshot.stack?.version ?? undefined)[0];
+  const status = snapshot.report.severity === 'fail' ? cliFail(headline) : cliWarn(headline);
+  return {
+    lines: [
+      `${label} ${status}`,
+      ...advice.slice(0, 1).map((line) => `${' '.repeat(label.length)} ${dim(line)}`),
+      `${' '.repeat(label.length)} ${dim(`fix: ${fix}`)}`,
+    ],
+    failureCount: snapshot.report.severity === 'fail' ? 1 : 0,
+    issueCount: 1,
+  };
+}
+
+/** Impure wrapper: reads the running container and this binary's own stamp, then describes them. */
+export function runVersionSkewDoctorSection(): { lines: string[]; failureCount: number; issueCount: number } {
+  return describeVersionSkewSection(gatherSkew());
+}
+
+/**
+ * Is this node running the image its env file says it runs?
+ *
+ * Fifteen of seventeen fleet appliances were recreated onto a new `:dev` digest on 2026-09-21 while
+ * their env files went on naming an older one, untouched since the day before. Nothing on any of
+ * those machines said so: the containers were healthy, the Hub served, and each node was one
+ * restart away from silently reverting to the build it had been moved off.
+ *
+ * A failure rather than a note, and for a different reason from the CLI-vs-stack line above: a
+ * version skew costs you a missing command until someone updates, while this one undoes itself the
+ * next time the machine boots. The env file compose actually read is the one consulted, which on
+ * that fleet is `.env.dev` and not the `.env` this CLI would otherwise have guessed.
+ */
+export function describeImagePinSection(report: PinReport, envFile: string): { lines: string[]; failureCount: number; issueCount: number } {
+  const label = 'Image pin           ';
+  if (report.severity === 'ok') {
+    // A node with nothing pinned, and a node with no container, have both answered the question.
+    return { lines: [`${label} ${colorize(`${STEP_ICONS.pending} ${report.headline}`, 'dim')}`], failureCount: 0, issueCount: 0 };
+  }
+  void envFile;
+  return {
+    // Every line, not a sample: `describePinDrift` returns the file it read, what a restart would do,
+    // and the command that fixes it, and dropping any of the three leaves the operator guessing.
+    lines: [`${label} ${cliFail(report.headline)}`, ...report.lines.map((line) => `${' '.repeat(label.length)} ${dim(line)}`)],
+    failureCount: 1,
+    issueCount: 1,
+  };
+}
+
+/** Impure wrapper: the compose identity, the env file it names, and the running image. */
+export function runImagePinDoctorSection(fallbackEnvFile: string): { lines: string[]; failureCount: number; issueCount: number } {
+  const pin = inspectImagePin(discoverComposeIdentity(), fallbackEnvFile, readStackBuild()?.reference ?? null);
+  return describeImagePinSection(pin.report, pin.envFile);
+}
+
 export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolean }) {
   const ctx = resolveHubContext(env);
   if (ctx.appliance) {
@@ -213,6 +289,12 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   const composeFilesFound = composeFiles.every((file) => existsSync(resolvePath(file)));
   // Read on the host, from the env file compose hands the Hub: a DEVICE_ID copied from another machine.
   const deviceIdSection = runDeviceIdDoctorSection(envFileName);
+  // The two distribution channels, side by side. Cheap (two `docker inspect` calls) and the only
+  // place either version is ever named next to the other.
+  const versionSection = runVersionSkewDoctorSection();
+  // And whether the env file still names the image that is actually running — the other half of
+  // "the recorded version and the real one disagree", and the one that reverts itself on reboot.
+  const imagePinSection = runImagePinDoctorSection(ctx.appliance ? join(ctx.dataDir as string, '.env') : envFileName);
   const lines = [
     `Docker               ${dockerOk ? cliOk('available') : cliFail('unavailable')}`,
     `Docker Compose       ${composeOk ? cliOk('available') : cliFail('unavailable')}`,
@@ -220,6 +302,8 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     `Root folder          ${existsSync(rootFolderHost) ? cliOk('present') : cliWarn('missing')}  ${rootFolderHost}`,
     `Compose files        ${composeFilesFound ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorTunnelTokenStatus(ctx)}`,
+    ...versionSection.lines,
+    ...imagePinSection.lines,
     ...deviceIdSection.lines,
     ...operatorSection.lines,
     ...registrationSection.lines,
@@ -231,12 +315,20 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   // env file before setup is an answer, not a fault.
   const failureCount =
     [dockerOk, composeOk, composeFilesFound].filter((ok) => !ok).length +
+    versionSection.failureCount +
+    imagePinSection.failureCount +
     deviceIdSection.failureCount +
     networkSection.failureCount +
     bridgeSection.failureCount +
     operatorSection.failureCount +
     registrationSection.failureCount;
-  const issueCount = networkSection.issueCount + bridgeSection.issueCount + operatorSection.issueCount + registrationSection.issueCount;
+  const issueCount =
+    versionSection.issueCount +
+    imagePinSection.issueCount +
+    networkSection.issueCount +
+    bridgeSection.issueCount +
+    operatorSection.issueCount +
+    registrationSection.issueCount;
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, failureCount > 0 ? 'red' : issueCount > 0 ? 'yellow' : 'cyan');
   if (failureCount > 0) process.exitCode = 1;
 }

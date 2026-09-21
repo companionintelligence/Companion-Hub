@@ -50,6 +50,7 @@ const mocks = vi.hoisted(() => {
     runAppCommand: vi.fn(record('runAppCommand')),
     runApiKeyCommand: vi.fn(record('runApiKeyCommand')),
     runHostUpdate: vi.fn(record('runHostUpdate')),
+    runSelfUpdateCommand: vi.fn(record('runSelfUpdateCommand')),
     runConnectCommand: vi.fn(record('runConnectCommand')),
     runWizard: vi.fn(record('runWizard')),
     runCatalogLogin: vi.fn(record('runCatalogLogin')),
@@ -109,6 +110,7 @@ vi.mock('../lib/cli-update.js', () => ({
   runVersionCommand: mocks.runVersionCommand,
   runConnectCommand: mocks.runConnectCommand,
   runHostUpdate: mocks.runHostUpdate,
+  runSelfUpdateCommand: mocks.runSelfUpdateCommand,
 }));
 
 vi.mock('../lib/catalog-submit.js', () => ({
@@ -275,6 +277,12 @@ describe('runCli command routing', () => {
     { argv: ['public-web', 'repair'], expected: [{ handler: 'runPublicWebCommand', args: [['repair']] }] },
     { argv: ['connect', '--yes'], expected: [{ handler: 'runConnectCommand', args: [['--yes']] }] },
     { argv: ['update', '--check'], expected: [{ handler: 'runHostUpdate', args: [['--check']] }] },
+    // The other distribution channel. `update` and `self-update` are near-identical strings and
+    // must never fall through to one another: one delegates to the desktop app, the other replaces
+    // this binary, and routing the wrong way would be silent.
+    { argv: ['self-update'], expected: [{ handler: 'runSelfUpdateCommand', args: [[]] }] },
+    { argv: ['self-update', '--to', '0.2.73'], expected: [{ handler: 'runSelfUpdateCommand', args: [['--to', '0.2.73']] }] },
+    { argv: ['self-update', '--check'], expected: [{ handler: 'runSelfUpdateCommand', args: [['--check']] }] },
     { argv: ['login', '--org', 'acme'], expected: [{ handler: 'runCatalogLogin', args: [['--org', 'acme']] }] },
     { argv: ['logout'], expected: [{ handler: 'runCatalogLogout', args: [] }] },
     { argv: ['submit', './bundle'], expected: [{ handler: 'runCatalogSubmit', args: [['./bundle']] }] },
