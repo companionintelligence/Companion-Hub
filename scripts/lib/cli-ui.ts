@@ -76,6 +76,12 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
       { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires CI Hub)' },
+      {
+        command: `${BASE_COMMAND} version [--short]`,
+        description:
+          "This CLI's version, then the running Hub's build read from GET /api/hub/build (release/channel, commit, image ref and digest). " +
+          'They update through separate channels and routinely differ. --short prints only this CLI and never probes the Hub',
+      },
     ],
   },
   {
@@ -396,7 +402,7 @@ export function renderHelp() {
     box('Help & docs', [
       `${pad(colorize(`${BASE_COMMAND} man`, 'green'), 20)}  Manual-style command reference`,
       `${pad(colorize(`${BASE_COMMAND} --help`, 'green'), 20)}  This help output`,
-      `${pad(colorize(`${BASE_COMMAND} version`, 'green'), 20)}  Show version`,
+      `${pad(colorize(`${BASE_COMMAND} version`, 'green'), 20)}  This CLI's version and the running Hub's build`,
     ]),
     box('Environments', [allowedEnvs.join('  |  ')], 'yellow'),
   ].join('\n\n');

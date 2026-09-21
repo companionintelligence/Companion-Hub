@@ -193,6 +193,44 @@ ARG SENTRY_RELEASE=""
 ENV SENTRY_DSN=${SENTRY_DSN}
 ENV SENTRY_RELEASE=${SENTRY_RELEASE}
 
+# ---- Build identity (see packages/backend/src/core/build-info/hub-build-info.ts) ----
+#
+# A deployed Hub could not say which build it was. Three separate reasons, all fixed here:
+#
+#  1. The runtime image carried NO version at all. `ARG CI_HUB_VERSION` above is declared in the
+#     `builder` stage only, so its ENV never reached this stage — and build-container.yml did not
+#     pass it in the first place. The only version a running container had came from compose.
+#  2. That compose value (`CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}`) is read from the install's
+#     env file, which no build writes. It was wrong on 10 of 16 fleet Hubs on 2026-09-17
+#     (`0.2.53`, `v0.2.22`, `4.5.0`, `latest`, `local-paint-*`) — see hub-deployment.ts.
+#  3. `package.json` is NOT bumped per release (see scripts/build-standalone-cli.cjs), so the
+#     in-image `package.json` version identifies nothing either.
+#
+# Hence a SEPARATE namespace. These must never be named `CI_HUB_VERSION`: compose `environment:`
+# beats image ENV, so a stamp under that name would be shadowed by exactly the stale env-file value
+# that caused the problem. Nothing in any compose file, env writer or `.env` template sets a
+# `CI_HUB_BUILD_*` key, which is what makes these trustworthy at runtime — they can only have come
+# from the build that produced this image.
+#
+# Empty is a truthful answer: a local `docker build` stamps nothing, and the endpoint then reports
+# `source: "unstamped"` rather than inventing a version.
+ARG CI_HUB_BUILD_VERSION=""
+ARG CI_HUB_BUILD_CHANNEL=""
+ARG CI_HUB_BUILD_SHA=""
+ARG CI_HUB_BUILD_REF=""
+ARG CI_HUB_BUILD_TIME=""
+ARG CI_HUB_BUILD_IMAGE_REF=""
+ENV CI_HUB_BUILD_VERSION=${CI_HUB_BUILD_VERSION}
+ENV CI_HUB_BUILD_CHANNEL=${CI_HUB_BUILD_CHANNEL}
+ENV CI_HUB_BUILD_SHA=${CI_HUB_BUILD_SHA}
+ENV CI_HUB_BUILD_REF=${CI_HUB_BUILD_REF}
+ENV CI_HUB_BUILD_TIME=${CI_HUB_BUILD_TIME}
+# The reference this build PUBLISHED (`ghcr.io/companionintelligence/ci-hub:0.2.73`). The image
+# DIGEST is deliberately absent: the registry computes it from the pushed manifest, so it cannot
+# exist inside the layers being pushed. It is read back from Docker at runtime instead — see
+# `GET /api/hub/build`, which reports `imageDigest: null` when the socket cannot answer.
+ENV CI_HUB_BUILD_IMAGE_REF=${CI_HUB_BUILD_IMAGE_REF}
+
 WORKDIR /app
 
 # Install native modules and docker-compose on the TARGET platform so the arm64

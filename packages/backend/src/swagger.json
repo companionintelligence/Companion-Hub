@@ -5690,6 +5690,22 @@
         ]
       }
     },
+    "/api/hub/build": {
+      "get": {
+        "description": "The release, commit, image reference and build time stamped into this image at build time, plus the running image digest when Docker can be reached. `declaredVersion` is the install env file's CI_HUB_VERSION, reported for comparison only — it is not evidence of which build is running.",
+        "operationId": "build",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Build identity. `source: \"unstamped\"` means this image carries no build stamp."
+          }
+        },
+        "summary": "Build identity of the running Hub",
+        "tags": [
+          "HubBuildInfo"
+        ]
+      }
+    },
     "/api/public-web/diagnostics": {
       "get": {
         "operationId": "getDiagnostics",
