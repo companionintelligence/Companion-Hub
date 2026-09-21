@@ -8,10 +8,9 @@ import { ModelMemory } from './local-resources';
  * The model-memory budget, as beta-red produced it on 2026-09-20: the Hub's router had loaded
  * nothing, so the old panel read "0G of 10G" while nvidia-smi held 9 of 10 GiB for an Ollama
  * runner and an out-of-band vLLM. The rows below are what the same node reports now, and the
- * assertions are about the WORDS beside each figure — a number Ollama reported and a number
- * nvidia-smi measured are different kinds of number, and a reader chasing the gap between
- * them (Ollama says 1.5G, nvidia-smi says 2.9G for the same runner) must be able to see which
- * is which.
+ * assertions are about the WORDS beside each figure — a number an engine planned and a number
+ * nvidia-smi measured are different kinds of number (Ollama's /api/ps said 1.5G for a runner
+ * nvidia-smi held at 2.9G), and a reader chasing that gap must be able to see which is which.
  */
 
 const ready = { pending: false, failed: false };
@@ -25,41 +24,58 @@ const betaRed: MemoryBudgetSummary = {
   appContainerBudgetMb: 1500,
   modelBudgetVramMb: 9728,
   modelBudgetRamMb: 28_452,
-  modelUsedVramMb: 1533 + 6104,
+  modelUsedVramMb: 2926 + 6104,
   modelUsedRamMb: 0,
   pinnedVramMb: 0,
   pinnedRamMb: 0,
   usage: {
     sampledAt: '2026-09-20T00:00:00Z',
     backends: [
-      { backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 1533, source: 'engine' },
+      { backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 2926, source: 'process' },
       { backend: 'vllm', models: ['Qwen/Qwen2.5-3B-Instruct-AWQ'], pool: 'vram', usedMb: 6104, source: 'process' },
     ],
   },
 };
 
 describe('ModelMemory', () => {
-  it('counts what the engines hold, and says per engine whether it was reported or measured', () => {
+  it('counts what the engines hold, measured per process, and names the tool that measured it', () => {
     const { container } = render(<ModelMemory memory={betaRed} hardware={discrete} state={ready} />);
     const vram = container.querySelector('[data-testid="model-memory-vram"]') as HTMLElement;
 
-    expect(vram.textContent).toContain('7.5G of 9.5G');
+    expect(vram.textContent).toContain('8.8G of 9.5G');
     expect(vram.textContent).toContain('gemma4:e4b');
-    expect(vram.textContent).toContain("1.5G · the engine's own figure");
-    expect(vram.textContent).toContain('Qwen/Qwen2.5-3B-Instruct-AWQ');
     // The vendor tool by name: it is what an operator runs to check the number.
+    expect(vram.textContent).toContain('2.9G · nvidia-smi');
+    expect(vram.textContent).toContain('Qwen/Qwen2.5-3B-Instruct-AWQ');
     expect(vram.textContent).toContain('6G · nvidia-smi');
     expect(container.textContent).not.toContain('floor');
   });
 
-  it('writes a floor when an engine holds a model nothing could size, and never renders that engine as 0', () => {
+  it("says when a figure is the engine's own plan rather than a reading", () => {
+    // No vendor tool reached the runner (a CPU-only node, or nvidia-smi absent from the image):
+    // Ollama's /api/ps figure stands in, and the row must not pass it off as measured.
     const budget: MemoryBudgetSummary = {
       ...betaRed,
       modelUsedVramMb: 1533,
       usage: {
         sampledAt: '2026-09-20T00:00:00Z',
+        backends: [{ backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 1533, source: 'engine' }],
+      },
+    };
+    const { container } = render(<ModelMemory memory={budget} hardware={discrete} state={ready} />);
+
+    expect(container.textContent).toContain("1.5G · the engine's own figure");
+    expect(container.textContent).not.toContain('nvidia-smi');
+  });
+
+  it('writes a floor when an engine holds a model nothing could size, and never renders that engine as 0', () => {
+    const budget: MemoryBudgetSummary = {
+      ...betaRed,
+      modelUsedVramMb: 2926,
+      usage: {
+        sampledAt: '2026-09-20T00:00:00Z',
         backends: [
-          { backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 1533, source: 'engine' },
+          { backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 2926, source: 'process' },
           { backend: 'vllm', models: ['Qwen/Qwen2.5-3B-Instruct-AWQ'], pool: 'vram', usedMb: null, source: 'unmeasured' },
         ],
       },
@@ -67,7 +83,7 @@ describe('ModelMemory', () => {
     const { container } = render(<ModelMemory memory={budget} hardware={discrete} state={ready} />);
     const vram = container.querySelector('[data-testid="model-memory-vram"]') as HTMLElement;
 
-    expect(vram.textContent).toContain('≥1.5G of 9.5G');
+    expect(vram.textContent).toContain('≥2.9G of 9.5G');
     expect(vram.textContent).toContain('— · holds a model, not measured');
     expect(vram.textContent).not.toContain('0G · holds');
     expect(container.textContent).toContain('vllm holds a model this node cannot size, so Used is a floor');

@@ -153,8 +153,24 @@ describe('MemoryManagerService', () => {
   // GiB for an Ollama runner and an out-of-band vLLM.
 
   describe('used memory comes from the engines, not the registry', () => {
-    it('discrete GPU: counts an Ollama-loaded model the registry never heard of, from /api/ps size_vram', async () => {
-      // gemma4:e4b as beta-red's Ollama reported it — loaded by pool traffic, so not tracked.
+    it('discrete GPU: counts an Ollama-loaded model the registry never heard of, from the runner nvidia-smi sees', async () => {
+      // gemma4:e4b as beta-red held it — loaded by pool traffic, so not tracked. /api/ps planned
+      // 1,533 MiB for it; the runner process held 2,926 MiB. The measurement wins.
+      reportResidency([
+        ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+        { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 1533 * MiB, totalBytes: 4200 * MiB })] },
+      ]);
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 4101, processName: '/usr/local/lib/ollama/llama-server', vramMb: 2926 }]);
+
+      const budget = await service.calculateBudget(makeProfile());
+
+      expect(budget.modelUsedVramMb).toBe(2926);
+      expect(budget.modelUsedRamMb).toBe(0);
+      expect(budget.usage.backends).toEqual([{ backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 2926, source: 'process' }]);
+      expect(modelRegistry.getLoadedModels).toHaveBeenCalled();
+    });
+
+    it("discrete GPU: falls back to /api/ps size_vram when nothing measured Ollama's runner", async () => {
       reportResidency([
         ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
         { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 1533 * MiB, totalBytes: 4200 * MiB })] },
@@ -163,9 +179,76 @@ describe('MemoryManagerService', () => {
       const budget = await service.calculateBudget(makeProfile());
 
       expect(budget.modelUsedVramMb).toBe(1533);
-      expect(budget.modelUsedRamMb).toBe(0);
       expect(budget.usage.backends).toEqual([{ backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 1533, source: 'engine' }]);
-      expect(modelRegistry.getLoadedModels).toHaveBeenCalled();
+    });
+
+    describe('a bare `llama-server`, as rocm-smi reports both Ollama and Lemonade runners', () => {
+      const amd = () =>
+        makeProfile({
+          gpu: {
+            available: true,
+            vendor: 'amd',
+            model: 'Radeon 8060S',
+            vramMb: 2048,
+            unifiedMemory: true,
+            driverVersion: '',
+            runtimeAvailable: true,
+          },
+        });
+      const ollamaHolding = (): BackendResidency => ({
+        backend: 'ollama',
+        source: 'measured',
+        models: [resident('qwen3:9b', { engineGpuBytes: 7319 * MiB, totalBytes: 7319 * MiB })],
+      });
+      const lemonadeHolding = (): BackendResidency => ({ backend: 'lemonade', source: 'measured', models: [resident('Qwen3-0.6B-GGUF')] });
+
+      it('is Ollama when only Ollama holds a model', async () => {
+        reportResidency([...nothingResident().filter((entry) => entry.backend !== 'ollama'), ollamaHolding()]);
+        gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 7001, processName: 'llama-server', vramMb: 8100 }]);
+
+        const budget = await service.calculateBudget(amd());
+
+        expect(budget.usage.backends).toEqual([{ backend: 'ollama', models: ['qwen3:9b'], pool: 'ram', usedMb: 8100, source: 'process' }]);
+      });
+
+      it('is Lemonade when only Lemonade holds a model', async () => {
+        reportResidency([...nothingResident().filter((entry) => entry.backend !== 'lemonade'), lemonadeHolding()]);
+        gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 7002, processName: 'llama-server', vramMb: 900 }]);
+
+        const budget = await service.calculateBudget(amd());
+
+        expect(budget.usage.backends).toEqual([{ backend: 'lemonade', models: ['Qwen3-0.6B-GGUF'], pool: 'ram', usedMb: 900, source: 'process' }]);
+      });
+
+      it('is claimed by neither when both hold a model: Ollama keeps its own figure, Lemonade is a floor', async () => {
+        reportResidency([
+          ...nothingResident().filter((entry) => entry.backend !== 'ollama' && entry.backend !== 'lemonade'),
+          ollamaHolding(),
+          lemonadeHolding(),
+        ]);
+        gpuSampler.sampleVramByProcess.mockResolvedValue([
+          { pid: 7001, processName: 'llama-server', vramMb: 8100 },
+          { pid: 7002, processName: 'llama-server', vramMb: 900 },
+        ]);
+
+        const budget = await service.calculateBudget(amd());
+
+        expect(budget.modelUsedRamMb).toBe(7319);
+        expect(budget.usage.backends).toEqual([
+          { backend: 'ollama', models: ['qwen3:9b'], pool: 'ram', usedMb: 7319, source: 'engine' },
+          { backend: 'lemonade', models: ['Qwen3-0.6B-GGUF'], pool: 'ram', usedMb: null, source: 'unmeasured' },
+        ]);
+      });
+
+      it('never lets a path that names another engine be read as a bare runner', async () => {
+        // A manual llama.cpp on the host (beta-nas runs one): its path names neither engine.
+        reportResidency([...nothingResident().filter((entry) => entry.backend !== 'ollama'), ollamaHolding()]);
+        gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 7003, processName: '/home/ci/llama.cpp/build/bin/llama-server', vramMb: 5000 }]);
+
+        const budget = await service.calculateBudget(amd());
+
+        expect(budget.usage.backends).toEqual([{ backend: 'ollama', models: ['qwen3:9b'], pool: 'ram', usedMb: 7319, source: 'engine' }]);
+      });
     });
 
     it('unified memory: counts Ollama /api/ps `size` against RAM and leaves VRAM at zero', async () => {
@@ -258,7 +341,7 @@ describe('MemoryManagerService', () => {
       expect(budget.usage.backends).toEqual([{ backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 5000, source: 'registry' }]);
     });
 
-    it('the engine wins over the registry when both have an opinion, so nothing is counted twice', async () => {
+    it('a live reading wins over the registry when both have an opinion, so nothing is counted twice', async () => {
       reportResidency([
         ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
         { backend: 'ollama', source: 'measured', models: [resident('gemma4:e4b', { engineGpuBytes: 1533 * MiB, totalBytes: 4200 * MiB })] },

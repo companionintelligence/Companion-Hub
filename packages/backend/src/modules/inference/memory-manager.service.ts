@@ -32,18 +32,26 @@ const LIVE_USAGE_TTL_MS = 5_000;
  * Which vendor-tool process rows belong to which engine, matched against the row's process name
  * lowercased. `nvidia-smi` reports a full path or the process title (`VLLM::EngineCore`,
  * `/usr/local/lib/ollama/llama-server`); `rocm-smi` reports the kernel `comm`, truncated to 15
- * characters (`VLLM::EngineCor`, `dflash_server`). Ollama is deliberately absent: its figure comes
- * from `/api/ps`, and its runner is a bare `llama-server` under rocm-smi — indistinguishable from
- * the one Lemonade spawns, so neither name is claimed for Lemonade either. A row nothing here
- * matches is not model memory this budget knows about.
+ * characters (`VLLM::EngineCor`, `dflash_server`). A row nothing here matches is not model memory
+ * this budget knows about — except a bare `llama-server`, which {@link llamaServerOwner} settles.
  */
 const ENGINE_PROCESS_PATTERNS: Partial<Record<InferenceBackendType, RegExp>> = {
+  ollama: /ollama/,
   vllm: /vllm/,
   lucebox: /dflash|lucebox/,
   lemonade: /lemonade|lemond/,
   mtplx: /mtplx/,
   dspark: /dspark/,
 };
+
+/**
+ * The one process name two engines share. Ollama's runner IS llama.cpp's server
+ * (`/usr/local/lib/ollama/llama-server` — the path names it under nvidia-smi), and Lemonade spawns
+ * the same binary from its own tree. Under rocm-smi both are the bare comm `llama-server`, so the
+ * name alone cannot say whose it is.
+ */
+const LLAMA_SERVER_COMM = 'llama-server';
+const LLAMA_SERVER_ENGINES = ['ollama', 'lemonade'] as const satisfies readonly InferenceBackendType[];
 
 /** One sweep over everything that can say what is in memory, taken together so the figures agree in time. */
 type LiveObservation = {
@@ -287,10 +295,16 @@ function modelPoolFor(profile: HardwareProfile): 'vram' | 'ram' {
 }
 
 /**
- * Turns one observation into per-engine rows. The precedence, per engine: its own accounting
- * when it gives sizes, else its process as the vendor tool sees it, else — only when the engine
+ * Turns one observation into per-engine rows. The precedence, per engine: its process as the
+ * vendor tool sees it, else its own accounting when it gives sizes, else — only when the engine
  * could not be asked at all — the Hub's own bookkeeping of what it loaded there. An engine that
  * is holding something none of those can size is reported as `unmeasured`, never as 0.
+ *
+ * The process reading goes first because it is the only one of the three that is a measurement.
+ * Ollama's `/api/ps` `size_vram` is the scheduler's plan for the weights and KV cache; measured on
+ * beta-red it said 1,533 MiB for gemma4:e4b while nvidia-smi held 2,926 MiB for the same runner —
+ * the CUDA context and compute buffers are real VRAM the plan does not count, and it is the
+ * measured figure that decides whether the next model fits.
  */
 function deriveModelMemoryUsage(input: { pool: 'vram' | 'ram'; observation: LiveObservation; tracked: TrackedModel[] }): ModelMemoryUsage {
   const { pool, observation, tracked } = input;
@@ -311,8 +325,8 @@ function deriveModelMemoryUsage(input: { pool: 'vram' | 'ram'; observation: Live
     }
     // Ollama sizes both pools per model (`size_vram`, `size`); Lemonade names its models and
     // sizes neither. One model without a figure makes the engine's total unusable — summing the
-    // rest would report a floor as if it were the whole — so the engine falls through to the
-    // process reading below.
+    // rest would report a floor as if it were the whole — so the engine's own figure is only a
+    // fallback when every model carries one.
     let engineMb: number | null = 0;
     for (const model of residency.models) {
       const bytes = pool === 'vram' ? model.engineGpuBytes : model.totalBytes;
@@ -333,6 +347,13 @@ function deriveModelMemoryUsage(input: { pool: 'vram' | 'ram'; observation: Live
     residentByBackend.set(type, health.modelsLoaded.length > 0 ? { models: [...health.modelsLoaded], engineMb: null } : 'none');
   }
 
+  const bareLlamaServerOwner = llamaServerOwner(
+    LLAMA_SERVER_ENGINES.filter((type) => {
+      const resident = residentByBackend.get(type);
+      return resident !== undefined && resident !== 'none' && resident !== 'unknown';
+    }),
+  );
+
   for (const type of INFERENCE_BACKEND_TYPES) {
     const resident = residentByBackend.get(type);
     if (resident === undefined || resident === 'none') continue;
@@ -350,14 +371,14 @@ function deriveModelMemoryUsage(input: { pool: 'vram' | 'ram'; observation: Live
       continue;
     }
 
-    if (resident.engineMb !== null) {
-      backends.push({ backend: type, models: resident.models, pool, usedMb: resident.engineMb, source: 'engine' });
+    const processMb = sumProcessVramMb(type, observation.samples, bareLlamaServerOwner);
+    if (processMb > 0) {
+      backends.push({ backend: type, models: resident.models, pool, usedMb: processMb, source: 'process' });
       continue;
     }
 
-    const processMb = sumProcessVramMb(type, observation.samples);
-    if (processMb > 0) {
-      backends.push({ backend: type, models: resident.models, pool, usedMb: processMb, source: 'process' });
+    if (resident.engineMb !== null) {
+      backends.push({ backend: type, models: resident.models, pool, usedMb: resident.engineMb, source: 'engine' });
       continue;
     }
 
@@ -367,8 +388,23 @@ function deriveModelMemoryUsage(input: { pool: 'vram' | 'ram'; observation: Live
   return { sampledAt: observation.sampledAt, backends };
 }
 
-function sumProcessVramMb(type: InferenceBackendType, samples: GpuProcessVramSample[]): number {
+/**
+ * Who a bare `llama-server` row belongs to: whichever of the two llama.cpp-hosting engines is
+ * the only one holding a model right now. With both holding something the row stays unclaimed —
+ * Ollama then falls back to its own `/api/ps` figure and Lemonade reads as unmeasured, which is
+ * a floor rather than the double count that claiming it for both would be.
+ */
+function llamaServerOwner(holding: readonly InferenceBackendType[]): InferenceBackendType | null {
+  return holding.length === 1 ? (holding[0] ?? null) : null;
+}
+
+function sumProcessVramMb(type: InferenceBackendType, samples: GpuProcessVramSample[], bareLlamaServerOwner: InferenceBackendType | null): number {
   const pattern = ENGINE_PROCESS_PATTERNS[type];
   if (!pattern) return 0;
-  return samples.filter((sample) => pattern.test(sample.processName.toLowerCase())).reduce((sum, sample) => sum + sample.vramMb, 0);
+  return samples
+    .filter((sample) => {
+      const name = sample.processName.toLowerCase();
+      return pattern.test(name) || (name === LLAMA_SERVER_COMM && bareLlamaServerOwner === type);
+    })
+    .reduce((sum, sample) => sum + sample.vramMb, 0);
 }

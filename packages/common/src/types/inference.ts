@@ -77,12 +77,19 @@ export interface MemoryBudget {
   usage: ModelMemoryUsage;
 }
 
-/** How one engine's share of `modelUsedVramMb` / `modelUsedRamMb` was established. */
+/**
+ * How one engine's share of `modelUsedVramMb` / `modelUsedRamMb` was established, in order of
+ * preference: `process` is the only measurement, and the others stand in when there is none.
+ */
 export type ModelMemoryUsageSource =
-  /** The engine's own accounting — Ollama `/api/ps` (`size_vram` on a discrete GPU, `size` elsewhere). */
-  | 'engine'
   /** The engine's process as the vendor tool sees it (`nvidia-smi` / `rocm-smi` per-process VRAM). */
   | 'process'
+  /**
+   * The engine's own accounting — Ollama `/api/ps` (`size_vram` on a discrete GPU, `size`
+   * elsewhere). A plan, not a reading: on beta-red it said 1,533 MiB for a runner nvidia-smi
+   * held at 2,926 MiB, the CUDA context and compute buffers being real VRAM it does not count.
+   */
+  | 'engine'
   /** The Hub's bookkeeping of models its own router loaded — used only when the engine cannot be asked. */
   | 'registry'
   /** The engine holds a model, but nothing on this node can size it. It contributes 0 and says so. */

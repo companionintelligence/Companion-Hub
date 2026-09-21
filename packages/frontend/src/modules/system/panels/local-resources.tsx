@@ -141,7 +141,7 @@ function usageSourceLabel(entry: ModelMemoryUsageEntrySummary, vendor: string | 
  * this panel exists.
  *
  * `used` is what every engine on the node holds NOW, and each engine's line says how that
- * was learned: the engine's own accounting, its process as the vendor tool sees it, or —
+ * was learned: its process as the vendor tool sees it, else the engine's own accounting, or —
  * only when the engine could not be asked — the Hub's bookkeeping of what it loaded there.
  * An engine holding a model nothing can size is listed without a figure and the pool's
  * used reads as a floor (`≥`), because the remainder is not known to be free. Measured on

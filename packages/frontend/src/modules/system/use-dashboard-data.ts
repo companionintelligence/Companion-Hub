@@ -225,11 +225,12 @@ export interface InferenceBackendStatus {
 /**
  * One engine's share of the budget's used figure, and how it was established.
  *
- * `source` is the point. `engine` is Ollama's own `/api/ps` accounting, `process` is what
- * nvidia-smi / rocm-smi read for the engine's process, `registry` is the Hub's bookkeeping of
- * what its router loaded (used only when the engine could not be asked), and `unmeasured` is
- * an engine that is holding a model nothing on the node can size — its `usedMb` is `null`,
- * and the used figure it is missing from is a floor, not the total.
+ * `source` is the point. `process` is what nvidia-smi / rocm-smi read for the engine's process
+ * — the only measurement; `engine` is the engine's own accounting (Ollama's `/api/ps`), used
+ * when no process was read; `registry` is the Hub's bookkeeping of what its router loaded
+ * (used only when the engine could not be asked); and `unmeasured` is an engine that is
+ * holding a model nothing on the node can size — its `usedMb` is `null`, and the used figure
+ * it is missing from is a floor, not the total.
  */
 export interface ModelMemoryUsageEntrySummary {
   backend: string;
