@@ -9,6 +9,8 @@ import {
   fetchInferencePreferences,
   formatContextCapResultLines,
   formatLocalContextCapLines,
+  formatLocalOllamaSlotsLines,
+  formatOllamaSlotsResultLines,
   formatPairingPinCancelledLines,
   formatPairingPinLines,
   formatPairingPinStateLines,
@@ -30,6 +32,7 @@ import {
   resolvePoolPeerTarget,
   runPoolDiscover,
   setInferenceContextCap,
+  setInferenceOllamaSlots,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
   unpairPoolPeer,
@@ -766,6 +769,170 @@ describe('hub-pool-cli context cap', () => {
       const result = formatContextCapResultLines(16_384, { preferredBackend: 'ollama' }, null, false);
       expect(result.tone).toBe('red');
       expect(result.lines.join('\n')).toContain('predates the context cap');
+    });
+  });
+});
+
+describe('hub-pool-cli Ollama slots', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('PATCHes the slot count through the preferences route with the backend it was given — null to clear', async () => {
+    hubApiFetch.mockResolvedValue({ preferredBackend: 'ollama', ollamaSlots: null });
+
+    await setInferenceOllamaSlots('.env.local', 'ollama', 4);
+    await setInferenceOllamaSlots('.env.local', 'vllm', null);
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/preferences');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toBe('{"backend":"ollama","ollamaSlots":4}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"backend":"vllm","ollamaSlots":null}');
+  });
+
+  it('shows this node’s slot count in status with the knob’s state, and nothing when none is stated or the Hub predates slots', () => {
+    const base = status();
+    const stated = formatPoolStatusLines({ ...base, localNode: { ...base.localNode, ollamaSlots: 4 } }).join('\n');
+    expect(stated).toContain('Slots      Ollama runs 4 requests at once; slot-aware placement off (poolSlotAwareness=0)');
+    expect(stated).toContain('cihub pool slots clear');
+    const on = formatLocalOllamaSlotsLines({ ...base.localNode, ollamaSlots: 1 }, { ...base.settings, poolSlotAwareness: 1 }).join('\n');
+    expect(on).toContain('Ollama runs 1 request at once; slot-aware placement on');
+    expect(formatLocalOllamaSlotsLines({ ...base.localNode, ollamaSlots: null }, base.settings)).toEqual([]);
+    expect(formatLocalOllamaSlotsLines(base.localNode, base.settings)).toEqual([]);
+    expect(formatPoolStatusLines(base).join('\n')).not.toContain('Slots      ');
+  });
+
+  describe('formatOllamaSlotsResultLines', () => {
+    const prefs = (ollamaSlots: number | null) => ({ preferredBackend: 'ollama', ollamaSlots });
+
+    it('confirms a count that read back as requested, and names the daemon setting it must match', () => {
+      const result = formatOllamaSlotsResultLines(4, prefs(null), prefs(4), true);
+      expect(result.tone).toBe('green');
+      expect(result.title).toBe('Slot count set');
+      expect(result.lines.join('\n')).toContain('runs 4 requests at once');
+      expect(result.lines.join('\n')).toContain('OLLAMA_NUM_PARALLEL on this node should be 4');
+      expect(result.lines.join('\n')).toContain('cihub fleet backends --ollama-parallel 4');
+    });
+
+    it('recommends the fleet command with the node’s other runtime flags, and says what the bare flag would drop', () => {
+      // The runtime drop-in is rendered whole from the flags on the line: `--ollama-parallel 4 --execute`
+      // alone would rewrite every node's file without OLLAMA_KEEP_ALIVE / OLLAMA_CONTEXT_LENGTH and
+      // restart the daemon to make it so. The box must never hand the operator that command bare.
+      const text = formatOllamaSlotsResultLines(4, prefs(null), prefs(4), true).lines.join('\n');
+      expect(text).toContain('--ollama-parallel 4 --ollama-context <n> --ollama-keep-alive <d> --execute');
+      expect(text).toContain('rendered whole from the flags');
+      expect(text).toContain('--ollama-parallel 4 alone would drop OLLAMA_KEEP_ALIVE and OLLAMA_CONTEXT_LENGTH');
+      expect(text).not.toMatch(/--ollama-parallel 4 --execute/);
+    });
+
+    it('confirms a clear, saying what ranking goes back to', () => {
+      const result = formatOllamaSlotsResultLines(null, prefs(2), prefs(null), true);
+      expect(result).toMatchObject({ title: 'Slot count cleared', tone: 'yellow' });
+      expect(result.lines.join('\n')).toContain('queue depth alone');
+    });
+
+    it('says nothing was written when the count already read as requested', () => {
+      expect(formatOllamaSlotsResultLines(4, prefs(4), null, false)).toMatchObject({ title: 'Slot count unchanged' });
+      expect(formatOllamaSlotsResultLines(null, prefs(null), null, false).lines.join('\n')).toContain('nothing to clear');
+    });
+
+    it('does not report success when the read-back disagrees with the request', () => {
+      const result = formatOllamaSlotsResultLines(4, prefs(null), prefs(2), true);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('reads back 2');
+    });
+
+    it('says an older Hub stored nothing', () => {
+      const result = formatOllamaSlotsResultLines(4, { preferredBackend: 'ollama' }, null, false);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('predates the slot count');
+    });
+  });
+
+  describe('pool log', () => {
+    const BETA_MAX = 'hub-c.example-tailnet.ts.net';
+
+    function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
+      return {
+        at: '2026-09-21T10:00:01.000Z',
+        direction: 'outbound',
+        path: '/v1/chat/completions',
+        model: 'qwen3-coder:30b',
+        node: PEER_A,
+        peerId: 'peer-1',
+        backend: 'ollama',
+        candidates: 3,
+        attempt: 1,
+        failedOverFrom: [],
+        outcome: 'served',
+        status: 200,
+        durationMs: 470,
+        ...overrides,
+      };
+    }
+
+    function logOf(entries: PoolRoutingLogResponse['entries']): string {
+      const summary = {
+        recorded: entries.length,
+        capacity: 200,
+        served: entries.length,
+        failed: 0,
+        failovers: 0,
+        lastAt: '2026-09-21T10:00:01.000Z',
+      };
+      return formatPoolRoutingLogLines({ summary, entries }).join('\n');
+    }
+
+    it('marks a row a full engine was moved on, with its queue depth and slots', () => {
+      const text = logOf([
+        routingEntry({
+          slots: { demoted: [{ node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 }], overridden: false },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ moved ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
+    });
+
+    it('names this node as local, lists every demoted node in ranked order, and says "slot" for one', () => {
+      const text = logOf([
+        routingEntry({
+          slots: {
+            demoted: [
+              { node: 'local', backend: 'ollama', inFlight: 3, slots: 1 },
+              { node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 },
+            ],
+            overridden: false,
+          },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ moved local (3 in flight, 1 slot), ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
+    });
+
+    it('says so when the request was placed on a full engine anyway', () => {
+      // Every candidate full, every free one failed first, or a ceiling put the free ones behind it:
+      // the log must read "placed anyway", never claim the node was skipped.
+      const text = logOf([
+        routingEntry({
+          node: BETA_MAX,
+          slots: { demoted: [{ node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 }], overridden: true },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ placed anyway with every slot full on ${BETA_MAX} (2 in flight, 2 slots): no node with a free slot was ahead of it`);
+      expect(text).not.toContain('moved');
+    });
+
+    it('adds nothing to a row the slots did not change, with the knob off, or from a Hub predating slots', () => {
+      const text = logOf([
+        // Some candidate stated a count, but every one had a free slot: the record is present and empty.
+        routingEntry({ slots: { demoted: [], overridden: false } }),
+        routingEntry({ slots: null }),
+        routingEntry(),
+      ]);
+
+      expect(text).not.toContain('slot');
+      expect(text).not.toContain('↳');
     });
   });
 });

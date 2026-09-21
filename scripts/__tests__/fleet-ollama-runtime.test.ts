@@ -1,11 +1,13 @@
 /**
- * Ollama's runtime drop-in: rendered whole from four flags, separate from the bind, restart only on
+ * Ollama's runtime drop-in: rendered whole from five flags, separate from the bind, restart only on
  * a byte change.
  *
  * The measured facts these cases encode (2026-09-20): no node set `OLLAMA_NUM_PARALLEL`, so the
  * fleet ceiling was the sum of single streams; a restart unloads every resident model (60-108 s to
  * reload), so a fleet command that restarts on every run is a fleet command nobody re-runs; and the
- * bind step moves aside any drop-in that sets `OLLAMA_HOST`, so the runtime file must never.
+ * bind step moves aside any drop-in that sets `OLLAMA_HOST`, so the runtime file must never. And
+ * (2026-09-21) a 24h keep-alive with no resident-model cap filled 122/123 GB on core-7 and had the
+ * kernel OOM-kill llama-server on core-17, so `OLLAMA_MAX_LOADED_MODELS` is the fifth key.
  */
 
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -15,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   classifyHubContextCapOutput,
+  HUB_OLLAMA_SLOTS_SETTING,
   classifyRuntimeApplyOutput,
   describeHubContextCapPlan,
   describeRuntimeTransition,
@@ -40,11 +43,13 @@ describe('the runtime drop-in', () => {
     expect(envLines(ollamaRuntimeDropinContent({ igpu: true }))).toEqual(['Environment="OLLAMA_IGPU_ENABLE=1"']);
     // `off` is a real setting — an explicit 0 on a node where something else turned it on.
     expect(envLines(ollamaRuntimeDropinContent({ igpu: false }))).toEqual(['Environment="OLLAMA_IGPU_ENABLE=0"']);
-    expect(envLines(ollamaRuntimeDropinContent({ parallel: 4, keepAlive: '24h', contextLength: 16384, igpu: true }))).toEqual([
+    expect(envLines(ollamaRuntimeDropinContent({ maxLoaded: 2 }))).toEqual(['Environment="OLLAMA_MAX_LOADED_MODELS=2"']);
+    expect(envLines(ollamaRuntimeDropinContent({ parallel: 4, keepAlive: '24h', contextLength: 16384, igpu: true, maxLoaded: 2 }))).toEqual([
       'Environment="OLLAMA_NUM_PARALLEL=4"',
       'Environment="OLLAMA_KEEP_ALIVE=24h"',
       'Environment="OLLAMA_CONTEXT_LENGTH=16384"',
       'Environment="OLLAMA_IGPU_ENABLE=1"',
+      'Environment="OLLAMA_MAX_LOADED_MODELS=2"',
     ]);
   });
 
@@ -54,9 +59,27 @@ describe('the runtime drop-in', () => {
     const content = ollamaRuntimeDropinContent({ parallel: undefined, keepAlive: '24h' });
     expect(content).not.toContain('OLLAMA_NUM_PARALLEL');
     expect(envLines(content)).toEqual(['Environment="OLLAMA_KEEP_ALIVE=24h"']);
+    // A run without --ollama-max-loaded renders no cap: the key falls back to Ollama's default, which
+    // is why the docs say to pass it on every run that manages it.
+    expect(ollamaRuntimeDropinContent({ parallel: 4, keepAlive: '24h' })).not.toContain('OLLAMA_MAX_LOADED_MODELS');
+    expect(ollamaRuntimeDropinContent({ maxLoaded: undefined, keepAlive: '24h' })).not.toContain('OLLAMA_MAX_LOADED_MODELS');
     // Every key left out is still a valid, empty [Service] section.
     expect(envLines(ollamaRuntimeDropinContent({}))).toEqual([]);
     expect(ollamaRuntimeDropinContent({})).toContain('[Service]');
+  });
+
+  it('keeps the header byte-identical to the file the four-flag CLI wrote, so adding the fifth key restarts nothing by itself', () => {
+    // The plan and the apply shell both compare the whole file. A reworded header would make every
+    // node's on-disk file "changed" on the next run of the same flags, and restart every Ollama on
+    // the fleet for a comment.
+    const header = ollamaRuntimeDropinContent({})
+      .split('\n')
+      .filter((l) => l.startsWith('#'));
+    expect(header).toEqual([
+      '# Managed by cihub fleet — Ollama runtime settings on this node. The bind lives in its own file.',
+      '# Rendered whole from the --ollama-parallel / --ollama-keep-alive / --ollama-context / --ollama-igpu',
+      "# flags of 'cihub fleet backends --execute'; a key not listed here is not managed by cihub.",
+    ]);
   });
 
   it('never mentions the bind, so the bind step never moves it aside', () => {
@@ -86,9 +109,15 @@ describe('parseOllamaRuntimeValue', () => {
     expect(parseOllamaRuntimeValue('--ollama-keep-alive', '-1')).toBe('-1');
     expect(parseOllamaRuntimeValue('--ollama-igpu', 'on')).toBe(true);
     expect(parseOllamaRuntimeValue('--ollama-igpu', 'off')).toBe(false);
-    for (const flag of ['--ollama-parallel', '--ollama-context', '--ollama-keep-alive', '--ollama-igpu'] as const) {
-      expect(parseOllamaRuntimeValue(flag, 'unset')).toBeUndefined();
-    }
+    expect(parseOllamaRuntimeValue('--ollama-max-loaded', '2')).toBe(2);
+    expect(parseOllamaRuntimeValue('--ollama-max-loaded', '1')).toBe(1);
+    expect(parseOllamaRuntimeValue('--ollama-max-loaded', '16')).toBe(16);
+    // One call per flag: the overloads take a literal flag name each, not a union.
+    expect(parseOllamaRuntimeValue('--ollama-parallel', 'unset')).toBeUndefined();
+    expect(parseOllamaRuntimeValue('--ollama-context', 'unset')).toBeUndefined();
+    expect(parseOllamaRuntimeValue('--ollama-keep-alive', 'unset')).toBeUndefined();
+    expect(parseOllamaRuntimeValue('--ollama-igpu', 'unset')).toBeUndefined();
+    expect(parseOllamaRuntimeValue('--ollama-max-loaded', 'unset')).toBeUndefined();
   });
 
   it('refuses nonsense before any machine is dialled', () => {
@@ -97,6 +126,12 @@ describe('parseOllamaRuntimeValue', () => {
     expect(() => parseOllamaRuntimeValue('--ollama-context', '100')).toThrow(/between 512 and/);
     expect(() => parseOllamaRuntimeValue('--ollama-keep-alive', 'forever')).toThrow(/duration such as 24h/);
     expect(() => parseOllamaRuntimeValue('--ollama-igpu', 'yes')).toThrow(/on, off or 'unset'/);
+    // 0 is not "no cap" to Ollama — it means 3 × GPU count, the default that filled core-7. The way
+    // to hand the key back is `unset`, so 0 is refused rather than written.
+    expect(() => parseOllamaRuntimeValue('--ollama-max-loaded', '0')).toThrow(/--ollama-max-loaded must be an integer between 1 and 16/);
+    expect(() => parseOllamaRuntimeValue('--ollama-max-loaded', '17')).toThrow(/between 1 and 16/);
+    expect(() => parseOllamaRuntimeValue('--ollama-max-loaded', 'two')).toThrow(OllamaRuntimeFlagError);
+    expect(() => parseOllamaRuntimeValue('--ollama-max-loaded', '1.5')).toThrow(OllamaRuntimeFlagError);
   });
 });
 
@@ -159,6 +194,41 @@ describe('planOllamaRuntime', () => {
     expect(planOllamaRuntime([onDisk], undefined, { parallel: 2 }).restart).toBe(true);
     // Every key left out: the file becomes header-only, and that is a change worth a restart.
     expect(planOllamaRuntime([onDisk], undefined, {}).restart).toBe(true);
+  });
+
+  it('adds the resident-model cap to a file the four-flag CLI wrote, then leaves it alone on the next run', () => {
+    // The batch tier as the fleet runs it: 2 slots × 32k with a 24h keep-alive, written before the
+    // cap existed. Adding --ollama-max-loaded 2 is one more key — a write and a restart.
+    const tier = { parallel: 2, keepAlive: '24h', contextLength: 32768 };
+    const before: DropinFile = { name: RUNTIME_DROPIN, content: ollamaRuntimeDropinContent(tier).trimEnd() };
+    const add = planOllamaRuntime([before], 'OLLAMA_NUM_PARALLEL=2 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=32768', { ...tier, maxLoaded: 2 });
+    expect(add.file.action).toBe('write');
+    expect(add.restart).toBe(true);
+    expect(add.noop).toBe(false);
+    expect(add.current.OLLAMA_MAX_LOADED_MODELS).toBeUndefined();
+    expect(add.target.OLLAMA_MAX_LOADED_MODELS).toBe('2');
+    expect(add.summary[0]).toContain('OLLAMA_CONTEXT_LENGTH=32768 OLLAMA_MAX_LOADED_MODELS=2, then daemon-reload and restart ollama');
+
+    // The same five flags again, with the daemon running them: nothing to write, nothing to restart.
+    const after: DropinFile = { name: RUNTIME_DROPIN, content: ollamaRuntimeDropinContent({ ...tier, maxLoaded: 2 }).trimEnd() };
+    const again = planOllamaRuntime([after], 'OLLAMA_NUM_PARALLEL=2 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=32768 OLLAMA_MAX_LOADED_MODELS=2', {
+      ...tier,
+      maxLoaded: 2,
+    });
+    expect(again.file.action).toBe('unchanged');
+    expect(again.restart).toBe(false);
+    expect(again.noop).toBe(true);
+    expect(again.summary[0]).toContain('OLLAMA_MAX_LOADED_MODELS; ollama not restarted');
+
+    // File in place but the daemon still runs uncapped (a run cut off before daemon-reload): not a no-op.
+    const stale = planOllamaRuntime([after], 'OLLAMA_NUM_PARALLEL=2 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=32768', { ...tier, maxLoaded: 2 });
+    expect(stale.noop).toBe(false);
+    expect(stale.unresolved).toEqual(['OLLAMA_MAX_LOADED_MODELS']);
+
+    // The flag dropped from the command line: the key leaves the file, and Ollama's default is back.
+    const dropped = planOllamaRuntime([after], undefined, tier);
+    expect(dropped.file.action).toBe('write');
+    expect(dropped.file.content).not.toContain('OLLAMA_MAX_LOADED_MODELS');
   });
 
   it('names a later drop-in that would outrank a managed key, and ignores one that sorts before', () => {
@@ -337,6 +407,30 @@ describe.skipIf(!bash)('ollamaRuntimeApplyShell (sandboxed bash)', () => {
     expect((box.calls().match(/systemctl restart ollama\n/g) ?? []).length).toBe(2);
   });
 
+  it('adds the resident-model cap to a file written before it existed with one restart, and the next run restarts nothing', () => {
+    const box = sandbox();
+    // The batch tier as it was on 2026-09-21: keep-alive without a cap, three 27-30B models resident.
+    const tier = { parallel: 2, keepAlive: '24h', contextLength: 32768 };
+    run(ollamaRuntimeApplyShell(tier), box);
+    expect((box.calls().match(/systemctl restart ollama\n/g) ?? []).length).toBe(1);
+
+    const capped = { ...tier, maxLoaded: 2 };
+    const add = run(ollamaRuntimeApplyShell(capped), box);
+    expect(add.status, add.stderr).toBe(0);
+    const outcome = classifyRuntimeApplyOutput(add.stdout, add.stderr, capped);
+    expect(outcome.outcome).toBe('applied');
+    expect(outcome.transition).toContain('OLLAMA_MAX_LOADED_MODELS <unset> → 2');
+    expect(readFileSync(path.join(box.dropins, RUNTIME_DROPIN), 'utf-8')).toContain('Environment="OLLAMA_MAX_LOADED_MODELS=2"');
+    expect((box.calls().match(/systemctl restart ollama\n/g) ?? []).length).toBe(2);
+
+    const again = run(ollamaRuntimeApplyShell(capped), box);
+    expect(again.status, again.stderr).toBe(0);
+    const second = classifyRuntimeApplyOutput(again.stdout, again.stderr, capped);
+    expect(second.outcome).toBe('unchanged');
+    expect(second.why).toContain('OLLAMA_MAX_LOADED_MODELS=2; ollama not restarted');
+    expect((box.calls().match(/systemctl restart ollama\n/g) ?? []).length).toBe(2);
+  });
+
   it('reloads and restarts an unchanged file systemd never loaded, and fails one a later drop-in overrides', () => {
     const box = sandbox();
     // A run cut off between `install` and `daemon-reload`: the file is there, the daemon runs the old
@@ -401,8 +495,14 @@ describe.skipIf(!bash)('ollamaRuntimeApplyShell (sandboxed bash)', () => {
 });
 
 describe('OLLAMA_RUNTIME_KEYS', () => {
-  it('are the four the audit asked for, and nothing about the bind', () => {
-    expect([...OLLAMA_RUNTIME_KEYS]).toEqual(['OLLAMA_NUM_PARALLEL', 'OLLAMA_KEEP_ALIVE', 'OLLAMA_CONTEXT_LENGTH', 'OLLAMA_IGPU_ENABLE']);
+  it('are the four the audit asked for plus the resident-model cap, and nothing about the bind', () => {
+    expect([...OLLAMA_RUNTIME_KEYS]).toEqual([
+      'OLLAMA_NUM_PARALLEL',
+      'OLLAMA_KEEP_ALIVE',
+      'OLLAMA_CONTEXT_LENGTH',
+      'OLLAMA_IGPU_ENABLE',
+      'OLLAMA_MAX_LOADED_MODELS',
+    ]);
   });
 });
 
@@ -464,6 +564,31 @@ describe('hubContextCapShell', () => {
   });
 });
 
+describe('hubContextCapShell for the slot count (--ollama-parallel)', () => {
+  const set = hubContextCapShell(4, '/srv/hub', HUB_OLLAMA_SLOTS_SETTING);
+  const clear = hubContextCapShell(null, '/srv/hub', HUB_OLLAMA_SLOTS_SETTING);
+
+  it('is the cap script with the two keys swapped: reads ollamaSlots, sets inferenceOllamaSlots, clears ollamaSlots', () => {
+    expect(set).toContain(`grep -q '"ollamaSlots"'`);
+    expect(set).toContain(`-X PATCH -d '{"inferenceOllamaSlots":4}' "$cihub_cap_url/user-settings"`);
+    expect(set).toContain('if [ "$cihub_cap_now" = 4 ] || [ "$cihub_cap_now" = absent ]; then');
+    expect(clear).toContain('{\\"backend\\":\\"$cihub_cap_backend\\",\\"ollamaSlots\\":null}');
+    for (const script of [set, clear]) {
+      expect(script).not.toContain('maxNumCtx');
+      expect(script).not.toContain('inferenceMaxNumCtx');
+      expect(script).not.toMatch(/echo[^\n]*\$cihub_cap_key/);
+      expect(script).toContain('unset cihub_cap_key');
+    }
+  });
+
+  it('names the setting and the route in the dry-run line', () => {
+    expect(describeHubContextCapPlan(4, HUB_OLLAMA_SLOTS_SETTING)).toContain('inferenceOllamaSlots=4');
+    expect(describeHubContextCapPlan(4, HUB_OLLAMA_SLOTS_SETTING)).toContain('PATCH /api/user-settings');
+    expect(describeHubContextCapPlan(null, HUB_OLLAMA_SLOTS_SETTING)).toContain('clear the slot count');
+    expect(describeHubContextCapPlan(null, HUB_OLLAMA_SLOTS_SETTING)).toContain('ollamaSlots=null');
+  });
+});
+
 describe('classifyHubContextCapOutput', () => {
   const m = HUB_CONTEXT_CAP_MARKERS;
   const out = (...lines: string[]) => lines.join('\n');
@@ -512,6 +637,18 @@ describe('classifyHubContextCapOutput', () => {
     const unread = classifyHubContextCapOutput(okRun('none', '200'), '', 16384);
     expect(unread.outcome).toBe('failed');
     expect(unread.why).toContain('read-back');
+  });
+
+  it('reports the slot count in its own words, with its own bounds and key', () => {
+    const s = HUB_OLLAMA_SLOTS_SETTING;
+    expect(classifyHubContextCapOutput(okRun('none', '200', '4'), '', 4, s).why).toBe('slot count none → 4 (PATCH /api/user-settings 200)');
+    expect(classifyHubContextCapOutput(okRun('4', 'skipped'), '', 4, s).why).toBe('slot count already 4');
+    expect(classifyHubContextCapOutput(okRun('none', 'skipped'), '', null, s).why).toBe('no slot count set; nothing to clear');
+    expect(classifyHubContextCapOutput(okRun('none', '400'), '', 4, s).why).toContain('1 to 64');
+    expect(classifyHubContextCapOutput(okRun('absent', 'skipped'), '', 4, s).why).toContain(
+      'predates the slot count (GET /api/inference/preferences has no ollamaSlots)',
+    );
+    expect(classifyHubContextCapOutput(okRun('none', '200', '2'), '', 4, s).why).toContain('reads back 2, not 4');
   });
 
   it('names a Hub whose build predates the cap, and treats clearing one as nothing to do', () => {

@@ -94,6 +94,8 @@ export interface PoolPeerRow {
    * it. `null` is no ceiling; absent is a Hub predating ceilings. Both mean the peer serves any prompt.
    */
   maxPromptTokens?: number | null;
+  /** Present on `/status` rows only: the Ollama slot count the peer advertised, as routing reads it. `null` is not stated; absent is a Hub predating slots. */
+  ollamaSlots?: number | null;
   /** Present on `/status` rows only: the peer's rates as timed here and as it reported them. Absent on a Hub predating throughput. */
   throughput?: { observed: PoolThroughputEstimate[]; advertised: PoolThroughputEstimate[] };
 }
@@ -151,6 +153,8 @@ export interface PoolStatusResponse {
     poolProbeSnapshotTtlMs?: number;
     /** Absent on a Hub predating prefix affinity; `0` there would have meant off anyway. */
     poolPrefixAffinityMaxInFlight?: number;
+    /** Absent on a Hub predating slot-aware placement; `0` there would have meant off anyway. */
+    poolSlotAwareness?: number;
   };
   tailscaleAdminApiConfigured: boolean;
   localNode: {
@@ -169,6 +173,8 @@ export interface PoolStatusResponse {
     maxPromptTokensSetBy?: 'env' | 'setting' | null;
     /** This node's context cap (`inferenceMaxNumCtx`), or `null` for none. Absent on a Hub predating caps. */
     maxNumCtx?: number | null;
+    /** This node's Ollama slot count (`inferenceOllamaSlots`), or `null` for not stated. Absent on a Hub predating slots. */
+    ollamaSlots?: number | null;
     /** This node's own measured rates, as it advertises them. Absent on a Hub predating throughput. */
     throughput?: PoolThroughputEstimate[];
   };
@@ -233,6 +239,19 @@ export interface PoolRoutingRecord {
   throughput?: PoolRoutingThroughput | null;
   /** What prefix affinity did to this decision, or `null` when it was off or did not apply. Absent on a Hub predating affinity. */
   affinity?: PoolRoutingAffinity | null;
+  /**
+   * What slot-aware placement did to this decision, or `null` when the knob is off or no candidate
+   * stated a slot count. Absent on a Hub predating slots.
+   */
+  slots?: PoolRoutingSlots | null;
+}
+
+/** Mirrors `PoolRoutingSlots` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingSlots {
+  /** Candidates whose known queue depth had reached their stated slots, in ranked order; `'local'` for this node. Moved behind every free one, never removed. */
+  demoted: { node: string; backend: string; inFlight: number; slots: number }[];
+  /** Placed on one of those anyway: every candidate was full, every free one failed first, or a ceiling put every free one behind it. */
+  overridden: boolean;
 }
 
 /** Mirrors `PoolRoutingAffinity` in `hub-pool-routing-log.service.ts`. */
@@ -484,13 +503,15 @@ export async function setPoolMaxPromptTokens(envFileName: string, maxPromptToken
 }
 
 /**
- * `GET /api/inference/preferences`, the two fields `pool context-cap` reads. `maxNumCtx` is the
- * stored cap on the `num_ctx` handed to apps (`null` for none); the key is absent on a Hub predating
- * caps, which is how the command tells one apart from a Hub with no cap set.
+ * `GET /api/inference/preferences`, the fields `pool context-cap` and `pool slots` read. `maxNumCtx`
+ * is the stored cap on the `num_ctx` handed to apps (`null` for none); `ollamaSlots` the stored
+ * statement of how many requests the node's Ollama runs at once (`null` for not stated). Each key is
+ * absent on a Hub predating it, which is how the command tells one apart from a Hub with nothing set.
  */
 export interface InferencePreferencesResponse {
   preferredBackend: string | null;
   maxNumCtx?: number | null;
+  ollamaSlots?: number | null;
 }
 
 export async function fetchInferencePreferences(envFileName: string): Promise<InferencePreferencesResponse> {
@@ -510,6 +531,22 @@ export async function setInferenceContextCap(envFileName: string, backend: strin
   return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
     method: 'PATCH',
     body: JSON.stringify({ backend, maxNumCtx }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/**
+ * Set this node's Ollama slot count, or clear it with `null`, through the same route and for the same
+ * reasons as the cap above: it can remove the key, and it answers with the preferences as stored.
+ */
+export async function setInferenceOllamaSlots(
+  envFileName: string,
+  backend: string,
+  ollamaSlots: number | null,
+): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify({ backend, ollamaSlots }),
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
 }
@@ -747,6 +784,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   lines.push(...formatPairingPinStateLines(status.pairingPin));
   lines.push(...formatLocalPromptCeilingLines(status.localNode));
   lines.push(...formatLocalContextCapLines(status.localNode));
+  lines.push(...formatLocalOllamaSlotsLines(status.localNode, status.settings));
 
   // An unreachable backend and a node with no models both show an empty inventory; only this says which.
   if (status.localNode.capabilitiesError) {
@@ -789,6 +827,19 @@ export function formatLocalPromptCeilingLines(localNode: PoolStatusResponse['loc
 export function formatLocalContextCapLines(localNode: PoolStatusResponse['localNode']): string[] {
   if (typeof localNode.maxNumCtx !== 'number') return [];
   return [`  Context    apps are handed a num_ctx of at most ${localNode.maxNumCtx} tokens  — clear with: cihub pool context-cap clear`];
+}
+
+/**
+ * This node's Ollama slot count, under "This node" in `pool status`, and whether placement reads it.
+ * Nothing when none is stated, like the cap above. The knob is named because a stated count with the
+ * knob off is the common state during a canary: peers may be placing against it while this node is not.
+ */
+export function formatLocalOllamaSlotsLines(localNode: PoolStatusResponse['localNode'], settings: PoolStatusResponse['settings']): string[] {
+  if (typeof localNode.ollamaSlots !== 'number') return [];
+  const placement = settings.poolSlotAwareness ? 'slot-aware placement on' : 'slot-aware placement off (poolSlotAwareness=0)';
+  return [
+    `  Slots      Ollama runs ${localNode.ollamaSlots} request${localNode.ollamaSlots === 1 ? '' : 's'} at once; ${placement}  — clear with: cihub pool slots clear`,
+  ];
 }
 
 /** The peers advertising a ceiling, since the peer table has no column for it. Nothing when none does. */
@@ -1082,6 +1133,75 @@ export function formatContextCapResultLines(
   };
 }
 
+/**
+ * The box `cihub pool slots` prints. Same three outcomes from `before` as the cap's box, for the
+ * same reasons; `after` is the read-back, so the box reports the count in force, not the one requested.
+ */
+export function formatOllamaSlotsResultLines(
+  requested: number | null,
+  before: InferencePreferencesResponse,
+  after: InferencePreferencesResponse | null,
+  written: boolean,
+): { title: string; lines: string[]; tone: 'green' | 'yellow' | 'red' | 'cyan' } {
+  if (!('ollamaSlots' in before)) {
+    return {
+      title: 'Slot count not supported',
+      tone: 'red',
+      lines: [
+        `${FAIL} This Hub's build predates the slot count, so nothing was written and placement is unchanged.`,
+        'Update it first: cihub pool update',
+      ],
+    };
+  }
+  if (!written) {
+    return {
+      title: 'Slot count unchanged',
+      tone: 'cyan',
+      lines:
+        requested === null
+          ? ['No slot count is stated on this node; nothing to clear.']
+          : [`The slot count is already ${requested}; nothing was written.`],
+    };
+  }
+  const inForce = after?.ollamaSlots;
+  if (after && inForce !== requested) {
+    return {
+      title: 'Slot count not in force',
+      tone: 'red',
+      lines: [
+        `${FAIL} Asked for ${requested === null ? 'none' : requested}, but the Hub reads back ${inForce === null || inForce === undefined ? 'none' : inForce}.`,
+        'Read the Hub log around the write: cihub logs',
+      ],
+    };
+  }
+  if (requested === null) {
+    return {
+      title: 'Slot count cleared',
+      tone: 'yellow',
+      lines: [
+        'This node states no slot count again: the pool ranks it by queue depth alone, as before slots',
+        'existed, and peers learn that on their next health poll.',
+      ],
+    };
+  }
+  return {
+    title: 'Slot count set',
+    tone: 'green',
+    lines: [
+      `This node states that its Ollama runs ${requested} request${requested === 1 ? '' : 's'} at once. Peers learn it on their next health poll;`,
+      'with poolSlotAwareness=1 an entry node places behind every node with a free slot before this one',
+      `once ${requested} ${requested === 1 ? 'is' : 'are'} in flight here.`,
+      '',
+      `Match it to the daemon: OLLAMA_NUM_PARALLEL on this node should be ${requested} too. Across the fleet,`,
+      `cihub fleet backends --ollama-parallel ${requested} --ollama-context <n> --ollama-keep-alive <d> --execute sets both —`,
+      "passed with the node's other runtime flags: that file is rendered whole from the flags on the line, so",
+      `--ollama-parallel ${requested} alone would drop OLLAMA_KEEP_ALIVE and OLLAMA_CONTEXT_LENGTH from every node it touches.`,
+      '',
+      'Check it: cihub pool status',
+    ],
+  };
+}
+
 // --- discovery ---
 
 const DISCOVER_WIDTHS = [34, 24] as const;
@@ -1274,6 +1394,20 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         throughput.overridden
           ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
           : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
+      );
+    }
+    // Only when a full engine was moved: the record is present, with an empty `demoted`, on every
+    // request where some candidate stated a count, and a note on each of those would bury the one
+    // an operator reading why a burst skipped the 2-slot node needs.
+    const slots = entry.slots;
+    if (slots && slots.demoted.length > 0) {
+      const nodes = slots.demoted
+        .map((demoted) => `${sanitizeForBox(demoted.node)} (${demoted.inFlight} in flight, ${demoted.slots} slot${demoted.slots === 1 ? '' : 's'})`)
+        .join(', ');
+      lines.push(
+        slots.overridden
+          ? `  ↳ placed anyway with every slot full on ${nodes}: no node with a free slot was ahead of it`
+          : `  ↳ moved ${nodes} behind nodes with a free slot`,
       );
     }
     // Only when affinity changed something or stood aside: a `hit` is the line an operator watching

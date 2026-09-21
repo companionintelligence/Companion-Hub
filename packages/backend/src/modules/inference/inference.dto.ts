@@ -1,5 +1,6 @@
 import { createZodDto } from '@/common/zod-dto';
 import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
+import { MAX_INFERENCE_OLLAMA_SLOTS, MIN_INFERENCE_OLLAMA_SLOTS } from '@/common/helpers/inference-ollama-slots';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { z } from 'zod';
 
@@ -40,6 +41,10 @@ export const inferencePreferencesSchema = z.object({
   // (`OLLAMA_CONTEXT_LENGTH`) so no app asks for a window that reloads the model. `null` clears it,
   // which restores sizing from the model window and this node's memory alone.
   maxNumCtx: z.number().int().min(MIN_INFERENCE_MAX_NUM_CTX).max(MAX_INFERENCE_MAX_NUM_CTX).nullable().optional(),
+  // How many requests this node's Ollama runs at once — set it to the daemon's `OLLAMA_NUM_PARALLEL`
+  // so the pool can tell a full engine from a half-empty one. `null` clears it, which ranks this
+  // node by queue depth alone again.
+  ollamaSlots: z.number().int().min(MIN_INFERENCE_OLLAMA_SLOTS).max(MAX_INFERENCE_OLLAMA_SLOTS).nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}

@@ -24,6 +24,7 @@ import {
   type HubPoolDirectionalState,
   type HubPoolPin,
 } from '@/common/helpers/hub-pool';
+import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import {
@@ -36,6 +37,8 @@ import {
   type PoolRoutingPin,
   type PoolRoutingPromptCeiling,
   type PoolRoutingRecordInput,
+  type PoolRoutingSlotDemotion,
+  type PoolRoutingSlots,
   type PoolRoutingThroughput,
   type PoolRoutingThroughputEstimate,
   type PoolRoutingUsage,
@@ -734,6 +737,66 @@ export function splitDemoted(group: PoolCandidate[], demoted: ReadonlySet<PoolCa
   return [group.filter((candidate) => !demoted.has(candidate)), group.filter((candidate) => demoted.has(candidate))];
 }
 
+/** What slot-aware placement knows about one candidate: the queue depth the ranker sorted on, and the slots its node advertised. */
+export interface SlotOccupancy {
+  inFlight: number;
+  slots: number;
+}
+
+/**
+ * Judge each Ollama candidate's known queue depth against the slot count its node advertised
+ * (`inferenceOllamaSlots`, the operator's statement of `OLLAMA_NUM_PARALLEL`). `demoted` is the set
+ * of candidates whose queue already fills their slots, to be moved behind every candidate that still
+ * has one free — because past that point Ollama queues the request behind the engine rather than
+ * serving it (measured 2026-09-21: 5–10 s to the first token on a full 2-slot node while 4-slot nodes
+ * sat idle).
+ *
+ * The rules are the prompt ceiling's and the throughput placement's, because the risk is the same —
+ * a preference must never become a refusal:
+ *
+ * 1. **Unstated is neither full nor free.** A candidate whose node advertises no slot count, or whose
+ *    engine is not Ollama, is never demoted and keeps its place relative to the ones that are not.
+ * 2. **Demoted, never removed**, so failover still reaches a full node when every free one fails.
+ * 3. **All full means nothing moves.** When every candidate is at or over its slots, `demoted` is
+ *    empty, the ranker's order stands, and `overridden: true` says so.
+ *
+ * The queue depth judged is the one the ranker sorted on — for a peer the larger of what it reported
+ * and what this node has forwarded it, or the neutral assumed load when its snapshot is stale — so a
+ * 1-slot peer that cannot be measured counts as full: an unmeasured node is never taken for an idle
+ * one. `decision` is `null` when no candidate carried a slot count, so a fleet that never states one
+ * gets the list back untouched. Pure and exported for its own test, like `applyPromptCeiling`.
+ */
+export function applySlotPlacement(
+  ordered: PoolCandidate[],
+  occupancyOf: (candidate: PoolCandidate) => SlotOccupancy | null,
+): { demoted: ReadonlySet<PoolCandidate>; decision: PoolRoutingSlots | null } {
+  const full = new Set<PoolCandidate>();
+  const demoted: PoolRoutingSlotDemotion[] = [];
+  let stated = 0;
+  for (const candidate of ordered) {
+    const occupancy = occupancyOf(candidate);
+    if (!occupancy) {
+      continue;
+    }
+    stated += 1;
+    if (occupancy.inFlight < occupancy.slots) {
+      continue;
+    }
+    full.add(candidate);
+    demoted.push({
+      node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      backend: candidate.backend,
+      inFlight: occupancy.inFlight,
+      slots: occupancy.slots,
+    });
+  }
+  if (stated === 0) {
+    return { demoted: NOTHING_DEMOTED, decision: null };
+  }
+  const overridden = full.size === ordered.length;
+  return { demoted: overridden ? NOTHING_DEMOTED : full, decision: { demoted, overridden } };
+}
+
 /** What one forwarded response revealed about its engine's speed, gathered while it streams. */
 interface ResponseTiming {
   firstChunkAt: number | null;
@@ -1067,6 +1130,11 @@ export class PoolProxyService {
     return this.configuration.getHubPoolPreferences().poolPrefixAffinityMaxInFlight;
   }
 
+  /** Read per request, like {@link localAffinity}. `0` (the default) keeps slot counts out of ranking entirely — see {@link applyAdvertisedSlots}. */
+  private slotAwareness(): number {
+    return this.configuration.getHubPoolPreferences().poolSlotAwareness;
+  }
+
   /** How old a peer's capability snapshot may be before its self-reported load is discarded, derived from the configured poll cadence so retuning one retunes the other. */
   private capabilitiesFreshnessMs(): number {
     return this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000 * CAPABILITIES_FRESHNESS_POLLS;
@@ -1116,6 +1184,16 @@ export class PoolProxyService {
    * Then the prompt ceilings, within each of those groups: a node whose ceiling is below the
    * request's estimate moves behind every node that is not — see {@link applyPromptCeiling}.
    *
+   * Then slot-aware placement, within each of those groups and only with `poolSlotAwareness` on: an
+   * Ollama candidate whose known queue depth already fills the slots its node advertised moves behind
+   * every candidate that still has one free — see {@link applySlotPlacement}. Judged on every route
+   * that occupies a slot, body or not, because `OLLAMA_NUM_PARALLEL` queues an embedding exactly as
+   * it queues a turn; the one caller that occupies none — the peer `/api/show` lookup in
+   * {@link describeFromPeer}, answered from metadata on disk — says so and is not judged. Inside
+   * the ceiling because the ceiling is an operator's statement about a prompt and this is an
+   * inference about a queue; outside throughput because a full engine queues the request whole,
+   * where a slow one merely reads it slowly. At 0, the shipped default, nothing here is read.
+   *
    * Then measured throughput, within each of those groups: a candidate whose measured prefill rate
    * would take it past the request's budget moves behind the ones that would not — see
    * {@link applyThroughputPlacement}. `streaming` picks the budget, as it does for the forward.
@@ -1152,11 +1230,19 @@ export class PoolProxyService {
       /** The window the body asks for (`options.num_ctx`), read only if some candidate has a cap; `null` when it carries none. */
       numCtx?: () => number | null;
     },
+    /**
+     * Whether the request being placed will occupy one of the engine's `OLLAMA_NUM_PARALLEL` slots.
+     * Every forwarded request does — a turn and an embedding alike — so this defaults on; a
+     * metadata lookup does not, and passing `false` keeps {@link applySlotPlacement} out of its
+     * ranking so a full node is still asked first when it is the one best placed to answer.
+     */
+    occupiesSlot = true,
   ): Promise<{
     candidates: PoolCandidate[];
     pin: HubPoolPin | null;
     promptCeiling: PoolRoutingPromptCeiling | null;
     contextCap: PoolRoutingContextCap | null;
+    slots: PoolRoutingSlots | null;
     throughput: PoolRoutingThroughput | null;
     /** What affinity saw and did, and the key to remember the placement under; both `null` when affinity did not apply. */
     affinity: { decision: PoolRoutingAffinity | null; key: PrefixKey | null };
@@ -1190,6 +1276,7 @@ export class PoolProxyService {
     const ceiling = measurePromptBytes
       ? this.applyPromptCeilings(model, ordered, peers, measurePromptBytes)
       : { preferred: ordered, overCeiling: [], decision: null };
+    const slots = occupiesSlot ? this.applyAdvertisedSlots(model, affinity.ordered, peers) : { demoted: NOTHING_DEMOTED, decision: null };
     const throughput =
       prompt && measurePromptBytes
         ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming)
@@ -1198,20 +1285,25 @@ export class PoolProxyService {
     // effect on the next request and costs no query on the inference hot path.
     const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
     // The cap is the outermost split and the ceiling the next, because both are operator statements
-    // and a node over its cap reloads or truncates where a node over its ceiling is merely slow;
-    // throughput, an inference, splits within those. With nothing demoted and neither tail this is
-    // `applyPin(ordered, pin)` exactly, which keeps an unmeasured fleet on the order it had before
-    // any of them existed. The ceiling's own "everything over means nothing moves" rule was judged
-    // on the whole list, so `overCeiling` is already empty in that case.
+    // and a node over its cap reloads or truncates where a node over its ceiling is merely slow. The
+    // other two are inferences and split within those: slots outside throughput, because a full
+    // engine queues the request whole where a slow one merely reads it slowly. With nothing demoted
+    // and no over-cap or over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps an
+    // unmeasured fleet on the order it had before any of the four existed. The ceiling's own
+    // "everything over means nothing moves" rule was judged on the whole list, so `overCeiling` is
+    // already empty in that case.
     const overCeiling = new Set(ceiling.overCeiling);
     const candidates = [cap.preferred, cap.overCap].flatMap((capGroup) =>
-      splitDemoted(capGroup, overCeiling).flatMap((group) => splitDemoted(group, throughput.demoted).flatMap((part) => applyPin(part, pin))),
+      splitDemoted(capGroup, overCeiling).flatMap((group) =>
+        splitDemoted(group, slots.demoted).flatMap((slotPart) => splitDemoted(slotPart, throughput.demoted).flatMap((part) => applyPin(part, pin))),
+      ),
     );
     return {
       candidates,
       pin,
       promptCeiling: ceiling.decision,
       contextCap: cap.decision,
+      slots: slots.decision,
       throughput: throughput.decision,
       // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
       // first, and a ceiling, a demotion or a pin applied after affinity can each have put another
@@ -1385,6 +1477,52 @@ export class PoolProxyService {
   }
 
   /**
+   * Each Ollama candidate's queue depth against the slot count its node stated — this node's own
+   * `inferenceOllamaSlots` for a local candidate, the figure a peer advertised for a peer — then
+   * {@link applySlotPlacement}.
+   *
+   * Everything short-circuits on the knob: at 0 no slot count is read and nothing is demoted, which
+   * is what makes the default byte-identical to the build before slots. The queue depth is the
+   * ranked entry's own `inFlight` — the number the sort just used, so the decision and the order it
+   * shaped agree on what the queue was. Slot counts come from the same places everything else in
+   * ranking does (the in-memory settings object and the snapshots `usablePeers` already loaded), so
+   * this adds no query. One debug line per request that demoted something, as for the ceiling.
+   */
+  private applyAdvertisedSlots(model: string, ranked: RankedCandidate[], peers: HubPoolPeer[]): ReturnType<typeof applySlotPlacement> {
+    // `!(> 0)` rather than `<= 0`, as for affinity: a settings object from before this knob existed
+    // reads `undefined` here, and that must read as off.
+    if (!(this.slotAwareness() > 0)) {
+      return { demoted: NOTHING_DEMOTED, decision: null };
+    }
+    const localSlots = clampOllamaSlots(this.configuration.getInferencePreferences()?.ollamaSlots);
+    const peerSlots = new Map<string, number | null>(
+      peers.map((peer) => [peer.id, clampOllamaSlots((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.ollamaSlots)]),
+    );
+    const inFlightOf = new Map(ranked.map((entry) => [entry.candidate, entry.inFlight]));
+    const result = applySlotPlacement(
+      ranked.map((entry) => entry.candidate),
+      (candidate) => {
+        if (candidate.backend !== 'ollama') {
+          return null;
+        }
+        const slots = candidate.peerId === null ? localSlots : (peerSlots.get(candidate.peerId) ?? null);
+        const inFlight = inFlightOf.get(candidate);
+        return slots === null || inFlight === undefined ? null : { inFlight, slots };
+      },
+    );
+    const decision = result.decision;
+    if (decision && decision.demoted.length > 0) {
+      const nodes = decision.demoted.map((entry) => `${entry.node} (${entry.inFlight} in flight, ${entry.slots} slots)`).join(', ');
+      this.logger.debug(
+        decision.overridden
+          ? `[PoolProxy] every candidate for "${model}" has its slots full — ${nodes} — so placing it anyway`
+          : `[PoolProxy] "${model}" put ${nodes} behind every candidate with a free slot`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * Each candidate's ceiling — this node's own (env override applied) for a local candidate, the
    * figure a peer advertised for a peer — then {@link applyPromptCeiling}.
    *
@@ -1449,6 +1587,7 @@ export class PoolProxyService {
         pin: null,
         promptCeiling: null,
         contextCap: null,
+        slots: null,
         throughput: null,
         affinity: null,
         outcome: 'failed',
@@ -1476,7 +1615,7 @@ export class PoolProxyService {
     // Keyed on the resolved model, never the alias: `auto` on two Hubs can mean two models, and the
     // cache a session warms is the resolved one's.
     const prefixKey = memoize(() => derivePrefixKey(model, body, params.sessionHeader));
-    const { candidates, pin, promptCeiling, contextCap, throughput, affinity, peers, localProbes } = await this.rankCandidates(
+    const { candidates, pin, promptCeiling, contextCap, slots, throughput, affinity, peers, localProbes } = await this.rankCandidates(
       model,
       judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey, numCtx: () => requestedNumCtx(body) } : undefined,
     );
@@ -1499,6 +1638,7 @@ export class PoolProxyService {
         pin: describePinForLog(pin),
         promptCeiling,
         contextCap,
+        slots,
         throughput,
         affinity: affinity.decision,
         outcome: 'failed',
@@ -1536,6 +1676,7 @@ export class PoolProxyService {
       pin: describePinForLog(pin),
       promptCeiling,
       contextCap,
+      slots,
       ...describeRequestShape(method, body),
       throughput,
       affinity: affinity.decision,
@@ -1567,6 +1708,18 @@ export class PoolProxyService {
         this.logger.debug(
           `[PoolProxy] every candidate whose context cap can take ${row.contextCap.numCtx} failed for "${model}"; trying ${nodeLabel}, which is capped below it`,
         );
+      }
+      // Reaching a full node means nothing with a free slot is ahead of it any more: every such node
+      // failed, or a prompt ceiling put them all behind it. Recorded as an override for the same
+      // reason as the ceiling's: the log must not claim the node was skipped.
+      const placedSlots = row.slots;
+      if (
+        placedSlots &&
+        !placedSlots.overridden &&
+        placedSlots.demoted.some((entry) => entry.node === nodeLabel && entry.backend === candidate.backend)
+      ) {
+        placedSlots.overridden = true;
+        this.logger.debug(`[PoolProxy] placing "${model}" on ${nodeLabel}, whose slots are full, because nothing with a free slot is ahead of it`);
       }
       const placedThroughput = row.throughput;
       if (
@@ -1994,6 +2147,7 @@ export class PoolProxyService {
       // Null for the same reason as the pin: the ceiling and the cap are applied by the node choosing where work goes.
       promptCeiling: null,
       contextCap: null,
+      slots: null,
       throughput: null,
       affinity: null,
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
@@ -2092,7 +2246,15 @@ export class PoolProxyService {
     // Belt-and-braces with `PROMPT_CEILING_PATHS`, which lists only the four generation paths and so
     // already excludes every {@link MODEL_METADATA_PATHS} entry on the `proxyRequest` side; keep
     // both, because they guard different callers.
-    const { candidates } = await this.rankCandidates(model);
+    //
+    // `occupiesSlot: false` for the same reason, against the third placement decision: slot-aware
+    // placement moves a node whose `OLLAMA_NUM_PARALLEL` slots are full behind every node with a
+    // free one, because a forwarded request would queue behind the engine there. This lookup takes
+    // no slot — `/api/show` is answered by the daemon from metadata on disk, not by a loaded model —
+    // so a full node is exactly as quick to answer it as an idle one, and demoting it would walk
+    // past the node the ranker chose over a queue the lookup never joins. Embeddings keep the pass:
+    // they occupy a slot like any turn.
+    const { candidates } = await this.rankCandidates(model, undefined, false);
     for (const candidate of candidates) {
       if (clientClosed.aborted) {
         break;

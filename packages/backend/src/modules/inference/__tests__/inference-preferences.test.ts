@@ -148,6 +148,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'lemonade',
@@ -198,6 +199,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'ollama',
@@ -233,6 +235,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -258,6 +261,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8000',
+      undefined,
       undefined,
       undefined,
     );
@@ -286,6 +290,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8080',
+      undefined,
       undefined,
     );
   }, 30_000);
@@ -354,6 +359,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       16_384,
+      undefined,
     );
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       2,
@@ -366,6 +372,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       null,
+      undefined,
     );
   }, 30_000);
 
@@ -376,6 +383,69 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 1638 }).success).toBe(false);
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 16_384.5 }).success).toBe(false);
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 2 ** 21 }).success).toBe(false);
+  });
+
+  it('passes the Ollama slot count through, and a null to clear it', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', ollamaSlots: 4 } as never);
+
+    await controller.updatePreferences({ backend: 'ollama', ollamaSlots: 4 });
+    await controller.updatePreferences({ backend: 'ollama', ollamaSlots: null });
+    // Both in one body: the cap and the slots land in their own positions, neither moves the other.
+    await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 32_768, ollamaSlots: 2 });
+
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      1,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      4,
+    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      2,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      null,
+    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      3,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      32_768,
+      2,
+    );
+  }, 30_000);
+
+  it('bounds the Ollama slot count in the preferences schema: an integer from 1 to 64, or null', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 4 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 1 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 64 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama' }).success).toBe(true);
+    // Zero slots is not a daemon, a fraction is not a slot, and past the bound `--ollama-parallel` accepts.
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 0 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: -1 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 2.5 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 65 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: '4' }).success).toBe(false);
   });
 
   it('accepts the dspark backend and a valid dsparkUrl in the preferences schema', () => {

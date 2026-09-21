@@ -33,9 +33,11 @@ import {
 } from './fleet-ollama-bind.js';
 import {
   classifyHubContextCapOutput,
+  HUB_CONTEXT_CAP_SETTING,
   classifyRuntimeApplyOutput,
   type HubContextCap,
   type HubContextCapOutcome,
+  type HubInferenceSetting,
   hubContextCapShell,
   type OllamaRuntimeSettings,
   ollamaRuntimeApplyShell,
@@ -111,9 +113,10 @@ const PORTS: Record<InstallableBackend, number> = {
  * Exported because the adopt path writes the same canonical file as the install path, and the two
  * must agree on its contents or a re-run would strip a setting the previous run added.
  *
- * Deliberately NOT where `OLLAMA_NUM_PARALLEL`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_CONTEXT_LENGTH` or
- * `OLLAMA_IGPU_ENABLE` live: those are per-run operator choices, written to their own drop-in by
- * `fleet-ollama-runtime.ts` so that changing one never rewrites (or restarts over) the bind.
+ * Deliberately NOT where `OLLAMA_NUM_PARALLEL`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_CONTEXT_LENGTH`,
+ * `OLLAMA_IGPU_ENABLE` or `OLLAMA_MAX_LOADED_MODELS` live: those are per-run operator choices,
+ * written to their own drop-in by `fleet-ollama-runtime.ts` so that changing one never rewrites (or
+ * restarts over) the bind.
  */
 export function ollamaManagedEnvironment(facts: HostFacts): string[] {
   const gfx = facts.gpus.find((g) => g.vendor === 'amd')?.gfx;
@@ -613,21 +616,30 @@ export async function applyOllamaRuntimeSettings(
   }
 }
 
-// ─── The Hub's context cap, after the runtime drop-in ───────────────────────
+// ─── The Hub's context cap and slot count, after the runtime drop-in ────────
 
 export type HubContextCapResult = HubContextCapOutcome & { ms?: number };
 
 /**
- * Tell the node's Hub the context cap `--ollama-context` just wrote into Ollama's environment.
+ * Tell the node's Hub the context cap `--ollama-context` just wrote into Ollama's environment — or,
+ * with `setting`, the slot count `--ollama-parallel` did.
  *
  * Runs after the runtime step, and only on a node where that step applied or was already in
  * effect: the cap is the Hub's half of `OLLAMA_CONTEXT_LENGTH`, and telling a Hub about a context
- * the daemon does not run would make the handout wrong in the other direction. Unprivileged — the
- * device key is read on the node and used on its loopback, never printed, never carried back here.
- * The classifier's `applied` is a cap that read back as requested; nothing else is reported as done.
+ * the daemon does not run would make the handout wrong in the other direction; the slot count is
+ * the Hub's half of `OLLAMA_NUM_PARALLEL`, and a count the daemon does not run would have the pool
+ * placing against slots that are not there. Unprivileged — the device key is read on the node and
+ * used on its loopback, never printed, never carried back here. The classifier's `applied` is a
+ * value that read back as requested; nothing else is reported as done.
  */
-export async function applyHubContextCap(target: SshTarget, cap: HubContextCap, dataDir: string, timeoutMs = 90_000): Promise<HubContextCapResult> {
-  const command = `bash <<'CIHUB_HUB_CONTEXT_CAP_EOF'\n${hubContextCapShell(cap, dataDir)}\nCIHUB_HUB_CONTEXT_CAP_EOF`;
+export async function applyHubContextCap(
+  target: SshTarget,
+  cap: HubContextCap,
+  dataDir: string,
+  timeoutMs = 90_000,
+  setting: HubInferenceSetting = HUB_CONTEXT_CAP_SETTING,
+): Promise<HubContextCapResult> {
+  const command = `bash <<'${setting.heredoc}'\n${hubContextCapShell(cap, dataDir, setting)}\n${setting.heredoc}`;
   const started = Date.now();
   const result = await sshCapture(target, command, timeoutMs);
   const ms = Date.now() - started;
@@ -643,7 +655,7 @@ export async function applyHubContextCap(target: SshTarget, cap: HubContextCap, 
       ms,
     };
   }
-  return { ...classifyHubContextCapOutput(result.out, result.err, cap), ms };
+  return { ...classifyHubContextCapOutput(result.out, result.err, cap, setting), ms };
 }
 
 // ─── Firewall rules for the Hub's engine probes ─────────────────────────────

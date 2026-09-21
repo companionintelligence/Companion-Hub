@@ -1,5 +1,6 @@
 /**
- * Ollama's runtime environment — parallelism, keep-alive, context, iGPU — in a file of its own.
+ * Ollama's runtime environment — parallelism, keep-alive, context, iGPU, resident-model cap — in a
+ * file of its own.
  *
  * Measured on the 2026-09-20 fleet: no node sets `OLLAMA_NUM_PARALLEL`, so every Ollama serves ONE
  * sequence at a time and the pool's ceiling is the sum of fifteen single streams (~450-550 tok/s on
@@ -8,13 +9,19 @@
  * `OLLAMA_CONTEXT_LENGTH` (a node whose default context is too large for its GTT spills to CPU with
  * HTTP 200s) and `OLLAMA_IGPU_ENABLE` (3-5x single-stream on the B2-flagged Strix Halo boxes) belong.
  *
+ * `OLLAMA_MAX_LOADED_MODELS` joined them on 2026-09-21: a 24h keep-alive with no cap on resident
+ * models let three 27-30B models pile up on batch-tier Strix Halo nodes next to vLLM, Lucebox and
+ * Lemonade — core-7 at 122/123 GB with swap full, core-17's kernel OOM-killing llama-server and
+ * dbus. A cap of 2 freed 122 → 56 GB (core-7), 109 → 72 (core-17), 95 → 49 (core-14) and 102 → 56
+ * (fzzy) by hand; managing it here makes the tiering rule reproducible from the command line.
+ *
  * A SEPARATE drop-in from the bind, on purpose. `zzzzz-cihub-bind.conf` is the one file that sets
  * the bind, and the bind step moves aside any drop-in that sets the bind and nothing the canonical
  * file does not — so a runtime file that also carried it would be a file the bind step fights with,
  * and a bind change would restart the daemon over a runtime change and vice versa. This file never
  * mentions the bind variable, and a test keeps it that way.
  *
- * The whole file is rendered from the four flags every time: a key the operator did not pass (or
+ * The whole file is rendered from the five flags every time: a key the operator did not pass (or
  * passed as `unset`) is simply not in it, and falls back to whatever Ollama or another drop-in
  * decides. That makes a run reproducible from its command line, and makes "revert" a run with the
  * keys left out. The daemon is restarted only when the rendered bytes differ from what is on disk,
@@ -47,7 +54,13 @@ import {
  */
 export const RUNTIME_DROPIN = 'zzzzz-cihub-runtime.conf';
 
-export const OLLAMA_RUNTIME_KEYS = ['OLLAMA_NUM_PARALLEL', 'OLLAMA_KEEP_ALIVE', 'OLLAMA_CONTEXT_LENGTH', 'OLLAMA_IGPU_ENABLE'] as const;
+export const OLLAMA_RUNTIME_KEYS = [
+  'OLLAMA_NUM_PARALLEL',
+  'OLLAMA_KEEP_ALIVE',
+  'OLLAMA_CONTEXT_LENGTH',
+  'OLLAMA_IGPU_ENABLE',
+  'OLLAMA_MAX_LOADED_MODELS',
+] as const;
 export type OllamaRuntimeKey = (typeof OLLAMA_RUNTIME_KEYS)[number];
 
 /**
@@ -61,6 +74,7 @@ export interface OllamaRuntimeSettings {
   keepAlive?: string;
   contextLength?: number;
   igpu?: boolean;
+  maxLoaded?: number;
 }
 
 /** The word that leaves a key out. Accepted by every runtime flag. */
@@ -87,6 +101,7 @@ export function parseOllamaRuntimeValue(flag: '--ollama-parallel', raw: string):
 export function parseOllamaRuntimeValue(flag: '--ollama-context', raw: string): number | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-keep-alive', raw: string): string | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-igpu', raw: string): boolean | undefined;
+export function parseOllamaRuntimeValue(flag: '--ollama-max-loaded', raw: string): number | undefined;
 export function parseOllamaRuntimeValue(flag: string, raw: string): number | string | boolean | undefined {
   const value = raw.trim();
   if (value === RUNTIME_UNSET) return undefined;
@@ -105,6 +120,10 @@ export function parseOllamaRuntimeValue(flag: string, raw: string): number | str
       if (value === 'on') return true;
       if (value === 'off') return false;
       throw new OllamaRuntimeFlagError(`${flag} must be on, off or '${RUNTIME_UNSET}' (got '${raw}').`);
+    case '--ollama-max-loaded':
+      // Ollama reads 0 as "3 × GPU count" — not a cap, and not what an operator typing 0 means; the
+      // way to hand the key back to Ollama is `unset`. 16 is past any node's memory for real models.
+      return parseBoundedInt(flag, value, 1, 16);
     default:
       throw new OllamaRuntimeFlagError(`Unknown Ollama runtime flag '${flag}'.`);
   }
@@ -117,6 +136,7 @@ export function ollamaRuntimeEnvironment(settings: OllamaRuntimeSettings): Array
   if (settings.keepAlive !== undefined) env.push(['OLLAMA_KEEP_ALIVE', settings.keepAlive]);
   if (settings.contextLength !== undefined) env.push(['OLLAMA_CONTEXT_LENGTH', String(settings.contextLength)]);
   if (settings.igpu !== undefined) env.push(['OLLAMA_IGPU_ENABLE', settings.igpu ? '1' : '0']);
+  if (settings.maxLoaded !== undefined) env.push(['OLLAMA_MAX_LOADED_MODELS', String(settings.maxLoaded)]);
   return env;
 }
 
@@ -128,6 +148,10 @@ export function ollamaRuntimeTargets(settings: OllamaRuntimeSettings): Partial<R
 /**
  * Content of the runtime drop-in. Every line is a plain `Environment="K=V"`; the header says what
  * wrote it and how to change it, and deliberately never names the bind or its variable.
+ *
+ * The header is frozen at the four flags it first named. It is compared byte for byte with the file
+ * on disk, so rewording it — even to list `--ollama-max-loaded` — would restart every Ollama on the
+ * fleet the next time the same flags are re-run, for a comment.
  */
 export function ollamaRuntimeDropinContent(settings: OllamaRuntimeSettings): string {
   const lines = [
@@ -140,7 +164,7 @@ export function ollamaRuntimeDropinContent(settings: OllamaRuntimeSettings): str
   return `${lines.join('\n')}\n`;
 }
 
-/** The four managed keys as `systemctl show -p Environment` currently resolves them. */
+/** The five managed keys as `systemctl show -p Environment` currently resolves them. */
 export function readRuntimeEnvironment(showEnvironment: string | undefined): Partial<Record<OllamaRuntimeKey, string>> {
   if (showEnvironment === undefined) return {};
   const env = parseShowEnvironment(showEnvironment.startsWith('Environment=') ? showEnvironment : `Environment=${showEnvironment}`);
@@ -353,7 +377,7 @@ export function classifyRuntimeApplyOutput(out: string, err: string, settings: O
   return { outcome: 'applied', why: pick(RUNTIME_MARKERS.written) ?? 'runtime settings applied', before, after, transition };
 }
 
-// ─── The Hub's side of --ollama-context ──────────────────────────────────────
+// ─── The Hub's side of --ollama-context and --ollama-parallel ────────────────
 
 /**
  * `OLLAMA_CONTEXT_LENGTH` is half of a setting. The Hub sizes the `num_ctx` it hands its apps from
@@ -371,8 +395,51 @@ export function classifyRuntimeApplyOutput(out: string, err: string, settings: O
  *
  * The write is skipped when the cap already reads as requested: `/api/inference/preferences` sweeps
  * every AI app on any write, and clearing a cap that is not there would restart apps for nothing.
+ *
+ * `OLLAMA_NUM_PARALLEL` has the same shape of gap, and the same fix. The pool ranks by queue depth
+ * and cannot tell a full 2-slot engine from a half-empty 4-slot one (fleet-qa B5, 2026-09-21:
+ * beta-max 0.47 s → 9.0 s TTFT under a 4-way burst while 4-slot nodes sat idle); the Hub setting
+ * that tells it is `inferenceOllamaSlots`, and `--ollama-parallel` writes it the same way, through
+ * the same script, described by {@link HubInferenceSetting}.
  */
 export type HubContextCap = number | null;
+
+/**
+ * One Hub setting a runtime flag has a Hub half for: the two API keys that carry it, and the words
+ * the report uses for it. The shell, the classifier and the plan line are written once against this
+ * shape; the two instances below are the whole difference between `--ollama-context` and
+ * `--ollama-parallel` on the Hub side.
+ */
+export interface HubInferenceSetting {
+  /** The key on `GET`/`PATCH /api/inference/preferences`: read for the current value, and written as `null` to clear. */
+  preferenceKey: 'maxNumCtx' | 'ollamaSlots';
+  /** The key on `PATCH /api/user-settings`, which sets a number but cannot remove one. */
+  settingKey: 'inferenceMaxNumCtx' | 'inferenceOllamaSlots';
+  /** What the report calls it. */
+  label: string;
+  /** What the Hub accepts, for the hint on a 400. */
+  range: string;
+  /** The heredoc delimiter the SSH step wraps the script in — distinct per setting, so a transcript names which step ran. */
+  heredoc: string;
+}
+
+/** `--ollama-context`'s Hub half: the ceiling on the `num_ctx` handed to apps. */
+export const HUB_CONTEXT_CAP_SETTING: HubInferenceSetting = {
+  preferenceKey: 'maxNumCtx',
+  settingKey: 'inferenceMaxNumCtx',
+  label: 'context cap',
+  range: '2048 to 1048576',
+  heredoc: 'CIHUB_HUB_CONTEXT_CAP_EOF',
+};
+
+/** `--ollama-parallel`'s Hub half: how many requests the daemon runs at once, for slot-aware placement. */
+export const HUB_OLLAMA_SLOTS_SETTING: HubInferenceSetting = {
+  preferenceKey: 'ollamaSlots',
+  settingKey: 'inferenceOllamaSlots',
+  label: 'slot count',
+  range: '1 to 64',
+  heredoc: 'CIHUB_HUB_OLLAMA_SLOTS_EOF',
+};
 
 export const HUB_CONTEXT_CAP_MARKERS = {
   key: 'hub-context-cap-key:',
@@ -393,24 +460,30 @@ export function hubContextCapRoute(cap: HubContextCap): string {
 const showCap = (cap: HubContextCap | undefined): string => (cap === undefined ? 'unknown' : cap === null ? 'none' : String(cap));
 
 /** The dry-run line under a node's runtime plan. */
-export function describeHubContextCapPlan(cap: HubContextCap): string {
+export function describeHubContextCapPlan(cap: HubContextCap, setting: HubInferenceSetting = HUB_CONTEXT_CAP_SETTING): string {
   return cap === null
-    ? `hub: would clear the context cap on this node's Hub (${hubContextCapRoute(cap)} maxNumCtx=null) unless none is set`
-    : `hub: would set inferenceMaxNumCtx=${cap} on this node's Hub (${hubContextCapRoute(cap)}) unless already ${cap}`;
+    ? `hub: would clear the ${setting.label} on this node's Hub (${hubContextCapRoute(cap)} ${setting.preferenceKey}=null) unless none is set`
+    : `hub: would set ${setting.settingKey}=${cap} on this node's Hub (${hubContextCapRoute(cap)}) unless already ${cap}`;
 }
 
 /**
- * Tell the node's Hub the context cap. Runs on the node, unprivileged; never echoes the key.
+ * Tell the node's Hub the context cap — or, with `setting`, the slot count. Runs on the node,
+ * unprivileged; never echoes the key.
  *
  * Same key lookup as `hubRecommendationScript`: the `ci-hub` container's `/data/state/settings.json`
  * first (`node -e`, because a JSON value can carry escapes a regex would truncate), then the host
- * data dir. `GET /api/inference/preferences` first, always: it says whether this Hub knows the cap
- * at all (`maxNumCtx` absent from the body is a build predating it), what it is now, and — for a
+ * data dir. `GET /api/inference/preferences` first, always: it says whether this Hub knows the
+ * setting at all (its key absent from the body is a build predating it), what it is now, and — for a
  * clear — which backend to send back. Then the write, then a read-back, so the caller never reports
- * a cap nobody read. Every finding is a marker line; the exit status is always 0.
+ * a value nobody read. Every finding is a marker line; the exit status is always 0.
  */
-export function hubContextCapShell(cap: HubContextCap, dataDir = '/var/lib/companion-hub'): string {
+export function hubContextCapShell(
+  cap: HubContextCap,
+  dataDir = '/var/lib/companion-hub',
+  setting: HubInferenceSetting = HUB_CONTEXT_CAP_SETTING,
+): string {
   const hostSettings = `${dataDir.replace(/'/g, "'\\''")}/state/settings.json`;
+  const { preferenceKey, settingKey } = setting;
   const m = HUB_CONTEXT_CAP_MARKERS;
   const finish = [`echo "${m.complete}"`, 'rm -f "$cihub_cap_body"', 'unset cihub_cap_key', 'exit 0'];
   const write =
@@ -424,7 +497,7 @@ export function hubContextCapShell(cap: HubContextCap, dataDir = '/var/lib/compa
           `  cihub_cap_backend="$(sed -n 's/.*"preferredBackend"[[:space:]]*:[[:space:]]*"\\([a-z]*\\)".*/\\1/p' "$cihub_cap_body" | head -1)"`,
           '  case "$cihub_cap_backend" in ollama|vllm|lemonade|mtplx|dspark|lucebox) ;; *) cihub_cap_backend=ollama ;; esac',
           `  echo "${m.backend} $cihub_cap_backend"`,
-          `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d "{\\"backend\\":\\"$cihub_cap_backend\\",\\"maxNumCtx\\":null}" "$cihub_cap_url/inference/preferences")"`,
+          `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d "{\\"backend\\":\\"$cihub_cap_backend\\",\\"${preferenceKey}\\":null}" "$cihub_cap_url/inference/preferences")"`,
           '  [ -n "$cihub_cap_code" ] || cihub_cap_code=000',
           `  echo "${m.write} $cihub_cap_code"`,
           'fi',
@@ -434,7 +507,7 @@ export function hubContextCapShell(cap: HubContextCap, dataDir = '/var/lib/compa
           '  cihub_cap_code=skipped',
           `  echo "${m.write} skipped"`,
           'else',
-          `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d '{"inferenceMaxNumCtx":${cap}}' "$cihub_cap_url/user-settings")"`,
+          `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d '{"${settingKey}":${cap}}' "$cihub_cap_url/user-settings")"`,
           '  [ -n "$cihub_cap_code" ] || cihub_cap_code=000',
           `  echo "${m.write} $cihub_cap_code"`,
           'fi',
@@ -457,10 +530,10 @@ export function hubContextCapShell(cap: HubContextCap, dataDir = '/var/lib/compa
     "cihub_cap_url='http://127.0.0.1:5002/api'",
     // `-w '%{http_code}'` prints `000` itself on a refused connection; only an empty string (no curl) needs the fallback.
     `cihub_cap_curl() { curl -s -o "$cihub_cap_body" -w '%{http_code}' --max-time 30 -H "Authorization: Bearer $cihub_cap_key" -H 'Content-Type: application/json' "$@" 2>/dev/null; }`,
-    // `maxNumCtx` as the body carries it: digits, `none` for null, `absent` when the key is not there (a build predating the cap).
+    // The key as the body carries it: digits, `none` for null, `absent` when the key is not there (a build predating the setting).
     'cihub_cap_read() {',
-    '  if grep -q \'"maxNumCtx"\' "$cihub_cap_body" 2>/dev/null; then',
-    `    cihub_cap_v="$(sed -n 's/.*"maxNumCtx"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$cihub_cap_body" | head -1)"`,
+    `  if grep -q '"${preferenceKey}"' "$cihub_cap_body" 2>/dev/null; then`,
+    `    cihub_cap_v="$(sed -n 's/.*"${preferenceKey}"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p' "$cihub_cap_body" | head -1)"`,
     '    if [ -n "$cihub_cap_v" ]; then echo "$cihub_cap_v"; else echo none; fi',
     '  else',
     '    echo absent',
@@ -512,7 +585,12 @@ function parseCapMarker(raw: string | undefined): HubContextCap | undefined {
  * what tells that apart from a write that took. A build that predates the cap is caught one step
  * earlier — `maxNumCtx` missing from the preferences body — and named, with the fix.
  */
-export function classifyHubContextCapOutput(out: string, err: string, cap: HubContextCap): HubContextCapOutcome {
+export function classifyHubContextCapOutput(
+  out: string,
+  err: string,
+  cap: HubContextCap,
+  setting: HubInferenceSetting = HUB_CONTEXT_CAP_SETTING,
+): HubContextCapOutcome {
   const lines = `${out}\n${err}`.split('\n').map((l) => l.trim());
   const pick = (marker: string) =>
     lines
@@ -539,23 +617,23 @@ export function classifyHubContextCapOutput(out: string, err: string, cap: HubCo
   const nowRaw = pick(m.now);
   if (nowRaw === 'absent') {
     return cap === null
-      ? { outcome: 'unchanged', why: "this Hub's build predates the context cap; nothing to clear" }
+      ? { outcome: 'unchanged', why: `this Hub's build predates the ${setting.label}; nothing to clear` }
       : {
           outcome: 'failed',
-          why: "this Hub's build predates the context cap (GET /api/inference/preferences has no maxNumCtx) — update it first: cihub fleet update --hub",
+          why: `this Hub's build predates the ${setting.label} (GET /api/inference/preferences has no ${setting.preferenceKey}) — update it first: cihub fleet update --hub`,
         };
   }
   const before = parseCapMarker(nowRaw);
   const write = pick(m.write);
   if (write === 'skipped') {
-    return { outcome: 'unchanged', why: cap === null ? 'no context cap set; nothing to clear' : `context cap already ${cap}`, before };
+    return { outcome: 'unchanged', why: cap === null ? `no ${setting.label} set; nothing to clear` : `${setting.label} already ${cap}`, before };
   }
   if (write === undefined) return { outcome: 'failed', why: 'the Hub step printed no write status', before };
   const writeStatus = Number(write.slice(0, 3));
   if (writeStatus < 200 || writeStatus >= 300) {
     const hint =
       writeStatus === 400 && cap !== null
-        ? ' — the Hub accepts a cap from 2048 to 1048576'
+        ? ` — the Hub accepts a ${setting.label} from ${setting.range}`
         : writeStatus === 0
           ? ' — nothing answered on 127.0.0.1:5002'
           : '';
@@ -581,7 +659,7 @@ export function classifyHubContextCapOutput(out: string, err: string, cap: HubCo
   }
   return {
     outcome: 'applied',
-    why: `context cap ${showCap(before)} → ${showCap(cap)} (${route} ${writeStatus})`,
+    why: `${setting.label} ${showCap(before)} → ${showCap(cap)} (${route} ${writeStatus})`,
     before,
     after,
     httpStatus: writeStatus,

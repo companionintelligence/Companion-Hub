@@ -99,6 +99,18 @@ export interface PoolPeerCapabilities {
    */
   maxNumCtx?: number;
   /**
+   * How many requests the answering node's Ollama runs at once (`inferenceOllamaSlots`), which its
+   * operator set to the daemon's `OLLAMA_NUM_PARALLEL`. With `poolSlotAwareness` on, an entry node
+   * puts this node behind every candidate with a free slot once its known queue depth reaches this
+   * figure — see `applySlotPlacement` — because past it Ollama queues the request behind the engine
+   * rather than serving it.
+   *
+   * ABSENT means not stated, and that is the only encoding of it: a node with none omits the key,
+   * and so does every build predating the field; both rank by queue depth alone, as before. Read
+   * through `clampOllamaSlots`, never raw.
+   */
+  ollamaSlots?: number;
+  /**
    * How fast the answering node's own engines have been reading prompts and writing tokens, per
    * (backend, model), as it measured them serving its apps and its peers. A caller treats it as a
    * second opinion next to what it timed itself, and believes whichever is slower — see
@@ -429,6 +441,8 @@ export interface PoolStatusPeer extends PublicHubPoolPeer {
   maxPromptTokens?: number | null;
   /** The context cap the peer advertised, clamped the way a handout reads it, or `null` for none. Policy, like the ceiling; not freshness-gated. */
   maxNumCtx?: number | null;
+  /** The Ollama slot count the peer advertised, clamped the way the ranker reads it, or `null` for not stated. Policy, like the two above; not freshness-gated. */
+  ollamaSlots?: number | null;
   /** The peer's prefill and decode rates, timed here and self-reported, after the same validation and decay the ranker applies. */
   throughput?: PoolStatusPeerThroughput;
 }
@@ -457,6 +471,8 @@ export interface PoolStatusLocalNode {
   maxPromptTokensSetBy?: 'env' | 'setting' | null;
   /** This node's context cap (`inferenceMaxNumCtx`), or `null` for none. What peers are told, and what caps this node's own handouts. */
   maxNumCtx?: number | null;
+  /** This node's Ollama slot count (`inferenceOllamaSlots`), or `null` for not stated. What peers are told, and what local slot-aware placement reads. */
+  ollamaSlots?: number | null;
   /** This node's own engines' measured rates: exactly what it advertises to peers. */
   throughput?: PoolThroughputEstimate[];
 }
