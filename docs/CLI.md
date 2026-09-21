@@ -1153,9 +1153,12 @@ after the binary is on the node, immediately before `register`. A code is one de
 and Portal refuses a second device by the same name, so minting first meant one failed download
 left an orphan device in Portal and a name the next attempt could not use. A minted code is kept
 in `~/.config/cihub/fleet-pending-pairing-codes.json` (owner-readable only, scoped to the org of the
-login that minted it) until the Hub reports registered, and a retry reuses it. A `409` on mint names
-the two things it can mean — an orphan from an earlier attempt, or a node registered under another
-org — because only a person in Portal can tell which.
+login that minted it) until the Hub reports registered, and a retry reuses it. A kept code that a
+later `cihub fleet devices re-register` replaced is refused, naming the re-register, rather than
+sent — Portal honours only the newest (see `fleet devices` below). A `409` on mint names the two
+things it can mean — an orphan from an earlier attempt, or a node registered under another org —
+because only a person in Portal can tell which; when this machine re-registered the device, the
+`409` says that instead, and to pass the code with `--code`.
 
 The **claim** step is the one this list used to be missing. Registering a node does not give it an
 operator, and a Hub with no operator answers `409 AUTH_ERROR_HUB_NOT_CLAIMED` to its own device key —
@@ -1298,6 +1301,18 @@ old organization frees it, and `fleet install` enrols it into the new one.
 `re-register` keeps the record and mints a replacement pairing code, marking the device inactive
 until it pairs again: for a node that is staying in this organization but has lost its key. The
 code is printed with the `cihub register --code` line to run on the node.
+
+Portal honours only the newest code, so a re-register also kills any code a `fleet install` on
+this machine had kept for the node (see `fleet install` above). On 2026-09-20 a re-register of
+core-1 was followed by `fleet install --nodes core-1`, which reused the code it had kept from the
+day before and failed at register with "Pairing failed". Now `re-register` writes the new code
+into the kept-codes file under the roster node whose name is the device's name or slug — the
+same mapping `fleet install` uses when it mints — replacing the stale one, and prints the
+`fleet install --nodes <node> --execute` line that will reuse it. If no roster node carries the
+name, it says so; pass the code to the next install with `--code`. Every re-register is also
+recorded, so a `fleet install` that still finds a kept code older than a re-register for that
+device refuses it and names the re-register, instead of sending a dead code. A re-register run on
+another machine leaves no record here.
 
 Targets must match exactly one device by name, slug or Portal id — `core-1` never matches
 `core-17` — and an ambiguous name is refused with the candidates listed, because this precedes a
