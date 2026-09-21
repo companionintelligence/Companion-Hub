@@ -239,6 +239,29 @@ describe('DockerComposeBuilder', () => {
       await expect(composeBuilder.getDockerCompose([ungranted], {}, falcoUrn, subnet)).rejects.toThrow(/host-privileged access/);
     });
 
+    it('allows NET_ADMIN and /dev/net/tun for the VPN apps (transmission-vpn, wg-easy) but not SYS_MODULE', async () => {
+      const transmissionUrn = createAppUrn('transmission-vpn', CI_MARKETPLACE_STORE_SLUG);
+      const transmission: ServiceInput = {
+        name: 'transmission-vpn',
+        image: 'image',
+        internalPort: 9091,
+        capAdd: ['NET_ADMIN'],
+        devices: ['/dev/net/tun'],
+      };
+      await expect(composeBuilder.getDockerCompose([transmission], {}, transmissionUrn, subnet)).resolves.toContain('- NET_ADMIN');
+
+      const wgEasyUrn = createAppUrn('wg-easy', CI_MARKETPLACE_STORE_SLUG);
+      const wgEasy: ServiceInput = { name: 'wg-easy', image: 'image', internalPort: 51821, capAdd: ['NET_ADMIN'] };
+      await expect(composeBuilder.getDockerCompose([wgEasy], {}, wgEasyUrn, subnet)).resolves.toContain('- NET_ADMIN');
+
+      // Upstream's wg-easy compose also lists SYS_MODULE (kernel module loading); the grant stops at NET_ADMIN.
+      const withSysModule: ServiceInput = { ...wgEasy, capAdd: ['NET_ADMIN', 'SYS_MODULE'] };
+      await expect(composeBuilder.getDockerCompose([withSysModule], {}, wgEasyUrn, subnet)).rejects.toThrow(/host-privileged access/);
+
+      // And NET_ADMIN is still a grant: the same manifest from a non-allowlisted app is refused.
+      await expect(composeBuilder.getDockerCompose([wgEasy], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
     it('allows a privileged sandbox service for refly', async () => {
       const reflyUrn = createAppUrn('refly', CI_MARKETPLACE_STORE_SLUG);
       const main: ServiceInput = { name: 'refly', image: 'image', internalPort: 5700 };

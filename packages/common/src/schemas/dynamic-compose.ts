@@ -211,6 +211,14 @@ export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> =
   netalertx: { capAdd: ['NET_ADMIN'] },
   'pi-hole': { capAdd: ['NET_ADMIN'] },
   strix: { capAdd: ['NET_ADMIN'] },
+  // Transmission behind an OpenVPN client (haugene/transmission-openvpn): NET_ADMIN brings up and
+  // routes through the tunnel interface, as gluetun. `/dev/net/tun` is an ordinary character
+  // device and needs no `devices` grant.
+  'transmission-vpn': { capAdd: ['NET_ADMIN'] },
+  // WireGuard server with a web UI: NET_ADMIN creates and manages wg0, as wireguard. Upstream's
+  // compose also lists SYS_MODULE, which only loads the wireguard kernel module; Hub hosts run
+  // kernels with WireGuard built in, so the manifest drops it and it is not granted here.
+  'wg-easy': { capAdd: ['NET_ADMIN'] },
   wireguard: { capAdd: ['NET_ADMIN'] },
   // QEMU/KVM appliances: NET_ADMIN builds the guest's bridge and TAP interface.
   macos: { capAdd: ['NET_ADMIN'] },
