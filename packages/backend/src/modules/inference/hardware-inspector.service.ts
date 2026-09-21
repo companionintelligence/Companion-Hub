@@ -31,14 +31,16 @@ const HOST_MEMINFO_PATH = '/host/proc/meminfo';
 // of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
 const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
-// What nvidia-smi / sysfs report as the card's total is the card minus what the driver keeps
-// back: the 8 GB RTX A1000 on beta-nas answers `memory.total` 8188 MiB (nvidia.json, 2026-09-21),
-// a 24 GB RTX 4090 24564, a 16 GB RTX A4000 16376, a 24 GB RX 7900 XTX 24560 via
-// mem_info_vram_total. Read against exact power-of-two tier lines, each lands one tier below the
-// card it is. No standard card size (4, 6, 8, 10, 11, 12, 16, 20, 24, 32 GB …) other than the
-// one AT a line reports within this much below it, so the slack cannot lift a smaller card over
-// one. Discrete VRAM only: a unified-memory node is tiered on `ram.totalMb`, untouched here.
-const DISCRETE_VRAM_TIER_SLACK_MB = 256;
+// `nvidia.json` is written once per `cihub up` (scripts/init-gpu-runtime.ts), right before the
+// containers start; nothing rewrites it afterwards, and Docker's own restart after a host reboot
+// brings the Hub back without one. So what bounds the truth of "the host's driver answered
+// nvidia-smi" is not a clock — a fixed max age like the GPU-process file's would expire it a
+// minute into every boot, or mean nothing — but the boot it was taken in: a loaded driver does
+// not leave without a reboot, and a reboot is exactly where it fails to come back (a kernel update
+// DKMS did not follow). A probe from a previous boot describes previous hardware and proves
+// nothing about this one. /proc/uptime is the kernel's, not the container's, so this boot is
+// known here; the tolerance covers the wall clock settling (NTP) between boot and the probe.
+const HOST_NVIDIA_PROBE_BOOT_TOLERANCE_MS = 5 * 60 * 1000;
 // Windows WMI Win32_VideoController.AdapterRAM is a 32-bit field that NVIDIA saturates at exactly
 // 4095 MB, so any GPU with >=4 GB VRAM reports ~4095 MB there. Readings in this band on Windows are
 // treated as suspect and cross-checked against nvidia-smi. A reading of 4096+ MB instead comes from
@@ -352,7 +354,9 @@ export class HardwareInspectorService {
     if (gpu.vendor === 'nvidia') {
       // Same shape as the AMD block above: the host's own proof that the card is driven, kept
       // apart from `runtimeAvailable`, which stays the container's view. See gpuRuntimeReady().
-      const hostNvidiaAvailable = nvidiaHostProbe !== null || (await this.hostGpuProcessesFileNamesNvidia());
+      // Each source vouches only for as long as its writer does: nvidia.json for the boot it was
+      // written in, the GPU-process file for the sampler's max age.
+      const hostNvidiaAvailable = nvidiaHostProbe?.writtenThisBoot === true || (await this.hostGpuProcessesFileNamesNvidia());
       gpu = { ...gpu, hostNvidiaAvailable };
       if (gpu.runtimeAvailable) {
         this.logger.info('[HardwareInspector] NVIDIA GPU detected and NVIDIA container runtime is available.');
@@ -536,10 +540,9 @@ export class HardwareInspectorService {
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {
     if (gpu.available && this.gpuRuntimeReady(gpu)) {
       const effectiveVram = gpu.unifiedMemory ? ram.totalMb : gpu.vramMb;
-      const tieredVram = gpu.unifiedMemory ? effectiveVram : effectiveVram + DISCRETE_VRAM_TIER_SLACK_MB;
-      if (tieredVram >= 16384) return 'high';
-      if (tieredVram >= 8192) return 'medium';
-      if (tieredVram >= 4096) return 'low';
+      if (effectiveVram >= 16384) return 'high';
+      if (effectiveVram >= 8192) return 'medium';
+      if (effectiveVram >= 4096) return 'low';
       if (!gpu.unifiedMemory && effectiveVram < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && (gpu.vendor === 'nvidia' || gpu.vendor === 'amd')) {
         this.logger.warn(
           `[HardwareInspector] ${gpu.vendor.toUpperCase()} GPU detected with unreliable VRAM reading (${effectiveVram} MB); defaulting tier to low until probe data is available.`,
@@ -832,7 +835,16 @@ export class HardwareInspectorService {
     }
   }
 
-  private async readNvidiaHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string } | null> {
+  /**
+   * init-gpu-runtime's `nvidia.json`. `model`/`vramMb`/`driverVersion` fill in what the container
+   * cannot see of the card, whatever the file's age — the card's name does not change under a
+   * running Hub. `writtenThisBoot` is the stricter question `hostNvidiaAvailable` asks, whether
+   * the probe can vouch for the host's driver NOW: its `updatedAt` must parse and fall inside
+   * this boot (see {@link HOST_NVIDIA_PROBE_BOOT_TOLERANCE_MS}). Same shape as the GPU-process
+   * file's rule — an unparseable or out-of-window stamp proves nothing, a stamp ahead of our clock
+   * included — with the window set by the writer's cadence, which for this file is the boot.
+   */
+  private async readNvidiaHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string; writtenThisBoot: boolean } | null> {
     try {
       const raw = await this.filesystem.readTextFile('/data/state/hardware/nvidia.json');
       if (!raw) return null;
@@ -841,6 +853,7 @@ export class HardwareInspectorService {
         model?: string;
         vramMb?: number;
         driverVersion?: string;
+        updatedAt?: string;
       };
 
       if (!parsed.model || typeof parsed.model !== 'string') return null;
@@ -848,10 +861,25 @@ export class HardwareInspectorService {
         model: parsed.model,
         vramMb: typeof parsed.vramMb === 'number' && Number.isFinite(parsed.vramMb) && parsed.vramMb > 0 ? parsed.vramMb : 0,
         driverVersion: typeof parsed.driverVersion === 'string' ? parsed.driverVersion : '',
+        writtenThisBoot: this.isHostProbeFromThisBoot(typeof parsed.updatedAt === 'string' ? parsed.updatedAt : undefined),
       };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Whether an ISO timestamp falls inside the current host boot, with
+   * {@link HOST_NVIDIA_PROBE_BOOT_TOLERANCE_MS} of tolerance on both ends. `os.uptime()` reads
+   * the kernel's `/proc/uptime`, which Docker does not namespace, so inside the Hub container it
+   * is the host's.
+   */
+  private isHostProbeFromThisBoot(updatedAt: string | undefined, now: number = Date.now()): boolean {
+    if (!updatedAt) return false;
+    const writtenAt = Date.parse(updatedAt);
+    if (!Number.isFinite(writtenAt)) return false;
+    const bootedAt = now - os.uptime() * 1000;
+    return writtenAt >= bootedAt - HOST_NVIDIA_PROBE_BOOT_TOLERANCE_MS && writtenAt <= now + HOST_NVIDIA_PROBE_BOOT_TOLERANCE_MS;
   }
 
   private async readAmdHostProbe(): Promise<{ model: string; vramMb: number; driverVersion: string } | null> {
@@ -1144,10 +1172,21 @@ export class HardwareInspectorService {
     }
   }
 
+  /**
+   * A discrete card the CONTAINER runtime drives, whose VRAM still reads as a PCIe BAR: the
+   * container's own nvidia-smi / sysfs will answer once the device settles, so the profile is
+   * re-detected on {@link INCOMPLETE_GPU_PROFILE_REFRESH_COOLDOWN_MS}. Deliberately
+   * `runtimeAvailable`, not {@link gpuRuntimeReady}: a card proven only by the host has no
+   * container-side VRAM source to wait on, and its host sources cannot change under this
+   * process — `nvidia.json` is rewritten by the `cihub up` that restarts the Hub, and the
+   * GPU-process file carries no total — so re-detecting would spend `docker info`, lspci and
+   * the rest every five minutes for the life of the process and never resolve. Such a profile
+   * stays `low` until a rescan.
+   */
   private hasIncompleteDiscreteGpuProfile(profile: HardwareProfile): boolean {
     return (
       profile.gpu.available &&
-      this.gpuRuntimeReady(profile.gpu) &&
+      profile.gpu.runtimeAvailable &&
       !profile.gpu.unifiedMemory &&
       (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
       profile.gpu.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB

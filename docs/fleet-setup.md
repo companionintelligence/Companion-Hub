@@ -519,10 +519,16 @@ The same file is the Hub's second proof that the host drives an NVIDIA card. The
 the `nvidia` Docker runtime in `docker info` before it would tier an NVIDIA card by its VRAM, so a
 node with the driver but without nvidia-container-toolkit — beta-nas, RTX A1000 8 GB, 2026-09-21 —
 sat on `cpu-only` while the host's Ollama and vLLM held the card. Now the tier follows the host:
-init-gpu-runtime's `nvidia.json` (name + VRAM) or a fresh `gpu_processes.json` with
-`"vendor":"nvidia"` sets `gpu.hostNvidiaAvailable`, and the tier is read from the VRAM. The profile
-keeps `gpu.runtimeAvailable: false` on such a node: that is still the container's own view, and it
-still means container apps get no CUDA until the toolkit is installed.
+init-gpu-runtime's `nvidia.json` (name + VRAM, written by `cihub up`) or a fresh `gpu_processes.json`
+with `"vendor":"nvidia"` sets `gpu.hostNvidiaAvailable`, and the tier is read from the VRAM. Each
+proof holds only as long as its writer vouches: the process file for a minute past its last sample,
+`nvidia.json` for the host boot it was written in — after a reboot that Docker's restart policy
+brought the Hub back from, without a `cihub up`, only the timer file proves the card, so a node
+whose driver did not come back is not tiered from last boot's probe. The profile keeps
+`gpu.runtimeAvailable: false` on such a node: that is still the container's own view, and it still
+means container apps get no CUDA until the toolkit is installed. The VRAM is read at the exact tier
+lines: a probe that reports the driver's reservation subtracted (`nvidia.json` says 8188 MB for
+beta-nas's 8 GB A1000) lands one tier down when it is the only VRAM source.
 
 ## Before touching a node: preflight
 
