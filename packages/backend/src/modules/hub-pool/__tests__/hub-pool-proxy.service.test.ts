@@ -20,6 +20,7 @@ import {
   DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PRESSURE_WEIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
   MIN_POOL_MAX_PROMPT_TOKENS,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
@@ -39,6 +40,7 @@ import {
   PoolForwardDeadlineError,
   PoolProxyService,
   applyPromptCeiling,
+  applySlotPlacement,
   applyThroughputPlacement,
   describeUnresolvableAuto,
   firstByteBudgetMs,
@@ -179,6 +181,7 @@ describe('PoolProxyService', () => {
       poolMaxPromptTokens: null,
       poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
       poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+      poolSlotAwareness: DEFAULT_POOL_SLOT_AWARENESS,
       ...overrides,
     });
   }
@@ -2641,6 +2644,309 @@ describe('PoolProxyService', () => {
           excluded: [{ node: LOCAL_CANDIDATE_KEY, maxPromptTokens: FZZY_CEILING }],
           overridden: false,
         });
+      });
+    });
+  });
+
+  /**
+   * Slot-aware placement, with the fleet's own numbers (2026-09-21, fleet-qa B5 cell, 4-way bursts):
+   * the batch-tier nodes moved to `OLLAMA_NUM_PARALLEL=2` queued requests behind Ollama for 5–10 s to
+   * the first token — beta-max 0.47 s → 9.0 s — while 4-slot nodes sat idle, and the fleet aggregate at
+   * c=4 fell 14–16 %. The ranker alone prefers the 2-slot node here when it has the shorter queue,
+   * which is exactly the placement that queued. Every test is one of three questions: does a request
+   * go first to a node with a free slot, does a fleet with the knob off — or with no slot count stated
+   * — route exactly as before, and can a full slot ever turn a request that would have been served
+   * into a 502.
+   */
+  describe('slot-aware placement', () => {
+    const MODEL = 'qwen3-coder:30b';
+
+    /** A connected peer holding MODEL on Ollama, with a queue depth and optionally a stated slot count. */
+    function node(
+      id: string,
+      options: {
+        inFlightRequests?: number;
+        ollamaSlots?: unknown;
+        maxPromptTokens?: number;
+        hardwareTier?: string;
+        backend?: 'ollama' | 'vllm';
+      } = {},
+    ): HubPoolPeer {
+      return mockPeer({
+        id,
+        nodeFqdn: `${id}.tailxyz.ts.net`,
+        lastCapabilities: {
+          ...capabilitiesWithModel(MODEL, {
+            inFlightRequests: options.inFlightRequests ?? 0,
+            ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
+            // `unknown`, as for the ceiling: this arrives as jsonb the peer controls.
+            ...('ollamaSlots' in options ? { ollamaSlots: options.ollamaSlots as number } : {}),
+            ...(options.maxPromptTokens === undefined ? {} : { maxPromptTokens: options.maxPromptTokens }),
+          }),
+          ...(options.backend === 'vllm' ? { backends: [{ type: 'vllm', healthy: true, modelsLoaded: [MODEL] }] } : {}),
+        } as unknown as Record<string, unknown>,
+      });
+    }
+
+    /** beta-max: 2 slots, both busy, so the ranker likes its queue of 2. core-2: 4 slots, 3 busy, so one is free. */
+    function betaMaxAndCore2(): HubPoolPeer[] {
+      return [node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }), node('core-2', { inFlightRequests: 3, ollamaSlots: 4 })];
+    }
+
+    const ids = (candidates: { peerId: string | null }[]) => candidates.map((candidate) => candidate.peerId);
+
+    describe('at the default (poolSlotAwareness = 0) nothing changes', () => {
+      it('ranks a full 2-slot node ahead of a 4-slot node with a free slot, on queue depth alone — the pre-slots order', async () => {
+        peerService.listConnectedPeers.mockResolvedValue(betaMaxAndCore2());
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('reads no slot count at all: this node stays first however full its own engine is', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual([null, 'core-2']);
+      });
+
+      it('records no slot decision, so the routing log reads as it did before', async () => {
+        const peers = betaMaxAndCore2();
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(routingLog.list()[0]).toMatchObject({ node: 'beta-max.tailxyz.ts.net', slots: null });
+      });
+    });
+
+    describe('with the knob on', () => {
+      beforeEach(() => {
+        setPoolPreferences({ poolSlotAwareness: 1 });
+      });
+
+      it('puts a 2-slot peer with 2 in flight behind a 4-slot peer with 3 in flight, though the ranker scored it first', async () => {
+        peerService.listConnectedPeers.mockResolvedValue(betaMaxAndCore2());
+
+        // Behind, not gone: a burst that fills core-2 too still has beta-max to fail over to.
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'beta-max']);
+      });
+
+      it('leaves a node with a free slot where the ranker put it', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 1, ollamaSlots: 2 }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('leaves a peer that states no slot count untouched — an older build, or an operator who never set one', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('old-build', { inFlightRequests: 2 }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['old-build', 'core-2']);
+      });
+
+      it('puts THIS node behind a peer with a free slot when its own slots are full', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', null]);
+      });
+
+      it('keeps the whole list, in ranked order, when every candidate is full — a queued answer beats a 502', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }),
+          node('core-2', { inFlightRequests: 4, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('judges Ollama only: a vLLM candidate on a node that states slots keeps its place', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('vllm-node', { inFlightRequests: 2, ollamaSlots: 2, backend: 'vllm' }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['vllm-node', 'core-2']);
+      });
+
+      it('counts the requests this node forwarded a peer since its snapshot, so a burst fills its slots here before the peer reports it', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 0, ollamaSlots: 2 }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+        loadService.acquire('beta-max');
+        loadService.acquire('beta-max');
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'beta-max']);
+      });
+
+      it('treats a 1-slot peer whose snapshot is stale as full — an unmeasured node is never taken for an idle one', async () => {
+        const stale = new Date(Date.now() - DEFAULT_POOL_HEALTH_POLL_SECONDS * 1000 * 4).toISOString();
+        peerService.listConnectedPeers.mockResolvedValue([
+          mockPeer({ ...node('one-slot', { inFlightRequests: 0, ollamaSlots: 1 }), lastSeenAt: stale }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'one-slot']);
+      });
+
+      it.each([
+        ['a string', '2'],
+        ['zero', 0],
+        ['a negative', -1],
+        ['past the bound', 65],
+      ])('lets a malformed advertised slot count (%s) demote nothing', async (_label, hostile) => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 2, ollamaSlots: hostile }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('applies inside the ceiling: a full node under its ceiling still goes ahead of a free node over it', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }),
+          node('fzzy', { inFlightRequests: 0, ollamaSlots: 4, maxPromptTokens: MIN_POOL_MAX_PROMPT_TOKENS }),
+        ]);
+
+        // ~46k tokens: over fzzy's ceiling, so fzzy is the ceiling tail whatever its slots say.
+        expect(ids(await service.buildCandidateList(MODEL, 184_000))).toEqual(['beta-max', 'fzzy']);
+      });
+
+      it('applies before a pin, so a pin at a full node cannot put it back in front of a free one', async () => {
+        peerService.listConnectedPeers.mockResolvedValue(betaMaxAndCore2());
+        setPoolPreferences({
+          poolSlotAwareness: 1,
+          poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'beta-max', mode: 'prefer' }],
+        });
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'beta-max']);
+      });
+
+      describe('in the routing log', () => {
+        const turn = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hello' }] };
+
+        it('says which node its slots moved back, at what queue depth, against how many slots', async () => {
+          const peers = betaMaxAndCore2();
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn, model: MODEL, res: createMockResponse() });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net', candidates: 2, attempt: 1, outcome: 'served', failedOverFrom: [] });
+          expect(entry?.slots).toEqual({
+            demoted: [{ node: 'beta-max.tailxyz.ts.net', backend: 'ollama', inFlight: 2, slots: 2 }],
+            overridden: false,
+          });
+        });
+
+        it('records an empty decision when every stated node had a free slot, so the figures are visible for the requests that fit too', async () => {
+          const peers = [node('beta-max', { inFlightRequests: 1, ollamaSlots: 2 }), node('core-2', { inFlightRequests: 3, ollamaSlots: 4 })];
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn, model: MODEL, res: createMockResponse() });
+
+          expect(routingLog.list()[0]?.slots).toEqual({ demoted: [], overridden: false });
+        });
+
+        it('still fails over to the full node when every node with a free slot fails, and says the demotion was overridden', async () => {
+          const peers = betaMaxAndCore2();
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async (url) =>
+            String(url).includes('core-2') ? new Response('model not loaded', { status: 503 }) : new Response('data: [DONE]\n\n', { status: 200 }),
+          );
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn, model: MODEL, res: createMockResponse() });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'beta-max.tailxyz.ts.net', outcome: 'served', status: 200, failedOverFrom: ['core-2.tailxyz.ts.net'] });
+          expect(entry?.slots).toMatchObject({ demoted: [{ node: 'beta-max.tailxyz.ts.net', inFlight: 2, slots: 2 }], overridden: true });
+        });
+
+        it('judges an embedding too: slots queue every request, not only the ones a ceiling judges', async () => {
+          const peers = betaMaxAndCore2();
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('{}', { status: 200 }));
+
+          await service.proxyRequest({
+            path: '/v1/embeddings',
+            method: 'POST',
+            body: { model: MODEL, input: 'x' },
+            model: MODEL,
+            res: createMockResponse(),
+          });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net', promptCeiling: null });
+          expect(entry?.slots).toMatchObject({ demoted: [{ node: 'beta-max.tailxyz.ts.net' }], overridden: false });
+        });
+      });
+    });
+
+    describe('applySlotPlacement', () => {
+      const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+      const betaMax = { peerId: 'beta-max', nodeFqdn: 'beta-max.tailxyz.ts.net', backend: 'ollama' } as const;
+      const core2 = { peerId: 'core-2', nodeFqdn: 'core-2.tailxyz.ts.net', backend: 'ollama' } as const;
+
+      it('demotes nothing, and records no decision, when no candidate states a slot count', () => {
+        expect(applySlotPlacement([local, betaMax, core2], () => null)).toEqual({ demoted: new Set(), decision: null });
+      });
+
+      it('demotes exactly the candidates whose queue has reached their slots, and names them in ranked order', () => {
+        const occupancy = { local: { inFlight: 4, slots: 4 }, 'beta-max': { inFlight: 2, slots: 2 }, 'core-2': { inFlight: 3, slots: 4 } } as const;
+
+        const result = applySlotPlacement([betaMax, local, core2], (candidate) => occupancy[candidate.peerId ?? 'local']);
+
+        expect([...result.demoted]).toEqual([betaMax, local]);
+        expect(result.decision).toEqual({
+          demoted: [
+            { node: 'beta-max.tailxyz.ts.net', backend: 'ollama', inFlight: 2, slots: 2 },
+            { node: LOCAL_CANDIDATE_KEY, backend: 'ollama', inFlight: 4, slots: 4 },
+          ],
+          overridden: false,
+        });
+        expect(splitDemoted([betaMax, local, core2], result.demoted)).toEqual([[core2], [betaMax, local]]);
+      });
+
+      it('demotes nothing, and says it was overridden, when every candidate is full', () => {
+        const result = applySlotPlacement([betaMax, core2], () => ({ inFlight: 2, slots: 2 }));
+
+        expect(result.demoted.size).toBe(0);
+        expect(result.decision).toMatchObject({ overridden: true });
+        expect(result.decision?.demoted).toHaveLength(2);
+      });
+
+      it('leaves an unstated candidate in place and still counts it as free, so a full node is demoted behind it', () => {
+        const result = applySlotPlacement([betaMax, core2], (candidate) => (candidate.peerId === 'beta-max' ? { inFlight: 2, slots: 2 } : null));
+
+        expect([...result.demoted]).toEqual([betaMax]);
+        expect(result.decision?.overridden).toBe(false);
       });
     });
   });

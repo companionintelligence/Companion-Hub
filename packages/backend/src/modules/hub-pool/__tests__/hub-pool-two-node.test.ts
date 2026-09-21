@@ -24,6 +24,7 @@ import {
   DEFAULT_POOL_PRESSURE_WEIGHT,
   DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
   POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
   type PoolContainerRollup,
@@ -203,6 +204,8 @@ interface Node {
   setMaxPromptTokens(tokens: number | null): void;
   /** Set or clear this node's handout context cap (`inferenceMaxNumCtx`), as a settings PATCH does. */
   setMaxNumCtx(tokens: number | null): void;
+  /** Set or clear this node's Ollama slot count (`inferenceOllamaSlots`), as a settings PATCH does. */
+  setOllamaSlots(slots: number | null): void;
   /** What this node's proxy has timed, and what its `/capabilities` advertises from. */
   throughput: HubPoolThroughputService;
   /** Runs one health-poll tick, as the module's own timer would. */
@@ -227,6 +230,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolMaxPromptTokens: null,
     poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
     poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+    poolSlotAwareness: DEFAULT_POOL_SLOT_AWARENESS,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
 
@@ -365,6 +369,9 @@ function buildNode(fqdn: string, models: string[]): Node {
     },
     setMaxNumCtx(tokens: number | null) {
       configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: tokens } as never);
+    },
+    setOllamaSlots(slots: number | null) {
+      configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: slots } as never);
     },
     throughput,
     /** Make this node report a measured band, as its sampler would. */
@@ -1681,6 +1688,27 @@ describe('Hub Pool across two nodes', () => {
 
       expect(cachedOn(beta)).not.toHaveProperty('maxNumCtx');
       expect((await beta.service.getPoolStatus()).peers[0]?.maxNumCtx).toBeNull();
+    });
+
+    it('carries core’s Ollama slot count through /capabilities into beta’s cached snapshot and status card, and off the wire when cleared', async () => {
+      await pairNodes();
+      await beta.poll();
+      expect(cachedOn(beta)).not.toHaveProperty('ollamaSlots');
+      expect((await beta.service.getPoolStatus()).peers[0]?.ollamaSlots).toBeNull();
+
+      core.setOllamaSlots(4);
+      await beta.poll();
+
+      expect(cachedOn(beta).ollamaSlots).toBe(4);
+      expect((await beta.service.getPoolStatus()).peers[0]?.ollamaSlots).toBe(4);
+      expect((await core.service.getPoolStatus()).localNode).toMatchObject({ ollamaSlots: 4 });
+
+      core.setOllamaSlots(null);
+      await beta.poll();
+
+      expect(cachedOn(beta)).not.toHaveProperty('ollamaSlots');
+      expect((await beta.service.getPoolStatus()).peers[0]?.ollamaSlots).toBeNull();
+      expect((await core.service.getPoolStatus()).localNode).toMatchObject({ ollamaSlots: null });
     });
 
     it('leaves the key off the wire when core has no ceiling, and takes it off again when one is cleared', async () => {
