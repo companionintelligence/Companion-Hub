@@ -15,8 +15,10 @@ import {
   formatPairingPinLines,
   formatPairingPinStateLines,
   formatPeerAuthModeLines,
+  formatPeerContextCapLines,
   formatPeerRefusalLines,
   formatPoolDiscoverLines,
+  formatPoolContextCapLines,
   formatPoolPeerTable,
   formatPoolPeersLines,
   formatPoolProbeLines,
@@ -33,8 +35,10 @@ import {
   runPoolDiscover,
   setInferenceContextCap,
   setInferenceOllamaSlots,
+  peerContextCap,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
+  summariseContextCaps,
   unpairPoolPeer,
 } from '../hub-pool-cli';
 
@@ -771,6 +775,117 @@ describe('hub-pool-cli context cap', () => {
     expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
     // Omitting the field would leave the old cap in place: null is the "clear".
     expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit).body).toBe('{"backend":"vllm","maxNumCtx":null}');
+  });
+
+  describe('per-peer caps: the column, the comparison, and the three readings', () => {
+    const capped = (id: string, node: string, maxNumCtx: number | null | undefined, rest: Partial<PoolPeerRow> = {}) =>
+      peer({ id, nodeFqdn: node, ...(maxNumCtx === undefined ? {} : { maxNumCtx }), ...rest });
+
+    it('renders a number, `none` and `?` as three different cells, never as a default', () => {
+      // `none` is a peer that answered and named no cap — routing reads it as "takes any window".
+      // `?` is a peer nothing is known about, or a Hub whose rows predate the field. A cap column
+      // that showed either as a number is how an operator concludes a fleet is uniform when it is not.
+      expect(peerContextCap(capped('a', PEER_A, 65_536))).toBe(65_536);
+      expect(peerContextCap(capped('b', PEER_B, null))).toBeNull();
+      expect(peerContextCap(capped('c', PEER_B, null, { lastCapabilities: null }))).toBeUndefined();
+      expect(peerContextCap(capped('d', PEER_B, undefined))).toBeUndefined();
+
+      const table = formatPoolPeerTable([
+        capped('a', PEER_A, 65_536),
+        capped('b', PEER_B, null),
+        capped('c', 'hub-d.example-tailnet.ts.net', null, { lastCapabilities: null }),
+      ]).join('\n');
+
+      expect(table).toContain('CONTEXT');
+      expect(table).toMatch(/65536\s+ollama/);
+      expect(table).toMatch(/none\s+ollama/);
+      expect(table).toMatch(/\?\s+-/);
+    });
+
+    it('summarises a spread, a mix and a uniform pool, and counts only what is known', () => {
+      const spread = summariseContextCaps([
+        { node: 'core-14', cap: 8_192 },
+        { node: 'core-2', cap: 65_536 },
+        { node: 'beta-nas', cap: null },
+        { node: 'unpolled', cap: undefined },
+      ]);
+
+      expect(spread).toMatchObject({ smallest: 8_192, largest: 65_536, disagrees: true, mixed: true });
+      expect(spread.uncapped).toEqual(['beta-nas']);
+      expect(spread.unknown).toEqual(['unpolled']);
+      // One cap repeated is agreement, and an all-uncapped pool is neither a spread nor a mix.
+      expect(
+        summariseContextCaps([
+          { node: 'a', cap: 65_536 },
+          { node: 'b', cap: 65_536 },
+        ]),
+      ).toMatchObject({ disagrees: false, mixed: false });
+      expect(
+        summariseContextCaps([
+          { node: 'a', cap: null },
+          { node: 'b', cap: null },
+        ]),
+      ).toMatchObject({ disagrees: false, mixed: false });
+    });
+
+    it('names the nodes a disagreement places behind, and the uncapped node that collects the large windows', () => {
+      const text = formatPoolContextCapLines(
+        status({
+          localNode: { ...status().localNode, maxNumCtx: 65_536 },
+          peers: [capped('a', PEER_A, 16_384), capped('b', PEER_B, null)],
+        }),
+      ).join('\n');
+
+      expect(text).toContain('Context caps');
+      expect(text).toContain('caps disagree across this pool (16384 … 65536)');
+      expect(text).toContain(`${PEER_A} at 16384 is placed behind`);
+      expect(text).toContain(`no cap on ${PEER_B}`);
+      expect(text).toContain('cihub fleet backends --backends ollama --ollama-context <N> --execute');
+    });
+
+    it('says nothing when every node agrees, and nothing at all when the whole pool is uncapped', () => {
+      const agreed = formatPoolContextCapLines(
+        status({ localNode: { ...status().localNode, maxNumCtx: 65_536 }, peers: [capped('a', PEER_A, 65_536)] }),
+      ).join('\n');
+
+      expect(agreed).toContain('Context caps');
+      expect(agreed).not.toContain('disagree');
+      expect(agreed).not.toContain('no cap on');
+      // A pool where nothing is capped behaves exactly as the build before caps did. Say nothing.
+      expect(formatPoolContextCapLines(status({ peers: [capped('a', PEER_A, null)] }))).toEqual([]);
+    });
+
+    it('ignores peers that cannot be routed to, so a disabled or unreachable node raises no warning', () => {
+      const lines = formatPoolContextCapLines(
+        status({
+          localNode: { ...status().localNode, maxNumCtx: 65_536 },
+          peers: [capped('a', PEER_A, 16_384, { enabled: false }), capped('b', PEER_B, 8_192, { status: 'unreachable' })],
+        }),
+      ).join('\n');
+
+      expect(lines).not.toContain('disagree');
+      expect(lines).not.toContain(PEER_A);
+    });
+
+    it("marks an unknown cap as unknown rather than folding it into 'uncapped'", () => {
+      const lines = formatPoolContextCapLines(
+        status({ localNode: { ...status().localNode, maxNumCtx: 65_536 }, peers: [capped('a', PEER_A, undefined)] }),
+      ).join('\n');
+
+      expect(lines).toContain(`no cap known for ${PEER_A}`);
+      expect(lines).not.toContain('no cap on');
+    });
+
+    it('adds one comparison line to `pool peers`, and nothing when the peers agree', () => {
+      const disagreeing = formatPeerContextCapLines([capped('a', PEER_A, 16_384), capped('b', PEER_B, 65_536)]).join('\n');
+      expect(disagreeing).toContain('peer context caps disagree (16384 … 65536)');
+
+      expect(formatPeerContextCapLines([capped('a', PEER_A, 65_536), capped('b', PEER_B, 65_536)])).toEqual([]);
+      // And it reaches the real `pool peers` output, under the table that carries the numbers.
+      expect(formatPoolPeersLines([capped('a', PEER_A, 16_384), capped('b', PEER_B, null)]).join('\n')).toContain(
+        'advertises no context cap while others are capped',
+      );
+    });
   });
 
   it('shows this node’s cap in status, and nothing on a node without one or a Hub predating caps', () => {

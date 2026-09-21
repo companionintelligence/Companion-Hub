@@ -1245,6 +1245,32 @@ describe('HubPoolPeerService', () => {
           ['garbled', null],
         ]);
       });
+
+      /**
+       * `/pool/peers` lists the fleet; `/pool/status` draws the card. A cap decides which nodes a
+       * large window may be placed on, so the two must not disagree about it — and neither may be
+       * left to read the raw jsonb, which the peer writes.
+       */
+      it('reports the same clamped cap to the status card and to the peers list, for every reading', async () => {
+        const rows = [
+          peerWith('core-17', { ...baseCapabilities, maxNumCtx: 16_384 }),
+          peerWith('old-build', baseCapabilities),
+          peerWith('garbled', { ...baseCapabilities, maxNumCtx: 'sixteen k' }),
+          peerWith('never-probed', null as unknown as Record<string, unknown>),
+        ];
+        repo.listAll.mockResolvedValue(rows);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers.map((peer) => [peer.id, peer.maxNumCtx])).toEqual([
+          ['core-17', 16_384],
+          ['old-build', null],
+          ['garbled', null],
+          ['never-probed', null],
+        ]);
+        // The helper `/pool/peers` calls, on the same rows, with the same answers.
+        expect(rows.map((peer) => service.peerContextCap(peer))).toEqual([16_384, null, null, null]);
+      });
     });
   });
 
