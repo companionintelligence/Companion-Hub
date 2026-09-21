@@ -136,13 +136,37 @@ export class MemoryManagerService {
     };
   }
 
+  /**
+   * RAM a new model may take right now: the budget's arithmetic (total minus reserve, app
+   * overhead and what the engines hold) capped by what the host actually has free.
+   *
+   * The budget's "used" is the engines' own figures, and on a unified-memory node the pool
+   * they draw from is the whole machine: the apps, the OS, page cache under pressure, and any
+   * engine the sweep could not size (`unmeasured` contributes 0 — a floor, by design) all take
+   * from the same RAM, and none of them is in the arithmetic. That is how `ci` admitted a load
+   * while vLLM held 96 GB of GTT out-of-band and Ollama got OOM-killed. `profile.ram.availableMb`
+   * is MemAvailable read live by the hardware inspector on a Linux host (`ram.sampledAt` says
+   * so): the kernel's own word on the remainder, so the cap follows the host, with the system
+   * reserve off it the same as off the total. On macOS/Windows the figure is the desktop probe's
+   * snapshot from app start — `vm_stat` free+inactive, routinely a fraction of RAM the OS would
+   * hand over on demand — and it never recovers, so it must not cap anything.
+   */
+  private ramHeadroomMb(profile: HardwareProfile, budget: MemoryBudget): number {
+    const budgeted = budget.modelBudgetRamMb - budget.modelUsedRamMb;
+    if (!profile.ram.sampledAt) {
+      return budgeted;
+    }
+    const live = Math.max(0, profile.ram.availableMb - SYSTEM_RESERVED_RAM_MB);
+    return Math.min(budgeted, live);
+  }
+
   /** Check if a model can fit in the current memory budget */
   async canFitModel(profile: HardwareProfile, memoryFootprintMb: number): Promise<{ fits: boolean; availableMb: number; requiredMb: number }> {
     const budget = await this.calculateBudget(profile);
 
     let availableMb: number;
     if (modelPoolFor(profile) === 'ram') {
-      availableMb = budget.modelBudgetRamMb - budget.modelUsedRamMb;
+      availableMb = this.ramHeadroomMb(profile, budget);
     } else {
       availableMb = budget.modelBudgetVramMb - budget.modelUsedVramMb;
     }
@@ -176,7 +200,7 @@ export class MemoryManagerService {
   /** Check if an app can start given the current memory state */
   async canStartApp(profile: HardwareProfile, appMemoryMb: number): Promise<{ canStart: boolean; modelsToEvict: string[]; warning?: string }> {
     const budget = await this.calculateBudget(profile);
-    const remainingRam = budget.modelBudgetRamMb - budget.modelUsedRamMb;
+    const remainingRam = this.ramHeadroomMb(profile, budget);
 
     if (remainingRam >= appMemoryMb) {
       return { canStart: true, modelsToEvict: [] };

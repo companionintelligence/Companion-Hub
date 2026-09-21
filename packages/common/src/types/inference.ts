@@ -30,7 +30,19 @@ export interface HardwareProfile {
   };
   ram: {
     totalMb: number;
+    /**
+     * MemAvailable, read live (sampled every few seconds) on a Linux host; a boot-time snapshot
+     * from the desktop host probe on macOS/Windows, where the container only sees the VM.
+     */
     availableMb: number;
+    /** `totalMb - availableMb` at the same sample. Optional — absent on older profiles / test fixtures. */
+    usedMb?: number;
+    /**
+     * ISO time of the live MemAvailable sample behind `availableMb`. Absent when the figure is
+     * a host-probe snapshot (macOS/Windows) or on older profiles — admission control caps on a
+     * live figure only, since a snapshot cannot be trusted to have recovered.
+     */
+    sampledAt?: string;
   };
   cpu: {
     arch: 'x86_64' | 'arm64';
