@@ -22,9 +22,12 @@
  * :11435 to beta-1 — while the SYSTEM `ollama.service` is what listens on :11434. Deciding by the
  * unit's name skipped that node ("would start a second daemon") and managed nothing on it. So
  * ownership is decided by the LISTENER: which cgroup holds the socket on :11434 — the system unit,
- * a user unit, a container, something else — and a user unit is the reason to refuse only when it
- * is the thing serving the port. `ss -e` reports the socket's cgroup without root (iproute2 ≥ 5.10),
- * which is what lets the unprivileged status probe tell core-2 from beta-1.
+ * a user unit, a container, something else — and a name-matched user unit stops being the reason
+ * to refuse only when the SYSTEM unit is the thing serving the port. With nobody on the port, or
+ * an owner the probe cannot see, the name refuses as it always did: a user-scope daemon between
+ * its stop and its bind looks exactly like a free port. `ss -e` reports the socket's cgroup
+ * without root (iproute2 ≥ 5.10), which is what lets the unprivileged status probe tell core-2
+ * from beta-1.
  *
  * So this module does three things, all pure and all tested against the real filenames above:
  * resolve the EFFECTIVE `OLLAMA_HOST` exactly as systemd would and name the file that won; plan a
@@ -636,9 +639,10 @@ export function parseSsListeners(ss: string, port = OLLAMA_BIND_PORT): PortOwner
     if (!address) continue;
     const proc = /users:\(\("([^"]+)",pid=(\d+)/.exec(line);
     const uid = /\buid:(\d+)\b/.exec(line);
-    // A path, or nothing: from another cgroup namespace `ss` prints `cgroup:unreachable:<id>`, which
-    // names no unit and must not be mistaken for a foreign one.
-    const cgroup = /\bcgroup:(\/\S*)/.exec(line)?.[1];
+    // A path, or nothing: from another cgroup namespace `ss` prints `cgroup:unreachable:<id>`, and
+    // for a socket in the root cgroup a bare `cgroup:/` — neither names a unit, and neither must be
+    // mistaken for a foreign one. With a pid, the probe's /proc line still classifies the listener.
+    const cgroup = /\bcgroup:(\/\S+)/.exec(line)?.[1];
     const classified = cgroup ? classifyCgroup(cgroup) : { scope: 'unknown' as const, unit: undefined };
     owners.push({
       address,
@@ -680,7 +684,8 @@ export function parseOwnerLines(lines: readonly string[]): PortOwner[] {
   for (const line of lines) {
     const m = /^(\d+)\s+(\S+)\s*(.*)$/.exec(line.trim());
     if (!m) continue;
-    const cgroup = (m[3] ?? '').trim();
+    // The root cgroup (`/`) names no unit any more than an empty field does.
+    const cgroup = (m[3] ?? '').trim().replace(/^\/$/, '');
     const { scope, unit } = classifyCgroup(cgroup);
     owners.push({ pid: Number(m[1]), user: m[2], cgroup: cgroup || undefined, scope, unit });
   }
@@ -738,12 +743,6 @@ export interface OwnershipInput {
   port?: number;
 }
 
-/** A user-scope unit's own `OLLAMA_HOST`, when it names this port (or names no port, which Ollama reads as 11434). */
-function userUnitClaimsPort(u: UserUnitEvidence, port: number): boolean {
-  if (!u.ollamaHost) return false;
-  return normalizeOllamaHost(u.ollamaHost).port === port;
-}
-
 /**
  * May the installer touch the SYSTEM `ollama.service` on this node?
  *
@@ -753,14 +752,17 @@ function userUnitClaimsPort(u: UserUnitEvidence, port: number): boolean {
  * restart-loop under systemd's `Restart=always` while the drop-ins the installer just wrote
  * configure a service that is not the one serving.
  *
- * An active user-scope unit whose name matches `ollama*` is evidence, not a verdict. When the
- * socket is known to be the system unit's (its cgroup, its uid, or its main pid), that unit is
- * not the daemon — core-2's `ollama-tunnel.service` is an ssh forward — and the system unit is
- * managed, with a note naming the unit and why it was not the reason to stop. The name alone still
- * refuses in exactly two cases: the port has a listener whose owner the probe could not see
- * (no pid, no cgroup, no uid to compare — it may well be that unit's), or nothing listens but the
- * unit's own `OLLAMA_HOST` claims this port. The reason is one sentence because it is printed on
- * one line of a fleet report.
+ * An active user-scope unit whose name matches `ollama*` is overruled in exactly one case: the
+ * socket is known to be the system unit's (its cgroup, its uid, or its main pid). Then that unit
+ * is not the daemon — core-2's `ollama-tunnel.service` is an ssh forward — and the system unit is
+ * managed, with a note naming the unit and why it was not the reason to stop. Otherwise the name
+ * refuses, as it always did. When NOTHING listens, because a user-scope daemon between a stop and
+ * a bind (beta-1 mid-restart) looks exactly like a free port and the probe has nothing else to go
+ * by — `systemctl --user list-units` rows carry no `OLLAMA_HOST`, so the unit's own claim to the
+ * port is not evidence the probe can produce. And when something listens whose owner the probe
+ * could not see (no pid, no cgroup), unless the socket's uid belongs to no login user at all: a
+ * login user's socket may be the unit's, or a hand-started `ollama serve` in anyone's session. The
+ * reason is one sentence because it is printed on one line of a fleet report.
  */
 export function decideSystemUnitOwnership(input: OwnershipInput): OwnershipDecision {
   const port = input.port ?? OLLAMA_BIND_PORT;
@@ -838,40 +840,30 @@ export function decideSystemUnitOwnership(input: OwnershipInput): OwnershipDecis
     };
   }
   const unseen = owners.find((o) => o.scope === 'unknown');
-  if (unseen) {
-    // Something listens and the probe could not name it. The socket's uid against the unit's user is
-    // the one comparison left; without it, the name-match is presumed to be the listener.
-    const userUid = input.userUids?.[activeUser.user];
-    if (unseen.uid !== undefined && userUid !== undefined && unseen.uid !== userUid) {
-      return {
-        refuse: false,
-        owners,
-        userUnits,
-        note: `${named}, but :${port} is held by uid ${unseen.uid}, not ${activeUser.user}'s (${userUid}) — that unit is not the listener; managing the system unit`,
-      };
-    }
+  // Something listens and the probe could not name it. The socket's uid against the login users'
+  // is the one comparison left: a uid that is no login user's cannot be the unit's (it runs as its
+  // user) nor a hand-started `ollama serve` in anyone's session, so that unit is not the listener.
+  // The unit's own user must be among the uids dumped, or the comparison proves nothing.
+  const ownUid = input.userUids?.[activeUser.user];
+  const holder = unseen?.uid === undefined ? undefined : Object.entries(input.userUids ?? {}).find(([, uid]) => uid === unseen.uid)?.[0];
+  if (unseen?.uid !== undefined && ownUid !== undefined && holder === undefined) {
     return {
-      refuse: true,
-      reason: `${activeUser.unit} is running under ${activeUser.user}'s systemd --user${activeUser.ollamaHost ? ` (OLLAMA_HOST=${activeUser.ollamaHost})` : ''}; the system ollama.service path would start a second daemon and collide on :${port}`,
+      refuse: false,
       owners,
       userUnits,
+      note: `${named}, but :${port} is held by uid ${unseen.uid}, which is no login user's (${activeUser.user} is ${ownUid}) — that unit is not the listener; managing the system unit`,
     };
   }
-  // Nothing listens. The unit's own OLLAMA_HOST naming this port is its claim to it; otherwise the
-  // port is free and the system unit is the thing to manage.
-  if (userUnitClaimsPort(activeUser, port)) {
-    return {
-      refuse: true,
-      reason: `${activeUser.unit} is running under ${activeUser.user}'s systemd --user (OLLAMA_HOST=${activeUser.ollamaHost}); the system ollama.service path would start a second daemon and collide on :${port}`,
-      owners,
-      userUnits,
-    };
-  }
+  // The name refuses, as before: the listener is a login user's, or was not seen at all — or
+  // nothing listens, which is what a user-scope daemon looks like between its stop and its bind
+  // (beta-1 mid-restart), and a `list-units` row carries no `OLLAMA_HOST` to tell that apart from
+  // a unit that never binds here.
+  const held = holder !== undefined && holder !== activeUser.user ? ` and :${port} is held by ${holder}'s uid ${unseen?.uid}` : '';
   return {
-    refuse: false,
+    refuse: true,
+    reason: `${activeUser.unit} is running under ${activeUser.user}'s systemd --user${activeUser.ollamaHost ? ` (OLLAMA_HOST=${activeUser.ollamaHost})` : ''}${held}; the system ollama.service path would start a second daemon and collide on :${port}`,
     owners,
     userUnits,
-    note: `${named}, but nothing listens on :${port} — that unit is not an Ollama daemon on this port; managing the system unit`,
   };
 }
 
@@ -1205,12 +1197,14 @@ export const BIND_MARKERS = {
  *
  * Decides by the listener, like {@link decideSystemUnitOwnership}: every socket on :11434 is
  * classified by its cgroup — the one `ss -e` prints for the socket, or failing that (older
- * iproute2) the one in /proc/<pid>/cgroup, which root can always read — and a user unit, a
- * container or a foreign system unit holding the port refuses. The user managers are asked
- * afterwards, and an active `ollama*` unit there refuses ONLY when nobody was found serving the
- * port: when the system unit was, that unit is not the daemon (core-2's `ollama-tunnel.service`),
- * and a `ollama-bind-note:` line names it and says so; when nothing listens, the port is free and
- * the note says that instead.
+ * iproute2, another cgroup namespace, the root cgroup) the one in /proc/<pid>/cgroup, which root
+ * can always read — and a user unit, a container or a foreign system unit holding the port
+ * refuses. The user managers are asked afterwards, and an active `ollama*` unit there is overruled
+ * ONLY when the system unit was found serving the port: then that unit is not the daemon (core-2's
+ * `ollama-tunnel.service`), and a `ollama-bind-note:` line names it and says so. Otherwise the name
+ * refuses, as it always did — a port with nobody on it is also what a user-scope daemon looks like
+ * between its stop and its bind, and the guard has no way to tell that from a unit that never
+ * binds here.
  *
  * Prints a `ollama-bind-refused:` line and exits 0: the outcome is decided by the marker, and a
  * refusal is a fact about the machine, not a failed install.
@@ -1218,20 +1212,19 @@ export const BIND_MARKERS = {
 export function ollamaOwnershipGuardShell(): string {
   return [
     'cihub_sys_owner=""',
-    'cihub_port_held=""',
     // One `pid:cgroup` word per listener, `-` for a field ss did not print. awk keeps the words
     // free of spaces, so the for-loop (not a piped while, whose `exit` would only leave a subshell)
     // can split them.
     `for cihub_row in $(ss -ltnpe 2>/dev/null | awk '$4 ~ /:${OLLAMA_BIND_PORT}$/ { pid = "-"; cg = "-"; for (i = 1; i <= NF; i++) { if ($i ~ /^cgroup:/) cg = substr($i, 8); if (match($i, /pid=[0-9]+/)) pid = substr($i, RSTART + 4, RLENGTH - 4) } print pid ":" cg }' | sort -u); do`,
     // biome-ignore lint/suspicious/noTemplateCurlyInString: bash parameter expansion in the generated script.
     '  pid="${cihub_row%%:*}"; cg="${cihub_row#*:}"',
-    // `cgroup:unreachable:<id>` (another cgroup namespace) names no unit: read /proc instead.
-    '  case "$cg" in /*) : ;; *) cg="" ;; esac',
-    '  if [ -z "$cg" ] && [ "$pid" != "-" ]; then cg="$(tail -1 /proc/$pid/cgroup 2>/dev/null | cut -d: -f3-)"; fi',
+    // `cgroup:unreachable:<id>` (another cgroup namespace) and a bare `cgroup:/` (the root cgroup)
+    // name no unit: read /proc instead, and treat a root cgroup there the same way.
+    '  case "$cg" in /?*) : ;; *) cg="" ;; esac',
+    '  if [ -z "$cg" ] && [ "$pid" != "-" ]; then cg="$(tail -1 /proc/$pid/cgroup 2>/dev/null | cut -d: -f3-)"; case "$cg" in /?*) : ;; *) cg="" ;; esac; fi',
     '  who="?"; [ "$pid" != "-" ] && who="$(stat -c %U /proc/$pid 2>/dev/null || echo \'?\')"',
     // biome-ignore lint/suspicious/noTemplateCurlyInString: bash parameter expansion in the generated script.
     '  unit="${cg##*/}"',
-    '  cihub_port_held=1',
     '  case "$cg" in',
     `    *user@*|*/user-*.slice/*) echo "${BIND_MARKERS.refused} $unit under $who's systemd --user (pid $pid) already owns :${OLLAMA_BIND_PORT}; enabling the system ollama.service would start a second daemon that collides on the port"; exit 0 ;;`,
     `    *docker*|*containerd*|*libpod*) echo "${BIND_MARKERS.refused} :${OLLAMA_BIND_PORT} is served by a container (cgroup $cg); the system ollama.service is not what answers here"; exit 0 ;;`,
@@ -1240,8 +1233,9 @@ export function ollamaOwnershipGuardShell(): string {
     `    *) echo "${BIND_MARKERS.refused} :${OLLAMA_BIND_PORT} is owned by $unit (pid $pid), not ollama.service; not touching a listener this installer does not manage"; exit 0 ;;`,
     '  esac',
     'done',
-    // The user managers: an active `ollama*` unit is the daemon only if nothing else was found
-    // serving the port. `$uu` can be a tunnel, a watcher, anything whose name matches.
+    // The user managers: an active `ollama*` unit is presumed the daemon unless the SYSTEM unit
+    // was found serving the port. `$uu` can be a tunnel, a watcher, anything whose name matches —
+    // but with nobody on the port it can as well be the daemon mid-restart, and the name refuses.
     "for u in $(loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'); do",
     '  uu="$(systemctl --user -M "$u@" list-units --type=service --state=active --no-legend --plain 2>/dev/null </dev/null | awk \'tolower($1) ~ /ollama/ {print $1; exit}\')"',
     '  [ -n "$uu" ] || continue',
@@ -1249,8 +1243,6 @@ export function ollamaOwnershipGuardShell(): string {
     // Root always sees the pid; the socket cgroup alone (a non-root run) still names the owner.
     '    cihub_sys_pid="pid $cihub_sys_owner"; [ "$cihub_sys_owner" = "-" ] && cihub_sys_pid="pid not disclosed"',
     `    echo "${BIND_MARKERS.note} $uu is active under $u's systemd --user, but the system ollama.service ($cihub_sys_pid) is what serves :${OLLAMA_BIND_PORT} — that unit is not the daemon; managing the system unit"`,
-    '  elif [ -z "$cihub_port_held" ]; then',
-    `    echo "${BIND_MARKERS.note} $uu is active under $u's systemd --user, but nothing listens on :${OLLAMA_BIND_PORT} — that unit is not an Ollama daemon on this port; managing the system unit"`,
     '  else',
     `    echo "${BIND_MARKERS.refused} $uu is running under $u's systemd --user; the system ollama.service path would start a second daemon and collide on :${OLLAMA_BIND_PORT}"; exit 0`,
     '  fi',
