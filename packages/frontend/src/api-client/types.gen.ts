@@ -48,6 +48,7 @@ export type AppContextDto = {
         defaultAppCpuLimit?: string;
         defaultAppMemoryLimit?: string;
         autoAllocateAppResources?: boolean;
+        autoUpdates?: boolean;
         demoMode: boolean;
         disablePasswordReset: boolean;
         dnsIp: string;
@@ -69,12 +70,13 @@ export type AppContextDto = {
         themeBase?: string;
         themeColor?: string;
         ciHubApiKey?: string;
+        ciHubMoveKey?: string;
         ciHubOrganizationId?: string;
         ciHubOrganizationSlug?: string;
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
@@ -90,6 +92,8 @@ export type AppContextDto = {
         hubPoolRequireSignedPeers?: boolean;
         hubPoolShareContainerStats?: boolean;
         hubPoolPressureWeight?: number;
+        hubPoolMaxPromptTokens?: number;
+        hubPoolRouteAppsAlways?: boolean;
         inferenceSupervisionMode?: 'off' | 'observe';
         inferenceSupervisionPollSeconds?: number;
         hubPoolPins?: Array<{
@@ -117,6 +121,8 @@ export type AppContextDto = {
         operator: boolean;
         hasCompletedOnboarding: boolean;
         advancedMode: boolean;
+        accessStatus?: 'active' | 'revoked';
+        orgRole?: 'owner' | 'admin' | 'member';
     };
     apps: Array<{
         id: string;
@@ -168,12 +174,13 @@ export type UserSettingsBody = {
     themeBase?: string;
     themeColor?: string;
     ciHubApiKey?: string;
+    ciHubMoveKey?: string;
     ciHubOrganizationId?: string;
     ciHubOrganizationSlug?: string;
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
@@ -189,6 +196,8 @@ export type UserSettingsBody = {
     hubPoolRequireSignedPeers?: boolean;
     hubPoolShareContainerStats?: boolean;
     hubPoolPressureWeight?: number;
+    hubPoolMaxPromptTokens?: number;
+    hubPoolRouteAppsAlways?: boolean;
     inferenceSupervisionMode?: 'off' | 'observe';
     inferenceSupervisionPollSeconds?: number;
     hubPoolPins?: Array<{
@@ -298,6 +307,18 @@ export type RegisterDto = {
     requiresEmailVerification?: boolean;
 };
 
+export type HubClaimStatusDto = {
+    [key: string]: unknown;
+};
+
+export type HubClaimBody = {
+    [key: string]: unknown;
+};
+
+export type HubClaimDto = {
+    [key: string]: unknown;
+};
+
 export type SessionRefreshDto = {
     sessionId: string;
     issuedAt: number;
@@ -315,6 +336,11 @@ export type PortalSessionHintDto = {
     email: string;
     portalBaseUrl: string;
     source: 'hub_operator' | 'hub_user' | 'portal_session';
+    portalReachable: boolean;
+};
+
+export type HubOperatorsDto = {
+    [key: string]: unknown;
 };
 
 export type PortalDesktopExchangeDto = {
@@ -913,6 +939,7 @@ export type AppRuntimeMonitorDto = {
             memoryUsageBytes: number;
             memoryLimitBytes: number;
         }>;
+        gpuVramMb: number;
     }>;
     history: Array<{
         sampledAt: string;
@@ -923,7 +950,12 @@ export type AppRuntimeMonitorDto = {
             cpuPercent: number;
             memoryUsageBytes: number;
             containerCount: number;
+            gpuVramMb: number;
         }>;
+    }>;
+    unattributedGpu: Array<{
+        processName: string;
+        vramMb: number;
     }>;
 };
 
@@ -1242,6 +1274,7 @@ export type AppRuntimeHealthDto = {
         memoryUsageBytes: number;
         memoryLimitBytes: number;
     }>;
+    gpuVramMb: number;
 };
 
 export type SearchAppsDto = {
@@ -1301,7 +1334,7 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
@@ -1325,6 +1358,8 @@ export type UpdateHubPoolPreferencesBody = {
     poolRequireSignedPeers?: boolean;
     poolShareContainerStats?: boolean;
     poolPressureWeight?: number;
+    poolMaxPromptTokens?: number;
+    poolRouteAppsAlways?: boolean;
 };
 
 export type UpsertPoolPinBody = {
@@ -1359,6 +1394,7 @@ export type PairingUpgradeBody = {
 export type CreateApiKeyBody = {
     name: string;
     capability: 'read' | 'write' | 'full';
+    scope: 'mcp' | 'inference';
 };
 
 export type UpdateApiKeyBody = {
@@ -2042,18 +2078,19 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
     vllmUrl?: string;
     mtplxUrl?: string;
     dsparkUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
 };
 
 export type RoutingLogQueryDto = {
     limit?: number;
+    since?: string;
 };
 
 export type DeletePoolPinQuery = {
@@ -2366,6 +2403,20 @@ export type GetStatusData = {
 export type GetStatusResponses = {
     /**
      * Returns the explicit provisioning status
+     */
+    200: unknown;
+};
+
+export type GetPhaseData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/registration/phase';
+};
+
+export type GetPhaseResponses = {
+    /**
+     * Returns the in-memory phase, degraded reasons, and last check-in outcome
      */
     200: unknown;
 };
@@ -3113,6 +3164,32 @@ export type RegisterResponses = {
 
 export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
 
+export type HubClaimStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/hub/claim';
+};
+
+export type HubClaimStatusResponses = {
+    default: HubClaimStatusDto;
+};
+
+export type HubClaimStatusResponse = HubClaimStatusResponses[keyof HubClaimStatusResponses];
+
+export type ClaimHubData = {
+    body: HubClaimBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/hub/claim';
+};
+
+export type ClaimHubResponses = {
+    default: HubClaimDto;
+};
+
+export type ClaimHubResponse = ClaimHubResponses[keyof ClaimHubResponses];
+
 export type LogoutData = {
     body?: never;
     path?: never;
@@ -3204,6 +3281,19 @@ export type PortalSessionHintResponses = {
 };
 
 export type PortalSessionHintResponse = PortalSessionHintResponses[keyof PortalSessionHintResponses];
+
+export type ListOperatorsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/operators';
+};
+
+export type ListOperatorsResponses = {
+    default: HubOperatorsDto;
+};
+
+export type ListOperatorsResponse = ListOperatorsResponses[keyof ListOperatorsResponses];
 
 export type ExchangePortalDesktopLoginData = {
     body?: never;
@@ -3554,6 +3644,19 @@ export type UnignoreAppVersionResponses = {
     200: unknown;
 };
 
+export type GetInferenceEnvStalenessData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/inference-env';
+};
+
+export type GetInferenceEnvStalenessResponses = {
+    200: unknown;
+};
+
 export type CheckAvailabilityData = {
     body?: never;
     path: {
@@ -3876,7 +3979,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
     };
     url: '/api/inference/models/runtime';
 };
@@ -4082,7 +4185,7 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
         vllmUrl?: string;
         mtplxUrl?: string;
         dsparkUrl?: string;
@@ -4158,6 +4261,28 @@ export type GetMtplxStatusData = {
 };
 
 export type GetMtplxStatusResponses = {
+    200: unknown;
+};
+
+export type GetLlamacppStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/llamacpp/status';
+};
+
+export type GetLlamacppStatusResponses = {
+    200: unknown;
+};
+
+export type GetLmStudioStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/lmstudio/status';
+};
+
+export type GetLmStudioStatusResponses = {
     200: unknown;
 };
 
@@ -4271,6 +4396,7 @@ export type GetPoolRoutingLogData = {
     path?: never;
     query?: {
         limit?: number;
+        since?: string;
     };
     url: '/api/inference/pool/routing-log';
 };
@@ -4734,6 +4860,17 @@ export type LocalOllamaEmbedResponses = {
     201: unknown;
 };
 
+export type LocalOllamaShowData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/api/show';
+};
+
+export type LocalOllamaShowResponses = {
+    201: unknown;
+};
+
 export type LocalOpenAiModelsData = {
     body?: never;
     path?: never;
@@ -4776,6 +4913,17 @@ export type CreateKeyData = {
 
 export type CreateKeyResponses = {
     201: unknown;
+};
+
+export type GrantableCapabilitiesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys/grantable';
+};
+
+export type GrantableCapabilitiesResponses = {
+    200: unknown;
 };
 
 export type RevokeKeyData = {
@@ -4892,6 +5040,19 @@ export type ValidateConfigResponses = {
 };
 
 export type ValidateConfigResponse = ValidateConfigResponses[keyof ValidateConfigResponses];
+
+export type PlanInstallData = {
+    body: AppFormBody;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/app-lifecycle/{urn}/install/plan';
+};
+
+export type PlanInstallResponses = {
+    201: unknown;
+};
 
 export type StartAppData = {
     body?: never;

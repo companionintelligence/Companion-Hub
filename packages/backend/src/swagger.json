@@ -2972,7 +2972,9 @@
                 "lemonade",
                 "mtplx",
                 "dspark",
-                "lucebox"
+                "lucebox",
+                "llamacpp",
+                "lmstudio"
               ]
             }
           }
@@ -3289,7 +3291,9 @@
                 "lemonade",
                 "mtplx",
                 "dspark",
-                "lucebox"
+                "lucebox",
+                "llamacpp",
+                "lmstudio"
               ]
             }
           },
@@ -3439,6 +3443,34 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/llamacpp/status": {
+      "get": {
+        "operationId": "getLlamacppStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/lmstudio/status": {
+      "get": {
+        "operationId": "getLmStudioStatus",
+        "parameters": [],
         "responses": {
           "200": {
             "description": ""
@@ -6888,7 +6920,9 @@
                   "lemonade",
                   "mtplx",
                   "dspark",
-                  "lucebox"
+                  "lucebox",
+                  "llamacpp",
+                  "lmstudio"
                 ]
               },
               "inferenceModel": {
@@ -7396,7 +7430,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "inferenceModel": {
@@ -12618,7 +12654,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "model": {
@@ -12831,11 +12869,20 @@
               "write",
               "full"
             ]
+          },
+          "scope": {
+            "default": "mcp",
+            "type": "string",
+            "enum": [
+              "mcp",
+              "inference"
+            ]
           }
         },
         "required": [
           "name",
-          "capability"
+          "capability",
+          "scope"
         ],
         "additionalProperties": false
       },
@@ -16011,7 +16058,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "vllmUrl": {
@@ -16040,7 +16089,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           }
         },
