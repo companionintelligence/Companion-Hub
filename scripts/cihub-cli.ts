@@ -28,7 +28,14 @@ import { showDeviceId, registerHub } from './lib/cli-register';
 import { POOL_SUBCOMMANDS, type ParsedPoolArgs, parsePoolArgs, isPlausiblePeerFqdn, type PoolSubcommand, runPoolCommand } from './lib/cli-pool';
 import { confirmDestructiveAction } from './lib/cli-prompt';
 import { type HubContext, resolveHubContext, isFirstRun } from './lib/hub-context';
-import { renderVersion, firstPathFromLookupOutput, resolveCompanionHubBinary, runHostUpdate, runConnectCommand } from './lib/cli-update';
+import {
+  renderVersion,
+  firstPathFromLookupOutput,
+  resolveCompanionHubBinary,
+  runHostUpdate,
+  runConnectCommand,
+  runSelfUpdateCommand,
+} from './lib/cli-update';
 import { parseAppRuntimeArgs, appStatusColor, runAppCommand } from './lib/cli-app';
 import {
   apiKeyTableHasCapability,
@@ -75,6 +82,6 @@ export type { ParsedPoolArgs, PoolSubcommand };
 export { confirmDestructiveAction };
 export { resolveHubContext, isFirstRun };
 export type { HubContext };
-export { renderVersion, firstPathFromLookupOutput, resolveCompanionHubBinary, runHostUpdate, runConnectCommand };
+export { renderVersion, firstPathFromLookupOutput, resolveCompanionHubBinary, runHostUpdate, runConnectCommand, runSelfUpdateCommand };
 export { parseAppRuntimeArgs, appStatusColor, runAppCommand };
 export { sqlQuote, isValidApiKeyName, parseApiKeyScopes, buildApiKeyInsertSql, apiKeyTableHasCapability, formatApiKeyRows, runApiKeyCommand };

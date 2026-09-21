@@ -9,6 +9,7 @@ import { bold } from './cli-ui.js';
 const PACKAGE_JSON_URL = new URL('../../package.json', import.meta.url);
 
 declare const CIHUB_BUILD_VERSION: string | undefined;
+declare const CIHUB_BUILD_REVISION: string | undefined;
 
 export function packageVersion(): string {
   const buildVersion = typeof CIHUB_BUILD_VERSION === 'string' ? CIHUB_BUILD_VERSION.trim() : '';
@@ -23,6 +24,20 @@ export function packageVersion(): string {
   } catch {
     return '0.0.0';
   }
+}
+
+/**
+ * The commit this `cihub` was built from, or null for a build that did not stamp one.
+ *
+ * `packageVersion()` answers "which release is this", which a `dev` or PR build has no answer for —
+ * and those are exactly the builds a fleet runs while a release is being prepared. The Hub image
+ * stamps `org.opencontainers.image.revision` for the same reason, so stamping it here is what lets
+ * the two be compared at all when neither carries a version (see cli-version-skew.ts).
+ */
+export function packageRevision(): string | null {
+  const buildRevision = typeof CIHUB_BUILD_REVISION === 'string' ? CIHUB_BUILD_REVISION.trim() : '';
+  if (buildRevision) return buildRevision;
+  return process.env.CIHUB_BUILD_REVISION?.trim() || null;
 }
 
 export const envFileMap: Record<HubEnv, string> = {

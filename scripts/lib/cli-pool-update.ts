@@ -88,16 +88,51 @@ export function composeFilesForPoolUpdate(cwd: string, baseComposeFiles: string[
   return { files: [...baseComposeFiles, PULL_IMAGE_OVERLAY], overlayApplied: true };
 }
 
+/** Where the image this command deploys came from — printed, because the wrong source is a downgrade. */
+export type PoolUpdateImageSource = 'process-env' | 'env-file' | 'channel-default';
+
 /**
- * The image the overlay pulls. Respects an operator-set `CI_HUB_IMAGE` (the same variable
- * `docker-compose.dev-image.yml` already reads) and otherwise defaults to the tag matching the
- * environment being updated — `ghcr.io/companionintelligence/ci-hub:dev` for `pool update dev`,
- * and so on. A fleet deliberately running `prod`-shaped compose with `dev`-tagged content (this
- * project's own test fleet does) sets `CI_HUB_IMAGE` to override the default explicitly, rather
- * than this command guessing which tag a `prod` env "really" means.
+ * The image this command deploys, and which of three sources decided it.
+ *
+ * The middle source is the fix. `run()` passes `CI_HUB_IMAGE` into the compose child's
+ * *environment*, and Docker Compose gives the process environment precedence over `--env-file` — so
+ * whatever this function returns silently overrides the pin in the env file compose was handed.
+ * Until now this function never looked at that file, so an operator's explicit digest was discarded
+ * in favour of a channel tag, or of a value from some other file. On an appliance that is a
+ * **downgrade**: `resolveHubContext` forces `env` to `prod` whatever argument was typed, so
+ * `cihub pool update dev` fell through to `…/ci-hub:prod` — a tag the fleet does not publish to.
+ *
+ * Precedence, and why:
+ *
+ * 1. `process.env.CI_HUB_IMAGE` — an operator naming a reference on the command line for this run
+ *    only (`CI_HUB_IMAGE=<ref> cihub pool update`, the shape a fleet roll uses). The most explicit
+ *    thing anyone can say, so it wins.
+ * 2. `CI_HUB_IMAGE` in the env file compose actually reads — the node's standing pin, and exactly
+ *    the value compose would have used had this command not overridden it. Honouring it is the
+ *    whole point: a pin the operator wrote must not lose to a tag nobody chose.
+ * 3. The tag for the environment. Last resort, for a node that pins nothing at all.
  */
-export function resolvePoolUpdateImage(env: HubEnv, existingEnvValue: string | undefined): string {
-  return existingEnvValue?.trim() || `ghcr.io/companionintelligence/ci-hub:${env}`;
+export function resolvePoolUpdateImage(input: { env: HubEnv; processValue: string | undefined; envFileValue: string | undefined }): {
+  image: string;
+  source: PoolUpdateImageSource;
+} {
+  const fromProcess = input.processValue?.trim();
+  if (fromProcess) return { image: fromProcess, source: 'process-env' };
+  const fromFile = input.envFileValue?.trim();
+  if (fromFile) return { image: fromFile, source: 'env-file' };
+  return { image: `ghcr.io/companionintelligence/ci-hub:${input.env}`, source: 'channel-default' };
+}
+
+/** How the chosen image is described on the line `pool update` prints before it pulls. */
+export function describeImageSource(source: PoolUpdateImageSource, envFile: string): string {
+  switch (source) {
+    case 'process-env':
+      return 'from CI_HUB_IMAGE in this command\u2019s environment';
+    case 'env-file':
+      return `pinned in ${envFile}`;
+    case 'channel-default':
+      return `no CI_HUB_IMAGE in ${envFile}, so falling back to the channel tag`;
+  }
 }
 
 /** `docker compose ... pull` / `... up -d --remove-orphans`, sharing the same base args as every other lifecycle command. */

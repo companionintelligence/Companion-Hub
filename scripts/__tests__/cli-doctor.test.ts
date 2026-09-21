@@ -104,7 +104,41 @@ vi.mock('../hub-cleanup-lib.js', async (importOriginal) => ({
   runHubCleanup: mocks.runHubCleanup,
 }));
 
-import { describeRegistrationPhase, doctorHub, uninstallHub } from '../lib/cli-doctor.js';
+// Mocked for the same reason as device-id: unmocked, the CLI-vs-stack line would read whatever
+// containers happen to be running on the machine the suite runs on.
+const skewMocks = vi.hoisted(() => ({
+  gatherSkew: vi.fn(() => ({
+    cli: { version: '0.2.73', revision: null },
+    stack: { container: 'ci-hub', reference: 'ghcr.io/companionintelligence/ci-hub:0.2.73', version: '0.2.73', revision: null },
+    channel: { kind: 'standalone' as const, path: '/usr/local/bin/cihub' },
+    verdict: { kind: 'match' as const, how: 'version' as const, cli: '0.2.73', stack: '0.2.73' },
+    report: { severity: 'ok' as const, headline: 'cihub 0.2.73 matches the running stack', lines: ['cihub 0.2.73 matches the running stack'] },
+  })),
+}));
+vi.mock('../lib/cli-version-skew.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/cli-version-skew.js')>()),
+  gatherSkew: skewMocks.gatherSkew,
+}));
+
+// Same reason again: the image-pin line reads the running container and the env file compose named,
+// and neither is a property of the machine the suite happens to run on.
+const pinMocks = vi.hoisted(() => ({
+  inspectImagePin: vi.fn(() => ({
+    envFile: '/data/.env',
+    fromCompose: true,
+    declared: undefined as string | undefined,
+    drift: { kind: 'not-running' as const },
+    report: { severity: 'ok' as const, headline: 'no Hub container running, so there is no image to compare the pin against', lines: [] },
+  })),
+}));
+vi.mock('../lib/cli-image-pin.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/cli-image-pin.js')>()),
+  inspectImagePin: pinMocks.inspectImagePin,
+}));
+
+import { describeImagePinSection, describeRegistrationPhase, describeVersionSkewSection, doctorHub, uninstallHub } from '../lib/cli-doctor.js';
+import { compareDeclaredToRunning, describePinDrift } from '../lib/cli-image-pin.js';
+import { classifyCliInstall, compareBuilds, describeSkew, type SkewSnapshot } from '../lib/cli-version-skew.js';
 
 /** A machine where every file doctor looks for is really there, so only the mocked checks decide. */
 const dataDir = mkdtempSync(join(tmpdir(), 'cihub-doctor-'));
@@ -443,5 +477,100 @@ describe('doctorHub tunnel token line', () => {
     const text = doctorText();
     expect(text).toMatch(/Tunnel token\s+\S*\s*present/);
     expect(text).not.toContain('no registration marker');
+  });
+});
+
+/**
+ * The CLI-vs-stack line: the one mismatch doctor could not see.
+ *
+ * beta-max, 2026-09-21 — `cihub version` 0.2.72, an untagged stack image, and a green doctor while
+ * `cihub pool ceiling` answered `Unknown pool subcommand`. The fail/note split matters here as much
+ * as anywhere else in this file: a `:dev` node whose image carries no release tag is normal, and
+ * failing it would put a red line on every development machine in the fleet.
+ */
+describe('CLI vs stack', () => {
+  const doctorText = () => (log.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+  const channel = classifyCliInstall('/usr/local/bin/cihub');
+  const snapshot = (cliVersion: string, stackVersion: string | null, reference: string, revision: string | null = null): SkewSnapshot => {
+    const cli = { version: cliVersion, revision: null };
+    const stack = { container: 'ci-hub', reference, version: stackVersion, revision };
+    const verdict = compareBuilds(cli, stack);
+    return { cli, stack, channel, verdict, report: describeSkew(verdict, channel) };
+  };
+
+  it('says nothing but the good news when both name the same release', () => {
+    const section = describeVersionSkewSection(snapshot('0.2.73', '0.2.73', 'ghcr.io/companionintelligence/ci-hub:0.2.73'));
+    expect(section).toMatchObject({ failureCount: 0, issueCount: 0 });
+    expect(stripAnsi(section.lines.join('\n'))).toContain('CLI vs stack');
+  });
+
+  it('fails doctor on a proven mismatch, naming both versions and the fix', () => {
+    const section = describeVersionSkewSection(snapshot('0.2.72', '0.2.73', 'ghcr.io/companionintelligence/ci-hub:0.2.73'));
+    const text = stripAnsi(section.lines.join('\n'));
+    expect(section.failureCount).toBe(1);
+    expect(text).toContain('0.2.72');
+    expect(text).toContain('0.2.73');
+    expect(text).toContain('cihub self-update --to 0.2.73');
+  });
+
+  it('notes, but does not fail, a stack whose image names no release', () => {
+    const section = describeVersionSkewSection(snapshot('0.2.72', null, 'ghcr.io/companionintelligence/ci-hub@sha256:14a090870a75'));
+    expect(section).toMatchObject({ failureCount: 0, issueCount: 1 });
+    expect(stripAnsi(section.lines.join('\n'))).toContain('Cannot be compared');
+  });
+
+  it('puts the line in the doctor box and fails the command on a mismatch', async () => {
+    skewMocks.gatherSkew.mockReturnValueOnce(
+      snapshot('0.2.72', '0.2.73', 'ghcr.io/companionintelligence/ci-hub:0.2.73') as unknown as ReturnType<typeof skewMocks.gatherSkew>,
+    );
+    await doctorHub('prod');
+    expect(doctorText()).toContain('CLI vs stack');
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+/**
+ * The env file that does not name the image the Hub runs.
+ *
+ * Fifteen of seventeen fleet appliances were recreated onto a new `:dev` digest on 2026-09-21 with
+ * their env files left naming an older one. Every local check on those nodes was green, and each was
+ * one reboot away from reverting to the build it had been moved off. Unlike the CLI-vs-stack line
+ * this is a hard failure, because it undoes itself without anyone touching the machine.
+ */
+describe('Image pin', () => {
+  const doctorText = () => (log.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+  const REPO = 'ghcr.io/companionintelligence/ci-hub';
+  const rolled = `${REPO}@sha256:35de8a86274a8aa9fb22aa9c35026e7de021be4a75004b7243625c1e3438f3e6`;
+  const pinned = `${REPO}@sha256:8add981ab8b6970097b9dd3b1b28519468e1087be0d15865733300c455b2835b`;
+  const section = (declared: string | undefined, running: string | null, envFile = '/home/ci/.local/share/companion-hub/.env.dev') =>
+    describeImagePinSection(describePinDrift(compareDeclaredToRunning(declared, running), envFile, true), envFile);
+
+  it('fails, and names both references, when the pin and the container disagree', () => {
+    const result = section(pinned, rolled);
+    const text = stripAnsi(result.lines.join('\n'));
+    expect(result).toMatchObject({ failureCount: 1, issueCount: 1 });
+    expect(text).toContain('Image pin');
+    expect(text).toContain('8add981ab8b6');
+    expect(text).toContain('35de8a86274a');
+    expect(text).toContain('.env.dev');
+  });
+
+  it('is quiet when the pin is in force, or when there is nothing to compare', () => {
+    expect(section(rolled, rolled)).toMatchObject({ failureCount: 0, issueCount: 0 });
+    expect(section(undefined, rolled)).toMatchObject({ failureCount: 0, issueCount: 0 });
+    expect(section(pinned, null)).toMatchObject({ failureCount: 0, issueCount: 0 });
+  });
+
+  it('puts the line in the doctor box and fails the command', async () => {
+    pinMocks.inspectImagePin.mockReturnValueOnce({
+      envFile: '/home/ci/.local/share/companion-hub/.env.dev',
+      fromCompose: true,
+      declared: pinned,
+      drift: compareDeclaredToRunning(pinned, rolled),
+      report: describePinDrift(compareDeclaredToRunning(pinned, rolled), '/home/ci/.local/share/companion-hub/.env.dev', true),
+    } as unknown as ReturnType<typeof pinMocks.inspectImagePin>);
+    await doctorHub('prod');
+    expect(doctorText()).toContain('Image pin');
+    expect(process.exitCode).toBe(1);
   });
 });

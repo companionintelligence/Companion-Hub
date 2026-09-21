@@ -75,7 +75,14 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
-      { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires CI Hub)' },
+      {
+        command: `${BASE_COMMAND} update [--check]`,
+        description: 'Report CLI vs stack versions, then install the desktop + stack update (requires CI Hub)',
+      },
+      {
+        command: `${BASE_COMMAND} self-update [--to <version>] [--check]`,
+        description: 'Replace a standalone cihub binary with the release this Hub stack runs (needs GH_TOKEN)',
+      },
     ],
   },
   {
@@ -416,8 +423,8 @@ export function renderManPage() {
       'doctor, clean, reset, and the mcp, public-web and pool subcommands.',
       '',
       'Every other command takes none. fleet refuses one outright (cihub fleet scan prod is an error);',
-      'app, models and api-key read it as a subcommand name and fail; connect, update, uninstall and',
-      'the catalog commands ignore it. None of them is a way to retarget an environment.',
+      'app, models and api-key read it as a subcommand name and fail; connect, update, self-update,',
+      'uninstall and the catalog commands ignore it. None of them is a way to retarget an environment.',
       '',
       'Use local for source-based development and dev/staging/prod for appliance-style compose environments.',
       '',

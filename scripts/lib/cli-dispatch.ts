@@ -30,7 +30,7 @@ import { runWriteStatusFile } from './status-file.js';
 import { cleanHub, downHub, recreateHub, resetHub, restartHub } from './cli-teardown.js';
 import { allowedEnvs, BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { printMessageBox, renderHelp, renderManPage } from './cli-ui.js';
-import { renderVersion, runConnectCommand, runHostUpdate } from './cli-update.js';
+import { renderVersion, runConnectCommand, runHostUpdate, runSelfUpdateCommand } from './cli-update.js';
 import { runWizard } from './cli-wizard.js';
 
 export async function runCli(rawArgs: string[]) {
@@ -237,7 +237,12 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'update') {
-    runHostUpdate(args.slice(1));
+    await runHostUpdate(args.slice(1));
+    return;
+  }
+
+  if (first === 'self-update') {
+    await runSelfUpdateCommand(args.slice(1));
     return;
   }
 
