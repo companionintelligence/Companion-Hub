@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO, hubContainerName } from './common/constants';
+import { APP_DATA_DIR, DATA_DIR, HUB_MANAGED_LABEL, HUB_STACK_REGISTRY_REPO, hubContainerName } from './common/constants';
 import { withTimeout } from './common/helpers/with-timeout';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
@@ -77,8 +77,17 @@ export class AppService implements OnApplicationShutdown {
 
       // Do not block listen on Docker prune — a hung dockerode call on Desktop can
       // starve the event loop before /api/health/live is reachable.
+      //
+      // Filtered on the managed label, never a bare prune. Docker's `/networks/prune`
+      // counts only RUNNING containers as "in use", so an unfiltered prune at boot
+      // deleted the network of every stopped compose stack on the host — a developer's
+      // ci-server worktree, anything the operator runs beside the Hub — and their
+      // stopped containers then failed to start with "network <id> not found". The
+      // Hub owns only what it created; networks it did not label (including app
+      // networks written before the label existed) are left to the orphan reconcile
+      // job, which checks stopped containers too.
       void Promise.race([
-        this.docker.pruneNetworks(),
+        this.docker.pruneNetworks({ filters: { label: [`${HUB_MANAGED_LABEL}=true`] } }),
         new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error('Docker network prune timed out after 15s')), 15_000);
         }),

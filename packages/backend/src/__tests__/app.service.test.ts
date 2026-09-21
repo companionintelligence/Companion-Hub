@@ -199,6 +199,19 @@ describe('AppService', () => {
       expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping Docker network prune during bootstrap'));
     });
 
+    it('prunes only Hub-managed networks, never every idle network on the host', async () => {
+      // A bare prune deletes the network of every stopped compose stack on the machine
+      // (Docker counts only running containers as "in use"), which broke `make dev` in
+      // sibling checkouts after each reboot. The filter is the whole fix.
+      dockerode.pruneNetworks.mockResolvedValue({ NetworksDeleted: [] });
+
+      await appService.bootstrap();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(dockerode.pruneNetworks).toHaveBeenCalledTimes(1);
+      expect(dockerode.pruneNetworks).toHaveBeenCalledWith({ filters: { label: ['ci-hub.managed=true'] } });
+    });
+
     it('schedules a background app store catalog sync after marketplace init', async () => {
       marketplaceService.initialize.mockClear();
 
