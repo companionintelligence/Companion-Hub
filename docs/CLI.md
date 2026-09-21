@@ -490,6 +490,7 @@ cihub pool unpair <id>                        # remove a peer and revoke both to
 cihub pool pin <node|local> [--model <id>]    # prefer one node for a model, or for everything
 cihub pool unpin [--model <id>]               # drop that preference and rank by load again
 cihub pool ceiling <tokens>|clear [env]       # longer prompts go to another node when one can serve them
+cihub pool context-cap <tokens>|clear [env]   # cap the num_ctx handed to this node's apps at the engine's context
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
@@ -550,6 +551,25 @@ The value is a whole number from 1024 to 1048576 — no `16k`, which means diffe
 people. The box reports the ceiling actually in force after the write: when
 `HUB_POOL_MAX_PROMPT_TOKENS` is set in the Hub's environment it wins, and the box says the command
 changed nothing in effect.
+
+### `cihub pool context-cap`
+
+`cihub pool context-cap 16384` caps the context window (`num_ctx`) this node's Hub hands its apps at
+16384 tokens; `cihub pool context-cap clear` removes the cap. It is the Hub's half of Ollama's
+`OLLAMA_CONTEXT_LENGTH`: set both to the same number and no app asks for a window the engine does
+not run, so nothing reloads — see
+[Context caps](./hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs)
+for the 25 GB → 44 GB reload that made it a setting. Across a fleet, `cihub fleet backends
+--ollama-context N --execute` sets both halves on every node ([below](#ollamas-runtime-environment-a-second-file-restarted-only-on-change));
+this command is the single-node form, for a node whose engine was configured some other way.
+
+The value is a whole number from 2048 to 1048576, digits only. Confirmed like `ceiling`, because it
+is a state change — and one that restarts the AI apps whose env it changes. The command reads
+`GET /api/inference/preferences` before the write (a cap that already reads as requested is left
+alone, so nothing restarts) and again after it, and the box reports the cap in force rather than the
+one requested. The write goes through `PATCH /api/inference/preferences`, the route that can remove
+the key; a Hub whose preferences carry no `maxNumCtx` predates the cap and is told so without a
+write. `cihub pool status` shows the cap under **This node**.
 
 ### Identifying a peer
 
@@ -1095,13 +1115,39 @@ cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 2
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # again: unchanged, no restart
 ```
 
-The Hub does not read this file, and Ollama's API does not expose `OLLAMA_CONTEXT_LENGTH`, so after
-setting `--ollama-context` tell the node's Hub the same number:
-`PATCH /api/user-settings {"inferenceMaxNumCtx": <N>}`. The Hub then hands its apps
-`min(model window, memory-sized recommendation, N)` instead of a window that reloads the model — on
-core-2 an uncapped 65536 handout against four 16384 slots took `qwen3-coder:30b` from 25 GB to
-44 GB, and every request at another size reloaded it again. See
+**`--ollama-context` also sets each node's Hub context cap.** The Hub does not read this file, and
+Ollama's API does not expose `OLLAMA_CONTEXT_LENGTH`, so on every node where the runtime step applied
+or was already in effect, the same run tells that node's Hub the same number —
+`inferenceMaxNumCtx`, written over the node's own loopback API with the node's own device key (read
+inside the `ci-hub` container, or from `--data-dir`'s `state/settings.json`; never printed, never
+carried back). The Hub then hands its apps `min(model window, memory-sized recommendation, N)`
+instead of a window that reloads the model — on core-2 an uncapped 65536 handout against four 16384
+slots took `qwen3-coder:30b` from 25 GB to 44 GB, and every request at another size reloaded it
+again. See
 [Context caps](./hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs).
+
+The step runs after the drop-in, so the daemon runs the context before the Hub is told about it, and
+prints its own `hub` line per node: `applied — context cap none → 16384 (PATCH /api/user-settings
+200)`, `unchanged — context cap already 16384`, or `failed` with the HTTP code (a non-2xx fails the
+node, like a drop-in that read back wrong). A cap is reported applied only after
+`GET /api/inference/preferences` reads it back — an older Hub's settings schema strips a key it does
+not know and answers 200 having stored nothing, and a Hub whose preferences carry no `maxNumCtx` at
+all is failed as predating the cap, with `cihub fleet update --hub` as the fix. The dry run prints
+`hub: would set inferenceMaxNumCtx=16384 …` under the runtime plan and dials no Hub.
+
+`--ollama-context unset` clears the cap as well, through `PATCH /api/inference/preferences
+{"backend": <current>, "maxNumCtx": null}` — `/api/user-settings` cannot remove a key — and skips the
+write on a Hub that has none, because that route restarts every AI app on any write. The cap is
+touched **only when `--ollama-context` is passed**: a run with just `--ollama-parallel` renders the
+file without `OLLAMA_CONTEXT_LENGTH` but leaves the Hub's cap alone, so pass the flag on every run
+that manages it, the way the file's own reproducibility already asks. A node the runtime step
+skipped (user-scope unit) or failed keeps whatever cap it had; its line already says why.
+
+```bash
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context 16384 --execute   # drop-in + each Hub's inferenceMaxNumCtx=16384
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context unset --execute   # drop key from the file, clear each Hub's cap
+cihub pool context-cap 16384                                                                   # the same cap, on this node only
+```
 
 #### Firewall rules for the Hub's engine probes
 
@@ -1391,6 +1437,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
 | `fleet boot-params --execute` | Any node failed, or was **refused** — by the quoting check or the console gate. A refusal is work the run did not do, and a chain must not read it as done. The dry run exits `1` only for a node it could not read |
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
+| `pool context-cap` | The Hub's build predates the cap (nothing was written), or the cap read back after the write is not the one requested |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
