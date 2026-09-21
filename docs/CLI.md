@@ -734,7 +734,7 @@ Tailscale and no Hub. That machine is the one being set up.
 | **D3** | Non-streaming first-byte latency vs the 15 s peer connect timeout | A warm 27B model could not return **headers** in 15 s non-streaming while the identical streaming request answered in ~1 s. Measured against a model an engine is actually holding (`loaded`/`pinned`, text modality) — a model on disk would time its cold load, and an embedding model would answer 400 — and asks for a few hundred tokens, because the defect is buffering the whole completion and one token has nothing to buffer. Opt-in behind `--check-latency`; otherwise reported as skipped with the reason |
 | **E1** | Can the Hub container reach the host's inference backends? | The existing bridge section, reused unchanged: `ufw` silently blocked container→host Ollama on a node with 8 models and the Hub reported an empty inventory with no error |
 | **F1** | Does every paired peer still accept this node as the Hub it paired with? | beta-max's database volume was recreated, which gave it a new pool identity. Every peer answered each poll with a 401 for 28 hours, showed only `unreachable`, and passed every check above. Reads the Hub's own classification from `GET /api/inference/pool/status`: a changed identity fails, a bare 401 warns, and the notes carry the re-pair commands. It never probes or unpairs a peer itself |
-| **F2** | Do the nodes this one would route to agree on a context window? | Measured across the fleet on 2026-09-21, `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536 with one node unset, and nothing anywhere said so — the only way to see it was to ssh to seventeen boxes and grep their systemd drop-ins. Since a cap became an input to placement, a disagreement decides which nodes a large window may go to. A spread is reported with the nodes it places behind (deliberate on a batch tier, a surprise otherwise); a node advertising **no** cap among capped ones is the harder finding, because "no cap" reads as "takes any window" in both rules, so it collects exactly the windows its own engine may not run. A cap nobody knows is never read as an absent one |
+| **F2** | Do the nodes this one would route to agree on a context window? | Measured across the fleet on 2026-09-21, `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536, and nothing anywhere said so — the only way to see it was to ssh to seventeen boxes and grep their systemd drop-ins. Since a cap became an input to placement, a disagreement decides which nodes a large window may go to. A spread is reported with the nodes it places behind (deliberate on a batch tier, a surprise otherwise); a node advertising **no** cap among capped ones is the harder finding, because "no cap" reads as "takes any window" in both rules, so it collects exactly the windows its own engine may not run. A cap nobody knows is never read as an absent one |
 
 Section **B** is written to one rule: an unprovable claim is not made. Where the evidence supports only
 "the repo has commits the image cannot contain", that is what it prints; where it supports nothing, it says
@@ -1143,14 +1143,26 @@ written — prints one `runtime: now …` line per node with all five keys, `<un
 fixed order, so two nodes' lines line up:
 
 ```
-core-14  runtime: now OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2
+core-3   runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>
+core-14  runtime: now OLLAMA_NUM_PARALLEL=2 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=32768 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2
 ```
 
 That is the fleet-wide inventory of `OLLAMA_CONTEXT_LENGTH`, and `--json` carries the same values
 under each node's `bind.runtime.now`. It exists because there was no such inventory: on 2026-09-21
-the fleet's contexts ran from 8192 to 65536 with one node unset, and reading them meant an ssh and a
-`grep` on each of seventeen boxes. A node this run may not touch — a user-scope unit, a container —
-still reports its environment, since it still serves inference.
+the fleet's contexts ran from 8192 to 65536, and reading them meant an ssh and a `grep` on each of
+seventeen boxes. A node this run may not touch — a user-scope unit, a container — still reports its
+environment, since it still serves inference.
+
+**It reports the value the daemon resolved, not the one in a file — read it this way and nothing
+else.** The line comes from `systemctl show ollama -p Environment`, which is the merged environment
+after every drop-in. `grep`ping `/etc/systemd/system/ollama.service.d/*.conf` does NOT answer this
+question: a node may carry several drop-ins assigning the same key, systemd merges them in lexical
+filename order, and the LAST assignment wins. core-14 carries both a `10-ci-tuning.conf` setting
+8192 and `zzzzz-cihub-runtime.conf` setting 32768 — a grep that takes the first match reports 8192
+for a node that has been running 32768 all along. That failure mode is invisible unless you already
+know to look for a second file, and it misreported seven of sixteen nodes the one time it was tried.
+The `zzzzz` prefix exists precisely so cihub's file sorts last and wins; a drop-in that would sort
+after it is the only real conflict, and `--ollama-context` reports that one as `CANNOT WIN`.
 
 `--ollama-max-loaded` is the other half of `--ollama-keep-alive`. A 24h keep-alive with no cap on
 resident models is a slow leak: on 2026-09-21 three 27–30B models had piled up on batch-tier Strix

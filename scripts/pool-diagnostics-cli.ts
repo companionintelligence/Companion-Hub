@@ -2657,8 +2657,12 @@ export function checkPeerIdentities(peers: PeerStatusRow[] | null, reason: strin
  *
  * A cap became an input to placement in #1555, which means a disagreement is now a correctness
  * question rather than a tuning one. Measured across this fleet on 2026-09-21,
- * `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536 with one node unset, and nothing anywhere said so:
- * the only way to see it was to ssh to all seventeen boxes and grep their systemd drop-ins.
+ * `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536 and nothing anywhere said so: the only way to see
+ * it was to ssh to all seventeen boxes and read their merged systemd environment.
+ *
+ * This check reads the cap a node ADVERTISES (`inferenceMaxNumCtx`), which is the only value
+ * routing acts on — and which a node can have set on its daemon and absent on its Hub. That pairing
+ * is the quiet one: the engine runs 8192 while the Hub tells every peer it takes any window.
  *
  * Two findings, and they are different faults.
  *

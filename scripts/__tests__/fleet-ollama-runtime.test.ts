@@ -263,7 +263,8 @@ describe('describeRuntimeTransition', () => {
 describe('describeRuntimeEnvironment', () => {
   it('lists every managed key, set or not, so an inventory line is comparable across nodes', () => {
     // The transition line prints only what a run manages, so a read-only run said nothing at all —
-    // which is how OLLAMA_CONTEXT_LENGTH came to run 8192 … 65536 across this fleet unnoticed.
+    // which is how OLLAMA_CONTEXT_LENGTH came to run 8192 … 65536 across this fleet unnoticed. The
+    // input is the MERGED environment from `systemctl show`, never a drop-in file's own contents.
     expect(describeRuntimeEnvironment({ OLLAMA_CONTEXT_LENGTH: '65536' })).toBe(
       'OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=65536 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
     );

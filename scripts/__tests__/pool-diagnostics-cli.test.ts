@@ -1838,24 +1838,27 @@ describe('F1 peers accept this node', () => {
     });
 
     it('warns on a spread, naming the nodes a handout now places behind', () => {
-      // The 2026-09-21 fleet: 8192 on core-14, 65536 on core-2, and nothing said so.
+      // The 2026-09-21 fleet: 8192 on core-3, 65536 on core-2, and nothing said so.
       const check = checkContextCaps(
         local(65_536),
-        [capped('core-14.example-tailnet.ts.net', 8_192), capped('core-2.example-tailnet.ts.net', 65_536)],
+        [capped('core-3.example-tailnet.ts.net', 8_192), capped('core-2.example-tailnet.ts.net', 65_536)],
         null,
       );
 
       expect(check.verdict).toBe('warn');
       expect(check.detail).toContain('8192 … 65536');
-      expect(text(formatPoolCheckLines([check]))).toContain('core-14.example-tailnet.ts.net');
+      expect(text(formatPoolCheckLines([check]))).toContain('core-3.example-tailnet.ts.net');
       expect(check.commands).toEqual(['cihub fleet backends --backends ollama --ollama-context <N> --execute']);
     });
 
     it('warns harder on an uncapped node among capped ones, which is where the large windows land', () => {
-      const check = checkContextCaps(local(65_536), [capped('beta-nas.example-tailnet.ts.net', null)], null);
+      // The real shape of this on 2026-09-21: a node whose DAEMON runs a context (core-3 at 8192)
+      // while its Hub carries no `inferenceMaxNumCtx` at all. Only the Hub value is advertised, so
+      // the pool reads "takes any window" and hands it windows its engine truncates.
+      const check = checkContextCaps(local(65_536), [capped('core-3.example-tailnet.ts.net', null)], null);
 
       expect(check.verdict).toBe('warn');
-      expect(check.detail).toContain('beta-nas.example-tailnet.ts.net');
+      expect(check.detail).toContain('core-3.example-tailnet.ts.net');
       expect(check.detail).toContain('no cap');
       expect(text(formatPoolCheckLines([check]))).toContain('takes any window');
     });
