@@ -94,6 +94,14 @@ export interface PoolPeerRow {
    * it. `null` is no ceiling; absent is a Hub predating ceilings. Both mean the peer serves any prompt.
    */
   maxPromptTokens?: number | null;
+  /**
+   * The context cap the peer advertised, as this Hub's routing reads it — on `/status` rows and on
+   * `/peers` rows alike, since a cap now decides which nodes a large window may go to.
+   *
+   * `null` is "no cap advertised", which routing reads as "takes any window"; absent is a Hub
+   * predating caps on this route. Neither may be rendered as a number, and neither is a default.
+   */
+  maxNumCtx?: number | null;
   /** Present on `/status` rows only: the Ollama slot count the peer advertised, as routing reads it. `null` is not stated; absent is a Hub predating slots. */
   ollamaSlots?: number | null;
   /** Present on `/status` rows only: the peer's rates as timed here and as it reported them. Absent on a Hub predating throughput. */
@@ -597,9 +605,89 @@ function shortId(id: string): string {
   return sanitizeForBox(id).slice(0, 8);
 }
 
+// --- context caps ---
+
+/**
+ * A peer's context cap in the three readings that must never share an encoding.
+ *
+ * A number is the cap routing applies. `null` is a peer that answered and named no cap — routing
+ * reads that as "takes any window", so it is where large windows land, and it is NOT the same thing
+ * as not knowing. `undefined` is not knowing: a peer this node has never had a capabilities snapshot
+ * from, or a Hub whose peer rows predate the field. Collapsing the last two — into each other, or
+ * into a number — is how an operator concludes a fleet is uniform when it is not.
+ */
+export function peerContextCap(peer: Pick<PoolPeerRow, 'maxNumCtx' | 'lastCapabilities'>): number | null | undefined {
+  if (typeof peer.maxNumCtx === 'number') return peer.maxNumCtx;
+  return peer.maxNumCtx === null && peer.lastCapabilities ? null : undefined;
+}
+
+/** `65536`, `none` or `?` — one cap, in a table cell or a list line. */
+export function showContextCap(cap: number | null | undefined): string {
+  return typeof cap === 'number' ? String(cap) : cap === null ? 'none' : '?';
+}
+
+/** A node and the cap it advertises, as {@link summariseContextCaps} judges the pool. */
+export interface ContextCapNode {
+  node: string;
+  /** The cap routing applies: a number, `null` for none advertised, `undefined` for not known here. */
+  cap: number | null | undefined;
+}
+
+export interface ContextCapSpread {
+  /** Nodes whose cap is a number, smallest first. */
+  capped: { node: string; cap: number }[];
+  /** Nodes that answered and named no cap — routing sends any window at these. */
+  uncapped: string[];
+  /** Nodes nothing is known about; neither a finding nor a clean bill. */
+  unknown: string[];
+  smallest: number | null;
+  largest: number | null;
+  /** Two or more distinct caps: a handout sized from `largest` puts the smaller ones behind. */
+  disagrees: boolean;
+  /** At least one capped node and at least one uncapped one: the uncapped take every large window. */
+  mixed: boolean;
+}
+
+/**
+ * What the pool's caps add up to, for the one question that matters since #1555 made a cap an input
+ * to placement: would a request be placed differently on one node than on another?
+ *
+ * Two states are worth telling an operator about, and they are different faults.
+ *
+ * *Disagreeing* caps: an app is handed the LARGEST cap among the nodes serving its model
+ * (`poolContextCap`), and placement then keeps that window off every node capped below it
+ * (`applyContextCap`). So the small-capped nodes quietly stop being eligible for the fleet's agent
+ * traffic while still passing every health check.
+ *
+ * *Mixed* capped and uncapped: an uncapped node reads as "takes any window" in both rules, so it
+ * absorbs the large windows — including windows its own `OLLAMA_CONTEXT_LENGTH` does not run, which
+ * is the reload (or the CPU spill) the cap exists to prevent. An unset cap is not a safe default.
+ */
+export function summariseContextCaps(nodes: readonly ContextCapNode[]): ContextCapSpread {
+  const capped = nodes.filter((entry): entry is { node: string; cap: number } => typeof entry.cap === 'number').sort((a, b) => a.cap - b.cap);
+  const uncapped = nodes.filter((entry) => entry.cap === null).map((entry) => entry.node);
+  const unknown = nodes.filter((entry) => entry.cap === undefined).map((entry) => entry.node);
+  const caps = capped.map((entry) => entry.cap);
+  return {
+    capped,
+    uncapped,
+    unknown,
+    smallest: caps.length ? (caps[0] as number) : null,
+    largest: caps.length ? (caps[caps.length - 1] as number) : null,
+    disagrees: new Set(caps).size > 1,
+    mixed: capped.length > 0 && uncapped.length > 0,
+  };
+}
+
+/** The fleet-wide command that sets both halves on every node. Named wherever a cap is reported as wrong. */
+export const CONTEXT_CAP_FLEET_COMMAND = 'cihub fleet backends --backends ollama --ollama-context <N> --execute';
+
 // --- peers ---
 
-const PEER_WIDTHS = [8, 34, 4, 16, 20, 5] as const;
+const PEER_WIDTHS = [8, 34, 4, 16, 20, 5, 7] as const;
+
+/** The NODE column plus room for the ` (this node)` suffix the cap list adds to one row. */
+const CAP_NODE_WIDTH = PEER_WIDTHS[1] + 12;
 
 /**
  * Peer table. The ID column is the first 8 characters of the row uuid — enough to hand back to
@@ -611,7 +699,7 @@ export function formatPoolPeerTable(peers: PoolPeerRow[]): string[] {
   }
 
   const lines = [
-    `${cell('ID', PEER_WIDTHS[0])} ${cell('NODE', PEER_WIDTHS[1])} ${cell('DIR', PEER_WIDTHS[2])} ${cell('STATUS', PEER_WIDTHS[3])} ${cell('LAST SEEN', PEER_WIDTHS[4])} ${cell('QUEUE', PEER_WIDTHS[5])} ENGINES`,
+    `${cell('ID', PEER_WIDTHS[0])} ${cell('NODE', PEER_WIDTHS[1])} ${cell('DIR', PEER_WIDTHS[2])} ${cell('STATUS', PEER_WIDTHS[3])} ${cell('LAST SEEN', PEER_WIDTHS[4])} ${cell('QUEUE', PEER_WIDTHS[5])} ${cell('CONTEXT', PEER_WIDTHS[6])} ENGINES`,
     ruleRow([...PEER_WIDTHS, 'ENGINES'.length]),
   ];
 
@@ -640,6 +728,9 @@ export function formatPoolPeerTable(peers: PoolPeerRow[]): string[] {
         cell(status, PEER_WIDTHS[3]),
         cell(formatPoolTimestamp(peer.lastSeenAt), PEER_WIDTHS[4]),
         cell(queue === undefined ? '-' : String(queue), PEER_WIDTHS[5]),
+        // The cap decides which nodes a large window may be placed on, so it belongs on the row
+        // rather than in a footnote: `none` and `?` are findings, not blanks. See peerContextCap.
+        cell(showContextCap(peerContextCap(peer)), PEER_WIDTHS[6]),
         formatEngines(peer.lastCapabilities?.backends),
       ].join(' '),
     );
@@ -672,7 +763,7 @@ const DISABLED_PEER_HINT =
   'Peers marked `/off` exchange no work with this node. The pairing and both tokens are kept — put one back with `cihub pool peer-enable <id>`.';
 
 export function formatPoolPeersLines(peers: PoolPeerRow[]): string[] {
-  const lines = [...formatPoolPeerTable(peers), ...formatPoolPeerModelLines(peers)];
+  const lines = [...formatPoolPeerTable(peers), ...formatPeerContextCapLines(peers), ...formatPoolPeerModelLines(peers)];
   if (peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
     lines.push('', PENDING_INBOUND_HINT);
   }
@@ -794,6 +885,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   lines.push(...formatPoolPinLines(status.pins));
 
   lines.push('', 'Peers', ...formatPoolPeerTable(status.peers).map((line) => `  ${line}`));
+  lines.push(...formatPoolContextCapLines(status));
   lines.push(...formatPeerPromptCeilingLines(status.peers));
   lines.push(...formatThroughputLines(status));
 
@@ -839,6 +931,96 @@ export function formatLocalOllamaSlotsLines(localNode: PoolStatusResponse['local
   const placement = settings.poolSlotAwareness ? 'slot-aware placement on' : 'slot-aware placement off (poolSlotAwareness=0)';
   return [
     `  Slots      Ollama runs ${localNode.ollamaSlots} request${localNode.ollamaSlots === 1 ? '' : 's'} at once; ${placement}  — clear with: cihub pool slots clear`,
+  ];
+}
+
+/**
+ * Which peers this node would actually place work on. A pending, unreachable or disabled peer is not
+ * a candidate, so its cap cannot change a routing decision and must not raise a cap warning.
+ */
+function contextCapCandidates(peers: PoolPeerRow[]): PoolPeerRow[] {
+  return peers.filter((peer) => peer.status === 'connected' && peer.enabled !== false);
+}
+
+/**
+ * Every routing candidate's context cap under `pool status`, and the warning when they disagree
+ * enough to change where a request goes.
+ *
+ * The peer table's CONTEXT column already shows each number; this block exists for the comparison,
+ * which is the thing an operator cannot do by reading rows — and which became a correctness question
+ * rather than a tuning one when a cap became an input to placement.
+ *
+ * Silent on a pool where nothing is capped at all: that is the documented default (no cap anywhere,
+ * every node takes any window) and it behaves exactly as the build before caps did, so warning about
+ * it on every `pool status` would be noise. The moment one node is capped, the comparison matters and
+ * the block appears.
+ */
+export function formatPoolContextCapLines(status: PoolStatusResponse): string[] {
+  // Node names are sanitized once, here, because every line below interpolates them into prose the
+  // `cell` helper never sees.
+  const nodes: ContextCapNode[] = [
+    { node: `${sanitizeForBox(status.localNode.nodeFqdn ?? '(unknown)')} (this node)`, cap: status.localNode.maxNumCtx },
+    ...contextCapCandidates(status.peers).map((peer) => ({ node: sanitizeForBox(peer.nodeFqdn), cap: peerContextCap(peer) })),
+  ];
+  const spread = summariseContextCaps(nodes);
+  // Nothing capped anywhere is the pre-cap default, and it reads identically. Say nothing.
+  if (spread.capped.length === 0) return [];
+
+  const lines = [
+    '',
+    'Context caps (a node capped below a request is placed behind one that can take it)',
+    ...nodes.map((entry) => `  ${cell(entry.node, CAP_NODE_WIDTH)} ${showContextCap(entry.cap)}`),
+  ];
+  // The prose is wrapped rather than hand-broken: node names are operator-supplied and of any
+  // length, so a fixed break would run off the terminal on the first real fleet.
+  const note = (glyph: string, text: string) => wrapWords(text, ACTION_WRAP_WIDTH).map((line, i) => (i === 0 ? `  ${glyph} ${line}` : `    ${line}`));
+
+  // Not a fault on its own — a small node capped low is a deliberate tier, and placement is built
+  // for it. What the operator cannot see without this line is the CONSEQUENCE: those nodes stop
+  // taking the fleet's agent traffic while passing every health check.
+  if (spread.disagrees) {
+    const smallest = spread.capped.filter((entry) => entry.cap === spread.smallest).map((entry) => entry.node);
+    lines.push(
+      ...note(
+        PENDING,
+        `caps disagree across this pool (${spread.smallest} … ${spread.largest}). An app is handed the largest cap among the nodes serving its model, so ${smallest.join(', ')} at ${spread.smallest} is placed behind for those requests.`,
+      ),
+    );
+  }
+  // This one IS a fault: no cap reads as "takes any window" in both rules, so the uncapped node
+  // collects exactly the requests its own OLLAMA_CONTEXT_LENGTH may not run.
+  if (spread.mixed) {
+    lines.push(
+      ...note(
+        FAIL,
+        `no cap on ${spread.uncapped.join(', ')}, so routing reads ${spread.uncapped.length === 1 ? 'it' : 'them'} as "takes any window" and places large ones there — including windows its own OLLAMA_CONTEXT_LENGTH does not run.`,
+      ),
+    );
+  }
+  if (spread.unknown.length > 0) {
+    lines.push(...note(PENDING, `no cap known for ${spread.unknown.join(', ')} — never probed, or a Hub predating caps. Not read as uncapped here.`));
+  }
+  if (spread.disagrees || spread.mixed) {
+    lines.push(`    Set every node's engine context and its Hub cap together: ${CONTEXT_CAP_FLEET_COMMAND}`);
+  }
+  return lines;
+}
+
+/**
+ * The same comparison under `cihub pool peers`, which has the rows but not this node's own cap.
+ * One line, because the CONTEXT column above it already carries the numbers.
+ */
+export function formatPeerContextCapLines(peers: PoolPeerRow[]): string[] {
+  const spread = summariseContextCaps(
+    contextCapCandidates(peers).map((peer) => ({ node: sanitizeForBox(peer.nodeFqdn), cap: peerContextCap(peer) })),
+  );
+  if (!spread.disagrees && !spread.mixed) return [];
+  const why = spread.disagrees
+    ? `peer context caps disagree (${spread.smallest} … ${spread.largest})`
+    : `${spread.uncapped.join(', ')} advertises no context cap while others are capped`;
+  return [
+    '',
+    ...wrapWords(`Context caps: ${why}. A request's num_ctx decides which of these may serve it — see cihub pool status.`, ACTION_WRAP_WIDTH),
   ];
 }
 

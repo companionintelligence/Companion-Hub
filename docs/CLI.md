@@ -530,11 +530,24 @@ authentication modes are listed — there is no `pool pins` subcommand to keep i
 | `This node` | Name, tailnet, hardware tier, live queue depth, engines, and this node's pool **identity fingerprint** |
 | `Pairing` | Only when a PIN is outstanding: until when, and how to revoke it. Never the digits |
 | `Pins` | Each pin with its target resolved, and whether it can apply right now |
-| `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
+| `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, **context cap**, engines |
+| `Context caps` | Only once any node is capped: this node's cap and every connected peer's, side by side, with a warning when they disagree enough to change where a request goes |
 | `Ceiling` / `Prompt ceilings` | Only when set: this node's prompt ceiling (and whether the `.env` sets it), and each peer's advertised one |
 | `Measured speed` | Only once something has been timed: prompt and output rates per node, engine and model, with each peer shown as timed here and as it reported itself |
 | `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
 | `Peers refusing this Hub` | Only when a peer answers but refuses this Hub: **identity changed** (its database was recreated) or **credentials refused**, since when, when it is next probed, and the exact re-pair commands. See [A peer whose identity changed](./hub-pool.md#a-peer-whose-identity-changed) |
+
+The `CONTEXT` column and the `Context caps` block exist because a cap is an input to placement: an
+app is handed the largest cap among the nodes serving its model, and every node capped below that
+window is then placed behind. Three readings, and they never share a cell — a **number** is the cap
+routing applies, **`none`** is a peer that answered and named no cap (routing reads that as "takes
+any window", so the large windows land there), and **`?`** is a cap nobody here knows, from a peer
+never probed or a Hub predating the field. An absent cap is never drawn as a number, and `none` is
+never drawn as `?`. The block's warnings distinguish a deliberate spread (a batch-tier node capped
+low, which placement is built for) from an uncapped node among capped ones, which is the one that
+collects windows its own `OLLAMA_CONTEXT_LENGTH` may not run. `cihub pool peers` carries the same
+column, and one line when the peers disagree. `cihub pool doctor` decides the same question as
+check **F2**.
 
 The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
 bearer token takes **both** directions of that pairing down. The upgrade runs on a health poll by
@@ -570,7 +583,8 @@ is a state change — and one that restarts the AI apps whose env it changes. Th
 alone, so nothing restarts) and again after it, and the box reports the cap in force rather than the
 one requested. The write goes through `PATCH /api/inference/preferences`, the route that can remove
 the key; a Hub whose preferences carry no `maxNumCtx` predates the cap and is told so without a
-write. `cihub pool status` shows the cap under **This node**.
+write. `cihub pool status` shows the cap under **This node**, and every connected peer's next to it
+under **Context caps**.
 
 ### `cihub pool slots`
 
@@ -720,6 +734,7 @@ Tailscale and no Hub. That machine is the one being set up.
 | **D3** | Non-streaming first-byte latency vs the 15 s peer connect timeout | A warm 27B model could not return **headers** in 15 s non-streaming while the identical streaming request answered in ~1 s. Measured against a model an engine is actually holding (`loaded`/`pinned`, text modality) — a model on disk would time its cold load, and an embedding model would answer 400 — and asks for a few hundred tokens, because the defect is buffering the whole completion and one token has nothing to buffer. Opt-in behind `--check-latency`; otherwise reported as skipped with the reason |
 | **E1** | Can the Hub container reach the host's inference backends? | The existing bridge section, reused unchanged: `ufw` silently blocked container→host Ollama on a node with 8 models and the Hub reported an empty inventory with no error |
 | **F1** | Does every paired peer still accept this node as the Hub it paired with? | beta-max's database volume was recreated, which gave it a new pool identity. Every peer answered each poll with a 401 for 28 hours, showed only `unreachable`, and passed every check above. Reads the Hub's own classification from `GET /api/inference/pool/status`: a changed identity fails, a bare 401 warns, and the notes carry the re-pair commands. It never probes or unpairs a peer itself |
+| **F2** | Do the nodes this one would route to agree on a context window? | Measured across the fleet on 2026-09-21, `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536 with one node unset, and nothing anywhere said so — the only way to see it was to ssh to seventeen boxes and grep their systemd drop-ins. Since a cap became an input to placement, a disagreement decides which nodes a large window may go to. A spread is reported with the nodes it places behind (deliberate on a batch tier, a surprise otherwise); a node advertising **no** cap among capped ones is the harder finding, because "no cap" reads as "takes any window" in both rules, so it collects exactly the windows its own engine may not run. A cap nobody knows is never read as an absent one |
 
 Section **B** is written to one rule: an unprovable claim is not made. Where the evidence supports only
 "the repo has commits the image cannot contain", that is what it prints; where it supports nothing, it says
@@ -1122,6 +1137,21 @@ Ollama's default or to whatever another drop-in sets — so a run is reproducibl
 line, and `--ollama-parallel unset` is how you revert. With none of the five flags the runtime file
 is not touched at all.
 
+**Every run reports what each node's daemon runs now, flags or no flags.** The bind probe already
+reads the merged environment, so `cihub fleet backends --backends ollama` — no runtime flag, nothing
+written — prints one `runtime: now …` line per node with all five keys, `<unset>` included and in a
+fixed order, so two nodes' lines line up:
+
+```
+core-14  runtime: now OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2
+```
+
+That is the fleet-wide inventory of `OLLAMA_CONTEXT_LENGTH`, and `--json` carries the same values
+under each node's `bind.runtime.now`. It exists because there was no such inventory: on 2026-09-21
+the fleet's contexts ran from 8192 to 65536 with one node unset, and reading them meant an ssh and a
+`grep` on each of seventeen boxes. A node this run may not touch — a user-scope unit, a container —
+still reports its environment, since it still serves inference.
+
 `--ollama-max-loaded` is the other half of `--ollama-keep-alive`. A 24h keep-alive with no cap on
 resident models is a slow leak: on 2026-09-21 three 27–30B models had piled up on batch-tier Strix
 Halo nodes next to vLLM, Lucebox and Lemonade — core-7 at 122/123 GB with swap full, core-17's
@@ -1145,6 +1175,7 @@ what the daemon resolves instead — and runs nothing. A node whose `:11434` bel
 under `ollama.service.d/` configures nothing there, and those units carry their own environment.
 
 ```bash
+cihub fleet backends --backends ollama                                                        # inventory only: every node's runtime env, nothing written
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h            # plan
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # apply, restart where changed
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # again: unchanged, no restart

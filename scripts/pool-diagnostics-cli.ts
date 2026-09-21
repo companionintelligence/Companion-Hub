@@ -27,7 +27,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isHubContainerRunning, probeHostPort, resolveHubContainerName, runBridgeDoctorSection } from './bridge-diagnostics-cli';
 import { parseEnvFile } from './env-file';
-import { type PoolPeerProbeFailure, wrapWords } from './hub-pool-cli';
+import { CONTEXT_CAP_FLEET_COMMAND, type PoolPeerProbeFailure, showContextCap, summariseContextCaps, wrapWords } from './hub-pool-cli';
 import { BIND_MOUNT_DIRS } from './lib/bind-mounts';
 import { cliFail, cliOk, colorize, dim, sanitizeForBox, STEP_ICONS, type Tone } from './lib/cli-ui';
 import { allowedEnvs, type HubEnv } from './lib/cli-types';
@@ -2568,12 +2568,25 @@ export function checkNonStreamingHeadroom(
 // F — paired peers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The slice of a `/pool/status` peer row F1 reads. */
+/** The slice of a `/pool/status` peer row F1 and F2 read. */
 export interface PeerStatusRow {
   nodeFqdn: string;
   status: string;
   /** Absent on a Hub predating probe classification, which is not the same as `null` (probes succeeding). */
   probeFailure?: PoolPeerProbeFailure | null;
+  /** F2. Absent on a Hub predating the per-peer kill switch, where every peer is in the pool. */
+  enabled?: boolean;
+  /** F2. `null` is "no cap advertised"; absent is a Hub predating caps. The two are not the same, and neither is a number. */
+  maxNumCtx?: number | null;
+  /** F2. `null` when this node has never had a capabilities snapshot from the peer, so its cap is unknown rather than absent. */
+  lastCapabilities?: unknown;
+}
+
+/** The slice of `/pool/status`'s `localNode` F2 reads. */
+export interface LocalNodeStatusRow {
+  nodeFqdn: string | null;
+  /** `null` is "no cap set here"; absent is a Hub predating caps. */
+  maxNumCtx?: number | null;
 }
 
 /** Note lines are indented seven columns inside the box, so this keeps them near 100. */
@@ -2639,24 +2652,130 @@ export function checkPeerIdentities(peers: PeerStatusRow[] | null, reason: strin
   };
 }
 
+/**
+ * F2: do the nodes this one would route to agree on a context window?
+ *
+ * A cap became an input to placement in #1555, which means a disagreement is now a correctness
+ * question rather than a tuning one. Measured across this fleet on 2026-09-21,
+ * `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536 with one node unset, and nothing anywhere said so:
+ * the only way to see it was to ssh to all seventeen boxes and grep their systemd drop-ins.
+ *
+ * Two findings, and they are different faults.
+ *
+ * A **spread** is reported, not failed. A small node capped low is a deliberate tier and placement
+ * is built for it; what an operator cannot see otherwise is the consequence — an app is handed the
+ * largest cap among the nodes serving its model, so the low-capped ones stop taking that traffic
+ * while passing every other check in this doctor.
+ *
+ * A node with **no cap among capped ones** is a warn. No cap reads as "takes any window" in both
+ * rules, so that node collects exactly the large windows its own `OLLAMA_CONTEXT_LENGTH` may not
+ * run — the 25 GB → 44 GB reload on core-2, or the CPU spill on a 10 GB card. An unset cap is not a
+ * safe default, and this check exists so it stops being an invisible one.
+ *
+ * Read-only, from the status this section already fetched. It never writes a cap anywhere.
+ */
+export function checkContextCaps(localNode: LocalNodeStatusRow | null, peers: PeerStatusRow[] | null, reason: string | null): PoolCheck {
+  const base = { id: 'F2', label: 'Context caps' };
+  if (peers === null || localNode === null) {
+    return { ...base, verdict: 'unknown', detail: reason ?? 'could not read /api/inference/pool/status' };
+  }
+  // A peer that is not a routing candidate cannot have its cap change a placement, so it is not
+  // evidence either way and must not raise a finding.
+  const candidates = peers.filter((peer) => peer.status === 'connected' && peer.enabled !== false);
+  if (candidates.length === 0) {
+    return { ...base, verdict: 'ok', detail: 'no connected peers, so nothing here is placed by a cap' };
+  }
+  if (!('maxNumCtx' in localNode) && candidates.every((peer) => !('maxNumCtx' in peer))) {
+    return {
+      ...base,
+      verdict: 'unknown',
+      detail: 'this Hub build does not report context caps',
+      notes: ['Caps decide which nodes a large window may be placed on. Update the Hub to see them: cihub fleet update --hub'],
+    };
+  }
+
+  const nodes = [
+    { node: `${sanitizeForBox(localNode.nodeFqdn ?? '(this node)')} (this node)`, cap: localNode.maxNumCtx },
+    ...candidates.map((peer) => ({
+      node: sanitizeForBox(peer.nodeFqdn),
+      // Absent and `null` are not the same: `null` is a peer that answered and named no cap,
+      // absent — or a peer never heard from — is a cap nobody knows, which is not "uncapped".
+      cap: typeof peer.maxNumCtx === 'number' ? peer.maxNumCtx : peer.maxNumCtx === null && peer.lastCapabilities ? null : undefined,
+    })),
+  ];
+  const spread = summariseContextCaps(nodes);
+  const inventory = nodes.map((entry) => `${entry.node.padEnd(40, ' ')} ${showContextCap(entry.cap)}`);
+  const unknownNote =
+    spread.unknown.length > 0 ? [`No cap known for ${spread.unknown.join(', ')} — never probed, or a Hub predating caps. Not read as uncapped.`] : [];
+
+  if (spread.mixed) {
+    return {
+      ...base,
+      verdict: 'warn',
+      detail: `${spread.uncapped.join(', ')} advertise${spread.uncapped.length === 1 ? 's' : ''} no cap while others are capped ${spread.smallest} … ${spread.largest}`,
+      notes: [
+        ...inventory,
+        'An uncapped node reads as "takes any window" in both placement and the handout, so the large',
+        'windows land there — including windows its own OLLAMA_CONTEXT_LENGTH does not run, which is a',
+        'full model reload per request, or a spill to CPU on a small card.',
+        ...unknownNote,
+      ],
+      commands: [CONTEXT_CAP_FLEET_COMMAND],
+    };
+  }
+  if (spread.disagrees) {
+    const smallest = spread.capped.filter((entry) => entry.cap === spread.smallest).map((entry) => entry.node);
+    return {
+      ...base,
+      verdict: 'warn',
+      detail: `caps run ${spread.smallest} … ${spread.largest} across this node and its ${candidates.length} connected peer(s)`,
+      notes: [
+        ...inventory,
+        `An app is handed the largest cap among the nodes serving its model, so ${smallest.join(', ')}`,
+        `at ${spread.smallest} is placed behind for those requests. Deliberate on a batch tier; a surprise otherwise.`,
+        ...unknownNote,
+      ],
+      commands: [CONTEXT_CAP_FLEET_COMMAND],
+    };
+  }
+  if (spread.capped.length === 0) {
+    return {
+      ...base,
+      verdict: 'ok',
+      detail: 'no node here caps its context, so every node takes any window',
+      notes: [...inventory, ...unknownNote],
+    };
+  }
+  // Every cap this node knows agrees. With one it does not know, that is not a clean bill: it is
+  // `unknown`, the verdict for "I could not look" — which never counts as an issue, and never as a
+  // pass either. The two states above decided on evidence and stand whatever else is unknown.
+  return {
+    ...base,
+    verdict: spread.unknown.length > 0 ? 'unknown' : 'ok',
+    detail:
+      spread.unknown.length > 0
+        ? `every cap this node knows is ${spread.smallest}, but ${spread.unknown.length} connected peer(s) do not report one`
+        : `every node here caps at ${spread.smallest}`,
+    notes: [...inventory, ...unknownNote],
+  };
+}
+
 async function collectSectionF(base: string, hubAnswering: boolean, apiKey: string | undefined): Promise<PoolCheck[]> {
   if (!hubAnswering) {
-    return [checkPeerIdentities(null, 'not probed — the Hub is not answering locally (see A2)')];
+    const why = 'not probed — the Hub is not answering locally (see A2)';
+    return [checkPeerIdentities(null, why), checkContextCaps(null, null, why)];
   }
   if (!apiKey) {
-    return [checkPeerIdentities(null, 'needs the operator key from <ROOT_FOLDER_HOST>/state/settings.json to read pool status')];
+    const why = 'needs the operator key from <ROOT_FOLDER_HOST>/state/settings.json to read pool status';
+    return [checkPeerIdentities(null, why), checkContextCaps(null, null, why)];
   }
   const probe = await timedFetch(`${base}/api/inference/pool/status`, HUB_PROBE_TIMEOUT_MS, { headers: { Authorization: `Bearer ${apiKey}` } });
-  const body = parseJsonBody<{ peers?: PeerStatusRow[] }>(probe);
+  const body = parseJsonBody<{ peers?: PeerStatusRow[]; localNode?: LocalNodeStatusRow }>(probe);
   if (!probe.ok || !Array.isArray(body?.peers)) {
-    return [
-      checkPeerIdentities(
-        null,
-        probe.status === null ? sanitizeForBox(probe.error ?? 'no answer') : `/api/inference/pool/status answered ${probe.status}`,
-      ),
-    ];
+    const why = probe.status === null ? sanitizeForBox(probe.error ?? 'no answer') : `/api/inference/pool/status answered ${probe.status}`;
+    return [checkPeerIdentities(null, why), checkContextCaps(null, null, why)];
   }
-  return [checkPeerIdentities(body.peers, null)];
+  return [checkPeerIdentities(body.peers, null), checkContextCaps(body.localNode ?? null, body.peers, null)];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

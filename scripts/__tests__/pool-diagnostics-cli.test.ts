@@ -39,6 +39,7 @@ const {
   checkEnvFoundation,
   checkHubHealth,
   checkNonStreamingHeadroom,
+  checkContextCaps,
   checkPeerIdentities,
   checkPoolCommandParity,
   checkPoolProtocol,
@@ -1825,6 +1826,82 @@ describe('F1 peers accept this node', () => {
     expect(text(section.lines)).not.toContain('cihub_super_secret_device_key');
     vi.unstubAllGlobals();
   });
+
+  describe('F2 — context caps', () => {
+    const local = (maxNumCtx?: number | null) => ({ nodeFqdn: 'hub-a.example-tailnet.ts.net', ...(maxNumCtx === undefined ? {} : { maxNumCtx }) });
+    const capped = (node: string, maxNumCtx?: number | null, rest: Record<string, unknown> = {}) => ({
+      nodeFqdn: node,
+      status: 'connected',
+      lastCapabilities: {},
+      ...(maxNumCtx === undefined ? {} : { maxNumCtx }),
+      ...rest,
+    });
+
+    it('warns on a spread, naming the nodes a handout now places behind', () => {
+      // The 2026-09-21 fleet: 8192 on core-14, 65536 on core-2, and nothing said so.
+      const check = checkContextCaps(
+        local(65_536),
+        [capped('core-14.example-tailnet.ts.net', 8_192), capped('core-2.example-tailnet.ts.net', 65_536)],
+        null,
+      );
+
+      expect(check.verdict).toBe('warn');
+      expect(check.detail).toContain('8192 … 65536');
+      expect(text(formatPoolCheckLines([check]))).toContain('core-14.example-tailnet.ts.net');
+      expect(check.commands).toEqual(['cihub fleet backends --backends ollama --ollama-context <N> --execute']);
+    });
+
+    it('warns harder on an uncapped node among capped ones, which is where the large windows land', () => {
+      const check = checkContextCaps(local(65_536), [capped('beta-nas.example-tailnet.ts.net', null)], null);
+
+      expect(check.verdict).toBe('warn');
+      expect(check.detail).toContain('beta-nas.example-tailnet.ts.net');
+      expect(check.detail).toContain('no cap');
+      expect(text(formatPoolCheckLines([check]))).toContain('takes any window');
+    });
+
+    it('passes a pool that agrees, and one where nothing is capped at all', () => {
+      expect(checkContextCaps(local(65_536), [capped('hub-b.example-tailnet.ts.net', 65_536)], null)).toMatchObject({
+        verdict: 'ok',
+        detail: 'every node here caps at 65536',
+      });
+      expect(checkContextCaps(local(null), [capped('hub-b.example-tailnet.ts.net', null)], null)).toMatchObject({ verdict: 'ok' });
+    });
+
+    it('does not read an unknown cap as an uncapped one, and does not call that a pass either', () => {
+      // A peer this node has never had a snapshot from is not evidence of anything. Saying "no cap"
+      // for it would invent a finding; saying "capped" would hide one. `unknown` is neither, and —
+      // like every other undetermined check here — it is not counted as an issue.
+      const check = checkContextCaps(local(65_536), [capped('hub-b.example-tailnet.ts.net', null, { lastCapabilities: null })], null);
+
+      expect(check.verdict).toBe('unknown');
+      expect(check.detail).toContain('do not report one');
+      expect(text(formatPoolCheckLines([check]))).toContain('Not read as uncapped');
+
+      // A decided finding still stands when something else is unknown.
+      const mixed = checkContextCaps(
+        local(65_536),
+        [capped('hub-b.example-tailnet.ts.net', null), capped('hub-c.example-tailnet.ts.net', null, { lastCapabilities: null })],
+        null,
+      );
+      expect(mixed.verdict).toBe('warn');
+      expect(text(formatPoolCheckLines([mixed]))).toContain('Not read as uncapped');
+    });
+
+    it('is silent about peers this node would not route to, and about a pool with none', () => {
+      expect(checkContextCaps(local(65_536), [capped('hub-b.example-tailnet.ts.net', 8_192, { enabled: false })], null)).toMatchObject({
+        verdict: 'ok',
+        detail: 'no connected peers, so nothing here is placed by a cap',
+      });
+      expect(checkContextCaps(local(65_536), [], null).verdict).toBe('ok');
+    });
+
+    it('says it could not tell rather than passing, on an unreadable status or a Hub predating caps', () => {
+      expect(checkContextCaps(null, null, 'the Hub is not answering locally (see A2)')).toMatchObject({ verdict: 'unknown' });
+      const old = checkContextCaps({ nodeFqdn: 'hub-a.example-tailnet.ts.net' }, [capped('hub-b.example-tailnet.ts.net')], null);
+      expect(old).toMatchObject({ verdict: 'unknown', detail: 'this Hub build does not report context caps' });
+    });
+  });
 });
 
 describe('runPoolDoctorSection', () => {
@@ -1838,7 +1915,7 @@ describe('runPoolDoctorSection', () => {
     const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
     const rendered = text(section.lines);
 
-    for (const id of ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4', 'C1', 'C2', 'D1', 'D2', 'D3', 'F1']) expect(rendered).toContain(id);
+    for (const id of ['A1', 'A2', 'A3', 'A4', 'B1', 'B2', 'B3', 'B4', 'C1', 'C2', 'D1', 'D2', 'D3', 'F1', 'F2']) expect(rendered).toContain(id);
     expect(rendered).toContain('Hub Pool preflight');
 
     // Structure, in RENDER ORDER — the loop above is a substring check over the joined text, so it
@@ -1862,6 +1939,7 @@ describe('runPoolDoctorSection', () => {
       'D2',
       'D3',
       'F1',
+      'F2',
     ]);
     // A reported reason ("Error: fetch failed") is the point; a stack trace is the failure mode.
     // Asserted on frame TEXT, not on indentation: sanitizeForBox collapses every whitespace run

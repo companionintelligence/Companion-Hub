@@ -20,6 +20,7 @@ import {
   HUB_OLLAMA_SLOTS_SETTING,
   classifyRuntimeApplyOutput,
   describeHubContextCapPlan,
+  describeRuntimeEnvironment,
   describeRuntimeTransition,
   HUB_CONTEXT_CAP_MARKERS,
   hubContextCapShell,
@@ -256,6 +257,22 @@ describe('describeRuntimeTransition', () => {
     expect(describeRuntimeTransition({ OLLAMA_KEEP_ALIVE: '24h' }, {}, { parallel: 4 })).toBe(
       'OLLAMA_NUM_PARALLEL <unset>, OLLAMA_KEEP_ALIVE 24h → <unset>',
     );
+  });
+});
+
+describe('describeRuntimeEnvironment', () => {
+  it('lists every managed key, set or not, so an inventory line is comparable across nodes', () => {
+    // The transition line prints only what a run manages, so a read-only run said nothing at all —
+    // which is how OLLAMA_CONTEXT_LENGTH came to run 8192 … 65536 across this fleet unnoticed.
+    expect(describeRuntimeEnvironment({ OLLAMA_CONTEXT_LENGTH: '65536' })).toBe(
+      'OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=65536 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
+    );
+    // Fixed key order, so two nodes' lines line up column for column.
+    expect(describeRuntimeEnvironment({ OLLAMA_MAX_LOADED_MODELS: '2', OLLAMA_NUM_PARALLEL: '4' })).toBe(
+      'OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2',
+    );
+    // A node that sets nothing is still five words, never an empty line.
+    expect(describeRuntimeEnvironment({}).split(' ')).toHaveLength(5);
   });
 });
 

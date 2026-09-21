@@ -191,6 +191,23 @@ export function describeRuntimeTransition(
   return cells.join(', ') || 'no runtime keys managed';
 }
 
+/**
+ * Every managed key as the daemon currently resolves it, `<unset>` included.
+ *
+ * {@link describeRuntimeTransition} deliberately prints only the keys a run manages or changes, so a
+ * read-only run — `cihub fleet backends` with no runtime flag — said nothing at all about the
+ * environment its probe had just read. That is how `OLLAMA_CONTEXT_LENGTH` came to run from 8192 to
+ * 65536 across seventeen nodes, with one unset, and the only way to find out was to ssh to each box
+ * and grep its drop-ins.
+ *
+ * Every key is listed, in the fixed key order, so two nodes' lines line up and a missing key is a
+ * word rather than an absence. Reads nothing and changes nothing: the caller already has the
+ * merged environment from the bind probe.
+ */
+export function describeRuntimeEnvironment(env: Partial<Record<OllamaRuntimeKey, string>>): string {
+  return OLLAMA_RUNTIME_KEYS.map((key) => `${key}=${env[key] ?? '<unset>'}`).join(' ');
+}
+
 export interface OllamaRuntimePlan {
   file: { name: string; path: string; content: string; action: 'write' | 'unchanged' };
   /** The daemon is restarted only when the file changes (or, found by the apply shell, when systemd never loaded it). */
