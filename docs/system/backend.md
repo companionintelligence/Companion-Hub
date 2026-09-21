@@ -339,6 +339,15 @@ Installed apps get inference config two ways, and both choose the model through 
   ever pulled. A model only a peer serves gets `num_ctx` 32768 (raised to the app's floor) rather than
   a value sized from this node's memory. The peer filter mirrors `PoolProxyService.usablePeers`;
   change both together.
+- **Context cap.** `CI_LLM_NUM_CTX` (`HERMES_NUM_CTX`) is `min(model window, memory-sized
+  recommendation, cap)`, where the cap is the node's `inferenceMaxNumCtx` setting — the operator's
+  statement of the engine's own context (`OLLAMA_CONTEXT_LENGTH`) — and, for an app routed through
+  the pool, the smallest cap among the nodes serving the chosen model (`poolContextCap`). Absent is
+  no cap. Without it apps asked Ollama for a 65536 window on a node running four slots at 16384, and
+  every request at a different size reloaded a 30B model (core-2, 2026-09-20). The cap wins over an
+  app's floor, with a warning; a handout that differs from the window the local Ollama holds the
+  model at (`/api/ps` `context_length`) is also logged, since it is a reload. See
+  [Context caps](../hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs).
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
   never pulls a model a pool node already serves, nor one the app's requirements rule out. When the
   pool already serves the app a suitable model, it pulls only the operator's preferred model, never

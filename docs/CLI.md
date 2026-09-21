@@ -1095,6 +1095,14 @@ cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 2
 cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # again: unchanged, no restart
 ```
 
+The Hub does not read this file, and Ollama's API does not expose `OLLAMA_CONTEXT_LENGTH`, so after
+setting `--ollama-context` tell the node's Hub the same number:
+`PATCH /api/user-settings {"inferenceMaxNumCtx": <N>}`. The Hub then hands its apps
+`min(model window, memory-sized recommendation, N)` instead of a window that reloads the model — on
+core-2 an uncapped 65536 handout against four 16384 slots took `qwen3-coder:30b` from 25 GB to
+44 GB, and every request at another size reloaded it again. See
+[Context caps](./hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs).
+
 #### Firewall rules for the Hub's engine probes
 
 Every pooled request runs a live health probe against each local engine port before it ranks

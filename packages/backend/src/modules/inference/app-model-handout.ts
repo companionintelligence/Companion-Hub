@@ -1,5 +1,6 @@
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 import { inventoryListsModel, sameModelId } from '@/common/helpers/hub-pool';
+import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { checkModelRequirements, describeRequirements, hasInferenceRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import { recommendContextLength } from './context-length.util';
 import { compareLlmCandidates } from './model-registry.service';
@@ -25,6 +26,12 @@ export interface PoolInventoryBackend {
   backend: InferenceBackendType;
   /** Engine ids with any model the node is withholding as unservable already removed. */
   models: string[];
+  /**
+   * The node's ceiling on the `num_ctx` it hands its apps (`inferenceMaxNumCtx`), set by its
+   * operator to its engine's own context. `null` or absent when it has none, or when the peer's
+   * build does not advertise one — the two are the same on the wire. See {@link poolContextCap}.
+   */
+  maxNumCtx?: number | null;
 }
 
 /** What the pool proxy could route a request to right now: this node's healthy backends plus every usable peer's. */
@@ -48,6 +55,28 @@ function servedLocally(inventory: PoolInventory, engineId: string, backend?: Inf
   return inventory.backends.some((entry) => entry.local && (!backend || entry.backend === backend) && inventoryListsModel(entry.models, engineId));
 }
 
+/**
+ * The context cap a pooled handout of `engineId` must respect: the smallest cap among the nodes
+ * that serve it, or `null` when none of them advertises one.
+ *
+ * The proxy may place the app's request on any of those nodes, and a node's cap is its operator's
+ * statement of what its engine runs at — a request above it reloads that node's model with a
+ * larger window (core-2, 2026-09-20: 25 GB → 44 GB on a 30B, and every request at another size a
+ * reload back). The minimum is what fits everywhere. A node that advertises no cap counts for
+ * nothing here rather than as unlimited, because a build predating the field is indistinguishable
+ * from one with no cap: the caller falls back to its own cap when this is `null`.
+ */
+export function poolContextCap(inventory: PoolInventory, engineId: string, backend?: InferenceBackendType): number | null {
+  let cap: number | null = null;
+  for (const entry of inventory.backends) {
+    if (backend && entry.backend !== backend) continue;
+    if (!inventoryListsModel(entry.models, engineId)) continue;
+    const advertised = clampContextCap(entry.maxNumCtx);
+    if (advertised !== null && (cap === null || advertised < cap)) cap = advertised;
+  }
+  return cap;
+}
+
 export interface ChatModelHandout {
   /** The engine id to hand out, or null when nothing qualifies. */
   engineId: string | null;
@@ -57,6 +86,8 @@ export interface ChatModelHandout {
   servedBy: string[];
   /** True when this node itself serves the model, so its own memory is the right basis for num_ctx. */
   servedLocally: boolean;
+  /** The smallest context cap among the nodes serving `engineId`, or null when none advertises one. See {@link poolContextCap}. */
+  contextCap: number | null;
   /** Served models the app's requirements excluded, with the reasons. */
   rejected: Array<{ engineId: string; unmet: string[] }>;
   /** Why no model was handed out, in words an app can show. Null whenever `engineId` is set. */
@@ -100,6 +131,7 @@ export function selectPoolChatModel(input: {
     source,
     servedBy: nodesServing(inventory, engineId, model?.backend),
     servedLocally: servedLocally(inventory, engineId, model?.backend),
+    contextCap: poolContextCap(inventory, engineId, model?.backend),
     rejected,
     error: null,
     preferredNote,
@@ -169,7 +201,7 @@ export function selectPoolChatModel(input: {
   }
 
   const error = describeNoSuitableChatModel({ appSlug, requirements, rejected, scope: 'pool' });
-  return { engineId: null, model: null, source: 'none', servedBy: [], servedLocally: false, rejected, error, preferredNote };
+  return { engineId: null, model: null, source: 'none', servedBy: [], servedLocally: false, contextCap: null, rejected, error, preferredNote };
 }
 
 /** The explicit error an app is handed in place of a model, naming what it needs and what was ruled out. */
@@ -203,10 +235,15 @@ export function describeNoSuitableChatModel(input: {
  * report its memory. The fallback is the ladder's 32768 rung, the rung nearest the 32000 window
  * CI-OpenClaw's config reconcile has always defaulted to, rather than the 8192 an unknown budget
  * produces — a quarter of the window that app was built and tested against. App floors still apply.
+ *
+ * Both answers are then capped at `maxContextLength`, the operator's statement of what the engine
+ * runs at (see `inference-context-cap.ts`). The cap wins over an app's floor: the floor is what the
+ * app would like, the cap is what the engine will serve without reloading the model, and handing
+ * out the floor anyway is exactly the 44 GB reload on core-2. The caller warns when they conflict.
  */
 export const PEER_SERVED_CONTEXT_LENGTH = 32_768;
 
-export function handoutContextLength(input: {
+export interface ContextHandoutInput {
   model: CuratedModel;
   servedLocally: boolean;
   effectiveInferenceMemoryMb: number;
@@ -219,7 +256,21 @@ export function handoutContextLength(input: {
    */
   kvMbPerToken?: number | null;
   weightMb?: number | null;
-}): number {
+  /**
+   * The engine-runtime ceiling: this node's `inferenceMaxNumCtx`, or for a pooled handout the
+   * pool-wide minimum from {@link poolContextCap}. `null` or absent is no cap. Anything this build
+   * cannot believe (see `clampContextCap`) is no cap too.
+   */
+  maxContextLength?: number | null;
+}
+
+export function handoutContextLength(input: ContextHandoutInput): number {
+  const cap = clampContextCap(input.maxContextLength);
+  const sized = uncappedContextLength(input);
+  return cap === null ? sized : Math.min(sized, cap);
+}
+
+function uncappedContextLength(input: ContextHandoutInput): number {
   const { model, minContextLength } = input;
   if (input.servedLocally) {
     return recommendContextLength({
@@ -234,6 +285,46 @@ export function handoutContextLength(input: {
   const cap = Math.floor(model.runtime.contextWindow > 0 ? model.runtime.contextWindow : PEER_SERVED_CONTEXT_LENGTH);
   const floor = Number.isFinite(minContextLength) ? Math.max(0, Math.floor(minContextLength as number)) : 0;
   return Math.min(Math.max(PEER_SERVED_CONTEXT_LENGTH, floor), cap);
+}
+
+/**
+ * What an operator should hear about a context handout, for the caller to log at warn level.
+ *
+ * Two things are worth a line, and both are silent failures otherwise. A cap below the app's floor
+ * hands the app a window it has said it refuses — Hermes aborts at startup below 64000 — and the
+ * only fix is on the engine (`--ollama-context`) or the cap, not in the Hub. And a handout that
+ * differs from the window the local engine currently holds the model at (`/api/ps`
+ * `context_length`) is a reload on the app's first request, and a reload back on the next request
+ * at the old size; when no cap is set, that is the core-2 flip and the cap is the fix.
+ */
+export function describeContextHandout(input: {
+  appSlug: string;
+  engineId: string;
+  numCtx: number;
+  maxContextLength: number | null;
+  minContextLength?: number;
+  /** The `context_length` the local engine reports the model loaded at, or null when it is not loaded or cannot be asked. */
+  residentContextLength: number | null;
+}): string[] {
+  const { appSlug, engineId, numCtx, minContextLength, residentContextLength } = input;
+  const cap = clampContextCap(input.maxContextLength);
+  const notes: string[] = [];
+  if (cap !== null && typeof minContextLength === 'number' && minContextLength > cap) {
+    notes.push(
+      `${appSlug}: the context cap (${cap}) is below its ${minContextLength}-token floor, so it is handed ${numCtx} and may refuse to start; ` +
+        `raise the engine's context (cihub fleet backends --ollama-context) and the cap together, or leave this app off this node.`,
+    );
+  }
+  if (residentContextLength !== null && residentContextLength > 0 && residentContextLength !== numCtx) {
+    notes.push(
+      `${appSlug}: ollama holds ${engineId} at a ${residentContextLength}-token window and the handout is ${numCtx}; ` +
+        `its first request reloads the model at ${numCtx}, and the next request at ${residentContextLength} reloads it back` +
+        (cap === null
+          ? ' — set the context cap (Settings > Inference) to the engine OLLAMA_CONTEXT_LENGTH so every app asks for the same window.'
+          : '.'),
+    );
+  }
+  return notes;
 }
 
 export interface PrePullDecision {
