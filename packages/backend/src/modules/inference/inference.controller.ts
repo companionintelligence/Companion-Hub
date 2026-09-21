@@ -410,7 +410,7 @@ export class InferenceController {
   @Get('memory')
   async getMemory() {
     const profile = await this.hardwareInspector.getProfile();
-    return this.memoryManager.calculateBudget(profile);
+    return await this.memoryManager.calculateBudget(profile);
   }
 
   @UseGuards(AuthGuard)
@@ -487,7 +487,7 @@ export class InferenceController {
     const profile = await this.hardwareInspector.getProfile();
     const curated = this.modelRegistry.getCuratedModel(body.modelId);
     const footprint = curated?.runtime.memoryFootprintMb || 0;
-    const canPin = this.memoryManager.canPinModel(profile, footprint);
+    const canPin = await this.memoryManager.canPinModel(profile, footprint);
 
     if (!canPin.canPin) {
       return { success: false, message: canPin.reason };
@@ -551,7 +551,7 @@ export class InferenceController {
     // Automatic recommendations remain local-platform-aware; this exception only preserves remote
     // endpoint configuration and lets the live probe decide what that server actually serves.
     const availableModels = this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true });
-    const budget = this.memoryManager.calculateBudget(profile);
+    const budget = await this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();
 
     const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);

@@ -145,6 +145,7 @@ const highTierProfile: HardwareProfileResponse = {
     modelUsedRamMb: 0,
     pinnedVramMb: 0,
     pinnedRamMb: 0,
+    usage: { sampledAt: '2026-09-20T00:00:00.000Z', backends: [] },
   },
   backends: {
     recommended: 'ollama',
