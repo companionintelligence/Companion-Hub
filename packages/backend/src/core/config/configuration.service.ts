@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
+import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
@@ -123,6 +124,7 @@ type PersistedSettingsValues = {
   inferenceVllmUrl: string | undefined;
   inferenceMtplxUrl: string | undefined;
   inferenceDsparkUrl: string | undefined;
+  inferenceMaxNumCtx: number | undefined;
   inferenceCloudProviders: CloudProviderConfig[] | undefined;
   hubPoolEnabled: boolean | undefined;
   hubPoolOutboundEnabled: boolean | undefined;
@@ -157,6 +159,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceVllmUrl: undefined,
   inferenceMtplxUrl: undefined,
   inferenceDsparkUrl: undefined,
+  inferenceMaxNumCtx: undefined,
   inferenceCloudProviders: undefined,
   hubPoolEnabled: undefined,
   hubPoolOutboundEnabled: undefined,
@@ -249,6 +252,7 @@ export class ConfigurationService {
       inferenceVllmUrl: settings.inferenceVllmUrl,
       inferenceMtplxUrl: settings.inferenceMtplxUrl,
       inferenceDsparkUrl: settings.inferenceDsparkUrl,
+      inferenceMaxNumCtx: settings.inferenceMaxNumCtx,
       inferenceCloudProviders: settings.inferenceCloudProviders,
       hubPoolEnabled: settings.hubPoolEnabled,
       hubPoolOutboundEnabled: settings.hubPoolOutboundEnabled,
@@ -349,6 +353,7 @@ export class ConfigurationService {
         inferenceVllmUrl: settingsValues.inferenceVllmUrl,
         inferenceMtplxUrl: settingsValues.inferenceMtplxUrl,
         inferenceDsparkUrl: settingsValues.inferenceDsparkUrl,
+        inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
         inferenceCloudProviders: settingsValues.inferenceCloudProviders,
         // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
         // off) mean the same thing to routing but different things to the UI, which distinguishes
@@ -503,13 +508,18 @@ export class ConfigurationService {
       preferredVllmUrl: this.config.userSettings.inferenceVllmUrl ?? null,
       preferredMtplxUrl: this.config.userSettings.inferenceMtplxUrl ?? null,
       preferredDsparkUrl: this.config.userSettings.inferenceDsparkUrl ?? null,
+      // `null` is no cap: the handout is sized from the model window and this node's memory alone,
+      // as before the cap existed. Clamped on read, so a value an older build persisted out of this
+      // build's bounds reads as no cap instead of starving an app. See `inference-context-cap.ts`.
+      maxNumCtx: clampContextCap(this.config.userSettings.inferenceMaxNumCtx),
     };
   }
 
   /**
    * Persist inference preferences. `model` is the catalog id of the default model Companion agents
    * (Hermes, OpenClaw) and the Hub use by default. Pass `null` to clear it; omit it to leave it
-   * unchanged. `embeddingModel` and `visionModel` follow the same convention.
+   * unchanged. `embeddingModel`, `visionModel`, and `maxNumCtx` follow the same convention; a
+   * cleared `maxNumCtx` removes the key rather than storing a null, like the pool prompt ceiling.
    */
   public async setInferencePreferences(
     backend: InferenceBackendType,
@@ -520,6 +530,7 @@ export class ConfigurationService {
     vllmUrl?: string | null,
     mtplxUrl?: string | null,
     dsparkUrl?: string | null,
+    maxNumCtx?: number | null,
   ) {
     const settings: {
       inferenceBackend: InferenceBackendType;
@@ -530,6 +541,7 @@ export class ConfigurationService {
       inferenceVllmUrl?: string;
       inferenceMtplxUrl?: string;
       inferenceDsparkUrl?: string;
+      inferenceMaxNumCtx?: number;
     } = { inferenceBackend: backend };
     if (model !== undefined) {
       settings.inferenceModel = model ?? undefined;
@@ -551,6 +563,9 @@ export class ConfigurationService {
     }
     if (dsparkUrl !== undefined) {
       settings.inferenceDsparkUrl = dsparkUrl?.trim() ? dsparkUrl.trim() : undefined;
+    }
+    if (maxNumCtx !== undefined) {
+      settings.inferenceMaxNumCtx = maxNumCtx ?? undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();

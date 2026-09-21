@@ -263,6 +263,21 @@ export class OllamaBackend implements InferenceBackend {
     return cost;
   }
 
+  /**
+   * The context window Ollama currently holds `modelId` at, from `/api/ps` `context_length`, or
+   * null when the model is not resident or the engine cannot be asked. Never cached: it changes
+   * with every load, which is exactly what a handout compares itself against (see
+   * `describeContextHandout`). Note it is whatever the LAST request asked for, not the daemon's
+   * `OLLAMA_CONTEXT_LENGTH` — the API does not expose that — so it says "this handout will reload
+   * the model", never "this is the right size". Never throws.
+   */
+  async residentContextLength(modelId: string): Promise<number | null> {
+    const resident = await this.listResident();
+    const sameTag = (id: string) => id === modelId || id === `${modelId}:latest` || `${id}:latest` === modelId;
+    const loaded = resident.models?.find((m) => sameTag(m.id));
+    return loaded?.contextLength != null && loaded.contextLength > 0 ? loaded.contextLength : null;
+  }
+
   async listModels(): Promise<BackendModelInfo[]> {
     try {
       const url = await this.resolveUrl();

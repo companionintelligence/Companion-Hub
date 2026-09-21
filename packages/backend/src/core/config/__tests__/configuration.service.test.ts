@@ -330,6 +330,64 @@ describe('settingsSchema — Hub Pool fields', () => {
   });
 });
 
+describe('settingsSchema — inference context cap', () => {
+  it('accepts the cap as a string, as a form would submit it, and degrades an out-of-range one to "no cap"', () => {
+    expect(settingsSchema.partial().safeParse({ inferenceMaxNumCtx: '16384' }).data).toEqual({ inferenceMaxNumCtx: 16384 });
+    // A dropped digit and a value past the longest window on the fleet both read as absent on the
+    // boot path rather than failing the parse; the write path (UserSettingsBody) refuses them.
+    for (const persisted of [{ inferenceMaxNumCtx: 1638 }, { inferenceMaxNumCtx: 2 ** 21 }, { inferenceMaxNumCtx: 'lots' }]) {
+      const parsed = settingsSchema.partial().safeParse(persisted);
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data).toEqual({});
+    }
+  });
+});
+
+describe('ConfigurationService inference preferences — context cap', () => {
+  function makeService(userSettings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      config: { demoMode: boolean; userSettings: Record<string, unknown> };
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      getInferencePreferences: () => { maxNumCtx: number | null };
+      setInferencePreferences: (...args: unknown[]) => Promise<{ maxNumCtx: number | null }>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { demoMode: false, userSettings };
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  it('is null until an operator sets one — the handout then sizes exactly as the build before the cap', () => {
+    expect(makeService({}).getInferencePreferences().maxNumCtx).toBeNull();
+  });
+
+  it('reads a persisted cap through the clamp, so a value outside this build bounds is no cap rather than a tiny one', () => {
+    expect(makeService({ inferenceMaxNumCtx: 16_384 }).getInferencePreferences().maxNumCtx).toBe(16_384);
+    expect(makeService({ inferenceMaxNumCtx: 12 }).getInferencePreferences().maxNumCtx).toBeNull();
+  });
+
+  it('sets, leaves alone, and clears the cap through setInferencePreferences', async () => {
+    const svc = makeService({ inferenceMaxNumCtx: 16_384 });
+
+    // Omitted: unchanged.
+    expect((await svc.setInferencePreferences('ollama')).maxNumCtx).toBe(16_384);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama' });
+
+    // Set.
+    expect(
+      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 32_768)).maxNumCtx,
+    ).toBe(32_768);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceMaxNumCtx: 32_768 });
+
+    // Cleared: the key is removed rather than stored as null, like the pool prompt ceiling.
+    expect(
+      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, null)).maxNumCtx,
+    ).toBeNull();
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceMaxNumCtx: undefined });
+  });
+});
+
 describe('ConfigurationService.readPersistedSettings', () => {
   function makeReader() {
     const svc = Object.create(ConfigurationService.prototype) as unknown as {
