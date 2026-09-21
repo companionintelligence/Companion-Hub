@@ -54,7 +54,9 @@ export interface StandardizedAiEnv {
    * tokens, as a string. Scaled to the host's memory, capped by the model's
    * window so apps don't inherit Ollama's oversized memory-based default, and
    * capped by the operator's `inferenceMaxNumCtx` — the engine's own context —
-   * so an app never asks for a window that reloads the model.
+   * so an app never asks for a window that reloads the model. Through the pool
+   * the cap is the largest among the nodes serving the model, and the proxy
+   * places a request only on nodes whose cap can take its window.
    */
   CI_LLM_NUM_CTX?: string;
   /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `lucebox` | `cloud`). */
@@ -263,9 +265,11 @@ export class InferenceEnvResolver {
         askOllama ? this.ollamaBackend.contextCostForModel(chatCurated.backendModelId) : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
       ]);
-      // A pooled request may land on any node serving the model, so the pool-wide minimum of
-      // their caps applies when one is known; this node's own cap otherwise, and on the direct path.
-      const maxContextLength = poolChoice?.contextCap ?? this.endpoints.localContextCap();
+      // Through the pool, the largest cap among the nodes serving the model — the proxy places a
+      // request only on nodes whose cap can take its window, so no smaller node binds (see
+      // `poolContextCap`); this node's own cap on the direct path.
+      const localContextCap = this.endpoints.localContextCap();
+      const maxContextLength = poolChoice ? poolChoice.contextCap : localContextCap;
       const numCtx = handoutContextLength({
         model: chatCurated,
         servedLocally: chatServedLocally,
@@ -283,6 +287,7 @@ export class InferenceEnvResolver {
         maxContextLength,
         minContextLength: requirements.minContextLength,
         residentContextLength: residentContextLength ?? null,
+        ...(poolChoice && chatServedLocally ? { localContextCap } : {}),
       })) {
         this.logger.warn(`[InferenceEnvResolver] ${note}`);
       }

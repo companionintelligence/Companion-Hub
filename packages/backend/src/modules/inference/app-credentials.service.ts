@@ -414,9 +414,11 @@ export class AppCredentialsService implements OnApplicationShutdown {
         askOllama ? this.ollamaBackend.contextCostForModel(chatModel.backendModelId) : null,
         askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
       ]);
-      // Same cap as the resolver: the pool-wide minimum when the pool serves the app and a node
-      // advertises one, else this node's own. See `inference-context-cap.ts`.
-      const maxContextLength = poolChoice?.contextCap ?? this.endpoints.localContextCap();
+      // Same cap as the resolver: through the pool, the largest cap among the nodes serving the
+      // model (placement keeps the request off the smaller ones — see `poolContextCap`); this
+      // node's own cap on the direct path. See `inference-context-cap.ts`.
+      const localContextCap = this.endpoints.localContextCap();
+      const maxContextLength = poolChoice ? poolChoice.contextCap : localContextCap;
       const numCtx = handoutContextLength({
         model: chatModel,
         servedLocally: chatServedLocally,
@@ -434,6 +436,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
         maxContextLength,
         minContextLength: requirements.minContextLength,
         residentContextLength: residentContextLength ?? null,
+        ...(poolChoice && chatServedLocally ? { localContextCap } : {}),
       })) {
         this.logger.warn(`[AppCredentials] ${note}`);
       }

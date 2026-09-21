@@ -9,6 +9,7 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
@@ -30,6 +31,8 @@ import {
   HubPoolRoutingLogService,
   type PoolRoutingAffinity,
   type PoolRoutingCeilingExclusion,
+  type PoolRoutingContextCap,
+  type PoolRoutingContextCapExclusion,
   type PoolRoutingOutcome,
   type PoolRoutingPin,
   type PoolRoutingPromptCeiling,
@@ -277,6 +280,26 @@ export function resetPoolFetchDispatcherForTests(): void {
 /** Does this body ask for a streamed response? Decides which of the two budgets applies. */
 export function isStreamingRequest(body: unknown): boolean {
   return !!(body && typeof body === 'object' && (body as { stream?: unknown }).stream === true);
+}
+
+/**
+ * The context window a request asks its engine for — Ollama's `options.num_ctx` — or `null` when
+ * it carries none.
+ *
+ * Only the native Ollama dialect can say: both agents on the fleet send it there (OpenClaw through
+ * `params.num_ctx` on its `api: "ollama"` provider, Hermes through its native adapter), and it is
+ * what an engine actually loads the model at. The OpenAI-compatible `/v1` surface has no such field
+ * and Ollama ignores one if sent (see `describeFromPeer`'s note on the Hermes probe), so a `/v1`
+ * request runs at the serving engine's own default window — which is what the node's cap records.
+ * For those, the caller falls back to the prompt estimate; see `applyContextCaps`. Anything but a
+ * positive integer is no request, not a tiny one.
+ */
+export function requestedNumCtx(body: unknown): number | null {
+  if (!isRecord(body) || !isRecord(body.options)) {
+    return null;
+  }
+  const raw = body.options.num_ctx;
+  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
 }
 
 /**
@@ -589,6 +612,63 @@ export function applyPromptCeiling(
   const decision = { estimatedTokens, excluded, overridden };
   // Identity-preserving when nothing was over or everything was, so both read as "the ranker's list".
   return excluded.length === 0 || overridden ? { preferred: ordered, overCeiling: [], decision } : { preferred, overCeiling, decision };
+}
+
+/**
+ * Split a ranked list into the candidates whose context cap can take the window the request asks
+ * for (`preferred`) and the ones capped below it (`overCap`), each in the order the ranker produced.
+ *
+ * A node's cap (`inferenceMaxNumCtx`, advertised as `maxNumCtx`) is its operator's statement of the
+ * window its engine runs at. A request asking for more reloads that engine's model with the larger
+ * window — core-2, 2026-09-20: `ollama ps` 25 GB → 44 GB on a 30B, ~40 s, and a reload back on the
+ * next request at the old size — or, on the `/v1` surface where `num_ctx` cannot be sent, has its
+ * prompt truncated to the window. So a candidate takes the request only if its cap is unset or at
+ * least `numCtx`. This is what lets the handout ask for the fleet's LARGEST window rather than its
+ * smallest (see `poolContextCap`): core-17's 16384 no longer decides what ci-hermes on core-2 may
+ * ask for, because a 65536 request is simply not placed on core-17 while anything else can take it.
+ *
+ * The same shape of decision as {@link applyPromptCeiling}, and applied outside it, because both are
+ * operator statements and this one is the stronger: an over-ceiling node is slow, an over-cap node
+ * reloads or truncates.
+ *
+ * 1. **It is a preference, not a rule.** An over-cap node is moved to the back, never removed, so a
+ *    request still has somewhere to go when every node that can take its window fails. When every
+ *    candidate is over its cap nothing moves at all, and `overridden: true` says so.
+ * 2. **It never re-orders within either group.** Both halves keep the ranker's order.
+ * 3. **Uncapped means any window.** A node that advertises no cap — none set, or a build predating
+ *    the field — is never moved back. The placement rule and the handout agree on this, which is
+ *    the point: an uncapped node is one the handout may size past every capped node's window.
+ *
+ * Pure and exported for its own test, like `applyPromptCeiling`.
+ */
+export function applyContextCap(
+  ordered: PoolCandidate[],
+  capOf: (candidate: PoolCandidate) => number | null,
+  request: { numCtx: number; source: PoolRoutingContextCap['source'] },
+): { preferred: PoolCandidate[]; overCap: PoolCandidate[]; decision: PoolRoutingContextCap | null } {
+  const caps = ordered.map(capOf);
+  if (caps.every((cap) => cap === null)) {
+    return { preferred: ordered, overCap: [], decision: null };
+  }
+  const preferred: PoolCandidate[] = [];
+  const overCap: PoolCandidate[] = [];
+  const excluded: PoolRoutingContextCapExclusion[] = [];
+  for (const [index, candidate] of ordered.entries()) {
+    const cap = caps[index] ?? null;
+    if (cap === null || request.numCtx <= cap) {
+      preferred.push(candidate);
+      continue;
+    }
+    overCap.push(candidate);
+    // One entry per node: a node with two engines holding the model is still one node that said no.
+    const node = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
+    if (!excluded.some((entry) => entry.node === node)) {
+      excluded.push({ node, maxNumCtx: cap });
+    }
+  }
+  const overridden = preferred.length === 0;
+  const decision = { numCtx: request.numCtx, source: request.source, excluded, overridden };
+  return excluded.length === 0 || overridden ? { preferred: ordered, overCap: [], decision } : { preferred, overCap, decision };
 }
 
 const NOTHING_DEMOTED: ReadonlySet<PoolCandidate> = new Set();
@@ -1096,9 +1176,13 @@ export class PoolProxyService {
    * queue is under the limit — see {@link applyPrefixAffinity}. Applied before every step below, so
    * each of them still wins over it.
    *
-   * Then the prompt ceilings, when `promptBytes` is given: a node whose ceiling is below the
-   * request's estimate moves behind every node that is not, keeping its place in the failover walk —
-   * see {@link applyPromptCeiling}.
+   * Then the context caps, when `promptBytes` is given: a node whose cap is below the window the
+   * request asks for — `numCtx` when the body carried `options.num_ctx`, else the prompt estimate —
+   * moves behind every node that can take it, keeping its place in the failover walk — see
+   * {@link applyContextCap}.
+   *
+   * Then the prompt ceilings, within each of those groups: a node whose ceiling is below the
+   * request's estimate moves behind every node that is not — see {@link applyPromptCeiling}.
    *
    * Then slot-aware placement, within each of those groups and only with `poolSlotAwareness` on: an
    * Ollama candidate whose known queue depth already fills the slots its node advertised moves behind
@@ -1117,8 +1201,9 @@ export class PoolProxyService {
    * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
    */
-  async buildCandidateList(model: string, promptBytes?: number, streaming = true): Promise<PoolCandidate[]> {
-    return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming })).candidates;
+  async buildCandidateList(model: string, promptBytes?: number, streaming = true, numCtx: number | null = null): Promise<PoolCandidate[]> {
+    return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming, numCtx: () => numCtx }))
+      .candidates;
   }
 
   /**
@@ -1142,6 +1227,8 @@ export class PoolProxyService {
       streaming: boolean;
       /** The request's session key, derived only if affinity is on — a header read and at most a 4 KB digest, but not for a fleet that has it off. */
       prefixKey?: () => PrefixKey | null;
+      /** The window the body asks for (`options.num_ctx`), read only if some candidate has a cap; `null` when it carries none. */
+      numCtx?: () => number | null;
     },
     /**
      * Whether the request being placed will occupy one of the engine's `OLLAMA_NUM_PARALLEL` slots.
@@ -1154,6 +1241,7 @@ export class PoolProxyService {
     candidates: PoolCandidate[];
     pin: HubPoolPin | null;
     promptCeiling: PoolRoutingPromptCeiling | null;
+    contextCap: PoolRoutingContextCap | null;
     slots: PoolRoutingSlots | null;
     throughput: PoolRoutingThroughput | null;
     /** What affinity saw and did, and the key to remember the placement under; both `null` when affinity did not apply. */
@@ -1180,8 +1268,11 @@ export class PoolProxyService {
     ranked.sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank);
     const affinity = this.applyRememberedPlacement(ranked, prompt?.prefixKey);
     const ordered = affinity.ordered.map((entry) => entry.candidate);
-    // Shared, so the two prompt-size decisions cost one serialisation between them at most.
+    // Shared, so the three prompt-size decisions cost one serialisation between them at most.
     const measurePromptBytes = prompt ? memoize(prompt.bytes) : undefined;
+    const cap = measurePromptBytes
+      ? this.applyContextCaps(model, ordered, peers, measurePromptBytes, prompt?.numCtx)
+      : { preferred: ordered, overCap: [], decision: null };
     const ceiling = measurePromptBytes
       ? this.applyPromptCeilings(model, ordered, peers, measurePromptBytes)
       : { preferred: ordered, overCeiling: [], decision: null };
@@ -1193,17 +1284,25 @@ export class PoolProxyService {
     // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
     // effect on the next request and costs no query on the inference hot path.
     const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
-    // The ceiling is the outer split because it is an operator's statement and the other two are
-    // inferences; slots sit outside throughput because a full engine queues the request whole. With
-    // nothing demoted and no over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps
-    // an unmeasured fleet on the order it had before any of the three existed.
-    const candidates = [ceiling.preferred, ceiling.overCeiling].flatMap((group) =>
-      splitDemoted(group, slots.demoted).flatMap((slotPart) => splitDemoted(slotPart, throughput.demoted).flatMap((part) => applyPin(part, pin))),
+    // The cap is the outermost split and the ceiling the next, because both are operator statements
+    // and a node over its cap reloads or truncates where a node over its ceiling is merely slow. The
+    // other two are inferences and split within those: slots outside throughput, because a full
+    // engine queues the request whole where a slow one merely reads it slowly. With nothing demoted
+    // and no over-cap or over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps an
+    // unmeasured fleet on the order it had before any of the four existed. The ceiling's own
+    // "everything over means nothing moves" rule was judged on the whole list, so `overCeiling` is
+    // already empty in that case.
+    const overCeiling = new Set(ceiling.overCeiling);
+    const candidates = [cap.preferred, cap.overCap].flatMap((capGroup) =>
+      splitDemoted(capGroup, overCeiling).flatMap((group) =>
+        splitDemoted(group, slots.demoted).flatMap((slotPart) => splitDemoted(slotPart, throughput.demoted).flatMap((part) => applyPin(part, pin))),
+      ),
     );
     return {
       candidates,
       pin,
       promptCeiling: ceiling.decision,
+      contextCap: cap.decision,
       slots: slots.decision,
       throughput: throughput.decision,
       // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
@@ -1329,6 +1428,55 @@ export class PoolProxyService {
   }
 
   /**
+   * Each candidate's context cap — this node's `inferenceMaxNumCtx` for a local candidate, the
+   * `maxNumCtx` a peer advertised for a peer — then {@link applyContextCap} against the window the
+   * request asks for.
+   *
+   * That window is the body's `options.num_ctx` when it carries one (the native Ollama dialect, which
+   * is what both agents on the fleet speak), and otherwise the prompt estimate: a request without
+   * `num_ctx` — every OpenAI-compatible `/v1` call — runs at the serving engine's own default
+   * window, which is exactly what the node's cap records, and a prompt over that window is truncated
+   * there. So the estimate is the smallest window the request can be served in, and a capped node
+   * below it is moved back for the same reason a capped node below an explicit `num_ctx` is.
+   *
+   * Caps come from the same places everything else in ranking does: the in-memory settings object
+   * and the capability snapshots `usablePeers` already loaded, so this adds no query. The body is
+   * measured only when some candidate has a cap, and one debug line is written per request the cap
+   * actually changed, never at info, for the ceiling's reason.
+   */
+  private applyContextCaps(
+    model: string,
+    ordered: PoolCandidate[],
+    peers: HubPoolPeer[],
+    measurePromptBytes: () => number,
+    numCtxOf: (() => number | null) | undefined,
+  ): ReturnType<typeof applyContextCap> {
+    const localCap = clampContextCap(this.configuration.getInferencePreferences()?.maxNumCtx);
+    const peerCaps = new Map<string, number | null>(
+      peers.map((peer) => [peer.id, clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx)]),
+    );
+    const capOf = (candidate: PoolCandidate) => (candidate.peerId === null ? localCap : (peerCaps.get(candidate.peerId) ?? null));
+    if (!ordered.some((candidate) => capOf(candidate) !== null)) {
+      return { preferred: ordered, overCap: [], decision: null };
+    }
+    const numCtx = numCtxOf?.() ?? null;
+    const request =
+      numCtx === null ? { numCtx: estimatePromptTokens(measurePromptBytes()), source: 'estimated' as const } : { numCtx, source: 'request' as const };
+    const result = applyContextCap(ordered, capOf, request);
+    const decision = result.decision;
+    if (decision && decision.excluded.length > 0) {
+      const nodes = decision.excluded.map((entry) => `${entry.node} (cap ${entry.maxNumCtx})`).join(', ');
+      const window = decision.source === 'request' ? `num_ctx ${decision.numCtx}` : `~${decision.numCtx}-token prompt with no num_ctx`;
+      this.logger.debug(
+        decision.overridden
+          ? `[PoolProxy] ${window} for "${model}" is over every candidate's context cap — ${nodes} — so placing it anyway`
+          : `[PoolProxy] ${window} for "${model}" put ${nodes} behind every candidate whose cap can take it`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * Each Ollama candidate's queue depth against the slot count its node stated — this node's own
    * `inferenceOllamaSlots` for a local candidate, the figure a peer advertised for a peer — then
    * {@link applySlotPlacement}.
@@ -1438,6 +1586,7 @@ export class PoolProxyService {
         failedOverFrom: [],
         pin: null,
         promptCeiling: null,
+        contextCap: null,
         slots: null,
         throughput: null,
         affinity: null,
@@ -1466,9 +1615,9 @@ export class PoolProxyService {
     // Keyed on the resolved model, never the alias: `auto` on two Hubs can mean two models, and the
     // cache a session warms is the resolved one's.
     const prefixKey = memoize(() => derivePrefixKey(model, body, params.sessionHeader));
-    const { candidates, pin, promptCeiling, slots, throughput, affinity, peers, localProbes } = await this.rankCandidates(
+    const { candidates, pin, promptCeiling, contextCap, slots, throughput, affinity, peers, localProbes } = await this.rankCandidates(
       model,
-      judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey } : undefined,
+      judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey, numCtx: () => requestedNumCtx(body) } : undefined,
     );
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
@@ -1488,6 +1637,7 @@ export class PoolProxyService {
         failedOverFrom,
         pin: describePinForLog(pin),
         promptCeiling,
+        contextCap,
         slots,
         throughput,
         affinity: affinity.decision,
@@ -1525,6 +1675,7 @@ export class PoolProxyService {
       failedOverFrom,
       pin: describePinForLog(pin),
       promptCeiling,
+      contextCap,
       slots,
       ...describeRequestShape(method, body),
       throughput,
@@ -1548,6 +1699,14 @@ export class PoolProxyService {
         row.promptCeiling.overridden = true;
         this.logger.debug(
           `[PoolProxy] every candidate under its prompt ceiling failed for "${model}"; trying ${nodeLabel}, which is over its ceiling`,
+        );
+      }
+      // Same for the cap: reaching a node capped below the window means every node that could take
+      // it already failed, and the log should read "placed over its cap" rather than "skipped".
+      if (row.contextCap && !row.contextCap.overridden && row.contextCap.excluded.some((entry) => entry.node === nodeLabel)) {
+        row.contextCap.overridden = true;
+        this.logger.debug(
+          `[PoolProxy] every candidate whose context cap can take ${row.contextCap.numCtx} failed for "${model}"; trying ${nodeLabel}, which is capped below it`,
         );
       }
       // Reaching a full node means nothing with a free slot is ahead of it any more: every such node
@@ -1985,8 +2144,9 @@ export class PoolProxyService {
       // Always null: a pin is THIS Hub's policy for work it originates. Work a peer forwards us is
       // never re-routed (see `forwardToLocalBackendAndRespond`), so no pin can have shaped it.
       pin: null,
-      // Null for the same reason as the pin: the ceiling is applied by the node choosing where work goes.
+      // Null for the same reason as the pin: the ceiling and the cap are applied by the node choosing where work goes.
       promptCeiling: null,
+      contextCap: null,
       slots: null,
       throughput: null,
       affinity: null,

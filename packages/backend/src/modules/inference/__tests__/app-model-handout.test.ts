@@ -211,47 +211,74 @@ describe('handoutContextLength', () => {
   });
 });
 
+/**
+ * The bill-co fleet on 2026-09-21: core-17 is a 4×16384 batch node (with a 14000 prompt ceiling
+ * that already keeps agent turns off it), beta-max and ci run 4×32768, and the agent tier
+ * (core-2/4/5/6) runs 4×65536. The old pool-wide MINIMUM handed ci-hermes on core-2
+ * `HERMES_NUM_CTX=16384` — core-17's number — and Hermes refused tool use below 64000 while core-2's
+ * own engine served the model at 65536. The proxy now keeps a 65536 request off core-17, so the
+ * handout is bound by the LARGEST cap among the serving nodes, and not at all when one has none.
+ */
 describe('poolContextCap', () => {
-  const withCaps: PoolInventory = {
+  const allCapped: PoolInventory = {
     backends: [
       { node: LOCAL_POOL_NODE, local: true, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 65_536 },
-      { node: 'core-2', local: false, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 16_384 },
-      { node: 'core-6', local: false, backend: 'ollama', models: ['qwen3-coder:30b'] },
+      { node: 'core-17', local: false, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 16_384 },
+      { node: 'beta-max', local: false, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 32_768 },
       { node: 'beta-red', local: false, backend: 'ollama', models: ['gemma3:1b'], maxNumCtx: 4096 },
     ],
   };
+  const agentTierUncapped: PoolInventory = {
+    backends: [
+      { node: LOCAL_POOL_NODE, local: true, backend: 'ollama', models: ['qwen3-coder:30b'] },
+      { node: 'core-17', local: false, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 16_384 },
+      { node: 'beta-max', local: false, backend: 'ollama', models: ['qwen3-coder:30b'], maxNumCtx: 32_768 },
+    ],
+  };
 
-  it('is the smallest cap among the nodes serving the model, ignoring nodes that serve something else', () => {
+  it('is the largest cap among the nodes serving the model, ignoring nodes that serve something else', () => {
     // beta-red's 4096 does not count: the proxy will never place a qwen3-coder:30b request there.
-    expect(poolContextCap(withCaps, 'qwen3-coder:30b')).toBe(16_384);
-    expect(poolContextCap(withCaps, 'gemma3:1b')).toBe(4096);
+    expect(poolContextCap(allCapped, 'qwen3-coder:30b')).toBe(65_536);
+    expect(poolContextCap(allCapped, 'gemma3:1b')).toBe(4096);
+  });
+
+  it('is no cap at all when any serving node advertises none — that node takes any window, so nothing smaller binds', () => {
+    // core-2 as it was on 2026-09-21: no cap of its own, and 16384 from core-17 must not be the answer.
+    expect(poolContextCap(agentTierUncapped, 'qwen3-coder:30b')).toBeNull();
+  });
+
+  it('is never the fleet minimum, whichever position the small node holds', () => {
+    const reversed: PoolInventory = { backends: [...agentTierUncapped.backends].reverse() };
+    expect(poolContextCap(reversed, 'qwen3-coder:30b')).toBeNull();
+    const cappedReversed: PoolInventory = { backends: [...allCapped.backends].reverse() };
+    expect(poolContextCap(cappedReversed, 'qwen3-coder:30b')).toBe(65_536);
   });
 
   it('is null when no serving node advertises a cap, which is what an older build looks like', () => {
     expect(poolContextCap(core4Inventory, 'qwen3-coder:30b')).toBeNull();
-    expect(poolContextCap(withCaps, 'nothing-serves:this')).toBeNull();
+    expect(poolContextCap(allCapped, 'nothing-serves:this')).toBeNull();
   });
 
-  it('reads a cap the way the wire is read: an unbelievable value is no cap, not a tiny one', () => {
+  it('reads a cap the way the wire is read: an unbelievable value is no cap, and no cap means unbounded', () => {
     const inventory: PoolInventory = {
       backends: [
         { node: 'a', local: false, backend: 'ollama', models: ['m:1b'], maxNumCtx: 12 },
         { node: 'b', local: false, backend: 'ollama', models: ['m:1b'], maxNumCtx: 32_768 },
       ],
     };
-    expect(poolContextCap(inventory, 'm:1b')).toBe(32_768);
+    expect(poolContextCap(inventory, 'm:1b')).toBeNull();
   });
 
   it('is carried on the handout selectPoolChatModel returns, for the model it chose', () => {
     const handout = selectPoolChatModel({
       appSlug: 'openclaw',
-      inventory: withCaps,
+      inventory: allCapped,
       catalog: CURATED_MODELS,
       preferredId: null,
       requirements: appInferenceRequirements('openclaw'),
     });
     expect(handout.engineId).toBe('qwen3-coder:30b');
-    expect(handout.contextCap).toBe(16_384);
+    expect(handout.contextCap).toBe(65_536);
   });
 });
 
@@ -282,6 +309,29 @@ describe('describeContextHandout', () => {
     const capped = describeContextHandout({ ...base, residentContextLength: 65_536 });
     expect(capped).toHaveLength(1);
     expect(capped[0]).not.toContain('Settings > Inference');
+  });
+
+  it('says a pooled handout above this node cap is placed elsewhere, instead of promising a reload placement prevents', () => {
+    // beta-max (cap 32768) serving qwen3-coder:30b next to an uncapped agent tier: its Hermes is
+    // handed 65536, and the proxy sends those turns to the agent tier, not to beta-max's engine.
+    const notes = describeContextHandout({
+      ...base,
+      appSlug: 'hermes-agent',
+      numCtx: 65_536,
+      maxContextLength: null,
+      residentContextLength: 32_768,
+      localContextCap: 32_768,
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("hermes-agent: handed 65536 for qwen3-coder:30b, above this node's own cap (32768)");
+    expect(notes[0]).toContain('only on failover');
+    expect(notes[0]).not.toContain('its first request reloads');
+  });
+
+  it('keeps the reload warning when this node cap can take the pooled handout', () => {
+    const notes = describeContextHandout({ ...base, numCtx: 16_384, residentContextLength: 8192, localContextCap: 16_384 });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('holds qwen3-coder:30b at a 8192-token window and the handout is 16384');
   });
 });
 
