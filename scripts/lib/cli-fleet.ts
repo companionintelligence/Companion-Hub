@@ -76,7 +76,7 @@ import {
   planBindConsolidation,
 } from './fleet-ollama-bind.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
-import { type CihubBinarySource, parseCihubVersionOutput, resolveCihubBinarySource } from './fleet-cihub-binary.js';
+import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
 import {
   clearPendingPairingCode,
   describeDeviceNameConflict,
@@ -200,7 +200,10 @@ export interface FleetArgs {
   yes: boolean;
   /** A cihub-linux-* release asset on this machine, streamed to every node that needs one. */
   cihubBinary?: string;
-  /** Release tag to fetch with GH_TOKEN when no --cihub-binary is given. Default: latest. */
+  /**
+   * Release tag to fetch with GH_TOKEN when no --cihub-binary is given (default: latest, resolved to
+   * its tag before any node is dialled); with --cihub-binary, what the file is when it will not run here.
+   */
   cihubVersion?: string;
   /**
    * CI Account address each installed Hub is claimed for, creating its first operator.
@@ -1445,14 +1448,25 @@ function readLocalCihubVersion(binaryPath: string): string | undefined {
   }
 }
 
+/**
+ * The source, decided once per run and pinned to a version: a `latest` becomes the tag GitHub
+ * resolves it to right now, so every node compares against — and installs — the same release, and a
+ * token that cannot see the repository is one line here rather than a silent adopt on every node.
+ */
+async function resolveBinarySourceForRun(args: FleetArgs): Promise<CihubBinarySource> {
+  return pinCihubReleaseSource(
+    resolveCihubBinarySource({ binaryPath: args.cihubBinary, version: args.cihubVersion, readVersion: readLocalCihubVersion }),
+  );
+}
+
 function describeBinarySource(source: CihubBinarySource): string {
   switch (source.kind) {
     case 'local':
-      return `cihub binary: ${source.path}${source.version ? ` (${source.version})` : ''}, streamed to nodes that need one`;
+      return `cihub binary: ${source.path}${source.version ? ` (${source.version})` : ' (version unknown: it would not run here — is it executable? — and --cihub-version can say what it is)'}, streamed to nodes that need one`;
     case 'release':
-      return `cihub binary: release ${source.version}, fetched here with the GitHub token and streamed to nodes that need one`;
+      return `cihub binary: release ${source.version}${source.resolvedFrom ? ` (${source.resolvedFrom})` : ''}, fetched here with the GitHub token and streamed to nodes that need one`;
     case 'unavailable':
-      return `${source.why} — nodes that already have a cihub are adopted; the rest fail at 'install cihub'. ${source.fix.join(' ')}`;
+      return `${source.why} — nodes that already have a cihub are adopted without a version check; the rest fail at 'install cihub'. ${source.fix.join(' ')}`;
   }
 }
 
@@ -1497,7 +1511,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
       console.log(colorize(`  needs 'cihub login --scope ${DEVICE_PAIR_SCOPE}', or --code for one node`, 'dim'));
     }
     console.log(colorize('  requires a Postgres password', 'dim'));
-    const binarySource = resolveCihubBinarySource({ binaryPath: args.cihubBinary, version: args.cihubVersion, readVersion: readLocalCihubVersion });
+    const binarySource = await resolveBinarySourceForRun(args);
     console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
     console.log(
       colorize(
@@ -1522,9 +1536,10 @@ async function runInstall(args: FleetArgs): Promise<void> {
     process.exit(2);
   }
 
-  // Where a node that has no `cihub` gets one. Decided once, here, so a run with no way to get the
-  // binary says so on its first node rather than after that node's Portal device exists.
-  const binarySource = resolveCihubBinarySource({ binaryPath: args.cihubBinary, version: args.cihubVersion, readVersion: readLocalCihubVersion });
+  // Where a node that has no `cihub` — or an older one — gets one. Decided once, here, so a run with
+  // no way to get the binary says so on its first node rather than after that node's Portal device
+  // exists, and so `latest` is one tag for the whole run.
+  const binarySource = await resolveBinarySourceForRun(args);
   console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
   const binaryCache = new Map<string, { path: string; sha256: string; label: string }>();
 

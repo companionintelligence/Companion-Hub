@@ -207,12 +207,26 @@ export function sshCapture(target: SshTarget, command: string, timeoutMs: number
 }
 
 /**
+ * The remote command for a script that must read the SSH session's stdin — what `sshStreamFile` needs.
+ *
+ * Not a heredoc, which is how every other remote step carries its script: a heredoc IS that bash's
+ * stdin, so a `cat` inside it reads the rest of its own script and the bytes ssh is feeding never
+ * reach anything. That is the exit 0, silent, marker-less `install cihub` a node reported on
+ * 2026-09-20. The script goes in argv instead, and stdin stays what ssh made it.
+ */
+export function stdinScriptCommand(script: string): string {
+  return `bash -c '${script.replace(/'/g, "'\\''")}'`;
+}
+
+/**
  * Run one command on one node with a local file on its stdin.
  *
  * The one thing `sshCapture` cannot do, by design (`-n`). This exists for exactly one caller: putting
  * the `cihub` binary on a node. The release lives in a private GitHub repository, so a node cannot
  * `curl` it; the operator's machine can, and already has it. Streaming the bytes down the SSH
  * session the install already holds needs no token on the node and no second transport.
+ *
+ * `command` must leave stdin to the script — build it with `stdinScriptCommand`, not a heredoc.
  *
  * Same contract as `sshCapture`: never throws for a remote failure, `code: null` on timeout.
  */
