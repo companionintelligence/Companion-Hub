@@ -200,7 +200,7 @@ export class InferenceTools implements OnModuleInit {
         const profile = await this.hardwareInspector.getProfile();
         const curated = this.modelRegistry.getCuratedModel(modelId);
         const footprint = curated?.runtime.memoryFootprintMb || 0;
-        const canPin = this.memoryManager.canPinModel(profile, footprint);
+        const canPin = await this.memoryManager.canPinModel(profile, footprint);
 
         if (!canPin.canPin) {
           return { success: false, message: canPin.reason };
@@ -253,7 +253,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
         const profile = await this.hardwareInspector.getProfile();
-        return this.memoryManager.calculateBudget(profile);
+        return await this.memoryManager.calculateBudget(profile);
       },
     });
 
