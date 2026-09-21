@@ -11,6 +11,7 @@ import {
   composeFilesForPoolUpdate,
   decideGitUpdate,
   describeImageChange,
+  describeImageSource,
   gatherGitUpdateFacts,
   resolvePoolUpdateImage,
 } from '../lib/cli-pool-update';
@@ -146,18 +147,61 @@ describe('composeFilesForPoolUpdate', () => {
   });
 });
 
+/**
+ * Which image `pool update` deploys, and why the env file has to be one of the sources.
+ *
+ * `run()` hands `CI_HUB_IMAGE` to the compose child in its *environment*, and Docker Compose gives
+ * the process environment precedence over `--env-file` — so this function's answer overrides the pin
+ * compose was handed. It used to consider only `process.env`, which meant an operator's explicit
+ * digest lost to a channel tag. On an appliance that is a downgrade: `resolveHubContext` forces
+ * `prod` whatever argument was typed, so `cihub pool update dev` fell through to `…:prod`.
+ *
+ * The digests are the ones measured on core-6 on 2026-09-21, where exactly this ran and put the
+ * node onto a build older than the one it had been serving.
+ */
 describe('resolvePoolUpdateImage', () => {
-  it('defaults to the tag matching the environment being updated', () => {
-    expect(resolvePoolUpdateImage('dev', undefined)).toBe('ghcr.io/companionintelligence/ci-hub:dev');
-    expect(resolvePoolUpdateImage('prod', undefined)).toBe('ghcr.io/companionintelligence/ci-hub:prod');
+  const REPO = 'ghcr.io/companionintelligence/ci-hub';
+  const operativePin = `${REPO}@sha256:d8f0b6a0c9550000000000000000000000000000000000000000000000000000`;
+  const older = `${REPO}@sha256:8add981ab8b6970097b9dd3b1b28519468e1087be0d15865733300c455b2835b`;
+
+  it('honours the pin in the env file compose actually reads', () => {
+    // The regression: without this the digest an operator wrote into .env.dev was discarded.
+    expect(resolvePoolUpdateImage({ env: 'prod', processValue: undefined, envFileValue: operativePin })).toEqual({
+      image: operativePin,
+      source: 'env-file',
+    });
   });
 
-  it('respects an operator-set CI_HUB_IMAGE instead of guessing what a `prod`-shaped test fleet actually wants', () => {
-    expect(resolvePoolUpdateImage('prod', 'ghcr.io/companionintelligence/ci-hub:dev')).toBe('ghcr.io/companionintelligence/ci-hub:dev');
+  it('never lets the channel tag beat an explicit pin — the downgrade that was measured', () => {
+    const resolved = resolvePoolUpdateImage({ env: 'prod', processValue: undefined, envFileValue: operativePin });
+    expect(resolved.image).not.toBe(`${REPO}:prod`);
+    expect(resolved.image).not.toBe(older);
   });
 
-  it('treats a blank CI_HUB_IMAGE (set but empty) the same as unset, not as a literal empty image name', () => {
-    expect(resolvePoolUpdateImage('dev', '   ')).toBe('ghcr.io/companionintelligence/ci-hub:dev');
+  it('lets a reference given on the command line win over the file, for a deliberate one-off roll', () => {
+    expect(resolvePoolUpdateImage({ env: 'prod', processValue: `${REPO}:dev`, envFileValue: operativePin })).toEqual({
+      image: `${REPO}:dev`,
+      source: 'process-env',
+    });
+  });
+
+  it('falls back to the tag matching the environment only when nothing is pinned anywhere', () => {
+    expect(resolvePoolUpdateImage({ env: 'dev', processValue: undefined, envFileValue: undefined })).toEqual({
+      image: `${REPO}:dev`,
+      source: 'channel-default',
+    });
+    expect(resolvePoolUpdateImage({ env: 'prod', processValue: undefined, envFileValue: undefined }).image).toBe(`${REPO}:prod`);
+  });
+
+  it('treats a blank value (set but empty) the same as unset at every level', () => {
+    expect(resolvePoolUpdateImage({ env: 'dev', processValue: '   ', envFileValue: '  ' }).source).toBe('channel-default');
+    expect(resolvePoolUpdateImage({ env: 'dev', processValue: '   ', envFileValue: operativePin }).source).toBe('env-file');
+  });
+
+  it('names the source on the line it prints, so a fallback is not mistaken for a pin', () => {
+    expect(describeImageSource('env-file', '/data/.env.dev')).toContain('/data/.env.dev');
+    expect(describeImageSource('process-env', '/data/.env.dev')).toContain('environment');
+    expect(describeImageSource('channel-default', '/data/.env.dev')).toContain('no CI_HUB_IMAGE');
   });
 });
 

@@ -39,6 +39,19 @@ separate dev feed so dev desktop builds can update without touching production.
 The desktop **app binary** is never updated without a user action; the **stack
 images** auto-update daily when the toggle is on.
 
+### The CLI is on this channel, not the stack's
+
+`cihub` ships *inside* the desktop package, so `companion-hub update` replaces the app and its
+bundled CLI together — and rolling the stack image never touches either. Installs that did not come
+from the desktop app have their own command: `brew upgrade --cask companion-hub`,
+`scoop update companion-hub`, or, for the standalone `cihub-<os>-<arch>` release asset a headless
+appliance gets from `cihub fleet install`, `cihub self-update`.
+
+`cihub update` opens by naming this CLI's version and the running stack's, and when no
+`companion-hub` binary is present — the normal case on an appliance — it names the command for the
+channel this `cihub` actually came from instead of telling the operator to install a desktop app.
+See [Keeping the CLI and the stack together](CLI.md#keeping-the-cli-and-the-stack-together).
+
 ### Install flow (per platform)
 
 - **macOS** — mount DMG, `ditto` the `.app` over the install target, relaunch.

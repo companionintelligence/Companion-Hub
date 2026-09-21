@@ -72,6 +72,25 @@ function readPackageVersion() {
   return pkg.version;
 }
 
+/**
+ * The commit this binary is built from, stamped beside the version.
+ *
+ * A `dev`, PR or pre-tag build has no release to report, and `cihub version` alone then says
+ * nothing that can be matched against the Hub image it drives — which is how a CLI and a stack from
+ * different builds sat on an appliance unnoticed. The Hub image already stamps
+ * `org.opencontainers.image.revision`; this is the same identity on the other channel, so
+ * `cihub doctor` can compare two untagged builds. Empty outside a checkout, and never fatal: the
+ * version remains the primary identity.
+ */
+function readBuildRevision() {
+  const fromEnv = (process.env.CI_HUB_BUILD_REVISION || process.env.GITHUB_SHA || '').trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  const result = spawnSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  return result.status === 0 ? (result.stdout || '').trim() : '';
+}
+
 function detectHostRustTarget() {
   if (process.platform === 'linux' && process.arch === 'x64') return 'x86_64-unknown-linux-gnu';
   if (process.platform === 'linux' && process.arch === 'arm64') return 'aarch64-unknown-linux-gnu';
@@ -207,6 +226,7 @@ function buildStandaloneCli(options = {}) {
   const allowFallback = !options.target || options.target === target.rustTarget;
   const candidates = bunTargetCandidates(target, allowFallback);
   const version = readPackageVersion();
+  const revision = readBuildRevision();
 
   mkdirSync(path.dirname(outfile), { recursive: true });
   if (existsSync(outfile)) {
@@ -218,7 +238,18 @@ function buildStandaloneCli(options = {}) {
   for (const bunTarget of candidates) {
     const result = spawnSync(
       'bun',
-      ['build', '--compile', `--target=${bunTarget}`, '--outfile', outfile, '--define', `CIHUB_BUILD_VERSION=${JSON.stringify(version)}`, ENTRYPOINT],
+      [
+        'build',
+        '--compile',
+        `--target=${bunTarget}`,
+        '--outfile',
+        outfile,
+        '--define',
+        `CIHUB_BUILD_VERSION=${JSON.stringify(version)}`,
+        '--define',
+        `CIHUB_BUILD_REVISION=${JSON.stringify(revision)}`,
+        ENTRYPOINT,
+      ],
       {
         cwd: REPO_ROOT,
         stdio: 'inherit',
@@ -252,6 +283,7 @@ function buildStandaloneCli(options = {}) {
 
   return {
     version,
+    revision,
     outfile,
     artifactFilename: artifactFilename(target),
     target: { ...target, bunTarget: builtTarget },
@@ -277,6 +309,7 @@ module.exports = {
   DEFAULT_OUTDIR,
   SUPPORTED_TARGETS,
   artifactFilename,
+  readBuildRevision,
   bunTargetCandidates,
   buildStandaloneCli,
   detectHostRustTarget,

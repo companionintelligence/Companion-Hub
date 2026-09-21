@@ -3,7 +3,11 @@
  *
  * `cihub update` deliberately delegates to the installed `companion-hub` desktop binary rather
  * than reimplementing the download/verify/relaunch dance: that binary owns its own replacement.
+ * What it does NOT delegate is the question of whether the two channels agree — the CLI ships on
+ * one and the Hub stack image on another, and nothing used to notice when they drifted apart. Every
+ * update entry point now opens with that answer; see cli-version-skew.ts.
  */
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { stdin as input, stdout as output } from 'node:process';
@@ -13,13 +17,30 @@ import { usageAndExit } from './cli-args.js';
 import { isApplianceMode } from './cli-repo-context.js';
 import { BASE_COMMAND } from './cli-types.js';
 import { colorize, printMessageBox } from './cli-ui.js';
-import { envFileMap, packageVersion } from './cli-compose-env.js';
+import { envFileMap, packageRevision, packageVersion } from './cli-compose-env.js';
+import { describeTarget, installBinaryOverSelf, planSelfUpdate, selfUpdateUsage } from './cli-self-update.js';
+import { classifyCliInstall, cliUpdateInstructions, gatherSkew, type SkewReport, type SkewSnapshot } from './cli-version-skew.js';
 import { resolveProdApplianceContext } from './paths.js';
 import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './connect-agent.js';
+import { downloadReleaseAsset } from './fleet-cihub-binary.js';
 import { promptHiddenPassword } from './seed-appliance.js';
 
+/**
+ * `cihub version` now names the commit too when the build stamped one.
+ *
+ * A release build says `cihub 0.2.73` and nothing more, because the version IS the identity. A
+ * `dev`, PR or pre-tag build shares a version string with every other build of that line, and
+ * reporting only that is how an appliance and a laptop both claimed `0.2.72` while running
+ * different code.
+ */
 export function renderVersion(): string {
-  return `${BASE_COMMAND} ${packageVersion()}`;
+  const revision = packageRevision();
+  return revision ? `${BASE_COMMAND} ${packageVersion()} (${revision.slice(0, 9)})` : `${BASE_COMMAND} ${packageVersion()}`;
+}
+
+/** The colour a skew report is printed in — the same mapping everywhere it is shown. */
+export function skewBoxColor(report: SkewReport): 'red' | 'yellow' | 'cyan' {
+  return report.severity === 'fail' ? 'red' : report.severity === 'warn' ? 'yellow' : 'cyan';
 }
 
 /**
@@ -176,16 +197,136 @@ export function resolveCompanionHubBinary(): string {
   return 'companion-hub';
 }
 
-export function runHostUpdate(args: string[]) {
+/**
+ * `cihub update` — report where the two channels stand, then move the one this binary can move.
+ *
+ * The report comes first and always, including on `--check`, because it is the only place the two
+ * versions are ever named side by side. The delegation below is unchanged: the desktop binary owns
+ * its own replacement, and the `cihub` inside it comes along for free.
+ *
+ * What changed is the failure. `companion-hub` is not installed on a headless appliance, so this
+ * used to end at "Install CI Hub desktop" — advice that does not apply to the machine it was
+ * printed on, on the machines where the skew actually bites. Now it names the command for the
+ * channel this CLI really came from.
+ */
+export async function runHostUpdate(args: string[]) {
   const checkOnly = args.includes('--check');
+  const snapshot = gatherSkew();
+  printMessageBox('CLI and Hub stack', snapshot.report.lines, skewBoxColor(snapshot.report));
+
   const binary = resolveCompanionHubBinary();
-  const cliArgs = checkOnly ? ['update', '--check'] : ['update'];
-  const result = spawnSync(binary, cliArgs, { stdio: 'inherit' });
-  if (result.error) {
-    console.error(`${colorize('Error', 'red')}: Could not run ${binary}. Install CI Hub desktop or run from the app Settings.`);
-    process.exit(1);
+  const result = spawnSync(binary, checkOnly ? ['update', '--check'] : ['update'], { stdio: 'inherit' });
+  if (!result.error) {
+    // A proven version mismatch survives a successful desktop update — the stack is the other
+    // channel — so it must not be reported as a clean run.
+    process.exit(result.status || (snapshot.report.severity === 'fail' ? 1 : 0));
   }
-  process.exit(result.status ?? 1);
+
+  // No desktop app on this machine: the appliance case, and the one where the skew actually bites.
+  // `cihub update` used to end here with "Install CI Hub desktop", advice that does not apply to a
+  // headless node. A standalone binary CAN update itself, so this is the one command either way.
+  if (snapshot.channel.kind === 'standalone') {
+    printMessageBox(
+      'No desktop app on this machine',
+      [`${binary} is not installed here.`, 'This cihub is a standalone binary, so it updates itself instead.'],
+      'cyan',
+    );
+    await runSelfUpdateCommand(checkOnly ? ['--check'] : [], snapshot);
+    return;
+  }
+
+  printMessageBox(
+    'Nothing to update from here',
+    [
+      `${binary} is not installed here, so there is no desktop update to run.`,
+      'This cihub came from somewhere else; update it with:',
+      ...cliUpdateInstructions(snapshot.channel, snapshot.stack?.version ?? undefined).map((line) => `  ${line}`),
+      '',
+      `The Hub stack is a separate channel: ${BASE_COMMAND} pool update`,
+    ],
+    'yellow',
+  );
+  // Exit 1 whether or not this was a check: nothing was updated, and a scripted caller that treats
+  // 0 as "up to date" would be wrong.
+  process.exit(1);
+}
+
+/**
+ * `cihub self-update` — replace this standalone binary with the release the stack runs.
+ *
+ * See cli-self-update.ts for why the package-manager channels are refused and why this needs a
+ * token. Nothing here touches the Hub stack: `cihub pool update` is that half, and keeping them
+ * apart is what lets an operator fix one without recreating containers to do it.
+ */
+export async function runSelfUpdateCommand(args: string[], gathered?: SkewSnapshot) {
+  for (const arg of args) {
+    if (arg !== '--check' && arg !== '--to' && !arg.startsWith('--to=') && !/^\d/.test(arg) && !/^v\d/.test(arg)) {
+      usageAndExit(`Unknown argument: ${arg}\n${selfUpdateUsage(BASE_COMMAND)}`);
+    }
+  }
+  const checkOnly = args.includes('--check');
+  const toFlag = args.indexOf('--to');
+  const inlineTo = args.find((arg) => arg.startsWith('--to='));
+  const requestedVersion = inlineTo ? inlineTo.slice('--to='.length) : toFlag >= 0 ? args[toFlag + 1] : undefined;
+  if ((toFlag >= 0 && !requestedVersion) || (inlineTo && !requestedVersion)) usageAndExit(selfUpdateUsage(BASE_COMMAND));
+
+  // `cihub update` has already gathered and printed this; re-reading it would print the box twice.
+  const snapshot = gathered ?? gatherSkew();
+  if (!gathered) printMessageBox('CLI and Hub stack', snapshot.report.lines, skewBoxColor(snapshot.report));
+
+  const plan = planSelfUpdate({
+    channel: classifyCliInstall(process.execPath),
+    platform: process.platform,
+    arch: process.arch,
+    env: process.env,
+    requestedVersion,
+    stackVersion: snapshot.stack?.version ?? null,
+  });
+  if (!plan.ok) {
+    printMessageBox('Cannot self-update', [plan.why, '', ...plan.fix.map((line) => `  ${line}`)], 'yellow');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (checkOnly) {
+    printMessageBox(
+      'Self-update (check only)',
+      [
+        `Would install ${plan.assetName} ${plan.version} — ${plan.reason}.`,
+        `Over ${describeTarget(plan.target)}.`,
+        'Nothing was downloaded or replaced.',
+      ],
+      'cyan',
+    );
+    return;
+  }
+
+  let asset: { path: string; tag: string };
+  try {
+    asset = await downloadReleaseAsset({ token: plan.token, assetName: plan.assetName, version: plan.version });
+  } catch (error) {
+    printMessageBox(
+      'Self-update failed',
+      [error instanceof Error ? error.message : String(error), '', '  Check the token can read the private repository: gh auth status'],
+      'red',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  const installed = installBinaryOverSelf({
+    sourceBytes: readFileSync(asset.path),
+    targetPath: plan.target,
+    // `latest` is a pointer, not a claim about what the asset reports, so only a named version is
+    // held to matching. The binary still has to run and identify itself either way.
+    expectedVersion: plan.version === 'latest' ? undefined : plan.version,
+  });
+  printMessageBox(
+    installed.ok ? 'Self-update complete' : 'Self-update failed',
+    [installed.message, ...(installed.ok ? [`Release ${asset.tag}. Run \`${BASE_COMMAND} doctor\` to confirm it matches the stack.`] : [])],
+    installed.ok ? 'green' : 'red',
+  );
+  if (!installed.ok) process.exitCode = 1;
 }
 
 // --- connect an existing agent (BYO) ---
