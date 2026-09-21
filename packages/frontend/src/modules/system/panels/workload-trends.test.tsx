@@ -202,4 +202,36 @@ describe('WorkloadTrend', () => {
     expect(container.textContent).toContain('Idle');
     expect(lineRuns(container, 'Engine — GPU memory by workload')).toHaveLength(1);
   });
+
+  /*
+   * The "scale to 256 TB" regression, pinned. `gpuVramMb` is megabytes and the axis scale takes
+   * bytes; the ceiling used to be computed from the raw megabytes and THEN multiplied by 1024² at
+   * render, so the scale's 256 MiB floor — 268,435,456 — was printed as 268,435,456 MB. Seen live
+   * on a 10 GB RTX 3080 on every node whose workloads held no VRAM, because that is exactly when
+   * the floor is the ceiling.
+   */
+  it('labels an empty GPU axis in gigabytes, never terabytes', () => {
+    // The Hub's own container: present in every sample, never holding VRAM.
+    const hub = { appUrn: 'urn:hub', appName: 'Hub', cpuPercent: 3, gpuVramMb: null };
+    const history = [sample(20, [hub]), sample(21, [hub]), sample(22, [hub])];
+
+    const { container } = render(<WorkloadTrend metric="gpu" history={history} apps={[app(hub.appUrn, hub.appName, 3)]} state={READY} />);
+
+    expect(container.textContent).toContain('scale to 1.0 GB');
+    expect(container.textContent).not.toMatch(/TB/);
+  });
+
+  it('scales a GPU axis from the megabytes it is given, in the same unit its label prints', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+    const history = [sample(20, [{ ...engine, gpuVramMb: 1_533 }]), sample(21, [{ ...engine, gpuVramMb: 1_533 }])];
+
+    const { container } = render(<WorkloadTrend metric="gpu" history={history} apps={[app(engine.appUrn, engine.appName, 5)]} state={READY} />);
+
+    // 1,533 MiB is the row's value; padded 10% and rounded up to the next 256 MiB step it is
+    // 1,792 MiB, which is the ceiling — a plausible figure one gridline above the peak, not
+    // 1,792 MiB re-read as megabytes-of-megabytes.
+    expect(container.textContent).toContain('1.5 GB');
+    expect(container.textContent).toContain('scale to 1.8 GB');
+    expect(container.textContent).not.toMatch(/TB/);
+  });
 });
