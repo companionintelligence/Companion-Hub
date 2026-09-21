@@ -28,6 +28,20 @@ const appRuntimeHistoryPointSchema = z.object({
   gpuVramMb: z.number().nullable(),
 });
 
+const appReadinessCheckSchema = z.object({
+  status: z.string(),
+  detail: z.string().optional(),
+});
+
+// Normalised, not the app's raw body — see `app-readiness.helpers.ts` for what each field means.
+const appReadinessSchema = z.object({
+  status: z.enum(['ok', 'degraded', 'unknown']),
+  checks: z.record(z.string(), appReadinessCheckSchema),
+  busy: z.boolean().nullable(),
+  drainable: z.boolean().nullable(),
+  sampledAt: z.string(),
+});
+
 const appRuntimeHealthSchema = z.object({
   appUrn: z.string(),
   appName: z.string(),
@@ -46,6 +60,9 @@ const appRuntimeHealthSchema = z.object({
   sampledAt: z.string(),
   containers: z.array(containerRuntimeStatsSchema),
   gpuVramMb: z.number().nullable(),
+  // `null` when the app declares no `hub_integration.readiness` endpoint, or is not running so
+  // nothing was probed; a probe that happened but produced nothing readable is `unknown`.
+  readiness: appReadinessSchema.nullable(),
 });
 
 const appRuntimeHistorySampleSchema = z.object({

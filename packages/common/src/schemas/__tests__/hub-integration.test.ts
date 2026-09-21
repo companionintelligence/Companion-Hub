@@ -230,6 +230,67 @@ describe('hubIntegrationSchema', () => {
     });
   });
 
+  describe('readiness endpoint (CI-Hub#1556)', () => {
+    it('should accept the ci-hermes descriptor and keep every field', () => {
+      const result = hubIntegrationSchema.safeParse({
+        readiness: { service: 'ci-hermes-gateway', port: 8642, path: '/health/detailed', bearer_env: 'APP_SEED' },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.readiness).toEqual({ service: 'ci-hermes-gateway', port: 8642, path: '/health/detailed', bearer_env: 'APP_SEED' });
+      }
+    });
+
+    it('should default path to /health and leave bearer_env undefined (an unauthenticated probe)', () => {
+      const result = hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8080 } });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.readiness?.path).toBe('/health');
+        expect(result.data?.readiness?.bearer_env).toBeUndefined();
+      }
+    });
+
+    it('should leave readiness undefined when not declared, so nothing is probed', () => {
+      const result = hubIntegrationSchema.safeParse({ mcp_client: true });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data?.readiness).toBeUndefined();
+      }
+    });
+
+    it('should require service and a valid port', () => {
+      expect(hubIntegrationSchema.safeParse({ readiness: { port: 8642 } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: '', port: 8642 } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway' } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 0 } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 65536 } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 80.5 } }).success).toBe(false);
+    });
+
+    it('should reject a service that is a hostname or an authority rather than a compose service name', () => {
+      // The bearer is sent to whatever `service` names, so only a shape that can be one of the
+      // app's own compose services is allowed; the monitor then checks it against the compose.
+      for (const service of ['evil.example.com', 'host.docker.internal', 'ci-memory:8642', 'Gateway', '-gateway', 'gate way', 'a/b', 'gateway.']) {
+        expect(hubIntegrationSchema.safeParse({ readiness: { service, port: 8642 } }).success).toBe(false);
+      }
+      for (const service of ['ci-hermes-gateway', 'gateway', 'db_1', '0api']) {
+        expect(hubIntegrationSchema.safeParse({ readiness: { service, port: 8642 } }).success).toBe(true);
+      }
+    });
+
+    it('should reject a relative path or one containing whitespace (it is interpolated into the probe URL)', () => {
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, path: 'health' } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, path: '/health detailed' } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, path: '/health\n' } }).success).toBe(false);
+    });
+
+    it('should reject a malformed bearer_env (must be a valid env var name)', () => {
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, bearer_env: '' } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, bearer_env: '1_BAD' } }).success).toBe(false);
+      expect(hubIntegrationSchema.safeParse({ readiness: { service: 'gateway', port: 8642, bearer_env: 'APP SEED' } }).success).toBe(false);
+    });
+  });
+
   describe('R-SCH-2: appInfoSchema integration', () => {
     const minimalAppInfo = {
       id: 'test-app',
@@ -279,6 +340,18 @@ describe('hubIntegrationSchema', () => {
       if (result.success) {
         expect(result.data.hub_integration?.inference?.llm_base_url).toBe('LLM_API_BASE');
         expect(result.data.hub_integration?.inference?.num_ctx).toBeUndefined();
+      }
+    });
+
+    it('should parse appInfoSchema with hub_integration.readiness', () => {
+      const result = appInfoSchema.safeParse({
+        ...minimalAppInfo,
+        hub_integration: { readiness: { service: 'ci-hermes-gateway', port: 8642, path: '/health/detailed', bearer_env: 'APP_SEED' } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.hub_integration?.readiness?.service).toBe('ci-hermes-gateway');
+        expect(result.data.hub_integration?.readiness?.bearer_env).toBe('APP_SEED');
       }
     });
 

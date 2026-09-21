@@ -38,6 +38,7 @@ function app(appUrn: string, appName: string, cpuPercent: number): AppRuntimeHea
     sampledAt: '2026-09-10T02:31:00Z',
     containers: [],
     gpuVramMb: null,
+    readiness: null,
   };
 }
 

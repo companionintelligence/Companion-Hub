@@ -369,6 +369,28 @@ Installed apps get inference config two ways, and both choose the model through 
   remove its endpoint or its chat model, and restarts an app at most once per 10 minutes, checking
   again when that window ends. The Hub-upgrade sync still restarts every AI app unconditionally.
 
+## App readiness endpoint
+
+App status (`running`, `stopped`) is what Docker says, from `app-status-sync.service.ts`, and
+readiness never changes it. An app that wants the Hub to see inside its process declares
+`hub_integration.readiness` (`{ service, port, path = "/health", bearer_env? }`, CI-Hub#1556).
+`AppRuntimeMonitorService` then dials `http://<service>:<port><path>` on the shared network, the
+way `agent-notify` dials a wake hook, on its existing cadence and only while the app is `running`,
+with a 2 s timeout and `Authorization: Bearer <value of bearer_env from the app's app.env>` when
+the manifest names one. The bearer is never logged. The probe only ever dials a service declared in
+the app's own installed docker-compose.json — the schema refuses hostnames, and the monitor refuses
+(with `unknown` and one warning) a name the compose does not declare — so `bearer_env` can only
+reach the app's own containers, never another app, the host, or the internet.
+
+`app-readiness.helpers.ts` normalises the body into `AppRuntimeHealthDto.readiness`:
+`status` (`ok` | `degraded` | `unknown`), `checks[name].{status, detail?}`, `busy`, `drainable`,
+`sampledAt`. It reads Hermes's `/health/detailed` layout (`readiness.checks`, `gateway_busy`,
+`gateway_drainable`); a body with no `readiness` block is `ok` only from a top-level
+`status: "ok"`. A probe that times out, answers non-2xx, or returns an unreadable body is `unknown`,
+never `degraded`. `readiness` is `null` when the app declares no endpoint or is not running. The
+app detail page shows a pill beside the Memory badge and, when checks fail, lists them by name
+with the app's `detail` (`app-readiness.tsx`).
+
 ## Family Hub auth and Memory connect
 
 Human dashboard login (password and Portal SSO) goes through `AuthService.admitHubPerson`. Each Portal `(issuer, subject)` that is a member of the paired org gets their own Hub `user` row (`operator: true`). Device-key Bearer and CLI JWT still map to the bootstrap operator.
