@@ -29,7 +29,8 @@ export interface PoolInventoryBackend {
   /**
    * The node's ceiling on the `num_ctx` it hands its apps (`inferenceMaxNumCtx`), set by its
    * operator to its engine's own context. `null` or absent when it has none, or when the peer's
-   * build does not advertise one — the two are the same on the wire. See {@link poolContextCap}.
+   * build does not advertise one — the two are the same on the wire, and both read as "takes any
+   * window". See {@link poolContextCap}.
    */
   maxNumCtx?: number | null;
 }
@@ -56,15 +57,26 @@ function servedLocally(inventory: PoolInventory, engineId: string, backend?: Inf
 }
 
 /**
- * The context cap a pooled handout of `engineId` must respect: the smallest cap among the nodes
- * that serve it, or `null` when none of them advertises one.
+ * The context cap a pooled handout of `engineId` must respect: the LARGEST cap among the nodes
+ * that serve it, or `null` — no cap — when none serve it or any serving node advertises none.
  *
- * The proxy may place the app's request on any of those nodes, and a node's cap is its operator's
- * statement of what its engine runs at — a request above it reloads that node's model with a
- * larger window (core-2, 2026-09-20: 25 GB → 44 GB on a 30B, and every request at another size a
- * reload back). The minimum is what fits everywhere. A node that advertises no cap counts for
- * nothing here rather than as unlimited, because a build predating the field is indistinguishable
- * from one with no cap: the caller falls back to its own cap when this is `null`.
+ * A node's cap is its operator's statement of what its engine runs at, and a request above it
+ * reloads that node's model with a larger window (core-2, 2026-09-20: 25 GB → 44 GB on a 30B, and
+ * every request at another size a reload back). The proxy no longer places such a request there:
+ * a request asking for a window is placed only on nodes whose cap is unset or at least that window
+ * (`applyContextCap`), the same way a prompt ceiling moves a node back. So the handout can ask for
+ * the largest window any serving node offers, and placement keeps it off the rest.
+ *
+ * It used to be the smallest cap, "what fits everywhere", and that let one small node cap the whole
+ * fleet's agents: on 2026-09-21 core-17 (a 4×16384 batch node whose prompt ceiling already kept
+ * agent turns off it) advertised 16384, and ci-hermes on core-2 — whose own engine serves the model
+ * at 65536 — was handed `HERMES_NUM_CTX=16384` and refused tool use ("Hermes needs at least
+ * 64,000"). Set to 65536 by hand the task succeeded in 54 s, entirely on core-2.
+ *
+ * A serving node with no cap reads as unbounded, because that is what placement makes of it: it
+ * accepts any window, so the handout is not bound by any capped node either. A build predating the
+ * field is indistinguishable from one with no cap, and is treated the same — which is why every
+ * node should carry its cap (`cihub fleet backends --ollama-context` writes them all).
  */
 export function poolContextCap(inventory: PoolInventory, engineId: string, backend?: InferenceBackendType): number | null {
   let cap: number | null = null;
@@ -72,7 +84,8 @@ export function poolContextCap(inventory: PoolInventory, engineId: string, backe
     if (backend && entry.backend !== backend) continue;
     if (!inventoryListsModel(entry.models, engineId)) continue;
     const advertised = clampContextCap(entry.maxNumCtx);
-    if (advertised !== null && (cap === null || advertised < cap)) cap = advertised;
+    if (advertised === null) return null;
+    if (cap === null || advertised > cap) cap = advertised;
   }
   return cap;
 }
@@ -86,7 +99,7 @@ export interface ChatModelHandout {
   servedBy: string[];
   /** True when this node itself serves the model, so its own memory is the right basis for num_ctx. */
   servedLocally: boolean;
-  /** The smallest context cap among the nodes serving `engineId`, or null when none advertises one. See {@link poolContextCap}. */
+  /** The largest context cap among the nodes serving `engineId`, or null when any of them advertises none. See {@link poolContextCap}. */
   contextCap: number | null;
   /** Served models the app's requirements excluded, with the reasons. */
   rejected: Array<{ engineId: string; unmet: string[] }>;
@@ -257,9 +270,9 @@ export interface ContextHandoutInput {
   kvMbPerToken?: number | null;
   weightMb?: number | null;
   /**
-   * The engine-runtime ceiling: this node's `inferenceMaxNumCtx`, or for a pooled handout the
-   * pool-wide minimum from {@link poolContextCap}. `null` or absent is no cap. Anything this build
-   * cannot believe (see `clampContextCap`) is no cap too.
+   * The engine-runtime ceiling: this node's `inferenceMaxNumCtx` on the direct path, or for a
+   * pooled handout the largest cap among the serving nodes from {@link poolContextCap}. `null` or
+   * absent is no cap. Anything this build cannot believe (see `clampContextCap`) is no cap too.
    */
   maxContextLength?: number | null;
 }
@@ -296,6 +309,11 @@ function uncappedContextLength(input: ContextHandoutInput): number {
  * differs from the window the local engine currently holds the model at (`/api/ps`
  * `context_length`) is a reload on the app's first request, and a reload back on the next request
  * at the old size; when no cap is set, that is the core-2 flip and the cap is the fix.
+ *
+ * Through the pool the second reads differently. A handout above this node's own cap is not a
+ * reload here: the proxy places the app's requests on a node whose cap can take the window and
+ * reaches this node's engine only on failover. So when `localContextCap` is set and below the
+ * handout, the line says that instead of promising a reload that placement prevents.
  */
 export function describeContextHandout(input: {
   appSlug: string;
@@ -305,15 +323,29 @@ export function describeContextHandout(input: {
   minContextLength?: number;
   /** The `context_length` the local engine reports the model loaded at, or null when it is not loaded or cannot be asked. */
   residentContextLength: number | null;
+  /**
+   * This node's own cap, when the handout went through the pool and this node serves the model —
+   * the one case a handout may lawfully exceed it. Omit on the direct path, where `maxContextLength`
+   * already is this node's cap.
+   */
+  localContextCap?: number | null;
 }): string[] {
   const { appSlug, engineId, numCtx, minContextLength, residentContextLength } = input;
   const cap = clampContextCap(input.maxContextLength);
+  const localCap = clampContextCap(input.localContextCap);
   const notes: string[] = [];
   if (cap !== null && typeof minContextLength === 'number' && minContextLength > cap) {
     notes.push(
       `${appSlug}: the context cap (${cap}) is below its ${minContextLength}-token floor, so it is handed ${numCtx} and may refuse to start; ` +
         `raise the engine's context (cihub fleet backends --ollama-context) and the cap together, or leave this app off this node.`,
     );
+  }
+  if (localCap !== null && localCap < numCtx) {
+    notes.push(
+      `${appSlug}: handed ${numCtx} for ${engineId}, above this node's own cap (${localCap}); ` +
+        `the pool places its requests on nodes whose cap can take that window, and this node's engine serves them only on failover, which reloads it at ${numCtx}.`,
+    );
+    return notes;
   }
   if (residentContextLength !== null && residentContextLength > 0 && residentContextLength !== numCtx) {
     notes.push(

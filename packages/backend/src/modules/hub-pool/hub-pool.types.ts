@@ -87,12 +87,15 @@ export interface PoolPeerCapabilities {
   /**
    * The answering node's ceiling on the context window it hands its apps (`inferenceMaxNumCtx`),
    * which its operator set to the engine's own context (`OLLAMA_CONTEXT_LENGTH`). An entry node
-   * whose app may be served here caps the app's `num_ctx` at the smallest cap among the candidates
-   * that serve the model — see `poolContextCap` — so a pooled request never asks a peer's engine for
-   * a window that reloads its model.
+   * reads it twice: placing a request, it moves this node behind every candidate whose cap can take
+   * the window the request asks for (`applyContextCap`), so a pooled request never asks this engine
+   * for a window that reloads its model while another node can take it; and handing an app its
+   * `num_ctx`, it uses the largest cap among the candidates that serve the model
+   * (`poolContextCap`), since placement keeps that window off the smaller ones.
    *
    * ABSENT means no cap, and that is the only encoding of it: a node with none omits the key, and
-   * so does every build predating the field. Read through `clampContextCap`, never raw.
+   * so does every build predating the field — both read as "takes any window". Read through
+   * `clampContextCap`, never raw.
    */
   maxNumCtx?: number;
   /**
