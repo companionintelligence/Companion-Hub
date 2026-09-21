@@ -77,7 +77,16 @@ import {
 } from './fleet-ollama-bind.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
-import { clearPendingPairingCode, describeDeviceNameConflict, readPendingPairingCode, savePendingPairingCode } from './fleet-pairing-codes.js';
+import {
+  clearPendingPairingCode,
+  describeDeviceNameConflict,
+  describeInvalidatedPairingCode,
+  findInvalidatingReRegistration,
+  findReRegistration,
+  readPendingPairingCode,
+  recordReRegisteredPairingCode,
+  savePendingPairingCode,
+} from './fleet-pairing-codes.js';
 import {
   deletePortalDevice,
   findPortalDevice,
@@ -1540,14 +1549,21 @@ async function runInstall(args: FleetArgs): Promise<void> {
 
     // The code is minted (or reused) INSIDE installNode, after every gate and after the binary is on
     // the node — the last step before `register`. A kept code survives a failed attempt; a spent one
-    // is forgotten once the Hub reports registered.
+    // is forgotten once the Hub reports registered. A kept code that a later `fleet devices
+    // re-register` has replaced is refused by name: Portal honours only the newest, and sending the
+    // old one is a twenty-minute `hub up` ending in "Pairing failed" (core-1, 2026-09-20).
     const orgId = storedLogin?.orgId ?? '';
     const mint =
       strategy.kind === 'given'
         ? undefined
         : async () => {
             const pending = readPendingPairingCode(node.ip, orgId);
-            if (pending) return { code: pending.pairingCode, detail: `reusing the code minted ${pending.mintedAt.slice(0, 16)} for ${pending.slug}` };
+            if (pending) {
+              const invalidated = findInvalidatingReRegistration(pending);
+              if (invalidated) throw new Error(describeInvalidatedPairingCode(pending, invalidated));
+              const origin = pending.reRegisteredAt ? 're-registered' : 'minted';
+              return { code: pending.pairingCode, detail: `reusing the code ${origin} ${pending.mintedAt.slice(0, 16)} for ${pending.slug}` };
+            }
             try {
               const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
               savePendingPairingCode({
@@ -1562,7 +1578,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
               return { code: minted.pairingCode, detail: `registered as ${minted.slug}` };
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
-              throw new Error(/already exists/.test(message) ? describeDeviceNameConflict(node.name) : message);
+              throw new Error(/already exists/.test(message) ? describeDeviceNameConflict(node.name, findReRegistration(node.name, orgId)) : message);
             }
           };
 
@@ -2367,7 +2383,32 @@ async function runDevices(args: FleetArgs): Promise<void> {
       const minted = await reRegisterPortalDevice({ login: resolved, deviceId: device.id });
       console.log(`${colorize('✓', 'green')} ${device.name} — replacement pairing code minted; the device is inactive until it pairs again`);
       console.log(colorize(`  on the node: cihub register --code ${minted.pairingCode}`, 'dim'));
-      if (args.json) console.log(JSON.stringify({ device: device.id, pairingCode: minted.pairingCode }, null, 2));
+      // The code a `fleet install` kept for this node died the moment Portal answered. Replace it,
+      // so the next install reuses this one rather than failing at register with the old. Portal
+      // has already done its part, so a store this machine cannot write is a warning, not a failure.
+      let kept: ReturnType<typeof recordReRegisteredPairingCode>;
+      try {
+        kept = recordReRegisteredPairingCode({
+          device: { id: device.id, name: device.name, slug: device.slug },
+          deviceId: minted.deviceId,
+          pairingCode: minted.pairingCode,
+          orgId: organizationId,
+          roster: loadFleetRoster().nodes,
+        });
+      } catch (error) {
+        kept = { why: `the code could not be kept for fleet install (${error instanceof Error ? error.message : String(error)})` };
+      }
+      if (kept.ip) {
+        console.log(
+          colorize(
+            `  or from here: ${BASE_COMMAND} fleet install --nodes ${kept.node} --execute, which reuses this code${kept.replaced ? ` in place of the one kept ${kept.replaced.mintedAt.slice(0, 16)}` : ''}`,
+            'dim',
+          ),
+        );
+      } else {
+        console.log(colorize(`  ${kept.why}; pass it to the next fleet install with --code`, 'yellow'));
+      }
+      if (args.json) console.log(JSON.stringify({ device: device.id, pairingCode: minted.pairingCode, keptForNode: kept.node ?? null }, null, 2));
     } catch (error) {
       console.error(colorize(`${device.name}: ${error instanceof Error ? error.message : String(error)}`, 'red'));
       process.exitCode = 1;
