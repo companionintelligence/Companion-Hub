@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { type FileOnlySettings, type PersistedSettings, type UserSettingsBody, parsePersistedSettings, settingsFileSchema } from '@/app.dto';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
+import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
@@ -10,6 +11,7 @@ import {
   DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PRESSURE_WEIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
   type HubPoolPin,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
@@ -125,6 +127,7 @@ type PersistedSettingsValues = {
   inferenceMtplxUrl: string | undefined;
   inferenceDsparkUrl: string | undefined;
   inferenceMaxNumCtx: number | undefined;
+  inferenceOllamaSlots: number | undefined;
   inferenceCloudProviders: CloudProviderConfig[] | undefined;
   hubPoolEnabled: boolean | undefined;
   hubPoolOutboundEnabled: boolean | undefined;
@@ -137,6 +140,7 @@ type PersistedSettingsValues = {
   hubPoolMaxPromptTokens: number | undefined;
   hubPoolProbeSnapshotTtlMs: number | undefined;
   hubPoolPrefixAffinityMaxInFlight: number | undefined;
+  hubPoolSlotAwareness: number | undefined;
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
   hubPoolPins: HubPoolPin[] | undefined;
@@ -160,6 +164,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceMtplxUrl: undefined,
   inferenceDsparkUrl: undefined,
   inferenceMaxNumCtx: undefined,
+  inferenceOllamaSlots: undefined,
   inferenceCloudProviders: undefined,
   hubPoolEnabled: undefined,
   hubPoolOutboundEnabled: undefined,
@@ -172,6 +177,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolMaxPromptTokens: undefined,
   hubPoolProbeSnapshotTtlMs: undefined,
   hubPoolPrefixAffinityMaxInFlight: undefined,
+  hubPoolSlotAwareness: undefined,
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
   hubPoolPins: undefined,
@@ -253,6 +259,7 @@ export class ConfigurationService {
       inferenceMtplxUrl: settings.inferenceMtplxUrl,
       inferenceDsparkUrl: settings.inferenceDsparkUrl,
       inferenceMaxNumCtx: settings.inferenceMaxNumCtx,
+      inferenceOllamaSlots: settings.inferenceOllamaSlots,
       inferenceCloudProviders: settings.inferenceCloudProviders,
       hubPoolEnabled: settings.hubPoolEnabled,
       hubPoolOutboundEnabled: settings.hubPoolOutboundEnabled,
@@ -265,6 +272,7 @@ export class ConfigurationService {
       hubPoolMaxPromptTokens: settings.hubPoolMaxPromptTokens,
       hubPoolProbeSnapshotTtlMs: settings.hubPoolProbeSnapshotTtlMs,
       hubPoolPrefixAffinityMaxInFlight: settings.hubPoolPrefixAffinityMaxInFlight,
+      hubPoolSlotAwareness: settings.hubPoolSlotAwareness,
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
       hubPoolPins: settings.hubPoolPins,
@@ -354,6 +362,7 @@ export class ConfigurationService {
         inferenceMtplxUrl: settingsValues.inferenceMtplxUrl,
         inferenceDsparkUrl: settingsValues.inferenceDsparkUrl,
         inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
+        inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
         inferenceCloudProviders: settingsValues.inferenceCloudProviders,
         // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
         // off) mean the same thing to routing but different things to the UI, which distinguishes
@@ -369,6 +378,7 @@ export class ConfigurationService {
         hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
         hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
         hubPoolPrefixAffinityMaxInFlight: settingsValues.hubPoolPrefixAffinityMaxInFlight,
+        hubPoolSlotAwareness: settingsValues.hubPoolSlotAwareness,
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         hubPoolPins: settingsValues.hubPoolPins,
@@ -512,14 +522,18 @@ export class ConfigurationService {
       // as before the cap existed. Clamped on read, so a value an older build persisted out of this
       // build's bounds reads as no cap instead of starving an app. See `inference-context-cap.ts`.
       maxNumCtx: clampContextCap(this.config.userSettings.inferenceMaxNumCtx),
+      // `null` is not stated: the pool ranks this node by queue depth alone, as before slots existed.
+      // Clamped on read for the reason the cap is. See `inference-ollama-slots.ts`.
+      ollamaSlots: clampOllamaSlots(this.config.userSettings.inferenceOllamaSlots),
     };
   }
 
   /**
    * Persist inference preferences. `model` is the catalog id of the default model Companion agents
    * (Hermes, OpenClaw) and the Hub use by default. Pass `null` to clear it; omit it to leave it
-   * unchanged. `embeddingModel`, `visionModel`, and `maxNumCtx` follow the same convention; a
-   * cleared `maxNumCtx` removes the key rather than storing a null, like the pool prompt ceiling.
+   * unchanged. `embeddingModel`, `visionModel`, `maxNumCtx` and `ollamaSlots` follow the same
+   * convention; a cleared `maxNumCtx` or `ollamaSlots` removes the key rather than storing a null,
+   * like the pool prompt ceiling.
    */
   public async setInferencePreferences(
     backend: InferenceBackendType,
@@ -531,6 +545,7 @@ export class ConfigurationService {
     mtplxUrl?: string | null,
     dsparkUrl?: string | null,
     maxNumCtx?: number | null,
+    ollamaSlots?: number | null,
   ) {
     const settings: {
       inferenceBackend: InferenceBackendType;
@@ -542,6 +557,7 @@ export class ConfigurationService {
       inferenceMtplxUrl?: string;
       inferenceDsparkUrl?: string;
       inferenceMaxNumCtx?: number;
+      inferenceOllamaSlots?: number;
     } = { inferenceBackend: backend };
     if (model !== undefined) {
       settings.inferenceModel = model ?? undefined;
@@ -566,6 +582,9 @@ export class ConfigurationService {
     }
     if (maxNumCtx !== undefined) {
       settings.inferenceMaxNumCtx = maxNumCtx ?? undefined;
+    }
+    if (ollamaSlots !== undefined) {
+      settings.inferenceOllamaSlots = ollamaSlots ?? undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();
@@ -595,6 +614,7 @@ export class ConfigurationService {
       poolMaxPromptTokens: this.config.userSettings.hubPoolMaxPromptTokens ?? null,
       poolProbeSnapshotTtlMs: this.config.userSettings.hubPoolProbeSnapshotTtlMs ?? DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
       poolPrefixAffinityMaxInFlight: this.config.userSettings.hubPoolPrefixAffinityMaxInFlight ?? DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+      poolSlotAwareness: this.config.userSettings.hubPoolSlotAwareness ?? DEFAULT_POOL_SLOT_AWARENESS,
       // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
       // in-memory settings the next request will rank against.
       poolPins: [...(this.config.userSettings.hubPoolPins ?? [])],
@@ -622,6 +642,7 @@ export class ConfigurationService {
       hubPoolMaxPromptTokens?: number;
       hubPoolProbeSnapshotTtlMs?: number;
       hubPoolPrefixAffinityMaxInFlight?: number;
+      hubPoolSlotAwareness?: number;
       hubPoolPins?: HubPoolPin[];
       hubPoolRouteAppsAlways?: boolean;
     } = {};
@@ -660,6 +681,9 @@ export class ConfigurationService {
     }
     if (preferences.poolPrefixAffinityMaxInFlight !== undefined) {
       settings.hubPoolPrefixAffinityMaxInFlight = preferences.poolPrefixAffinityMaxInFlight;
+    }
+    if (preferences.poolSlotAwareness !== undefined) {
+      settings.hubPoolSlotAwareness = preferences.poolSlotAwareness;
     }
     // The whole list, never a delta: pins have no per-row identity in settings.json, so the pin
     // service computes the next array and this persists it. `undefined` still means "leave alone",
