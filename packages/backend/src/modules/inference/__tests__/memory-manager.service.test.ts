@@ -549,6 +549,111 @@ describe('MemoryManagerService', () => {
     });
   });
 
+  // ─── Live host RAM on a unified node ──────────────────────────────
+  //
+  // The budget's "used" is what the engines hold, and on a unified-memory node that is not the
+  // whole story: the apps, the OS, page cache under pressure and any engine the sweep cannot size
+  // draw from the same RAM. On `ci` (Strix Halo) vLLM held 96 GB of GTT out-of-band; the budget
+  // still said the machine was free, and the load it admitted got Ollama OOM-killed. The hardware
+  // inspector now serves `ram.availableMb` live (marked by `ram.sampledAt`), and that is what a
+  // load on a unified node must be admitted against as well.
+
+  describe('live host RAM cap (unified memory)', () => {
+    const STRIX_HALO_TOTAL_MB = 128085;
+    const unified = (ram: HardwareProfile['ram']): HardwareProfile =>
+      makeProfile({
+        gpu: {
+          available: true,
+          vendor: 'amd',
+          model: 'Radeon 8060S',
+          vramMb: STRIX_HALO_TOTAL_MB,
+          unifiedMemory: true,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostRocmKfdAvailable: true,
+        },
+        ram,
+        effectiveInferenceMemoryMb: ram.availableMb,
+      });
+    const live = (availableMb: number): HardwareProfile['ram'] => ({
+      totalMb: STRIX_HALO_TOTAL_MB,
+      availableMb,
+      usedMb: STRIX_HALO_TOTAL_MB - availableMb,
+      sampledAt: '2026-09-20T12:00:00.000Z',
+    });
+
+    it('admits against what the host has free now, not the budget arithmetic alone', async () => {
+      // Engines: nothing resident, so the budget is total − 2 GB reserve = 126037 MB.
+      // Host: vLLM has 96 GB of GTT the sweep never sees; MemAvailable says 20 GB.
+      const profile = unified(live(20480));
+
+      const fit = await service.canFitModel(profile, 24000);
+
+      expect(fit.fits).toBe(false);
+      expect(fit.availableMb).toBe(20480 - 2048);
+      expect(fit.requiredMb).toBe(24000);
+      // The same load fits once the host actually has the room.
+      expect((await service.canFitModel(unified(live(53052)), 24000)).fits).toBe(true);
+    });
+
+    it('still honours the budget when the host has more free than the engines leave', async () => {
+      // Ollama holds a 100 GB model: 128085 − 2048 − 100000 = 26037 MB budgeted; the host
+      // (page cache reclaimable) says 60 GB free.
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('qwen3.6:35b', { totalBytes: 100000 * MiB })] },
+        ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+      ]);
+
+      const fit = await service.canFitModel(unified(live(61440)), 24000);
+      expect(fit.availableMb).toBe(26037);
+      expect(fit.fits).toBe(true);
+      expect((await service.canFitModel(unified(live(61440)), 30000)).fits).toBe(false);
+    });
+
+    it('does not cap on a host-probe snapshot (no sampledAt): macOS/Windows keep the budget arithmetic', async () => {
+      // The desktop probe's vm_stat free+inactive at app start on a busy Mac; it never refreshes,
+      // and macOS would hand the memory over on demand. Capping on it would refuse loads that
+      // were admitted before.
+      const profile = unified({ totalMb: 98304, availableMb: 12288 });
+
+      const fit = await service.canFitModel(profile, 24000);
+
+      expect(fit.availableMb).toBe(98304 - 2048);
+      expect(fit.fits).toBe(true);
+    });
+
+    it('discrete node: VRAM admission is untouched by the live RAM figure', async () => {
+      const profile = makeProfile({ ram: { totalMb: 65536, availableMb: 4096, usedMb: 61440, sampledAt: '2026-09-20T12:00:00.000Z' } });
+
+      const fit = await service.canFitModel(profile, 20000);
+
+      expect(fit.availableMb).toBe(24576 - 512);
+      expect(fit.fits).toBe(true);
+    });
+
+    it('a host with less free than the reserve has no headroom, and says 0 rather than a negative number', async () => {
+      const fit = await service.canFitModel(unified(live(1024)), 100);
+      expect(fit.availableMb).toBe(0);
+      expect(fit.fits).toBe(false);
+    });
+
+    it('canStartApp evicts against the live figure', async () => {
+      const candidates: TrackedModel[] = [tracked({ catalogId: 'model-a', backendModelId: 'a', memoryUsedMb: 20000 })];
+      modelRegistry.getEvictionCandidates.mockReturnValue(candidates);
+      reportResidency([
+        { backend: 'ollama', source: 'measured', models: [resident('a', { totalBytes: 20000 * MiB })] },
+        ...nothingResident().filter((entry) => entry.backend !== 'ollama'),
+      ]);
+
+      // Budget headroom 106037 MB; host says 8 GB free. A 10 GB app needs the model gone.
+      const result = await service.canStartApp(unified(live(8192)), 10240);
+
+      expect(result.canStart).toBe(true);
+      expect(result.modelsToEvict).toEqual(['model-a']);
+      expect(result.warning).toContain('evict');
+    });
+  });
+
   // ─── canPinModel ──────────────────────────────────────────────────
 
   describe('canPinModel', () => {
