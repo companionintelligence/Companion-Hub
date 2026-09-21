@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { computeCpuChartScale, computeMemoryChartScale } from './resource-monitor-chart';
+import { computeCpuChartScale, computeMemoryChartScale, computeVramChartScale } from './resource-monitor-chart';
 
 describe('computeCpuChartScale', () => {
   it('uses a 0–100% axis when all samples are at or below one core', () => {
@@ -76,5 +76,30 @@ describe('computeMemoryChartScale', () => {
 
   it('ignores values that are not measurements at all', () => {
     expect(computeMemoryChartScale([Number.NaN, -1, Number.POSITIVE_INFINITY]).max).toBe(256 * MIB);
+  });
+});
+
+describe('computeVramChartScale', () => {
+  const MIB = 1024 ** 2;
+  const GIB = 1024 ** 3;
+
+  it('floors an empty or zero series at 1 GiB, the size of the thing a workload holding VRAM holds', () => {
+    expect(computeVramChartScale([]).max).toBe(GIB);
+    expect(computeVramChartScale([0, 0]).max).toBe(GIB);
+    expect(computeVramChartScale([Number.NaN, -1]).max).toBe(GIB);
+  });
+
+  it('lifts a sub-gigabyte peak to the same floor rather than a 256 MiB box', () => {
+    expect(computeVramChartScale([300 * MIB]).max).toBe(GIB);
+  });
+
+  it('otherwise rounds exactly as the memory scale does, in bytes', () => {
+    expect(computeVramChartScale([1_533 * MIB])).toEqual(computeMemoryChartScale([1_533 * MIB]));
+    expect(computeVramChartScale([1_533 * MIB]).max).toBe(1_792 * MIB);
+    expect(computeVramChartScale([9.8 * GIB]).max % GIB).toBe(0);
+  });
+
+  it('keeps every tick an exact byte count at the floor', () => {
+    expect(computeVramChartScale([]).ticks.every((tick) => Number.isInteger(tick))).toBe(true);
   });
 });
