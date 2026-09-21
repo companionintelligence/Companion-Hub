@@ -339,7 +339,11 @@ Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a
 (`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the
 system unit there would start a second daemon on the same port, so the installer refuses with the
 reason — before running ollama.com's installer, which would do exactly that. And a node with no
-tailnet address fails the tailnet bind rather than falling back to something else.
+tailnet address fails the tailnet bind rather than falling back to something else. The beta-1
+refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
+under `ci`'s `systemd --user` too — an ssh forward to beta-1 — while its system `ollama.service` is
+what serves `:11434`, and it is managed like any other node, with a note naming the tunnel unit
+(see [the seam in `CLI.md`](CLI.md#ollamas-bind-one-file-read-back)).
 
 When a drop-in seems to have no effect: `systemctl cat ollama` shows the merge order, and
 `cihub fleet status` names the winner. Note the seam in [`CLI.md`](CLI.md#ollamas-bind-one-file-read-back):

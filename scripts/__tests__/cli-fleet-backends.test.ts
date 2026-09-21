@@ -54,24 +54,35 @@ const facts = (over: Partial<HostFacts> = {}): HostFacts => ({
 
 const ok = (out: string) => ({ ok: true, out, err: '', code: 0, ms: 5 });
 
-/** The bind probe for a node already managed for `--bind all` (guard up), with or without the runtime file. */
-function bindProbe(node: { runtime?: string; env?: string; userScope?: boolean }) {
+/**
+ * The bind probe for a node already managed for `--bind all` (guard up), with or without the runtime
+ * file. `userScope` is beta-1 (a user unit serves the port, the system unit is dead). `tunnel` is
+ * core-2 as the unprivileged probe really sees it (2026-09-21): the system unit serves :11434 as
+ * uid 997, so `ss` withholds the pid and there is no `owner=` line — only the socket's cgroup — and
+ * a user-scope `ollama-tunnel.service` (an ssh forward) is active beside it.
+ */
+function bindProbe(node: { runtime?: string; env?: string; userScope?: boolean; tunnel?: boolean }) {
   const bindFile = canonicalBindDropinContent(normalizeOllamaHost('0.0.0.0'));
   const lines = [
     'bind_probe=1',
     'unit_file=/etc/systemd/system/ollama.service',
     `show:ActiveState=${node.userScope ? 'inactive' : 'active'}`,
     `show:UnitFileState=${node.userScope ? 'disabled' : 'enabled'}`,
+    ...(node.tunnel ? ['show:MainPID=3522669', 'show:UID=997'] : []),
     'show:NeedDaemonReload=no',
     `show:Environment=OLLAMA_HOST=0.0.0.0:11434 OLLAMA_KEEP_ALIVE=5m${node.env ? ` ${node.env}` : ''}`,
     'tailscale_ip=100.100.1.1',
     'guard_unit=active',
     node.userScope
       ? 'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=2417,fd=3))'
-      : 'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=901,fd=3))',
-    node.userScope
-      ? 'owner=2417 ci /user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service'
-      : 'owner=901 ollama /system.slice/ollama.service',
+      : node.tunnel
+        ? 'ss=LISTEN 0 4096 *:11434 *:* uid:997 ino:81099226 sk:8006 cgroup:/system.slice/ollama.service v6only:0 <->'
+        : 'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=901,fd=3))',
+    ...(node.userScope
+      ? ['owner=2417 ci /user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service']
+      : node.tunnel
+        ? ['user_uid=ci 1001', 'user_unit=ci ollama-tunnel.service loaded active running SSH tunnel: core-2 localhost:11435 -> beta-1 Ollama :11434']
+        : ['owner=901 ollama /system.slice/ollama.service']),
     `dir_entry=${CANONICAL_BIND_DROPIN}`,
     `===DROPIN /etc/systemd/system/ollama.service.d/${CANONICAL_BIND_DROPIN}===`,
     bindFile,
@@ -359,6 +370,68 @@ describe('fleet backends --execute', () => {
     expect(runtimeCalls()).toHaveLength(0);
     // Not a failure: a fact about the machine, reported so the run continues.
     expect(process.exitCode).toBeUndefined();
+  });
+
+  // core-2, 2026-09-21: `fleet backends` printed "ollama skipped — ollama-tunnel.service is running
+  // under ci's systemd --user; the system ollama.service path would start a second daemon and
+  // collide on :11434" and managed nothing — but the SYSTEM ollama.service is what listens there,
+  // and the user unit is an ssh forward whose name merely matches. The listener decides.
+  describe('a user-scope `ollama*` unit that is not the listener (core-2)', () => {
+    beforeEach(() => {
+      // No runtime file yet, so the runtime step has work to do — the work that used to be skipped.
+      hosts['10.0.0.2'] = { bind: bindProbe({ tunnel: true }), ufw: firewallProbe(UFW_FULL) };
+    });
+
+    const NOTE =
+      "ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (uid 997) is what serves :11434 — that unit is not the daemon; managing the system unit";
+
+    it('is managed on --execute, and the line says which unit was seen and why it did not stop the run', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'core-2']);
+      const text = printed();
+      expect(text).not.toMatch(/ollama\s+skipped/);
+      expect(text).not.toContain('would start a second daemon');
+      expect(text).toMatch(/ollama\s+adopted.*bind already 0\.0\.0\.0:11434/);
+      expect(text).toContain(NOTE);
+      expect(text).toContain(`${RUNTIME_DROPIN} now carries OLLAMA_NUM_PARALLEL=4; ollama restarted`);
+      // The runtime step ran on the system unit — the thing that was previously "managed nothing".
+      expect(runtimeCalls().map((c) => c.host)).toEqual(['10.0.0.2']);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('the dry run plans the runtime for it and prints the same note under the bind', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--nodes', 'core-2']);
+      const text = printed();
+      expect(text).toContain(`bind: ${NOTE}`);
+      expect(text).not.toContain('would refuse');
+      expect(text).toContain(`runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4, then daemon-reload and restart ollama`);
+      expect(sudoCalls()).toHaveLength(0);
+    });
+
+    it('the report carries the note as data, so a fleet-wide JSON run can list every such node', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-2', '--json']);
+      const json = output.find((l) => l.trimStart().startsWith('['));
+      expect(json).toBeDefined();
+      const rows = JSON.parse(json ?? '[]') as Array<{ backend?: string; bind?: { note?: string; refused?: string } }>;
+      const ollama = rows.find((r) => r.backend === 'ollama');
+      expect(ollama?.bind?.note).toBe(NOTE);
+      expect(ollama?.bind?.refused).toBeUndefined();
+    });
+
+    it('a user-scope unit that IS the listener still skips, by the socket cgroup alone', async () => {
+      // beta-1 through the same unprivileged `ss -e`: no owner= line, the cgroup on the ss line.
+      hosts['10.0.0.3'] = {
+        bind: bindProbe({ userScope: true })
+          .replace(
+            /^ss=.*$/m,
+            'ss=LISTEN 0 4096 *:11434 *:* uid:1000 ino:133057448 sk:9003 cgroup:/user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service v6only:0 <->',
+          )
+          .replace(/^owner=.*\n/m, 'user_uid=ci 1000\nuser_unit=ci ollama-local.service loaded active running Ollama local model server\n'),
+        ufw: firewallProbe(UFW_FULL),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'beta-1']);
+      expect(printed()).toMatch(/ollama\s+skipped.*ollama-local\.service under ci's systemd --user \(socket uid 1000\) already owns :11434/);
+      expect(runtimeCalls()).toHaveLength(0);
+    });
   });
 
   it('adds only the missing firewall rules, verifies them, and leaves a complete table alone', async () => {

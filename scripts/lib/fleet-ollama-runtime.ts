@@ -279,7 +279,9 @@ export const RUNTIME_MARKERS = {
  * Apply the runtime settings on a node. Runs as root. Idempotent.
  *
  * In order: refuse if something other than the system unit owns the port (same guard as the bind —
- * a drop-in under `ollama.service.d/` configures nothing on beta-1 or core-2); read the merged
+ * a drop-in under `ollama.service.d/` configures nothing on beta-1, whose daemon is a user unit;
+ * core-2's `ollama-tunnel.service` only LOOKS like that case, and the guard goes by the listener);
+ * read the merged
  * environment; render the file to a temp path and compare bytes with what is on disk; if identical
  * and systemd has loaded it, touch nothing and say so; if identical but systemd reports
  * `NeedDaemonReload=yes` and a managed key is not in effect — a previous run stopped between
