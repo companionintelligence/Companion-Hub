@@ -2,7 +2,12 @@ import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { describe, expect, it } from 'vitest';
 import { InternalNetworkGuard } from '../internal-network.guard';
 
-function createContext(request: { ip?: string; socket?: { remoteAddress?: string }; headers?: Record<string, string> }): ExecutionContext {
+function createContext(request: {
+  ip?: string;
+  socket?: { remoteAddress?: string };
+  headers?: Record<string, string>;
+  hubPrincipal?: string;
+}): ExecutionContext {
   return {
     switchToHttp: () => ({
       getRequest: () => request,
@@ -57,6 +62,27 @@ describe('InternalNetworkGuard', () => {
         }),
       ),
     ).toThrow(ForbiddenException);
+  });
+
+  /**
+   * An authenticated `inference` key answers the question this guard asks better than the source IP
+   * does. The principal is set only on inference paths (`AuthMiddleware.attachInferenceKey`), so it
+   * cannot appear on the other routes this guard protects.
+   */
+  it('allows a public address once an inference API key has authenticated', () => {
+    expect(
+      guard.canActivate(
+        createContext({
+          ip: '203.0.113.10',
+          socket: { remoteAddress: '203.0.113.10' },
+          hubPrincipal: 'inference',
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each(['session', 'portal-device', 'cli', 'qa-read'])('still rejects a public address for the %s principal', (principal) => {
+    expect(() => guard.canActivate(createContext({ ip: '203.0.113.10', hubPrincipal: principal }))).toThrow(ForbiddenException);
   });
 
   it('does not trust spoofed x-forwarded-for headers directly', () => {

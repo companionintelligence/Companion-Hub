@@ -17,6 +17,16 @@ import { isPrivateOrLocalIp, normalizeIpLiteral } from '@/common/helpers/ip-addr
 export class InternalNetworkGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest() as Request;
+
+    // An authenticated `inference` API key answers the question this guard asks — "may this caller
+    // spend the appliance's GPU?" — better than the source IP does, so where one is present the IP
+    // is not consulted. `AuthMiddleware` sets this principal ONLY on `isInferenceApiRoute` paths
+    // (see `attachInferenceKey`), so it cannot appear on the app-callback and credential routes
+    // this guard also protects, whatever a caller sends.
+    if (request.hubPrincipal === 'inference') {
+      return true;
+    }
+
     const ip = normalizeIpLiteral(request.ip ?? request.socket.remoteAddress ?? undefined);
     if (!ip || !isPrivateOrLocalIp(ip)) {
       throw new ForbiddenException('This endpoint is only available on the local appliance network');

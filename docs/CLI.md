@@ -346,9 +346,10 @@ carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_K
 **not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
 
 ```bash
-cihub api-key create --name "laptop"                     # operator keys carry the 'mcp' scope
-cihub api-key create --name "fleet-qa" --scope qa:read   # read-only test key (see below)
-cihub api-key list                                       # id, name, scopes, capability, prefix
+cihub api-key create --name "laptop"                        # operator keys carry the 'mcp' scope
+cihub api-key create --name "fleet-qa" --scope qa:read      # read-only test key (see below)
+cihub api-key create --name "Cursor" --scope inference      # OpenAI-compatible client key (see below)
+cihub api-key list                                          # id, name, scopes, capability, prefix
 ```
 
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
@@ -362,8 +363,16 @@ scope on its key, and it is stored as `read`. A Hub built before `qa:read` exist
 but authenticates nothing with it. See
 [Reading these without an operator credential](hub-pool.md#reading-these-without-an-operator-credential).
 
+An `inference` key authenticates the OpenAI-compatible and Ollama-native inference routes —
+`/api/inference/v1/*`, `/api/inference/pool/v1/*`, `/api/inference/pool/api/*`, and the `/api/tags`
+and `/api/version` probes — and nothing else. It carries no operator identity, reaches no MCP tool,
+and is what you paste into an editor or agent so that the tool can run inference here without
+holding the appliance. Like `qa:read` it must be the only scope on its key and is stored as `read`.
+See [`connect-developer-tools.md`](connect-developer-tools.md).
+
 `create` also accepts `--capability read|write|full`, which decides what the key may do on the
-surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
+surfaces its scopes opened — `write` is the default. It is refused on a `qa:read` or `inference`
+key, which reach a fixed route list and no tools. Raise or lower an existing key's capability in
 **Settings → Security**; the CLI has `create` and `list` only.
 
 A key you create with the CLI records no creator, because nobody is signed in. It keeps its per-app

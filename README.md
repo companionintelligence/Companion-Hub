@@ -45,6 +45,14 @@ or `CI_LOCAL_ONLY=true` in the hub `.env` stops it, as does the switch in
 Settings → General. What is collected, and what is not, is documented in
 [`docs/telemetry.md`](docs/telemetry.md).
 
+## Connect your tools
+
+Hub speaks the OpenAI API and the Ollama native API. Create an `inference`-scoped key in
+**Settings → Security** (or `cihub api-key create --scope inference`) and point any OpenAI-compatible
+client — Cursor, Continue, Cline, Aider, Zed, the OpenAI SDKs — at
+`http://<hub-host>:5002/api/inference/v1` with `"model": "auto"`. The key reaches the inference
+routes and nothing else. See [`docs/connect-developer-tools.md`](docs/connect-developer-tools.md).
+
 ## Documentation
 
 Start with [`docs/README.md`](docs/README.md) for the doc map, product glossary, tip scrub policy, and writing style.

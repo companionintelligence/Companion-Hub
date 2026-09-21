@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyInfo, ApiKeyService } from './api-key.service';
-import { MCP_SCOPE } from './api-key.scopes';
+import { MCP_SCOPE, type OperatorMintableScope } from './api-key.scopes';
 import type { ApiKeyCapability } from './api-key.capabilities';
 
 /**
@@ -27,12 +27,16 @@ export class ApiKeyAdminService {
    * it; only its hash is stored. Multiple keys are valid at once, so "rotation" is create-new →
    * roll-out → revoke-old, with no downtime for connected agents.
    *
-   * Operator keys carry the 'mcp' scope only: the 'app' scope requires an owning app URN to satisfy
-   * the callback guard's identity check, so an operator-created 'app' key could never authenticate
-   * anything — offering it would only mint dead credentials.
+   * `scope` is which surface the key opens, and is limited to `OPERATOR_MINTABLE_SCOPES` — see that
+   * constant for why 'app' and 'qa:read' are not on it. It defaults to 'mcp' in the DTO, which is
+   * what this method minted before the parameter existed.
    *
-   * `capability` is what the key may do on that scope, and unlike the scope it IS a choice: a key
-   * minted for a third-party MCP client to read memory has no business installing apps.
+   * `capability` is what the key may do on the MCP tool surface, and there it IS a choice: a key
+   * minted for a third-party MCP client to read memory has no business installing apps. On an
+   * 'inference' key it is inert — running a completion is neither a read nor a write of appliance
+   * state — so it is stored as given and never consulted. Stored rather than forced to a fixed
+   * value because a scope that later grows a meaningful capability should not have to unpick a
+   * column full of a placeholder.
    *
    * `createdByUserId` is the person creating it. The key acts with that person's grants and role
    * from then on, so it can never do more than they can; `null` is a caller with no person behind it
@@ -40,9 +44,14 @@ export class ApiKeyAdminService {
    * Required, not defaulted: a key with no creator keeps its per-app reach on every app, so a caller
    * that forgot to say who is creating one must not get that by omission.
    */
-  async createKey(name: string, capability: ApiKeyCapability, createdByUserId: number | null): Promise<ApiKeyInfo & { key: string }> {
-    const created = await this.apiKeys.create(name, { scopes: [MCP_SCOPE], capability, createdByUserId });
-    this.logger.info('API key admin: key created', created.id, capability, `createdBy=${createdByUserId ?? 'none'}`);
+  async createKey(
+    name: string,
+    capability: ApiKeyCapability,
+    createdByUserId: number | null,
+    scope: OperatorMintableScope = MCP_SCOPE,
+  ): Promise<ApiKeyInfo & { key: string }> {
+    const created = await this.apiKeys.create(name, { scopes: [scope], capability, createdByUserId });
+    this.logger.info('API key admin: key created', created.id, scope, capability, `createdBy=${createdByUserId ?? 'none'}`);
     return created;
   }
 

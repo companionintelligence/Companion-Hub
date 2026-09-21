@@ -17,8 +17,13 @@ declare global {
        * `qa-read` is an API key carrying the `qa:read` scope. It never has a `user`: `AuthGuard`
        * refuses it with 403, and only `ObservabilityReadGuard` admits it, on GET routes marked
        * `@ObservabilityRead()`.
+       *
+       * `inference` is an API key carrying the `inference` scope, and never has a `user` either.
+       * `AuthMiddleware` resolves it only on the client-facing inference paths
+       * (`isInferenceApiRoute`), where `InternalNetworkGuard` and `PoolAppGuard` accept it in place
+       * of the request's origin. It authenticates nothing anywhere else.
        */
-      hubPrincipal?: 'session' | 'portal-device' | 'cli' | 'qa-read';
+      hubPrincipal?: 'session' | 'portal-device' | 'cli' | 'qa-read' | 'inference';
       /**
        * A host-local credential (device key or CLI JWT) authenticated, but this Hub has no
        * operator row for it to speak as — it was registered with Portal and never claimed.

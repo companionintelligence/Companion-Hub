@@ -151,6 +151,42 @@ describe('api-key create', () => {
     });
   });
 
+  /*
+   * An `inference` key is pasted into third-party software — an editor's settings file, an agent
+   * harness — so the same standalone rule applies for a sharper reason than it does to `qa:read`:
+   * one row that also carried 'mcp' would put install and uninstall behind a string the operator
+   * handed to their IDE.
+   */
+  describe('inference keys', () => {
+    it('mints one with --scope, stored as read', () => {
+      runApiKeyCommand(['create', '--name', 'Cursor', '--scope', 'inference']);
+      expect(insertSql()).toContain("ARRAY['inference']::text[]");
+      expect(insertSql()).toContain("'read'");
+      expect(insertSql()).not.toContain("'write'");
+    });
+
+    it('prints the routes it opens and where to point a client', () => {
+      runApiKeyCommand(['create', '--name', 'Cursor', '--scope', 'inference']);
+
+      const printed = (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+      expect(printed).toContain('/api/inference/v1/chat/completions');
+      expect(printed).toContain('Every other route refuses it.');
+      expect(printed).toContain('docs/connect-developer-tools.md');
+    });
+
+    it('refuses to put it on the same key as another scope', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'Cursor', '--scopes', 'mcp,inference'])).toThrow('exit');
+      expect(errorText()).toContain("The 'inference' scope must be the only scope on its key");
+      expect(insertSql()).toBeUndefined();
+    });
+
+    it('refuses a capability, which the key could never use', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'Cursor', '--scope', 'inference', '--capability', 'write'])).toThrow('exit');
+      expect(errorText()).toContain('--capability write would do nothing');
+      expect(insertSql()).toBeUndefined();
+    });
+  });
+
   it('reads --name in either flag form, and still refuses one that is a forgotten flag value', () => {
     runApiKeyCommand(['create', '--name=laptop', '--capability=read']);
     expect(insertSql()).toContain("VALUES ('laptop'");

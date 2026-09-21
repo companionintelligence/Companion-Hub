@@ -30,16 +30,17 @@ const API_KEY_PREFIX_LEN = 8; // mirrors PREFIX_LEN in ApiKeyService
  * correctly provisioned and authenticate nothing — the same "credential that isn't one" this
  * command exists to retire.
  */
-const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp', 'qa:read'];
+const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp', 'qa:read', 'inference'];
 
 /**
- * Scopes that must be the only scope on their key — mirrors QA_READ_SCOPE in api-key.scopes.ts.
+ * Scopes that must be the only scope on their key — mirrors STANDALONE_SCOPES in api-key.scopes.ts.
  *
- * A `qa:read` key is the credential a test harness holds so that it does NOT hold operator authority.
- * One row carrying 'mcp' as well would hand that harness the whole MCP tool surface under a name that
- * says "read", which is the exact mistake the scope exists to prevent.
+ * A `qa:read` key is the credential a test harness holds so that it does NOT hold operator authority,
+ * and an `inference` key is the one an editor or agent holds for the same reason. One row carrying
+ * 'mcp' as well would hand that holder the whole MCP tool surface under a name that says otherwise,
+ * which is the exact mistake each scope exists to prevent.
  */
-const STANDALONE_API_KEY_SCOPES: readonly string[] = ['qa:read'];
+const STANDALONE_API_KEY_SCOPES: readonly string[] = ['qa:read', 'inference'];
 
 /**
  * What a `qa:read` key reaches — mirrors the handlers marked `@ObservabilityRead()` in the backend.
@@ -50,6 +51,18 @@ const QA_READ_ROUTES: readonly string[] = [
   'GET /api/inference/pool/routing-log',
   'GET /api/apps/:urn (without the app config)',
   'GET /api/apps/install-queue',
+];
+
+/**
+ * What an `inference` key reaches — mirrors `isInferenceApiRoute` in the backend. Printed at
+ * creation so the operator minting it sees the whole of its authority before pasting it into an
+ * editor.
+ */
+const INFERENCE_ROUTES: readonly string[] = [
+  'POST /api/inference/v1/chat/completions (and /embeddings, /audio/*)',
+  'GET  /api/inference/v1/models',
+  'POST /api/inference/pool/v1/* and /api/inference/pool/api/* (pooled)',
+  'GET  /api/version, GET /api/tags (Ollama-native probes)',
 ];
 
 /** Scopes that exist but are only ever minted for an app, so the error can say why, not just "unknown". */
@@ -118,8 +131,8 @@ function apiKeyScopeConflict(scopes: string[]): string | null {
   const standalone = scopes.filter((scope) => STANDALONE_API_KEY_SCOPES.includes(scope));
   if (standalone.length === 0 || scopes.length === 1) return null;
   return (
-    `The '${standalone.join("', '")}' scope must be the only scope on its key: it exists so a test harness can hold ` +
-    'a credential that reads and does nothing else. Create a separate key for the other scope.'
+    `The '${standalone.join("', '")}' scope must be the only scope on its key: it exists so its holder can hold ` +
+    'a credential with no operator authority at all. Create a separate key for the other scope.'
   );
 }
 
@@ -310,14 +323,19 @@ export function runApiKeyCommand(args: string[]) {
     if (conflict) usageAndExit(conflict);
 
     const isQaRead = scopes.includes('qa:read');
+    const isInference = scopes.includes('inference');
     const requestedCapability = readApiKeyFlag(args, '--capability');
-    // Capability decides what an MCP key may do among tools; a `qa:read` key has no tools, only its
-    // route list. Stored as 'read' so `api-key list` does not show a test key as 'write', and an explicit
-    // wider value is refused rather than stored as a grant the server would never apply.
-    if (isQaRead && requestedCapability !== undefined && requestedCapability !== 'read') {
-      usageAndExit(`A qa:read key reads a fixed list of routes; --capability ${requestedCapability || '(empty)'} would do nothing. Omit it.`);
+    // Capability decides what an MCP key may do among tools; neither a `qa:read` nor an `inference`
+    // key has tools, only its route list. Stored as 'read' so `api-key list` does not show one as
+    // 'write', and an explicit wider value is refused rather than stored as a grant the server would
+    // never apply.
+    const toollessScope = isQaRead ? 'qa:read' : isInference ? 'inference' : null;
+    if (toollessScope && requestedCapability !== undefined && requestedCapability !== 'read') {
+      usageAndExit(
+        `A ${toollessScope} key reaches a fixed list of routes; --capability ${requestedCapability || '(empty)'} would do nothing. Omit it.`,
+      );
     }
-    const capability = requestedCapability ?? (isQaRead ? 'read' : DEFAULT_API_KEY_CAPABILITY);
+    const capability = requestedCapability ?? (toollessScope ? 'read' : DEFAULT_API_KEY_CAPABILITY);
     if (!API_KEY_CAPABILITIES.includes(capability)) {
       usageAndExit(
         `Unknown capability: ${capability || '(empty)'}. Valid: ${API_KEY_CAPABILITIES.join(', ')} — ` +
@@ -364,11 +382,22 @@ export function runApiKeyCommand(args: string[]) {
               'Update the Hub if you need capability-limited keys.',
             ]),
         ...(isQaRead ? ['', 'Accepted only on:', ...QA_READ_ROUTES.map((route) => `  ${route}`), 'Every other route refuses it.'] : []),
+        ...(isInference
+          ? [
+              '',
+              'Accepted only on:',
+              ...INFERENCE_ROUTES.map((route) => `  ${route}`),
+              'Every other route refuses it. Point a client at this Hub with',
+              `  base URL  ${bold('http://<this-hub>:5002/api/inference/v1')}`,
+              '  api key   the key below',
+              'See docs/connect-developer-tools.md.',
+            ]
+          : []),
         '',
         `${bold('key')}     ${rawKey}`,
         '',
         'This is the only time the key is shown. Store it now.',
-        isQaRead ? 'Revoke it in Settings → Security.' : 'Change what it can do, or revoke it, in Settings → Security.',
+        toollessScope ? 'Revoke it in Settings → Security.' : 'Change what it can do, or revoke it, in Settings → Security.',
       ],
       'green',
     );

@@ -4,7 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
-import { QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
+import { INFERENCE_SCOPE, QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
 import { Injectable, type NestMiddleware, ServiceUnavailableException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
@@ -13,6 +13,7 @@ import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { OBSERVABILITY_READ_METHODS } from './observability-read.guard';
+import { isInferenceApiRoute } from './inference-api-routes';
 
 /**
  * Constant-time secret comparison, length-safe.
@@ -202,6 +203,44 @@ export class AuthMiddleware implements NestMiddleware {
   }
 
   /**
+   * Name an `inference` API key as the `inference` principal — and, like `qa:read`, install NO user.
+   *
+   * No user is again the whole design. An editor extension holding this key must be able to run a
+   * completion and nothing else, so every guard that asks "is there an operator here" has to keep
+   * saying no. What the principal buys is narrower: `InternalNetworkGuard` and `PoolAppGuard` stop
+   * asking *where the request came from* once they can see a credential, which is what lets the key
+   * work from the operator's laptop over the tailnet or the tunnel instead of only from a container
+   * on the appliance bridge.
+   *
+   * Looked up only on {@link isInferenceApiRoute}, which is the allow-list — see that function for
+   * why the allow-list lives at the lookup rather than at a later check, and why peer forwarding
+   * (`/api/inference/pool/local/*`) is excluded from it.
+   *
+   * Unlike `attachQaReadKey` this runs on POST, because a completion is a POST. The cost is one
+   * indexed key-store SELECT per inference request that carries a 64-hex bearer — which on this
+   * surface is mostly Hub-managed apps sending `CI_LLM_API_KEY`, a *backend* key that will not
+   * match a row. That is a real cost and a deliberate one: it is a single lookup in front of a
+   * request that occupies a GPU for seconds to minutes, and the peer-forwarding path that actually
+   * runs hot is excluded above.
+   *
+   * A key store that cannot answer leaves the request unauthenticated rather than failing it, for
+   * the same reason as `attachQaReadKey`: a database blip must not turn an app's inference — which
+   * the origin guards would have admitted on their own — into a 503.
+   */
+  private async attachInferenceKey(req: Request, token: string): Promise<void> {
+    if (!this.apiKeys || !HUB_API_KEY_SHAPE.test(token) || !isInferenceApiRoute(req)) {
+      return;
+    }
+    try {
+      if (await this.apiKeys.resolve(token, INFERENCE_SCOPE)) {
+        req.hubPrincipal = 'inference';
+      }
+    } catch {
+      // Unauthenticated, as above. `ApiKeyService` has already retried transient failures and logged them.
+    }
+  }
+
+  /**
    * Speak as the first operator on behalf of a host-local credential — or, when there is no
    * operator to speak as, refuse to install a principal and record WHY.
    *
@@ -318,8 +357,15 @@ export class AuthMiddleware implements NestMiddleware {
         if (error instanceof ServiceUnavailableException) {
           throw error;
         }
-        // Not a JWT this Hub signed; the last arm is a `qa:read` API key.
+        // Not a JWT this Hub signed; the last arms are the two scoped API keys that carry no
+        // operator. Both scopes are standalone (see api-key.scopes.ts), so no key this Hub mints
+        // can satisfy them both — but the second lookup is skipped once the first named a
+        // principal regardless, so a row hand-written into the database can never have one arm
+        // silently overwrite the other's answer. It also saves the SELECT.
         await this.attachQaReadKey(req, token);
+        if (!req.hubPrincipal) {
+          await this.attachInferenceKey(req, token);
+        }
         return next();
       }
     }

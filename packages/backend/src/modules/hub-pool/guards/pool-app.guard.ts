@@ -31,6 +31,15 @@ export class PoolAppGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
 
+    // A caller holding an `inference` API key has proven what this guard infers from provenance,
+    // so arriving through the tunnel is no longer disqualifying — that is the whole point of the
+    // key, and an operator's editor is exactly the caller that reaches the Hub that way. The
+    // principal is set only on inference paths (`AuthMiddleware.attachInferenceKey`), so this
+    // cannot widen any other route.
+    if (request.hubPrincipal === 'inference') {
+      return true;
+    }
+
     for (const header of TUNNEL_MARKER_HEADERS) {
       if (request.headers[header]) {
         throw new ForbiddenException('The pool proxy is only available to apps on the local appliance network');
