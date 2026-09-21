@@ -1313,6 +1313,11 @@ export function formatPoolProbeLines(result: PoolProbeResult): string[] {
 
 const LOG_WIDTHS = [20, 4, 20, 34, 5, 7] as const;
 
+/** Where a routing-log row's affinity key came from, in the words an app operator can act on. Never the key itself. */
+function describeAffinityKey(affinity: Pick<PoolRoutingAffinity, 'key'>): string {
+  return affinity.key === 'header' ? 'session from X-Hub-Pool-Session' : 'session from prompt digest';
+}
+
 export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
   const summary = log.summary;
   const header = [
@@ -1412,18 +1417,21 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     }
     // Only when affinity changed something or stood aside: a `hit` is the line an operator watching
     // a session stay put needs, a `skipped` says why a turn re-prefilled cold, and a `miss` on every
-    // first turn would bury both.
+    // first turn would bury both. Each names where the key came from: a session the app named with
+    // `X-Hub-Pool-Session` and one the proxy digested from the prompt are told apart on this line,
+    // because a `hit` that sent sessions to the wrong node (core-2, 2026-09-21) was a digest that
+    // named too many of them, and the first question is which kind of key it was.
     const affinity = entry.affinity;
     if (affinity?.outcome === 'hit') {
       lines.push(
-        `  ↳ followed its prompt prefix to ${sanitizeForBox(affinity.remembered ?? '?')} (${affinity.inFlight ?? 0} in flight, limit ${affinity.maxInFlight})`,
+        `  ↳ followed its prompt prefix to ${sanitizeForBox(affinity.remembered ?? '?')} (${affinity.inFlight ?? 0} in flight, limit ${affinity.maxInFlight}; ${describeAffinityKey(affinity)})`,
       );
     } else if (affinity?.outcome === 'skipped') {
       const node = sanitizeForBox(affinity.remembered ?? '?');
       lines.push(
         affinity.inFlight !== null && affinity.inFlight >= affinity.maxInFlight
-          ? `  ↳ ${node} holds this prompt's prefix but had ${affinity.inFlight} in flight (limit ${affinity.maxInFlight}); ranked as usual`
-          : `  ↳ ${node} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
+          ? `  ↳ ${node} holds this prompt's prefix but had ${affinity.inFlight} in flight (limit ${affinity.maxInFlight}); ranked as usual (${describeAffinityKey(affinity)})`
+          : `  ↳ ${node} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first (${describeAffinityKey(affinity)})`,
       );
     }
     // The chain, not a count: which nodes refused is the whole point of reading this log.

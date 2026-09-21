@@ -54,7 +54,6 @@ import {
 import {
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
-  PREFIX_HASH_CHARS,
   PrefixAffinityStore,
   applyPrefixAffinity,
   derivePrefixKey,
@@ -2044,6 +2043,41 @@ describe('PoolProxyService', () => {
         expect(second?.affinity).toEqual({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
       });
 
+      /**
+       * The herding bug, measured on core-2, 2026-09-21: six concurrent sessions behind one 25k-token
+       * system prefix, differing only in their first user message, all keyed together — every
+       * session's first turn was a `hit` on a node that had never served it, and when one session
+       * moved they all followed, cold. Two sessions of one agent stand in for the six.
+       */
+      it('keeps two concurrent sessions of one agent apart, however long the system prompt they share', async () => {
+        const sharedSystem = { role: 'system', content: `You are an agent with these tools: ${'…'.repeat(8_192)}` };
+        const sessionA = { model: MODEL, stream: false, messages: [sharedSystem, { role: 'user', content: 'read the repo' }] };
+        const sessionB = { model: MODEL, stream: false, messages: [sharedSystem, { role: 'user', content: 'write the tests' }] };
+        // A's first turn goes to the peer because local is busy. Local is idle again for everything after.
+        await firstCallLandsOnPeer(sessionA);
+
+        // B's first turn: nothing has been served for THIS session, so the ranker decides — local, not A's peer.
+        const bFirst = await route(sessionB);
+        // A's second turn follows A to the peer; B's follows B, which stayed home.
+        const aSecond = await route({
+          ...sessionA,
+          messages: [...sessionA.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now fix it' }],
+        });
+        const bSecond = await route({
+          ...sessionB,
+          messages: [...sessionB.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'run them' }],
+        });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY, PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(bFirst)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(headersSetOn(aSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        expect(headersSetOn(bSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        const [bSecondRow, aSecondRow, bFirstRow] = routingLog.list();
+        expect(bFirstRow?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+        expect(aSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN });
+        expect(bSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: LOCAL_CANDIDATE_KEY });
+      });
+
       it('falls through to the ranker once the remembered node has the limit in flight, and says so', async () => {
         await firstCallLandsOnPeer();
         // Two already queued there: this request would be its third, and waiting costs more than re-prefilling.
@@ -2262,7 +2296,7 @@ describe('PoolProxyService', () => {
 
       it('includes every leading system message and the first message after them, and nothing later', () => {
         const twoSystem = [SYSTEM, { role: 'system', content: 'and also…' }, { role: 'user', content: 'go' }];
-        expect(promptHead({ messages: [...twoSystem, { role: 'assistant', content: 'later' }] })).toBe(JSON.stringify(twoSystem));
+        expect(promptHead({ messages: [...twoSystem, { role: 'assistant', content: 'later' }] })).toEqual(twoSystem);
         expect(
           promptHead({
             messages: [
@@ -2270,24 +2304,65 @@ describe('PoolProxyService', () => {
               { role: 'assistant', content: 'later' },
             ],
           }),
-        ).toBe(JSON.stringify([{ role: 'user', content: 'go' }]));
+        ).toEqual([{ role: 'user', content: 'go' }]);
       });
 
       it('keys a completion or generate body on its system and prompt fields, and nothing on a body with neither', () => {
-        expect(promptHead({ model: MODEL, prompt: 'Once upon' })).toBe(JSON.stringify([null, 'Once upon']));
-        expect(promptHead({ model: MODEL, system: 'Be brief', prompt: 'Once upon' })).toBe(JSON.stringify(['Be brief', 'Once upon']));
+        expect(promptHead({ model: MODEL, prompt: 'Once upon' })).toEqual([null, 'Once upon']);
+        expect(promptHead({ model: MODEL, system: 'Be brief', prompt: 'Once upon' })).toEqual(['Be brief', 'Once upon']);
         expect(promptHead({ model: MODEL, input: ['a'] })).toBeNull();
         expect(promptHead({ model: MODEL, messages: [] })).toBeNull();
         expect(derivePrefixKey(MODEL, { model: MODEL }, undefined)).toBeNull();
         expect(derivePrefixKey(MODEL, 'not an object', undefined)).toBeNull();
       });
 
-      /** Two sessions of one agent share a key once the system prompt alone fills the digest — and that is right: the shared prefix is what the cache holds. */
-      it('digests only the first PREFIX_HASH_CHARS of the head', () => {
-        const longSystem = { role: 'system', content: 'x'.repeat(PREFIX_HASH_CHARS) };
-        const a = derivePrefixKey(MODEL, { messages: [longSystem, { role: 'user', content: 'task a' }] }, undefined);
-        const b = derivePrefixKey(MODEL, { messages: [longSystem, { role: 'user', content: 'task b' }] }, undefined);
-        expect(a).toEqual(b);
+      /**
+       * The digest reads the whole head, never a window over it. An earlier 4 KB window keyed
+       * every session of an agent together once the system prompt alone filled it (core-2,
+       * 2026-09-21: six sessions behind one 25k-token prefix, one key), and the table then
+       * remembered the node that last served any of them.
+       */
+      it('keys two sessions apart that share a system prompt longer than any window, and one session together as it grows', () => {
+        // ~64 KB of system prompt, then a first user message that differs by a word.
+        const longSystem = { role: 'system', content: 'x'.repeat(65_536) };
+        const a1 = { messages: [longSystem, { role: 'user', content: 'task a' }] };
+        const b1 = { messages: [longSystem, { role: 'user', content: 'task b' }] };
+        const a = derivePrefixKey(MODEL, a1, undefined);
+        const b = derivePrefixKey(MODEL, b1, undefined);
+        expect(a).not.toBeNull();
+        expect(a).not.toEqual(b);
+
+        // Session A on its next turn: the head is unchanged, so is the key.
+        const a2 = { messages: [...a1.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now b' }] };
+        expect(derivePrefixKey(MODEL, a2, undefined)).toEqual(a);
+
+        // A difference deep in the system prompt — past where any window would read — keys apart too.
+        const edited = {
+          messages: [
+            { role: 'system', content: `${'x'.repeat(65_535)}y` },
+            { role: 'user', content: 'task a' },
+          ],
+        };
+        expect(derivePrefixKey(MODEL, edited, undefined)).not.toEqual(a);
+
+        // The header still overrides the digest: two bodies that key apart follow one header.
+        expect(derivePrefixKey(MODEL, a1, 'chat-42')).toEqual(derivePrefixKey(MODEL, b1, 'chat-42'));
+        expect(derivePrefixKey(MODEL, a1, 'chat-42')?.source).toBe('header');
+      });
+
+      it('digests a completion body as two framed parts, so the same text split differently between system and prompt keys apart', () => {
+        const a = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief.', prompt: ' Once upon' }, undefined);
+        const b = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief. ', prompt: 'Once upon' }, undefined);
+        expect(a).not.toBeNull();
+        expect(a).not.toEqual(b);
+        // And the whole prompt counts: a body that rebuilds the conversation into `prompt` keys each call apart.
+        const grown = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief.', prompt: ' Once upon a time' }, undefined);
+        expect(grown).not.toEqual(a);
+      });
+
+      it('never keys an embeddings body, however it is shaped', () => {
+        expect(derivePrefixKey(MODEL, { model: MODEL, input: 'x'.repeat(65_536) }, undefined)).toBeNull();
+        expect(derivePrefixKey(MODEL, { model: MODEL, input: ['a', 'b'] }, undefined)).toBeNull();
       });
     });
 

@@ -1225,7 +1225,7 @@ export class PoolProxyService {
     prompt?: {
       bytes: () => number;
       streaming: boolean;
-      /** The request's session key, derived only if affinity is on — a header read and at most a 4 KB digest, but not for a fleet that has it off. */
+      /** The request's session key, derived only if affinity is on — a header read, else one SHA-256 over the prompt's head, but not for a fleet that has it off. */
       prefixKey?: () => PrefixKey | null;
       /** The window the body asks for (`options.num_ctx`), read only if some candidate has a cap; `null` when it carries none. */
       numCtx?: () => number | null;
