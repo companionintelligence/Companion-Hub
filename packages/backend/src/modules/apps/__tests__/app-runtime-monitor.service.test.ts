@@ -57,7 +57,7 @@ describe('AppRuntimeMonitorService', () => {
     // one on — every existing test in this file predates GPU attribution and asserts nothing about
     // it, so the default here must be a genuine no-op, not a fabricated reading.
     hardwareInspector.getProfile.mockResolvedValue({} as any);
-    gpuSampler.sampleVramByProcess.mockResolvedValue([]);
+    gpuSampler.observeVramByProcess.mockResolvedValue({ samples: [], source: null });
 
     service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade, hardwareInspector, gpuSampler);
   });
@@ -545,27 +545,46 @@ describe('AppRuntimeMonitorService', () => {
 
       expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ gpuVramMb: null });
       expect(snapshot.unattributedGpu).toBeNull();
-      expect(gpuSampler.sampleVramByProcess).toHaveBeenCalledWith(undefined);
+      // Absent, said once per snapshot: the nulls above are for want of a measurement.
+      expect(snapshot.gpuVramSource).toBe('absent');
+      expect(gpuSampler.observeVramByProcess).toHaveBeenCalledWith(undefined);
+    });
+
+    it('reports the source that measured, even when it found nothing holding VRAM', async () => {
+      // A fresh host probe file listing no processes is a measurement of an idle card; the chart
+      // may show nothing, but the tile must not say the reading is absent on this node.
+      hardwareInspector.getProfile.mockResolvedValue({ gpu: { vendor: 'nvidia' } } as any);
+      gpuSampler.observeVramByProcess.mockResolvedValue({ samples: [], source: 'host-file' });
+
+      const snapshot = await service.getRuntimeMonitorSnapshot();
+
+      expect(snapshot.gpuVramSource).toBe('host-file');
+      expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ gpuVramMb: null });
+      expect(dockerReadFacade.mapPidsToContainers).not.toHaveBeenCalled();
     });
 
     it('sums a sampled process onto the workload whose container holds it', async () => {
       hardwareInspector.getProfile.mockResolvedValue({ gpu: { vendor: 'amd' } } as any);
-      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 4242, processName: 'some-engine', vramMb: 512 }]);
+      gpuSampler.observeVramByProcess.mockResolvedValue({ samples: [{ pid: 4242, processName: 'some-engine', vramMb: 512 }], source: 'host-file' });
       dockerReadFacade.mapPidsToContainers.mockResolvedValue(new Map([[4242, 'alpha_store-svc-1']]));
 
       const snapshot = await service.getRuntimeMonitorSnapshot();
 
       expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ gpuVramMb: 512 });
       expect(snapshot.unattributedGpu).toBeNull();
+      expect(snapshot.gpuVramSource).toBe('host-file');
       expect(dockerReadFacade.mapPidsToContainers).toHaveBeenCalledWith([4242]);
     });
 
     it('sums two processes in the same container onto one workload total', async () => {
       hardwareInspector.getProfile.mockResolvedValue({ gpu: { vendor: 'nvidia' } } as any);
-      gpuSampler.sampleVramByProcess.mockResolvedValue([
-        { pid: 1, processName: 'engine-a', vramMb: 300 },
-        { pid: 2, processName: 'engine-b', vramMb: 200 },
-      ]);
+      gpuSampler.observeVramByProcess.mockResolvedValue({
+        samples: [
+          { pid: 1, processName: 'engine-a', vramMb: 300 },
+          { pid: 2, processName: 'engine-b', vramMb: 200 },
+        ],
+        source: 'tool',
+      });
       dockerReadFacade.mapPidsToContainers.mockResolvedValue(
         new Map([
           [1, 'alpha_store-svc-1'],
@@ -580,7 +599,7 @@ describe('AppRuntimeMonitorService', () => {
 
     it('reports a process matching no known container as unattributed, not silently dropped', async () => {
       hardwareInspector.getProfile.mockResolvedValue({ gpu: { vendor: 'amd' } } as any);
-      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 9, processName: 'ollama', vramMb: 4096 }]);
+      gpuSampler.observeVramByProcess.mockResolvedValue({ samples: [{ pid: 9, processName: 'ollama', vramMb: 4096 }], source: 'tool' });
       // A bare host process: no container holds this PID at all, unlike the matched cases above.
       dockerReadFacade.mapPidsToContainers.mockResolvedValue(new Map());
 
@@ -596,6 +615,7 @@ describe('AppRuntimeMonitorService', () => {
       const snapshot = await service.getRuntimeMonitorSnapshot();
 
       expect(snapshot.apps.find((app) => app.appUrn === 'alpha:store')).toMatchObject({ cpuPercent: 5, gpuVramMb: null });
+      expect(snapshot.gpuVramSource).toBe('absent');
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('GPU VRAM attribution failed'));
     });
   });

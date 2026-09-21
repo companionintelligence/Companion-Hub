@@ -600,6 +600,8 @@ describe('installNode runs the cert step', () => {
       }
       if (cmd.includes('command -v cihub')) return ssh('path=/usr/local/bin/cihub\ncihub 0.2.70');
       if (cmd.includes('cihub up --detached')) return ssh('hub-up-complete');
+      // Both timers install under systemd/user; the GPU probe is the one that names its script.
+      if (cmd.includes('cihub-gpu-processes')) return ssh('gpu-probe-no-tool');
       if (cmd.includes('systemd/user')) return ssh('status-timer-installed');
       if (cmd.includes('cihub pool pair')) return ssh('pool-join-attempted');
       calls.push(`other:${cmd.slice(0, 30)}`);

@@ -793,7 +793,7 @@ cihub fleet backends [--backends a,b] [--execute]      # what each node can run 
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
-cihub fleet update [--hub] [--ollama] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, pull models
+cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet update --hub [--pin-digest <repo@sha256:…> | --to-majority] --execute   # pin the Hub build
@@ -1177,7 +1177,7 @@ rows sit below. Nothing is planned where ufw is inactive or absent — nothing d
 
 Per node, in order: probe hardware → **load gate** → Linux and Docker check → **preflight** →
 install `cihub` → **portal device** → `hub up` and register → **claim** → install the status-file
-timer → **tailscale cert** → optionally join a pool. Each step re-checks the state it claims to have
+timer → install the GPU probe timer → **tailscale cert** → optionally join a pool. Each step re-checks the state it claims to have
 produced, because a step that trusts an exit code is how a fleet ends up believing it registered
 machines it never reached. `hub up` reads the port the Hub was actually given (`API_PORT`, which a
 port heal can move) and fails when nothing answers there or the answer does not say `registered`.
@@ -1257,8 +1257,18 @@ failure, whatever `pool update` said. The pin holds for that run only — it rea
 `CI_HUB_IMAGE` and is not written to the node — and the run ends by saying so.
 
 `--models a,b` pulls each model, trying the Hub-managed container, then a host `ollama` binary, then
-the HTTP API, because this fleet runs Ollama three different ways. Pass at least one of the two
-flags, or the command says there is nothing to do and exits `0`.
+the HTTP API, because this fleet runs Ollama three different ways. Pass at least one of the flags,
+or the command says there is nothing to do and exits `0`.
+
+`--gpu-probe` installs the per-process GPU VRAM probe on each node — the same step `fleet install`
+runs, alone, so it can be rolled onto a fleet that is otherwise untouched. It writes the checked-in
+`scripts/host-probes/cihub-gpu-processes.{sh,service,timer}` (bundled into the CLI) to the SSH
+account's `~/.local/bin` and `~/.config/systemd/user`, takes one sample, enables lingering, and
+enables the timer: `nvidia-smi` or `rocm-smi` on the host every 15 seconds into
+`<data-dir>/state/hardware/gpu_processes.json`, which the Hub container reads; the container itself
+has neither tool. A node with neither tool is reported as skipped, not failed. The Hub needs no
+restart and no new `cihub` binary on the node. What the file means and how the Hub uses it is in
+[`fleet-setup.md`](fleet-setup.md#per-process-gpu-vram-a-host-timer-the-hub-reads).
 
 `--models recommended` asks **each node's own Hub** for the list it already computes for that
 hardware, rather than applying one list to every machine — the flat list is how this fleet drifted

@@ -167,9 +167,14 @@ export default function ResourceMonitorPage() {
         history={history.slice(-HISTORY_LIMIT)}
         apps={apps}
         state={containerState}
+        gpuVramSource={containers.data?.gpuVramSource}
         className="col-span-full md:col-span-1 xl:col-span-3"
       />
-      <WorkloadCoverage hardware={hardware.data} className="col-span-full md:col-span-1 xl:col-span-3" />
+      <WorkloadCoverage
+        hardware={hardware.data}
+        gpuVramSource={containers.data?.gpuVramSource}
+        className="col-span-full md:col-span-1 xl:col-span-3"
+      />
 
       {/* ── B. This machine ───────────────────────────────────────────────── */}
       <BandHeader title={t('DASHBOARD_BAND_MACHINE')} />

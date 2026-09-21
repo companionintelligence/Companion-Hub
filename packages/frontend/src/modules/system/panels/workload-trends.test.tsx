@@ -177,6 +177,59 @@ describe('WorkloadTrend', () => {
     expect(container.textContent).toContain('600 MB');
   });
 
+  it('says in words when per-process VRAM is absent on this node, whatever the rows show', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+    // The probe timer died mid-window: two real points, then nulls, and the newest snapshot says
+    // no source answered. The trace ends in a gap and the line says why — not a zero, not silence.
+    const history = [
+      sample(20, [{ ...engine, gpuVramMb: 512 }]),
+      sample(21, [{ ...engine, gpuVramMb: 512 }]),
+      sample(22, [engine]),
+      sample(23, [engine]),
+    ];
+
+    const { container } = render(
+      <WorkloadTrend metric="gpu" history={history} apps={[app(engine.appUrn, engine.appName, 5)]} state={READY} gpuVramSource="absent" />,
+    );
+
+    const note = container.querySelector('[data-testid="workload-trend-gpu-absent"]');
+    expect(note?.textContent).toContain('not read on this node');
+    expect(note?.textContent).toContain('cihub fleet update --gpu-probe');
+    // The rows are still there: the two real points are history worth keeping, and the gap after
+    // them is a gap — one run that never touches the baseline a fabricated zero would have drawn.
+    expect(container.textContent).toContain('Engine');
+    const runs = lineRuns(container, 'Engine — GPU memory by workload');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).not.toContain(',37');
+  });
+
+  it('prints the absent line even with no workloads or a single sample, and never for a source that answered', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+
+    const empty = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="absent" />);
+    expect(empty.container.querySelector('[data-testid="workload-trend-gpu-absent"]')).not.toBeNull();
+
+    const waiting = render(
+      <WorkloadTrend
+        metric="gpu"
+        history={[sample(20, [engine])]}
+        apps={[app(engine.appUrn, engine.appName, 5)]}
+        state={READY}
+        gpuVramSource="absent"
+      />,
+    );
+    expect(waiting.container.querySelector('[data-testid="workload-trend-gpu-absent"]')).not.toBeNull();
+
+    // A source that answered and found nothing holding VRAM is a measurement, not an absence.
+    for (const source of ['host-file', 'tool', null, undefined] as const) {
+      const { container } = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource={source} />);
+      expect(container.querySelector('[data-testid="workload-trend-gpu-absent"]')).toBeNull();
+    }
+    // And the line belongs to the GPU tile alone, whatever the source says.
+    const cpu = render(<WorkloadTrend metric="cpu" history={[]} apps={[]} state={READY} gpuVramSource="absent" />);
+    expect(cpu.container.querySelector('[data-testid="workload-trend-gpu-absent"]')).toBeNull();
+  });
+
   it('leaves a workload with no GPU VRAM found unmeasured, not drawn at zero — same rule as an absent workload', () => {
     const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
     const idle = { appUrn: 'urn:idle', appName: 'Idle', cpuPercent: 2 };

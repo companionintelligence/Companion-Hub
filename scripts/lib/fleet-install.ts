@@ -21,6 +21,7 @@
  *    claims to have produced.
  */
 
+import { classifyGpuProbeOutput, describeGpuProbeOutcome, installGpuProbeTimerScript } from './gpu-probe-timer.js';
 import { classifyStatusTimerOutput, describeStatusTimerOutcome, installStatusTimerScript } from './status-timer.js';
 import { sshCapture, sshStreamFile, type SshTarget, stdinScriptCommand } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
@@ -483,6 +484,11 @@ export async function installNode(
     ms: Date.now() - timerStarted,
   });
 
+  // Per-process GPU VRAM for the Hub container, which cannot run the vendor tool itself. Best-effort
+  // like the status timer, and skipped outright on a node with neither tool — that is an Apple or
+  // CPU-only node, not a failure. `cihub fleet update --gpu-probe` re-runs this same step alone.
+  steps.push(await gpuProbeTimerStep(target));
+
   // TLS for pooling. A peer is stored under its tailnet FQDN and reached at https://<fqdn>, so a
   // `tailscale cert` on this node is a prerequisite for every pool call — and nothing provisioned one
   // until now. Measured 2026-09-10: 14 of 18 nodes had a certificate because someone ran it by hand;
@@ -498,4 +504,24 @@ export async function installNode(
   }
 
   return { node: node.name, ok: steps.every((s) => s.ok || s.skipped), steps };
+}
+
+/**
+ * Install the GPU probe timer on one node and say what it got. Shared by `fleet install` and
+ * `fleet update --gpu-probe`, so the two cannot drift on what "installed" means.
+ *
+ * sshCapture rather than step(): the outcome is decided by markers that can appear on any line,
+ * and step() reports only the last one.
+ */
+export async function gpuProbeTimerStep(target: SshTarget): Promise<InstallStep> {
+  const started = Date.now();
+  const run = await sshCapture(target, `bash <<'CIHUB_STEP_EOF'\n${installGpuProbeTimerScript()}\nCIHUB_STEP_EOF`, 2 * 60_000);
+  const outcome = classifyGpuProbeOutput(run.out, run.ok);
+  return {
+    name: 'gpu probe timer',
+    ok: outcome !== 'failed',
+    skipped: outcome === 'no-tool' || outcome === 'no-user-session',
+    detail: outcome === 'failed' ? `${describeGpuProbeOutcome(outcome)}: ${tail(run.err || run.out, 2)}` : describeGpuProbeOutcome(outcome),
+    ms: Date.now() - started,
+  };
 }

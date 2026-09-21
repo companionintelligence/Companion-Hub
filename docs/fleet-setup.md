@@ -465,8 +465,24 @@ timer on the node runs the vendor query and writes
 *not measured*, never as zero — a writer that dies must not leave a stale "nothing is loaded"
 behind it.
 
-Install it as a user unit on the node (the Hub's state directory belongs to the same user, so
-no root is needed; the user must be lingering, which `cihub fleet install` nodes are):
+`cihub fleet install` installs it on every new node, and this rolls it onto an existing fleet
+(the same step, alone; a dry run without `--execute` prints the plan):
+
+```bash
+cihub fleet update --gpu-probe --execute
+```
+
+Per node the run writes the three checked-in files (bundled into the CLI, so the standalone `cihub`
+carries them) to the SSH account's `~/.local/bin` and `~/.config/systemd/user`, takes one sample,
+runs `loginctl enable-linger`, and enables the timer. It reports one of: installed; installed but
+only while this user is logged in (lingering was refused); installed but the tool did not answer as
+this account (`rocm-smi --showpids` reads the KFD process table, which is root's); no user manager;
+neither tool on the node — skipped, not failed, since an Apple or CPU-only node (core-4) is not a
+bug. Lingering is enabled *before* `systemctl --user` is tried: on core-3 the user manager only
+existed once `enable-linger` had run. Re-running is safe and refreshes the files in place.
+
+By hand, the same install is (the Hub's state directory belongs to the same user, so no root is
+needed; the user must be lingering, which `cihub fleet install` nodes are):
 
 ```bash
 scp scripts/host-probes/cihub-gpu-processes.{sh,service,timer} ci@<node>:/tmp/
@@ -490,6 +506,13 @@ the service. The file is:
 `nvidia-smi`, the 15-character kernel `comm` from `rocm-smi` — because that is what the Hub matches
 engines on. Per-process compute *utilization* is not in the file and not coming from these tools:
 both report it blank on this fleet's hardware.
+
+The Hub says which source answered. `GET /api/apps/resource-monitor` carries `gpuVramSource` —
+`host-file`, `tool` (the vendor CLI run by a Hub outside Docker), or `absent`, meaning nothing on
+this node could measure and every workload's `gpuVramMb` is `null` for want of a reading rather than
+for want of a workload. The resource dashboard's GPU trend tile and coverage tile print `absent` in
+words, with this install step beside it, instead of drawing an empty chart that reads as "nothing
+holds VRAM". A fresh file listing no processes is `host-file` with no rows: measured, and idle.
 
 ## Before touching a node: preflight
 

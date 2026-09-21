@@ -196,4 +196,46 @@ describe('GpuProcessSamplerService', () => {
     expect(await service.sampleVramByProcess('nvidia')).toEqual([]);
     expect(execMock).not.toHaveBeenCalled();
   });
+
+  describe('observeVramByProcess says which source answered', () => {
+    it('names the host file, including when it lists nothing — measured and idle is not absent', async () => {
+      filesystem.readJsonFile.mockResolvedValue({ ...BETA_RED_HOST_FILE, processes: [] });
+      await expect(service.observeVramByProcess('nvidia')).resolves.toEqual({ samples: [], source: 'host-file' });
+      expect(execMock).not.toHaveBeenCalled();
+    });
+
+    it('names the tool when the file is absent and the tool answered', async () => {
+      filesystem.readJsonFile.mockResolvedValue(null);
+      execMock.mockImplementation((_cmd: string, _opts: unknown, cb: (err: null, out: { stdout: string; stderr: string }) => void) => {
+        cb(null, { stdout: NVIDIA_SMI_COMPUTE_APPS_OUTPUT, stderr: '' });
+      });
+      const observation = await service.observeVramByProcess('nvidia');
+      expect(observation.source).toBe('tool');
+      expect(observation.samples).toHaveLength(2);
+    });
+
+    it('answers absent — [] and no source — inside the Hub container: no file, tool not on PATH', async () => {
+      // `sh -c nvidia-smi …` with no binary exits 127; the debug line must name the fix, not a broken tool.
+      const logger = mock<LoggerService>();
+      service = new GpuProcessSamplerService(logger, filesystem);
+      filesystem.readJsonFile.mockResolvedValue(null);
+      execMock.mockImplementation((_cmd: string, _opts: unknown, cb: (err: Error | null) => void) => {
+        cb(Object.assign(new Error('Command failed: nvidia-smi … sh: nvidia-smi: not found'), { code: 127 }));
+      });
+      await expect(service.observeVramByProcess('nvidia')).resolves.toEqual({ samples: [], source: null });
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringContaining('cihub fleet update --gpu-probe'));
+    });
+
+    it('answers absent when the tool is present but fails, and for a vendor with no tool', async () => {
+      filesystem.readJsonFile.mockResolvedValue(null);
+      execMock.mockImplementation((_cmd: string, _opts: unknown, cb: (err: Error | null) => void) => {
+        cb(Object.assign(new Error('timed out'), { killed: true }));
+      });
+      await expect(service.observeVramByProcess('amd')).resolves.toEqual({ samples: [], source: null });
+      await expect(service.observeVramByProcess(undefined)).resolves.toEqual({ samples: [], source: null });
+      await expect(service.observeVramByProcess('apple')).resolves.toEqual({ samples: [], source: null });
+      // No fork for a vendor nothing here can query.
+      expect(execMock).toHaveBeenCalledTimes(1);
+    });
+  });
 });
