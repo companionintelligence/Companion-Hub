@@ -4,6 +4,7 @@ import {
   Delete,
   ForbiddenException,
   Get,
+  Headers,
   Optional,
   Param,
   Patch,
@@ -29,6 +30,7 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import { POOL_REQUEST_ID_HEADER, PoolProxyService, normalizePoolRequestId } from './hub-pool-proxy.service';
+import { POOL_SESSION_HEADER } from './hub-pool-prefix-affinity';
 import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
 import { HubPoolPinService } from './hub-pool-pin.service';
 import {
@@ -480,44 +482,48 @@ export class HubPoolController {
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/chat/completions')
-  async proxyChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    await this.proxyToPool('/v1/chat/completions', body, res);
+  async proxyChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
+    await this.proxyToPool('/v1/chat/completions', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/completions')
-  async proxyCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    await this.proxyToPool('/v1/completions', body, res);
+  async proxyCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
+    await this.proxyToPool('/v1/completions', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/embeddings')
-  async proxyEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    await this.proxyToPool('/v1/embeddings', body, res);
+  async proxyEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
+    await this.proxyToPool('/v1/embeddings', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('api/generate')
-  async proxyOllamaGenerate(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    await this.proxyToPool('/api/generate', body, res);
+  async proxyOllamaGenerate(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
+    await this.proxyToPool('/api/generate', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('api/chat')
-  async proxyOllamaChat(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    await this.proxyToPool('/api/chat', body, res);
+  async proxyOllamaChat(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
+    await this.proxyToPool('/api/chat', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('api/embeddings')
-  async proxyOllamaEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    await this.proxyToPool('/api/embeddings', body, res);
+  async proxyOllamaEmbeddings(
+    @Body() body: Record<string, unknown>,
+    @Res() res: Response,
+    @Headers(POOL_SESSION_HEADER) session?: string | string[],
+  ) {
+    await this.proxyToPool('/api/embeddings', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('api/embed')
-  async proxyOllamaEmbed(@Body() body: Record<string, unknown>, @Res() res: Response) {
-    await this.proxyToPool('/api/embed', body, res);
+  async proxyOllamaEmbed(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
+    await this.proxyToPool('/api/embed', body, res, session);
   }
 
   @UseGuards(InferenceAccessGuard)
@@ -554,13 +560,18 @@ export class HubPoolController {
     await this.proxyService.proxyLocalOnlyRequest('/api/show', 'POST', body, res);
   }
 
-  private async proxyToPool(path: string, body: Record<string, unknown>, res: Response): Promise<void> {
+  /**
+   * `session` is the app's `X-Hub-Pool-Session` header, read on every routed POST so an app that
+   * names its session gets prefix affinity for it (see `hub-pool-prefix-affinity.ts`). Passed through
+   * untouched — the proxy normalises it — and ignored on a route affinity does not judge.
+   */
+  private async proxyToPool(path: string, body: Record<string, unknown>, res: Response, session?: string | string[]): Promise<void> {
     const model = typeof body?.model === 'string' ? body.model : undefined;
     if (!model) {
       res.status(400).json({ error: 'Request body must include a "model" field' });
       return;
     }
-    await this.proxyService.proxyRequest({ path, method: 'POST', body, model, res });
+    await this.proxyService.proxyRequest({ path, method: 'POST', body, model, res, sessionHeader: session });
   }
 
   // ── Peer-facing local forward (PoolPeerGuard: paired peers only, never re-selects candidates) ──

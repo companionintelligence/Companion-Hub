@@ -27,6 +27,7 @@ import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import {
   HubPoolRoutingLogService,
+  type PoolRoutingAffinity,
   type PoolRoutingCeilingExclusion,
   type PoolRoutingOutcome,
   type PoolRoutingPin,
@@ -49,6 +50,7 @@ import {
   type ThroughputTarget,
 } from './hub-pool-throughput.service';
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
+import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
@@ -490,6 +492,8 @@ interface RankedCandidate {
   candidate: PoolCandidate;
   /** Queue depth, already carrying the local-affinity handicap for peers and the weighted pressure term. Lower is better. */
   score: number;
+  /** The raw queue depth `score` was built from, which is what prefix affinity judges against its limit. */
+  inFlight: number;
   /**
    * GPU-pressure band 0-3, with {@link UNKNOWN_PRESSURE} standing in for "unmeasured". Read as a
    * tie-break only, and only when `poolPressureWeight` is non-zero — see the comparator.
@@ -900,6 +904,12 @@ export class PoolProxyService {
 
   private readonly throughput: HubPoolThroughputService;
   private readonly localHealth: HubPoolLocalHealthService;
+  /**
+   * Where each recent prompt prefix was last placed — see `hub-pool-prefix-affinity.ts`. Owned here
+   * rather than injected: the proxy is its only reader and writer, and a process-local hint has no
+   * other consumer to share it with.
+   */
+  private readonly prefixAffinity = new PrefixAffinityStore();
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -972,6 +982,11 @@ export class PoolProxyService {
     return this.configuration.getHubPoolPreferences().poolPressureWeight;
   }
 
+  /** Read per request, like {@link localAffinity}. `0` (the default) keeps affinity out of ranking entirely, and no prefix is hashed or remembered — see {@link rankCandidates}. */
+  private prefixAffinityMaxInFlight(): number {
+    return this.configuration.getHubPoolPreferences().poolPrefixAffinityMaxInFlight;
+  }
+
   /** How old a peer's capability snapshot may be before its self-reported load is discarded, derived from the configured poll cadence so retuning one retunes the other. */
   private capabilitiesFreshnessMs(): number {
     return this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000 * CAPABILITIES_FRESHNESS_POLLS;
@@ -1008,6 +1023,11 @@ export class PoolProxyService {
    * the invariant the whole feature turns on: most of the fleet cannot measure, and if silence read
    * as "idle" the pool would systematically route to whichever machine knows least about itself.
    *
+   * Then prefix affinity, when the request carries a session key and `poolPrefixAffinityMaxInFlight`
+   * is above zero: the node and engine that last served this prefix move to the front while their
+   * queue is under the limit — see {@link applyPrefixAffinity}. Applied before every step below, so
+   * each of them still wins over it.
+   *
    * Then the prompt ceilings, when `promptBytes` is given: a node whose ceiling is below the
    * request's estimate moves behind every node that is not, keeping its place in the failover walk —
    * see {@link applyPromptCeiling}.
@@ -1039,12 +1059,19 @@ export class PoolProxyService {
      * throughput evidence: that is one more serialisation of what can be a 184 KB agent turn, and a
      * fleet with neither should not pay it. Absent means "no body to judge", and both steps are skipped.
      */
-    prompt?: { bytes: () => number; streaming: boolean },
+    prompt?: {
+      bytes: () => number;
+      streaming: boolean;
+      /** The request's session key, derived only if affinity is on — a header read and at most a 4 KB digest, but not for a fleet that has it off. */
+      prefixKey?: () => PrefixKey | null;
+    },
   ): Promise<{
     candidates: PoolCandidate[];
     pin: HubPoolPin | null;
     promptCeiling: PoolRoutingPromptCeiling | null;
     throughput: PoolRoutingThroughput | null;
+    /** What affinity saw and did, and the key to remember the placement under; both `null` when affinity did not apply. */
+    affinity: { decision: PoolRoutingAffinity | null; key: PrefixKey | null };
     /** The peer rows ranking read, so placement-time checks see the same snapshot the order came from. */
     peers: HubPoolPeer[];
     /** What each local backend said — the no-candidate 502 reports these. */
@@ -1053,9 +1080,10 @@ export class PoolProxyService {
     const [{ candidates: local, probes: localProbes }, peers] = await Promise.all([this.probeLocalCandidates(model), this.usablePeers()]);
     const weight = this.pressureWeight();
     const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
-    const localScore = this.loadService.localInFlight() + weight * localPressure;
+    const localInFlight = this.loadService.localInFlight();
+    const localScore = localInFlight + weight * localPressure;
     const ranked: RankedCandidate[] = [
-      ...local.map((candidate) => ({ candidate, score: localScore, pressure: localPressure, tierRank: LOCAL_TIER_RANK })),
+      ...local.map((candidate) => ({ candidate, score: localScore, inFlight: localInFlight, pressure: localPressure, tierRank: LOCAL_TIER_RANK })),
       ...this.peerCandidates(model, peers, weight),
     ];
     // Stable sort: candidates that tie on every key keep insertion order — local backends in
@@ -1063,9 +1091,9 @@ export class PoolProxyService {
     //
     // `weight ? … : 0` rather than always comparing: at weight 0 the middle key must not exist, or a
     // measured node would start winning ties that a static hardware tier decides today.
-    const ordered = ranked
-      .sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank)
-      .map((entry) => entry.candidate);
+    ranked.sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank);
+    const affinity = this.applyRememberedPlacement(ranked, prompt?.prefixKey);
+    const ordered = affinity.ordered.map((entry) => entry.candidate);
     // Shared, so the two prompt-size decisions cost one serialisation between them at most.
     const measurePromptBytes = prompt ? memoize(prompt.bytes) : undefined;
     const ceiling = measurePromptBytes
@@ -1081,15 +1109,66 @@ export class PoolProxyService {
     // The ceiling is the outer split because it is an operator's statement and throughput is an
     // inference. With nothing demoted and no over-ceiling tail this is `applyPin(ordered, pin)`
     // exactly, which keeps an unmeasured fleet on the order it had before either existed.
+    const candidates = [ceiling.preferred, ceiling.overCeiling].flatMap((group) =>
+      splitDemoted(group, throughput.demoted).flatMap((part) => applyPin(part, pin)),
+    );
     return {
-      candidates: [ceiling.preferred, ceiling.overCeiling].flatMap((group) =>
-        splitDemoted(group, throughput.demoted).flatMap((part) => applyPin(part, pin)),
-      ),
+      candidates,
       pin,
       promptCeiling: ceiling.decision,
       throughput: throughput.decision,
+      // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
+      // first, and a ceiling, a demotion or a pin applied after affinity can each have put another
+      // node there. The routing log's other sections say which one did.
+      affinity: {
+        decision: affinity.describe(candidates[0]),
+        key: affinity.key,
+      },
       peers,
       localProbes,
+    };
+  }
+
+  /**
+   * {@link applyPrefixAffinity} against the store, plus what to tell the routing log about it.
+   *
+   * Everything short-circuits on the knob: at 0 the key is never derived, the store is never read,
+   * and the ranked list comes back untouched — which is what makes the default byte-identical to the
+   * build before affinity, and the whole reason the knob doubles as the switch. One debug line for a
+   * request affinity changed or stood aside on, never at info, for the same reason the ceiling logs
+   * that way: the routing log is where decisions are read, and an agent turns all day.
+   */
+  private applyRememberedPlacement(
+    ranked: RankedCandidate[],
+    prefixKey: (() => PrefixKey | null) | undefined,
+  ): { ordered: RankedCandidate[]; key: PrefixKey | null; describe: (first: PoolCandidate | undefined) => PoolRoutingAffinity | null } {
+    const nothing = { ordered: ranked, key: null, describe: () => null };
+    const maxInFlight = this.prefixAffinityMaxInFlight();
+    // `!(> 0)` rather than `<= 0`: a settings object from before this knob existed reads `undefined`
+    // here, and that must read as off, never as "no limit".
+    if (!(maxInFlight > 0) || !prefixKey) {
+      return nothing;
+    }
+    const key = prefixKey();
+    if (!key) {
+      return nothing;
+    }
+    const remembered = this.prefixAffinity.get(key.key);
+    const { ordered, sticky } = applyPrefixAffinity(ranked, remembered, maxInFlight);
+    return {
+      ordered,
+      key,
+      describe: (first) => {
+        const outcome = sticky ? (first === sticky.candidate ? 'hit' : 'skipped') : 'miss';
+        if (sticky && outcome === 'skipped') {
+          this.logger.debug(
+            sticky.inFlight >= maxInFlight
+              ? `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix but has ${sticky.inFlight} in flight (limit ${maxInFlight}); ranking as usual`
+              : `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
+          );
+        }
+        return { key: key.source, outcome, remembered: remembered?.node ?? null, inFlight: sticky?.inFlight ?? null, maxInFlight };
+      },
     };
   }
 
@@ -1197,7 +1276,15 @@ export class PoolProxyService {
     return result;
   }
 
-  async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
+  async proxyRequest(params: {
+    path: string;
+    method: string;
+    body: unknown;
+    model: string;
+    res: Response;
+    /** The app's `X-Hub-Pool-Session` header as Express read it, if it sent one — see `POOL_SESSION_HEADER`. */
+    sessionHeader?: string | string[];
+  }): Promise<void> {
     const { path, method, res } = params;
     const startedAt = Date.now();
     const clientClosed = abortWhenClientCloses(res);
@@ -1217,6 +1304,7 @@ export class PoolProxyService {
         pin: null,
         promptCeiling: null,
         throughput: null,
+        affinity: null,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
@@ -1239,9 +1327,12 @@ export class PoolProxyService {
     const judged = PROMPT_CEILING_PATHS.has(path);
     // Serialised once for ranking and every attempt, rather than once per forward.
     const payload = memoize(() => forwardedPayload(method, body));
-    const { candidates, pin, promptCeiling, throughput, peers, localProbes } = await this.rankCandidates(
+    // Keyed on the resolved model, never the alias: `auto` on two Hubs can mean two models, and the
+    // cache a session warms is the resolved one's.
+    const prefixKey = memoize(() => derivePrefixKey(model, body, params.sessionHeader));
+    const { candidates, pin, promptCeiling, throughput, affinity, peers, localProbes } = await this.rankCandidates(
       model,
-      judged ? { bytes: () => payload()?.length ?? 0, streaming } : undefined,
+      judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey } : undefined,
     );
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
@@ -1262,6 +1353,7 @@ export class PoolProxyService {
         pin: describePinForLog(pin),
         promptCeiling,
         throughput,
+        affinity: affinity.decision,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
@@ -1298,7 +1390,11 @@ export class PoolProxyService {
       promptCeiling,
       ...describeRequestShape(method, body),
       throughput,
+      affinity: affinity.decision,
     });
+    // The decision stated on the response, like the serving node: set on the 502 too, since a turn
+    // that failed everywhere is one an operator will want to know was or was not following its prefix.
+    const affinityHeader: Record<string, string> = affinity.decision ? { [POOL_AFFINITY_HEADER]: affinity.decision.outcome } : {};
 
     let lastError: unknown;
     let committed = false;
@@ -1333,6 +1429,12 @@ export class PoolProxyService {
       const measurable = judged && this.idleForMeasurement(candidate, peers);
       const attemptStartedAt = Date.now();
       this.loadService.acquire(key);
+      // At placement, before the engine answers, so a session's next call — an agent's parallel
+      // tool calls arrive while the first is still prefilling — finds the engine already reading
+      // the shared prefix. A failover overwrites it with the candidate that actually took the work.
+      if (affinity.key) {
+        this.prefixAffinity.remember(affinity.key.key, candidate);
+      }
       try {
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
         const headersAt = Date.now();
@@ -1358,7 +1460,7 @@ export class PoolProxyService {
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
-        this.commitResponse(upstream, res, servedByHeaders(candidate, model, row.id));
+        this.commitResponse(upstream, res, { ...servedByHeaders(candidate, model, row.id), ...affinityHeader });
         committed = true;
         const meter = measurable && upstream.ok ? startResponseTiming() : null;
         try {
@@ -1419,8 +1521,15 @@ export class PoolProxyService {
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
+    // Nothing holds this prefix now — the last engine to try it gave up — so the next call ranks fresh.
+    if (affinity.key) {
+      this.prefixAffinity.forget(affinity.key.key);
+    }
     if (!res.headersSent) {
       res.setHeader(POOL_REQUEST_ID_HEADER, row.id);
+      for (const [name, value] of Object.entries(affinityHeader)) {
+        res.setHeader(name, value);
+      }
     }
     this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
   }
@@ -1729,6 +1838,7 @@ export class PoolProxyService {
       // Null for the same reason as the pin: the ceiling is applied by the node choosing where work goes.
       promptCeiling: null,
       throughput: null,
+      affinity: null,
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,
@@ -1982,9 +2092,11 @@ export class PoolProxyService {
       const match = capabilities.backends.find((b) => b.healthy && inventoryListsModel(b.modelsLoaded, model));
       if (match) {
         const pressure = this.peerPressure(peer, capabilities) ?? UNKNOWN_PRESSURE;
+        const inFlight = this.peerLoad(peer, capabilities);
         candidates.push({
           candidate: { peerId: peer.id, nodeFqdn: peer.nodeFqdn, backend: match.type },
-          score: this.peerLoad(peer, capabilities) + weight * pressure + this.localAffinity(),
+          score: inFlight + weight * pressure + this.localAffinity(),
+          inFlight,
           pressure,
           tierRank: this.tierRank(capabilities.hardwareTier),
         });

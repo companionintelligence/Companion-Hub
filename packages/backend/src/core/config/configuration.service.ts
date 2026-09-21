@@ -6,6 +6,7 @@ import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJson
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PRESSURE_WEIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
   type HubPoolPin,
@@ -133,6 +134,7 @@ type PersistedSettingsValues = {
   hubPoolPressureWeight: number | undefined;
   hubPoolMaxPromptTokens: number | undefined;
   hubPoolProbeSnapshotTtlMs: number | undefined;
+  hubPoolPrefixAffinityMaxInFlight: number | undefined;
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
   hubPoolPins: HubPoolPin[] | undefined;
@@ -166,6 +168,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolPressureWeight: undefined,
   hubPoolMaxPromptTokens: undefined,
   hubPoolProbeSnapshotTtlMs: undefined,
+  hubPoolPrefixAffinityMaxInFlight: undefined,
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
   hubPoolPins: undefined,
@@ -257,6 +260,7 @@ export class ConfigurationService {
       hubPoolPressureWeight: settings.hubPoolPressureWeight,
       hubPoolMaxPromptTokens: settings.hubPoolMaxPromptTokens,
       hubPoolProbeSnapshotTtlMs: settings.hubPoolProbeSnapshotTtlMs,
+      hubPoolPrefixAffinityMaxInFlight: settings.hubPoolPrefixAffinityMaxInFlight,
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
       hubPoolPins: settings.hubPoolPins,
@@ -359,6 +363,7 @@ export class ConfigurationService {
         hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
         hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
         hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
+        hubPoolPrefixAffinityMaxInFlight: settingsValues.hubPoolPrefixAffinityMaxInFlight,
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         hubPoolPins: settingsValues.hubPoolPins,
@@ -574,6 +579,7 @@ export class ConfigurationService {
       // stored null — see `setHubPoolPreferences`.
       poolMaxPromptTokens: this.config.userSettings.hubPoolMaxPromptTokens ?? null,
       poolProbeSnapshotTtlMs: this.config.userSettings.hubPoolProbeSnapshotTtlMs ?? DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+      poolPrefixAffinityMaxInFlight: this.config.userSettings.hubPoolPrefixAffinityMaxInFlight ?? DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
       // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
       // in-memory settings the next request will rank against.
       poolPins: [...(this.config.userSettings.hubPoolPins ?? [])],
@@ -600,6 +606,7 @@ export class ConfigurationService {
       hubPoolPressureWeight?: number;
       hubPoolMaxPromptTokens?: number;
       hubPoolProbeSnapshotTtlMs?: number;
+      hubPoolPrefixAffinityMaxInFlight?: number;
       hubPoolPins?: HubPoolPin[];
       hubPoolRouteAppsAlways?: boolean;
     } = {};
@@ -635,6 +642,9 @@ export class ConfigurationService {
     }
     if (preferences.poolProbeSnapshotTtlMs !== undefined) {
       settings.hubPoolProbeSnapshotTtlMs = preferences.poolProbeSnapshotTtlMs;
+    }
+    if (preferences.poolPrefixAffinityMaxInFlight !== undefined) {
+      settings.hubPoolPrefixAffinityMaxInFlight = preferences.poolPrefixAffinityMaxInFlight;
     }
     // The whole list, never a delta: pins have no per-row identity in settings.json, so the pin
     // service computes the next array and this persists it. `undefined` still means "leave alone",
