@@ -1674,7 +1674,7 @@
   "DASHBOARD_COVERAGE_TITLE": "Not measured per workload",
   "DASHBOARD_COVERAGE_GPU_LABEL": "GPU per workload",
   "DASHBOARD_COVERAGE_GPU_TAG": "VRAM only",
-  "DASHBOARD_COVERAGE_GPU_WHY": "Real per-process VRAM is measured now (rocm-smi / nvidia-smi) and attributed to whichever workload's container holds it \u2014 see the GPU trend beside CPU and memory above. Compute UTILIZATION per workload is NOT measured: rocm-smi's CU occupancy reads UNKNOWN and nvidia-smi's per-process utilization reads blank for every process on this fleet's hardware, confirmed live on an AMD and an NVIDIA node.",
+  "DASHBOARD_COVERAGE_GPU_WHY": "Real per-process VRAM is measured (rocm-smi / nvidia-smi) and attributed to whichever workload's container holds it \u2014 see the GPU trend beside CPU and memory above. The Hub container cannot run either tool itself, so on a node without the host timer (cihub-gpu-processes, see fleet-setup.md) the reading is absent, not zero. Compute UTILIZATION per workload is NOT measured: rocm-smi's CU occupancy reads UNKNOWN and nvidia-smi's per-process utilization reads blank for every process on this fleet's hardware, confirmed live on an AMD and an NVIDIA node.",
   "DASHBOARD_COVERAGE_GPU_ENABLE": "A working per-process utilization signal would need DRM fdinfo accounting or a newer profiling API \u2014 unconfirmed whether this fleet's kernels and drivers support either.",
   "DASHBOARD_COVERAGE_GPU_HOST": "This host's GPU: {{gpu}}. Node pressure bands are on the pool node rows below.",
   "DASHBOARD_COVERAGE_GPU_HOST_UNKNOWN": "This host has not reported a GPU. Node pressure bands are on the pool node rows below.",
