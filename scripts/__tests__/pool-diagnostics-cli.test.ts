@@ -2411,9 +2411,9 @@ describe('runPoolDoctorSection', () => {
     const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
 
     expect(maxConcurrent).toBe(1);
-    // All six, in the order the Hub's own fan-out builds them.
+    // Every backend, in the order the Hub's own fan-out builds them (INFERENCE_BACKEND_TYPES).
     const probed = fetchMock.mock.calls.map(([url]) => /backend=(\w+)/.exec(String(url))?.[1]).filter(Boolean);
-    expect(probed).toEqual(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox']);
+    expect(probed).toEqual(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio']);
     expect(text(section.lines)).toContain('so the slow one is named, not averaged away');
     vi.unstubAllGlobals();
   });

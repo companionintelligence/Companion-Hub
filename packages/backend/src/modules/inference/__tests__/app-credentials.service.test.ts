@@ -14,6 +14,8 @@ import { MtplxBackend } from '../backends/mtplx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { LlamacppBackend } from '../backends/llamacpp.backend';
+import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -220,6 +222,8 @@ describe('AppCredentialsService', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
+        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
         InferenceBackendRegistry,
         { provide: ConfigurationService, useValue: configurationService },
         { provide: HubPoolPeerService, useValue: hubPoolPeerService },
@@ -443,7 +447,7 @@ describe('AppCredentialsService', () => {
       // installed app fetches its credentials through here, so a stale settings.json must not take
       // credential resolution down Hub-wide.
       configurationService.getInferencePreferences.mockReturnValue({
-        preferredBackend: 'llamacpp' as InferenceBackendType,
+        preferredBackend: 'tensorrt-llm' as InferenceBackendType,
         preferredModel: null,
         preferredEmbeddingModel: null,
         preferredVisionModel: null,
@@ -454,14 +458,14 @@ describe('AppCredentialsService', () => {
       const config = await service.getCredentials('hermes-agent');
 
       // The fallback moves the backend *type*, not just the instance: `provider` is reported to the
-      // app, and the same value indexes BACKEND_API_KEY, so leaving 'llamacpp' in place would ship
+      // app, and the same value indexes BACKEND_API_KEY, so leaving 'tensorrt-llm' in place would ship
       // an undefined HERMES_OPENAI_API_KEY.
       expect(config.provider).toBe('ollama');
       expect(config.endpointUrl).toBe(OLLAMA_OPENAI_URL);
       expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
       expect(config.chatModelId).toBe('hermes4:70b');
       // The operator only finds the typo if the log names it.
-      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'llamacpp'"));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'tensorrt-llm'"));
     });
   });
 

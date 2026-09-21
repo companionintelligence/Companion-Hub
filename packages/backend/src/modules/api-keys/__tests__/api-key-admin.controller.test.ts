@@ -38,9 +38,9 @@ describe('ApiKeyAdminController', () => {
       ['nobody for the CLI', cli, null],
       ['nobody for the Portal device push', portalPush, null],
     ])('records %s', async (_label, req, createdBy) => {
-      await controller.createKey({ name: 'n8n', capability: 'write' } as never, req);
+      await controller.createKey({ name: 'n8n', capability: 'write', scope: 'mcp' } as never, req);
 
-      expect(admin.createKey).toHaveBeenCalledWith('n8n', 'write', createdBy);
+      expect(admin.createKey).toHaveBeenCalledWith('n8n', 'write', createdBy, 'mcp');
     });
   });
 
@@ -76,9 +76,9 @@ describe('ApiKeyAdminController', () => {
     it('lets an owner or admin create one', async () => {
       whois.isOrgManager.mockResolvedValue(true);
 
-      await controller.createKey({ name: 'n8n', capability: 'full' } as never, session());
+      await controller.createKey({ name: 'n8n', capability: 'full', scope: 'mcp' } as never, session());
 
-      expect(admin.createKey).toHaveBeenCalledWith('n8n', 'full', 7);
+      expect(admin.createKey).toHaveBeenCalledWith('n8n', 'full', 7, 'mcp');
     });
 
     it.each([
@@ -149,6 +149,32 @@ describe('ApiKeyAdminController', () => {
     ])('tells the screen %s may give full capability, without asking', async (_label, req) => {
       await expect(controller.grantableCapabilities(req)).resolves.toEqual({ canGrantFull: true });
       expect(whois.isOrgManager).not.toHaveBeenCalled();
+    });
+  });
+
+  /*
+   * An `inference` key opens the OpenAI-compatible routes and reaches no MCP tool, so the
+   * owner/admin gate — which exists because `full` reaches the destructive tools — has nothing to
+   * decide about one. The gate must still apply to every scope that is not this one, including a
+   * body that names no scope at all.
+   */
+  describe('the inference scope', () => {
+    it('passes the scope through to the service', async () => {
+      await controller.createKey({ name: 'Cursor', capability: 'read', scope: 'inference' } as never, session());
+
+      expect(admin.createKey).toHaveBeenCalledWith('Cursor', 'read', 7, 'inference');
+    });
+
+    it('asks no owner or admin about one, whatever its capability says', async () => {
+      await controller.createKey({ name: 'Cursor', capability: 'full', scope: 'inference' } as never, session());
+
+      expect(whois.isOrgManager).not.toHaveBeenCalled();
+      expect(admin.createKey).toHaveBeenCalledWith('Cursor', 'full', 7, 'inference');
+    });
+
+    it('still gates a full key whose body names no scope', async () => {
+      await expect(controller.createKey({ name: 'n8n', capability: 'full' } as never, session())).rejects.toThrow('API_KEY_FULL_ROLE_REQUIRED');
+      expect(admin.createKey).not.toHaveBeenCalled();
     });
   });
 });

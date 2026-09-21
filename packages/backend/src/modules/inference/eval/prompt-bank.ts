@@ -27,10 +27,10 @@
  * lacks a model a prompt needs, the case is skipped — never installed.
  */
 
-/** The six inference backends CI-Hub can front. See CI-Hub packages/backend/src/modules/inference/backends/. */
-export type LlmBackend = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+/** The inference backends CI-Hub can front. See CI-Hub packages/backend/src/modules/inference/backends/. */
+export type LlmBackend = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
 
-export const LLM_BACKENDS: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'];
+export const LLM_BACKENDS: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'];
 
 /**
  * Wire dialect. Base URLs never carry `/v1` — the dialect supplies the whole path, exactly the way
@@ -465,6 +465,14 @@ export interface LlmPrompt {
 
 /** Every backend speaks OpenAI `/v1/chat/completions` — the common denominator. */
 const ALL: LlmBackend[] = LLM_BACKENDS;
+/*
+ * The capability groupings below name only engines whose capability has been VERIFIED, which is why
+ * `llamacpp` and `lmstudio` appear in none of them. Both are new here and neither has been driven on
+ * this fleet: llama-server does implement /v1/completions and /v1/embeddings, and LM Studio
+ * documents both, but "documented" is the standard this file exists to refuse. They are in `ALL`
+ * because a chat request over the OpenAI dialect is the one thing every engine here answers by
+ * definition — it is what makes it a backend at all. Move them into a grouping when a run proves it.
+ */
 /** Backends with a verified legacy `/v1/completions` route. dspark/lucebox are chat-shaped; don't guess. */
 const COMPLETION_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade'];
 /**

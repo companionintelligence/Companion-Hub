@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { BackendHealthStatus } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
@@ -8,6 +9,8 @@ import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
@@ -57,14 +60,31 @@ describe('HubPoolLocalHealthService', () => {
   beforeEach(() => {
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
-    const others = [mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+    const others = [
+      mock<LemonadeBackend>(),
+      mock<MtplxBackend>(),
+      mock<DsparkBackend>(),
+      mock<LuceboxBackend>(),
+      mock<LlamacppBackend>(),
+      mock<LmStudioBackend>(),
+    ];
     for (const backend of [ollama, vllm, ...others]) {
       backend.healthCheck.mockResolvedValue(DOWN);
     }
-    const [lemonade, mtplx, dspark, lucebox] = others as [LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend];
+    const [lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio] = others as [
+      LemonadeBackend,
+      MtplxBackend,
+      DsparkBackend,
+      LuceboxBackend,
+      LlamacppBackend,
+      LmStudioBackend,
+    ];
     configuration = mock<ConfigurationService>();
     setPoolPreferences({});
-    service = new HubPoolLocalHealthService(new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox), configuration);
+    service = new HubPoolLocalHealthService(
+      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
+      configuration,
+    );
   });
 
   afterEach(() => {
@@ -76,7 +96,9 @@ describe('HubPoolLocalHealthService', () => {
     // tie-break, so it must not become "whoever answered first".
     ollama.healthCheck.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve(UP), 5)));
 
-    expect((await service.read()).map((entry) => entry.type)).toEqual(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox']);
+    // Derived from the tuple, not a literal: the point is registry ORDER, and a hand-written list
+    // just re-asserts itself the day a backend is added.
+    expect((await service.read()).map((entry) => entry.type)).toEqual([...INFERENCE_BACKEND_TYPES]);
   });
 
   it('shares one in-flight probe between concurrent cold reads', async () => {

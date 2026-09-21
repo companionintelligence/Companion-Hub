@@ -58,6 +58,7 @@ import {
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
+import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -2172,10 +2173,19 @@ export class PoolProxyService {
    * Best-effort passthrough for the endpoints that carry no `model` field and so can't be routed
    * across the pool — `GET /v1/models`, `GET /api/tags`, `GET /api/ps`, `GET /api/version`,
    * `POST /api/show`. Tries this node's own backends in order and serves the first that answers.
-   * Cross-node merging of the listing endpoints is a known gap; see docs/hub-pool.md.
+   *
+   * The two *listing* paths are the exception: they are served by {@link serveMergedListing}, which
+   * adds what connected peers hold to what this node answered. Everything else is still a local
+   * passthrough, because there is nothing coherent to merge — `/api/ps` is about this machine's
+   * memory, `/api/version` about this machine's engine, and `/api/show` is a lookup that falls back
+   * to a peer wholesale rather than blending.
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
     const clientClosed = abortWhenClientCloses(res);
+    if (MERGED_LISTING_PATHS.has(path)) {
+      await this.serveMergedListing(path, method, res, clientClosed);
+      return;
+    }
     // Ollama's `/api/show` names the model in `name` (older clients) or `model`, and an app whose
     // chat model is the `auto` alias asks about `auto` here before its first chat — OpenClaw's
     // provider does exactly that, and read the engine's 404 as "model not found" without ever
@@ -2225,6 +2235,84 @@ export class PoolProxyService {
       );
     }
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
+  }
+
+  /**
+   * `GET /v1/models` / `GET /api/tags`, answered for the POOL rather than for this node.
+   *
+   * Three things it fixes, all of which were visible on the fleet:
+   * - A client was told this node's models and then found a model it had never been offered served
+   *   fine, because a peer held it. The listing was the only surface still answering for one node.
+   * - A Hub whose own engines are down or absent answered 502 while its peers held a dozen models.
+   *   The local half is now allowed to fail without failing the request.
+   * - `auto` resolves pool-wide, so the model a listing did not mention is routinely the one that
+   *   runs.
+   *
+   * The peer half costs no network I/O — it reads `hub_pool_peer.last_capabilities`, the snapshot
+   * the health poll already refreshes and the ranker already reads, so the listing and the next
+   * completion cannot disagree. Ranking is not consulted: this answers "what may I ask for", not
+   * "where would it run".
+   *
+   * Buffered rather than streamed, unlike every other path here. A merged body has to be built
+   * before any of it can be written, and a model list is small — the streaming path exists for
+   * generations, which this is not.
+   */
+  private async serveMergedListing(path: string, method: string, res: Response, clientClosed: AbortSignal): Promise<void> {
+    const local = await this.firstLocalListing(path, method, clientClosed);
+    if (clientClosed.aborted) {
+      res.destroy();
+      return;
+    }
+
+    const peers = await this.usablePeers().catch((error: unknown) => {
+      // A peer read that fails must not take down a listing this node answered on its own. It
+      // degrades to exactly the pre-pool behaviour, which is what an operator with no peers gets.
+      this.logger.debug(`[PoolProxy] ${path} could not read peer inventories: ${error instanceof Error ? error.message : String(error)}`);
+      return [] as HubPoolPeer[];
+    });
+    const peerModels = peers.flatMap((peer) => this.peerServableInventory(peer).backends.flatMap((backend) => backend.models));
+    const extra = peerOnlyModels(listedModelIds(path, local), peerModels);
+
+    if (local === null && extra.length === 0) {
+      // Nothing anywhere. Keep the old 502 and the old warn: a caller probing this route to decide
+      // whether the Hub speaks Ollama natively reads the failure, not the body.
+      if (NATIVE_CAPABILITY_PROBE_PATHS.has(path)) {
+        this.logger.warn(
+          `[PoolProxy] no local backend could serve ${path}; a caller probing this route to decide native-vs-OpenAI-compatible ` +
+            'routing (e.g. ci-hermes) will silently fall back to /v1 and lose per-request context-length control.',
+        );
+      }
+      this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
+      return;
+    }
+
+    if (extra.length > 0) {
+      this.logger.debug(`[PoolProxy] ${path} merged ${extra.length} peer-only model(s) from ${peers.length} peer(s)`);
+    }
+    this.respondUncommitted(res, 200, mergeModelListing(path, local, extra));
+  }
+
+  /**
+   * The first local backend's parsed listing body, or `null` when none answered with usable JSON.
+   *
+   * `null` is not an error here. A Hub with no local engine is a legitimate pool member — it exists
+   * to send work to peers — and its listing should describe what the pool can do, not fail.
+   */
+  private async firstLocalListing(path: string, method: string, clientClosed: AbortSignal): Promise<unknown> {
+    for (const type of INFERENCE_BACKEND_TYPES) {
+      if (clientClosed.aborted) return null;
+      try {
+        const upstream = await this.callBackend(type, path, method, undefined, undefined, clientClosed);
+        if (!upstream.ok) {
+          this.logger.debug(`[PoolProxy] ${path} via local ${type} answered ${upstream.status}; trying the next backend`);
+          continue;
+        }
+        return await upstream.json();
+      } catch (error) {
+        this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return null;
   }
 
   /**
