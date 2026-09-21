@@ -595,6 +595,25 @@ describe('hub-pool-cli prompt ceiling', () => {
     expect(text).toContain(`~46031-token prompt skipped ${FZZY} (ceiling 16000)`);
   });
 
+  it('marks a routing-log row that followed its prompt prefix, and one whose remembered node was too busy', () => {
+    const text = logOf([
+      routingEntry({ affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 1, maxInFlight: 2 } }),
+      routingEntry({ node: 'local', peerId: null, affinity: { key: 'header', outcome: 'skipped', remembered: PEER_A, inFlight: 2, maxInFlight: 2 } }),
+      routingEntry({ node: 'local', peerId: null, affinity: { key: 'header', outcome: 'skipped', remembered: PEER_A, inFlight: 0, maxInFlight: 2 } }),
+      routingEntry({ affinity: { key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 } }),
+      routingEntry({ affinity: null }),
+      routingEntry(),
+    ]);
+
+    expect(text).toContain(`followed its prompt prefix to ${PEER_A} (1 in flight, limit 2)`);
+    expect(text).toContain(`${PEER_A} holds this prompt's prefix but had 2 in flight (limit 2); ranked as usual`);
+    expect(text).toContain(
+      `${PEER_A} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
+    );
+    // A miss, an off row, and a row from a Hub predating affinity add nothing.
+    expect(text.match(/prefix/g)).toHaveLength(3);
+  });
+
   it('says so when a long prompt was placed over a ceiling after all, rather than hiding the override', () => {
     const text = logOf([
       routingEntry({

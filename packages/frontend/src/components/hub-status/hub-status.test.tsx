@@ -749,7 +749,9 @@ describe('HubStatus startup screens', () => {
 
     expect(await screen.findByRole('heading', { name: 'Starting CI Hub' })).toBeInTheDocument();
     expect(await screen.findByText('Services are coming online…')).toBeInTheDocument();
-    expect(screen.getByText('69%')).toBeInTheDocument();
+    // `find`, not `get`: the status line renders from `status` while the progress panel waits on the
+    // progress poll, and on a loaded CI runner the panel was still the Initialising row here.
+    expect(await screen.findByText('69%')).toBeInTheDocument();
     expect(metaTime()).toBe('0:00 elapsed');
 
     expect(fact('Images pulled')).toBe('Images pulled4 of 4 (100%)');

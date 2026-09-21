@@ -464,6 +464,35 @@ export const MIN_POOL_PROBE_SNAPSHOT_TTL_MS = 0;
 /** Five minutes: past this an engine that came up is invisible to the pool for longer than an operator will wait before restarting things. */
 export const MAX_POOL_PROBE_SNAPSHOT_TTL_MS = 300_000;
 
+/**
+ * How many requests the node that last served a prompt prefix may have in flight — counting the one
+ * being placed — and still be preferred for the next request carrying the same prefix.
+ *
+ * Prefill dominates an agent turn on this fleet. Measured on core-2 through the pool proxy,
+ * 2026-09-20: OpenClaw's first turn was 44,340 prompt tokens, 258 output, 100.8 s wall, and Ollama's
+ * journal put `prompt processing` at 67.34 s (608 tok/s). The agent's second model call in the same
+ * turn (44,630 tokens, same prefix) got only a partial cache hit — `cached n_tokens = 15958`, 28,672
+ * tokens re-prefilled in 63 s — because the four Ollama slots (`OLLAMA_NUM_PARALLEL=4`, fleet-wide)
+ * are shared with other traffic and the pool had no notion of which node held a session's prefix.
+ * Affinity remembers the node and engine that last served each prefix and moves them to the front
+ * of the ranked list while their queue is shorter than this, because past that point waiting behind
+ * the queue costs more than the ~60 s of re-prefill it would save.
+ *
+ * A preference, never a rule: the remembered node is moved to the front of the list the ranker built,
+ * so a node the pool excluded is never resurrected, an operator pin still wins, and failover is what
+ * it was. Zero, deliberately, the same way `DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS` and
+ * `DEFAULT_POOL_PRESSURE_WEIGHT` are: at 0 no prefix is hashed or remembered and ranking is byte for
+ * byte the build before affinity existed, so the canary node that PATCHes
+ * `poolPrefixAffinityMaxInFlight` to 2 can be measured against a node that took the same image and
+ * nothing else. 2 is the value to validate at: the remembered node takes the request when it is idle
+ * or has one other request in flight, and hands it on when it has two or more.
+ */
+export const DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 0;
+/** `0` turns affinity off; the request being placed always counts, so there is no lower value that would ever prefer anything. */
+export const MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 0;
+/** Same bound as `MAX_POOL_LOCAL_AFFINITY`: past this queue depth the wait behind it dwarfs any prefill saved. */
+export const MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 20;
+
 /** How often each `connected`/`unreachable` peer is probed for capabilities. */
 export const DEFAULT_POOL_HEALTH_POLL_SECONDS = 30;
 /** Below this the probes cost more than the routing accuracy they buy, and an 8s probe timeout would start overlapping ticks. */
@@ -526,6 +555,8 @@ export interface HubPoolPreferences {
   poolMaxPromptTokens: number | null;
   /** How long a local engine's health answer is reused for placement; `0` (the default) probes live on every request. See {@link DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS}. */
   poolProbeSnapshotTtlMs: number;
+  /** The queue depth up to which the node that last served a prompt prefix is preferred for it, counting the request being placed; `0` (the default) turns affinity off. See {@link DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT}. */
+  poolPrefixAffinityMaxInFlight: number;
   /**
    * Operator routing overrides, newest last. Empty (the default) means the ranker decides alone and
    * routing is byte-identical to a build without pinning — see {@link resolvePinFor}.
