@@ -17,7 +17,7 @@ packages/frontend/
   src/modules/          Page-level features (dashboard, app-store, settings, …)
   src/components/       Shared UI (hub-status, layouts, providers)
   src/lib/              API fetch, tauri probes, session, theme
-  src/api-client/       Generated OpenAPI client + TanStack Query hooks
+  src/api-client/       Generated OpenAPI client + TanStack Query hooks (generator-owned)
   routes/               React Router route definitions
 ```
 
@@ -69,6 +69,7 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 ## API client
 
 - Generated from backend OpenAPI: `pnpm run gen:api-client`
+- `packages/frontend/src/api-client/` is **generator-owned**: `gen:api-client` wipes the directory and rewrites it from `packages/backend/src/swagger.json` (see `openapi-ts.config.ts`). Never hand-write a file there. A committed one survives only until the next regeneration, then shows up as an unexplained deletion in someone's diff, and restoring it by reflex re-arms the trap. Hand-written wrappers over the generated SDK belong in `src/lib/api-routes/` — for example `named-status-routes.ts`, which names the generator's numbered `getStatusN` operations.
 - Tauri release builds probe local ports via `packages/frontend/src/lib/tauri-hub-probe.ts`
 - Session refresh: `packages/frontend/src/lib/hub-session-refresh.ts`
 - Local Vite (`:5005`) must probe same-origin `/api/health/live` (the Vite proxy) before a leftover Docker Hub on `:5002`. Do **not** bind the API client to `:5004` or `:5002` — `/api` stays same-origin on `:5005` so the session cookie survives. Binding it was a 401 → full `/login` reload → "Connecting to local API...". HubStatus on `:5005` must ignore Docker compose status (that is the appliance stack). Featured (`GET /api/store/featured-bundle`) is served through that Vite proxy.
