@@ -61,6 +61,7 @@ interface Network {
   external: boolean;
   subnet?: string;
   internal?: boolean;
+  labels?: Record<string, string | boolean>;
   ipam?: {
     config: {
       subnet: string;
@@ -233,6 +234,10 @@ export class DockerComposeBuilder {
       networkConfig.ipam = {
         config: [{ subnet: network.subnet }],
       };
+    }
+
+    if (network.labels) {
+      networkConfig.labels = network.labels;
     }
 
     this.networks[network.key] = networkConfig;
@@ -550,12 +555,16 @@ export class DockerComposeBuilder {
         });
       }
     }
+    // The Hub's boot-time network prune is filtered on the managed label, so only networks
+    // the Hub declared are ever pruned. The external Hub networks above are deliberately
+    // unlabelled here: they are shared infrastructure, not this app's to reclaim.
     dockerCompose.addNetwork({
       key: `${appName}_${appStoreId}_network`,
       name: `${appName}_${appStoreId}_network`,
       external: false,
       subnet,
       internal: isolation?.internal,
+      labels: managedAppLabels(appUrn),
     });
 
     return dockerCompose.build();
