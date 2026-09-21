@@ -1,4 +1,5 @@
 import { StatusDot } from '@/components/ui/dense/dense';
+import type { GpuVramSource } from '@/lib/app-runtime-monitor';
 import { cn } from '@/lib/utils';
 import type { HardwareSummary } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
@@ -10,11 +11,17 @@ import { useTranslation } from 'react-i18next';
  * As of the original build, two of those three metrics did not exist anywhere in this product.
  * One of them has since become partly real, and the other has moved to a different axis:
  *
- *   - GPU per workload. Real per-process VRAM now exists (`gpu-process-sampler.service.ts`,
- *     shelling `rocm-smi --showpids` / `nvidia-smi --query-compute-apps`), attributed to whichever
+ *   - GPU per workload. Real per-process VRAM now exists (`gpu-process-sampler.service.ts`:
+ *     `rocm-smi --showpids` / `nvidia-smi --query-compute-apps`, read from the host probe's file
+ *     on a Docker-deployed Hub and run directly on a Hub outside Docker), attributed to whichever
  *     workload's container holds it via `docker top` (`DockerReadFacade.mapPidsToContainers`), and
- *     is drawn as a real chart in `workload-trends.tsx` beside CPU and memory. What is STILL not
- *     measured, and is not a gap in this repo's code but a ceiling in the tools it shells out to:
+ *     is drawn as a real chart in `workload-trends.tsx` beside CPU and memory. It exists WHERE A
+ *     SOURCE ANSWERS: the container has neither tool, so a node without the probe timer reads
+ *     nothing, and the snapshot's `gpuVramSource` says `absent` rather than `[]`. This tile reads
+ *     that one field and changes its VRAM sentence on it — measured here (and by what), or not read
+ *     here (and how to fix it) — because a tile claiming "measured now" above an empty chart would
+ *     be the absence-vs-idleness collision this page exists to avoid. What is STILL not measured
+ *     anywhere, and is not a gap in this repo's code but a ceiling in the tools it shells out to:
  *     compute UTILIZATION per process. `rocm-smi`'s own `CU OCCUPANCY` column reads `UNKNOWN` on
  *     every process this fleet has ever shown it, and `nvidia-smi pmon`'s per-process sm/mem/enc/
  *     dec columns are all `-` on this driver — confirmed live on beta-max (AMD) and beta-red
@@ -35,7 +42,8 @@ import { useTranslation } from 'react-i18next';
  * It is a statement about INSTRUMENTATION, not a query result. Building it out of `Panel` +
  * `PanelBody` would make it structurally capable of rendering a skeleton or a red failure box,
  * and either one would say "this measurement is on its way / temporarily broken" about a
- * measurement that was never built. Nothing here changes with data.
+ * measurement that was never built. The two live values it reads — the host GPU's name and the
+ * GPU sample source — change which true sentence is printed, never whether one is.
  *
  * ── Why there is no dashed border ────────────────────────────────────────────────────────────
  *
@@ -56,11 +64,13 @@ import { useTranslation } from 'react-i18next';
  *
  * ── Copy rules, for whoever edits the strings later ──────────────────────────────────────────
  *
- * The GPU tag is now "VRAM only" — real, but scoped, so it must never regress back to a blanket
- * "not measured" now that half of it is true. The tokens tag stays "not recorded", present tense —
- * that half genuinely still is not, per-workload. NEVER "0". Never a dash. Never "no data" (reads
- * as an empty result set). Never "unavailable" (reads as a failed fetch). Never "coming soon" (a
- * roadmap promise this page has no business making).
+ * The GPU tag is "VRAM only" where a source answered — real, but scoped, so it must never regress
+ * back to a blanket "not measured" now that half of it is true — and "Not read here" where the
+ * snapshot says the source is absent on this node: that is a fact about THIS NODE'S instrumentation,
+ * named as such, with the install step beside it. The tokens tag stays "not recorded", present
+ * tense — that half genuinely still is not, per-workload. NEVER "0". Never a dash. Never "no data"
+ * (reads as an empty result set). Never "unavailable" (reads as a failed fetch). Never "coming
+ * soon" (a roadmap promise this page has no business making).
  *
  * NEVER, so that a later contributor does not undo this: no zero series in the trend charts this
  * tile points at; no percentage derived from `gpuPressure` (a 0-3 band — `BandMeter`'s doc comment
@@ -72,7 +82,22 @@ import { useTranslation } from 'react-i18next';
  * the same trap one level over.
  */
 
-function CoverageBlock({ label, tag, why, enable, nearest }: { label: string; tag: string; why: string; enable: string; nearest: string }) {
+function CoverageBlock({
+  label,
+  tag,
+  why,
+  also,
+  enable,
+  nearest,
+}: {
+  label: string;
+  tag: string;
+  why: string;
+  /** A second sentence of `why`, kept as its own translated string rather than concatenated. */
+  also?: string;
+  enable: string;
+  nearest: string;
+}) {
   return (
     <div className="space-y-1">
       <div className="flex flex-wrap items-baseline gap-x-2">
@@ -81,14 +106,43 @@ function CoverageBlock({ label, tag, why, enable, nearest }: { label: string; ta
         <span className="text-[10px] uppercase tracking-[0.5px] text-muted-foreground/70">{tag}</span>
       </div>
       <p className="text-[11px] leading-snug text-muted-foreground">{why}</p>
+      {also ? <p className="text-[11px] leading-snug text-muted-foreground">{also}</p> : null}
       <p className="text-[11px] leading-snug text-muted-foreground/70">{enable}</p>
       <p className="text-[11px] leading-snug text-muted-foreground/70">{nearest}</p>
     </div>
   );
 }
 
-export function WorkloadCoverage({ hardware, className }: { hardware: HardwareSummary | undefined; className?: string }) {
+export function WorkloadCoverage({
+  hardware,
+  gpuVramSource,
+  className,
+}: {
+  hardware: HardwareSummary | undefined;
+  /**
+   * The runtime monitor snapshot's `gpuVramSource`. `undefined` while that query has not answered,
+   * `null` on the backend's empty snapshot — both "not known", which gets the neutral sentence.
+   */
+  gpuVramSource?: GpuVramSource | null;
+  className?: string;
+}) {
   const { t } = useTranslation();
+
+  /*
+   * Four states for the VRAM sentence, and only `absent` changes the tag. `host-file` and `tool`
+   * are both "measured here" and differ only in who ran the tool, which is worth a word because
+   * it is the thing an operator checks when the chart goes quiet. Not-known is not absent: the
+   * snapshot in flight or failed says nothing about this node's instrumentation.
+   */
+  const vramAbsent = gpuVramSource === 'absent';
+  const vramLine =
+    gpuVramSource === 'host-file'
+      ? t('DASHBOARD_COVERAGE_GPU_VRAM_HOST_FILE')
+      : gpuVramSource === 'tool'
+        ? t('DASHBOARD_COVERAGE_GPU_VRAM_TOOL')
+        : vramAbsent
+          ? t('DASHBOARD_COVERAGE_GPU_VRAM_ABSENT')
+          : t('DASHBOARD_COVERAGE_GPU_VRAM_UNREAD');
 
   /*
    * The one thing this tile reads, and the only number it is allowed to show: the host GPU's own
@@ -126,9 +180,10 @@ export function WorkloadCoverage({ hardware, className }: { hardware: HardwareSu
 
       <CoverageBlock
         label={t('DASHBOARD_COVERAGE_GPU_LABEL')}
-        tag={t('DASHBOARD_COVERAGE_GPU_TAG')}
-        why={t('DASHBOARD_COVERAGE_GPU_WHY')}
-        enable={t('DASHBOARD_COVERAGE_GPU_ENABLE')}
+        tag={vramAbsent ? t('DASHBOARD_COVERAGE_GPU_TAG_ABSENT') : t('DASHBOARD_COVERAGE_GPU_TAG')}
+        why={vramLine}
+        also={t('DASHBOARD_COVERAGE_GPU_UTIL')}
+        enable={vramAbsent ? t('DASHBOARD_COVERAGE_GPU_ENABLE_ABSENT') : t('DASHBOARD_COVERAGE_GPU_ENABLE')}
         nearest={hostLine}
       />
 
