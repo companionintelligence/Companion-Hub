@@ -277,8 +277,9 @@ export interface PoolRoutingSlots {
    */
   demoted: PoolRoutingSlotDemotion[];
   /**
-   * `true` when the request was placed on one of those anyway: every candidate was full, or every
-   * one with a free slot failed first. A queued answer beats none.
+   * `true` when the request was placed on one of those anyway: every candidate was full, every one
+   * with a free slot failed first, or a prompt ceiling put every free one behind it. A queued
+   * answer beats none.
    */
   overridden: boolean;
 }

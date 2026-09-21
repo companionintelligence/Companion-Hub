@@ -1541,8 +1541,9 @@ export class PoolProxyService {
           `[PoolProxy] every candidate under its prompt ceiling failed for "${model}"; trying ${nodeLabel}, which is over its ceiling`,
         );
       }
-      // Reaching a full node means every node with a free slot already failed. Recorded as an
-      // override for the same reason as the ceiling's: the log must not claim the node was skipped.
+      // Reaching a full node means nothing with a free slot is ahead of it any more: every such node
+      // failed, or a prompt ceiling put them all behind it. Recorded as an override for the same
+      // reason as the ceiling's: the log must not claim the node was skipped.
       const placedSlots = row.slots;
       if (
         placedSlots &&
@@ -1550,7 +1551,7 @@ export class PoolProxyService {
         placedSlots.demoted.some((entry) => entry.node === nodeLabel && entry.backend === candidate.backend)
       ) {
         placedSlots.overridden = true;
-        this.logger.debug(`[PoolProxy] every candidate with a free slot failed for "${model}"; trying ${nodeLabel}, whose slots are full`);
+        this.logger.debug(`[PoolProxy] placing "${model}" on ${nodeLabel}, whose slots are full, because nothing with a free slot is ahead of it`);
       }
       const placedThroughput = row.throughput;
       if (

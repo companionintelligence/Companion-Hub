@@ -2888,6 +2888,24 @@ describe('PoolProxyService', () => {
           expect(entry?.slots).toMatchObject({ demoted: [{ node: 'beta-max.tailxyz.ts.net', inFlight: 2, slots: 2 }], overridden: true });
         });
 
+        it('says the demotion was overridden when a prompt ceiling put every free node behind the full one, so the placement is not read as a skip', async () => {
+          const peers = [
+            node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }),
+            node('fzzy', { inFlightRequests: 0, ollamaSlots: 4, maxPromptTokens: MIN_POOL_MAX_PROMPT_TOKENS }),
+          ];
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+          const longTurn = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'x'.repeat(184_000) }] };
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'beta-max.tailxyz.ts.net', attempt: 1, failedOverFrom: [] });
+          expect(entry?.promptCeiling).toMatchObject({ excluded: [{ node: 'fzzy.tailxyz.ts.net' }], overridden: false });
+          expect(entry?.slots).toMatchObject({ demoted: [{ node: 'beta-max.tailxyz.ts.net', inFlight: 2, slots: 2 }], overridden: true });
+        });
+
         it('judges an embedding too: slots queue every request, not only the ones a ceiling judges', async () => {
           const peers = betaMaxAndCore2();
           peerService.listConnectedPeers.mockResolvedValue(peers);
