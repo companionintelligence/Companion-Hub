@@ -119,6 +119,11 @@ const capCalls = () =>
   mocks.sshCapture.mock.calls
     .filter(([, command]) => String(command).includes('CIHUB_HUB_CONTEXT_CAP_EOF'))
     .map(([t, c]) => ({ host: (t as SshTarget).host, command: String(c) }));
+/** The Hub slot-count step, the same way: `--ollama-parallel`'s Hub half, under its own heredoc. */
+const slotCalls = () =>
+  mocks.sshCapture.mock.calls
+    .filter(([, command]) => String(command).includes('CIHUB_HUB_OLLAMA_SLOTS_EOF'))
+    .map(([t, c]) => ({ host: (t as SshTarget).host, command: String(c) }));
 
 /** What the node's Hub answered: the marker lines of a cap step that read `now`, wrote `write`, and read back `after`. */
 const capApplied = (now: string, write: string, after?: string) => {
@@ -175,6 +180,7 @@ beforeEach(() => {
     if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
     if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
     if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
+    if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('none', '200', '4'));
     throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
   });
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
@@ -477,6 +483,122 @@ describe('fleet backends --execute', () => {
   });
 });
 
+// ─── --ollama-parallel and the Hub's slot count ───────────────────────────────────────────────────
+
+describe('fleet backends --ollama-parallel', () => {
+  it('plans the Hub write under the runtime plan on a dry run, and dials no Hub', async () => {
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4']);
+    const text = printed();
+    expect(text).toContain(`runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4`);
+    expect(text).toContain("hub: would set inferenceOllamaSlots=4 on this node's Hub (PATCH /api/user-settings)");
+    expect(text).not.toContain('inferenceMaxNumCtx');
+    expect(slotCalls()).toHaveLength(0);
+    expect(capCalls()).toHaveLength(0);
+    // beta-1's unit is not ours to edit: no runtime line, and so no Hub line either.
+    const beta = text.slice(text.indexOf('beta-1'));
+    expect(beta).not.toContain('hub: would');
+
+    output = [];
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', 'unset']);
+    expect(printed()).toContain("hub: would clear the slot count on this node's Hub (PATCH /api/inference/preferences ollamaSlots=null)");
+    expect(slotCalls()).toHaveLength(0);
+  });
+
+  it('writes the slot count on every node where the runtime step applied or was already in effect, after the daemon runs it', async () => {
+    hosts['10.0.0.2'] = {
+      bind: bindProbe({ runtime: ollamaRuntimeDropinContent({ parallel: 4 }).trimEnd(), env: 'OLLAMA_NUM_PARALLEL=4' }),
+      ufw: firewallProbe(UFW_FULL),
+    };
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      // core-1's Hub had no slot count; core-2's already carried it.
+      if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF'))
+        return ok(t.host === '10.0.0.1' ? capApplied('none', '200', '4') : capApplied('4', 'skipped'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'core-1,core-2']);
+    const text = printed();
+    expect(runtimeCalls().map((c) => c.host)).toEqual(['10.0.0.1']);
+    expect(slotCalls().map((c) => c.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+    expect(capCalls()).toHaveLength(0);
+    for (const call of slotCalls()) {
+      expect(call.command.startsWith('bash <<')).toBe(true);
+      expect(call.command).not.toContain('sudo');
+      expect(call.command).toContain('{"inferenceOllamaSlots":4}');
+      expect(call.command).toContain(`grep -q '"ollamaSlots"'`);
+      expect(call.command).not.toContain('maxNumCtx');
+    }
+    expect(text).toMatch(/hub\s+applied.*slot count none → 4 \(PATCH \/api\/user-settings 200\)/);
+    expect(text).toMatch(/hub\s+unchanged.*slot count already 4/);
+    const core1 = mocks.sshCapture.mock.calls.filter(([t]) => (t as SshTarget).host === '10.0.0.1').map(([, c]) => String(c));
+    expect(core1.findIndex((c) => c.includes('CIHUB_OLLAMA_RUNTIME_EOF'))).toBeLessThan(
+      core1.findIndex((c) => c.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')),
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('writes both halves, cap then slots, when --ollama-context and --ollama-parallel are given together', async () => {
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_CONTEXT_LENGTH=16384'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
+      if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('none', '200', '4'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand([
+      'backends',
+      '--backends',
+      'ollama',
+      '--ollama-parallel',
+      '4',
+      '--ollama-context',
+      '16384',
+      '--execute',
+      '--nodes',
+      'core-1',
+    ]);
+    const text = printed();
+    expect(capCalls().map((c) => c.host)).toEqual(['10.0.0.1']);
+    expect(slotCalls().map((c) => c.host)).toEqual(['10.0.0.1']);
+    const core1 = mocks.sshCapture.mock.calls.map(([, c]) => String(c));
+    expect(core1.findIndex((c) => c.includes('CIHUB_HUB_CONTEXT_CAP_EOF'))).toBeLessThan(
+      core1.findIndex((c) => c.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')),
+    );
+    expect(text).toMatch(/hub\s+applied.*context cap none → 16384/);
+    expect(text).toMatch(/hub\s+applied.*slot count none → 4/);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails the node when the Hub predates the slot count, naming the fix, and does not touch the Hub on a node the runtime step skipped', async () => {
+    // beta-1: user-scope unit → runtime refused → no slot step.
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'beta-1']);
+    expect(slotCalls()).toHaveLength(0);
+    expect(printed()).not.toContain('hub ');
+
+    output = [];
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('absent', 'skipped'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'core-1']);
+    expect(slotCalls().map((c) => c.host)).toEqual(['10.0.0.1']);
+    expect(printed()).toMatch(/hub\s+failed.*predates the slot count \(GET \/api\/inference\/preferences has no ollamaSlots\)/);
+    expect(process.exitCode).toBe(1);
+  });
+});
+
 // ─── --ollama-context and the Hub's cap ────────────────────────────────────────────────────────────
 
 describe('fleet backends --ollama-context', () => {
@@ -496,10 +618,27 @@ describe('fleet backends --ollama-context', () => {
     expect(capCalls()).toHaveLength(0);
   });
 
-  it('leaves the Hub alone when --ollama-context was not given, even with other runtime flags', async () => {
-    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'core-1']);
+  it('leaves the Hub alone when neither --ollama-context nor --ollama-parallel was given, even with other runtime flags', async () => {
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-keep-alive', '24h', '--execute', '--nodes', 'core-1']);
     expect(printed()).not.toContain('hub ');
     expect(capCalls()).toHaveLength(0);
+    expect(slotCalls()).toHaveLength(0);
+  });
+
+  it('writes only the cap when --ollama-parallel was not given', async () => {
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384', '--execute', '--nodes', 'core-1']);
+    expect(capCalls()).toHaveLength(1);
+    expect(slotCalls()).toHaveLength(0);
+    expect(process.exitCode).toBeUndefined();
   });
 
   it('writes the cap on every node where the runtime step applied or was already in effect, unprivileged, reporting was → is', async () => {

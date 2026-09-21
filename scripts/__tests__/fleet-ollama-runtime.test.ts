@@ -17,6 +17,7 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   classifyHubContextCapOutput,
+  HUB_OLLAMA_SLOTS_SETTING,
   classifyRuntimeApplyOutput,
   describeHubContextCapPlan,
   describeRuntimeTransition,
@@ -563,6 +564,31 @@ describe('hubContextCapShell', () => {
   });
 });
 
+describe('hubContextCapShell for the slot count (--ollama-parallel)', () => {
+  const set = hubContextCapShell(4, '/srv/hub', HUB_OLLAMA_SLOTS_SETTING);
+  const clear = hubContextCapShell(null, '/srv/hub', HUB_OLLAMA_SLOTS_SETTING);
+
+  it('is the cap script with the two keys swapped: reads ollamaSlots, sets inferenceOllamaSlots, clears ollamaSlots', () => {
+    expect(set).toContain(`grep -q '"ollamaSlots"'`);
+    expect(set).toContain(`-X PATCH -d '{"inferenceOllamaSlots":4}' "$cihub_cap_url/user-settings"`);
+    expect(set).toContain('if [ "$cihub_cap_now" = 4 ] || [ "$cihub_cap_now" = absent ]; then');
+    expect(clear).toContain('{\\"backend\\":\\"$cihub_cap_backend\\",\\"ollamaSlots\\":null}');
+    for (const script of [set, clear]) {
+      expect(script).not.toContain('maxNumCtx');
+      expect(script).not.toContain('inferenceMaxNumCtx');
+      expect(script).not.toMatch(/echo[^\n]*\$cihub_cap_key/);
+      expect(script).toContain('unset cihub_cap_key');
+    }
+  });
+
+  it('names the setting and the route in the dry-run line', () => {
+    expect(describeHubContextCapPlan(4, HUB_OLLAMA_SLOTS_SETTING)).toContain('inferenceOllamaSlots=4');
+    expect(describeHubContextCapPlan(4, HUB_OLLAMA_SLOTS_SETTING)).toContain('PATCH /api/user-settings');
+    expect(describeHubContextCapPlan(null, HUB_OLLAMA_SLOTS_SETTING)).toContain('clear the slot count');
+    expect(describeHubContextCapPlan(null, HUB_OLLAMA_SLOTS_SETTING)).toContain('ollamaSlots=null');
+  });
+});
+
 describe('classifyHubContextCapOutput', () => {
   const m = HUB_CONTEXT_CAP_MARKERS;
   const out = (...lines: string[]) => lines.join('\n');
@@ -611,6 +637,18 @@ describe('classifyHubContextCapOutput', () => {
     const unread = classifyHubContextCapOutput(okRun('none', '200'), '', 16384);
     expect(unread.outcome).toBe('failed');
     expect(unread.why).toContain('read-back');
+  });
+
+  it('reports the slot count in its own words, with its own bounds and key', () => {
+    const s = HUB_OLLAMA_SLOTS_SETTING;
+    expect(classifyHubContextCapOutput(okRun('none', '200', '4'), '', 4, s).why).toBe('slot count none → 4 (PATCH /api/user-settings 200)');
+    expect(classifyHubContextCapOutput(okRun('4', 'skipped'), '', 4, s).why).toBe('slot count already 4');
+    expect(classifyHubContextCapOutput(okRun('none', 'skipped'), '', null, s).why).toBe('no slot count set; nothing to clear');
+    expect(classifyHubContextCapOutput(okRun('none', '400'), '', 4, s).why).toContain('1 to 64');
+    expect(classifyHubContextCapOutput(okRun('absent', 'skipped'), '', 4, s).why).toContain(
+      'predates the slot count (GET /api/inference/preferences has no ollamaSlots)',
+    );
+    expect(classifyHubContextCapOutput(okRun('none', '200', '2'), '', 4, s).why).toContain('reads back 2, not 4');
   });
 
   it('names a Hub whose build predates the cap, and treats clearing one as nothing to do', () => {

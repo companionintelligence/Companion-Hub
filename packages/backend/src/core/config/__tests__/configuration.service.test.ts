@@ -96,6 +96,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolMaxPromptTokens: number | null;
         poolProbeSnapshotTtlMs: number;
         poolPrefixAffinityMaxInFlight: number;
+        poolSlotAwareness: number;
         poolPins: unknown[];
       };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
@@ -138,6 +139,9 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // until an operator PATCHes a limit onto a canary node. Off by default for the same reason as
       // the snapshot TTL above: the canary is measured against a node that took the same image.
       poolPrefixAffinityMaxInFlight: 0,
+      // 0 is the pre-slots build: no slot count is read and the ranker alone decides, until an
+      // operator PATCHes it on at a canary node — off by default for the same reason as the two above.
+      poolSlotAwareness: 0,
       // No pins until an operator sets one, so the ranker alone decides — which is the whole
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],
@@ -385,6 +389,61 @@ describe('ConfigurationService inference preferences — context cap', () => {
       (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, null)).maxNumCtx,
     ).toBeNull();
     expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceMaxNumCtx: undefined });
+  });
+});
+
+describe('settingsSchema — inference Ollama slots', () => {
+  it('accepts the count as a string, as a form would submit it, and degrades an out-of-range one to "not stated"', () => {
+    expect(settingsSchema.partial().safeParse({ inferenceOllamaSlots: '4' }).data).toEqual({ inferenceOllamaSlots: 4 });
+    // Zero, a value past the bound and a word all read as absent on the boot path rather than
+    // failing the parse; the write path (UserSettingsBody) refuses them.
+    for (const persisted of [{ inferenceOllamaSlots: 0 }, { inferenceOllamaSlots: 65 }, { inferenceOllamaSlots: 'four' }]) {
+      const parsed = settingsSchema.partial().safeParse(persisted);
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data).toEqual({});
+    }
+  });
+});
+
+describe('ConfigurationService inference preferences — Ollama slots', () => {
+  function makeService(userSettings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      config: { demoMode: boolean; userSettings: Record<string, unknown> };
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      getInferencePreferences: () => { ollamaSlots: number | null };
+      setInferencePreferences: (...args: unknown[]) => Promise<{ ollamaSlots: number | null }>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { demoMode: false, userSettings };
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  it('is null until an operator states one — the pool then ranks this node by queue depth alone, as before slots', () => {
+    expect(makeService({}).getInferencePreferences().ollamaSlots).toBeNull();
+  });
+
+  it('reads a persisted count through the clamp, so a value outside this build bounds is not stated rather than believed', () => {
+    expect(makeService({ inferenceOllamaSlots: 4 }).getInferencePreferences().ollamaSlots).toBe(4);
+    expect(makeService({ inferenceOllamaSlots: 0 }).getInferencePreferences().ollamaSlots).toBeNull();
+  });
+
+  it('sets, leaves alone, and clears the count through setInferencePreferences', async () => {
+    const svc = makeService({ inferenceOllamaSlots: 4 });
+    const untouched = [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined];
+
+    // Omitted: unchanged.
+    expect((await svc.setInferencePreferences('ollama')).ollamaSlots).toBe(4);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama' });
+
+    // Set.
+    expect((await svc.setInferencePreferences('ollama', ...untouched, 2)).ollamaSlots).toBe(2);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaSlots: 2 });
+
+    // Cleared: the key is removed rather than stored as null, like the cap.
+    expect((await svc.setInferencePreferences('ollama', ...untouched, null)).ollamaSlots).toBeNull();
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaSlots: undefined });
   });
 });
 

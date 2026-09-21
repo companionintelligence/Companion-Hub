@@ -75,6 +75,13 @@ describe('parseFleetArgs', () => {
     });
     // `unset` leaves the key out; naming it still turns the runtime step on for the run.
     expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset']).ollamaRuntime).toEqual({ parallel: undefined });
+    // --ollama-context and --ollama-parallel each carry a Hub half; the other flags do not.
+    expect(parseFleetArgs(['backends', '--ollama-parallel', '4', '--ollama-context', '16384'])).toMatchObject({
+      hubContextCap: 16384,
+      hubOllamaSlots: 4,
+    });
+    expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset'])).toMatchObject({ hubOllamaSlots: null, hubContextCap: undefined });
+    expect(parseFleetArgs(['backends', '--ollama-keep-alive', '24h'])).toMatchObject({ hubContextCap: undefined, hubOllamaSlots: undefined });
     expect(parseFleetArgs(['backends', '--ollama-igpu', 'off']).ollamaRuntime).toEqual({ igpu: false });
     // The cap alone turns the step on too, in either flag spelling; a run without it has no `maxLoaded`.
     expect(parseFleetArgs(['backends', '--ollama-max-loaded=2']).ollamaRuntime).toEqual({ maxLoaded: 2 });
