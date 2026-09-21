@@ -474,15 +474,38 @@ describe('decideSystemUnitOwnership goes by the listener, not by a unit name', (
     if (nameless.refuse) expect(nameless.reason).toMatch(/^ollama-local\.service under \?'s systemd --user \(socket uid 1000\)/);
   });
 
-  it('a system unit that is not the listener does not count as one', () => {
-    // No listener at all, but the unit file exists and is active per systemd — nothing to pin a socket to.
-    const d = decideSystemUnitOwnership({
+  it('nothing listens: an active `ollama*` user unit refuses on its name, as it always did', () => {
+    // beta-1 between `systemctl --user restart ollama-local` stopping the daemon and the new one
+    // binding: the unit is active, the port is momentarily free, and the probe's `list-units` row
+    // carries no OLLAMA_HOST to say whether this unit ever binds here. A free port is not proof the
+    // unit is not the daemon — enabling the system unit now would collide a second later.
+    const restarting = decideSystemUnitOwnership({
+      ss: '',
+      userUids: { ci: 1000 },
+      userUnits: [{ user: 'ci', text: 'ollama-local.service loaded active running Ollama local model server' }],
+    });
+    expect(restarting.refuse).toBe(true);
+    if (restarting.refuse)
+      expect(restarting.reason).toBe(
+        "ollama-local.service is running under ci's systemd --user; the system ollama.service path would start a second daemon and collide on :11434",
+      );
+    // The same shape on core-2 (tunnel unit, daemon stopped): the name refuses too — the probe
+    // cannot tell the tunnel from a daemon mid-restart, and the system unit is not the listener.
+    // A system unit that is active per systemd but holds no socket is not the listener either.
+    const tunnelOnly = decideSystemUnitOwnership({
       ss: '',
       systemUnit: { active: true, mainPid: 5, uid: 997 },
       userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
     });
-    expect(d.refuse).toBe(false);
-    if (!d.refuse) expect(d.note).toMatch(/nothing listens on :11434 — that unit is not an Ollama daemon on this port; managing the system unit$/);
+    expect(tunnelOnly.refuse).toBe(true);
+    if (tunnelOnly.refuse)
+      expect(tunnelOnly.reason).toMatch(/^ollama-tunnel\.service is running under ci's systemd --user; the system ollama\.service path/);
+    // A `show` fixture that names another port is still the name: the probe never carries it, and
+    // a hand-pasted one is quoted for the operator, not weighed.
+    const elsewhere = ['Id=ollama-local.service', 'ActiveState=active', 'Environment=OLLAMA_HOST=127.0.0.1:11435'].join('\n');
+    const shown = decideSystemUnitOwnership({ ss: '', userUnits: [{ user: 'ci', text: elsewhere }] });
+    expect(shown.refuse).toBe(true);
+    if (shown.refuse) expect(shown.reason).toContain('(OLLAMA_HOST=127.0.0.1:11435)');
   });
 
   it('without a socket cgroup (older iproute2), the system unit’s uid or main pid pins the listener', () => {
@@ -513,7 +536,7 @@ describe('decideSystemUnitOwnership goes by the listener, not by a unit name', (
     expect(inactive.owners[0]?.scope).toBe('unknown');
   });
 
-  it('with only the socket uid, the unit’s user decides: theirs refuses, anyone else’s does not', () => {
+  it('with only the socket uid, a login user’s socket refuses — the unit’s own user or anyone else’s — and a system uid does not', () => {
     const noCgroup = (uid: number) => `LISTEN 0 4096 *:11434 *:* uid:${uid} ino:1 sk:1 v6only:0 <->`;
     const theirs = decideSystemUnitOwnership({ ss: noCgroup(1001), userUids: { ci: 1001 }, userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
     expect(theirs.refuse).toBe(true);
@@ -521,12 +544,44 @@ describe('decideSystemUnitOwnership goes by the listener, not by a unit name', (
       expect(theirs.reason).toBe(
         "ollama-tunnel.service is running under ci's systemd --user; the system ollama.service path would start a second daemon and collide on :11434",
       );
-    const notTheirs = decideSystemUnitOwnership({ ss: noCgroup(997), userUids: { ci: 1001 }, userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
+    // Another login user's socket: a hand-started `ollama serve` in bob's session, or bob's own
+    // unit that `-M bob@` could not list. Not the tunnel's, but not the system unit's either — and
+    // the tunnel's user was not the only login user to compare against.
+    const someoneElses = decideSystemUnitOwnership({
+      ss: noCgroup(1002),
+      userUids: { ci: 1001, bob: 1002 },
+      userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
+    });
+    expect(someoneElses.refuse).toBe(true);
+    if (someoneElses.refuse)
+      expect(someoneElses.reason).toBe(
+        "ollama-tunnel.service is running under ci's systemd --user and :11434 is held by bob's uid 1002; the system ollama.service path would start a second daemon and collide on :11434",
+      );
+    // Two users with active `ollama*` units and the socket is the SECOND one's: still refused.
+    const secondUnit = decideSystemUnitOwnership({
+      ss: noCgroup(1002),
+      userUids: { ci: 1001, bob: 1002 },
+      userUnits: [
+        { user: 'ci', text: CORE2_TUNNEL },
+        { user: 'bob', text: 'ollama-local.service loaded active running Ollama local model server' },
+      ],
+    });
+    expect(secondUnit.refuse).toBe(true);
+    if (secondUnit.refuse) expect(secondUnit.reason).toContain("held by bob's uid 1002");
+    // A uid that is no login user's cannot be the unit's, nor anyone's shell: the system unit is managed.
+    const notTheirs = decideSystemUnitOwnership({
+      ss: noCgroup(997),
+      userUids: { ci: 1001, bob: 1002 },
+      userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
+    });
     expect(notTheirs.refuse).toBe(false);
     if (!notTheirs.refuse)
       expect(notTheirs.note).toBe(
-        "ollama-tunnel.service is active under ci's systemd --user, but :11434 is held by uid 997, not ci's (1001) — that unit is not the listener; managing the system unit",
+        "ollama-tunnel.service is active under ci's systemd --user, but :11434 is held by uid 997, which is no login user's (ci is 1001) — that unit is not the listener; managing the system unit",
       );
+    // The unit's own user missing from the dump: nothing proves the socket is not theirs.
+    const unlisted = decideSystemUnitOwnership({ ss: noCgroup(997), userUids: { bob: 1002 }, userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
+    expect(unlisted.refuse).toBe(true);
     // No uid to compare either: the listener may well be the unit's, and the old refusal stands.
     const blind = decideSystemUnitOwnership({ ss: 'LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:*', userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
     expect(blind.refuse).toBe(true);
@@ -536,13 +591,24 @@ describe('decideSystemUnitOwnership goes by the listener, not by a unit name', (
       );
   });
 
-  it('with no listener, only a unit whose own OLLAMA_HOST claims the port refuses', () => {
-    const claims = ['Id=ollama-local.service', 'ActiveState=active', 'Environment=OLLAMA_HOST=0.0.0.0:11434'].join('\n');
-    expect(decideSystemUnitOwnership({ ss: '', userUnits: [{ user: 'ci', text: claims }] }).refuse).toBe(true);
-    const elsewhere = ['Id=ollama-local.service', 'ActiveState=active', 'Environment=OLLAMA_HOST=127.0.0.1:11435'].join('\n');
-    const d = decideSystemUnitOwnership({ ss: '', userUnits: [{ user: 'ci', text: elsewhere }] });
-    expect(d.refuse).toBe(false);
-    if (!d.refuse) expect(d.note).toMatch(/nothing listens on :11434/);
+  it('a bare `cgroup:/` on the socket is no cgroup: the /proc line classifies it, and without one it is unseen', () => {
+    // The root cgroup, as `ss -e` prints it for a socket in a namespace whose root is the
+    // listener's cgroup. Not a foreign unit; not proof of anything.
+    const rootCgroup = 'LISTEN 0 4096 *:11434 *:* users:(("ollama",pid=910,fd=3)) uid:997 ino:1 sk:1 cgroup:/ v6only:0 <->';
+    expect(parseSsListeners(rootCgroup)[0]).toMatchObject({ pid: 910, uid: 997, cgroup: undefined, scope: 'unknown' });
+    const byProc = decideSystemUnitOwnership({
+      ss: rootCgroup,
+      owners: ['910 ollama /system.slice/ollama.service'],
+      userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
+    });
+    expect(byProc.refuse).toBe(false);
+    expect(byProc.owners[0]).toMatchObject({ pid: 910, scope: 'system-ollama', unit: 'ollama.service' });
+    if (!byProc.refuse) expect(byProc.note).toMatch(/the system ollama\.service \(pid 910\) is what serves :11434/);
+    // /proc says the root cgroup too (cgroup v1, a container's init): still nobody the probe can name.
+    const rootEverywhere = decideSystemUnitOwnership({ ss: rootCgroup, owners: ['910 ollama /'], userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
+    expect(rootEverywhere.owners[0]).toMatchObject({ pid: 910, cgroup: undefined, scope: 'unknown' });
+    expect(rootEverywhere.refuse).toBe(true);
+    if (rootEverywhere.refuse) expect(rootEverywhere.reason).toMatch(/^ollama-tunnel\.service is running under ci's systemd --user;/);
   });
 
   it('no note when there is no user unit to explain', () => {
@@ -1023,7 +1089,12 @@ describe.skipIf(!bash)('ollamaOwnershipGuardShell (sandboxed bash)', () => {
     for (const dir of sandboxes.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function runGuard(stubs: { ss: string; userUnits?: string }) {
+  /**
+   * `procCgroup` stands in for `/proc/<pid>/cgroup` — the guard reads it with `tail -1`, so a
+   * `tail` stub answers for that path only and defers to the real one otherwise. The pids in
+   * these fixtures are not this machine's; the real /proc would say "no such process".
+   */
+  function runGuard(stubs: { ss: string; userUnits?: string; procCgroup?: string }) {
     const root = mkdtempSync(path.join(tmpdir(), 'cihub-guard-'));
     sandboxes.push(root);
     const bin = path.join(root, 'bin');
@@ -1036,6 +1107,13 @@ describe.skipIf(!bash)('ollamaOwnershipGuardShell (sandboxed bash)', () => {
     stub('ss', `printf '%s\\n' '${stubs.ss}'`);
     stub('loginctl', "printf '%s\\n' ' 1001 ci          yes active' '60578 gdm-greeter no  active'");
     stub('systemctl', ['case "$*" in', `  *"-M ci@"*"list-units"*) printf '%s\\n' '${stubs.userUnits ?? ''}' ;;`, 'esac'].join('\n'));
+    if (stubs.procCgroup !== undefined) {
+      stub(
+        'tail',
+        ['case "$*" in', `  *"/proc/"*"/cgroup"*) printf '%s\\n' '${stubs.procCgroup}' ;;`, '  *) exec /usr/bin/tail "$@" ;;', 'esac'].join('\n'),
+      );
+      stub('stat', 'echo ollama');
+    }
     const res = spawnSync(bash as string, ['-e', '-c', `${ollamaOwnershipGuardShell()}\necho guard-passed`], {
       env: { PATH: `${bin}:/usr/bin:/bin`, HOME: '/tmp' },
       encoding: 'utf-8',
@@ -1071,13 +1149,26 @@ describe.skipIf(!bash)('ollamaOwnershipGuardShell (sandboxed bash)', () => {
     expect(res.out).not.toContain(BIND_MARKERS.note);
   });
 
-  it('nothing listens: an active `ollama*` user unit is noted, not a reason to stop', () => {
-    const res = runGuard({ ss: '', userUnits: CORE2_TUNNEL });
-    expect(res.status, res.err).toBe(0);
-    expect(res.out).toContain(
-      "ollama-bind-note: ollama-tunnel.service is active under ci's systemd --user, but nothing listens on :11434 — that unit is not an Ollama daemon on this port; managing the system unit",
+  it('nothing listens: an active `ollama*` user unit refuses on its name, as it always did', () => {
+    // beta-1 with `ollama-local.service` between its stop and its bind: the unit is active, the
+    // port is free for a moment, and the guard has nothing but the name to go by. Enabling the
+    // system unit here is exactly the collision the guard exists to prevent.
+    const restarting = runGuard({ ss: '', userUnits: 'ollama-local.service loaded active running Ollama local model server' });
+    expect(restarting.status, restarting.err).toBe(0);
+    expect(restarting.out).toContain(
+      "ollama-bind-refused: ollama-local.service is running under ci's systemd --user; the system ollama.service path would start a second daemon and collide on :11434",
     );
-    expect(res.out.trim().endsWith('guard-passed')).toBe(true);
+    expect(restarting.out).not.toContain('guard-passed');
+    expect(restarting.out).not.toContain(BIND_MARKERS.note);
+    // core-2's tunnel with the system daemon stopped looks the same to the guard, and is refused
+    // the same way: the relaxation is for a SERVING system unit only.
+    const tunnel = runGuard({ ss: '', userUnits: CORE2_TUNNEL });
+    expect(tunnel.out).toContain("ollama-bind-refused: ollama-tunnel.service is running under ci's systemd --user;");
+    expect(tunnel.out).not.toContain('guard-passed');
+    // With no user unit at all a free port passes, as before.
+    const free = runGuard({ ss: '' });
+    expect(free.status, free.err).toBe(0);
+    expect(free.out.trim()).toBe('guard-passed');
   });
 
   it('a listener whose owner the guard cannot name, beside an active `ollama*` user unit, still refuses', () => {
@@ -1097,6 +1188,35 @@ describe.skipIf(!bash)('ollamaOwnershipGuardShell (sandboxed bash)', () => {
     });
     expect(res.out).not.toMatch(/owned by unreachable/);
     expect(res.out).toMatch(/ollama-bind-refused: ollama-tunnel\.service is running under ci's systemd --user/);
+  });
+
+  it('a bare `cgroup:/` on the socket is no cgroup: /proc classifies the listener when there is a pid', () => {
+    // The root cgroup on the socket, the real unit in /proc: the system unit serves, the tunnel is
+    // noted, the guard passes. Before: `unit=""` and a refusal reading "owned by  (pid 3522669)".
+    const rootSocket = 'LISTEN 0 4096 *:11434 *:* users:(("ollama",pid=3522669,fd=3)) uid:997 ino:1 sk:1 cgroup:/ v6only:0 <->';
+    const byProc = runGuard({ ss: rootSocket, userUnits: CORE2_TUNNEL, procCgroup: '0::/system.slice/ollama.service' });
+    expect(byProc.status, byProc.err).toBe(0);
+    expect(byProc.out).not.toContain(BIND_MARKERS.refused);
+    expect(byProc.out).toContain(
+      "ollama-bind-note: ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (pid 3522669) is what serves :11434",
+    );
+    expect(byProc.out.trim().endsWith('guard-passed')).toBe(true);
+    // /proc names a user unit instead: refused by that, not by the socket's empty cgroup.
+    const userByProc = runGuard({
+      ss: rootSocket,
+      userUnits: 'ollama-local.service loaded active running Ollama local model server',
+      procCgroup: '0::/user.slice/user-1001.slice/user@1001.service/app.slice/ollama-local.service',
+    });
+    expect(userByProc.out).toContain("ollama-bind-refused: ollama-local.service under ollama's systemd --user (pid 3522669) already owns :11434");
+    // /proc says the root cgroup too: nobody the guard can name, and the user unit's name refuses —
+    // never "owned by  (pid …)" with an empty unit.
+    const rootEverywhere = runGuard({ ss: rootSocket, userUnits: CORE2_TUNNEL, procCgroup: '0::/' });
+    expect(rootEverywhere.out).not.toMatch(/owned by\s+\(pid/);
+    expect(rootEverywhere.out).toMatch(/ollama-bind-refused: ollama-tunnel\.service is running under ci's systemd --user/);
+    // And with no pid to read, the same: unseen, and the name refuses.
+    const noPid = runGuard({ ss: 'LISTEN 0 4096 *:11434 *:* uid:997 ino:1 sk:1 cgroup:/ v6only:0 <->', userUnits: CORE2_TUNNEL });
+    expect(noPid.out).not.toMatch(/owned by\s+\(pid/);
+    expect(noPid.out).toMatch(/ollama-bind-refused: ollama-tunnel\.service is running under ci's systemd --user/);
   });
 
   it('a container or a foreign system unit on the port refuses, whatever the user managers say', () => {
