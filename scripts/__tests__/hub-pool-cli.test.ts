@@ -9,6 +9,8 @@ import {
   fetchInferencePreferences,
   formatContextCapResultLines,
   formatLocalContextCapLines,
+  formatLocalOllamaSlotsLines,
+  formatOllamaSlotsResultLines,
   formatPairingPinCancelledLines,
   formatPairingPinLines,
   formatPairingPinStateLines,
@@ -30,6 +32,7 @@ import {
   resolvePoolPeerTarget,
   runPoolDiscover,
   setInferenceContextCap,
+  setInferenceOllamaSlots,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
   unpairPoolPeer,
@@ -746,6 +749,72 @@ describe('hub-pool-cli context cap', () => {
       const result = formatContextCapResultLines(16_384, { preferredBackend: 'ollama' }, null, false);
       expect(result.tone).toBe('red');
       expect(result.lines.join('\n')).toContain('predates the context cap');
+    });
+  });
+});
+
+describe('hub-pool-cli Ollama slots', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('PATCHes the slot count through the preferences route with the backend it was given — null to clear', async () => {
+    hubApiFetch.mockResolvedValue({ preferredBackend: 'ollama', ollamaSlots: null });
+
+    await setInferenceOllamaSlots('.env.local', 'ollama', 4);
+    await setInferenceOllamaSlots('.env.local', 'vllm', null);
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/preferences');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toBe('{"backend":"ollama","ollamaSlots":4}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"backend":"vllm","ollamaSlots":null}');
+  });
+
+  it('shows this node’s slot count in status with the knob’s state, and nothing when none is stated or the Hub predates slots', () => {
+    const base = status();
+    const stated = formatPoolStatusLines({ ...base, localNode: { ...base.localNode, ollamaSlots: 4 } }).join('\n');
+    expect(stated).toContain('Slots      Ollama runs 4 requests at once; slot-aware placement off (poolSlotAwareness=0)');
+    expect(stated).toContain('cihub pool slots clear');
+    const on = formatLocalOllamaSlotsLines({ ...base.localNode, ollamaSlots: 1 }, { ...base.settings, poolSlotAwareness: 1 }).join('\n');
+    expect(on).toContain('Ollama runs 1 request at once; slot-aware placement on');
+    expect(formatLocalOllamaSlotsLines({ ...base.localNode, ollamaSlots: null }, base.settings)).toEqual([]);
+    expect(formatLocalOllamaSlotsLines(base.localNode, base.settings)).toEqual([]);
+    expect(formatPoolStatusLines(base).join('\n')).not.toContain('Slots      ');
+  });
+
+  describe('formatOllamaSlotsResultLines', () => {
+    const prefs = (ollamaSlots: number | null) => ({ preferredBackend: 'ollama', ollamaSlots });
+
+    it('confirms a count that read back as requested, and names the daemon setting it must match', () => {
+      const result = formatOllamaSlotsResultLines(4, prefs(null), prefs(4), true);
+      expect(result.tone).toBe('green');
+      expect(result.title).toBe('Slot count set');
+      expect(result.lines.join('\n')).toContain('runs 4 requests at once');
+      expect(result.lines.join('\n')).toContain('OLLAMA_NUM_PARALLEL on this node should be 4');
+      expect(result.lines.join('\n')).toContain('cihub fleet backends --ollama-parallel 4');
+    });
+
+    it('confirms a clear, saying what ranking goes back to', () => {
+      const result = formatOllamaSlotsResultLines(null, prefs(2), prefs(null), true);
+      expect(result).toMatchObject({ title: 'Slot count cleared', tone: 'yellow' });
+      expect(result.lines.join('\n')).toContain('queue depth alone');
+    });
+
+    it('says nothing was written when the count already read as requested', () => {
+      expect(formatOllamaSlotsResultLines(4, prefs(4), null, false)).toMatchObject({ title: 'Slot count unchanged' });
+      expect(formatOllamaSlotsResultLines(null, prefs(null), null, false).lines.join('\n')).toContain('nothing to clear');
+    });
+
+    it('does not report success when the read-back disagrees with the request', () => {
+      const result = formatOllamaSlotsResultLines(4, prefs(null), prefs(2), true);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('reads back 2');
+    });
+
+    it('says an older Hub stored nothing', () => {
+      const result = formatOllamaSlotsResultLines(4, { preferredBackend: 'ollama' }, null, false);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('predates the slot count');
     });
   });
 });

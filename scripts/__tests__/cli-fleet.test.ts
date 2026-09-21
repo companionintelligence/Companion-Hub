@@ -64,6 +64,13 @@ describe('parseFleetArgs', () => {
     });
     // `unset` leaves the key out; naming it still turns the runtime step on for the run.
     expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset']).ollamaRuntime).toEqual({ parallel: undefined });
+    // --ollama-context and --ollama-parallel each carry a Hub half; the other flags do not.
+    expect(parseFleetArgs(['backends', '--ollama-parallel', '4', '--ollama-context', '16384'])).toMatchObject({
+      hubContextCap: 16384,
+      hubOllamaSlots: 4,
+    });
+    expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset'])).toMatchObject({ hubOllamaSlots: null, hubContextCap: undefined });
+    expect(parseFleetArgs(['backends', '--ollama-keep-alive', '24h'])).toMatchObject({ hubContextCap: undefined, hubOllamaSlots: undefined });
     expect(parseFleetArgs(['backends', '--ollama-igpu', 'off']).ollamaRuntime).toEqual({ igpu: false });
     expect(() => parseFleetArgs(['backends', '--ollama-parallel', 'many'])).toThrow(/--ollama-parallel must be an integer between 1 and 64/);
     expect(() => parseFleetArgs(['backends', '--ollama-keep-alive', 'forever'])).toThrow(/duration such as 24h/);

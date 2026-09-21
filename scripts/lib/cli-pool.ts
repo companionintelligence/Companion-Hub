@@ -15,6 +15,7 @@ import {
   fetchInferencePreferences,
   fetchPoolStatus,
   formatContextCapResultLines,
+  formatOllamaSlotsResultLines,
   formatPoolPeersLines,
   formatPoolProbeLines,
   formatPairingPinCancelledLines,
@@ -29,6 +30,7 @@ import {
   resolvePoolPeerTarget,
   runPoolDiscover,
   setInferenceContextCap,
+  setInferenceOllamaSlots,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
   setPoolPeerEnabled,
@@ -74,6 +76,7 @@ export const POOL_SUBCOMMANDS = [
   'unpin',
   'ceiling',
   'context-cap',
+  'slots',
   // Four places in this repo and two in docs/CLI.md already tell the operator to run
   // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
   'pairing-pin',
@@ -94,6 +97,7 @@ const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = [
   // The token count (or `clear`) sits where a peer reference would, so `ceiling 16000 dev` reads the env.
   'ceiling',
   'context-cap',
+  'slots',
 ];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
@@ -268,6 +272,23 @@ export function parseContextCapArg(raw: string | undefined): number | null | und
   if (!/^\d+$/.test(value)) return undefined;
   const tokens = Number(value);
   return tokens >= MIN_CONTEXT_CAP && tokens <= MAX_CONTEXT_CAP ? tokens : undefined;
+}
+
+/** Matches `MIN_INFERENCE_OLLAMA_SLOTS` / `MAX_INFERENCE_OLLAMA_SLOTS` on the backend (`inference-ollama-slots.ts`), and `--ollama-parallel`'s bounds. */
+const MIN_OLLAMA_SLOTS = 1;
+const MAX_OLLAMA_SLOTS = 64;
+
+/**
+ * `clear` → `null`; a plain integer within the backend's bounds → that number; anything else →
+ * `undefined`, which the caller turns into a usage error. The same shape as the cap's parser: this
+ * number is compared against `OLLAMA_NUM_PARALLEL`, which is exact.
+ */
+export function parseOllamaSlotsArg(raw: string | undefined): number | null | undefined {
+  const value = raw?.trim() ?? '';
+  if (value.toLowerCase() === 'clear') return null;
+  if (!/^\d+$/.test(value)) return undefined;
+  const slots = Number(value);
+  return slots >= MIN_OLLAMA_SLOTS && slots <= MAX_OLLAMA_SLOTS ? slots : undefined;
 }
 
 /** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
@@ -497,6 +518,11 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'context-cap') {
       await runPoolContextCapCommand(ctx, parsed);
+      return;
+    }
+
+    if (parsed.subcommand === 'slots') {
+      await runPoolSlotsCommand(ctx, parsed);
       return;
     }
 
@@ -846,6 +872,48 @@ async function runPoolContextCapCommand(ctx: HubContext, parsed: ParsedPoolArgs)
     after = await fetchInferencePreferences(envFile).catch(() => patched);
   }
   const result = formatContextCapResultLines(requested, before, after, written);
+  printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+  if (result.tone === 'red') process.exitCode = 1;
+}
+
+/**
+ * `cihub pool slots <n>|clear` — how many requests this node's Ollama runs at once, to be set to the
+ * daemon's `OLLAMA_NUM_PARALLEL` so slot-aware placement (`poolSlotAwareness`) can tell a full
+ * engine from a half-empty one. See `docs/hub-pool.md` → Slot-aware placement for the B5 numbers.
+ *
+ * Confirmed like the cap — a state change. Unlike the cap it restarts nothing: the count changes what
+ * this node advertises and how the pool ranks it, not any app's env. Read before and after the write
+ * for the cap's reasons: the write route needs the stored backend, a count already in force is not
+ * worth a write, and the box reports the count in force rather than the one requested. A Hub whose
+ * preferences carry no `ollamaSlots` predates the setting and is told so without a write.
+ */
+async function runPoolSlotsCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const requested = parseOllamaSlotsArg(parsed.target);
+  if (requested === undefined) {
+    usageAndExit(
+      `Usage: ${BASE_COMMAND} pool slots <n>|clear [env] [--yes] — n is a whole number from ${MIN_OLLAMA_SLOTS} to ${MAX_OLLAMA_SLOTS}, e.g. 4 (the node's OLLAMA_NUM_PARALLEL)`,
+    );
+  }
+
+  const describe =
+    requested === null ? 'Clear the Ollama slot count' : `State that Ollama runs ${requested} request${requested === 1 ? '' : 's'} at once`;
+  const confirmed = await confirmDestructiveAction(`${describe} on this node`, parsed.yes, `${describe} on this node? [y/N]: `, 'a state change');
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left the slot count untouched.'], 'yellow');
+    return;
+  }
+
+  const before = await fetchInferencePreferences(envFile);
+  const supported = 'ollamaSlots' in before;
+  const alreadyInForce = supported && (before.ollamaSlots ?? null) === requested;
+  const written = supported && !alreadyInForce;
+  let after: InferencePreferencesResponse | null = null;
+  if (written) {
+    const patched = await setInferenceOllamaSlots(envFile, before.preferredBackend ?? 'ollama', requested);
+    after = await fetchInferencePreferences(envFile).catch(() => patched);
+  }
+  const result = formatOllamaSlotsResultLines(requested, before, after, written);
   printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
   if (result.tone === 'red') process.exitCode = 1;
 }

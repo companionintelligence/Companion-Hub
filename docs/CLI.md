@@ -491,6 +491,7 @@ cihub pool pin <node|local> [--model <id>]    # prefer one node for a model, or 
 cihub pool unpin [--model <id>]               # drop that preference and rank by load again
 cihub pool ceiling <tokens>|clear [env]       # longer prompts go to another node when one can serve them
 cihub pool context-cap <tokens>|clear [env]   # cap the num_ctx handed to this node's apps at the engine's context
+cihub pool slots <n>|clear [env]              # state how many requests this node's Ollama runs at once (OLLAMA_NUM_PARALLEL)
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
@@ -570,6 +571,28 @@ alone, so nothing restarts) and again after it, and the box reports the cap in f
 one requested. The write goes through `PATCH /api/inference/preferences`, the route that can remove
 the key; a Hub whose preferences carry no `maxNumCtx` predates the cap and is told so without a
 write. `cihub pool status` shows the cap under **This node**.
+
+### `cihub pool slots`
+
+`cihub pool slots 4` states that this node's Ollama runs 4 requests at once; `cihub pool slots clear`
+withdraws the statement. It is the Hub's half of Ollama's `OLLAMA_NUM_PARALLEL`, the way `context-cap`
+is the half of `OLLAMA_CONTEXT_LENGTH`: the pool ranks by queue depth and cannot otherwise tell a
+full 2-slot engine from a half-empty 4-slot one, and with `poolSlotAwareness` switched on an entry
+node places behind every node that still has a free slot before a node whose slots are full — see
+[Slot-aware placement](./hub-pool.md#slot-aware-placement) for the 0.47 s → 9.0 s first-token wait
+that made it a setting. Across a fleet, `cihub fleet backends --ollama-parallel N --execute` sets both
+halves on every node ([below](#ollamas-runtime-environment-a-second-file-restarted-only-on-change));
+this command is the single-node form.
+
+The value is a whole number from 1 to 64, digits only, the bounds `--ollama-parallel` accepts.
+Confirmed like `context-cap`, because it is a state change — though unlike the cap it restarts
+nothing: it changes what this node advertises to peers and how the pool ranks it, not any app's
+environment. The command reads `GET /api/inference/preferences` before the write (a count already in
+force is left alone) and again after it, and the box reports the count in force rather than the one
+requested. The write goes through `PATCH /api/inference/preferences`, the route that can remove the
+key; a Hub whose preferences carry no `ollamaSlots` predates the setting and is told so without a
+write. `cihub pool status` shows the count under **This node**, with whether `poolSlotAwareness` is
+on here.
 
 ### Identifying a peer
 
@@ -1138,15 +1161,26 @@ all is failed as predating the cap, with `cihub fleet update --hub` as the fix. 
 `--ollama-context unset` clears the cap as well, through `PATCH /api/inference/preferences
 {"backend": <current>, "maxNumCtx": null}` — `/api/user-settings` cannot remove a key — and skips the
 write on a Hub that has none, because that route restarts every AI app on any write. The cap is
-touched **only when `--ollama-context` is passed**: a run with just `--ollama-parallel` renders the
+touched **only when `--ollama-context` is passed**: a run with just `--ollama-keep-alive` renders the
 file without `OLLAMA_CONTEXT_LENGTH` but leaves the Hub's cap alone, so pass the flag on every run
 that manages it, the way the file's own reproducibility already asks. A node the runtime step
 skipped (user-scope unit) or failed keeps whatever cap it had; its line already says why.
 
+**`--ollama-parallel` also sets each node's Hub slot count**, on exactly the same terms: the same
+run tells the node's Hub `inferenceOllamaSlots=N` after the drop-in applies, so the pool knows how
+many requests the daemon runs at once and — with `poolSlotAwareness` on — places behind every node
+with a free slot before one whose slots are full (see
+[Slot-aware placement](./hub-pool.md#slot-aware-placement)). Same loopback write, same `hub` line
+(`applied — slot count none → 4 (PATCH /api/user-settings 200)`), same read-back before anything is
+called applied, same `unset` clearing through the preferences route, and a Hub whose preferences
+carry no `ollamaSlots` is failed as predating the setting. When both flags are given the cap is
+written first, then the slot count, each as its own `hub` line.
+
 ```bash
-cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context 16384 --execute   # drop-in + each Hub's inferenceMaxNumCtx=16384
-cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context unset --execute   # drop key from the file, clear each Hub's cap
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context 16384 --execute   # drop-in + each Hub's inferenceOllamaSlots=4 and inferenceMaxNumCtx=16384
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context unset --execute   # drop key from the file, clear each Hub's cap; slots still 4
 cihub pool context-cap 16384                                                                   # the same cap, on this node only
+cihub pool slots 4                                                                             # the same slot count, on this node only
 ```
 
 #### Firewall rules for the Hub's engine probes
@@ -1448,6 +1482,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | `fleet boot-params --execute` | Any node failed, or was **refused** — by the quoting check or the console gate. A refusal is work the run did not do, and a chain must not read it as done. The dry run exits `1` only for a node it could not read |
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `pool context-cap` | The Hub's build predates the cap (nothing was written), or the cap read back after the write is not the one requested |
+| `pool slots` | The Hub's build predates the slot count (nothing was written), or the count read back after the write is not the one requested |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |

@@ -190,6 +190,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         command: `${BASE_COMMAND} pool context-cap <tokens>|clear [env] [--yes]`,
         description: "Cap the num_ctx handed to this node's apps at the context the engine runs (OLLAMA_CONTEXT_LENGTH)",
       },
+      {
+        command: `${BASE_COMMAND} pool slots <n>|clear [env] [--yes]`,
+        description: "State how many requests this node's Ollama runs at once (OLLAMA_NUM_PARALLEL), for slot-aware placement",
+      },
       { command: `${BASE_COMMAND} pool log [env] [--limit N]`, description: 'Recent routing decisions, with failovers called out' },
       {
         command: `${BASE_COMMAND} pool enable|disable [env] [--outbound|--inbound] [--yes]`,
