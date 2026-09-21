@@ -1216,23 +1216,29 @@ address fails rather than silently binding somewhere else.
 That skip is decided by **who holds the listening socket**, not by a unit's name. The probe reads
 the cgroup `ss -e` reports for the socket on `:11434` (printed to any user, pid or no pid) and
 classifies it: the system `ollama.service`, a user unit, a container, some other system unit. A
-user-scope unit whose name matches `ollama*` is only the reason to skip when it is the thing
-serving the port. core-2 is the case that taught this (2026-09-21): it runs `ollama-tunnel.service`
-under `ci`'s `systemd --user` — an `ssh -L` to beta-1, listening on `:11435` — while the system
-`ollama.service` serves `:11434`; a guard that went by the name printed *"ollama-tunnel.service is
-running under ci's systemd --user; the system ollama.service path would start a second daemon"* and
-managed nothing on the node. Now the system unit there is managed, and the line says why the unit
-you can see in `systemctl --user` did not stop the run:
+user-scope unit whose name matches `ollama*` stops being the reason to skip in exactly one case:
+the **system** `ollama.service` is the thing serving the port. core-2 is the case that taught this
+(2026-09-21): it runs `ollama-tunnel.service` under `ci`'s `systemd --user` — an `ssh -L` to beta-1,
+listening on `:11435` — while the system `ollama.service` serves `:11434`; a guard that went by the
+name printed *"ollama-tunnel.service is running under ci's systemd --user; the system ollama.service
+path would start a second daemon"* and managed nothing on the node. Now the system unit there is
+managed, and the line says why the unit you can see in `systemctl --user` did not stop the run:
 
 ```
 bind: ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (uid 997) is what serves :11434 — that unit is not the daemon; managing the system unit
 ```
 
-The name still decides in two narrow cases, both conservative: something listens on `:11434` and
-the probe can see neither its pid nor its cgroup (an `ss` too old to print one — iproute2 before
-5.10 — with nothing to compare the socket's uid against), or nothing listens at all and the unit's
-own `OLLAMA_HOST` names this port. On `--execute` the same guard runs as root at the top of the
-install and adopt shells, and refuses or notes on the same evidence.
+Everywhere else the name refuses as it always did, on purpose. **Nothing listening** on `:11434`
+beside an active `ollama*` user unit is still a skip: that is exactly what beta-1 looks like for
+the second between `systemctl --user restart ollama-local` stopping the daemon and the new one
+binding, and the probe's `systemctl --user list-units` rows carry no `OLLAMA_HOST` that could tell a
+tunnel from a daemon that has not bound yet — so a free port is not treated as proof. Something
+listening whose owner the probe **cannot see** (no pid, no cgroup — an `ss` before iproute2 5.10)
+is a skip too, unless the socket's uid belongs to no login user at all; a login user's socket may
+be the unit's, or anyone's hand-started `ollama serve`. A socket whose cgroup `ss` prints as a bare
+`/` or as `unreachable:` names nothing and is read from `/proc/<pid>/cgroup` instead when a pid is
+disclosed. On `--execute` the same guard runs as root at the top of the install and adopt shells,
+and refuses or notes on the same evidence.
 
 An Ollama that is already answering is **adopted**, and the same bind policy is applied to it — the
 nodes that already run one are exactly where the arrangements diverge. A node that already reads back
@@ -1319,8 +1325,9 @@ above. The dry run prints the same plan — what is in effect now, whether the f
 what the daemon resolves instead — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
 `ollama-local.service`) is skipped with the reason: a drop-in under `ollama.service.d/` configures
 nothing there, and that unit carries its own environment. A user-scope unit that merely *looks* like
-one (core-2's `ollama-tunnel.service`, an ssh forward beside a serving system unit) is not a skip —
-[the listener decides](#ollamas-bind-one-file-read-back).
+one (core-2's `ollama-tunnel.service`, an ssh forward beside a **serving** system unit) is not a
+skip — [the listener decides](#ollamas-bind-one-file-read-back); the same unit with nobody on the
+port is, because a free port is also what the real daemon looks like mid-restart.
 
 ```bash
 cihub fleet backends --backends ollama                                                        # inventory only: every node's runtime env, nothing written

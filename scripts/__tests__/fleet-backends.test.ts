@@ -148,7 +148,7 @@ describe('the ollama bind policy', () => {
     // core-2 (2026-09-21): `ollama-tunnel.service` under ci's systemd --user is an ssh forward,
     // and the SYSTEM ollama.service serves the port. A guard that asked the user managers first
     // skipped the node. The guard classifies the socket by its cgroup (ss -e), and a name-matched
-    // user unit refuses only when nothing else was found serving the port.
+    // user unit is overruled only when the SYSTEM unit was found serving the port.
     const script = planBackend('ollama', host(), '/data').script ?? '';
     expect(script).toContain('ss -ltnpe');
     expect(script).toContain('cgroup:');
@@ -159,10 +159,12 @@ describe('the ollama bind policy', () => {
     expect(script).toContain(
       "ollama-bind-note: $uu is active under $u's systemd --user, but the system ollama.service ($cihub_sys_pid) is what serves :11434",
     );
-    // The genuine case keeps its message.
+    // The genuine case keeps its message — and it is also the answer when nothing listens: a free
+    // port is what a user-scope daemon looks like mid-restart, so the guard never notes that away.
     expect(script).toContain(
       "ollama-bind-refused: $uu is running under $u's systemd --user; the system ollama.service path would start a second daemon and collide on :11434",
     );
+    expect(script).not.toContain('nothing listens');
   });
 
   it('fails a tailnet bind on a node with no tailnet address BEFORE downloading anything', () => {

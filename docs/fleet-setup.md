@@ -343,7 +343,11 @@ tailnet address fails the tailnet bind rather than falling back to something els
 refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
 under `ci`'s `systemd --user` too — an ssh forward to beta-1 — while its system `ollama.service` is
 what serves `:11434`, and it is managed like any other node, with a note naming the tunnel unit
-(see [the seam in `CLI.md`](CLI.md#ollamas-bind-one-file-read-back)).
+(see [the listener rule in `CLI.md`](CLI.md#ollamas-bind-one-file-read-back)). That is the only
+case the name gives way to: a serving system unit. With **nothing** on `:11434` beside an active
+`ollama*` user unit the node is still skipped — beta-1 mid-restart looks exactly like that, and the
+probe has no way to tell a tunnel from a daemon that has not bound yet — and so is a listener the
+probe cannot classify, unless its uid belongs to no login user.
 
 When a drop-in seems to have no effect: `systemctl cat ollama` shows the merge order, and
 `cihub fleet status` names the winner. Note the seam in [`CLI.md`](CLI.md#ollamas-bind-one-file-read-back):

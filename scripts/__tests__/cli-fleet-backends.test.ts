@@ -449,6 +449,27 @@ describe('fleet backends --execute', () => {
       expect(printed()).toMatch(/ollama\s+skipped.*ollama-local\.service under ci's systemd --user \(socket uid 1000\) already owns :11434/);
       expect(runtimeCalls()).toHaveLength(0);
     });
+
+    it('the same unit with nothing on :11434 is still a skip — a free port is what a daemon mid-restart looks like', async () => {
+      // beta-1 between `systemctl --user restart ollama-local` stopping the daemon and the new one
+      // binding: the unit is active, no socket, no owner line. The relaxation is for a SERVING
+      // system unit only; here the name refuses as it did before the listener rule.
+      hosts['10.0.0.3'] = {
+        bind: bindProbe({ userScope: true })
+          .replace(/^ss=.*\n/m, '')
+          .replace(/^owner=.*\n/m, 'user_uid=ci 1000\nuser_unit=ci ollama-local.service loaded active running Ollama local model server\n'),
+        ufw: firewallProbe(UFW_FULL),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'beta-1']);
+      const text = printed();
+      expect(text).toMatch(
+        /ollama\s+skipped.*ollama-local\.service is running under ci's systemd --user; the system ollama\.service path would start a second daemon/,
+      );
+      expect(text).not.toContain('nothing listens');
+      expect(text).not.toContain('managing the system unit');
+      expect(runtimeCalls()).toHaveLength(0);
+      expect(process.exitCode).toBeUndefined();
+    });
   });
 
   it('adds only the missing firewall rules, verifies them, and leaves a complete table alone', async () => {
