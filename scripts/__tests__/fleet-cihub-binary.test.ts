@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  assetFormatError,
   assetNameForArch,
+  assetNameForPlatform,
   compareCihubVersions,
   downloadReleaseAsset,
   installCihubFromStdinScript,
@@ -134,6 +136,49 @@ describe('version parsing and ordering', () => {
     expect(assetNameForArch('x86_64')).toBe('cihub-linux-x64');
     expect(assetNameForArch('aarch64')).toBe('cihub-linux-arm64');
     expect(assetNameForArch('riscv64')).toBeUndefined();
+  });
+});
+
+/**
+ * `assetNameForArch` answers "which asset does this fleet NODE take", and a node is Linux.
+ * `cihub self-update` asks about the machine it is running on, which is as often the operator's Mac.
+ */
+describe('assetNameForPlatform', () => {
+  it('covers every platform the release workflow publishes, under both arch spellings', () => {
+    expect(assetNameForPlatform('linux', 'x64')).toBe('cihub-linux-x64');
+    expect(assetNameForPlatform('linux', 'aarch64')).toBe('cihub-linux-arm64');
+    expect(assetNameForPlatform('darwin', 'arm64')).toBe('cihub-macos-arm64');
+    expect(assetNameForPlatform('darwin', 'x86_64')).toBe('cihub-macos-x64');
+    expect(assetNameForPlatform('win32', 'x64')).toBe('cihub-windows-x64.exe');
+  });
+
+  it('has no answer for a platform or arch the release does not build', () => {
+    expect(assetNameForPlatform('freebsd', 'x64')).toBeUndefined();
+    expect(assetNameForPlatform('linux', 'riscv64')).toBeUndefined();
+  });
+});
+
+describe('assetFormatError', () => {
+  const html = Buffer.from('<html>Not Found</html>');
+  const elf = Buffer.concat([Buffer.from('\x7fELF', 'latin1'), Buffer.alloc(16, 1)]);
+  const machO = Buffer.concat([Buffer.from('cffaedfe', 'hex'), Buffer.alloc(16, 1)]);
+  const pe = Buffer.concat([Buffer.from('MZ', 'latin1'), Buffer.alloc(16, 1)]);
+
+  it('holds every platform asset to its own magic, not just ELF', () => {
+    expect(assetFormatError('cihub-linux-x64', elf)).toBeUndefined();
+    expect(assetFormatError('cihub-macos-arm64', machO)).toBeUndefined();
+    expect(assetFormatError('cihub-windows-x64.exe', pe)).toBeUndefined();
+  });
+
+  it('refuses an API error page served with a 200 under any asset name', () => {
+    // The failure this check exists for: a private-repo error renamed to the asset and installed.
+    expect(assetFormatError('cihub-linux-x64', html)).toMatch(/not an ELF binary/);
+    expect(assetFormatError('cihub-macos-arm64', html)).toMatch(/not a Mach-O binary/);
+    expect(assetFormatError('cihub-windows-x64.exe', html)).toMatch(/not a Windows executable/);
+  });
+
+  it('does not reject an asset whose platform it cannot tell from the name', () => {
+    expect(assetFormatError('some-other-asset', html)).toBeUndefined();
   });
 });
 

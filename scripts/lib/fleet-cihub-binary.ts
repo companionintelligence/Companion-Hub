@@ -33,6 +33,47 @@ export type CihubBinarySource =
   /** Nothing to install from. `why` and `fix` are what the node's line will say. */
   | { kind: 'unavailable'; why: string; fix: string[] };
 
+/**
+ * The release asset for a *host* running this CLI, across all three platforms.
+ *
+ * `assetNameForArch` answers the fleet-install question — "which Linux asset does this NODE take" —
+ * and only ever needs Linux, because a fleet node is one. `cihub self-update` asks about the machine
+ * it is running on, which is as often a macOS laptop as an appliance. Same naming the release
+ * workflow publishes: `cihub-<os>-<arch>`, `.exe` on Windows.
+ */
+export function assetNameForPlatform(platform: NodeJS.Platform, arch: string): string | undefined {
+  const os = platform === 'linux' ? 'linux' : platform === 'darwin' ? 'macos' : platform === 'win32' ? 'windows' : undefined;
+  if (!os) return undefined;
+  const cpu = arch === 'x64' || arch === 'x86_64' || arch === 'amd64' ? 'x64' : arch === 'arm64' || arch === 'aarch64' ? 'arm64' : undefined;
+  if (!cpu) return undefined;
+  return `cihub-${os}-${cpu}${os === 'windows' ? '.exe' : ''}`;
+}
+
+/**
+ * Is this actually an executable for the platform the asset name claims?
+ *
+ * The check exists because the failure it catches is the one this download had for its whole life:
+ * a private-repo API error is served as an HTML page with a 200, written to disk under the asset's
+ * name, and installed. Per-platform rather than ELF-only so the macOS and Windows assets
+ * `cihub self-update` fetches are held to the same bar — `<html>` is not a Mach-O either.
+ */
+export function assetFormatError(assetName: string, bytes: Buffer): string | undefined {
+  const head = bytes.subarray(0, 4);
+  const shown = JSON.stringify(bytes.subarray(0, 12).toString('latin1'));
+  if (assetName.includes('-linux-')) {
+    return head.toString('latin1') === '\x7fELF' ? undefined : `asset ${assetName} is not an ELF binary (starts with ${shown})`;
+  }
+  if (assetName.includes('-macos-')) {
+    // Thin Mach-O (either endianness) or a universal `fat` archive.
+    const magics = new Set(['feedfacf', 'feedface', 'cffaedfe', 'cefaedfe', 'cafebabe', 'bebafeca']);
+    return magics.has(head.toString('hex')) ? undefined : `asset ${assetName} is not a Mach-O binary (starts with ${shown})`;
+  }
+  if (assetName.includes('-windows-')) {
+    return head.subarray(0, 2).toString('latin1') === 'MZ' ? undefined : `asset ${assetName} is not a Windows executable (starts with ${shown})`;
+  }
+  return undefined;
+}
+
 export function assetNameForArch(arch: string): string | undefined {
   switch (arch) {
     case 'x86_64':
@@ -184,8 +225,8 @@ export async function downloadReleaseAsset(input: {
     const bytes = Buffer.from(await assetRes.arrayBuffer());
     if (bytes.length === 0) throw new Error(`asset download for ${input.assetName} was empty`);
     // Refuse an HTML error page renamed to a binary — the failure this download had for its whole life.
-    if (bytes.subarray(0, 4).toString('latin1') !== '\x7fELF')
-      throw new Error(`asset ${input.assetName} is not an ELF binary (starts with ${JSON.stringify(bytes.subarray(0, 12).toString('latin1'))})`);
+    const formatError = assetFormatError(input.assetName, bytes);
+    if (formatError) throw new Error(formatError);
     writeFileSync(target, bytes, { mode: 0o755 });
   }
   return { path: target, tag: release.tag_name, sha256: sha256File(target) };

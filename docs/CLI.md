@@ -299,6 +299,78 @@ cihub config [env]           # show resolved config values only
 
 ---
 
+## Keeping the CLI and the stack together
+
+`cihub` and the Hub stack image ship on **two independent channels**, and moving one has never moved
+the other:
+
+| | Artifact | Moved by |
+|---|---|---|
+| CLI | `cihub` — inside the desktop package, as a Homebrew cask / Scoop app, or as a standalone `cihub-<os>-<arch>` release asset | `companion-hub update`, `brew upgrade --cask companion-hub`, `scoop update companion-hub`, `cihub self-update` |
+| Stack | `ghcr.io/companionintelligence/ci-hub:<tag>` | `cihub pool update`, the Hub's own [stack self-update](hub-stack-self-update.md), `cihub fleet update --hub` |
+
+Drift between them is silent and it breaks runbooks. Measured on `beta-max`, 2026-09-21: `cihub
+version` said `0.2.72`, the running stack was an untagged GHCR index matching no published tag, and
+`cihub pool ceiling` — merged, released and documented — answered `Unknown pool subcommand`. Every
+local check was green.
+
+Three commands now report it, and they all give the same answer:
+
+- **`cihub doctor`** carries a `CLI vs stack` line naming both versions.
+- **`cihub update`** prints the comparison before it does anything.
+- **`cihub pool update`** prints it after the redeploy — the moment the skew is created.
+
+### How the two sides are identified
+
+The CLI reports the version stamped into it at build time, plus the commit when the build stamped
+one (`cihub version` shows `cihub 0.2.73 (abc123def)` on a `dev` or pre-tag build).
+
+The stack is read off the running container and **never** from `CI_HUB_VERSION` — that value comes
+from the install's env file, no build writes it, and it was wrong on 10 of 16 fleet Hubs on
+2026-09-17. In order: a version tag in the image reference, then `org.opencontainers.image.version`
+when it is version-shaped, then the highest version tag Docker holds locally for the same image.
+
+A `:dev` image, a digest pin and a local build match none of those, so the commit
+(`org.opencontainers.image.revision`) is compared instead. When neither a version nor a commit is
+available on both sides, that is reported as **cannot be compared** rather than as a match.
+
+**Only a proven mismatch fails `cihub doctor`** — two builds that each name a release and name
+different ones. A `:dev` node whose image carries no release tag is a yellow note, because that state
+is normal there.
+
+### `cihub self-update`
+
+```bash
+cihub self-update                 # install the release the running stack is on
+cihub self-update --to 0.2.73     # install a specific release
+cihub self-update --check         # report what would be installed; change nothing
+```
+
+Replaces **a standalone `cihub` binary** with a release asset, in place. It is the missing half on a
+headless appliance, where the CLI arrives once through `cihub fleet install` and nothing ever moves
+it again. It does not touch the Hub stack — `cihub pool update` is that half.
+
+The default target is the release the **stack** runs, not the newest one: the point is to end the
+skew on this machine, and pulling `latest` onto a node pinned two releases back would just invert it.
+When the stack names no release, it falls back to the newest and says so.
+
+It refuses, with the right command instead, when:
+
+| Situation | Why |
+|---|---|
+| Installed by Homebrew or Scoop | Overwriting the file leaves the manifest claiming a version that is not on disk, and the next upgrade reverts it |
+| Shipped inside the desktop app | The desktop updater replaces the app and its bundled CLI as one artifact |
+| Running from a source checkout | There is no binary to replace — `git pull`, then `node scripts/build-standalone-cli.cjs` |
+| Windows | Windows cannot replace a running executable |
+| No `GH_TOKEN`/`GITHUB_TOKEN` | The CI-Hub releases are **private**; unauthenticated the API answers 404, which reads like "no such release" |
+
+Before anything is replaced, the downloaded asset is staged beside the target on the same
+filesystem, run once to make it identify itself, and checked against the version that was asked for.
+A candidate that will not run — a wrong-architecture asset exits 126 — is discarded and the existing
+`cihub` is left exactly where it was.
+
+---
+
 ## App lifecycle
 
 Manage individual Docker containers on the host machine, independently of the compose stack.
@@ -774,6 +846,47 @@ different branch, no checkout at all — is left untouched and reported, never r
 behalf. After the pull and redeploy it polls `/api/health` for up to ~20s, then reads `poolProtocol`
 off `/api/inference/pool/identify` so you know at a glance whether the redeploy landed and whether this
 build has Hub Pool at all.
+
+#### Which image it deploys
+
+The command exports `CI_HUB_IMAGE` into the `docker compose` child's **environment**, and Compose
+gives the process environment precedence over `--env-file`. So whatever this command resolves
+overrides the pin in the env file Compose was handed, and the resolution order is the whole story:
+
+| Order | Source | Meaning |
+|---|---|---|
+| 1 | `CI_HUB_IMAGE` in the command's environment | `CI_HUB_IMAGE=<ref> cihub pool update` — a deliberate one-off roll |
+| 2 | `CI_HUB_IMAGE` in the env file **Compose actually reads** | the node's standing pin |
+| 3 | `ghcr.io/companionintelligence/ci-hub:<env>` | last resort, for a node that pins nothing |
+
+Source 2 is read from the file named by the running container's
+`com.docker.compose.project.environment_file` label, not from the file this CLI would otherwise
+guess — on the fleet those are `.env.dev` and `.env` respectively. The line printed before the pull
+names the reference **and** which of the three sources chose it.
+
+Before this order existed the env file was not consulted at all, so an explicit digest an operator
+had written lost to the channel tag — which on an appliance is a **downgrade**, since
+`resolveHubContext` forces `prod` whatever env argument was typed and the fleet does not publish to
+`:prod`.
+
+#### It records what it deployed
+
+Once `/api/health` answers, the deployed reference is written back to that same env file as
+`CI_HUB_IMAGE`. Without this the value lived only in the command's environment: on 2026-09-21
+fifteen fleet appliances were rolled onto a new `:dev` digest while their env files went on naming an
+older one, leaving every node one reboot away from silently reverting to the build it had been moved
+off. `cihub doctor`'s `Image pin` line reports that state wherever it already exists.
+
+The write-back preserves the channel — it records the reference that was deployed, so a `:dev` node
+stays on `:dev` and a digest-pinned node stays on its digest. A redeploy that does **not** come up
+healthy writes nothing, so the pin keeps naming the build that was serving.
+
+#### The `[env]` argument on an appliance
+
+`cihub pool update dev` on a packaged install runs as `[prod]`: outside a checkout there is one
+stack, and `resolveHubContext` infers `prod` for it. The argument is now reported as ignored instead
+of quietly disagreeing with the banner. **The env argument does not select a release channel** —
+`CI_HUB_IMAGE` in the env file does.
 
 Runs before the device-key gate, like `doctor` — the node most likely to need it has no key yet either.
 
@@ -1614,7 +1727,7 @@ normalization is in `scripts/lib/cli-args.ts`.
 | `cli-pool.ts` | `pool` |
 | `cli-fleet.ts` | `fleet` |
 | `cli-api-key.ts` | `api-key` |
-| `cli-update.ts` | `version`, `update`, `connect` |
+| `cli-update.ts` | `version`, `update`, `self-update`, `connect` |
 | `cli-wizard.ts` | `wizard` |
 | `catalog-submit.ts` | `login`, `logout`, `submit` |
 
@@ -1623,7 +1736,8 @@ appliance), `hub-context.ts` (env file, compose files, and working directory for
 context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded the same everywhere),
 `cli-proc.ts` (process execution), `cli-ui.ts` (colors, boxes, help and man rendering),
 `cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
-and pinning).
+and pinning), `cli-version-skew.ts` (the CLI-vs-stack comparison the three update entry points
+share) and `cli-self-update.ts` (which channel owns this binary, and the in-place replacement).
 
 `cli-fleet.ts` owns argument parsing and the eight subcommand runners only; the work is in
 `fleet-roster.ts` (the saved fleet), `fleet-discover.ts` (the three probe axes), `fleet-ssh.ts` (the
@@ -1654,7 +1768,10 @@ deleted, so an old script fails with guidance instead of "unknown command".
 
 `bin/cihub.cjs` runs the TypeScript through `tsx` at each invocation — that is the npm install.
 `pnpm run build:cli` (`scripts/build-standalone-cli.cjs`) instead bundles it with Bun into a single
-executable for six targets, which is what the desktop app bundles and installs onto `PATH`.
+executable for six targets, which is what the desktop app bundles and installs onto `PATH`. The
+bundle stamps both `CIHUB_BUILD_VERSION` and `CIHUB_BUILD_REVISION`, so a build with no release tag
+still has an identity the Hub image's `org.opencontainers.image.revision` can be compared against —
+see [Keeping the CLI and the stack together](#keeping-the-cli-and-the-stack-together).
 
 ---
 
@@ -1674,7 +1791,7 @@ The commands that target one environment accept an optional `[env]` argument —
 Every other command takes none, and passing one is not a way to retarget an environment. `fleet`
 refuses it outright — `cihub fleet scan prod` is an argument error, because fleet commands act on
 remote machines rather than on one of this machine's environments. `app`, `models` and `api-key`
-read it as a subcommand name and fail; `connect`, `update`, `uninstall`, `login`/`logout`/`submit`
+read it as a subcommand name and fail; `connect`, `update`, `self-update`, `uninstall`, `login`/`logout`/`submit`
 and `status --write-status-file` ignore it.
 
 Run outside a CI-Hub checkout (a packaged install), `up`/`down`/`reset`/`clean` infer `prod` and
