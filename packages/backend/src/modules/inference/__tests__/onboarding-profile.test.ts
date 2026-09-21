@@ -79,6 +79,7 @@ describe('InferenceController — onboarding-profile', () => {
       modelUsedRamMb: 0,
       pinnedVramMb: 0,
       pinnedRamMb: 0,
+      usage: { sampledAt: '2026-09-20T00:00:00.000Z', backends: [] },
     },
     cloudProviders: [],
   };
@@ -165,7 +166,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile({ backend: 'ollama' });
@@ -182,7 +183,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
     vllmBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen/Qwen2.5-7B-Instruct'] });
@@ -201,7 +202,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
     mtplxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed'] });
@@ -220,7 +221,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
     lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-GGUF'] });
     modelRegistry.getCatalog.mockReturnValue([
@@ -238,7 +239,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(amdProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
@@ -250,7 +251,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(amdProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
@@ -262,7 +263,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(appleProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
@@ -274,7 +275,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(noRuntimeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
@@ -292,7 +293,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.computeTier.mockReturnValue('high');
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
@@ -312,7 +313,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
     hostMetrics.readHostSection.mockResolvedValue({
       totalRamMb: 98304,
@@ -351,7 +352,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue(fakeModels);
     modelRegistry.getModelsForTier.mockReturnValue(fakeModels);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
@@ -367,7 +368,7 @@ describe('InferenceController — onboarding-profile', () => {
     hardwareInspector.getProfile.mockResolvedValue(unifiedProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
-    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();

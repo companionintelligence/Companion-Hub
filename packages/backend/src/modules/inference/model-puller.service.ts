@@ -32,8 +32,8 @@ export class ModelPullerService {
     return Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
   }
 
-  private getAvailableMemoryMb(profile: HardwareProfile): number {
-    const budget = this.memoryManager.calculateBudget(profile);
+  private async getAvailableMemoryMb(profile: HardwareProfile): Promise<number> {
+    const budget = await this.memoryManager.calculateBudget(profile);
     if (profile.gpu.available && !profile.gpu.unifiedMemory) {
       return Math.max(0, budget.modelBudgetVramMb - budget.modelUsedVramMb);
     }
@@ -51,7 +51,7 @@ export class ModelPullerService {
     const effectiveTier = tier ?? profile.tier;
     const tierModels = this.modelRegistry.getModelsForTier(effectiveTier);
     const availableDiskMb = await this.getAvailableDiskMb();
-    const availableMemoryMb = this.getAvailableMemoryMb(profile);
+    const availableMemoryMb = await this.getAvailableMemoryMb(profile);
     const requiredDiskMb = curated.requirements?.diskMb ?? 0;
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
@@ -117,7 +117,7 @@ export class ModelPullerService {
       };
     }
 
-    const memoryCheck = this.memoryManager.canFitModel(profile, requiredMemoryMb);
+    const memoryCheck = await this.memoryManager.canFitModel(profile, requiredMemoryMb);
     if (!memoryCheck.fits) {
       return {
         catalogId,

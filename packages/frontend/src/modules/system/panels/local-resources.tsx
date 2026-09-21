@@ -23,6 +23,7 @@ import {
   type LoadState,
   memoryBudgetRows,
   type MemoryBudgetSummary,
+  type ModelMemoryUsageEntrySummary,
   type PoolNodeSummary,
 } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
@@ -107,6 +108,29 @@ export function HostCapacity({
   );
 }
 
+/** MB as the short gigabyte figure the bars use. One decimal below 10G so a 1.5G model is not "2G". */
+function gigs(mb: number): string {
+  const value = mb / 1024;
+  return `${value >= 10 ? Math.round(value) : Number(value.toFixed(1))}G`;
+}
+
+/**
+ * The words beside each engine's figure, saying how it was established — the point of the row.
+ * A per-process reading names the tool, since that is what an operator will run to check it.
+ */
+function usageSourceLabel(entry: ModelMemoryUsageEntrySummary, vendor: string | undefined, t: (key: string) => string): string {
+  switch (entry.source) {
+    case 'engine':
+      return t('DASHBOARD_MEMORY_SOURCE_ENGINE');
+    case 'process':
+      return vendor === 'nvidia' ? 'nvidia-smi' : vendor === 'amd' ? 'rocm-smi' : t('DASHBOARD_MEMORY_SOURCE_PROCESS');
+    case 'registry':
+      return t('DASHBOARD_MEMORY_SOURCE_REGISTRY');
+    default:
+      return t('DASHBOARD_MEMORY_SOURCE_UNMEASURED');
+  }
+}
+
 /**
  * How much memory models may use, and how much they hold.
  *
@@ -115,6 +139,13 @@ export function HostCapacity({
  * A machine can be far from full and still refuse to load a model because the budget is
  * spent — which is unexplainable from a single "memory used" figure, and is the reason
  * this panel exists.
+ *
+ * `used` is what every engine on the node holds NOW, and each engine's line says how that
+ * was learned: its process as the vendor tool sees it, else the engine's own accounting, or —
+ * only when the engine could not be asked — the Hub's bookkeeping of what it loaded there.
+ * An engine holding a model nothing can size is listed without a figure and the pool's
+ * used reads as a floor (`≥`), because the remainder is not known to be free. Measured on
+ * beta-red before this: 0 of 10G on screen, 9 of 10G in nvidia-smi.
  */
 export function ModelMemory({
   memory,
@@ -130,6 +161,8 @@ export function ModelMemory({
   const { t } = useTranslation();
   const rows = memoryBudgetRows(memory);
   const unified = hardware?.gpu?.unifiedMemory === true;
+  const vendor = hardware?.gpu?.vendor;
+  const unmeasured = rows.flatMap((row) => row.engines.filter((entry) => entry.source === 'unmeasured').map((entry) => entry.backend));
 
   return (
     <Panel title={t('DASHBOARD_MODEL_MEMORY_TITLE')} density="compact" className={className}>
@@ -142,13 +175,14 @@ export function ModelMemory({
               const percent = budgetPercent(row.used, row.budget);
 
               return (
-                <div key={row.kind} className="space-y-1">
+                <div key={row.kind} className="space-y-1" data-testid={`model-memory-${row.kind}`}>
                   <div className="flex items-baseline justify-between gap-2 text-[11px]">
                     <span className="font-medium uppercase tracking-[0.5px]">{row.kind === 'vram' ? t('DASHBOARD_VRAM') : t('DASHBOARD_RAM')}</span>
                     <span className="tabular-nums text-muted-foreground">
                       {t('DASHBOARD_MEMORY_OF_BUDGET', {
-                        used: `${Math.round(row.used / 1024)}G`,
-                        budget: `${Math.round(row.budget / 1024)}G`,
+                        // A floor is written as one: an engine in this pool holds a model nobody could size.
+                        used: `${row.incomplete ? '≥' : ''}${gigs(row.used)}`,
+                        budget: gigs(row.budget),
                         percent: percent === null ? DASH : percent,
                       })}
                     </span>
@@ -163,14 +197,41 @@ export function ModelMemory({
                     ]}
                   />
                   <div className="flex justify-between text-[11px] text-muted-foreground">
-                    <span>{t('DASHBOARD_MEMORY_TOTAL', { total: `${Math.round(row.total / 1024)}G` })}</span>
-                    {row.pinned > 0 ? <span>{t('DASHBOARD_MEMORY_PINNED_MB', { mb: `${Math.round(row.pinned / 1024)}G` })}</span> : null}
+                    <span>{t('DASHBOARD_MEMORY_TOTAL', { total: gigs(row.total) })}</span>
+                    {row.pinned > 0 ? <span>{t('DASHBOARD_MEMORY_PINNED_MB', { mb: gigs(row.pinned) })}</span> : null}
                   </div>
+                  {/* One line per engine holding something, each saying where its figure came from.
+                      A figure the engine reported and a figure nvidia-smi measured are not the same
+                      kind of number, and a reader chasing a discrepancy needs to know which is which. */}
+                  {row.engines.length > 0 ? (
+                    <ul className="space-y-0.5 pt-0.5 text-[11px]">
+                      {row.engines.map((entry) => (
+                        <li key={entry.backend} className="flex items-baseline justify-between gap-2">
+                          <span className="min-w-0 truncate" title={(entry.models ?? []).join(', ')}>
+                            <span className="font-medium">{entry.backend}</span>
+                            {entry.models && entry.models.length > 0 ? (
+                              <span className="font-mono text-muted-foreground"> · {entry.models.join(', ')}</span>
+                            ) : null}
+                          </span>
+                          <span className="shrink-0 tabular-nums text-muted-foreground">
+                            {typeof entry.usedMb === 'number' ? gigs(entry.usedMb) : DASH} · {usageSourceLabel(entry, vendor, t)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                 </div>
               );
             })}
           </div>
         )}
+        {/* Only a Hub that reports usage can say nothing is held; a budget without the block is older, not empty. */}
+        {memory?.usage && rows.length > 0 && rows.every((row) => row.engines.length === 0) ? (
+          <p className="pt-1 text-[11px] leading-tight text-muted-foreground">{t('DASHBOARD_MEMORY_NOTHING_HELD')}</p>
+        ) : null}
+        {unmeasured.length > 0 ? (
+          <p className="pt-1 text-[11px] leading-tight text-muted-foreground">{t('DASHBOARD_MEMORY_FLOOR', { engines: unmeasured.join(', ') })}</p>
+        ) : null}
         {unified ? <p className="pt-1 text-[11px] leading-tight text-muted-foreground">{t('DASHBOARD_UNIFIED_MEMORY_NOTE')}</p> : null}
         {/* Docker overhead is an estimate — running app containers times a flat per-container
             figure — not a measurement. Saying so is the difference between a budget an

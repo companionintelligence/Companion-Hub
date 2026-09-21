@@ -222,7 +222,25 @@ export interface InferenceBackendStatus {
   modelsLoaded?: number;
 }
 
-/** The eleven fields of `/inference/memory`, all measured in MB. */
+/**
+ * One engine's share of the budget's used figure, and how it was established.
+ *
+ * `source` is the point. `process` is what nvidia-smi / rocm-smi read for the engine's process
+ * — the only measurement; `engine` is the engine's own accounting (Ollama's `/api/ps`), used
+ * when no process was read; `registry` is the Hub's bookkeeping of what its router loaded
+ * (used only when the engine could not be asked); and `unmeasured` is an engine that is
+ * holding a model nothing on the node can size — its `usedMb` is `null`, and the used figure
+ * it is missing from is a floor, not the total.
+ */
+export interface ModelMemoryUsageEntrySummary {
+  backend: string;
+  models?: string[];
+  pool?: 'vram' | 'ram';
+  usedMb?: number | null;
+  source?: 'engine' | 'process' | 'registry' | 'unmeasured';
+}
+
+/** The fields of `/inference/memory`, all measured in MB, plus where the used figures came from. */
 export interface MemoryBudgetSummary {
   totalVramMb?: number;
   totalRamMb?: number;
@@ -231,10 +249,12 @@ export interface MemoryBudgetSummary {
   appContainerBudgetMb?: number;
   modelBudgetVramMb?: number;
   modelBudgetRamMb?: number;
+  /** What every engine on the node holds now — not what this Hub loaded. See {@link ModelMemoryUsageEntrySummary}. */
   modelUsedVramMb?: number;
   modelUsedRamMb?: number;
   pinnedVramMb?: number;
   pinnedRamMb?: number;
+  usage?: { sampledAt?: string; backends?: ModelMemoryUsageEntrySummary[] };
 }
 
 export interface CloudProviderSummary {
@@ -539,6 +559,13 @@ export interface MemoryBudgetRow {
   budget: number;
   used: number;
   pinned: number;
+  /**
+   * `true` when an engine holding a model in this pool could not be sized, so `used` is a floor.
+   * A caller rendering `used` must say so: the remainder is NOT known to be free.
+   */
+  incomplete: boolean;
+  /** The engines whose figures `used` is built from, in the order the backend lists them. */
+  engines: ModelMemoryUsageEntrySummary[];
 }
 
 /**
@@ -552,6 +579,8 @@ export interface MemoryBudgetRow {
  */
 export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): MemoryBudgetRow[] {
   if (!budget) return [];
+  const engines = budget.usage?.backends ?? [];
+  const enginesIn = (pool: 'vram' | 'ram') => engines.filter((entry) => entry.pool === pool);
   const rows: MemoryBudgetRow[] = [
     {
       kind: 'vram',
@@ -559,6 +588,8 @@ export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): Memor
       budget: budget.modelBudgetVramMb ?? 0,
       used: budget.modelUsedVramMb ?? 0,
       pinned: budget.pinnedVramMb ?? 0,
+      incomplete: enginesIn('vram').some((entry) => entry.source === 'unmeasured'),
+      engines: enginesIn('vram'),
     },
     {
       kind: 'ram',
@@ -566,6 +597,8 @@ export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): Memor
       budget: budget.modelBudgetRamMb ?? 0,
       used: budget.modelUsedRamMb ?? 0,
       pinned: budget.pinnedRamMb ?? 0,
+      incomplete: enginesIn('ram').some((entry) => entry.source === 'unmeasured'),
+      engines: enginesIn('ram'),
     },
   ];
 
