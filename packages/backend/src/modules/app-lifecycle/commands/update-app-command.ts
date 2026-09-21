@@ -73,29 +73,49 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, { maxAttempts: 5, delayMs: 2000 });
       if (!probeResult.healthy) {
         logger.error(`Post-update health check failed for app ${appUrn}: ${probeResult.message}. Initiating auto-rollback...`);
-        if (backupFile) {
-          try {
-            await dockerService.composeApp(appUrn, 'down --remove-orphans');
-            await backupManager.restoreApp(appUrn, backupFile);
-            await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
-            logger.info(`Successfully rolled back ${appUrn} to backup ${backupFile}`);
-          } catch (rollbackErr) {
-            logger.error(`Failed to rollback ${appUrn} from backup: ${rollbackErr}`);
-          }
-        } else if (snapshotResult?.snapshotPath) {
-          try {
-            await dockerService.composeApp(appUrn, 'down --remove-orphans');
-            const { appDataDir } = appFilesManager.getAppPaths(appUrn);
-            const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
-            if (filesystem && (await filesystem.pathExists(snapshotResult.snapshotPath))) {
-              await filesystem.copyDirectory(snapshotResult.snapshotPath, appDataDir);
-              await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
-              logger.info(`Successfully rolled back ${appUrn} app data from snapshot ${snapshotResult.snapshotId}`);
+
+        // However the restore below goes, we must not leave the app torn down: `down` is
+        // immediately followed by an unconditional `up` on whatever files/data are on disk
+        // at that point, so a restore failure degrades to "recreate the just-updated version"
+        // rather than "stay offline". Restore failures are logged, not rethrown, for the
+        // same reason.
+        try {
+          await dockerService.composeApp(appUrn, 'down --remove-orphans');
+
+          if (backupFile) {
+            try {
+              await backupManager.restoreApp(appUrn, backupFile);
+              logger.info(`Restored ${appUrn} app files and data from backup ${backupFile}`);
+            } catch (restoreErr) {
+              logger.error(`Failed to restore ${appUrn} from backup ${backupFile}: ${restoreErr}`);
             }
-          } catch (snapshotErr) {
-            logger.error(`Failed to restore ${appUrn} from volume snapshot: ${snapshotErr}`);
+          } else if (snapshotResult?.snapshotPath || snapshotResult?.appFilesSnapshotPath) {
+            try {
+              const { appDataDir, appInstalledDir } = appFilesManager.getAppPaths(appUrn);
+              const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
+              if (filesystem && snapshotResult.snapshotPath && (await filesystem.pathExists(snapshotResult.snapshotPath))) {
+                await filesystem.removeDirectory(appDataDir);
+                await filesystem.copyDirectory(snapshotResult.snapshotPath, appDataDir);
+              }
+              if (filesystem && snapshotResult.appFilesSnapshotPath && (await filesystem.pathExists(snapshotResult.appFilesSnapshotPath))) {
+                await filesystem.removeDirectory(appInstalledDir);
+                await filesystem.copyDirectory(snapshotResult.appFilesSnapshotPath, appInstalledDir);
+              }
+              logger.info(`Restored ${appUrn} app files and data from snapshot ${snapshotResult.snapshotId}`);
+            } catch (snapshotErr) {
+              logger.error(`Failed to restore ${appUrn} from volume snapshot: ${snapshotErr}`);
+            }
+          } else {
+            logger.warn(`No backup or volume snapshot available to roll back ${appUrn}; recreating the current containers instead`);
           }
+
+          await dockerService.composeApp(appUrn, 'pull');
+          await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+          logger.info(`Auto-rollback recovery step completed for ${appUrn}`);
+        } catch (rollbackErr) {
+          logger.error(`Failed to bring ${appUrn} back up after auto-rollback: ${rollbackErr}`);
         }
+
         throw new Error(`Update failed health probe: ${probeResult.message}`);
       }
 

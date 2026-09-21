@@ -30,6 +30,8 @@ export interface PreUpdateVolumeSnapshotResult {
   snapshotId: string;
   timestamp: string;
   snapshotPath?: string;
+  /** Snapshot of the app's installed dir (docker-compose.yml, config.json, etc.) as it stood before the update overwrote it. */
+  appFilesSnapshotPath?: string;
   volumes: Array<{
     name?: string;
     type: 'bind' | 'volume';
@@ -48,6 +50,7 @@ export interface ContainerHealthProbeDetail {
   state: string;
   healthStatus: string | null;
   hasHealthCheck: boolean;
+  exitCode: number | null;
   failingStreak?: number;
   log?: string[];
 }
@@ -1605,7 +1608,7 @@ export class DockerService {
     const snapshotId = `pre-update-${appName}-${Date.now()}`;
 
     try {
-      const { appDataDir } = this.appFilesManager.getAppPaths(appUrn);
+      const { appDataDir, appInstalledDir } = this.appFilesManager.getAppPaths(appUrn);
       const { dataDir } = this.config.get('directories');
       const snapshotBaseDir = path.join(dataDir, 'snapshots', appStoreId, appName, snapshotId);
 
@@ -1624,6 +1627,19 @@ export class DockerService {
           source: appDataDir,
           snapshotTarget: snapshotPath,
         });
+      }
+
+      // Also snapshot the installed app files (docker-compose.yml, config.json) — the update
+      // is about to delete and replace this whole directory with the new version's files, and
+      // without this, a rollback can only restore data, never the previous compose/version.
+      const appFilesExist = await this.filesystem.pathExists(appInstalledDir);
+      let appFilesSnapshotPath: string | undefined;
+
+      if (appFilesExist) {
+        appFilesSnapshotPath = path.join(snapshotBaseDir, 'app-files');
+        this.logger.info(`[pre-update-snapshot] Snapshotting ${appInstalledDir} to ${appFilesSnapshotPath}`);
+        await this.filesystem.createDirectory(appFilesSnapshotPath);
+        await this.filesystem.copyDirectory(appInstalledDir, appFilesSnapshotPath);
       }
 
       const containers = await this.docker
@@ -1675,6 +1691,7 @@ export class DockerService {
         snapshotId,
         timestamp,
         snapshotPath,
+        appFilesSnapshotPath,
         volumes: snapshottedVolumes,
         success: true,
       };
@@ -1755,24 +1772,34 @@ export class DockerService {
         const healthStatus = health?.Status ?? null;
         const failingStreak = health?.FailingStreak;
         const log = health?.Log?.map((entry) => entry.Output || '').filter(Boolean);
+        const status = container.Status || state;
+        const exitCode = inspect?.State?.Running ? null : (inspect?.State?.ExitCode ?? (/Exited \(0\)/.test(status) ? 0 : null));
 
         containerDetails.push({
           id: container.Id,
           name,
-          status: container.Status || state,
+          status,
           state,
           healthStatus,
           hasHealthCheck,
+          exitCode,
           failingStreak,
           log,
         });
       }
 
+      // A container without a health check must be running UNLESS it exited cleanly (code 0) —
+      // that's a completed one-shot init job (migrate-database, setup-secrets, fix-db-permissions,
+      // etc.), not a crashed long-running service. Mirrors the running+exitZero convention that
+      // app-status-sync.service.ts / managed-app-containers.ts already use to decide app status.
       const unhealthyContainers = containerDetails.filter((c) => {
         if (c.hasHealthCheck) {
           return c.healthStatus !== 'healthy';
         }
-        return c.state !== 'running';
+        if (c.state === 'running') {
+          return false;
+        }
+        return !(c.state === 'exited' && c.exitCode === 0);
       });
 
       const allHealthy = unhealthyContainers.length === 0;
