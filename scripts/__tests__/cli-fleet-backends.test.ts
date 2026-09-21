@@ -292,6 +292,9 @@ describe('fleet backends --execute', () => {
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      // `--ollama-parallel --execute` also tells each node's Hub its slot count (#1554); this
+      // test predates that step, and without an answer here the run died on the first Hub dial.
+      if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('none', '200', '4'));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
     });
     await runFleetCommand([
