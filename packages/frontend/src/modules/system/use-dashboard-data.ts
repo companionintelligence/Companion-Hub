@@ -203,6 +203,13 @@ export interface RoutingLogEntry {
   attempt?: number;
   candidates?: number;
   failedOverFrom?: string[];
+  /**
+   * `true` when the app closed its connection before any candidate answered. Such a row still names
+   * the node it was waiting on, which is what keeps it out of {@link routingByNode}'s unplaced
+   * bucket and out of the `bad` "unplaced" fault in `triage.ts` — a caller that left is not a
+   * routing or capacity problem. Absent on a Hub predating the flag.
+   */
+  clientClosed?: boolean;
   pin?: unknown;
   /**
    * Token counts, attached once the backend's response finished — `null`/absent while pending,
@@ -222,7 +229,25 @@ export interface InferenceBackendStatus {
   modelsLoaded?: number;
 }
 
-/** The eleven fields of `/inference/memory`, all measured in MB. */
+/**
+ * One engine's share of the budget's used figure, and how it was established.
+ *
+ * `source` is the point. `process` is what nvidia-smi / rocm-smi read for the engine's process
+ * — the only measurement; `engine` is the engine's own accounting (Ollama's `/api/ps`), used
+ * when no process was read; `registry` is the Hub's bookkeeping of what its router loaded
+ * (used only when the engine could not be asked); and `unmeasured` is an engine that is
+ * holding a model nothing on the node can size — its `usedMb` is `null`, and the used figure
+ * it is missing from is a floor, not the total.
+ */
+export interface ModelMemoryUsageEntrySummary {
+  backend: string;
+  models?: string[];
+  pool?: 'vram' | 'ram';
+  usedMb?: number | null;
+  source?: 'engine' | 'process' | 'registry' | 'unmeasured';
+}
+
+/** The fields of `/inference/memory`, all measured in MB, plus where the used figures came from. */
 export interface MemoryBudgetSummary {
   totalVramMb?: number;
   totalRamMb?: number;
@@ -231,10 +256,12 @@ export interface MemoryBudgetSummary {
   appContainerBudgetMb?: number;
   modelBudgetVramMb?: number;
   modelBudgetRamMb?: number;
+  /** What every engine on the node holds now — not what this Hub loaded. See {@link ModelMemoryUsageEntrySummary}. */
   modelUsedVramMb?: number;
   modelUsedRamMb?: number;
   pinnedVramMb?: number;
   pinnedRamMb?: number;
+  usage?: { sampledAt?: string; backends?: ModelMemoryUsageEntrySummary[] };
 }
 
 export interface CloudProviderSummary {
@@ -279,7 +306,8 @@ export interface ResidencyReportSummary {
 export interface HardwareSummary {
   gpu?: { available?: boolean; vendor?: string; model?: string; vramMb?: number; unifiedMemory?: boolean; runtimeAvailable?: boolean };
   npu?: { available?: boolean; model?: string };
-  ram?: { totalMb?: number; availableMb?: number };
+  /** `usedMb`/`sampledAt` arrive with a live (Linux MemAvailable) sample; older Hubs send neither. */
+  ram?: { totalMb?: number; availableMb?: number; usedMb?: number; sampledAt?: string };
   cpu?: { arch?: string; cores?: number; model?: string };
   os?: { platform?: string; name?: string; version?: string };
   tier?: string;
@@ -539,6 +567,28 @@ export interface MemoryBudgetRow {
   budget: number;
   used: number;
   pinned: number;
+  /**
+   * `true` when an engine holding a model in this pool could not be sized, so `used` is a floor.
+   * A caller rendering `used` must say so: the remainder is NOT known to be free.
+   */
+  incomplete: boolean;
+  /** The engines whose figures `used` is built from, in the order the backend lists them. */
+  engines: ModelMemoryUsageEntrySummary[];
+}
+
+/**
+ * Host RAM in use, in MB, or `null` when the profile has no RAM figures at all.
+ *
+ * `usedMb` is what the Hub measured at the same instant as `availableMb`; a Hub that predates
+ * it still sends `totalMb` and `availableMb`, so the difference is the fallback. Either way
+ * the honest denominator is "RAM in use", not "RAM not available" — the two only coincide
+ * when the sample is live, which is exactly the case `usedMb` marks.
+ */
+export function hostRamUsedMb(hardware: HardwareSummary | undefined): number | null {
+  const ram = hardware?.ram;
+  if (typeof ram?.usedMb === 'number') return Math.max(0, ram.usedMb);
+  if (typeof ram?.totalMb === 'number' && typeof ram?.availableMb === 'number') return Math.max(0, ram.totalMb - ram.availableMb);
+  return null;
 }
 
 /**
@@ -552,6 +602,8 @@ export interface MemoryBudgetRow {
  */
 export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): MemoryBudgetRow[] {
   if (!budget) return [];
+  const engines = budget.usage?.backends ?? [];
+  const enginesIn = (pool: 'vram' | 'ram') => engines.filter((entry) => entry.pool === pool);
   const rows: MemoryBudgetRow[] = [
     {
       kind: 'vram',
@@ -559,6 +611,8 @@ export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): Memor
       budget: budget.modelBudgetVramMb ?? 0,
       used: budget.modelUsedVramMb ?? 0,
       pinned: budget.pinnedVramMb ?? 0,
+      incomplete: enginesIn('vram').some((entry) => entry.source === 'unmeasured'),
+      engines: enginesIn('vram'),
     },
     {
       kind: 'ram',
@@ -566,6 +620,8 @@ export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): Memor
       budget: budget.modelBudgetRamMb ?? 0,
       used: budget.modelUsedRamMb ?? 0,
       pinned: budget.pinnedRamMb ?? 0,
+      incomplete: enginesIn('ram').some((entry) => entry.source === 'unmeasured'),
+      engines: enginesIn('ram'),
     },
   ];
 

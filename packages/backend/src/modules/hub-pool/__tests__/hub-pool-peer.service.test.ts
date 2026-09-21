@@ -13,6 +13,9 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
   POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
   type PoolContainerSampler,
@@ -81,6 +84,9 @@ describe('HubPoolPeerService', () => {
       poolShareContainerStats: true,
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       poolMaxPromptTokens: null,
+      poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+      poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+      poolSlotAwareness: DEFAULT_POOL_SLOT_AWARENESS,
       ...overrides,
     });
   }
@@ -1156,6 +1162,26 @@ describe('HubPoolPeerService', () => {
         expect(capabilities.maxPromptTokens).toBe(16_000);
       });
 
+      it('advertises the handout context cap, and omits the key when there is none, like the ceiling', async () => {
+        configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: 16_384 } as never);
+        expect((await service.getOwnCapabilities()).maxNumCtx).toBe(16_384);
+        // Refusing inbound work does not blank it: it describes the engine, not an offer of work.
+        expect((await service.getOwnCapabilities(false)).maxNumCtx).toBe(16_384);
+
+        configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: null } as never);
+        expect(await service.getOwnCapabilities()).not.toHaveProperty('maxNumCtx');
+      });
+
+      it('advertises the Ollama slot count, and omits the key when none is stated, like the cap', async () => {
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 4 } as never);
+        expect((await service.getOwnCapabilities()).ollamaSlots).toBe(4);
+        // Refusing inbound work does not blank it: it describes the daemon, not an offer of work.
+        expect((await service.getOwnCapabilities(false)).ollamaSlots).toBe(4);
+
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: null } as never);
+        expect(await service.getOwnCapabilities()).not.toHaveProperty('ollamaSlots');
+      });
+
       it('picks up a settings change on the next poll, not the next restart', async () => {
         const before = await service.getOwnCapabilities();
         setPoolPreferences({ poolMaxPromptTokens: 16_000 });
@@ -1218,6 +1244,32 @@ describe('HubPoolPeerService', () => {
           ['old-build', null],
           ['garbled', null],
         ]);
+      });
+
+      /**
+       * `/pool/peers` lists the fleet; `/pool/status` draws the card. A cap decides which nodes a
+       * large window may be placed on, so the two must not disagree about it — and neither may be
+       * left to read the raw jsonb, which the peer writes.
+       */
+      it('reports the same clamped cap to the status card and to the peers list, for every reading', async () => {
+        const rows = [
+          peerWith('core-17', { ...baseCapabilities, maxNumCtx: 16_384 }),
+          peerWith('old-build', baseCapabilities),
+          peerWith('garbled', { ...baseCapabilities, maxNumCtx: 'sixteen k' }),
+          peerWith('never-probed', null as unknown as Record<string, unknown>),
+        ];
+        repo.listAll.mockResolvedValue(rows);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers.map((peer) => [peer.id, peer.maxNumCtx])).toEqual([
+          ['core-17', 16_384],
+          ['old-build', null],
+          ['garbled', null],
+          ['never-probed', null],
+        ]);
+        // The helper `/pool/peers` calls, on the same rows, with the same answers.
+        expect(rows.map((peer) => service.peerContextCap(peer))).toEqual([16_384, null, null, null]);
       });
     });
   });

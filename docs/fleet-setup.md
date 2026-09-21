@@ -109,8 +109,10 @@ front of a Hub session. An operator with no federated row is treated as a compil
 an owner. See CI-Engineering `architecture/identity/unified-identity-plan.md`.
 
 **A device key is not a user, and an API key is neither.** `cihub api-key create` mints an MCP-scoped
-key for tools; it is refused by the pool routes and by Portal. The one exception is a
-`--scope qa:read` key, which reads pool status and the routing log and nothing else. Keep the three apart when debugging a
+key for tools; it is refused by the pool routes and by Portal. Two narrower scopes exist, each alone
+on its key: `--scope qa:read` reads pool status and the routing log and nothing else, and
+`--scope inference` opens the [OpenAI-compatible inference routes](editor-inference.md) for an editor
+or SDK and nothing else. Neither is an operator credential. Keep the three planes apart when debugging a
 401 — the answer is usually that the right credential was never in play.
 
 > **Every installed app receives the device key in its environment.** Treat app installation as
@@ -337,7 +339,11 @@ Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a
 (`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the
 system unit there would start a second daemon on the same port, so the installer refuses with the
 reason — before running ollama.com's installer, which would do exactly that. And a node with no
-tailnet address fails the tailnet bind rather than falling back to something else.
+tailnet address fails the tailnet bind rather than falling back to something else. The beta-1
+refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
+under `ci`'s `systemd --user` too — an ssh forward to beta-1 — while its system `ollama.service` is
+what serves `:11434`, and it is managed like any other node, with a note naming the tunnel unit
+(see [the seam in `CLI.md`](CLI.md#ollamas-bind-one-file-read-back)).
 
 When a drop-in seems to have no effect: `systemctl cat ollama` shows the merge order, and
 `cihub fleet status` names the winner. Note the seam in [`CLI.md`](CLI.md#ollamas-bind-one-file-read-back):
@@ -448,6 +454,70 @@ Record the console on the node's `fleet.json` entry (`"oob": "nanokvm 192.168.0.
 `GRUB_CMDLINE_LINUX_DEFAULT` line that is not plainly double-quoted are CI-OS's own, so a node it
 provisions and a node this catches up end on a byte-identical line. Full detail in
 [`CLI.md` → `cihub fleet boot-params`](CLI.md#cihub-fleet-boot-params).
+## Per-process GPU VRAM: a host timer the Hub reads
+
+The Hub container is an Alpine image with no `nvidia-smi` or `rocm-smi` and no GPU device access,
+so it cannot see which process holds how much VRAM. Two dashboard figures depend on that reading:
+the per-workload GPU chart on the resource monitor, and the model memory budget's measured
+"used" figure. Without it the budget falls back to what the engines report about themselves and
+marks an engine it cannot size as *not measured*, so the used figure reads as a floor (`≥`).
+
+The reading comes from the host instead, through the same seam the GPU-pressure band uses: a
+timer on the node runs the vendor query and writes
+`<ROOT_FOLDER_HOST>/state/hardware/gpu_processes.json`, which the Hub reads as
+`/data/state/hardware/gpu_processes.json`. A file older than 60 seconds, or absent, reads as
+*not measured*, never as zero — a writer that dies must not leave a stale "nothing is loaded"
+behind it.
+
+`cihub fleet install` installs it on every new node, and this rolls it onto an existing fleet
+(the same step, alone; a dry run without `--execute` prints the plan):
+
+```bash
+cihub fleet update --gpu-probe --execute
+```
+
+Per node the run writes the three checked-in files (bundled into the CLI, so the standalone `cihub`
+carries them) to the SSH account's `~/.local/bin` and `~/.config/systemd/user`, takes one sample,
+runs `loginctl enable-linger`, and enables the timer. It reports one of: installed; installed but
+only while this user is logged in (lingering was refused); installed but the tool did not answer as
+this account (`rocm-smi --showpids` reads the KFD process table, which is root's); no user manager;
+neither tool on the node — skipped, not failed, since an Apple or CPU-only node (core-4) is not a
+bug. Lingering is enabled *before* `systemctl --user` is tried: on core-3 the user manager only
+existed once `enable-linger` had run. Re-running is safe and refreshes the files in place.
+
+By hand, the same install is (the Hub's state directory belongs to the same user, so no root is
+needed; the user must be lingering, which `cihub fleet install` nodes are):
+
+```bash
+scp scripts/host-probes/cihub-gpu-processes.{sh,service,timer} ci@<node>:/tmp/
+ssh ci@<node> 'install -m 0755 /tmp/cihub-gpu-processes.sh ~/.local/bin/ \
+  && install -m 0644 /tmp/cihub-gpu-processes.{service,timer} ~/.config/systemd/user/ \
+  && systemctl --user daemon-reload && systemctl --user enable --now cihub-gpu-processes.timer'
+```
+
+Check it with `systemctl --user list-timers cihub-gpu-processes.timer` and
+`docker exec ci-hub cat /data/state/hardware/gpu_processes.json`. On a node whose
+`ROOT_FOLDER_HOST` is not `~/.local/share/companion-hub`, set `CI_HUB_STATE_PATH` in a drop-in for
+the service. The file is:
+
+```json
+{"schemaVersion":1,"sampledAt":"2026-09-21T05:30:53Z","source":"nvidia-smi","vendor":"nvidia",
+ "processes":[{"pid":6975,"processName":"VLLM::EngineCore","vramMb":6104},
+              {"pid":3161051,"processName":"/usr/local/lib/ollama/llama-server","vramMb":2926}]}
+```
+
+`processName` is the vendor tool's own column, verbatim — a full path or process title from
+`nvidia-smi`, the 15-character kernel `comm` from `rocm-smi` — because that is what the Hub matches
+engines on. Per-process compute *utilization* is not in the file and not coming from these tools:
+both report it blank on this fleet's hardware.
+
+The Hub says which source answered. `GET /api/apps/resource-monitor` carries `gpuVramSource` —
+`host-file`, `tool` (the vendor CLI run by a Hub outside Docker), or `absent`, meaning nothing on
+this node could measure and every workload's `gpuVramMb` is `null` for want of a reading rather than
+for want of a workload. The resource dashboard's GPU trend tile and coverage tile print `absent` in
+words, with this install step beside it, instead of drawing an empty chart that reads as "nothing
+holds VRAM". A fresh file listing no processes is `host-file` with no rows: measured, and idle.
+
 ## Before touching a node: preflight
 
 Run this before a fleet install, update, or anything that will install a kernel, a driver or a

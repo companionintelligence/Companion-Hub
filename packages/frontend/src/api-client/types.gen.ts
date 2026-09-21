@@ -84,6 +84,8 @@ export type AppContextDto = {
         inferenceVllmUrl?: string;
         inferenceMtplxUrl?: string;
         inferenceDsparkUrl?: string;
+        inferenceMaxNumCtx?: number;
+        inferenceOllamaSlots?: number;
         hubPoolEnabled?: boolean;
         hubPoolOutboundEnabled?: boolean;
         hubPoolInboundEnabled?: boolean;
@@ -93,6 +95,9 @@ export type AppContextDto = {
         hubPoolShareContainerStats?: boolean;
         hubPoolPressureWeight?: number;
         hubPoolMaxPromptTokens?: number;
+        hubPoolProbeSnapshotTtlMs?: number;
+        hubPoolPrefixAffinityMaxInFlight?: number;
+        hubPoolSlotAwareness?: number;
         hubPoolRouteAppsAlways?: boolean;
         inferenceSupervisionMode?: 'off' | 'observe';
         inferenceSupervisionPollSeconds?: number;
@@ -188,6 +193,8 @@ export type UserSettingsBody = {
     inferenceVllmUrl?: string;
     inferenceMtplxUrl?: string;
     inferenceDsparkUrl?: string;
+    inferenceMaxNumCtx?: number;
+    inferenceOllamaSlots?: number;
     hubPoolEnabled?: boolean;
     hubPoolOutboundEnabled?: boolean;
     hubPoolInboundEnabled?: boolean;
@@ -197,6 +204,9 @@ export type UserSettingsBody = {
     hubPoolShareContainerStats?: boolean;
     hubPoolPressureWeight?: number;
     hubPoolMaxPromptTokens?: number;
+    hubPoolProbeSnapshotTtlMs?: number;
+    hubPoolPrefixAffinityMaxInFlight?: number;
+    hubPoolSlotAwareness?: number;
     hubPoolRouteAppsAlways?: boolean;
     inferenceSupervisionMode?: 'off' | 'observe';
     inferenceSupervisionPollSeconds?: number;
@@ -635,6 +645,12 @@ export type MyAppsDto = {
                         port: number;
                     };
                 };
+                readiness?: {
+                    service: string;
+                    port: number;
+                    path: string;
+                    bearer_env?: string;
+                };
                 edge_auth?: {
                     default?: boolean;
                 };
@@ -890,6 +906,12 @@ export type GuestAppsDto = {
                         port: number;
                     };
                 };
+                readiness?: {
+                    service: string;
+                    port: number;
+                    path: string;
+                    bearer_env?: string;
+                };
                 edge_auth?: {
                     default?: boolean;
                 };
@@ -940,6 +962,18 @@ export type AppRuntimeMonitorDto = {
             memoryLimitBytes: number;
         }>;
         gpuVramMb: number;
+        readiness: {
+            status: 'ok' | 'degraded' | 'unknown';
+            checks: {
+                [key: string]: {
+                    status: string;
+                    detail?: string;
+                };
+            };
+            busy: boolean;
+            drainable: boolean;
+            sampledAt: string;
+        };
     }>;
     history: Array<{
         sampledAt: string;
@@ -957,6 +991,7 @@ export type AppRuntimeMonitorDto = {
         processName: string;
         vramMb: number;
     }>;
+    gpuVramSource: 'host-file' | 'tool' | 'absent';
 };
 
 export type GetAppDto = {
@@ -1180,6 +1215,12 @@ export type GetAppDto = {
                     port: number;
                 };
             };
+            readiness?: {
+                service: string;
+                port: number;
+                path: string;
+                bearer_env?: string;
+            };
             edge_auth?: {
                 default?: boolean;
             };
@@ -1275,6 +1316,18 @@ export type AppRuntimeHealthDto = {
         memoryLimitBytes: number;
     }>;
     gpuVramMb: number;
+    readiness: {
+        status: 'ok' | 'degraded' | 'unknown';
+        checks: {
+            [key: string]: {
+                status: string;
+                detail?: string;
+            };
+        };
+        busy: boolean;
+        drainable: boolean;
+        sampledAt: string;
+    };
 };
 
 export type SearchAppsDto = {
@@ -1342,11 +1395,23 @@ export type UpdateInferencePreferencesBody = {
     vllmUrl?: string;
     mtplxUrl?: string;
     dsparkUrl?: string;
+    maxNumCtx?: number;
+    ollamaSlots?: number;
 };
 
 export type UpdateRocmInstallStateBody = {
     phase: 'idle' | 'downloading' | 'installing' | 'reboot_required' | 'failed' | 'completed';
     message?: string;
+};
+
+export type CreateApiKeyBody = {
+    name: string;
+    capability: 'read' | 'write' | 'full';
+    scope: 'mcp' | 'inference';
+};
+
+export type UpdateApiKeyBody = {
+    capability: 'read' | 'write' | 'full';
 };
 
 export type UpdateHubPoolPreferencesBody = {
@@ -1359,6 +1424,9 @@ export type UpdateHubPoolPreferencesBody = {
     poolShareContainerStats?: boolean;
     poolPressureWeight?: number;
     poolMaxPromptTokens?: number;
+    poolProbeSnapshotTtlMs?: number;
+    poolPrefixAffinityMaxInFlight?: number;
+    poolSlotAwareness?: number;
     poolRouteAppsAlways?: boolean;
 };
 
@@ -1389,16 +1457,6 @@ export type PairingConfirmBody = {
 export type PairingUpgradeBody = {
     nodeUuid: string;
     publicKey: string;
-};
-
-export type CreateApiKeyBody = {
-    name: string;
-    capability: 'read' | 'write' | 'full';
-    scope: 'mcp' | 'inference';
-};
-
-export type UpdateApiKeyBody = {
-    capability: 'read' | 'write' | 'full';
 };
 
 export type AppFormBody = {
@@ -4347,6 +4405,65 @@ export type GetAppCredentialsEnv1Responses = {
     200: unknown;
 };
 
+export type ListKeysData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys';
+};
+
+export type ListKeysResponses = {
+    200: unknown;
+};
+
+export type CreateKeyData = {
+    body: CreateApiKeyBody;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys';
+};
+
+export type CreateKeyResponses = {
+    201: unknown;
+};
+
+export type GrantableCapabilitiesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys/grantable';
+};
+
+export type GrantableCapabilitiesResponses = {
+    200: unknown;
+};
+
+export type RevokeKeyData = {
+    body?: never;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/api-keys/{id}';
+};
+
+export type RevokeKeyResponses = {
+    200: unknown;
+};
+
+export type UpdateKeyData = {
+    body: UpdateApiKeyBody;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/api-keys/{id}';
+};
+
+export type UpdateKeyResponses = {
+    200: unknown;
+};
+
 export type IdentifyData = {
     body?: never;
     path?: never;
@@ -4890,65 +5007,6 @@ export type LocalOllamaTagsData = {
 };
 
 export type LocalOllamaTagsResponses = {
-    200: unknown;
-};
-
-export type ListKeysData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/api-keys';
-};
-
-export type ListKeysResponses = {
-    200: unknown;
-};
-
-export type CreateKeyData = {
-    body: CreateApiKeyBody;
-    path?: never;
-    query?: never;
-    url: '/api/api-keys';
-};
-
-export type CreateKeyResponses = {
-    201: unknown;
-};
-
-export type GrantableCapabilitiesData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/api-keys/grantable';
-};
-
-export type GrantableCapabilitiesResponses = {
-    200: unknown;
-};
-
-export type RevokeKeyData = {
-    body?: never;
-    path: {
-        id: number;
-    };
-    query?: never;
-    url: '/api/api-keys/{id}';
-};
-
-export type RevokeKeyResponses = {
-    200: unknown;
-};
-
-export type UpdateKeyData = {
-    body: UpdateApiKeyBody;
-    path: {
-        id: number;
-    };
-    query?: never;
-    url: '/api/api-keys/{id}';
-};
-
-export type UpdateKeyResponses = {
     200: unknown;
 };
 
@@ -5512,6 +5570,20 @@ export type CheckDataIntegrityData = {
 };
 
 export type CheckDataIntegrityResponses = {
+    200: unknown;
+};
+
+export type BuildData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/hub/build';
+};
+
+export type BuildResponses = {
+    /**
+     * Build identity. `source: "unstamped"` means this image carries no build stamp.
+     */
     200: unknown;
 };
 

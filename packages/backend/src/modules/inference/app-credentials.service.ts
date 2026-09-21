@@ -14,6 +14,7 @@ import { cloudProviderManagedKeys } from './cloud-provider-env';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import {
   decideModelPrePull,
+  describeContextHandout,
   describeNoSuitableChatModel,
   handoutContextLength,
   INFERENCE_ERROR_ENV_KEY,
@@ -408,8 +409,16 @@ export class AppCredentialsService implements OnApplicationShutdown {
     if (provider !== 'cloud' && chatModel && chatModelId === chatModel.backendModelId) {
       // Same measured-first sizing as InferenceEnvResolver; see `model-geometry.util`. Only a
       // model this node serves can be measured, so a pool-served one keeps the heuristic.
-      const cost =
-        chatServedLocally && backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatModel.backendModelId)) ?? null) : null;
+      const askOllama = chatServedLocally && backendType === 'ollama';
+      const [cost, residentContextLength] = await Promise.all([
+        askOllama ? this.ollamaBackend.contextCostForModel(chatModel.backendModelId) : null,
+        askOllama ? this.ollamaBackend.residentContextLength(chatModel.backendModelId) : null,
+      ]);
+      // Same cap as the resolver: through the pool, the largest cap among the nodes serving the
+      // model (placement keeps the request off the smaller ones — see `poolContextCap`); this
+      // node's own cap on the direct path. See `inference-context-cap.ts`.
+      const localContextCap = this.endpoints.localContextCap();
+      const maxContextLength = poolChoice ? poolChoice.contextCap : localContextCap;
       const numCtx = handoutContextLength({
         model: chatModel,
         servedLocally: chatServedLocally,
@@ -417,8 +426,20 @@ export class AppCredentialsService implements OnApplicationShutdown {
         minContextLength: requirements.minContextLength,
         kvMbPerToken: cost?.kvMbPerToken ?? null,
         weightMb: cost?.weightMb ?? null,
+        maxContextLength,
       });
       env[keys.numCtx] = String(numCtx);
+      for (const note of describeContextHandout({
+        appSlug: slug,
+        engineId: chatModelId,
+        numCtx,
+        maxContextLength,
+        minContextLength: requirements.minContextLength,
+        residentContextLength: residentContextLength ?? null,
+        ...(poolChoice && chatServedLocally ? { localContextCap } : {}),
+      })) {
+        this.logger.warn(`[AppCredentials] ${note}`);
+      }
     }
 
     // Declare num_ctx and the error key as Hub-managed even when no value is emitted, so the

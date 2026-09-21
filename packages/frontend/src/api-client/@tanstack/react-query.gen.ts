@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { acknowledgeWelcome, appContext, appEvents, appLogsEvents, approvePeer, backupAllApps, backupApp, callback, callTool, cancelOperation, cancelPairingPin, cancelResetPassword, capabilities, changePassword, changeUsername, check, checkAppPorts, checkAuth, checkAvailability, checkDataIntegrity, checkDnsAvailability, checkForRemoval, checkForUpdates, checkResetPasswordRequest, checkUrlAvailability, claimHub, completeOnboarding, completePasswordReset, connectWithAuthKey, consumeBrowserHandoff, consumers, createAppStore, createCustomApp, createKey, createLink, createPortExposeApp, deleteAppBackup, deleteAppStore, deleteLink, deletePoolPin, detectServices, disablePeer, disableTotp, disableUserConfig, disconnect, disconnect2, downloadBackup, downloadHubLogs, downloadLocalCertificate, edgeSso, editLink, enablePeer, enableUserConfig, exchangePortalDesktopLogin, executeRehydrate, factoryReset, forceStopApp, getAllAllocations, getAllAppStores, getApp, getAppBackups, getAppComposeDiff, getAppConfigDiff, getAppCredentials, getAppCredentialsEnv0, getAppCredentialsEnv1, getAppDataListing, getAppDemoVideo, getAppImageSize, getAppMedia, getAppPorts, getAppScreenshot, getAutoUpdates, getCatalog, getCloudProviders, getConfig, getContainers, getCustomDomains, getDeviceId, getDiagnostics, getDiagnostics2, getDomains, getDsparkStatus, getEnabledAppStores, getFullInspection, getGuestApps, getGuestLinks, getHardware, getHealth, getHostListenerStatus, getHostListenerToken, getHubAccess, getImage, getInferenceEnvStaleness, getInstalledApps, getInstalledAppUrns, getInstallQueue, getLemonadeStatus, getLinks, getLlamacppStatus, getLmStudioStatus, getLuceboxStatus, getMcpInstallSchema, getMcpStatus, getMemory, getMtplxStatus, getOllamaStatus, getOnboardingProfile, getPhase, getPoolRoutingLog, getPoolSettings, getPortalConfig, getPorts, getPreferences, getRandomPort, getRehydratePlan, getRehydrateStatus, getResidentModels, getResourceMonitor, getRocmStatus, getRuntimeHealth, getRuntimeModels, getServeStatus, getStateDrift, getStatus, getStatus2, getStatus3, getStatus4, getStatus5, getStoreAlternatives, getStoreFeaturedBundle, getStoreListings, getSupervision, getTotpUri, getTrackedModels, getTranslation, getUpdatesAvailable, getUserConfig, getVllmStatus, grantableCapabilities, handleCallback, handleCallbackPost, handleDelete, handleGet, handlePairingConfirm, handlePairingReject, handlePairingRequest, handlePairingUnpair, handlePairingUpgrade, handlePost, health, hostEventLog, hostTelemetryHistory, hubClaimStatus, hubLogsEvents, identify, ignoreAppVersion, incrementAllAppVersions, installApp, installOllama, listDiscoverable, listKeys, listOperators, listPeers, listTools, live, loadModel, localChatCompletions, localCompletions, localEmbeddings, localOllamaChat, localOllamaEmbed, localOllamaEmbeddings, localOllamaGenerate, localOllamaShow, localOllamaTags, localOpenAiModels, login, logout, markRestoreIntent, mintBrowserHandoff, mintPairingPin, type Options, pairDevice, pairPeer, performUpdate, pinModel, planInstall, poolStatus, portalCallback, portalSessionHint, prepareFreshSetup, probeDomain, probeMcp, probePeerAddress, proxyChatCompletions, proxyCompletions, proxyEmbeddings, proxyOllamaChat, proxyOllamaEmbed, proxyOllamaEmbeddings, proxyOllamaGenerate, proxyOllamaPs, proxyOllamaShow, proxyOllamaTags, proxyOllamaVersion, proxyOpenAiModelsList, pullAppStores, pullModel, reconnectTunnel, refreshSession, register, registerDevice, rejectPeer, removeCatchAllRoutes, removeOriginRequestFromAllRoutes, removePeer, repair, repairOrphans, requestPasswordReset, rescanHardware, resetApp, resetPassword, resetRegistration, resolveAvailability, restartAllApps, restartApp, restartOnboarding, restoreAppBackup, revokeKey, rotateHubAccess, rotateIdentity, searchApps, seedDatabase, setAllAppSubnetToNull, setAllAppUpdateAvailable, setAutoUpdates, setCloudProvider, setupTotp, skip, start, startAllApps, startAllApps2, startApp, startAuth, startPortalLogin, startPullModel, state, status, stopAllApps, stopApp, syncExposure, syncMissingDnsRecords, systemLoad, systemResources, telemetry, traefik, unignoreAppVersion, uninstallAllApps, uninstallApp, unloadModel, unpinModel, updateAdvancedMode, updateAllApps, updateApp, updateAppConfig, updateAppMetadata, updateAppStore, updateCustomApp, updateKey, updatePoolSettings, updatePortExposeApp, updatePreferences, updateRocmInstallState, updateUserConfig, updateUserSettings, upgradePeer, uploadAppImage, uploadBackup, upsertPoolPin, userContext, v1AudioSpeech, v1AudioTranscriptions, v1ChatCompletions, v1Completions, v1Embeddings, v1Models, validateConfig, validateOrganizationName, verifyPasswordResetToken, verifyTotp, wake } from '../sdk.gen';
-import type { AcknowledgeWelcomeData, AppContextData, AppContextResponse, AppEventsData, AppLogsEventsData, ApprovePeerData, BackupAllAppsData, BackupAppData, BackupAppResponse, CallbackData, CallToolData, CancelOperationData, CancelOperationResponse, CancelPairingPinData, CancelResetPasswordData, CapabilitiesData, ChangePasswordData, ChangeUsernameData, CheckAppPortsData, CheckAuthData, CheckAuthResponse, CheckAvailabilityData, CheckData, CheckDataIntegrityData, CheckDnsAvailabilityData, CheckDnsAvailabilityResponse, CheckError, CheckForRemovalData, CheckForUpdatesData, CheckResetPasswordRequestData, CheckResetPasswordRequestResponse, CheckResponse, CheckUrlAvailabilityData, CheckUrlAvailabilityResponse, ClaimHubData, ClaimHubResponse, CompleteOnboardingData, CompletePasswordResetData, CompletePasswordResetResponse, ConnectWithAuthKeyData, ConnectWithAuthKeyResponse, ConsumeBrowserHandoffData, ConsumersData, CreateAppStoreData, CreateAppStoreResponse, CreateCustomAppData, CreateCustomAppResponse, CreateKeyData, CreateLinkData, CreatePortExposeAppData, CreatePortExposeAppResponse, DeleteAppBackupData, DeleteAppStoreData, DeleteLinkData, DeletePoolPinData, DetectServicesData, DisablePeerData, DisableTotpData, DisableUserConfigData, Disconnect2Data, DisconnectData, DisconnectResponse, DownloadBackupData, DownloadHubLogsData, DownloadLocalCertificateData, EdgeSsoData, EditLinkData, EnablePeerData, EnableUserConfigData, ExchangePortalDesktopLoginData, ExchangePortalDesktopLoginResponse, ExecuteRehydrateData, FactoryResetData, ForceStopAppData, ForceStopAppResponse, GetAllAllocationsData, GetAllAppStoresData, GetAllAppStoresResponse, GetAppBackupsData, GetAppBackupsResponse, GetAppComposeDiffData, GetAppComposeDiffResponse, GetAppConfigDiffData, GetAppConfigDiffResponse, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv1Data, GetAppData, GetAppDataListingData, GetAppDataListingResponse, GetAppDemoVideoData, GetAppImageSizeData, GetAppMediaData, GetAppMediaResponse, GetAppPortsData, GetAppResponse, GetAppScreenshotData, GetAutoUpdatesData, GetCatalogData, GetCloudProvidersData, GetConfigData, GetContainersData, GetCustomDomainsData, GetCustomDomainsResponse, GetDeviceIdData, GetDiagnostics2Data, GetDiagnostics2Response, GetDiagnosticsData, GetDiagnosticsResponse, GetDomainsData, GetDomainsResponse, GetDsparkStatusData, GetEnabledAppStoresData, GetEnabledAppStoresResponse, GetFullInspectionData, GetGuestAppsData, GetGuestAppsResponse, GetGuestLinksData, GetGuestLinksResponse, GetHardwareData, GetHealthData, GetHostListenerStatusData, GetHostListenerTokenData, GetHubAccessData, GetImageData, GetInferenceEnvStalenessData, GetInstalledAppsData, GetInstalledAppsResponse, GetInstalledAppUrnsData, GetInstalledAppUrnsResponse, GetInstallQueueData, GetInstallQueueResponse, GetLemonadeStatusData, GetLinksData, GetLinksResponse, GetLlamacppStatusData, GetLmStudioStatusData, GetLuceboxStatusData, GetMcpInstallSchemaData, GetMcpInstallSchemaResponse, GetMcpStatusData, GetMcpStatusResponse, GetMemoryData, GetMtplxStatusData, GetOllamaStatusData, GetOnboardingProfileData, GetPhaseData, GetPoolRoutingLogData, GetPoolSettingsData, GetPortalConfigData, GetPortsData, GetPreferencesData, GetRandomPortData, GetRandomPortResponse, GetRehydratePlanData, GetRehydrateStatusData, GetResidentModelsData, GetResourceMonitorData, GetResourceMonitorResponse, GetRocmStatusData, GetRuntimeHealthData, GetRuntimeHealthResponse, GetRuntimeModelsData, GetServeStatusData, GetServeStatusResponse, GetStateDriftData, GetStatus2Data, GetStatus2Response, GetStatus3Data, GetStatus3Response, GetStatus4Data, GetStatus5Data, GetStatusData, GetStoreAlternativesData, GetStoreFeaturedBundleData, GetStoreFeaturedBundleResponse, GetStoreListingsData, GetSupervisionData, GetTotpUriData, GetTotpUriResponse, GetTrackedModelsData, GetTranslationData, GetUpdatesAvailableData, GetUpdatesAvailableResponse, GetUserConfigData, GetUserConfigResponse, GetVllmStatusData, GrantableCapabilitiesData, HandleCallbackData, HandleCallbackPostData, HandleDeleteData, HandleDeleteResponse, HandleGetData, HandlePairingConfirmData, HandlePairingRejectData, HandlePairingRequestData, HandlePairingUnpairData, HandlePairingUpgradeData, HandlePostData, HealthData, HostEventLogData, HostEventLogResponse, HostTelemetryHistoryData, HostTelemetryHistoryResponse, HubClaimStatusData, HubClaimStatusResponse, HubLogsEventsData, IdentifyData, IgnoreAppVersionData, IncrementAllAppVersionsData, InstallAppData, InstallAppResponse, InstallOllamaData, ListDiscoverableData, ListKeysData, ListOperatorsData, ListOperatorsResponse, ListPeersData, ListToolsData, LiveData, LoadModelData, LocalChatCompletionsData, LocalCompletionsData, LocalEmbeddingsData, LocalOllamaChatData, LocalOllamaEmbedData, LocalOllamaEmbeddingsData, LocalOllamaGenerateData, LocalOllamaShowData, LocalOllamaTagsData, LocalOpenAiModelsData, LoginData, LoginResponse, LogoutData, MarkRestoreIntentData, MintBrowserHandoffData, MintBrowserHandoffResponse, MintPairingPinData, PairDeviceData, PairPeerData, PerformUpdateData, PinModelData, PlanInstallData, PoolStatusData, PortalCallbackData, PortalSessionHintData, PortalSessionHintResponse, PrepareFreshSetupData, ProbeDomainData, ProbeMcpData, ProbeMcpResponse, ProbePeerAddressData, ProxyChatCompletionsData, ProxyCompletionsData, ProxyEmbeddingsData, ProxyOllamaChatData, ProxyOllamaEmbedData, ProxyOllamaEmbeddingsData, ProxyOllamaGenerateData, ProxyOllamaPsData, ProxyOllamaShowData, ProxyOllamaTagsData, ProxyOllamaVersionData, ProxyOpenAiModelsListData, PullAppStoresData, PullAppStoresResponse, PullModelData, ReconnectTunnelData, RefreshSessionData, RefreshSessionResponse, RegisterData, RegisterDeviceData, RegisterResponse, RejectPeerData, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponse, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponse, RemovePeerData, RepairData, RepairOrphansData, RepairOrphansResponse, RepairResponse, RequestPasswordResetData, RequestPasswordResetResponse, RescanHardwareData, ResetAppData, ResetAppResponse, ResetPasswordData, ResetPasswordResponse, ResetRegistrationData, ResolveAvailabilityData, RestartAllAppsData, RestartAppData, RestartAppResponse, RestartOnboardingData, RestoreAppBackupData, RestoreAppBackupResponse, RevokeKeyData, RotateHubAccessData, RotateIdentityData, SearchAppsData, SearchAppsResponse, SeedDatabaseData, SetAllAppSubnetToNullData, SetAllAppUpdateAvailableData, SetAutoUpdatesData, SetCloudProviderData, SetupTotpData, SkipData, StartAllApps2Data, StartAllAppsData, StartAppData, StartAppResponse, StartAuthData, StartAuthResponse, StartData, StartPortalLoginData, StartPullModelData, StateData, StatusData, StopAllAppsData, StopAppData, StopAppResponse, SyncExposureData, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponse, SystemLoadData, SystemLoadResponse, SystemResourcesData, SystemResourcesResponse, TelemetryData, TraefikData, UnignoreAppVersionData, UninstallAllAppsData, UninstallAppData, UninstallAppResponse, UnloadModelData, UnpinModelData, UpdateAdvancedModeData, UpdateAllAppsData, UpdateAppConfigData, UpdateAppConfigResponse, UpdateAppData, UpdateAppMetadataData, UpdateAppResponse, UpdateAppStoreData, UpdateAppStoreResponse, UpdateCustomAppData, UpdateKeyData, UpdatePoolSettingsData, UpdatePortExposeAppData, UpdatePreferencesData, UpdateRocmInstallStateData, UpdateUserConfigData, UpdateUserSettingsData, UpgradePeerData, UploadAppImageData, UploadBackupData, UpsertPoolPinData, UserContextData, UserContextResponse, V1AudioSpeechData, V1AudioTranscriptionsData, V1ChatCompletionsData, V1CompletionsData, V1EmbeddingsData, V1ModelsData, ValidateConfigData, ValidateConfigResponse, ValidateOrganizationNameData, VerifyPasswordResetTokenData, VerifyPasswordResetTokenResponse, VerifyTotpData, VerifyTotpResponse, WakeData } from '../types.gen';
+import { acknowledgeWelcome, appContext, appEvents, appLogsEvents, approvePeer, backupAllApps, backupApp, build, callback, callTool, cancelOperation, cancelPairingPin, cancelResetPassword, capabilities, changePassword, changeUsername, check, checkAppPorts, checkAuth, checkAvailability, checkDataIntegrity, checkDnsAvailability, checkForRemoval, checkForUpdates, checkResetPasswordRequest, checkUrlAvailability, claimHub, completeOnboarding, completePasswordReset, connectWithAuthKey, consumeBrowserHandoff, consumers, createAppStore, createCustomApp, createKey, createLink, createPortExposeApp, deleteAppBackup, deleteAppStore, deleteLink, deletePoolPin, detectServices, disablePeer, disableTotp, disableUserConfig, disconnect, disconnect2, downloadBackup, downloadHubLogs, downloadLocalCertificate, edgeSso, editLink, enablePeer, enableUserConfig, exchangePortalDesktopLogin, executeRehydrate, factoryReset, forceStopApp, getAllAllocations, getAllAppStores, getApp, getAppBackups, getAppComposeDiff, getAppConfigDiff, getAppCredentials, getAppCredentialsEnv0, getAppCredentialsEnv1, getAppDataListing, getAppDemoVideo, getAppImageSize, getAppMedia, getAppPorts, getAppScreenshot, getAutoUpdates, getCatalog, getCloudProviders, getConfig, getContainers, getCustomDomains, getDeviceId, getDiagnostics, getDiagnostics2, getDomains, getDsparkStatus, getEnabledAppStores, getFullInspection, getGuestApps, getGuestLinks, getHardware, getHealth, getHostListenerStatus, getHostListenerToken, getHubAccess, getImage, getInferenceEnvStaleness, getInstalledApps, getInstalledAppUrns, getInstallQueue, getLemonadeStatus, getLinks, getLlamacppStatus, getLmStudioStatus, getLuceboxStatus, getMcpInstallSchema, getMcpStatus, getMemory, getMtplxStatus, getOllamaStatus, getOnboardingProfile, getPhase, getPoolRoutingLog, getPoolSettings, getPortalConfig, getPorts, getPreferences, getRandomPort, getRehydratePlan, getRehydrateStatus, getResidentModels, getResourceMonitor, getRocmStatus, getRuntimeHealth, getRuntimeModels, getServeStatus, getStateDrift, getStatus, getStatus2, getStatus3, getStatus4, getStatus5, getStoreAlternatives, getStoreFeaturedBundle, getStoreListings, getSupervision, getTotpUri, getTrackedModels, getTranslation, getUpdatesAvailable, getUserConfig, getVllmStatus, grantableCapabilities, handleCallback, handleCallbackPost, handleDelete, handleGet, handlePairingConfirm, handlePairingReject, handlePairingRequest, handlePairingUnpair, handlePairingUpgrade, handlePost, health, hostEventLog, hostTelemetryHistory, hubClaimStatus, hubLogsEvents, identify, ignoreAppVersion, incrementAllAppVersions, installApp, installOllama, listDiscoverable, listKeys, listOperators, listPeers, listTools, live, loadModel, localChatCompletions, localCompletions, localEmbeddings, localOllamaChat, localOllamaEmbed, localOllamaEmbeddings, localOllamaGenerate, localOllamaShow, localOllamaTags, localOpenAiModels, login, logout, markRestoreIntent, mintBrowserHandoff, mintPairingPin, type Options, pairDevice, pairPeer, performUpdate, pinModel, planInstall, poolStatus, portalCallback, portalSessionHint, prepareFreshSetup, probeDomain, probeMcp, probePeerAddress, proxyChatCompletions, proxyCompletions, proxyEmbeddings, proxyOllamaChat, proxyOllamaEmbed, proxyOllamaEmbeddings, proxyOllamaGenerate, proxyOllamaPs, proxyOllamaShow, proxyOllamaTags, proxyOllamaVersion, proxyOpenAiModelsList, pullAppStores, pullModel, reconnectTunnel, refreshSession, register, registerDevice, rejectPeer, removeCatchAllRoutes, removeOriginRequestFromAllRoutes, removePeer, repair, repairOrphans, requestPasswordReset, rescanHardware, resetApp, resetPassword, resetRegistration, resolveAvailability, restartAllApps, restartApp, restartOnboarding, restoreAppBackup, revokeKey, rotateHubAccess, rotateIdentity, searchApps, seedDatabase, setAllAppSubnetToNull, setAllAppUpdateAvailable, setAutoUpdates, setCloudProvider, setupTotp, skip, start, startAllApps, startAllApps2, startApp, startAuth, startPortalLogin, startPullModel, state, status, stopAllApps, stopApp, syncExposure, syncMissingDnsRecords, systemLoad, systemResources, telemetry, traefik, unignoreAppVersion, uninstallAllApps, uninstallApp, unloadModel, unpinModel, updateAdvancedMode, updateAllApps, updateApp, updateAppConfig, updateAppMetadata, updateAppStore, updateCustomApp, updateKey, updatePoolSettings, updatePortExposeApp, updatePreferences, updateRocmInstallState, updateUserConfig, updateUserSettings, upgradePeer, uploadAppImage, uploadBackup, upsertPoolPin, userContext, v1AudioSpeech, v1AudioTranscriptions, v1ChatCompletions, v1Completions, v1Embeddings, v1Models, validateConfig, validateOrganizationName, verifyPasswordResetToken, verifyTotp, wake } from '../sdk.gen';
+import type { AcknowledgeWelcomeData, AppContextData, AppContextResponse, AppEventsData, AppLogsEventsData, ApprovePeerData, BackupAllAppsData, BackupAppData, BackupAppResponse, BuildData, CallbackData, CallToolData, CancelOperationData, CancelOperationResponse, CancelPairingPinData, CancelResetPasswordData, CapabilitiesData, ChangePasswordData, ChangeUsernameData, CheckAppPortsData, CheckAuthData, CheckAuthResponse, CheckAvailabilityData, CheckData, CheckDataIntegrityData, CheckDnsAvailabilityData, CheckDnsAvailabilityResponse, CheckError, CheckForRemovalData, CheckForUpdatesData, CheckResetPasswordRequestData, CheckResetPasswordRequestResponse, CheckResponse, CheckUrlAvailabilityData, CheckUrlAvailabilityResponse, ClaimHubData, ClaimHubResponse, CompleteOnboardingData, CompletePasswordResetData, CompletePasswordResetResponse, ConnectWithAuthKeyData, ConnectWithAuthKeyResponse, ConsumeBrowserHandoffData, ConsumersData, CreateAppStoreData, CreateAppStoreResponse, CreateCustomAppData, CreateCustomAppResponse, CreateKeyData, CreateLinkData, CreatePortExposeAppData, CreatePortExposeAppResponse, DeleteAppBackupData, DeleteAppStoreData, DeleteLinkData, DeletePoolPinData, DetectServicesData, DisablePeerData, DisableTotpData, DisableUserConfigData, Disconnect2Data, DisconnectData, DisconnectResponse, DownloadBackupData, DownloadHubLogsData, DownloadLocalCertificateData, EdgeSsoData, EditLinkData, EnablePeerData, EnableUserConfigData, ExchangePortalDesktopLoginData, ExchangePortalDesktopLoginResponse, ExecuteRehydrateData, FactoryResetData, ForceStopAppData, ForceStopAppResponse, GetAllAllocationsData, GetAllAppStoresData, GetAllAppStoresResponse, GetAppBackupsData, GetAppBackupsResponse, GetAppComposeDiffData, GetAppComposeDiffResponse, GetAppConfigDiffData, GetAppConfigDiffResponse, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv1Data, GetAppData, GetAppDataListingData, GetAppDataListingResponse, GetAppDemoVideoData, GetAppImageSizeData, GetAppMediaData, GetAppMediaResponse, GetAppPortsData, GetAppResponse, GetAppScreenshotData, GetAutoUpdatesData, GetCatalogData, GetCloudProvidersData, GetConfigData, GetContainersData, GetCustomDomainsData, GetCustomDomainsResponse, GetDeviceIdData, GetDiagnostics2Data, GetDiagnostics2Response, GetDiagnosticsData, GetDiagnosticsResponse, GetDomainsData, GetDomainsResponse, GetDsparkStatusData, GetEnabledAppStoresData, GetEnabledAppStoresResponse, GetFullInspectionData, GetGuestAppsData, GetGuestAppsResponse, GetGuestLinksData, GetGuestLinksResponse, GetHardwareData, GetHealthData, GetHostListenerStatusData, GetHostListenerTokenData, GetHubAccessData, GetImageData, GetInferenceEnvStalenessData, GetInstalledAppsData, GetInstalledAppsResponse, GetInstalledAppUrnsData, GetInstalledAppUrnsResponse, GetInstallQueueData, GetInstallQueueResponse, GetLemonadeStatusData, GetLinksData, GetLinksResponse, GetLlamacppStatusData, GetLmStudioStatusData, GetLuceboxStatusData, GetMcpInstallSchemaData, GetMcpInstallSchemaResponse, GetMcpStatusData, GetMcpStatusResponse, GetMemoryData, GetMtplxStatusData, GetOllamaStatusData, GetOnboardingProfileData, GetPhaseData, GetPoolRoutingLogData, GetPoolSettingsData, GetPortalConfigData, GetPortsData, GetPreferencesData, GetRandomPortData, GetRandomPortResponse, GetRehydratePlanData, GetRehydrateStatusData, GetResidentModelsData, GetResourceMonitorData, GetResourceMonitorResponse, GetRocmStatusData, GetRuntimeHealthData, GetRuntimeHealthResponse, GetRuntimeModelsData, GetServeStatusData, GetServeStatusResponse, GetStateDriftData, GetStatus2Data, GetStatus2Response, GetStatus3Data, GetStatus3Response, GetStatus4Data, GetStatus5Data, GetStatusData, GetStoreAlternativesData, GetStoreFeaturedBundleData, GetStoreFeaturedBundleResponse, GetStoreListingsData, GetSupervisionData, GetTotpUriData, GetTotpUriResponse, GetTrackedModelsData, GetTranslationData, GetUpdatesAvailableData, GetUpdatesAvailableResponse, GetUserConfigData, GetUserConfigResponse, GetVllmStatusData, GrantableCapabilitiesData, HandleCallbackData, HandleCallbackPostData, HandleDeleteData, HandleDeleteResponse, HandleGetData, HandlePairingConfirmData, HandlePairingRejectData, HandlePairingRequestData, HandlePairingUnpairData, HandlePairingUpgradeData, HandlePostData, HealthData, HostEventLogData, HostEventLogResponse, HostTelemetryHistoryData, HostTelemetryHistoryResponse, HubClaimStatusData, HubClaimStatusResponse, HubLogsEventsData, IdentifyData, IgnoreAppVersionData, IncrementAllAppVersionsData, InstallAppData, InstallAppResponse, InstallOllamaData, ListDiscoverableData, ListKeysData, ListOperatorsData, ListOperatorsResponse, ListPeersData, ListToolsData, LiveData, LoadModelData, LocalChatCompletionsData, LocalCompletionsData, LocalEmbeddingsData, LocalOllamaChatData, LocalOllamaEmbedData, LocalOllamaEmbeddingsData, LocalOllamaGenerateData, LocalOllamaShowData, LocalOllamaTagsData, LocalOpenAiModelsData, LoginData, LoginResponse, LogoutData, MarkRestoreIntentData, MintBrowserHandoffData, MintBrowserHandoffResponse, MintPairingPinData, PairDeviceData, PairPeerData, PerformUpdateData, PinModelData, PlanInstallData, PoolStatusData, PortalCallbackData, PortalSessionHintData, PortalSessionHintResponse, PrepareFreshSetupData, ProbeDomainData, ProbeMcpData, ProbeMcpResponse, ProbePeerAddressData, ProxyChatCompletionsData, ProxyCompletionsData, ProxyEmbeddingsData, ProxyOllamaChatData, ProxyOllamaEmbedData, ProxyOllamaEmbeddingsData, ProxyOllamaGenerateData, ProxyOllamaPsData, ProxyOllamaShowData, ProxyOllamaTagsData, ProxyOllamaVersionData, ProxyOpenAiModelsListData, PullAppStoresData, PullAppStoresResponse, PullModelData, ReconnectTunnelData, RefreshSessionData, RefreshSessionResponse, RegisterData, RegisterDeviceData, RegisterResponse, RejectPeerData, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponse, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponse, RemovePeerData, RepairData, RepairOrphansData, RepairOrphansResponse, RepairResponse, RequestPasswordResetData, RequestPasswordResetResponse, RescanHardwareData, ResetAppData, ResetAppResponse, ResetPasswordData, ResetPasswordResponse, ResetRegistrationData, ResolveAvailabilityData, RestartAllAppsData, RestartAppData, RestartAppResponse, RestartOnboardingData, RestoreAppBackupData, RestoreAppBackupResponse, RevokeKeyData, RotateHubAccessData, RotateIdentityData, SearchAppsData, SearchAppsResponse, SeedDatabaseData, SetAllAppSubnetToNullData, SetAllAppUpdateAvailableData, SetAutoUpdatesData, SetCloudProviderData, SetupTotpData, SkipData, StartAllApps2Data, StartAllAppsData, StartAppData, StartAppResponse, StartAuthData, StartAuthResponse, StartData, StartPortalLoginData, StartPullModelData, StateData, StatusData, StopAllAppsData, StopAppData, StopAppResponse, SyncExposureData, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponse, SystemLoadData, SystemLoadResponse, SystemResourcesData, SystemResourcesResponse, TelemetryData, TraefikData, UnignoreAppVersionData, UninstallAllAppsData, UninstallAppData, UninstallAppResponse, UnloadModelData, UnpinModelData, UpdateAdvancedModeData, UpdateAllAppsData, UpdateAppConfigData, UpdateAppConfigResponse, UpdateAppData, UpdateAppMetadataData, UpdateAppResponse, UpdateAppStoreData, UpdateAppStoreResponse, UpdateCustomAppData, UpdateKeyData, UpdatePoolSettingsData, UpdatePortExposeAppData, UpdatePreferencesData, UpdateRocmInstallStateData, UpdateUserConfigData, UpdateUserSettingsData, UpgradePeerData, UploadAppImageData, UploadBackupData, UpsertPoolPinData, UserContextData, UserContextResponse, V1AudioSpeechData, V1AudioTranscriptionsData, V1ChatCompletionsData, V1CompletionsData, V1EmbeddingsData, V1ModelsData, ValidateConfigData, ValidateConfigResponse, ValidateOrganizationNameData, VerifyPasswordResetTokenData, VerifyPasswordResetTokenResponse, VerifyTotpData, VerifyTotpResponse, WakeData } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -2490,6 +2490,78 @@ export const getAppCredentialsEnv1Options = (options: Options<GetAppCredentialsE
     queryKey: getAppCredentialsEnv1QueryKey(options)
 });
 
+export const listKeysQueryKey = (options?: Options<ListKeysData>) => createQueryKey('listKeys', options);
+
+export const listKeysOptions = (options?: Options<ListKeysData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof listKeysQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await listKeys({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listKeysQueryKey(options)
+});
+
+export const createKeyMutation = (options?: Partial<Options<CreateKeyData>>): UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await createKey({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const grantableCapabilitiesQueryKey = (options?: Options<GrantableCapabilitiesData>) => createQueryKey('grantableCapabilities', options);
+
+export const grantableCapabilitiesOptions = (options?: Options<GrantableCapabilitiesData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof grantableCapabilitiesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await grantableCapabilities({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: grantableCapabilitiesQueryKey(options)
+});
+
+export const revokeKeyMutation = (options?: Partial<Options<RevokeKeyData>>): UseMutationOptions<unknown, DefaultError, Options<RevokeKeyData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<RevokeKeyData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await revokeKey({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
+export const updateKeyMutation = (options?: Partial<Options<UpdateKeyData>>): UseMutationOptions<unknown, DefaultError, Options<UpdateKeyData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UpdateKeyData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await updateKey({
+                ...options,
+                ...fnOptions,
+                throwOnError: true
+            });
+            return data;
+        }
+    };
+    return mutationOptions;
+};
+
 export const identifyQueryKey = (options?: Options<IdentifyData>) => createQueryKey('identify', options);
 
 export const identifyOptions = (options?: Options<IdentifyData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof identifyQueryKey>>({
@@ -3175,78 +3247,6 @@ export const localOllamaTagsOptions = (options?: Options<LocalOllamaTagsData>) =
     queryKey: localOllamaTagsQueryKey(options)
 });
 
-export const listKeysQueryKey = (options?: Options<ListKeysData>) => createQueryKey('listKeys', options);
-
-export const listKeysOptions = (options?: Options<ListKeysData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof listKeysQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await listKeys({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: listKeysQueryKey(options)
-});
-
-export const createKeyMutation = (options?: Partial<Options<CreateKeyData>>): UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> => {
-    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await createKey({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const grantableCapabilitiesQueryKey = (options?: Options<GrantableCapabilitiesData>) => createQueryKey('grantableCapabilities', options);
-
-export const grantableCapabilitiesOptions = (options?: Options<GrantableCapabilitiesData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof grantableCapabilitiesQueryKey>>({
-    queryFn: async ({ queryKey, signal }) => {
-        const { data } = await grantableCapabilities({
-            ...options,
-            ...queryKey[0],
-            signal,
-            throwOnError: true
-        });
-        return data;
-    },
-    queryKey: grantableCapabilitiesQueryKey(options)
-});
-
-export const revokeKeyMutation = (options?: Partial<Options<RevokeKeyData>>): UseMutationOptions<unknown, DefaultError, Options<RevokeKeyData>> => {
-    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<RevokeKeyData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await revokeKey({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
-export const updateKeyMutation = (options?: Partial<Options<UpdateKeyData>>): UseMutationOptions<unknown, DefaultError, Options<UpdateKeyData>> => {
-    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UpdateKeyData>> = {
-        mutationFn: async (fnOptions) => {
-            const { data } = await updateKey({
-                ...options,
-                ...fnOptions,
-                throwOnError: true
-            });
-            return data;
-        }
-    };
-    return mutationOptions;
-};
-
 export const getRehydratePlanQueryKey = (options?: Options<GetRehydratePlanData>) => createQueryKey('getRehydratePlan', options);
 
 export const getRehydratePlanOptions = (options?: Options<GetRehydratePlanData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getRehydratePlanQueryKey>>({
@@ -3814,6 +3814,26 @@ export const checkDataIntegrityOptions = (options?: Options<CheckDataIntegrityDa
         return data;
     },
     queryKey: checkDataIntegrityQueryKey(options)
+});
+
+export const buildQueryKey = (options?: Options<BuildData>) => createQueryKey('build', options);
+
+/**
+ * Build identity of the running Hub
+ *
+ * The release, commit, image reference and build time stamped into this image at build time, plus the running image digest when Docker can be reached. `declaredVersion` is the install env file's CI_HUB_VERSION, reported for comparison only — it is not evidence of which build is running.
+ */
+export const buildOptions = (options?: Options<BuildData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof buildQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await build({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: buildQueryKey(options)
 });
 
 export const getDiagnostics2QueryKey = (options?: Options<GetDiagnostics2Data>) => createQueryKey('getDiagnostics2', options);

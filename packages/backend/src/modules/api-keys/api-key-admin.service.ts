@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyInfo, ApiKeyService } from './api-key.service';
-import { MCP_SCOPE, type OperatorMintableScope } from './api-key.scopes';
+import { type OperatorMintableScope } from './api-key.scopes';
 import type { ApiKeyCapability } from './api-key.capabilities';
 
 /**
@@ -48,7 +48,7 @@ export class ApiKeyAdminService {
     name: string,
     capability: ApiKeyCapability,
     createdByUserId: number | null,
-    scope: OperatorMintableScope = MCP_SCOPE,
+    scope: OperatorMintableScope = 'mcp',
   ): Promise<ApiKeyInfo & { key: string }> {
     const created = await this.apiKeys.create(name, { scopes: [scope], capability, createdByUserId });
     this.logger.info('API key admin: key created', created.id, scope, capability, `createdBy=${createdByUserId ?? 'none'}`);

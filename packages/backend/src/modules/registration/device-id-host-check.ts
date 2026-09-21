@@ -39,7 +39,11 @@ import { normalizeDeviceIdCandidate } from './device-id.resolver';
 export const ALLOW_FOREIGN_DEVICE_ID_ENV = 'HUB_ALLOW_FOREIGN_DEVICE_ID';
 
 const MACHINE_ID_FILES = ['/etc/machine-id', '/var/lib/dbus/machine-id'] as const;
-/** Readable only as root on most hosts. The Hub container runs as root. The host-side CLI usually cannot read these, and it does not need to. */
+/**
+ * Readable only as root on most hosts. Whether the Hub process can read them depends on the image:
+ * the 0.2.61 release image ran the backend as root, the current one runs it as `node`. That is why
+ * a registered device ID is persisted (see `registeredDeviceIdPath`) rather than re-derived.
+ */
 const DMI_ID_FILES = ['/sys/class/dmi/id/product_uuid', '/sys/class/dmi/id/product_serial', '/sys/class/dmi/id/board_serial'] as const;
 
 const MACHINE_ID_SHAPE = /^[0-9a-f]{32}$/i;

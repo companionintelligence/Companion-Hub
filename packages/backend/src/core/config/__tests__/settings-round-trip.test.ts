@@ -78,6 +78,10 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   inferenceVllmUrl: 'http://vllm:8000',
   inferenceMtplxUrl: 'http://mtplx:8080',
   inferenceDsparkUrl: 'http://dspark:8080',
+  // The handout context cap (core-2, 2026-09-20). Non-default: the default is no cap.
+  inferenceMaxNumCtx: 16384,
+  // The node's Ollama slot count (fleet-qa B5, 2026-09-21). Non-default: the default is not stated.
+  inferenceOllamaSlots: 4,
   hubPoolEnabled: false,
   hubPoolOutboundEnabled: false,
   hubPoolInboundEnabled: false,
@@ -92,6 +96,11 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   // #1480: the per-node prompt ceiling. A key added to the schema without a fixture here fails the
   // first test in this file, which is how this one was caught when #1480 landed first.
   hubPoolMaxPromptTokens: 16000,
+  // Non-default, like the rest: the default is 0.
+  hubPoolProbeSnapshotTtlMs: 2500,
+  hubPoolPrefixAffinityMaxInFlight: 3,
+  // Non-default: the default is 0 (off).
+  hubPoolSlotAwareness: 1,
   inferenceSupervisionMode: 'observe',
   inferenceSupervisionPollSeconds: 45,
   hubPoolPins: [{ scope: 'model', model: 'qwen3.6:27b', targetKind: 'peer', peerId: 'peer-1', mode: 'prefer' }],
@@ -102,7 +111,7 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
 type Writers = {
   configuration: {
     setUserSettings(settings: PersistedSettings): Promise<void>;
-    setInferencePreferences(backend: string, model?: string | null): Promise<unknown>;
+    setInferencePreferences(backend: string, model?: string | null, ...rest: Array<string | number | null | undefined>): Promise<unknown>;
     setInferenceCloudProviders(providers: unknown[]): Promise<unknown>;
     setHubPoolPreferences(preferences: Record<string, unknown>): Promise<unknown>;
   };
@@ -143,6 +152,12 @@ const WRITERS: Array<{ name: string; write: (w: Writers) => Promise<unknown>; wr
     name: 'an inference-preferences save',
     write: (w) => w.configuration.setInferencePreferences('ollama', 'llama3.2:3b'),
     writes: { inferenceBackend: 'ollama', inferenceModel: 'llama3.2:3b' },
+  },
+  {
+    name: 'a context-cap save',
+    write: (w) =>
+      w.configuration.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 32768),
+    writes: { inferenceBackend: 'ollama', inferenceMaxNumCtx: 32768 },
   },
   {
     name: 'a cloud provider change',

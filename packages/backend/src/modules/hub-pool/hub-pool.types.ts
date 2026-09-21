@@ -85,6 +85,32 @@ export interface PoolPeerCapabilities {
    */
   maxPromptTokens?: number;
   /**
+   * The answering node's ceiling on the context window it hands its apps (`inferenceMaxNumCtx`),
+   * which its operator set to the engine's own context (`OLLAMA_CONTEXT_LENGTH`). An entry node
+   * reads it twice: placing a request, it moves this node behind every candidate whose cap can take
+   * the window the request asks for (`applyContextCap`), so a pooled request never asks this engine
+   * for a window that reloads its model while another node can take it; and handing an app its
+   * `num_ctx`, it uses the largest cap among the candidates that serve the model
+   * (`poolContextCap`), since placement keeps that window off the smaller ones.
+   *
+   * ABSENT means no cap, and that is the only encoding of it: a node with none omits the key, and
+   * so does every build predating the field — both read as "takes any window". Read through
+   * `clampContextCap`, never raw.
+   */
+  maxNumCtx?: number;
+  /**
+   * How many requests the answering node's Ollama runs at once (`inferenceOllamaSlots`), which its
+   * operator set to the daemon's `OLLAMA_NUM_PARALLEL`. With `poolSlotAwareness` on, an entry node
+   * puts this node behind every candidate with a free slot once its known queue depth reaches this
+   * figure — see `applySlotPlacement` — because past it Ollama queues the request behind the engine
+   * rather than serving it.
+   *
+   * ABSENT means not stated, and that is the only encoding of it: a node with none omits the key,
+   * and so does every build predating the field; both rank by queue depth alone, as before. Read
+   * through `clampOllamaSlots`, never raw.
+   */
+  ollamaSlots?: number;
+  /**
    * How fast the answering node's own engines have been reading prompts and writing tokens, per
    * (backend, model), as it measured them serving its apps and its peers. A caller treats it as a
    * second opinion next to what it timed itself, and believes whichever is slower — see
@@ -413,6 +439,10 @@ export interface PoolStatusPeer extends PublicHubPoolPeer {
    * ranker applies it for as long as it still trusts the same snapshot's inventory.
    */
   maxPromptTokens?: number | null;
+  /** The context cap the peer advertised, clamped the way a handout reads it, or `null` for none. Policy, like the ceiling; not freshness-gated. */
+  maxNumCtx?: number | null;
+  /** The Ollama slot count the peer advertised, clamped the way the ranker reads it, or `null` for not stated. Policy, like the two above; not freshness-gated. */
+  ollamaSlots?: number | null;
   /** The peer's prefill and decode rates, timed here and self-reported, after the same validation and decay the ranker applies. */
   throughput?: PoolStatusPeerThroughput;
 }
@@ -439,6 +469,10 @@ export interface PoolStatusLocalNode {
   maxPromptTokens?: number | null;
   /** Which source set {@link maxPromptTokens}: `'env'` is `HUB_POOL_MAX_PROMPT_TOKENS`, which a settings PATCH cannot change. */
   maxPromptTokensSetBy?: 'env' | 'setting' | null;
+  /** This node's context cap (`inferenceMaxNumCtx`), or `null` for none. What peers are told, and what caps this node's own handouts. */
+  maxNumCtx?: number | null;
+  /** This node's Ollama slot count (`inferenceOllamaSlots`), or `null` for not stated. What peers are told, and what local slot-aware placement reads. */
+  ollamaSlots?: number | null;
   /** This node's own engines' measured rates: exactly what it advertises to peers. */
   throughput?: PoolThroughputEstimate[];
 }

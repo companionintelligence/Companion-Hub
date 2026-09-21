@@ -489,6 +489,7 @@ describe('AuthMiddleware and app sessions', () => {
 describe('AuthMiddleware and qa:read API keys', () => {
   const QA_KEY = 'a'.repeat(64);
   const MCP_KEY = 'b'.repeat(64);
+  const INFERENCE_KEY = 'c'.repeat(64);
 
   const sessionManager = {
     resolveSessionUserId: vi.fn(),
@@ -504,6 +505,10 @@ describe('AuthMiddleware and qa:read API keys', () => {
   const rows = new Map([
     [sha256(QA_KEY), { id: 1, name: 'fleet-qa', scopes: ['qa:read'], capability: 'read', managed: false, ownerAppUrn: null, expiresAt: null }],
     [sha256(MCP_KEY), { id: 2, name: 'laptop', scopes: ['mcp'], capability: 'write', managed: false, ownerAppUrn: null, expiresAt: null }],
+    [
+      sha256(INFERENCE_KEY),
+      { id: 3, name: 'laptop-zed', scopes: ['inference'], capability: 'read', managed: false, ownerAppUrn: null, expiresAt: null },
+    ],
   ]);
   const repo = { findByHash: vi.fn(), touchLastUsed: vi.fn() };
 
@@ -545,6 +550,21 @@ describe('AuthMiddleware and qa:read API keys', () => {
 
   it('leaves an mcp key unauthenticated on the REST surface, exactly as before', async () => {
     const req = bearer(MCP_KEY);
+
+    await middleware.use(req, {} as never, vi.fn());
+
+    expect(req.hubPrincipal).toBeUndefined();
+    expect(req.user).toBeUndefined();
+  });
+
+  /**
+   * An inference key is stored as `read`, the same capability a qa:read key carries, and it reaches
+   * this arm on every GET an editor makes from outside the appliance (`InferenceAccessGuard` runs
+   * after the middleware). Scope, not capability, is what keeps it from becoming the `qa-read`
+   * principal: a leaked editor credential must open GPU time and nothing else.
+   */
+  it('leaves an inference key unauthenticated on the REST surface — read-only is not the same as qa-read', async () => {
+    const req = bearer(INFERENCE_KEY);
 
     await middleware.use(req, {} as never, vi.fn());
 
@@ -611,174 +631,6 @@ describe('AuthMiddleware and qa:read API keys', () => {
   it('leaves the request unauthenticated, not failed, when the key store cannot answer', async () => {
     repo.findByHash.mockRejectedValue(new Error('relation "api_key" does not exist'));
     const req = bearer(QA_KEY);
-    const next = vi.fn();
-
-    await middleware.use(req, {} as never, next);
-
-    expect(req.hubPrincipal).toBeUndefined();
-    expect(next).toHaveBeenCalledOnce();
-  });
-});
-
-/**
- * The `inference` arm. What is pinned is the shape of its authority: it names a principal, installs
- * NO user, is resolved only on the client-facing inference paths, and is never resolved on the
- * peer-forwarding hot path. A real `ApiKeyService` over an in-memory table, so the scope check is
- * the service's own rather than a mock's answer.
- */
-describe('AuthMiddleware and inference API keys', () => {
-  const INFERENCE_KEY = 'c'.repeat(64);
-  const MCP_KEY = 'd'.repeat(64);
-  /** What a Hub-managed app sends on the same routes: a *backend* key, which matches no row here. */
-  const BACKEND_KEY = 'e'.repeat(64);
-
-  const sessionManager = {
-    resolveSessionUserId: vi.fn(),
-    getSessionExpiresAt: vi.fn(),
-    touchSession: vi.fn(),
-    destroyAllSessionsByUserId: vi.fn(),
-  };
-  const config = { get: vi.fn() };
-  const userRepository = { getUserDtoById: vi.fn(), getFirstOperator: vi.fn() };
-  const sessionUserCache = { get: vi.fn(), beginRead: vi.fn(), set: vi.fn(), invalidate: vi.fn() };
-
-  const sha256 = (raw: string) => createHash('sha256').update(raw).digest('hex');
-  const rows = new Map([
-    [sha256(INFERENCE_KEY), { id: 1, name: 'cursor', scopes: ['inference'], capability: 'read', managed: false, ownerAppUrn: null, expiresAt: null }],
-    [sha256(MCP_KEY), { id: 2, name: 'laptop', scopes: ['mcp'], capability: 'write', managed: false, ownerAppUrn: null, expiresAt: null }],
-  ]);
-  const repo = { findByHash: vi.fn(), touchLastUsed: vi.fn() };
-
-  let middleware: AuthMiddleware;
-
-  const bearer = (token: string, originalUrl = '/api/inference/v1/chat/completions', method = 'POST') =>
-    ({
-      cookies: {},
-      headers: { authorization: `Bearer ${token}` },
-      query: {},
-      get: () => undefined,
-      method,
-      originalUrl,
-      url: originalUrl,
-    }) as unknown as Request;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    sessionManager.resolveSessionUserId.mockReturnValue(null);
-    sessionManager.getSessionExpiresAt.mockReturnValue(null);
-    config.get.mockImplementation((key: string) => (key === 'jwtSecret' ? 'jwt-secret' : undefined));
-    repo.findByHash.mockImplementation(async (hash: string) => rows.get(hash));
-    repo.touchLastUsed.mockResolvedValue(undefined);
-    const apiKeys = new ApiKeyService(repo as never, { warn: vi.fn(), info: vi.fn() } as never);
-    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never, apiKeys);
-  });
-
-  it('names an inference key as its own principal and installs no user', async () => {
-    const req = bearer(INFERENCE_KEY);
-    const next = vi.fn();
-
-    await middleware.use(req, {} as never, next);
-
-    expect(req.hubPrincipal).toBe('inference');
-    expect(req.user).toBeUndefined();
-    expect(req.hubUnclaimed).toBeUndefined();
-    expect(next).toHaveBeenCalledOnce();
-  });
-
-  /**
-   * The allow-list IS the lookup, so off the inference surface the key never names a principal and
-   * no guard downstream can be talked into honouring it, whatever the caller sends.
-   *
-   * On a GET the pre-existing `qa:read` arm still performs its own lookup — that is its behaviour,
-   * not this one's — and the row it finds carries the wrong scope, so it names nothing either. What
-   * is pinned here is the verdict, which is the part that decides access.
-   */
-  it.each([
-    ['an operator route', '/api/inference/models/catalog', 'GET'],
-    ['an app lifecycle route', '/api/apps/urn:ci:app:x', 'DELETE'],
-    ['the pool settings route', '/api/inference/pool/settings', 'GET'],
-    ['pool pairing', '/api/inference/pool/peers/pair', 'POST'],
-  ])('never names the inference principal off the inference surface (%s)', async (_label, url, method) => {
-    const req = bearer(INFERENCE_KEY, url, method);
-
-    await middleware.use(req, {} as never, vi.fn());
-
-    expect(req.hubPrincipal).toBeUndefined();
-    expect(req.user).toBeUndefined();
-  });
-
-  /**
-   * And on a write off the surface — where the `qa:read` arm does not run either — the key store is
-   * not touched at all.
-   */
-  it.each([
-    ['an app lifecycle route', '/api/apps/urn:ci:app:x', 'DELETE'],
-    ['pool pairing', '/api/inference/pool/peers/pair', 'POST'],
-  ])('costs no key-store lookup on a write off the surface (%s)', async (_label, url, method) => {
-    await middleware.use(bearer(INFERENCE_KEY, url, method), {} as never, vi.fn());
-
-    expect(repo.findByHash).not.toHaveBeenCalled();
-  });
-
-  /**
-   * Peer-to-peer forwarding is the pool's hot path and is authenticated by `PoolPeerGuard`, not by
-   * an API key. A lookup there would be a SELECT per hop for a credential the route never accepts.
-   */
-  it('never resolves the key on a peer forward, which every pooled turn crosses', async () => {
-    const req = bearer(INFERENCE_KEY, '/api/inference/pool/local/v1/chat/completions', 'POST');
-
-    await middleware.use(req, {} as never, vi.fn());
-
-    expect(repo.findByHash).not.toHaveBeenCalled();
-    expect(req.hubPrincipal).toBeUndefined();
-  });
-
-  it.each([
-    ['direct chat', '/api/inference/v1/chat/completions', 'POST'],
-    ['direct model listing', '/api/inference/v1/models', 'GET'],
-    ['pooled chat', '/api/inference/pool/v1/chat/completions', 'POST'],
-    ['pooled Ollama-native chat', '/api/inference/pool/api/chat', 'POST'],
-    ['the Ollama-native probe at the Hub root', '/api/tags', 'GET'],
-  ])('admits the key on %s', async (_label, url, method) => {
-    const req = bearer(INFERENCE_KEY, url, method);
-
-    await middleware.use(req, {} as never, vi.fn());
-
-    expect(req.hubPrincipal).toBe('inference');
-  });
-
-  it('leaves an mcp key unauthenticated on the inference surface', async () => {
-    const req = bearer(MCP_KEY);
-
-    await middleware.use(req, {} as never, vi.fn());
-
-    expect(req.hubPrincipal).toBeUndefined();
-  });
-
-  /**
-   * A Hub-managed app sends `CI_LLM_API_KEY` — the *backend's* key — on exactly these routes. It
-   * matches no row, so the request stays unauthenticated and is admitted by the origin guards the
-   * way it always was. The app path must not start failing because a scope was added.
-   */
-  it("leaves an app's backend key unauthenticated rather than refusing it", async () => {
-    const req = bearer(BACKEND_KEY);
-    const next = vi.fn();
-
-    await middleware.use(req, {} as never, next);
-
-    expect(req.hubPrincipal).toBeUndefined();
-    expect(next).toHaveBeenCalledOnce();
-  });
-
-  it('never looks up a token that is not shaped like a Hub key', async () => {
-    await middleware.use(bearer('sk-not-a-hub-key'), {} as never, vi.fn());
-
-    expect(repo.findByHash).not.toHaveBeenCalled();
-  });
-
-  it('leaves the request unauthenticated, not failed, when the key store cannot answer', async () => {
-    repo.findByHash.mockRejectedValue(new Error('relation "api_key" does not exist'));
-    const req = bearer(INFERENCE_KEY);
     const next = vi.fn();
 
     await middleware.use(req, {} as never, next);

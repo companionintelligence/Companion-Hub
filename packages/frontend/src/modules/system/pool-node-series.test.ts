@@ -442,6 +442,20 @@ describe('routingActivity', () => {
     expect(activity).toMatchObject({ unplaced: 1, outbound: 1, failed: 1 });
   });
 
+  /**
+   * The cross-package half of the beta-max fix (see `noteClientClosed` in `hub-pool-proxy.service.ts`).
+   * `unplaced` is defined here purely as "outbound with no node", and `triage.ts` raises it as a
+   * `bad` fault meaning "nothing was even tried at a node". So the backend settling a hang-up with a
+   * null node did not merely print a `-` in the CLI — it put a red routing/capacity fault on the
+   * dashboard for a request a node had been prefilling for 30 s. This pins the contract from this
+   * side: a row that names the node it was waiting on is placed, whatever ended it.
+   */
+  it('does not count a request the caller abandoned as unplaced — a node was working on it', () => {
+    const activity = routingActivity([row({ node: 'local', outcome: 'failed', clientClosed: true })]);
+
+    expect(activity).toMatchObject({ unplaced: 0, outbound: 1, failed: 1 });
+  });
+
   it('does not count an inbound row as unplaced — its node is the sender, not a server', () => {
     const activity = routingActivity([row({ direction: 'inbound', node: null })]);
 

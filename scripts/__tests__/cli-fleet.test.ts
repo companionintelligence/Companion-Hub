@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { FleetArgError, parseFleetArgs, resolvePairingCodeStrategy } from '../lib/cli-fleet.js';
-import { mergeFleetRoster, parseFleetRoster, partitionForRun, type FleetNode } from '../lib/fleet-roster.js';
+import { mergeFleetRoster, parseFleetRoster, partitionForRun, type FleetNode, SCAN_OFFLINE_NOTE } from '../lib/fleet-roster.js';
 import { classifySshFailure, sshDestination, type SshResult } from '../lib/fleet-ssh.js';
 
 const sshResult = (over: Partial<SshResult> = {}): SshResult => ({ ok: false, out: '', err: '', code: 255, ms: 10, ...over });
@@ -48,6 +48,54 @@ describe('parseFleetArgs', () => {
     expect(parseFleetArgs(['backends', '--bind=local']).bind).toBe('local');
     // Anything else is a typo, not a fourth policy.
     expect(() => parseFleetArgs(['backends', '--bind', 'everywhere'])).toThrow(/--bind must be one of tailnet, all, local/);
+  });
+
+  it('takes the five Ollama runtime flags on backends only, validated before any machine is dialled', () => {
+    // No runtime flag: the runtime drop-in is not touched at all — a run's existing behaviour.
+    expect(parseFleetArgs(['backends']).ollamaRuntime).toBeUndefined();
+    expect(
+      parseFleetArgs([
+        'backends',
+        '--ollama-parallel',
+        '4',
+        '--ollama-keep-alive=24h',
+        '--ollama-context',
+        '16384',
+        '--ollama-igpu',
+        'on',
+        '--ollama-max-loaded',
+        '2',
+      ]).ollamaRuntime,
+    ).toEqual({
+      parallel: 4,
+      keepAlive: '24h',
+      contextLength: 16384,
+      igpu: true,
+      maxLoaded: 2,
+    });
+    // `unset` leaves the key out; naming it still turns the runtime step on for the run.
+    expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset']).ollamaRuntime).toEqual({ parallel: undefined });
+    // --ollama-context and --ollama-parallel each carry a Hub half; the other flags do not.
+    expect(parseFleetArgs(['backends', '--ollama-parallel', '4', '--ollama-context', '16384'])).toMatchObject({
+      hubContextCap: 16384,
+      hubOllamaSlots: 4,
+    });
+    expect(parseFleetArgs(['backends', '--ollama-parallel', 'unset'])).toMatchObject({ hubOllamaSlots: null, hubContextCap: undefined });
+    expect(parseFleetArgs(['backends', '--ollama-keep-alive', '24h'])).toMatchObject({ hubContextCap: undefined, hubOllamaSlots: undefined });
+    expect(parseFleetArgs(['backends', '--ollama-igpu', 'off']).ollamaRuntime).toEqual({ igpu: false });
+    // The cap alone turns the step on too, in either flag spelling; a run without it has no `maxLoaded`.
+    expect(parseFleetArgs(['backends', '--ollama-max-loaded=2']).ollamaRuntime).toEqual({ maxLoaded: 2 });
+    expect(parseFleetArgs(['backends', '--ollama-max-loaded', 'unset']).ollamaRuntime).toEqual({ maxLoaded: undefined });
+    expect(parseFleetArgs(['backends', '--ollama-parallel', '4']).ollamaRuntime).not.toHaveProperty('maxLoaded');
+    expect(() => parseFleetArgs(['backends', '--ollama-parallel', 'many'])).toThrow(/--ollama-parallel must be an integer between 1 and 64/);
+    expect(() => parseFleetArgs(['backends', '--ollama-keep-alive', 'forever'])).toThrow(/duration such as 24h/);
+    expect(() => parseFleetArgs(['backends', '--ollama-igpu', 'maybe'])).toThrow(/on, off or 'unset'/);
+    // 0 is Ollama's "3 × GPUs", not "no cap"; `unset` is how the key is handed back.
+    expect(() => parseFleetArgs(['backends', '--ollama-max-loaded', '0'])).toThrow(/--ollama-max-loaded must be an integer between 1 and 16/);
+    expect(() => parseFleetArgs(['backends', '--ollama-max-loaded', '17'])).toThrow(/between 1 and 16/);
+    expect(() => parseFleetArgs(['backends', '--ollama-max-loaded'])).toThrow(FleetArgError);
+    expect(() => parseFleetArgs(['update', '--ollama-parallel', '4'])).toThrow(/only apply to `fleet backends`/);
+    expect(() => parseFleetArgs(['update', '--ollama-max-loaded', '2'])).toThrow(/--ollama-max-loaded only apply to `fleet backends`/);
   });
 
   it('refuses a flag that swallows the next flag as its value', () => {
@@ -299,6 +347,23 @@ describe('mergeFleetRoster', () => {
   it('does fill in facts about the network', () => {
     const merged = mergeFleetRoster(existing, [{ name: 'x', ip: '10.0.0.1', tailnetName: 'box.tail.ts.net' }]);
     expect(merged.nodes[0]?.tailnetName).toBe('box.tail.ts.net');
+  });
+
+  it('clears the one note earlier scans wrote themselves, and no other', () => {
+    // "tailnet reports offline" was written by the scan, then preserved as if an operator had
+    // written it, on thirty rows that were all online again.
+    const merged = mergeFleetRoster(
+      [
+        { name: 'a', ip: '10.0.0.1', note: SCAN_OFFLINE_NOTE },
+        { name: 'b', ip: '10.0.0.2', note: 'ACL gap, see #242' },
+      ],
+      [
+        { name: 'a', ip: '10.0.0.1' },
+        { name: 'b', ip: '10.0.0.2' },
+      ],
+    );
+    expect(merged.nodes.find((n) => n.ip === '10.0.0.1')?.note).toBeUndefined();
+    expect(merged.nodes.find((n) => n.ip === '10.0.0.2')?.note).toBe('ACL gap, see #242');
   });
 
   it('adds genuinely new nodes and reports them', () => {

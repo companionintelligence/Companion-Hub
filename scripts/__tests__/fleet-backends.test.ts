@@ -144,6 +144,27 @@ describe('the ollama bind policy', () => {
     expect(script.indexOf('ollama-bind-refused:')).toBeLessThan(script.indexOf('https://ollama.com/install.sh'));
   });
 
+  it('decides ownership of :11434 by the listener, not by a user unit’s name', () => {
+    // core-2 (2026-09-21): `ollama-tunnel.service` under ci's systemd --user is an ssh forward,
+    // and the SYSTEM ollama.service serves the port. A guard that asked the user managers first
+    // skipped the node. The guard classifies the socket by its cgroup (ss -e), and a name-matched
+    // user unit refuses only when nothing else was found serving the port.
+    const script = planBackend('ollama', host(), '/data').script ?? '';
+    expect(script).toContain('ss -ltnpe');
+    expect(script).toContain('cgroup:');
+    const listeners = script.indexOf('for cihub_row in $(ss -ltnpe');
+    const userManagers = script.indexOf('loginctl list-users');
+    expect(listeners).toBeGreaterThan(-1);
+    expect(userManagers).toBeGreaterThan(listeners);
+    expect(script).toContain(
+      "ollama-bind-note: $uu is active under $u's systemd --user, but the system ollama.service ($cihub_sys_pid) is what serves :11434",
+    );
+    // The genuine case keeps its message.
+    expect(script).toContain(
+      "ollama-bind-refused: $uu is running under $u's systemd --user; the system ollama.service path would start a second daemon and collide on :11434",
+    );
+  });
+
   it('fails a tailnet bind on a node with no tailnet address BEFORE downloading anything', () => {
     const script = planBackend('ollama', host(), '/data', { ollamaBind: 'tailnet' }).script ?? '';
     const check = script.indexOf('--bind tailnet needs a tailnet address');

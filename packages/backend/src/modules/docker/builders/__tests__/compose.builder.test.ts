@@ -31,6 +31,23 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
+  it('labels the app network as Hub-managed and leaves the shared Hub networks unlabelled', async () => {
+    // The Hub's boot-time `docker network prune` is filtered on this label. Without it the
+    // prune reclaims every idle network on the host, including other compose stacks'.
+    const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image' }], {}, urn, subnet);
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.networks['nginx_store-id_network'].labels).toMatchObject({
+      'ci-hub.managed': true,
+      'ci-hub.appurn': urn,
+    });
+    for (const [name, network] of Object.entries<{ external?: boolean; labels?: unknown }>(parsed.networks)) {
+      if (name === 'nginx_store-id_network') continue;
+      expect(network.external).toBe(true);
+      expect(network.labels).toBeUndefined();
+    }
+  });
+
   it('attaches main services to both Hub networks during canonical migration', async () => {
     const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
     process.env.HUB_CONTAINER_NAME = 'ci-hub';
@@ -220,6 +237,29 @@ describe('DockerComposeBuilder', () => {
         volumes: [{ hostPath: '/sys/module', containerPath: '/host/sys/module' }],
       };
       await expect(composeBuilder.getDockerCompose([ungranted], {}, falcoUrn, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('allows NET_ADMIN and /dev/net/tun for the VPN apps (transmission-vpn, wg-easy) but not SYS_MODULE', async () => {
+      const transmissionUrn = createAppUrn('transmission-vpn', CI_MARKETPLACE_STORE_SLUG);
+      const transmission: ServiceInput = {
+        name: 'transmission-vpn',
+        image: 'image',
+        internalPort: 9091,
+        capAdd: ['NET_ADMIN'],
+        devices: ['/dev/net/tun'],
+      };
+      await expect(composeBuilder.getDockerCompose([transmission], {}, transmissionUrn, subnet)).resolves.toContain('- NET_ADMIN');
+
+      const wgEasyUrn = createAppUrn('wg-easy', CI_MARKETPLACE_STORE_SLUG);
+      const wgEasy: ServiceInput = { name: 'wg-easy', image: 'image', internalPort: 51821, capAdd: ['NET_ADMIN'] };
+      await expect(composeBuilder.getDockerCompose([wgEasy], {}, wgEasyUrn, subnet)).resolves.toContain('- NET_ADMIN');
+
+      // Upstream's wg-easy compose also lists SYS_MODULE (kernel module loading); the grant stops at NET_ADMIN.
+      const withSysModule: ServiceInput = { ...wgEasy, capAdd: ['NET_ADMIN', 'SYS_MODULE'] };
+      await expect(composeBuilder.getDockerCompose([withSysModule], {}, wgEasyUrn, subnet)).rejects.toThrow(/host-privileged access/);
+
+      // And NET_ADMIN is still a grant: the same manifest from a non-allowlisted app is refused.
+      await expect(composeBuilder.getDockerCompose([wgEasy], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
     });
 
     it('allows a privileged sandbox service for refly', async () => {

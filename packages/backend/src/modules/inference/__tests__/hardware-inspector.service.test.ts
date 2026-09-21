@@ -1490,4 +1490,206 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.vendor).not.toBe('apple');
     });
   });
+
+  // ─── Live host RAM ─────────────────────────────────────────────────
+  //
+  // Measured on core-2 (Strix Halo, 128 GB unified) at :dev@61198ef62: GET /api/inference/hardware
+  // served ram {totalMb:128085, availableMb:124547} — the boot-time figure from init-host-probe —
+  // while `free -m` on the host said available 53052, with Ollama holding ~20 GB of qwen3.6:35b in
+  // GTT. The KPI rail read "3% / 3G of 125G in use", and effectiveInferenceMemoryMb was the same
+  // 124547, so the router budgeted model loads against RAM that was long gone.
+
+  describe('live host RAM', () => {
+    const KB = 1024;
+    const STRIX_HALO_TOTAL_MB = 128085;
+    const linuxProbe = (availableRamMb: number) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        platform: 'linux',
+        cpuArch: 'x86_64',
+        source: 'init-host-probe',
+        probedAt: '2026-09-18T00:00:00.000Z',
+        host: {
+          totalRamMb: STRIX_HALO_TOTAL_MB,
+          availableRamMb,
+          cpuCores: 32,
+          cpuModel: 'AMD RYZEN AI MAX+ 395 w/ Radeon 8060S',
+          diskTotalGb: 1863,
+          diskUsedGb: 412,
+          diskMount: '/',
+        },
+      });
+    const meminfo = (availableMb: number, totalMb = STRIX_HALO_TOTAL_MB) => `MemTotal: ${totalMb * KB} kB\nMemAvailable: ${availableMb * KB} kB`;
+
+    /** A meminfo the test can move between reads, beside a probe that never does. */
+    const mountHost = (probe: string | null, meminfoRef: { current: string | null }) => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') return probe;
+        if (filePath === '/host/proc/meminfo') return meminfoRef.current;
+        return null;
+      });
+    };
+    const meminfoReads = () => filesystemService.readTextFile.mock.calls.filter(([filePath]) => filePath === '/host/proc/meminfo').length;
+
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-20T12:00:00.000Z'));
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 32, brand: 'AMD RYZEN AI MAX+ 395 w/ Radeon 8060S' });
+      filesystemService.pathExists.mockResolvedValue(false);
+      execAsyncMock.mockResolvedValue({ stdout: '{}' });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('unified node: a stale Linux probe loses to the meminfo bind mount, and the profile follows MemAvailable', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+
+      const detected = await service.getProfile();
+
+      expect(detected.gpu.unifiedMemory).toBe(true);
+      expect(detected.ram.totalMb).toBe(STRIX_HALO_TOTAL_MB);
+      // Not the probe's 124547: the host as it is now.
+      expect(detected.ram.availableMb).toBe(53052);
+      expect(detected.ram.usedMb).toBe(STRIX_HALO_TOTAL_MB - 53052);
+      expect(detected.ram.sampledAt).toBe('2026-09-20T12:00:00.000Z');
+      // The router's budget on a unified node IS the live figure.
+      expect(detected.effectiveInferenceMemoryMb).toBe(53052);
+
+      // Ollama unloads the 20 GB model; the cached profile must see it without a re-detect.
+      const detectSpy = vi.spyOn(service, 'detect');
+      live.current = meminfo(73500);
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+
+      expect(detectSpy).not.toHaveBeenCalled();
+      expect(later.ram.availableMb).toBe(73500);
+      expect(later.ram.usedMb).toBe(STRIX_HALO_TOTAL_MB - 73500);
+      expect(later.ram.sampledAt).toBe('2026-09-20T12:00:06.000Z');
+      expect(later.effectiveInferenceMemoryMb).toBe(73500);
+      // Everything that does not move between detections is served as cached.
+      expect(later.gpu).toEqual(detected.gpu);
+      expect(later.ram.totalMb).toBe(detected.ram.totalMb);
+      expect(later.tier).toBe(detected.tier);
+    });
+
+    it('samples MemAvailable at most every few seconds, not per request', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+
+      await service.getProfile();
+      const readsAfterDetect = meminfoReads();
+
+      // Twenty dashboard/route requests inside the sample window: no further reads.
+      live.current = meminfo(40000);
+      for (let i = 0; i < 20; i += 1) {
+        vi.setSystemTime(new Date(`2026-09-20T12:00:0${Math.min(4, i % 5)}.000Z`));
+        const profile = await service.getProfile();
+        expect(profile.ram.availableMb).toBe(53052);
+      }
+      expect(meminfoReads()).toBe(readsAfterDetect);
+
+      // Past the window: one read, and the figure moves.
+      vi.setSystemTime(new Date('2026-09-20T12:00:05.500Z'));
+      const profile = await service.getProfile();
+      expect(profile.ram.availableMb).toBe(40000);
+      expect(meminfoReads()).toBe(readsAfterDetect + 1);
+    });
+
+    it('discrete node: free RAM is live but the inference budget stays the card', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9 7950X' });
+      const live = { current: meminfo(49941, 65536) };
+      mountHost(null, live);
+
+      const detected = await service.getProfile();
+
+      expect(detected.gpu.unifiedMemory).toBe(false);
+      expect(detected.ram.availableMb).toBe(49941);
+      expect(detected.ram.usedMb).toBe(65536 - 49941);
+      expect(detected.effectiveInferenceMemoryMb).toBe(24576);
+
+      live.current = meminfo(20000, 65536);
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+
+      expect(later.ram.availableMb).toBe(20000);
+      expect(later.ram.usedMb).toBe(65536 - 20000);
+      // VRAM, as before: system RAM is not where a discrete card's models go.
+      expect(later.effectiveInferenceMemoryMb).toBe(24576);
+      expect(later.gpu.vramMb).toBe(24576);
+    });
+
+    it('macOS host probe: the Docker Desktop VM meminfo is not the host, so the probe snapshot stands', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 12, brand: 'VirtualApple @ 2.50GHz' });
+      const macProbe = JSON.stringify({
+        schemaVersion: 1,
+        platform: 'darwin',
+        cpuArch: 'arm64',
+        source: 'desktop-host-macos',
+        probedAt: '2026-09-20T11:00:00.000Z',
+        host: {
+          totalRamMb: 98304,
+          availableRamMb: 83558,
+          cpuCores: 24,
+          cpuModel: 'Apple M2 Ultra',
+          diskTotalGb: 494,
+          diskUsedGb: 477,
+          diskMount: '/',
+        },
+      });
+      // The VM: 7.5 GB, of which 6.5 GB free — nothing to do with the 96 GB Ollama runs in.
+      const vm = { current: meminfo(6656, 7712) };
+      mountHost(macProbe, vm);
+
+      const detected = await service.getProfile();
+      expect(detected.ram.totalMb).toBe(98304);
+      expect(detected.ram.availableMb).toBe(83558);
+      expect(detected.ram.sampledAt).toBeUndefined();
+      expect(detected.effectiveInferenceMemoryMb).toBe(83558);
+
+      vm.current = meminfo(1000, 7712);
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+      expect(later.ram.availableMb).toBe(83558);
+      expect(later.ram.sampledAt).toBeUndefined();
+      expect(later.effectiveInferenceMemoryMb).toBe(83558);
+    });
+
+    it('keeps the last sample when a read yields no MemAvailable', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+      const detected = await service.getProfile();
+      expect(detected.ram.availableMb).toBe(53052);
+
+      // A meminfo with no MemAvailable line parses to 0 — not a figure to serve or budget on.
+      live.current = `MemTotal: ${STRIX_HALO_TOTAL_MB * KB} kB\nMemFree: 4096000 kB`;
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+      expect(later.ram.availableMb).toBe(53052);
+      expect(later.ram.sampledAt).toBe('2026-09-20T12:00:00.000Z');
+    });
+
+    it('rescan() serves the live figure too', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+
+      const profile = await service.rescan();
+
+      expect(profile.ram.availableMb).toBe(53052);
+      expect(profile.ram.usedMb).toBe(STRIX_HALO_TOTAL_MB - 53052);
+      expect(profile.effectiveInferenceMemoryMb).toBe(53052);
+    });
+  });
 });

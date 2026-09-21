@@ -9,24 +9,20 @@ import { isPrivateOrLocalIp, normalizeIpLiteral } from '@/common/helpers/ip-addr
  * NOT a real trust boundary on its own. Behind Traefik / the Cloudflare tunnel,
  * `request.ip` is the proxy's own (private) address unless Express `trust proxy`
  * is configured (see `HUB_TRUST_PROXY` in main.ts), so by default this guard
- * PASSES for public tunnel traffic. The authoritative check on the routes it
- * guards is {@link ManagedAppKeyGuard} (which binds the presented managed key to
- * the target app's URN). Keep both, but do not rely on this one alone.
+ * PASSES for public tunnel traffic. The one route group that still carries it,
+ * the memory-connect app callbacks, pairs it with `ManagedAppKeyGuard` (which
+ * binds the presented managed key to the target app's URN), and that is the
+ * authoritative check there. Every other app-facing route moved to an origin
+ * check that also refuses tunnel markers and public forwarded hops
+ * (`internalOriginRefusal`): `InferenceAccessGuard` where an `inference` API
+ * key is an acceptable alternative, and {@link InternalOriginGuard} where no
+ * credential is, such as the app credentials handout. Do not rely on this one
+ * alone.
  */
 @Injectable()
 export class InternalNetworkGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest() as Request;
-
-    // An authenticated `inference` API key answers the question this guard asks — "may this caller
-    // spend the appliance's GPU?" — better than the source IP does, so where one is present the IP
-    // is not consulted. `AuthMiddleware` sets this principal ONLY on `isInferenceApiRoute` paths
-    // (see `attachInferenceKey`), so it cannot appear on the app-callback and credential routes
-    // this guard also protects, whatever a caller sends.
-    if (request.hubPrincipal === 'inference') {
-      return true;
-    }
-
     const ip = normalizeIpLiteral(request.ip ?? request.socket.remoteAddress ?? undefined);
     if (!ip || !isPrivateOrLocalIp(ip)) {
       throw new ForbiddenException('This endpoint is only available on the local appliance network');

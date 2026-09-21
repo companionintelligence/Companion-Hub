@@ -9,6 +9,7 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import {
   CAPABILITIES_FRESHNESS_POLLS,
   UNKNOWN_PRESSURE,
@@ -23,20 +24,27 @@ import {
   type HubPoolDirectionalState,
   type HubPoolPin,
 } from '@/common/helpers/hub-pool';
+import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import {
   HubPoolRoutingLogService,
+  type PoolRoutingAffinity,
   type PoolRoutingCeilingExclusion,
+  type PoolRoutingContextCap,
+  type PoolRoutingContextCapExclusion,
   type PoolRoutingOutcome,
   type PoolRoutingPin,
   type PoolRoutingPromptCeiling,
   type PoolRoutingRecordInput,
+  type PoolRoutingSlotDemotion,
+  type PoolRoutingSlots,
   type PoolRoutingThroughput,
   type PoolRoutingThroughputEstimate,
   type PoolRoutingUsage,
 } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
+import { HubPoolLocalHealthService, type LocalBackendHealth } from './hub-pool-local-health.service';
 import {
   HubPoolThroughputService,
   missesBudget,
@@ -48,6 +56,7 @@ import {
   type ThroughputTarget,
 } from './hub-pool-throughput.service';
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
+import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
 import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
@@ -275,6 +284,26 @@ export function isStreamingRequest(body: unknown): boolean {
 }
 
 /**
+ * The context window a request asks its engine for — Ollama's `options.num_ctx` — or `null` when
+ * it carries none.
+ *
+ * Only the native Ollama dialect can say: both agents on the fleet send it there (OpenClaw through
+ * `params.num_ctx` on its `api: "ollama"` provider, Hermes through its native adapter), and it is
+ * what an engine actually loads the model at. The OpenAI-compatible `/v1` surface has no such field
+ * and Ollama ignores one if sent (see `describeFromPeer`'s note on the Hermes probe), so a `/v1`
+ * request runs at the serving engine's own default window — which is what the node's cap records.
+ * For those, the caller falls back to the prompt estimate; see `applyContextCaps`. Anything but a
+ * positive integer is no request, not a tiny one.
+ */
+export function requestedNumCtx(body: unknown): number | null {
+  if (!isRecord(body) || !isRecord(body.options)) {
+    return null;
+  }
+  const raw = body.options.num_ctx;
+  return typeof raw === 'number' && Number.isInteger(raw) && raw > 0 ? raw : null;
+}
+
+/**
  * What to tell a caller when every candidate failed.
  *
  * The single sentence this replaces — "All pool nodes serving model X are currently unreachable" —
@@ -394,11 +423,11 @@ const GENERATION_PATHS = new Set([
 // residency on the far side. The decision is stated on the response instead. The values are chosen so
 // nothing crosses a boundary it has not already crossed:
 //   - the peer's tailnet FQDN is what this Hub holds in its peer row, and the routes carrying it are
-//     `PoolAppGuard`-gated to apps inside this appliance, which are already trusted to spend that
-//     peer's GPU time;
+//     `InferenceAccessGuard`-gated to apps inside this appliance and to holders of an `inference`
+//     key, both of which are already trusted to spend that peer's GPU time;
 //   - a request this node served itself says `local`, never this node's own MagicDNS name. `identify`
-//     deliberately stopped disclosing that name to unauthenticated callers, and the proxy is an
-//     unauthenticated (origin-checked) surface, so the local case keeps the routing log's `NODE local`
+//     deliberately stopped disclosing that name to unauthenticated callers, and the proxy admits an
+//     internal caller by origin alone, so the local case keeps the routing log's `NODE local`
 //     rather than opening a second door to the same datum;
 //   - the backend is the engine TYPE (`ollama`, `vllm`, …), never a container name; the model is the
 //     one the caller asked for. The peer's node UUID is a durable correlator and is never here — which
@@ -490,6 +519,8 @@ interface RankedCandidate {
   candidate: PoolCandidate;
   /** Queue depth, already carrying the local-affinity handicap for peers and the weighted pressure term. Lower is better. */
   score: number;
+  /** The raw queue depth `score` was built from, which is what prefix affinity judges against its limit. */
+  inFlight: number;
   /**
    * GPU-pressure band 0-3, with {@link UNKNOWN_PRESSURE} standing in for "unmeasured". Read as a
    * tie-break only, and only when `poolPressureWeight` is non-zero — see the comparator.
@@ -584,6 +615,63 @@ export function applyPromptCeiling(
   return excluded.length === 0 || overridden ? { preferred: ordered, overCeiling: [], decision } : { preferred, overCeiling, decision };
 }
 
+/**
+ * Split a ranked list into the candidates whose context cap can take the window the request asks
+ * for (`preferred`) and the ones capped below it (`overCap`), each in the order the ranker produced.
+ *
+ * A node's cap (`inferenceMaxNumCtx`, advertised as `maxNumCtx`) is its operator's statement of the
+ * window its engine runs at. A request asking for more reloads that engine's model with the larger
+ * window — core-2, 2026-09-20: `ollama ps` 25 GB → 44 GB on a 30B, ~40 s, and a reload back on the
+ * next request at the old size — or, on the `/v1` surface where `num_ctx` cannot be sent, has its
+ * prompt truncated to the window. So a candidate takes the request only if its cap is unset or at
+ * least `numCtx`. This is what lets the handout ask for the fleet's LARGEST window rather than its
+ * smallest (see `poolContextCap`): core-17's 16384 no longer decides what ci-hermes on core-2 may
+ * ask for, because a 65536 request is simply not placed on core-17 while anything else can take it.
+ *
+ * The same shape of decision as {@link applyPromptCeiling}, and applied outside it, because both are
+ * operator statements and this one is the stronger: an over-ceiling node is slow, an over-cap node
+ * reloads or truncates.
+ *
+ * 1. **It is a preference, not a rule.** An over-cap node is moved to the back, never removed, so a
+ *    request still has somewhere to go when every node that can take its window fails. When every
+ *    candidate is over its cap nothing moves at all, and `overridden: true` says so.
+ * 2. **It never re-orders within either group.** Both halves keep the ranker's order.
+ * 3. **Uncapped means any window.** A node that advertises no cap — none set, or a build predating
+ *    the field — is never moved back. The placement rule and the handout agree on this, which is
+ *    the point: an uncapped node is one the handout may size past every capped node's window.
+ *
+ * Pure and exported for its own test, like `applyPromptCeiling`.
+ */
+export function applyContextCap(
+  ordered: PoolCandidate[],
+  capOf: (candidate: PoolCandidate) => number | null,
+  request: { numCtx: number; source: PoolRoutingContextCap['source'] },
+): { preferred: PoolCandidate[]; overCap: PoolCandidate[]; decision: PoolRoutingContextCap | null } {
+  const caps = ordered.map(capOf);
+  if (caps.every((cap) => cap === null)) {
+    return { preferred: ordered, overCap: [], decision: null };
+  }
+  const preferred: PoolCandidate[] = [];
+  const overCap: PoolCandidate[] = [];
+  const excluded: PoolRoutingContextCapExclusion[] = [];
+  for (const [index, candidate] of ordered.entries()) {
+    const cap = caps[index] ?? null;
+    if (cap === null || request.numCtx <= cap) {
+      preferred.push(candidate);
+      continue;
+    }
+    overCap.push(candidate);
+    // One entry per node: a node with two engines holding the model is still one node that said no.
+    const node = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
+    if (!excluded.some((entry) => entry.node === node)) {
+      excluded.push({ node, maxNumCtx: cap });
+    }
+  }
+  const overridden = preferred.length === 0;
+  const decision = { numCtx: request.numCtx, source: request.source, excluded, overridden };
+  return excluded.length === 0 || overridden ? { preferred: ordered, overCap: [], decision } : { preferred, overCap, decision };
+}
+
 const NOTHING_DEMOTED: ReadonlySet<PoolCandidate> = new Set();
 
 /**
@@ -648,6 +736,66 @@ export function splitDemoted(group: PoolCandidate[], demoted: ReadonlySet<PoolCa
     return [group];
   }
   return [group.filter((candidate) => !demoted.has(candidate)), group.filter((candidate) => demoted.has(candidate))];
+}
+
+/** What slot-aware placement knows about one candidate: the queue depth the ranker sorted on, and the slots its node advertised. */
+export interface SlotOccupancy {
+  inFlight: number;
+  slots: number;
+}
+
+/**
+ * Judge each Ollama candidate's known queue depth against the slot count its node advertised
+ * (`inferenceOllamaSlots`, the operator's statement of `OLLAMA_NUM_PARALLEL`). `demoted` is the set
+ * of candidates whose queue already fills their slots, to be moved behind every candidate that still
+ * has one free — because past that point Ollama queues the request behind the engine rather than
+ * serving it (measured 2026-09-21: 5–10 s to the first token on a full 2-slot node while 4-slot nodes
+ * sat idle).
+ *
+ * The rules are the prompt ceiling's and the throughput placement's, because the risk is the same —
+ * a preference must never become a refusal:
+ *
+ * 1. **Unstated is neither full nor free.** A candidate whose node advertises no slot count, or whose
+ *    engine is not Ollama, is never demoted and keeps its place relative to the ones that are not.
+ * 2. **Demoted, never removed**, so failover still reaches a full node when every free one fails.
+ * 3. **All full means nothing moves.** When every candidate is at or over its slots, `demoted` is
+ *    empty, the ranker's order stands, and `overridden: true` says so.
+ *
+ * The queue depth judged is the one the ranker sorted on — for a peer the larger of what it reported
+ * and what this node has forwarded it, or the neutral assumed load when its snapshot is stale — so a
+ * 1-slot peer that cannot be measured counts as full: an unmeasured node is never taken for an idle
+ * one. `decision` is `null` when no candidate carried a slot count, so a fleet that never states one
+ * gets the list back untouched. Pure and exported for its own test, like `applyPromptCeiling`.
+ */
+export function applySlotPlacement(
+  ordered: PoolCandidate[],
+  occupancyOf: (candidate: PoolCandidate) => SlotOccupancy | null,
+): { demoted: ReadonlySet<PoolCandidate>; decision: PoolRoutingSlots | null } {
+  const full = new Set<PoolCandidate>();
+  const demoted: PoolRoutingSlotDemotion[] = [];
+  let stated = 0;
+  for (const candidate of ordered) {
+    const occupancy = occupancyOf(candidate);
+    if (!occupancy) {
+      continue;
+    }
+    stated += 1;
+    if (occupancy.inFlight < occupancy.slots) {
+      continue;
+    }
+    full.add(candidate);
+    demoted.push({
+      node: candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY,
+      backend: candidate.backend,
+      inFlight: occupancy.inFlight,
+      slots: occupancy.slots,
+    });
+  }
+  if (stated === 0) {
+    return { demoted: NOTHING_DEMOTED, decision: null };
+  }
+  const overridden = full.size === ordered.length;
+  return { demoted: overridden ? NOTHING_DEMOTED : full, decision: { demoted, overridden } };
 }
 
 /** What one forwarded response revealed about its engine's speed, gathered while it streams. */
@@ -771,16 +919,73 @@ const MODEL_METADATA_PATHS = new Set(['/api/show']);
  */
 const PEER_MODEL_METADATA_HEADERS_TIMEOUT_MS = 15_000;
 
-export function describeNoCandidates(model: string, pin: HubPoolPin | null): string {
+/**
+ * What one of this node's own backends said when asked about a model — kept for the 502 that has
+ * no candidate to name, because "no pool node has it" was, on a fleet node, most often "this
+ * node has it and the Hub container cannot reach the engine": vLLM behind a firewall rule that
+ * only allowed Ollama's port, Lemonade published on the tailscale address only. Every one of
+ * those read as an inventory problem until someone probed from inside the container by hand.
+ */
+export interface LocalBackendProbe {
+  type: InferenceBackendType;
+  /** The URL the Hub probed — the container's view, which is the one that matters. */
+  url: string;
+  running: boolean;
+  healthy: boolean;
+  /** Whether the inventory named the requested model (regardless of health). */
+  listsModel: boolean;
+  error?: string;
+  /**
+   * How old this answer was when the request read it. Placement reads a snapshot (see
+   * `HubPoolLocalHealthService`), so an operator comparing this body with an engine they just
+   * fixed needs to know whether they are looking at a live probe or one from before the fix.
+   */
+  probedMsAgo: number;
+}
+
+export function describeNoCandidates(model: string, pin: HubPoolPin | null, probes: LocalBackendProbe[] = []): string {
   const base = `No pool node currently has model "${model}" available.`;
+  const local = describeLocalProbes(probes);
   if (!pin) {
-    return base;
+    return local ? `${base} ${local}` : base;
   }
   const target = pin.targetKind === 'local' ? 'this Hub' : 'a peer';
   const scope = pin.scope === 'model' ? `"${model}" is pinned` : 'Routing is pinned';
   // "either" is load-bearing: a prefer pin never removes a candidate, so the pinned node not being
   // able to serve the model is one fact about an empty list, not the cause of it.
-  return `${base} ${scope} to ${target}, which cannot serve it either — the pin only reorders candidates, so this is an inventory problem, not a pin one.`;
+  const pinned = `${base} ${scope} to ${target}, which cannot serve it either — the pin only reorders candidates, so this is an inventory problem, not a pin one.`;
+  return local ? `${pinned} ${local}` : pinned;
+}
+
+/**
+ * The local half of a no-candidate 502, in prose only where it is precise: a backend that answered
+ * but was left out (a foreign engine on a shared port, a server without weights, a model it has
+ * been failing to serve) is named with its reason; the unreachable ones are pointed at, not
+ * listed, because six "connection refused" lines say less than one probe from inside the container.
+ */
+/** A backend's probe URL for the 502 body; never lets a URL resolver's own failure mask the health answer. */
+function safeBaseUrl(backend: { getBaseUrl(): string }): string {
+  try {
+    return backend.getBaseUrl();
+  } catch {
+    return '';
+  }
+}
+
+function describeLocalProbes(probes: LocalBackendProbe[]): string {
+  if (probes.length === 0) return '';
+  const excluded = probes
+    .filter((probe) => probe.running && (!probe.healthy || probe.listsModel) && probe.error)
+    .map((probe) => `local ${probe.type} at ${probe.url} answered but was left out: ${probe.error}`);
+  const unreachable = probes.filter((probe) => !probe.running).map((probe) => probe.type);
+  const parts = [...excluded];
+  if (unreachable.length > 0) {
+    parts.push(
+      `local ${unreachable.join(', ')} not reachable from inside the Hub container — if one of them serves this model on the host, ` +
+        'it must listen on an address the container can reach (see `localBackends` in this response for each URL and error)',
+    );
+  }
+  return parts.length ? `${parts.join('; ')}.` : '';
 }
 
 /**
@@ -827,6 +1032,10 @@ export class PoolProxyService {
     // against a store of its own; Nest always injects the module's one, which the peer service
     // advertises and reports from.
     @Optional() throughput?: HubPoolThroughputService,
+    // Optional for the same positional reason, and before the router so that one keeps the last
+    // slot the constructor-shape test pins. A harness that passes none gets a snapshot of its own
+    // over the same registry and settings, which is all Nest's would be.
+    @Optional() localHealth?: HubPoolLocalHealthService,
     // Appended last and optional for the same positional reason. #1483 took the router out of
     // `auto` resolution, which now runs against the whole pool; residency arbitration
     // (`prepareTrackedModel`) is a separate job and is the only thing left that reads it. Without
@@ -834,9 +1043,17 @@ export class PoolProxyService {
     @Optional() @Inject(forwardRef(() => InferenceRouterService)) private readonly router?: InferenceRouterService,
   ) {
     this.throughput = throughput ?? new HubPoolThroughputService();
+    this.localHealth = localHealth ?? new HubPoolLocalHealthService(backends, configuration);
   }
 
   private readonly throughput: HubPoolThroughputService;
+  private readonly localHealth: HubPoolLocalHealthService;
+  /**
+   * Where each recent prompt prefix was last placed — see `hub-pool-prefix-affinity.ts`. Owned here
+   * rather than injected: the proxy is its only reader and writer, and a process-local hint has no
+   * other consumer to share it with.
+   */
+  private readonly prefixAffinity = new PrefixAffinityStore();
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -876,23 +1093,15 @@ export class PoolProxyService {
   }
 
   /**
-   * This node's models as {@link localCandidates} would offer them: healthy, running backends only,
+   * This node's models as {@link probeLocalCandidates} would offer them: healthy, running backends only,
    * minus anything a backend has withheld. The two must agree, or `auto` could resolve to a model
    * that then has no local candidate.
    */
   private async localServableInventory(): Promise<NodeModelInventory> {
-    const backends = await Promise.all(
-      this.backends.entries().map(async ([type, backend]) => {
-        try {
-          const health = await backend.healthCheck();
-          if (!health.running || !health.healthy) return null;
-          return { type, models: health.modelsLoaded.filter((id) => !inventoryListsModel(health.unservableModels, id)) };
-        } catch {
-          return null;
-        }
-      }),
-    );
-    return { local: true, backends: backends.filter((entry): entry is NonNullable<typeof entry> => entry !== null) };
+    const backends = (await this.localHealth.read())
+      .filter(({ health }) => health.running && health.healthy)
+      .map(({ type, health }) => ({ type, models: health.modelsLoaded.filter((id) => !inventoryListsModel(health.unservableModels, id)) }));
+    return { local: true, backends };
   }
 
   /** A peer's models as {@link peerCandidates} would offer them: a snapshot that exists, a peer accepting work, healthy backends. */
@@ -915,6 +1124,16 @@ export class PoolProxyService {
   /** Read per request, like {@link localAffinity}. `0` (the default) takes pressure out of ranking entirely — see {@link buildCandidateList}. */
   private pressureWeight(): number {
     return this.configuration.getHubPoolPreferences().poolPressureWeight;
+  }
+
+  /** Read per request, like {@link localAffinity}. `0` (the default) keeps affinity out of ranking entirely, and no prefix is hashed or remembered — see {@link rankCandidates}. */
+  private prefixAffinityMaxInFlight(): number {
+    return this.configuration.getHubPoolPreferences().poolPrefixAffinityMaxInFlight;
+  }
+
+  /** Read per request, like {@link localAffinity}. `0` (the default) keeps slot counts out of ranking entirely — see {@link applyAdvertisedSlots}. */
+  private slotAwareness(): number {
+    return this.configuration.getHubPoolPreferences().poolSlotAwareness;
   }
 
   /** How old a peer's capability snapshot may be before its self-reported load is discarded, derived from the configured poll cadence so retuning one retunes the other. */
@@ -953,9 +1172,28 @@ export class PoolProxyService {
    * the invariant the whole feature turns on: most of the fleet cannot measure, and if silence read
    * as "idle" the pool would systematically route to whichever machine knows least about itself.
    *
-   * Then the prompt ceilings, when `promptBytes` is given: a node whose ceiling is below the
-   * request's estimate moves behind every node that is not, keeping its place in the failover walk —
-   * see {@link applyPromptCeiling}.
+   * Then prefix affinity, when the request carries a session key and `poolPrefixAffinityMaxInFlight`
+   * is above zero: the node and engine that last served this prefix move to the front while their
+   * queue is under the limit — see {@link applyPrefixAffinity}. Applied before every step below, so
+   * each of them still wins over it.
+   *
+   * Then the context caps, when `promptBytes` is given: a node whose cap is below the window the
+   * request asks for — `numCtx` when the body carried `options.num_ctx`, else the prompt estimate —
+   * moves behind every node that can take it, keeping its place in the failover walk — see
+   * {@link applyContextCap}.
+   *
+   * Then the prompt ceilings, within each of those groups: a node whose ceiling is below the
+   * request's estimate moves behind every node that is not — see {@link applyPromptCeiling}.
+   *
+   * Then slot-aware placement, within each of those groups and only with `poolSlotAwareness` on: an
+   * Ollama candidate whose known queue depth already fills the slots its node advertised moves behind
+   * every candidate that still has one free — see {@link applySlotPlacement}. Judged on every route
+   * that occupies a slot, body or not, because `OLLAMA_NUM_PARALLEL` queues an embedding exactly as
+   * it queues a turn; the one caller that occupies none — the peer `/api/show` lookup in
+   * {@link describeFromPeer}, answered from metadata on disk — says so and is not judged. Inside
+   * the ceiling because the ceiling is an operator's statement about a prompt and this is an
+   * inference about a queue; outside throughput because a full engine queues the request whole,
+   * where a slow one merely reads it slowly. At 0, the shipped default, nothing here is read.
    *
    * Then measured throughput, within each of those groups: a candidate whose measured prefill rate
    * would take it past the request's budget moves behind the ones that would not — see
@@ -964,8 +1202,9 @@ export class PoolProxyService {
    * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
    */
-  async buildCandidateList(model: string, promptBytes?: number, streaming = true): Promise<PoolCandidate[]> {
-    return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming })).candidates;
+  async buildCandidateList(model: string, promptBytes?: number, streaming = true, numCtx: number | null = null): Promise<PoolCandidate[]> {
+    return (await this.rankCandidates(model, promptBytes === undefined ? undefined : { bytes: () => promptBytes, streaming, numCtx: () => numCtx }))
+      .candidates;
   }
 
   /**
@@ -984,21 +1223,42 @@ export class PoolProxyService {
      * throughput evidence: that is one more serialisation of what can be a 184 KB agent turn, and a
      * fleet with neither should not pay it. Absent means "no body to judge", and both steps are skipped.
      */
-    prompt?: { bytes: () => number; streaming: boolean },
+    prompt?: {
+      bytes: () => number;
+      streaming: boolean;
+      /** The request's session key, derived only if affinity is on — a header read and at most a 4 KB digest, but not for a fleet that has it off. */
+      prefixKey?: () => PrefixKey | null;
+      /** The window the body asks for (`options.num_ctx`), read only if some candidate has a cap; `null` when it carries none. */
+      numCtx?: () => number | null;
+    },
+    /**
+     * Whether the request being placed will occupy one of the engine's `OLLAMA_NUM_PARALLEL` slots.
+     * Every forwarded request does — a turn and an embedding alike — so this defaults on; a
+     * metadata lookup does not, and passing `false` keeps {@link applySlotPlacement} out of its
+     * ranking so a full node is still asked first when it is the one best placed to answer.
+     */
+    occupiesSlot = true,
   ): Promise<{
     candidates: PoolCandidate[];
     pin: HubPoolPin | null;
     promptCeiling: PoolRoutingPromptCeiling | null;
+    contextCap: PoolRoutingContextCap | null;
+    slots: PoolRoutingSlots | null;
     throughput: PoolRoutingThroughput | null;
+    /** What affinity saw and did, and the key to remember the placement under; both `null` when affinity did not apply. */
+    affinity: { decision: PoolRoutingAffinity | null; key: PrefixKey | null };
     /** The peer rows ranking read, so placement-time checks see the same snapshot the order came from. */
     peers: HubPoolPeer[];
+    /** What each local backend said — the no-candidate 502 reports these. */
+    localProbes: LocalBackendProbe[];
   }> {
-    const [local, peers] = await Promise.all([this.localCandidates(model), this.usablePeers()]);
+    const [{ candidates: local, probes: localProbes }, peers] = await Promise.all([this.probeLocalCandidates(model), this.usablePeers()]);
     const weight = this.pressureWeight();
     const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
-    const localScore = this.loadService.localInFlight() + weight * localPressure;
+    const localInFlight = this.loadService.localInFlight();
+    const localScore = localInFlight + weight * localPressure;
     const ranked: RankedCandidate[] = [
-      ...local.map((candidate) => ({ candidate, score: localScore, pressure: localPressure, tierRank: LOCAL_TIER_RANK })),
+      ...local.map((candidate) => ({ candidate, score: localScore, inFlight: localInFlight, pressure: localPressure, tierRank: LOCAL_TIER_RANK })),
       ...this.peerCandidates(model, peers, weight),
     ];
     // Stable sort: candidates that tie on every key keep insertion order — local backends in
@@ -1006,14 +1266,18 @@ export class PoolProxyService {
     //
     // `weight ? … : 0` rather than always comparing: at weight 0 the middle key must not exist, or a
     // measured node would start winning ties that a static hardware tier decides today.
-    const ordered = ranked
-      .sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank)
-      .map((entry) => entry.candidate);
-    // Shared, so the two prompt-size decisions cost one serialisation between them at most.
+    ranked.sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank);
+    const affinity = this.applyRememberedPlacement(ranked, prompt?.prefixKey);
+    const ordered = affinity.ordered.map((entry) => entry.candidate);
+    // Shared, so the three prompt-size decisions cost one serialisation between them at most.
     const measurePromptBytes = prompt ? memoize(prompt.bytes) : undefined;
+    const cap = measurePromptBytes
+      ? this.applyContextCaps(model, ordered, peers, measurePromptBytes, prompt?.numCtx)
+      : { preferred: ordered, overCap: [], decision: null };
     const ceiling = measurePromptBytes
       ? this.applyPromptCeilings(model, ordered, peers, measurePromptBytes)
       : { preferred: ordered, overCeiling: [], decision: null };
+    const slots = occupiesSlot ? this.applyAdvertisedSlots(model, affinity.ordered, peers) : { demoted: NOTHING_DEMOTED, decision: null };
     const throughput =
       prompt && measurePromptBytes
         ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming)
@@ -1021,17 +1285,79 @@ export class PoolProxyService {
     // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
     // effect on the next request and costs no query on the inference hot path.
     const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
-    // The ceiling is the outer split because it is an operator's statement and throughput is an
-    // inference. With nothing demoted and no over-ceiling tail this is `applyPin(ordered, pin)`
-    // exactly, which keeps an unmeasured fleet on the order it had before either existed.
-    return {
-      candidates: [ceiling.preferred, ceiling.overCeiling].flatMap((group) =>
-        splitDemoted(group, throughput.demoted).flatMap((part) => applyPin(part, pin)),
+    // The cap is the outermost split and the ceiling the next, because both are operator statements
+    // and a node over its cap reloads or truncates where a node over its ceiling is merely slow. The
+    // other two are inferences and split within those: slots outside throughput, because a full
+    // engine queues the request whole where a slow one merely reads it slowly. With nothing demoted
+    // and no over-cap or over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps an
+    // unmeasured fleet on the order it had before any of the four existed. The ceiling's own
+    // "everything over means nothing moves" rule was judged on the whole list, so `overCeiling` is
+    // already empty in that case.
+    const overCeiling = new Set(ceiling.overCeiling);
+    const candidates = [cap.preferred, cap.overCap].flatMap((capGroup) =>
+      splitDemoted(capGroup, overCeiling).flatMap((group) =>
+        splitDemoted(group, slots.demoted).flatMap((slotPart) => splitDemoted(slotPart, throughput.demoted).flatMap((part) => applyPin(part, pin))),
       ),
+    );
+    return {
+      candidates,
       pin,
       promptCeiling: ceiling.decision,
+      contextCap: cap.decision,
+      slots: slots.decision,
       throughput: throughput.decision,
+      // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
+      // first, and a ceiling, a demotion or a pin applied after affinity can each have put another
+      // node there. The routing log's other sections say which one did.
+      affinity: {
+        decision: affinity.describe(candidates[0]),
+        key: affinity.key,
+      },
       peers,
+      localProbes,
+    };
+  }
+
+  /**
+   * {@link applyPrefixAffinity} against the store, plus what to tell the routing log about it.
+   *
+   * Everything short-circuits on the knob: at 0 the key is never derived, the store is never read,
+   * and the ranked list comes back untouched — which is what makes the default byte-identical to the
+   * build before affinity, and the whole reason the knob doubles as the switch. One debug line for a
+   * request affinity changed or stood aside on, never at info, for the same reason the ceiling logs
+   * that way: the routing log is where decisions are read, and an agent turns all day.
+   */
+  private applyRememberedPlacement(
+    ranked: RankedCandidate[],
+    prefixKey: (() => PrefixKey | null) | undefined,
+  ): { ordered: RankedCandidate[]; key: PrefixKey | null; describe: (first: PoolCandidate | undefined) => PoolRoutingAffinity | null } {
+    const nothing = { ordered: ranked, key: null, describe: () => null };
+    const maxInFlight = this.prefixAffinityMaxInFlight();
+    // `!(> 0)` rather than `<= 0`: a settings object from before this knob existed reads `undefined`
+    // here, and that must read as off, never as "no limit".
+    if (!(maxInFlight > 0) || !prefixKey) {
+      return nothing;
+    }
+    const key = prefixKey();
+    if (!key) {
+      return nothing;
+    }
+    const remembered = this.prefixAffinity.get(key.key);
+    const { ordered, sticky } = applyPrefixAffinity(ranked, remembered, maxInFlight);
+    return {
+      ordered,
+      key,
+      describe: (first) => {
+        const outcome = sticky ? (first === sticky.candidate ? 'hit' : 'skipped') : 'miss';
+        if (sticky && outcome === 'skipped') {
+          this.logger.debug(
+            sticky.inFlight >= maxInFlight
+              ? `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix but has ${sticky.inFlight} in flight (limit ${maxInFlight}); ranking as usual`
+              : `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
+          );
+        }
+        return { key: key.source, outcome, remembered: remembered?.node ?? null, inFlight: sticky?.inFlight ?? null, maxInFlight };
+      },
     };
   }
 
@@ -1103,6 +1429,101 @@ export class PoolProxyService {
   }
 
   /**
+   * Each candidate's context cap — this node's `inferenceMaxNumCtx` for a local candidate, the
+   * `maxNumCtx` a peer advertised for a peer — then {@link applyContextCap} against the window the
+   * request asks for.
+   *
+   * That window is the body's `options.num_ctx` when it carries one (the native Ollama dialect, which
+   * is what both agents on the fleet speak), and otherwise the prompt estimate: a request without
+   * `num_ctx` — every OpenAI-compatible `/v1` call — runs at the serving engine's own default
+   * window, which is exactly what the node's cap records, and a prompt over that window is truncated
+   * there. So the estimate is the smallest window the request can be served in, and a capped node
+   * below it is moved back for the same reason a capped node below an explicit `num_ctx` is.
+   *
+   * Caps come from the same places everything else in ranking does: the in-memory settings object
+   * and the capability snapshots `usablePeers` already loaded, so this adds no query. The body is
+   * measured only when some candidate has a cap, and one debug line is written per request the cap
+   * actually changed, never at info, for the ceiling's reason.
+   */
+  private applyContextCaps(
+    model: string,
+    ordered: PoolCandidate[],
+    peers: HubPoolPeer[],
+    measurePromptBytes: () => number,
+    numCtxOf: (() => number | null) | undefined,
+  ): ReturnType<typeof applyContextCap> {
+    const localCap = clampContextCap(this.configuration.getInferencePreferences()?.maxNumCtx);
+    const peerCaps = new Map<string, number | null>(
+      peers.map((peer) => [peer.id, clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx)]),
+    );
+    const capOf = (candidate: PoolCandidate) => (candidate.peerId === null ? localCap : (peerCaps.get(candidate.peerId) ?? null));
+    if (!ordered.some((candidate) => capOf(candidate) !== null)) {
+      return { preferred: ordered, overCap: [], decision: null };
+    }
+    const numCtx = numCtxOf?.() ?? null;
+    const request =
+      numCtx === null ? { numCtx: estimatePromptTokens(measurePromptBytes()), source: 'estimated' as const } : { numCtx, source: 'request' as const };
+    const result = applyContextCap(ordered, capOf, request);
+    const decision = result.decision;
+    if (decision && decision.excluded.length > 0) {
+      const nodes = decision.excluded.map((entry) => `${entry.node} (cap ${entry.maxNumCtx})`).join(', ');
+      const window = decision.source === 'request' ? `num_ctx ${decision.numCtx}` : `~${decision.numCtx}-token prompt with no num_ctx`;
+      this.logger.debug(
+        decision.overridden
+          ? `[PoolProxy] ${window} for "${model}" is over every candidate's context cap — ${nodes} — so placing it anyway`
+          : `[PoolProxy] ${window} for "${model}" put ${nodes} behind every candidate whose cap can take it`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Each Ollama candidate's queue depth against the slot count its node stated — this node's own
+   * `inferenceOllamaSlots` for a local candidate, the figure a peer advertised for a peer — then
+   * {@link applySlotPlacement}.
+   *
+   * Everything short-circuits on the knob: at 0 no slot count is read and nothing is demoted, which
+   * is what makes the default byte-identical to the build before slots. The queue depth is the
+   * ranked entry's own `inFlight` — the number the sort just used, so the decision and the order it
+   * shaped agree on what the queue was. Slot counts come from the same places everything else in
+   * ranking does (the in-memory settings object and the snapshots `usablePeers` already loaded), so
+   * this adds no query. One debug line per request that demoted something, as for the ceiling.
+   */
+  private applyAdvertisedSlots(model: string, ranked: RankedCandidate[], peers: HubPoolPeer[]): ReturnType<typeof applySlotPlacement> {
+    // `!(> 0)` rather than `<= 0`, as for affinity: a settings object from before this knob existed
+    // reads `undefined` here, and that must read as off.
+    if (!(this.slotAwareness() > 0)) {
+      return { demoted: NOTHING_DEMOTED, decision: null };
+    }
+    const localSlots = clampOllamaSlots(this.configuration.getInferencePreferences()?.ollamaSlots);
+    const peerSlots = new Map<string, number | null>(
+      peers.map((peer) => [peer.id, clampOllamaSlots((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.ollamaSlots)]),
+    );
+    const inFlightOf = new Map(ranked.map((entry) => [entry.candidate, entry.inFlight]));
+    const result = applySlotPlacement(
+      ranked.map((entry) => entry.candidate),
+      (candidate) => {
+        if (candidate.backend !== 'ollama') {
+          return null;
+        }
+        const slots = candidate.peerId === null ? localSlots : (peerSlots.get(candidate.peerId) ?? null);
+        const inFlight = inFlightOf.get(candidate);
+        return slots === null || inFlight === undefined ? null : { inFlight, slots };
+      },
+    );
+    const decision = result.decision;
+    if (decision && decision.demoted.length > 0) {
+      const nodes = decision.demoted.map((entry) => `${entry.node} (${entry.inFlight} in flight, ${entry.slots} slots)`).join(', ');
+      this.logger.debug(
+        decision.overridden
+          ? `[PoolProxy] every candidate for "${model}" has its slots full — ${nodes} — so placing it anyway`
+          : `[PoolProxy] "${model}" put ${nodes} behind every candidate with a free slot`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * Each candidate's ceiling — this node's own (env override applied) for a local candidate, the
    * figure a peer advertised for a peer — then {@link applyPromptCeiling}.
    *
@@ -1139,7 +1560,15 @@ export class PoolProxyService {
     return result;
   }
 
-  async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
+  async proxyRequest(params: {
+    path: string;
+    method: string;
+    body: unknown;
+    model: string;
+    res: Response;
+    /** The app's `X-Hub-Pool-Session` header as Express read it, if it sent one — see `POOL_SESSION_HEADER`. */
+    sessionHeader?: string | string[];
+  }): Promise<void> {
     const { path, method, res } = params;
     const startedAt = Date.now();
     const clientClosed = abortWhenClientCloses(res);
@@ -1158,7 +1587,10 @@ export class PoolProxyService {
         failedOverFrom: [],
         pin: null,
         promptCeiling: null,
+        contextCap: null,
+        slots: null,
         throughput: null,
+        affinity: null,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
@@ -1181,9 +1613,12 @@ export class PoolProxyService {
     const judged = PROMPT_CEILING_PATHS.has(path);
     // Serialised once for ranking and every attempt, rather than once per forward.
     const payload = memoize(() => forwardedPayload(method, body));
-    const { candidates, pin, promptCeiling, throughput, peers } = await this.rankCandidates(
+    // Keyed on the resolved model, never the alias: `auto` on two Hubs can mean two models, and the
+    // cache a session warms is the resolved one's.
+    const prefixKey = memoize(() => derivePrefixKey(model, body, params.sessionHeader));
+    const { candidates, pin, promptCeiling, contextCap, slots, throughput, affinity, peers, localProbes } = await this.rankCandidates(
       model,
-      judged ? { bytes: () => payload()?.length ?? 0, streaming } : undefined,
+      judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey, numCtx: () => requestedNumCtx(body) } : undefined,
     );
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
@@ -1203,7 +1638,10 @@ export class PoolProxyService {
         failedOverFrom,
         pin: describePinForLog(pin),
         promptCeiling,
+        contextCap,
+        slots,
         throughput,
+        affinity: affinity.decision,
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
@@ -1211,7 +1649,10 @@ export class PoolProxyService {
         ...describeRequestShape(method, body),
       });
       res.setHeader(POOL_REQUEST_ID_HEADER, failed.id);
-      res.status(502).json({ error: describeNoCandidates(model, pin) });
+      // `localBackends` is the container's-eye view of every local engine: the operator reading
+      // this on a node that plainly runs the model needs the probed URL and the error, not a
+      // second look at the inventory.
+      res.status(502).json({ error: describeNoCandidates(model, pin, localProbes), localBackends: localProbes });
       return;
     }
 
@@ -1235,9 +1676,15 @@ export class PoolProxyService {
       failedOverFrom,
       pin: describePinForLog(pin),
       promptCeiling,
+      contextCap,
+      slots,
       ...describeRequestShape(method, body),
       throughput,
+      affinity: affinity.decision,
     });
+    // The decision stated on the response, like the serving node: set on the 502 too, since a turn
+    // that failed everywhere is one an operator will want to know was or was not following its prefix.
+    const affinityHeader: Record<string, string> = affinity.decision ? { [POOL_AFFINITY_HEADER]: affinity.decision.outcome } : {};
 
     let lastError: unknown;
     let committed = false;
@@ -1254,6 +1701,26 @@ export class PoolProxyService {
         this.logger.debug(
           `[PoolProxy] every candidate under its prompt ceiling failed for "${model}"; trying ${nodeLabel}, which is over its ceiling`,
         );
+      }
+      // Same for the cap: reaching a node capped below the window means every node that could take
+      // it already failed, and the log should read "placed over its cap" rather than "skipped".
+      if (row.contextCap && !row.contextCap.overridden && row.contextCap.excluded.some((entry) => entry.node === nodeLabel)) {
+        row.contextCap.overridden = true;
+        this.logger.debug(
+          `[PoolProxy] every candidate whose context cap can take ${row.contextCap.numCtx} failed for "${model}"; trying ${nodeLabel}, which is capped below it`,
+        );
+      }
+      // Reaching a full node means nothing with a free slot is ahead of it any more: every such node
+      // failed, or a prompt ceiling put them all behind it. Recorded as an override for the same
+      // reason as the ceiling's: the log must not claim the node was skipped.
+      const placedSlots = row.slots;
+      if (
+        placedSlots &&
+        !placedSlots.overridden &&
+        placedSlots.demoted.some((entry) => entry.node === nodeLabel && entry.backend === candidate.backend)
+      ) {
+        placedSlots.overridden = true;
+        this.logger.debug(`[PoolProxy] placing "${model}" on ${nodeLabel}, whose slots are full, because nothing with a free slot is ahead of it`);
       }
       const placedThroughput = row.throughput;
       if (
@@ -1272,6 +1739,12 @@ export class PoolProxyService {
       const measurable = judged && this.idleForMeasurement(candidate, peers);
       const attemptStartedAt = Date.now();
       this.loadService.acquire(key);
+      // At placement, before the engine answers, so a session's next call — an agent's parallel
+      // tool calls arrive while the first is still prefilling — finds the engine already reading
+      // the shared prefix. A failover overwrites it with the candidate that actually took the work.
+      if (affinity.key) {
+        this.prefixAffinity.remember(affinity.key.key, candidate);
+      }
       try {
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
         const headersAt = Date.now();
@@ -1297,7 +1770,7 @@ export class PoolProxyService {
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
-        this.commitResponse(upstream, res, servedByHeaders(candidate, model, row.id));
+        this.commitResponse(upstream, res, { ...servedByHeaders(candidate, model, row.id), ...affinityHeader });
         committed = true;
         const meter = measurable && upstream.ok ? startResponseTiming() : null;
         try {
@@ -1358,8 +1831,15 @@ export class PoolProxyService {
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
+    // Nothing holds this prefix now — the last engine to try it gave up — so the next call ranks fresh.
+    if (affinity.key) {
+      this.prefixAffinity.forget(affinity.key.key);
+    }
     if (!res.headersSent) {
       res.setHeader(POOL_REQUEST_ID_HEADER, row.id);
+      for (const [name, value] of Object.entries(affinityHeader)) {
+        res.setHeader(name, value);
+      }
     }
     this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
   }
@@ -1369,6 +1849,14 @@ export class PoolProxyService {
    * settled as failed with no status — nothing was served — and it is logged, because a client giving
    * up on a turn that had not started answering is the one symptom of a queue too slow for its callers.
    * After headers the row already says served, which it was, and a stopped generation is routine.
+   *
+   * The row KEEPS the node, peer and engine it was waiting on, and says `clientClosed`. Nulling them
+   * — which this did until beta-max, 2026-09-21 — left a row identical to the one a request that
+   * exhausted every candidate settles as, and the log's NODE column is where an operator looks first:
+   * four rows reading `qwen3-coder:30b  -  1/14  30031  x failed` were reported as "placement returns
+   * no candidate and times out" when placement had ranked fourteen candidates and the caller had
+   * given up on the first after 30 s. A request that ends because nobody is waiting for it is not a
+   * routing failure, and the log has to be able to say which of the two it is looking at.
    */
   private noteClientClosed(
     row: ReturnType<HubPoolRoutingLogService['open']>,
@@ -1383,11 +1871,11 @@ export class PoolProxyService {
     }
     const waitedMs = Date.now() - startedAt;
     this.routingLog.settle(row, {
-      node: null,
-      peerId: null,
-      backend: null,
+      // `node`, `peerId` and `backend` are deliberately absent: `settle` keeps what placement wrote,
+      // and what placement wrote is the candidate that was still holding this request.
       attempt: index + 1,
       outcome: 'failed',
+      clientClosed: true,
       status: null,
       durationMs: waitedMs,
     });
@@ -1462,7 +1950,7 @@ export class PoolProxyService {
 
   /**
    * Feed a local engine's own answer back into its serving-capability signal, so the next
-   * `localCandidates` knows something this request found out and no health poll could.
+   * `probeLocalCandidates` knows something this request found out and no health poll could.
    *
    * Only 5xx counts as a failure. 408 and 429 fail over too, but they are the engine saying "not
    * now" about its queue, not "not ever" about the model — withholding a model because the node
@@ -1486,14 +1974,22 @@ export class PoolProxyService {
       return;
     }
     const backend = this.backends.tryGet(backendType);
+    // A verdict that flipped the model's withheld state has changed what `healthCheck()` will
+    // report as `unservableModels`, and the snapshot placement reads is a copy of the last one.
+    // Dropping it here is what keeps quarantine request-accurate rather than TTL-accurate: the
+    // next request re-probes this backend instead of offering a model the node just failed.
     if (status >= 500) {
-      backend?.noteServingFailure?.(model, `HTTP ${status}`);
+      if (backend?.noteServingFailure?.(model, `HTTP ${status}`)) {
+        this.localHealth.invalidate(backendType);
+      }
       return;
     }
     if (status < 400) {
       // A 4xx is the engine's verdict on the *request*, not proof the model can run, so only a
       // clean response clears the record.
-      backend?.noteServingSuccess?.(model);
+      if (backend?.noteServingSuccess?.(model)) {
+        this.localHealth.invalidate(backendType);
+      }
     }
   }
 
@@ -1657,9 +2153,12 @@ export class PoolProxyService {
       // Always null: a pin is THIS Hub's policy for work it originates. Work a peer forwards us is
       // never re-routed (see `forwardToLocalBackendAndRespond`), so no pin can have shaped it.
       pin: null,
-      // Null for the same reason as the pin: the ceiling is applied by the node choosing where work goes.
+      // Null for the same reason as the pin: the ceiling and the cap are applied by the node choosing where work goes.
       promptCeiling: null,
+      contextCap: null,
+      slots: null,
       throughput: null,
+      affinity: null,
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,
@@ -1843,7 +2342,15 @@ export class PoolProxyService {
     // Belt-and-braces with `PROMPT_CEILING_PATHS`, which lists only the four generation paths and so
     // already excludes every {@link MODEL_METADATA_PATHS} entry on the `proxyRequest` side; keep
     // both, because they guard different callers.
-    const { candidates } = await this.rankCandidates(model);
+    //
+    // `occupiesSlot: false` for the same reason, against the third placement decision: slot-aware
+    // placement moves a node whose `OLLAMA_NUM_PARALLEL` slots are full behind every node with a
+    // free one, because a forwarded request would queue behind the engine there. This lookup takes
+    // no slot — `/api/show` is answered by the daemon from metadata on disk, not by a loaded model —
+    // so a full node is exactly as quick to answer it as an idle one, and demoting it would walk
+    // past the node the ranker chose over a queue the lookup never joins. Embeddings keep the pass:
+    // they occupy a slot like any turn.
+    const { candidates } = await this.rankCandidates(model, undefined, false);
     for (const candidate of candidates) {
       if (clientClosed.aborted) {
         break;
@@ -1918,26 +2425,48 @@ export class PoolProxyService {
    * has withheld (see `BackendHealthStatus.unservableModels`) is dropped here even though it is
    * sitting right there in the inventory.
    */
-  private async localCandidates(model: string): Promise<PoolCandidate[]> {
-    const results = await Promise.all(
-      this.backends.entries().map(async ([type, backend]): Promise<PoolCandidate | null> => {
-        try {
-          const health = await backend.healthCheck();
-          if (!health.running || !health.healthy || !inventoryListsModel(health.modelsLoaded, model)) {
-            return null;
-          }
-          if (inventoryListsModel(health.unservableModels, model)) {
-            this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
-            return null;
-          }
-          return { peerId: null, nodeFqdn: null, backend: type };
-        } catch (error) {
-          this.logger.debug(`[PoolProxy] local ${type} health check failed: ${error instanceof Error ? error.message : String(error)}`);
+  /**
+   * This node's candidates for `model`, plus what every local backend said on the way — the
+   * probes are what a no-candidate 502 reports, so the same health answer serves both.
+   *
+   * "Said" is the snapshot's word, not a live probe's: `HubPoolLocalHealthService` is what keeps
+   * a DROPped engine port from costing every request its 5 s transport timeout. The order is the
+   * registry's, not whichever engine answered first, because the ranker's stable sort turns it
+   * into the local tie-break.
+   */
+  private async probeLocalCandidates(model: string): Promise<{ candidates: PoolCandidate[]; probes: LocalBackendProbe[] }> {
+    const snapshot = await this.localHealth.read();
+    // Taken after the read, which can hold a cold request for the placement budget.
+    const now = Date.now();
+    const results = snapshot.map(
+      ({ type, backend, health, probedAt }: LocalBackendHealth): { candidate: PoolCandidate | null; probe: LocalBackendProbe } => {
+        const listsModel = inventoryListsModel(health.modelsLoaded, model);
+        const probe: LocalBackendProbe = {
+          type,
+          url: safeBaseUrl(backend),
+          running: health.running,
+          healthy: health.healthy,
+          listsModel,
+          error: health.error,
+          probedMsAgo: Math.max(0, now - probedAt),
+        };
+        if (!health.running || !health.healthy || !listsModel) {
+          return { candidate: null, probe };
         }
-        return null;
-      }),
+        if (inventoryListsModel(health.unservableModels, model)) {
+          this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
+          return {
+            candidate: null,
+            probe: { ...probe, error: probe.error ?? 'lists the model but has been unable to serve it; withheld until that observation decays' },
+          };
+        }
+        return { candidate: { peerId: null, nodeFqdn: null, backend: type }, probe };
+      },
     );
-    return results.filter((c): c is PoolCandidate => c !== null);
+    return {
+      candidates: results.map((entry) => entry.candidate).filter((c): c is PoolCandidate => c !== null),
+      probes: results.map((entry) => entry.probe),
+    };
   }
 
   /**
@@ -1978,9 +2507,11 @@ export class PoolProxyService {
       const match = capabilities.backends.find((b) => b.healthy && inventoryListsModel(b.modelsLoaded, model));
       if (match) {
         const pressure = this.peerPressure(peer, capabilities) ?? UNKNOWN_PRESSURE;
+        const inFlight = this.peerLoad(peer, capabilities);
         candidates.push({
           candidate: { peerId: peer.id, nodeFqdn: peer.nodeFqdn, backend: match.type },
-          score: this.peerLoad(peer, capabilities) + weight * pressure + this.localAffinity(),
+          score: inFlight + weight * pressure + this.localAffinity(),
+          inFlight,
           pressure,
           tierRank: this.tierRank(capabilities.hardwareTier),
         });

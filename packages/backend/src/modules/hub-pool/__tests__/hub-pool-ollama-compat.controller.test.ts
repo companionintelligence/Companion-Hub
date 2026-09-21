@@ -1,11 +1,16 @@
 import type { INestApplication } from '@nestjs/common';
+import { APP_FILTER } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
-import { PoolAppGuard } from '../guards/pool-app.guard';
+import { MainExceptionFilter } from '@/common/error/exception.filter';
+import { LoggerService } from '@/core/logger/logger.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { HubPoolOllamaCompatController } from '../hub-pool-ollama-compat.controller';
 import { PoolProxyService } from '../hub-pool-proxy.service';
+
+const INFERENCE_KEY = 'a'.repeat(64);
 
 /**
  * Unlike every other `hub-pool` controller test, this one boots a real Nest HTTP server and issues
@@ -22,10 +27,21 @@ import { PoolProxyService } from '../hub-pool-proxy.service';
 describe('HubPoolOllamaCompatController — top-level /api/version and /api/tags, real HTTP dispatch', () => {
   let app: INestApplication;
   let proxyService: MockProxy<PoolProxyService>;
+  let apiKeys: MockProxy<ApiKeyService>;
+  let logger: MockProxy<LoggerService>;
   let baseUrl: string;
 
   beforeAll(async () => {
     proxyService = mock<PoolProxyService>();
+    logger = mock<LoggerService>();
+    // The guard's key leg, faked at the service so this suite stays about routing: one key that
+    // resolves with the `inference` scope, and nothing else does.
+    apiKeys = mock<ApiKeyService>();
+    apiKeys.resolve.mockImplementation(async (rawKey, scope) =>
+      rawKey === INFERENCE_KEY && scope === 'inference'
+        ? { id: 1, name: 'laptop', capability: 'read', ownerAppUrn: null, createdByUserId: null }
+        : null,
+    );
     // Mirrors PoolProxyService.proxyLocalOnlyRequest's real contract: it writes the Ollama-shaped
     // response directly onto the Express Response rather than returning a value.
     proxyService.proxyLocalOnlyRequest.mockImplementation(async (path, _method, _body, res) => {
@@ -40,7 +56,16 @@ describe('HubPoolOllamaCompatController — top-level /api/version and /api/tags
 
     const moduleRef = await Test.createTestingModule({
       controllers: [HubPoolOllamaCompatController],
-      providers: [{ provide: PoolProxyService, useValue: proxyService }, InternalNetworkGuard, PoolAppGuard],
+      providers: [
+        { provide: PoolProxyService, useValue: proxyService },
+        { provide: ApiKeyService, useValue: apiKeys },
+        { provide: LoggerService, useValue: logger },
+        InferenceAccessGuard,
+        // The filter the Hub actually runs (app.module.ts wires it the same way). Without it a
+        // thrown guard exception falls to Nest's built-in `BaseExceptionFilter`, whose own
+        // `headersSent` handling would make the refusal case below pass for the wrong reason.
+        { provide: APP_FILTER, useFactory: (log: LoggerService) => new MainExceptionFilter(log), inject: [LoggerService] },
+      ],
     }).compile();
 
     app = moduleRef.createNestApplication();
@@ -54,6 +79,14 @@ describe('HubPoolOllamaCompatController — top-level /api/version and /api/tags
     const address = app.getHttpServer().address();
     const port = typeof address === 'object' && address ? address.port : 0;
     baseUrl = `http://127.0.0.1:${port}`;
+  });
+
+  // One app for the file, so call history is cleared per test rather than accumulated: the
+  // "never looked up" assertion below must hold on its own, not because the keyed test runs later.
+  beforeEach(() => {
+    apiKeys.resolve.mockClear();
+    proxyService.proxyLocalOnlyRequest.mockClear();
+    logger.error.mockClear();
   });
 
   afterAll(async () => {
@@ -86,8 +119,31 @@ describe('HubPoolOllamaCompatController — top-level /api/version and /api/tags
     expect(res.status).not.toBe(404);
   });
 
-  it('still enforces PoolAppGuard on the top-level route — a tunnel-forwarded request is refused exactly as it is on the inference/pool-prefixed one', async () => {
+  /**
+   * Dispatched through Nest for real, with `MainExceptionFilter` installed, so this also proves the
+   * guard's write-then-throw refusal survives the filter the Hub runs: the body the client sees is
+   * the OpenAI one the guard wrote, not the `{statusCode, message}` envelope the filter writes for
+   * every other thrown exception. The filter's `headersSent` early return is the load-bearing line;
+   * a filter that wrote anyway would hit `ERR_HTTP_HEADERS_SENT`, which re-enters it as a 500 and
+   * shows up as `logger.error` — hence the last assertion.
+   */
+  it('still enforces InferenceAccessGuard on the top-level route — a tunnel-forwarded request without a key is refused exactly as it is on the inference/pool-prefixed one', async () => {
     const res = await fetch(`${baseUrl}/api/version`, { headers: { 'cf-connecting-ip': '203.0.113.5' } });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('www-authenticate')).toBe('Bearer realm="ci-hub-inference"');
+    const body = await res.json();
+    expect(body).toEqual({ error: { message: expect.any(String), type: 'authentication_error', code: 'missing_api_key' } });
+    expect(body).not.toHaveProperty('statusCode');
+    expect(apiKeys.resolve).not.toHaveBeenCalled();
+    expect(proxyService.proxyLocalOnlyRequest).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('admits a tunnel-forwarded request that carries a valid inference key', async () => {
+    const res = await fetch(`${baseUrl}/api/version`, { headers: { 'cf-connecting-ip': '203.0.113.5', authorization: `Bearer ${INFERENCE_KEY}` } });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ version: '0.1.2' });
+    expect(apiKeys.resolve).toHaveBeenCalledTimes(1);
+    expect(apiKeys.resolve).toHaveBeenCalledWith(INFERENCE_KEY, 'inference');
   });
 });

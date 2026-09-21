@@ -57,7 +57,7 @@ describe('ModelPullerService.evaluatePull', () => {
     ollamaBackend = mock<OllamaBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(profile);
-    memoryManager.calculateBudget.mockReturnValue({
+    memoryManager.calculateBudget.mockResolvedValue({
       totalVramMb: 8192,
       totalRamMb: 16384,
       systemReservedRamMb: 1024,
@@ -69,8 +69,9 @@ describe('ModelPullerService.evaluatePull', () => {
       modelUsedRamMb: 0,
       pinnedVramMb: 0,
       pinnedRamMb: 0,
+      usage: { sampledAt: '2026-09-20T00:00:00.000Z', backends: [] },
     });
-    memoryManager.canFitModel.mockReturnValue({ fits: true, availableMb: 7000, requiredMb: 4096 });
+    memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 7000, requiredMb: 4096 });
     hostMetrics.readHostSection.mockResolvedValue(null);
     hostMetrics.getDisplayLoad.mockResolvedValue({
       diskSize: 100,
@@ -144,7 +145,7 @@ describe('ModelPullerService.evaluatePull', () => {
   });
 
   it('blocks pull when memory budget is insufficient', async () => {
-    memoryManager.canFitModel.mockReturnValue({ fits: false, availableMb: 1024, requiredMb: 4096 });
+    memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 1024, requiredMb: 4096 });
     const result = await service.evaluatePull('phi-4-mini');
     expect(result.canPull).toBe(false);
     expect(result.reason).toMatch(/memory/i);
@@ -188,7 +189,7 @@ describe('ModelPullerService.startPull', () => {
     ollamaBackend = mock<OllamaBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(profile);
-    memoryManager.calculateBudget.mockReturnValue({
+    memoryManager.calculateBudget.mockResolvedValue({
       totalVramMb: 8192,
       totalRamMb: 16384,
       systemReservedRamMb: 1024,
@@ -200,8 +201,9 @@ describe('ModelPullerService.startPull', () => {
       modelUsedRamMb: 0,
       pinnedVramMb: 0,
       pinnedRamMb: 0,
+      usage: { sampledAt: '2026-09-20T00:00:00.000Z', backends: [] },
     });
-    memoryManager.canFitModel.mockReturnValue({ fits: true, availableMb: 7000, requiredMb: 4096 });
+    memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 7000, requiredMb: 4096 });
     hostMetrics.readHostSection.mockResolvedValue(null);
     hostMetrics.getDisplayLoad.mockResolvedValue({
       diskSize: 100,
@@ -270,7 +272,7 @@ describe('ModelPullerService.startPull', () => {
   });
 
   it('skips blocked pulls when bestEffort is true', async () => {
-    memoryManager.canFitModel.mockReturnValue({ fits: false, availableMb: 1024, requiredMb: 4096 });
+    memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 1024, requiredMb: 4096 });
     const result = await service.startPull('phi-4-mini', { bestEffort: true });
     expect(result.status).toBe('skipped');
     expect(result.reason).toMatch(/memory/i);

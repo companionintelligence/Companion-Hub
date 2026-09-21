@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_POOL_MAX_PROMPT_TOKENS, MIN_POOL_MAX_PROMPT_TOKENS } from '@/common/helpers/hub-pool';
+import {
+  MAX_POOL_MAX_PROMPT_TOKENS,
+  MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+  MAX_POOL_SLOT_AWARENESS,
+  MAX_POOL_PROBE_SNAPSHOT_TTL_MS,
+  MIN_POOL_MAX_PROMPT_TOKENS,
+} from '@/common/helpers/hub-pool';
 import { UpdateHubPoolPreferencesBody } from '../hub-pool.dto';
 
 describe('UpdateHubPoolPreferencesBody — poolMaxPromptTokens', () => {
@@ -35,5 +41,79 @@ describe('UpdateHubPoolPreferencesBody — poolMaxPromptTokens', () => {
     ['a boolean', false],
   ])('rejects %s with a 400 rather than storing a ceiling that excludes the node from everything', (_label, value) => {
     expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolMaxPromptTokens: value }).success).toBe(false);
+  });
+});
+
+describe('UpdateHubPoolPreferencesBody — poolProbeSnapshotTtlMs', () => {
+  it('accepts 0, which is the way back to live probes on every request', () => {
+    const result = UpdateHubPoolPreferencesBody.schema.safeParse({ poolProbeSnapshotTtlMs: 0 });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ poolProbeSnapshotTtlMs: 0 });
+  });
+
+  it('accepts the upper bound', () => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolProbeSnapshotTtlMs: MAX_POOL_PROBE_SNAPSHOT_TTL_MS }).success).toBe(true);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['above the bound', MAX_POOL_PROBE_SNAPSHOT_TTL_MS + 1],
+    ['fractional', 10_000.5],
+    ['a string', '10000'],
+    ['null', null],
+  ])('rejects %s with a 400', (_label, value) => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolProbeSnapshotTtlMs: value }).success).toBe(false);
+  });
+});
+
+describe('UpdateHubPoolPreferencesBody — poolPrefixAffinityMaxInFlight', () => {
+  it('accepts 0, which switches prefix affinity off', () => {
+    const result = UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: 0 });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ poolPrefixAffinityMaxInFlight: 0 });
+  });
+
+  it('accepts the value it is validated at, and the upper bound', () => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: 2 }).success).toBe(true);
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT }).success).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['negative', -1],
+    ['above the bound', MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT + 1],
+    ['fractional', 1.5],
+    ['a string', '2'],
+    ['null', null],
+  ])('rejects %s with a 400', (_label, value) => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: value }).success).toBe(false);
+  });
+});
+
+describe('UpdateHubPoolPreferencesBody — poolSlotAwareness', () => {
+  it('accepts 0, which keeps slot counts out of ranking', () => {
+    const result = UpdateHubPoolPreferencesBody.schema.safeParse({ poolSlotAwareness: 0 });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ poolSlotAwareness: 0 });
+  });
+
+  it('accepts 1, which is on and also the upper bound', () => {
+    expect(MAX_POOL_SLOT_AWARENESS).toBe(1);
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolSlotAwareness: 1 }).success).toBe(true);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['above the bound', MAX_POOL_SLOT_AWARENESS + 1],
+    ['fractional', 0.5],
+    ['a string', '1'],
+    ['a boolean', true],
+    ['null', null],
+  ])('rejects %s with a 400', (_label, value) => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolSlotAwareness: value }).success).toBe(false);
   });
 });

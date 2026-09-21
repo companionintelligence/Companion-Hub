@@ -21,9 +21,11 @@ const API_KEY_PREFIX_LEN = 8; // mirrors PREFIX_LEN in ApiKeyService
 
 /**
  * Scopes an *operator* key may carry — deliberately narrower than API_KEY_SCOPES in
- * packages/backend/src/modules/api-keys/api-key.scopes.ts. Wider than the UI by exactly 'qa:read'
+ * packages/backend/src/modules/api-keys/api-key.scopes.ts, in the same relative order so a row this
+ * command writes sorts like one the service wrote. Wider than the UI by 'qa:read' and 'inference'
  * (ApiKeyAdminService pins operator keys to ['mcp']): a test key is minted over ssh on the node under
- * test, which is where this command runs and a browser usually is not.
+ * test, and an editor key on the Hub host where the operator is already at a terminal, which is
+ * where this command runs and a browser usually is not.
  *
  * 'app' is honoured only on a *managed* row: resolveManagedAppUrn requires `managed` and an owning
  * app URN, both of which only app provisioning sets. An operator key carrying 'app' would list as
@@ -33,12 +35,15 @@ const API_KEY_PREFIX_LEN = 8; // mirrors PREFIX_LEN in ApiKeyService
 const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp', 'qa:read', 'inference'];
 
 /**
- * Scopes that must be the only scope on their key — mirrors STANDALONE_SCOPES in api-key.scopes.ts.
+ * Scopes that must be the only scope on their key — mirrors QA_READ_SCOPE and INFERENCE_SCOPE in
+ * api-key.scopes.ts.
  *
- * A `qa:read` key is the credential a test harness holds so that it does NOT hold operator authority,
- * and an `inference` key is the one an editor or agent holds for the same reason. One row carrying
- * 'mcp' as well would hand that holder the whole MCP tool surface under a name that says otherwise,
- * which is the exact mistake each scope exists to prevent.
+ * Each of these opens one narrow surface and no operator authority: `qa:read` is the credential a
+ * test harness holds so that it does NOT hold operator authority, and `inference` is the credential
+ * an editor or SDK holds in a config file that syncs to clouds and lives in dotfiles repos. One row
+ * carrying 'mcp' as well would hand that harness, or whoever finds that config file, the whole MCP
+ * tool surface under a name that says "read" or "inference" — the exact mistake each scope exists
+ * to prevent. The backend does not refuse the combination; this command is where it is refused.
  */
 const STANDALONE_API_KEY_SCOPES: readonly string[] = ['qa:read', 'inference'];
 
@@ -54,15 +59,15 @@ const QA_READ_ROUTES: readonly string[] = [
 ];
 
 /**
- * What an `inference` key reaches — mirrors `isInferenceApiRoute` in the backend. Printed at
- * creation so the operator minting it sees the whole of its authority before pasting it into an
- * editor.
+ * What an `inference` key reaches — the two base paths `InferenceAccessGuard` sits in front of, as
+ * an editor's "base URL" field wants them rather than as a route list. Handler-level: every `/v1`
+ * route on `InferenceController` and every app-facing route on `HubPoolController` and
+ * `HubPoolOllamaCompatController`. Not `QA_READ_ROUTES` shape on purpose: the operator minting this
+ * key is about to paste a base URL into Continue or Zed, and a route list would make them derive it.
  */
-const INFERENCE_ROUTES: readonly string[] = [
-  'POST /api/inference/v1/chat/completions (and /embeddings, /audio/*)',
-  'GET  /api/inference/v1/models',
-  'POST /api/inference/pool/v1/* and /api/inference/pool/api/* (pooled)',
-  'GET  /api/version, GET /api/tags (Ollama-native probes)',
+const INFERENCE_BASES: readonly { label: string; base: string }[] = [
+  { label: 'OpenAI-compatible', base: 'http://<hub-host>:5002/api/inference/v1' },
+  { label: 'Ollama-compatible', base: 'http://<hub-host>:5002/api/inference/pool' },
 ];
 
 /** Scopes that exist but are only ever minted for an app, so the error can say why, not just "unknown". */
@@ -126,13 +131,20 @@ export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: s
 
 /**
  * Why this scope set may not be minted as one key, or `null` when it may.
+ *
+ * Worded for whichever standalone scope was asked for, and for the reason that is the same in every
+ * case — one credential, two blast radii. `qa:read,inference` names both, each needing its own key.
  */
 function apiKeyScopeConflict(scopes: string[]): string | null {
   const standalone = scopes.filter((scope) => STANDALONE_API_KEY_SCOPES.includes(scope));
   if (standalone.length === 0 || scopes.length === 1) return null;
+  const subject =
+    standalone.length === 1
+      ? `The '${standalone[0]}' scope must be the only scope on its key: it opens`
+      : `Each of ${standalone.map((scope) => `'${scope}'`).join(' and ')} must be the only scope on its key: each opens`;
   return (
-    `The '${standalone.join("', '")}' scope must be the only scope on its key: it exists so its holder can hold ` +
-    'a credential with no operator authority at all. Create a separate key for the other scope.'
+    `${subject} one narrow surface and no operator authority, and a key that also carried another scope would be ` +
+    'one credential with two unrelated blast radii. Create a separate key for each scope.'
   );
 }
 
@@ -255,6 +267,13 @@ function psqlErrorLines(result: { stdout: string; stderr: string }): string[] {
   return detail.length > 0 ? detail : ['psql returned a non-zero exit code'];
 }
 
+/** {@link INFERENCE_BASES} as aligned box lines, so the two URLs read as a column to copy from. */
+function inferenceBaseLines(): string[] {
+  const width = Math.max(...INFERENCE_BASES.map(({ label }) => label.length)) + 3;
+
+  return INFERENCE_BASES.map(({ label, base }) => `  ${label.padEnd(width)}${base}`);
+}
+
 /**
  * Read `--flag value` or `--flag=value`, the two spellings being interchangeable — the same rule
  * `readValue` applies in cli-fleet.ts.
@@ -325,17 +344,21 @@ export function runApiKeyCommand(args: string[]) {
     const isQaRead = scopes.includes('qa:read');
     const isInference = scopes.includes('inference');
     const requestedCapability = readApiKeyFlag(args, '--capability');
-    // Capability decides what an MCP key may do among tools; neither a `qa:read` nor an `inference`
-    // key has tools, only its route list. Stored as 'read' so `api-key list` does not show one as
-    // 'write', and an explicit wider value is refused rather than stored as a grant the server would
-    // never apply.
-    const toollessScope = isQaRead ? 'qa:read' : isInference ? 'inference' : null;
-    if (toollessScope && requestedCapability !== undefined && requestedCapability !== 'read') {
+    // Capability decides what an MCP key may do among tools; a `qa:read` key has no tools, only its
+    // route list. Stored as 'read' so `api-key list` does not show a test key as 'write', and an explicit
+    // wider value is refused rather than stored as a grant the server would never apply.
+    if (isQaRead && requestedCapability !== undefined && requestedCapability !== 'read') {
+      usageAndExit(`A qa:read key reads a fixed list of routes; --capability ${requestedCapability || '(empty)'} would do nothing. Omit it.`);
+    }
+    // Same for an `inference` key: InferenceAccessGuard checks the scope and never reads capability,
+    // so 'full' on this row would be a listing that claims the key can uninstall apps when it can
+    // only spend GPU time. Stored as 'read' for the same reason qa:read is.
+    if (isInference && requestedCapability !== undefined && requestedCapability !== 'read') {
       usageAndExit(
-        `A ${toollessScope} key reaches a fixed list of routes; --capability ${requestedCapability || '(empty)'} would do nothing. Omit it.`,
+        `An inference key opens the inference routes and no MCP tools; capability gates MCP tools only, so --capability ${requestedCapability || '(empty)'} would do nothing. Omit it.`,
       );
     }
-    const capability = requestedCapability ?? (toollessScope ? 'read' : DEFAULT_API_KEY_CAPABILITY);
+    const capability = requestedCapability ?? (isQaRead || isInference ? 'read' : DEFAULT_API_KEY_CAPABILITY);
     if (!API_KEY_CAPABILITIES.includes(capability)) {
       usageAndExit(
         `Unknown capability: ${capability || '(empty)'}. Valid: ${API_KEY_CAPABILITIES.join(', ')} — ` +
@@ -382,22 +405,18 @@ export function runApiKeyCommand(args: string[]) {
               'Update the Hub if you need capability-limited keys.',
             ]),
         ...(isQaRead ? ['', 'Accepted only on:', ...QA_READ_ROUTES.map((route) => `  ${route}`), 'Every other route refuses it.'] : []),
-        ...(isInference
-          ? [
-              '',
-              'Accepted only on:',
-              ...INFERENCE_ROUTES.map((route) => `  ${route}`),
-              'Every other route refuses it. Point a client at this Hub with',
-              `  base URL  ${bold('http://<this-hub>:5002/api/inference/v1')}`,
-              '  api key   the key below',
-              'See docs/connect-developer-tools.md.',
-            ]
-          : []),
+        // Printed as base URLs because that is the field the operator is about to fill in. As with
+        // qa:read, this command cannot tell whether the Hub in front of it knows the scope: a Hub built
+        // before `inference` existed accepts the row (scopes is an unchecked text[]) but authenticates
+        // nothing with it, and answers the editor 403 "only available on the local appliance network".
+        ...(isInference ? ['', 'Accepted only on the inference routes:', ...inferenceBaseLines(), 'Every other route refuses it.'] : []),
         '',
         `${bold('key')}     ${rawKey}`,
         '',
         'This is the only time the key is shown. Store it now.',
-        toollessScope ? 'Revoke it in Settings → Security.' : 'Change what it can do, or revoke it, in Settings → Security.',
+        // Capability is inert on both standalone scopes, so "change what it can do" would send the
+        // operator to a control that does nothing to this key.
+        isQaRead || isInference ? 'Revoke it in Settings → Security.' : 'Change what it can do, or revoke it, in Settings → Security.',
       ],
       'green',
     );

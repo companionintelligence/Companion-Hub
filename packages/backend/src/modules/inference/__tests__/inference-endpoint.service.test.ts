@@ -120,6 +120,28 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
       expect(inventory.backends.map((entry) => entry.node)).toEqual(['this Hub']);
     });
 
+    it('carries each node context cap, so a pooled handout can take the minimum over the nodes serving the model', async () => {
+      config.getInferencePreferences.mockReturnValue({ maxNumCtx: 32_768 } as never);
+      peers.listConnectedPeers.mockResolvedValue([peer('core-2', {}, { maxNumCtx: 16_384 }), peer('core-6')]);
+
+      const inventory = await service.poolInventory('test');
+
+      expect(inventory.backends).toEqual([
+        { node: 'this Hub', local: true, backend: 'ollama', models: ['gemma3:1b'], maxNumCtx: 32_768 },
+        { node: 'core-2', local: false, backend: 'ollama', models: ['core-2-model:8b'], maxNumCtx: 16_384 },
+        // Absent on the wire (an older build, or no cap) stays absent here: it is not a cap of 0.
+        { node: 'core-6', local: false, backend: 'ollama', models: ['core-6-model:8b'] },
+      ]);
+    });
+
+    it('reads a peer cap the way the wire is read: a value this build cannot believe is no cap', async () => {
+      peers.listConnectedPeers.mockResolvedValue([peer('core-2', {}, { maxNumCtx: '16384' }), peer('core-6', {}, { maxNumCtx: 12 })]);
+
+      const inventory = await service.poolInventory('test');
+
+      expect(inventory.backends.filter((entry) => !entry.local).every((entry) => !('maxNumCtx' in entry))).toBe(true);
+    });
+
     it('degrades to this node alone, with a warning, when the peer table cannot be read', async () => {
       peers.listConnectedPeers.mockRejectedValue(new Error('connection refused'));
 
@@ -127,6 +149,21 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
 
       expect(inventory.backends.map((entry) => entry.node)).toEqual(['this Hub']);
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('connection refused'));
+    });
+  });
+
+  describe('localContextCap', () => {
+    it('is the persisted cap, clamped, and null when none is set or the configuration cannot answer', () => {
+      config.getInferencePreferences.mockReturnValue({ maxNumCtx: 16_384 } as never);
+      expect(service.localContextCap()).toBe(16_384);
+
+      config.getInferencePreferences.mockReturnValue({ maxNumCtx: null } as never);
+      expect(service.localContextCap()).toBeNull();
+
+      config.getInferencePreferences.mockImplementation(() => {
+        throw new Error('settings mid-migration');
+      });
+      expect(service.localContextCap()).toBeNull();
     });
   });
 

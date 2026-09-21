@@ -196,6 +196,9 @@ export function saveFleetRoster(nodes: readonly FleetNode[], path: string = flee
  * excluded — quietly, on the next run. Discovery only fills fields that are absent and may correct
  * `tailnetName`, which is a fact about the network rather than a preference.
  */
+/** The exact note earlier scans wrote; never written now, removed on merge. */
+export const SCAN_OFFLINE_NOTE = 'tailnet reports offline';
+
 export function mergeFleetRoster(existing: readonly FleetNode[], discovered: readonly FleetNode[]): { nodes: FleetNode[]; added: FleetNode[] } {
   const byIp = new Map(existing.map((n) => [n.ip, { ...n }]));
   const added: FleetNode[] = [];
@@ -210,6 +213,10 @@ export function mergeFleetRoster(existing: readonly FleetNode[], discovered: rea
     if (found.tailnetName) current.tailnetName = found.tailnetName;
     if (!current.name || current.name === current.ip) current.name = found.name;
     if (current.local === undefined && found.local) current.local = true;
+    // Earlier scans wrote their own observation into `note`, where it was then preserved as if an
+    // operator had written it — and outlived the outage it described. The scan no longer writes it;
+    // this clears the copies it left.
+    if (current.note === SCAN_OFFLINE_NOTE) delete current.note;
   }
 
   return { nodes: [...byIp.values()], added };

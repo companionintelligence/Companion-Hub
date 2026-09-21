@@ -19,7 +19,20 @@ export const CATALOG_WRITE_SCOPE = 'catalog:write';
 /** Registering devices into the org, so a fleet install needs no browser per box. */
 export const DEVICE_PAIR_SCOPE = 'device:pair';
 
-export const CLI_LOGIN_SCOPES = [CATALOG_WRITE_SCOPE, DEVICE_PAIR_SCOPE] as const;
+/**
+ * Everything `device:pair` grants, and the rest of a device's life: listing an org's devices,
+ * minting a replacement pairing code for one, deleting one. Its own scope so a fleet install that
+ * only needs to enrol machines never holds a token that can destroy their records.
+ */
+export const DEVICE_MANAGE_SCOPE = 'device:manage';
+
+export const CLI_LOGIN_SCOPES = [CATALOG_WRITE_SCOPE, DEVICE_PAIR_SCOPE, DEVICE_MANAGE_SCOPE] as const;
+
+/** Whether a stored login may mint devices — `device:pair`, or the `device:manage` that includes it. */
+export function loginCanPairDevices(login: Pick<PortalLogin, 'scope'> | null | undefined): boolean {
+  const scope = loginScope(login);
+  return scope === DEVICE_PAIR_SCOPE || scope === DEVICE_MANAGE_SCOPE;
+}
 
 export type CliLoginScope = (typeof CLI_LOGIN_SCOPES)[number];
 
@@ -210,10 +223,8 @@ export type MintedPairingCode = { deviceId: string; pairingCode: string; name: s
  * the authorization.
  */
 export async function mintPairingCode(params: { name: string; login: PortalLogin; fetchImpl?: typeof fetch }): Promise<MintedPairingCode> {
-  const scope = loginScope(params.login);
-
-  if (scope !== DEVICE_PAIR_SCOPE) {
-    throw new Error(`the stored Portal login has scope ${scope ?? 'none'}; run: cihub login --scope ${DEVICE_PAIR_SCOPE}`);
+  if (!loginCanPairDevices(params.login)) {
+    throw new Error(`the stored Portal login has scope ${loginScope(params.login) ?? 'none'}; run: cihub login --scope ${DEVICE_PAIR_SCOPE}`);
   }
 
   const fetchImpl = params.fetchImpl ?? fetch;

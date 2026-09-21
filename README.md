@@ -51,7 +51,10 @@ Hub speaks the OpenAI API and the Ollama native API. Create an `inference`-scope
 **Settings → Security** (or `cihub api-key create --scope inference`) and point any OpenAI-compatible
 client — Cursor, Continue, Cline, Aider, Zed, the OpenAI SDKs — at
 `http://<hub-host>:5002/api/inference/v1` with `"model": "auto"`. The key reaches the inference
-routes and nothing else. See [`docs/connect-developer-tools.md`](docs/connect-developer-tools.md).
+routes and nothing else. See [`docs/editor-inference.md`](docs/editor-inference.md).
+
+It works the other way too: if you already run `llama-server` or LM Studio, set `LLAMACPP_URL` or
+`LMSTUDIO_URL` and the Hub serves from it rather than asking you to switch engines.
 
 ## Documentation
 

@@ -94,6 +94,9 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolHealthPollSeconds: number;
         poolPressureWeight: number;
         poolMaxPromptTokens: number | null;
+        poolProbeSnapshotTtlMs: number;
+        poolPrefixAffinityMaxInFlight: number;
+        poolSlotAwareness: number;
         poolPins: unknown[];
       };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
@@ -128,6 +131,17 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // No prompt ceiling: every node serves any prompt size until an operator says otherwise, which
       // is what the build before the ceiling did.
       poolMaxPromptTokens: null,
+      // 0 is the pre-snapshot build: placement probes every local engine live on each request,
+      // stall included, until an operator PATCHes a TTL onto a canary node. Off by default so the
+      // canary can be measured against a node that took the same image and nothing else.
+      poolProbeSnapshotTtlMs: 0,
+      // 0 is the pre-affinity build: no prefix is hashed or remembered and the ranker alone decides,
+      // until an operator PATCHes a limit onto a canary node. Off by default for the same reason as
+      // the snapshot TTL above: the canary is measured against a node that took the same image.
+      poolPrefixAffinityMaxInFlight: 0,
+      // 0 is the pre-slots build: no slot count is read and the ranker alone decides, until an
+      // operator PATCHes it on at a canary node — off by default for the same reason as the two above.
+      poolSlotAwareness: 0,
       // No pins until an operator sets one, so the ranker alone decides — which is the whole
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],
@@ -233,6 +247,30 @@ describe('ConfigurationService Hub Pool preferences', () => {
     expect(svc.getHubPoolPreferences().poolMaxPromptTokens).toBe(16_000);
   });
 
+  it('persists the probe snapshot TTL and reads it back, including 0 for live probes', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolProbeSnapshotTtlMs: 0 });
+
+    // `?? DEFAULT` must not swallow a 0: it is the operator's way back to the pre-snapshot build.
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolProbeSnapshotTtlMs: 0 });
+    expect(svc.getHubPoolPreferences().poolProbeSnapshotTtlMs).toBe(0);
+  });
+
+  it('persists the prefix-affinity limit and reads it back, including 0 for off', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolPrefixAffinityMaxInFlight: 2 });
+    expect(svc.getHubPoolPreferences().poolPrefixAffinityMaxInFlight).toBe(2);
+
+    await svc.setHubPoolPreferences({ poolPrefixAffinityMaxInFlight: 0 });
+
+    // `?? DEFAULT` must not swallow a 0: it is the operator's way back to the pre-affinity build.
+    expect(svc.mergeSettingsToDisk.mock.calls[1][0]).toEqual({ hubPoolPrefixAffinityMaxInFlight: 0 });
+    expect(svc.getHubPoolPreferences().poolPrefixAffinityMaxInFlight).toBe(0);
+  });
+
   it('clears a prompt ceiling by removing the key, and reads the cleared value as no ceiling', async () => {
     const svc = makePoolService();
     await svc.setHubPoolPreferences({ poolMaxPromptTokens: 16_000 });
@@ -293,6 +331,119 @@ describe('settingsSchema — Hub Pool fields', () => {
       expect(parsed.success).toBe(true);
       expect(parsed.success && parsed.data).toEqual({});
     }
+  });
+});
+
+describe('settingsSchema — inference context cap', () => {
+  it('accepts the cap as a string, as a form would submit it, and degrades an out-of-range one to "no cap"', () => {
+    expect(settingsSchema.partial().safeParse({ inferenceMaxNumCtx: '16384' }).data).toEqual({ inferenceMaxNumCtx: 16384 });
+    // A dropped digit and a value past the longest window on the fleet both read as absent on the
+    // boot path rather than failing the parse; the write path (UserSettingsBody) refuses them.
+    for (const persisted of [{ inferenceMaxNumCtx: 1638 }, { inferenceMaxNumCtx: 2 ** 21 }, { inferenceMaxNumCtx: 'lots' }]) {
+      const parsed = settingsSchema.partial().safeParse(persisted);
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data).toEqual({});
+    }
+  });
+});
+
+describe('ConfigurationService inference preferences — context cap', () => {
+  function makeService(userSettings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      config: { demoMode: boolean; userSettings: Record<string, unknown> };
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      getInferencePreferences: () => { maxNumCtx: number | null };
+      setInferencePreferences: (...args: unknown[]) => Promise<{ maxNumCtx: number | null }>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { demoMode: false, userSettings };
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  it('is null until an operator sets one — the handout then sizes exactly as the build before the cap', () => {
+    expect(makeService({}).getInferencePreferences().maxNumCtx).toBeNull();
+  });
+
+  it('reads a persisted cap through the clamp, so a value outside this build bounds is no cap rather than a tiny one', () => {
+    expect(makeService({ inferenceMaxNumCtx: 16_384 }).getInferencePreferences().maxNumCtx).toBe(16_384);
+    expect(makeService({ inferenceMaxNumCtx: 12 }).getInferencePreferences().maxNumCtx).toBeNull();
+  });
+
+  it('sets, leaves alone, and clears the cap through setInferencePreferences', async () => {
+    const svc = makeService({ inferenceMaxNumCtx: 16_384 });
+
+    // Omitted: unchanged.
+    expect((await svc.setInferencePreferences('ollama')).maxNumCtx).toBe(16_384);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama' });
+
+    // Set.
+    expect(
+      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 32_768)).maxNumCtx,
+    ).toBe(32_768);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceMaxNumCtx: 32_768 });
+
+    // Cleared: the key is removed rather than stored as null, like the pool prompt ceiling.
+    expect(
+      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, null)).maxNumCtx,
+    ).toBeNull();
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceMaxNumCtx: undefined });
+  });
+});
+
+describe('settingsSchema — inference Ollama slots', () => {
+  it('accepts the count as a string, as a form would submit it, and degrades an out-of-range one to "not stated"', () => {
+    expect(settingsSchema.partial().safeParse({ inferenceOllamaSlots: '4' }).data).toEqual({ inferenceOllamaSlots: 4 });
+    // Zero, a value past the bound and a word all read as absent on the boot path rather than
+    // failing the parse; the write path (UserSettingsBody) refuses them.
+    for (const persisted of [{ inferenceOllamaSlots: 0 }, { inferenceOllamaSlots: 65 }, { inferenceOllamaSlots: 'four' }]) {
+      const parsed = settingsSchema.partial().safeParse(persisted);
+      expect(parsed.success).toBe(true);
+      expect(parsed.success && parsed.data).toEqual({});
+    }
+  });
+});
+
+describe('ConfigurationService inference preferences — Ollama slots', () => {
+  function makeService(userSettings: Record<string, unknown>) {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      config: { demoMode: boolean; userSettings: Record<string, unknown> };
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      getInferencePreferences: () => { ollamaSlots: number | null };
+      setInferencePreferences: (...args: unknown[]) => Promise<{ ollamaSlots: number | null }>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { demoMode: false, userSettings };
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  it('is null until an operator states one — the pool then ranks this node by queue depth alone, as before slots', () => {
+    expect(makeService({}).getInferencePreferences().ollamaSlots).toBeNull();
+  });
+
+  it('reads a persisted count through the clamp, so a value outside this build bounds is not stated rather than believed', () => {
+    expect(makeService({ inferenceOllamaSlots: 4 }).getInferencePreferences().ollamaSlots).toBe(4);
+    expect(makeService({ inferenceOllamaSlots: 0 }).getInferencePreferences().ollamaSlots).toBeNull();
+  });
+
+  it('sets, leaves alone, and clears the count through setInferencePreferences', async () => {
+    const svc = makeService({ inferenceOllamaSlots: 4 });
+    const untouched = [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined];
+
+    // Omitted: unchanged.
+    expect((await svc.setInferencePreferences('ollama')).ollamaSlots).toBe(4);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama' });
+
+    // Set.
+    expect((await svc.setInferencePreferences('ollama', ...untouched, 2)).ollamaSlots).toBe(2);
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaSlots: 2 });
+
+    // Cleared: the key is removed rather than stored as null, like the cap.
+    expect((await svc.setInferencePreferences('ollama', ...untouched, null)).ollamaSlots).toBeNull();
+    expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceOllamaSlots: undefined });
   });
 });
 

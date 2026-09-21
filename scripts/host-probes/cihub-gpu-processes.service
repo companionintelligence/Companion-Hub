@@ -1,0 +1,11 @@
+# Per-process GPU VRAM for the Hub — see cihub-gpu-processes.sh beside this file, and the
+# "Per-process GPU VRAM" section of docs/fleet-setup.md for the install steps.
+[Unit]
+Description=Write per-process GPU VRAM for the Companion Hub container
+
+[Service]
+Type=oneshot
+# The state directory the Hub's compose binds to /data/state. Override with a drop-in on a node
+# whose ROOT_FOLDER_HOST is elsewhere.
+Environment=CI_HUB_STATE_PATH=%h/.local/share/companion-hub/state
+ExecStart=%h/.local/bin/cihub-gpu-processes.sh

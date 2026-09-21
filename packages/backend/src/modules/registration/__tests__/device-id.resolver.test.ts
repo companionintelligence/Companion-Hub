@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import { vol } from 'memfs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizeDeviceIdCandidate, resolveDeviceId } from '../device-id.resolver';
+import {
+  clearRegisteredDeviceId,
+  normalizeDeviceIdCandidate,
+  persistRegisteredDeviceId,
+  readRegisteredDeviceId,
+  resolveDeviceId,
+} from '../device-id.resolver';
 
 describe('device-id.resolver', () => {
   const dataDir = '/data';
@@ -32,6 +38,26 @@ describe('device-id.resolver', () => {
     it('prefers DEVICE_ID env var', async () => {
       process.env.DEVICE_ID = 'env-device-id';
 
+      await expect(resolveDeviceId({ dataDir })).resolves.toBe('env-device-id');
+    });
+
+    it('keeps the ID this Hub registered under ahead of anything the host can say, until a fresh setup clears it', async () => {
+      // The 0.2.61 image (root) registered a Hub as its DMI product UUID; the next image (uid 1000)
+      // could not read that file, derived the machine ID instead, and Portal answered every
+      // check-in with 403 "Device ID does not match authenticated device".
+      const execCommand = vi.fn().mockReturnValue('HW-SERIAL-AFTER-UPGRADE');
+      persistRegisteredDeviceId(dataDir, '0b781300-bba2-11f0-b93a-f8ab1e000000');
+      expect(readRegisteredDeviceId(dataDir)).toBe('0b781300-bba2-11f0-b93a-f8ab1e000000');
+      await expect(resolveDeviceId({ dataDir, execCommand: execCommand as never })).resolves.toBe('0b781300-bba2-11f0-b93a-f8ab1e000000');
+
+      clearRegisteredDeviceId(dataDir);
+      expect(readRegisteredDeviceId(dataDir)).toBeNull();
+      await expect(resolveDeviceId({ dataDir, execCommand: execCommand as never })).resolves.toBe('HW-SERIAL-AFTER-UPGRADE');
+    });
+
+    it('still lets an explicit DEVICE_ID win over the registration record', async () => {
+      process.env.DEVICE_ID = 'env-device-id';
+      persistRegisteredDeviceId(dataDir, 'registered-id');
       await expect(resolveDeviceId({ dataDir })).resolves.toBe('env-device-id');
     });
 

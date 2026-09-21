@@ -7,33 +7,80 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { bringUpScript, claimHubScript, installCihubScript, joinPoolScript, pullModelScript, updateHubScript } from '../lib/fleet-install.js';
+import {
+  bringUpScript,
+  claimHubScript,
+  describeStepFailure,
+  joinPoolScript,
+  pullModelScript,
+  shouldAdoptExistingCihub,
+  updateHubScript,
+} from '../lib/fleet-install.js';
 
-describe('installCihubScript', () => {
-  const script = installCihubScript();
-
-  it('downloads to a file and never pipes a download into a shell', () => {
-    // A POSIX pipeline reports only the last command's status, so `curl | sh` executes a truncated
-    // download and reports success.
-    expect(script).toContain('-o "$tmp"');
-    expect(script).not.toMatch(/curl[^\n]*\|\s*(sh|bash)/);
+describe('shouldAdoptExistingCihub', () => {
+  it('adopts a present cihub when nothing better is on offer, and says the versions were not compared', () => {
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.55' })).toMatchObject({ adopt: true, compared: false });
+    // `latest` is the flag's default, not a version: a July 0.2.36 was adopted against it on
+    // 2026-09-20 with a current release in hand. It must read as "unknown", never as "newer".
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.36' }, 'latest')).toMatchObject({ adopt: true, compared: false });
+    expect(shouldAdoptExistingCihub({ present: true }, 'latest')).toMatchObject({ adopt: true, compared: false, why: 'already installed' });
   });
 
-  it('refuses an empty download instead of installing it', () => {
-    // This exact URL 404'd for the whole life of the old installer; a renamed error page must not
-    // become /usr/local/bin/cihub.
-    expect(script).toContain('[ -s "$tmp" ]');
+  it('replaces one that is older than what this run would install', () => {
+    // A 0.2.55 from August drove a fresh install on 2026-09-18 and ran `up` against service names
+    // that no longer existed. "Present" is not "usable".
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.55' }, 'v0.2.72')).toMatchObject({ adopt: false, compared: true });
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.72' }, 'v0.2.72')).toMatchObject({ adopt: true, compared: true });
+    expect(shouldAdoptExistingCihub({ present: true, version: '0.2.80' }, 'v0.2.72')).toMatchObject({ adopt: true, compared: true });
   });
 
-  it('resolves the asset from the architecture, and fails loudly on an unknown one', () => {
-    expect(script).toContain('cihub-linux-x64');
-    expect(script).toContain('cihub-linux-arm64');
-    expect(script).toMatch(/unsupported architecture/);
+  it('replaces one whose version cannot be read, rather than guessing', () => {
+    expect(shouldAdoptExistingCihub({ present: true }, 'v0.2.72')).toMatchObject({ adopt: false, compared: false });
+    expect(shouldAdoptExistingCihub({ present: false }, 'v0.2.72')).toMatchObject({ adopt: false, compared: false });
+  });
+});
+
+describe('describeStepFailure', () => {
+  it('prefers the line that explains the failure over the last line of compose noise', () => {
+    const out = [
+      'Container ci-hub Started',
+      '┌─ Pairing failed ─┐',
+      '  That device is already paired. Send its current device key to re-pair it.',
+      '└──┘',
+      'Container traefik Started',
+    ].join('\n');
+    const detail = describeStepFailure(out, '');
+    expect(detail).toContain('Pairing failed');
+    expect(detail).toContain('already paired');
+    expect(detail).not.toMatch(/^Container traefik Started/);
   });
 
-  it('pins an explicit version when asked', () => {
-    expect(installCihubScript('v0.2.61')).toContain('tag="v0.2.61"');
-    expect(installCihubScript()).toContain('releases/latest');
+  it('falls back to the tail when nothing looks like an explanation', () => {
+    expect(describeStepFailure('one\ntwo\nthree\nfour', '')).toBe('two | three | four');
+  });
+
+  it('reads stderr first, where hub-up-failed markers go', () => {
+    expect(
+      describeStepFailure('Container traefik Started', 'hub-up-failed: nothing answered http://127.0.0.1:5003/api/registration/phase after cihub up'),
+    ).toContain('hub-up-failed');
+  });
+
+  it('never returns an empty reason when it knows how the step ended', () => {
+    // `✗ install cihub (0s) — ` on 2026-09-20: the script exited 0 before its first echo, so there was
+    // nothing to quote and the line said nothing. The exit code is always something to say.
+    expect(describeStepFailure('', '', { code: 0, marker: 'cihub-installed' })).toBe(
+      'exited 0 without printing cihub-installed: nothing on stdout or stderr',
+    );
+    expect(describeStepFailure('', '', { code: 1, marker: 'cihub-installed' })).toBe('exited 1 with nothing on stdout or stderr');
+    expect(describeStepFailure('', '', { code: null, marker: 'cihub-installed' })).toBe('killed before it printed anything');
+    // Output but no marker on an exit 0 is the same shape with more to show; the shape is still named.
+    expect(describeStepFailure('Container traefik Started', '', { code: 0, marker: 'hub-up-complete' })).toBe(
+      'exited 0 without printing hub-up-complete: Container traefik Started',
+    );
+    // A non-zero exit with something to quote quotes it, as before.
+    expect(describeStepFailure('', 'no passwordless sudo to install into /usr/local/bin', { code: 1, marker: 'cihub-installed' })).toBe(
+      'no passwordless sudo to install into /usr/local/bin',
+    );
   });
 });
 
@@ -49,9 +96,15 @@ describe('bringUpScript', () => {
     expect(bringUpScript('pw12345678', 'ABC123')).toContain("cihub register --code 'ABC123'");
   });
 
-  it('verifies registration state rather than trusting the command', () => {
+  it('verifies registration state rather than trusting the command, and fails on silence', () => {
     // register exited 0 on every failure until recently; the state check is the real evidence.
-    expect(bringUpScript('pw12345678', 'ABC123')).toContain('/api/registration/status');
+    // A heal once moved API_PORT to 5003; the probe was silent and the step still said done.
+    const script = bringUpScript('pw12345678', 'ABC123');
+    expect(script).toContain('/api/registration/phase');
+    expect(script).toContain('^API_PORT=');
+    expect(script).toMatch(/\[ -n "\$phase" \] \|\| \{ echo "hub-up-failed/);
+    expect(script).toContain('"registered":true');
+    expect(script).not.toContain('|| true\n');
   });
 
   it('escapes a quote in either secret rather than breaking out of the string', () => {

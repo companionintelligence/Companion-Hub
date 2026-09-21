@@ -34,6 +34,8 @@ import {
   type PoolContainerRollup,
   type PoolContainerSampler,
 } from '@/common/helpers/hub-pool';
+import { clampContextCap } from '@/common/helpers/inference-context-cap';
+import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -505,6 +507,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // usable, without ever putting a probe or a keygen on this path.
         identity,
         ...this.localPromptCeilingStatus(),
+        maxNumCtx: this.configuration.getInferencePreferences()?.maxNumCtx ?? null,
+        ollamaSlots: this.configuration.getInferencePreferences()?.ollamaSlots ?? null,
         throughput: this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [],
       },
       // `peerKeyFingerprint`, never the key: the fingerprint is what an operator compares across two
@@ -526,6 +530,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         containers: this.peerContainers(peer),
         // Through the same clamp the ranker reads it with, so a value routing ignores shows as none.
         maxPromptTokens: clampPromptCeiling((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxPromptTokens),
+        maxNumCtx: this.peerContextCap(peer),
+        ollamaSlots: clampOllamaSlots((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.ollamaSlots),
         throughput: this.peerThroughput(peer),
       })),
       peerCounts: {
@@ -1199,6 +1205,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const gpuPressureSource = this.pressureService.source();
     const containers = this.ownContainerRollup();
     const promptCeiling = resolvePoolMaxPromptTokens(this.configuration.getHubPoolPreferences().poolMaxPromptTokens).maxPromptTokens;
+    const contextCap = this.configuration.getInferencePreferences()?.maxNumCtx ?? null;
+    const ollamaSlots = this.configuration.getInferencePreferences()?.ollamaSlots ?? null;
     const throughput = this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [];
     return {
       hardwareTier: inventory.hardwareTier,
@@ -1237,6 +1245,14 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // not see it flicker with the inbound switch. Read per call, so a PATCH reaches peers on their
       // next poll rather than after a restart.
       ...(promptCeiling === null ? {} : { maxPromptTokens: promptCeiling }),
+      // Same encoding as the ceiling, for the same reasons: absent is "no cap" on every build, it
+      // describes the engine rather than an offer of work, and a PATCH reaches peers on their next
+      // poll. An entry node reads it to cap what it hands an app the pool may send here.
+      ...(contextCap === null ? {} : { maxNumCtx: contextCap }),
+      // Same encoding again: absent is "not stated" on every build and ranks by queue depth alone,
+      // it describes the daemon rather than an offer of work, and a PATCH reaches peers on their next
+      // poll. An entry node with `poolSlotAwareness` on reads it to tell a full engine from a free one.
+      ...(ollamaSlots === null ? {} : { ollamaSlots }),
       // Omitted when nothing has been timed, like every other measurement here: absence is what an
       // older build sends and what a reader ranks as unmeasured. Advertised whether or not this node
       // is accepting work, like the ceiling, because it describes the hardware rather than an offer.
@@ -1306,6 +1322,22 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
     return clampContainerRollup(capabilities?.containers);
+  }
+
+  /**
+   * A peer's context cap as this node's routing reads it, or `null` for "no cap advertised".
+   *
+   * Shared by `/pool/status` and `/pool/peers` for the same reason {@link peerContainers} is: the
+   * column is free-form jsonb the peer writes, so the clamped value is the only one a caller may
+   * render, and both surfaces must show the number that actually excludes the peer.
+   *
+   * Deliberately NOT freshness-gated, unlike the rollup above: a cap is the far operator's policy,
+   * not a measurement of this second, and `applyContextCap` keeps applying it for as long as it
+   * still trusts the same snapshot's inventory. Gating it here would draw a capped node as uncapped
+   * — "takes any window" — which is the one reading that sends a 64k request at a 16k engine.
+   */
+  peerContextCap(peer: HubPoolPeer): number | null {
+    return clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx);
   }
 
   /**

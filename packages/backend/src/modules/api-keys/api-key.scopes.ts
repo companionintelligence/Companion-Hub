@@ -14,16 +14,20 @@ import { OPERATOR_MINTABLE_SCOPES as SHARED_OPERATOR_MINTABLE_SCOPES, type Opera
  *   routing log, one app's status and the install queue — and refused everywhere else: 403 on any
  *   other GET, 401 on a write (`AuthMiddleware` only resolves it on a read).
  *   See {@link QA_READ_SCOPE}.
- * - 'inference': accepted ONLY on the OpenAI-compatible and Ollama-native inference surfaces marked
- *   `@InferenceApi()`, and refused everywhere else. It carries no operator authority at all — see
- *   {@link INFERENCE_SCOPE}.
+ * - 'inference': accepted ONLY by `InferenceAccessGuard`, on the OpenAI-compatible
+ *   `/api/inference/v1/*` routes and the app-facing pool proxy under `/api/inference/pool/*`, and
+ *   only when the request did not originate inside the appliance (an internal caller is admitted by
+ *   origin and its key is never read). Every other route refuses it. See {@link INFERENCE_SCOPE}.
+ *
+ * Append new scopes LAST: `normalizeScopes` orders a stored set by this list, so inserting one in
+ * the middle would re-order every existing row's scopes the next time it is reconciled.
  */
 export const API_KEY_SCOPES = ['mcp', 'app', 'qa:read', 'inference'] as const;
 
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 
-export const MCP_SCOPE = 'mcp' satisfies ApiKeyScope;
-export const APP_SCOPE = 'app' satisfies ApiKeyScope;
+export const MCP_SCOPE: ApiKeyScope = 'mcp';
+export const APP_SCOPE: ApiKeyScope = 'app';
 
 /**
  * The credential a test harness or a monitoring script should hold instead of an operator one.
@@ -43,40 +47,27 @@ export const APP_SCOPE = 'app' satisfies ApiKeyScope;
  * operator behind it, and a key that also carried 'mcp' would be one credential with two unrelated
  * blast radii.
  */
-export const QA_READ_SCOPE = 'qa:read' satisfies ApiKeyScope;
+export const QA_READ_SCOPE: ApiKeyScope = 'qa:read';
 
 /**
- * The credential an *external* OpenAI-compatible client holds — an editor assistant, a coding
- * agent, a script on the operator's laptop — so that it can send inference to this Hub without
- * holding operator authority and without being on the appliance's own network.
+ * The credential an editor or an SDK holds to use a Hub as its OpenAI-compatible endpoint.
  *
- * Why it exists. Until now the Hub's `/v1` surface was guarded by `InternalNetworkGuard` alone,
- * whose own docblock says it is "NOT a real trust boundary": it admits any caller whose source IP
- * is loopback or RFC1918, which behind Traefik or the Cloudflare tunnel is the proxy's own address.
- * So the surface was simultaneously too narrow for the caller it should serve (an operator's
- * laptop on the tailnet is not RFC1918 to this container) and too wide for the one it should not.
- * A scope fixes both ends: the key is the credential, the network is no longer the argument.
+ * An editor or SDK needs exactly three values — base URL, API key, model id — and the key sits in
+ * editor config files that sync to clouds (Continue's `config.yaml`, Zed's `settings.json`, a
+ * shell profile). A leaked one must therefore spend GPU time and nothing else: it never opens the
+ * MCP tool surface, Settings, or Portal. Like {@link QA_READ_SCOPE}, the CLI refuses to combine it
+ * with another scope — a key that also carried 'mcp' would be one credential with two unrelated
+ * blast radii — and the backend does not enforce that on its own.
  *
- * What it reaches: the handlers marked `@InferenceApi()` — chat completions, completions,
- * embeddings, the model listing, audio, and the Ollama-native equivalents, on both the direct
- * (`/api/inference/v1/*`) and pooled (`/api/inference/pool/*`) paths. Nothing else. `AuthGuard`
- * refuses it everywhere else exactly as it refuses a `qa:read` key, and for the same reason: the
- * middleware installs no `user`, so every guard that asks "is there an operator here" still says no.
+ * A key's `capability` is inert here: the inference routes have no verbs to gate, and
+ * `api-key.capabilities.ts` says capability gates MCP tools only. The CLI stores `read` for it.
  *
- * Capability is inert on this key, as on an 'app' key. `read`/`write`/`full` describe the MCP tool
- * surface; running a completion is neither a read nor a write of appliance state, and there is no
- * third thing on this surface for a capability to choose between. The route list is the whole of
- * its authority.
- *
- * Standalone, like {@link QA_READ_SCOPE}, and for a sharper reason. This key is pasted into
- * third-party software — an editor extension, an agent harness, a `.env` that gets committed by
- * accident — which is a materially worse place for a secret to live than an operator's shell. One
- * row that also carried 'mcp' would put the whole tool surface (install, start, uninstall) behind a
- * string the operator handed to their IDE.
- *
- * Minted by `cihub api-key create --scope inference`, or in Settings → Security.
+ * Minted by `cihub api-key create --scope inference`, or from Settings → Security, which offers it
+ * beside 'mcp' (see {@link OPERATOR_MINTABLE_SCOPES}) and lists it under its own badge. Checked by `InferenceAccessGuard`, and only on its second leg:
+ * a request from inside the appliance is admitted by origin before any header is read, which is why
+ * apps sending a placeholder bearer keep working with zero key-store lookups.
  */
-export const INFERENCE_SCOPE = 'inference' satisfies ApiKeyScope;
+export const INFERENCE_SCOPE: ApiKeyScope = 'inference';
 
 /**
  * Scopes an operator may mint for themselves, re-exported from `@ci-hub/common` — see the docblock
@@ -89,13 +80,3 @@ export const INFERENCE_SCOPE = 'inference' satisfies ApiKeyScope;
 export const OPERATOR_MINTABLE_SCOPES = SHARED_OPERATOR_MINTABLE_SCOPES satisfies readonly ApiKeyScope[];
 
 export type { OperatorMintableScope };
-
-/**
- * Scopes that must be the only scope on their key.
- *
- * Both are credentials whose whole point is that they do NOT carry operator authority — a test
- * harness's read-only key, an editor's inference key. One row that also carried 'mcp' would hand
- * that holder the entire tool surface under a name saying otherwise, which is the exact mistake
- * each scope exists to prevent. Mirrored in `scripts/lib/cli-api-key.ts`.
- */
-export const STANDALONE_SCOPES: readonly ApiKeyScope[] = [QA_READ_SCOPE, INFERENCE_SCOPE];

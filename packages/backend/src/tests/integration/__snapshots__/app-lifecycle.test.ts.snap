@@ -111,6 +111,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.X.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: test2:test
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: test2:test
 
 ",
   "/data/apps/test/test2/metadata/description.md": "test",
@@ -279,6 +284,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.X.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: test:test
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: test:test
 
 ",
   "/data/apps/test/test/metadata/description.md": "test",
@@ -497,6 +507,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.X.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: app1:test
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: app1:test
 
 ",
   "/data/apps/test/app1/metadata/description.md": "test",
@@ -583,6 +598,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.X.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: app2:test
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: app2:test
 
 ",
   "/data/apps/test/app2/metadata/description.md": "test",
@@ -669,6 +689,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.X.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: app3:test
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: app3:test
 
 ",
   "/data/apps/test/app3/metadata/description.md": "test",

@@ -22,6 +22,21 @@ describe('isPrivateOrLocalIp', () => {
     expect(isPrivateOrLocalIp('::1')).toBe(true);
     expect(isPrivateOrLocalIp('203.0.113.10')).toBe(false);
   });
+
+  /**
+   * The IPv6 private ranges are recognised by prefix, and `normalizeIpLiteral` returns the raw string
+   * for anything `SocketAddress` cannot parse — so a non-address that happens to start with `fd`,
+   * `fc` or `fe80:` must be rejected as not-an-address before the prefix is ever consulted.
+   */
+  it('recognises ULA and link-local, but only for a string that is an address', () => {
+    expect(isPrivateOrLocalIp('fd00::1')).toBe(true);
+    expect(isPrivateOrLocalIp('fc00::1')).toBe(true);
+    expect(isPrivateOrLocalIp('fe80::1')).toBe(true);
+    expect(isPrivateOrLocalIp('fdxyz')).toBe(false);
+    expect(isPrivateOrLocalIp('fc-garbage')).toBe(false);
+    expect(isPrivateOrLocalIp('fe80:zzz')).toBe(false);
+    expect(isPrivateOrLocalIp('unknown')).toBe(false);
+  });
 });
 
 describe('isPoolProbeTarget', () => {

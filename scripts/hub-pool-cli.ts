@@ -94,6 +94,16 @@ export interface PoolPeerRow {
    * it. `null` is no ceiling; absent is a Hub predating ceilings. Both mean the peer serves any prompt.
    */
   maxPromptTokens?: number | null;
+  /**
+   * The context cap the peer advertised, as this Hub's routing reads it — on `/status` rows and on
+   * `/peers` rows alike, since a cap now decides which nodes a large window may go to.
+   *
+   * `null` is "no cap advertised", which routing reads as "takes any window"; absent is a Hub
+   * predating caps on this route. Neither may be rendered as a number, and neither is a default.
+   */
+  maxNumCtx?: number | null;
+  /** Present on `/status` rows only: the Ollama slot count the peer advertised, as routing reads it. `null` is not stated; absent is a Hub predating slots. */
+  ollamaSlots?: number | null;
   /** Present on `/status` rows only: the peer's rates as timed here and as it reported them. Absent on a Hub predating throughput. */
   throughput?: { observed: PoolThroughputEstimate[]; advertised: PoolThroughputEstimate[] };
 }
@@ -111,6 +121,11 @@ export interface PoolRoutingSummary {
   capacity: number;
   served: number;
   failed: number;
+  /**
+   * How many of `failed` ended because the CALLER hung up rather than because routing failed.
+   * Absent on a Hub predating the flag, which is why nothing here infers it from `failed`.
+   */
+  clientClosed?: number;
   failovers: number;
   lastAt: string | null;
 }
@@ -147,6 +162,12 @@ export interface PoolStatusResponse {
     poolPressureWeight?: number;
     /** The STORED ceiling. Absent on a Hub predating ceilings, which is how `pool ceiling` detects one. */
     poolMaxPromptTokens?: number | null;
+    /** Absent on a Hub predating the local health snapshot; `0` there would have meant live probes anyway. */
+    poolProbeSnapshotTtlMs?: number;
+    /** Absent on a Hub predating prefix affinity; `0` there would have meant off anyway. */
+    poolPrefixAffinityMaxInFlight?: number;
+    /** Absent on a Hub predating slot-aware placement; `0` there would have meant off anyway. */
+    poolSlotAwareness?: number;
   };
   tailscaleAdminApiConfigured: boolean;
   localNode: {
@@ -163,6 +184,10 @@ export interface PoolStatusResponse {
     maxPromptTokens?: number | null;
     /** `'env'` when `HUB_POOL_MAX_PROMPT_TOKENS` set it, which no settings write can change. */
     maxPromptTokensSetBy?: 'env' | 'setting' | null;
+    /** This node's context cap (`inferenceMaxNumCtx`), or `null` for none. Absent on a Hub predating caps. */
+    maxNumCtx?: number | null;
+    /** This node's Ollama slot count (`inferenceOllamaSlots`), or `null` for not stated. Absent on a Hub predating slots. */
+    ollamaSlots?: number | null;
     /** This node's own measured rates, as it advertises them. Absent on a Hub predating throughput. */
     throughput?: PoolThroughputEstimate[];
   };
@@ -217,12 +242,44 @@ export interface PoolRoutingRecord {
   outcome: 'served' | 'failed';
   status: number | null;
   durationMs: number;
+  /**
+   * `true` when the app closed its connection before any candidate answered. The row still names the
+   * node that was working on it — absent this flag, that node and a genuine routing failure's `-`
+   * were the same row. Absent on a Hub predating the flag.
+   */
+  clientClosed?: boolean;
   /** Which operator pin shaped this decision, if any. Absent on a Hub predating pinning. */
   pin?: { scope: PoolPinScope; mode: 'prefer'; targetKind: PoolPinTargetKind } | null;
   /** What the prompt ceilings did to this decision, or `null` when no candidate had one. Absent on a Hub predating ceilings. */
   promptCeiling?: PoolRoutingPromptCeiling | null;
+  /** What the nodes' context caps did to this decision, or `null` when no candidate had one. Absent on a Hub predating cap placement. */
+  contextCap?: PoolRoutingContextCap | null;
   /** What measured prefill rates did to this decision, or `null` when nothing applicable was measured. Absent on a Hub predating throughput. */
   throughput?: PoolRoutingThroughput | null;
+  /** What prefix affinity did to this decision, or `null` when it was off or did not apply. Absent on a Hub predating affinity. */
+  affinity?: PoolRoutingAffinity | null;
+  /**
+   * What slot-aware placement did to this decision, or `null` when the knob is off or no candidate
+   * stated a slot count. Absent on a Hub predating slots.
+   */
+  slots?: PoolRoutingSlots | null;
+}
+
+/** Mirrors `PoolRoutingSlots` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingSlots {
+  /** Candidates whose known queue depth had reached their stated slots, in ranked order; `'local'` for this node. Moved behind every free one, never removed. */
+  demoted: { node: string; backend: string; inFlight: number; slots: number }[];
+  /** Placed on one of those anyway: every candidate was full, every free one failed first, or a ceiling put every free one behind it. */
+  overridden: boolean;
+}
+
+/** Mirrors `PoolRoutingAffinity` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingAffinity {
+  key: 'header' | 'hashed';
+  outcome: 'hit' | 'miss' | 'skipped';
+  remembered: string | null;
+  inFlight: number | null;
+  maxInFlight: number;
 }
 
 /** Mirrors `PoolRoutingThroughput` in `hub-pool-routing-log.service.ts`. */
@@ -253,6 +310,16 @@ export interface PoolRoutingPromptCeiling {
   estimatedTokens: number;
   excluded: { node: string; maxPromptTokens: number }[];
   /** Placed on an over-ceiling node anyway: every candidate was over its ceiling, or every one under a ceiling failed first. */
+  overridden: boolean;
+}
+
+/** Mirrors `PoolRoutingContextCap` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingContextCap {
+  /** The window the request asked for: its `options.num_ctx`, or the prompt estimate when it carried none. */
+  numCtx: number;
+  source: 'request' | 'estimated';
+  excluded: { node: string; maxNumCtx: number }[];
+  /** Placed on a node capped below the window anyway: every candidate was, or every one that could take it failed first. */
   overridden: boolean;
 }
 
@@ -454,6 +521,55 @@ export async function setPoolMaxPromptTokens(envFileName: string, maxPromptToken
   });
 }
 
+/**
+ * `GET /api/inference/preferences`, the fields `pool context-cap` and `pool slots` read. `maxNumCtx`
+ * is the stored cap on the `num_ctx` handed to apps (`null` for none); `ollamaSlots` the stored
+ * statement of how many requests the node's Ollama runs at once (`null` for not stated). Each key is
+ * absent on a Hub predating it, which is how the command tells one apart from a Hub with nothing set.
+ */
+export interface InferencePreferencesResponse {
+  preferredBackend: string | null;
+  maxNumCtx?: number | null;
+  ollamaSlots?: number | null;
+}
+
+export async function fetchInferencePreferences(envFileName: string): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
+}
+
+/**
+ * Set this node's context cap, or clear it with `null`, through `PATCH /api/inference/preferences`.
+ *
+ * That route — not `/api/user-settings` — because it is the one that can REMOVE the key, and it
+ * answers with the preferences as stored. It requires `backend`, so the caller passes the one the
+ * Hub already has (or Ollama, which an absent preference resolves to on the Hub). Every write here
+ * sweeps the AI apps whose env it changes; the caller skips the write when the cap already reads as
+ * requested.
+ */
+export async function setInferenceContextCap(envFileName: string, backend: string, maxNumCtx: number | null): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify({ backend, maxNumCtx }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/**
+ * Set this node's Ollama slot count, or clear it with `null`, through the same route and for the same
+ * reasons as the cap above: it can remove the key, and it answers with the preferences as stored.
+ */
+export async function setInferenceOllamaSlots(
+  envFileName: string,
+  backend: string,
+  ollamaSlots: number | null,
+): Promise<InferencePreferencesResponse> {
+  return hubApiFetch<InferencePreferencesResponse>(envFileName, '/inference/preferences', {
+    method: 'PATCH',
+    body: JSON.stringify({ backend, ollamaSlots }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
 /** Per-peer kill switch. Reversible and symmetric: the pairing and both tokens survive. */
 export async function setPoolPeerEnabled(envFileName: string, id: string, enabled: boolean): Promise<PoolPeerRow> {
   return hubApiFetch<PoolPeerRow>(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, {
@@ -500,9 +616,89 @@ function shortId(id: string): string {
   return sanitizeForBox(id).slice(0, 8);
 }
 
+// --- context caps ---
+
+/**
+ * A peer's context cap in the three readings that must never share an encoding.
+ *
+ * A number is the cap routing applies. `null` is a peer that answered and named no cap — routing
+ * reads that as "takes any window", so it is where large windows land, and it is NOT the same thing
+ * as not knowing. `undefined` is not knowing: a peer this node has never had a capabilities snapshot
+ * from, or a Hub whose peer rows predate the field. Collapsing the last two — into each other, or
+ * into a number — is how an operator concludes a fleet is uniform when it is not.
+ */
+export function peerContextCap(peer: Pick<PoolPeerRow, 'maxNumCtx' | 'lastCapabilities'>): number | null | undefined {
+  if (typeof peer.maxNumCtx === 'number') return peer.maxNumCtx;
+  return peer.maxNumCtx === null && peer.lastCapabilities ? null : undefined;
+}
+
+/** `65536`, `none` or `?` — one cap, in a table cell or a list line. */
+export function showContextCap(cap: number | null | undefined): string {
+  return typeof cap === 'number' ? String(cap) : cap === null ? 'none' : '?';
+}
+
+/** A node and the cap it advertises, as {@link summariseContextCaps} judges the pool. */
+export interface ContextCapNode {
+  node: string;
+  /** The cap routing applies: a number, `null` for none advertised, `undefined` for not known here. */
+  cap: number | null | undefined;
+}
+
+export interface ContextCapSpread {
+  /** Nodes whose cap is a number, smallest first. */
+  capped: { node: string; cap: number }[];
+  /** Nodes that answered and named no cap — routing sends any window at these. */
+  uncapped: string[];
+  /** Nodes nothing is known about; neither a finding nor a clean bill. */
+  unknown: string[];
+  smallest: number | null;
+  largest: number | null;
+  /** Two or more distinct caps: a handout sized from `largest` puts the smaller ones behind. */
+  disagrees: boolean;
+  /** At least one capped node and at least one uncapped one: the uncapped take every large window. */
+  mixed: boolean;
+}
+
+/**
+ * What the pool's caps add up to, for the one question that matters since #1555 made a cap an input
+ * to placement: would a request be placed differently on one node than on another?
+ *
+ * Two states are worth telling an operator about, and they are different faults.
+ *
+ * *Disagreeing* caps: an app is handed the LARGEST cap among the nodes serving its model
+ * (`poolContextCap`), and placement then keeps that window off every node capped below it
+ * (`applyContextCap`). So the small-capped nodes quietly stop being eligible for the fleet's agent
+ * traffic while still passing every health check.
+ *
+ * *Mixed* capped and uncapped: an uncapped node reads as "takes any window" in both rules, so it
+ * absorbs the large windows — including windows its own `OLLAMA_CONTEXT_LENGTH` does not run, which
+ * is the reload (or the CPU spill) the cap exists to prevent. An unset cap is not a safe default.
+ */
+export function summariseContextCaps(nodes: readonly ContextCapNode[]): ContextCapSpread {
+  const capped = nodes.filter((entry): entry is { node: string; cap: number } => typeof entry.cap === 'number').sort((a, b) => a.cap - b.cap);
+  const uncapped = nodes.filter((entry) => entry.cap === null).map((entry) => entry.node);
+  const unknown = nodes.filter((entry) => entry.cap === undefined).map((entry) => entry.node);
+  const caps = capped.map((entry) => entry.cap);
+  return {
+    capped,
+    uncapped,
+    unknown,
+    smallest: caps.length ? (caps[0] as number) : null,
+    largest: caps.length ? (caps[caps.length - 1] as number) : null,
+    disagrees: new Set(caps).size > 1,
+    mixed: capped.length > 0 && uncapped.length > 0,
+  };
+}
+
+/** The fleet-wide command that sets both halves on every node. Named wherever a cap is reported as wrong. */
+export const CONTEXT_CAP_FLEET_COMMAND = 'cihub fleet backends --backends ollama --ollama-context <N> --execute';
+
 // --- peers ---
 
-const PEER_WIDTHS = [8, 34, 4, 16, 20, 5] as const;
+const PEER_WIDTHS = [8, 34, 4, 16, 20, 5, 7] as const;
+
+/** The NODE column plus room for the ` (this node)` suffix the cap list adds to one row. */
+const CAP_NODE_WIDTH = PEER_WIDTHS[1] + 12;
 
 /**
  * Peer table. The ID column is the first 8 characters of the row uuid — enough to hand back to
@@ -514,7 +710,7 @@ export function formatPoolPeerTable(peers: PoolPeerRow[]): string[] {
   }
 
   const lines = [
-    `${cell('ID', PEER_WIDTHS[0])} ${cell('NODE', PEER_WIDTHS[1])} ${cell('DIR', PEER_WIDTHS[2])} ${cell('STATUS', PEER_WIDTHS[3])} ${cell('LAST SEEN', PEER_WIDTHS[4])} ${cell('QUEUE', PEER_WIDTHS[5])} ENGINES`,
+    `${cell('ID', PEER_WIDTHS[0])} ${cell('NODE', PEER_WIDTHS[1])} ${cell('DIR', PEER_WIDTHS[2])} ${cell('STATUS', PEER_WIDTHS[3])} ${cell('LAST SEEN', PEER_WIDTHS[4])} ${cell('QUEUE', PEER_WIDTHS[5])} ${cell('CONTEXT', PEER_WIDTHS[6])} ENGINES`,
     ruleRow([...PEER_WIDTHS, 'ENGINES'.length]),
   ];
 
@@ -543,6 +739,9 @@ export function formatPoolPeerTable(peers: PoolPeerRow[]): string[] {
         cell(status, PEER_WIDTHS[3]),
         cell(formatPoolTimestamp(peer.lastSeenAt), PEER_WIDTHS[4]),
         cell(queue === undefined ? '-' : String(queue), PEER_WIDTHS[5]),
+        // The cap decides which nodes a large window may be placed on, so it belongs on the row
+        // rather than in a footnote: `none` and `?` are findings, not blanks. See peerContextCap.
+        cell(showContextCap(peerContextCap(peer)), PEER_WIDTHS[6]),
         formatEngines(peer.lastCapabilities?.backends),
       ].join(' '),
     );
@@ -575,7 +774,7 @@ const DISABLED_PEER_HINT =
   'Peers marked `/off` exchange no work with this node. The pairing and both tokens are kept — put one back with `cihub pool peer-enable <id>`.';
 
 export function formatPoolPeersLines(peers: PoolPeerRow[]): string[] {
-  const lines = [...formatPoolPeerTable(peers), ...formatPoolPeerModelLines(peers)];
+  const lines = [...formatPoolPeerTable(peers), ...formatPeerContextCapLines(peers), ...formatPoolPeerModelLines(peers)];
   if (peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
     lines.push('', PENDING_INBOUND_HINT);
   }
@@ -663,7 +862,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
         : 'no Admin API credential — cihub pool discover still lists the tailnet peers this node can see'
     }`,
     `Settings     poolEnabled=${status.settings.poolEnabled} · outbound=${status.settings.poolOutboundEnabled} · inbound=${status.settings.poolInboundEnabled} · localAffinity=${status.settings.poolLocalAffinity} · healthPoll=${status.settings.poolHealthPollSeconds}s`,
-    `Routing log  ${routing.recorded}/${routing.capacity} recorded · ${routing.served} served · ${routing.failed} failed · ${routing.failovers} failover(s)`,
+    `Routing log  ${formatRoutingCounts(routing)}`,
     '',
     'This node',
     `  Node       ${sanitizeForBox(status.localNode.nodeFqdn ?? '(unknown)')}${status.localNode.tailnet ? `  tailnet ${sanitizeForBox(status.localNode.tailnet)}` : ''}`,
@@ -686,6 +885,8 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
 
   lines.push(...formatPairingPinStateLines(status.pairingPin));
   lines.push(...formatLocalPromptCeilingLines(status.localNode));
+  lines.push(...formatLocalContextCapLines(status.localNode));
+  lines.push(...formatLocalOllamaSlotsLines(status.localNode, status.settings));
 
   // An unreachable backend and a node with no models both show an empty inventory; only this says which.
   if (status.localNode.capabilitiesError) {
@@ -695,6 +896,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   lines.push(...formatPoolPinLines(status.pins));
 
   lines.push('', 'Peers', ...formatPoolPeerTable(status.peers).map((line) => `  ${line}`));
+  lines.push(...formatPoolContextCapLines(status));
   lines.push(...formatPeerPromptCeilingLines(status.peers));
   lines.push(...formatThroughputLines(status));
 
@@ -719,6 +921,118 @@ export function formatLocalPromptCeilingLines(localNode: PoolStatusResponse['loc
       ? '  — HUB_POOL_MAX_PROMPT_TOKENS in .env, which `pool ceiling` cannot change'
       : '  — clear with: cihub pool ceiling clear';
   return [`  Ceiling    prompts over ~${localNode.maxPromptTokens} tokens go to another node when one can serve them${source}`];
+}
+
+/**
+ * This node's context cap, under "This node" in `pool status`. Nothing when there is none, like the
+ * ceiling above, so a node that never set one — or a Hub predating caps — reads exactly as before.
+ */
+export function formatLocalContextCapLines(localNode: PoolStatusResponse['localNode']): string[] {
+  if (typeof localNode.maxNumCtx !== 'number') return [];
+  return [`  Context    apps are handed a num_ctx of at most ${localNode.maxNumCtx} tokens  — clear with: cihub pool context-cap clear`];
+}
+
+/**
+ * This node's Ollama slot count, under "This node" in `pool status`, and whether placement reads it.
+ * Nothing when none is stated, like the cap above. The knob is named because a stated count with the
+ * knob off is the common state during a canary: peers may be placing against it while this node is not.
+ */
+export function formatLocalOllamaSlotsLines(localNode: PoolStatusResponse['localNode'], settings: PoolStatusResponse['settings']): string[] {
+  if (typeof localNode.ollamaSlots !== 'number') return [];
+  const placement = settings.poolSlotAwareness ? 'slot-aware placement on' : 'slot-aware placement off (poolSlotAwareness=0)';
+  return [
+    `  Slots      Ollama runs ${localNode.ollamaSlots} request${localNode.ollamaSlots === 1 ? '' : 's'} at once; ${placement}  — clear with: cihub pool slots clear`,
+  ];
+}
+
+/**
+ * Which peers this node would actually place work on. A pending, unreachable or disabled peer is not
+ * a candidate, so its cap cannot change a routing decision and must not raise a cap warning.
+ */
+function contextCapCandidates(peers: PoolPeerRow[]): PoolPeerRow[] {
+  return peers.filter((peer) => peer.status === 'connected' && peer.enabled !== false);
+}
+
+/**
+ * Every routing candidate's context cap under `pool status`, and the warning when they disagree
+ * enough to change where a request goes.
+ *
+ * The peer table's CONTEXT column already shows each number; this block exists for the comparison,
+ * which is the thing an operator cannot do by reading rows — and which became a correctness question
+ * rather than a tuning one when a cap became an input to placement.
+ *
+ * Silent on a pool where nothing is capped at all: that is the documented default (no cap anywhere,
+ * every node takes any window) and it behaves exactly as the build before caps did, so warning about
+ * it on every `pool status` would be noise. The moment one node is capped, the comparison matters and
+ * the block appears.
+ */
+export function formatPoolContextCapLines(status: PoolStatusResponse): string[] {
+  // Node names are sanitized once, here, because every line below interpolates them into prose the
+  // `cell` helper never sees.
+  const nodes: ContextCapNode[] = [
+    { node: `${sanitizeForBox(status.localNode.nodeFqdn ?? '(unknown)')} (this node)`, cap: status.localNode.maxNumCtx },
+    ...contextCapCandidates(status.peers).map((peer) => ({ node: sanitizeForBox(peer.nodeFqdn), cap: peerContextCap(peer) })),
+  ];
+  const spread = summariseContextCaps(nodes);
+  // Nothing capped anywhere is the pre-cap default, and it reads identically. Say nothing.
+  if (spread.capped.length === 0) return [];
+
+  const lines = [
+    '',
+    'Context caps (a node capped below a request is placed behind one that can take it)',
+    ...nodes.map((entry) => `  ${cell(entry.node, CAP_NODE_WIDTH)} ${showContextCap(entry.cap)}`),
+  ];
+  // The prose is wrapped rather than hand-broken: node names are operator-supplied and of any
+  // length, so a fixed break would run off the terminal on the first real fleet.
+  const note = (glyph: string, text: string) => wrapWords(text, ACTION_WRAP_WIDTH).map((line, i) => (i === 0 ? `  ${glyph} ${line}` : `    ${line}`));
+
+  // Not a fault on its own — a small node capped low is a deliberate tier, and placement is built
+  // for it. What the operator cannot see without this line is the CONSEQUENCE: those nodes stop
+  // taking the fleet's agent traffic while passing every health check.
+  if (spread.disagrees) {
+    const smallest = spread.capped.filter((entry) => entry.cap === spread.smallest).map((entry) => entry.node);
+    lines.push(
+      ...note(
+        PENDING,
+        `caps disagree across this pool (${spread.smallest} … ${spread.largest}). An app is handed the largest cap among the nodes serving its model, so ${smallest.join(', ')} at ${spread.smallest} is placed behind for those requests.`,
+      ),
+    );
+  }
+  // This one IS a fault: no cap reads as "takes any window" in both rules, so the uncapped node
+  // collects exactly the requests its own OLLAMA_CONTEXT_LENGTH may not run.
+  if (spread.mixed) {
+    lines.push(
+      ...note(
+        FAIL,
+        `no cap on ${spread.uncapped.join(', ')}, so routing reads ${spread.uncapped.length === 1 ? 'it' : 'them'} as "takes any window" and places large ones there — including windows its own OLLAMA_CONTEXT_LENGTH does not run.`,
+      ),
+    );
+  }
+  if (spread.unknown.length > 0) {
+    lines.push(...note(PENDING, `no cap known for ${spread.unknown.join(', ')} — never probed, or a Hub predating caps. Not read as uncapped here.`));
+  }
+  if (spread.disagrees || spread.mixed) {
+    lines.push(`    Set every node's engine context and its Hub cap together: ${CONTEXT_CAP_FLEET_COMMAND}`);
+  }
+  return lines;
+}
+
+/**
+ * The same comparison under `cihub pool peers`, which has the rows but not this node's own cap.
+ * One line, because the CONTEXT column above it already carries the numbers.
+ */
+export function formatPeerContextCapLines(peers: PoolPeerRow[]): string[] {
+  const spread = summariseContextCaps(
+    contextCapCandidates(peers).map((peer) => ({ node: sanitizeForBox(peer.nodeFqdn), cap: peerContextCap(peer) })),
+  );
+  if (!spread.disagrees && !spread.mixed) return [];
+  const why = spread.disagrees
+    ? `peer context caps disagree (${spread.smallest} … ${spread.largest})`
+    : `${spread.uncapped.join(', ')} advertises no context cap while others are capped`;
+  return [
+    '',
+    ...wrapWords(`Context caps: ${why}. A request's num_ctx decides which of these may serve it — see cihub pool status.`, ACTION_WRAP_WIDTH),
+  ];
 }
 
 /** The peers advertising a ceiling, since the peer table has no column for it. Nothing when none does. */
@@ -937,6 +1251,150 @@ export function formatPromptCeilingResultLines(
   };
 }
 
+/**
+ * The box `cihub pool context-cap` prints.
+ *
+ * `before` is what the Hub reported before the write, and decides two of the outcomes on its own: a
+ * Hub whose preferences carry no `maxNumCtx` at all predates the cap (nothing is written to it), and
+ * a cap that already reads as requested is left alone (`written` false), because the write route
+ * restarts every AI app whose env it changes. `after` is the read-back — the box reports the cap in
+ * force, not the one requested.
+ */
+export function formatContextCapResultLines(
+  requested: number | null,
+  before: InferencePreferencesResponse,
+  after: InferencePreferencesResponse | null,
+  written: boolean,
+): { title: string; lines: string[]; tone: 'green' | 'yellow' | 'red' | 'cyan' } {
+  if (!('maxNumCtx' in before)) {
+    return {
+      title: 'Context cap not supported',
+      tone: 'red',
+      lines: [
+        `${FAIL} This Hub's build predates the context cap, so nothing was written and the handout is unchanged.`,
+        'Update it first: cihub pool update',
+      ],
+    };
+  }
+  if (!written) {
+    return {
+      title: 'Context cap unchanged',
+      tone: 'cyan',
+      lines:
+        requested === null
+          ? ['No context cap is set on this node; nothing to clear, and no app was restarted.']
+          : [`The cap is already ${requested} tokens; nothing was written, and no app was restarted.`],
+    };
+  }
+  const inForce = after?.maxNumCtx;
+  if (after && inForce !== requested) {
+    return {
+      title: 'Context cap not in force',
+      tone: 'red',
+      lines: [
+        `${FAIL} Asked for ${requested === null ? 'no cap' : `${requested} tokens`}, but the Hub reads back ${inForce === null || inForce === undefined ? 'no cap' : `${inForce} tokens`}.`,
+        'Read the Hub log around the write: cihub logs',
+      ],
+    };
+  }
+  if (requested === null) {
+    return {
+      title: 'Context cap cleared',
+      tone: 'yellow',
+      lines: [
+        "Apps on this node are sized from the model window and this node's memory alone again —",
+        'the sizing before the cap existed, which can hand out a window larger than the engine runs.',
+        '',
+        'AI apps whose env changed are restarting now; peers learn it on their next health poll.',
+      ],
+    };
+  }
+  return {
+    title: 'Context cap set',
+    tone: 'green',
+    lines: [
+      `Apps on this node are handed a num_ctx of at most ${requested} tokens: min(model window, memory sizing, ${requested}).`,
+      '',
+      'AI apps whose env changed are restarting now; peers learn the cap on their next health poll, and a',
+      'pooled request is capped at the smallest cap among the nodes serving its model.',
+      '',
+      `Match it to the engine: OLLAMA_CONTEXT_LENGTH on this node should be ${requested} too —`,
+      `cihub fleet backends --ollama-context ${requested} --execute sets both, on every node.`,
+      '',
+      'Check it: cihub pool status',
+    ],
+  };
+}
+
+/**
+ * The box `cihub pool slots` prints. Same three outcomes from `before` as the cap's box, for the
+ * same reasons; `after` is the read-back, so the box reports the count in force, not the one requested.
+ */
+export function formatOllamaSlotsResultLines(
+  requested: number | null,
+  before: InferencePreferencesResponse,
+  after: InferencePreferencesResponse | null,
+  written: boolean,
+): { title: string; lines: string[]; tone: 'green' | 'yellow' | 'red' | 'cyan' } {
+  if (!('ollamaSlots' in before)) {
+    return {
+      title: 'Slot count not supported',
+      tone: 'red',
+      lines: [
+        `${FAIL} This Hub's build predates the slot count, so nothing was written and placement is unchanged.`,
+        'Update it first: cihub pool update',
+      ],
+    };
+  }
+  if (!written) {
+    return {
+      title: 'Slot count unchanged',
+      tone: 'cyan',
+      lines:
+        requested === null
+          ? ['No slot count is stated on this node; nothing to clear.']
+          : [`The slot count is already ${requested}; nothing was written.`],
+    };
+  }
+  const inForce = after?.ollamaSlots;
+  if (after && inForce !== requested) {
+    return {
+      title: 'Slot count not in force',
+      tone: 'red',
+      lines: [
+        `${FAIL} Asked for ${requested === null ? 'none' : requested}, but the Hub reads back ${inForce === null || inForce === undefined ? 'none' : inForce}.`,
+        'Read the Hub log around the write: cihub logs',
+      ],
+    };
+  }
+  if (requested === null) {
+    return {
+      title: 'Slot count cleared',
+      tone: 'yellow',
+      lines: [
+        'This node states no slot count again: the pool ranks it by queue depth alone, as before slots',
+        'existed, and peers learn that on their next health poll.',
+      ],
+    };
+  }
+  return {
+    title: 'Slot count set',
+    tone: 'green',
+    lines: [
+      `This node states that its Ollama runs ${requested} request${requested === 1 ? '' : 's'} at once. Peers learn it on their next health poll;`,
+      'with poolSlotAwareness=1 an entry node places behind every node with a free slot before this one',
+      `once ${requested} ${requested === 1 ? 'is' : 'are'} in flight here.`,
+      '',
+      `Match it to the daemon: OLLAMA_NUM_PARALLEL on this node should be ${requested} too. Across the fleet,`,
+      `cihub fleet backends --ollama-parallel ${requested} --ollama-context <n> --ollama-keep-alive <d> --execute sets both —`,
+      "passed with the node's other runtime flags: that file is rendered whole from the flags on the line, so",
+      `--ollama-parallel ${requested} alone would drop OLLAMA_KEEP_ALIVE and OLLAMA_CONTEXT_LENGTH from every node it touches.`,
+      '',
+      'Check it: cihub pool status',
+    ],
+  };
+}
+
 // --- discovery ---
 
 const DISCOVER_WIDTHS = [34, 24] as const;
@@ -1046,15 +1504,34 @@ export function formatPoolProbeLines(result: PoolProbeResult): string[] {
 
 // --- routing log ---
 
+/**
+ * The counts line both `pool status` and `pool log` print.
+ *
+ * The hang-up breakdown is the whole reason this is a function: `4 failed` on a pool whose peers are
+ * all connected reads as "the pool cannot place work", and on beta-max (2026-09-21) that is exactly
+ * how it was read. Every one of those four was a caller that gave up at 30 s on a turn a node was
+ * still prefilling — a statement about how long the fleet takes to first byte, not about routing.
+ * Only printed when the Hub reported the figure and it is non-zero: an older Hub says nothing rather
+ * than implying zero, and a fleet where no caller ever left keeps the line it has always had.
+ */
+function formatRoutingCounts(summary: {
+  recorded: number;
+  capacity: number;
+  served: number;
+  failed: number;
+  clientClosed?: number;
+  failovers: number;
+}): string {
+  const abandoned = summary.clientClosed ?? 0;
+  const failed = abandoned > 0 ? `${summary.failed} failed (${abandoned} abandoned by the caller)` : `${summary.failed} failed`;
+  return `${summary.recorded}/${summary.capacity} recorded · ${summary.served} served · ${failed} · ${summary.failovers} failover(s)`;
+}
+
 const LOG_WIDTHS = [20, 4, 20, 34, 5, 7] as const;
 
 export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
   const summary = log.summary;
-  const header = [
-    `${summary.recorded}/${summary.capacity} recorded · ${summary.served} served · ${summary.failed} failed · ${summary.failovers} failover(s)`,
-    `Last decision  ${formatPoolTimestamp(summary.lastAt)}`,
-    '',
-  ];
+  const header = [formatRoutingCounts(summary), `Last decision  ${formatPoolTimestamp(summary.lastAt)}`, ''];
 
   if (log.entries.length === 0) {
     return [
@@ -1087,6 +1564,15 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         `${outcome}${status}`,
       ].join(' '),
     );
+    // First, and before every other annotation: it is the one that changes what the row MEANS. A
+    // `x failed` with no status is otherwise read as the pool failing to place the request, and the
+    // NODE column beside it — which now names the node that was still working — would then read as
+    // the node that broke. Neither is true: nobody was waiting for the answer any more.
+    if (entry.clientClosed) {
+      lines.push(
+        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${sanitizeForBox(entry.node ?? '?')} had not answered yet — not a routing failure`,
+      );
+    }
     // Named on the row it shaped: an operator seeing everything land on one node cannot otherwise
     // tell a pin from the ranker having decided the same thing.
     if (entry.pin) {
@@ -1101,6 +1587,17 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         ceiling.overridden
           ? `  ↳ ~${ceiling.estimatedTokens}-token prompt placed anyway over the ceiling of ${nodes}: no node under its ceiling could serve it`
           : `  ↳ ~${ceiling.estimatedTokens}-token prompt skipped ${nodes}`,
+      );
+    }
+    // Only when a cap changed something, for the same reason as the ceiling line above.
+    const cap = entry.contextCap;
+    if (cap && cap.excluded.length > 0) {
+      const nodes = cap.excluded.map((excluded) => `${sanitizeForBox(excluded.node)} (cap ${excluded.maxNumCtx})`).join(', ');
+      const window = cap.source === 'request' ? `num_ctx ${cap.numCtx}` : `~${cap.numCtx}-token prompt with no num_ctx`;
+      lines.push(
+        cap.overridden
+          ? `  ↳ ${window} placed anyway over the context cap of ${nodes}: no node whose cap could take it could serve it`
+          : `  ↳ ${window} skipped ${nodes}`,
       );
     }
     // Only when a measurement changed something, for the same reason as the ceiling line above.
@@ -1118,6 +1615,36 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         throughput.overridden
           ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
           : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
+      );
+    }
+    // Only when a full engine was moved: the record is present, with an empty `demoted`, on every
+    // request where some candidate stated a count, and a note on each of those would bury the one
+    // an operator reading why a burst skipped the 2-slot node needs.
+    const slots = entry.slots;
+    if (slots && slots.demoted.length > 0) {
+      const nodes = slots.demoted
+        .map((demoted) => `${sanitizeForBox(demoted.node)} (${demoted.inFlight} in flight, ${demoted.slots} slot${demoted.slots === 1 ? '' : 's'})`)
+        .join(', ');
+      lines.push(
+        slots.overridden
+          ? `  ↳ placed anyway with every slot full on ${nodes}: no node with a free slot was ahead of it`
+          : `  ↳ moved ${nodes} behind nodes with a free slot`,
+      );
+    }
+    // Only when affinity changed something or stood aside: a `hit` is the line an operator watching
+    // a session stay put needs, a `skipped` says why a turn re-prefilled cold, and a `miss` on every
+    // first turn would bury both.
+    const affinity = entry.affinity;
+    if (affinity?.outcome === 'hit') {
+      lines.push(
+        `  ↳ followed its prompt prefix to ${sanitizeForBox(affinity.remembered ?? '?')} (${affinity.inFlight ?? 0} in flight, limit ${affinity.maxInFlight})`,
+      );
+    } else if (affinity?.outcome === 'skipped') {
+      const node = sanitizeForBox(affinity.remembered ?? '?');
+      lines.push(
+        affinity.inFlight !== null && affinity.inFlight >= affinity.maxInFlight
+          ? `  ↳ ${node} holds this prompt's prefix but had ${affinity.inFlight} in flight (limit ${affinity.maxInFlight}); ranked as usual`
+          : `  ↳ ${node} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
       );
     }
     // The chain, not a count: which nodes refused is the whole point of reading this log.

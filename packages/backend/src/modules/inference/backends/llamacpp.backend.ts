@@ -167,21 +167,27 @@ export class LlamacppBackend implements InferenceBackend {
     return health.modelsLoaded.includes(modelId);
   }
 
-  noteServingFailure(modelId: string, reason: string): void {
+  /** True only on the observation that flipped the model to withheld — see the interface: a caller
+   *  ranking from a cached health answer needs to know that answer has just gone stale. */
+  noteServingFailure(modelId: string, reason: string): boolean {
     const decision = this.quarantine.recordFailure(modelId, reason);
     if (decision.withheld) {
       this.logger.warn(
         `[llama.cpp] Model ${modelId} is listed but failed to serve (${reason}); withholding it from routing for ${Math.round(decision.forMs / 1000)}s`,
       );
-      return;
+      return true;
     }
     this.logger.debug(`[llama.cpp] Model ${modelId} failed to serve (${reason}); strike ${decision.strikes} of ${QUARANTINE_STRIKES}`);
+    return false;
   }
 
-  noteServingSuccess(modelId: string): void {
+  /** True when the model WAS withheld until now — read before the clear, or it always answers false. */
+  noteServingSuccess(modelId: string): boolean {
+    const wasWithheld = this.quarantine.isWithheld(modelId);
     if (this.quarantine.recordSuccess(modelId)) {
       this.logger.info(`[llama.cpp] Model ${modelId} served again — no longer withheld from routing`);
     }
+    return wasWithheld;
   }
 
   /** See {@link getComposeConfig} — the Hub does not deploy this backend. */

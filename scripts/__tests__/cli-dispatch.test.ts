@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => {
   const calls: { handler: string; args: unknown[] }[] = [];
   const state = { appliance: false, confirm: true };
   const versionText = 'cihub 0.0.0-test';
+  // `cihub version` now reports the running Hub's build too, so the full command is async and does
+  // network I/O. `--short` is the one-line form that skips the probe.
+  const fullVersionText = `${versionText}\nhub    0.2.73 (dac546bcf)`;
   const record =
     (handler: string) =>
     (...args: unknown[]) => {
@@ -23,6 +26,8 @@ const mocks = vi.hoisted(() => {
     calls,
     state,
     versionText,
+    fullVersionText,
+    runVersionCommand: vi.fn(async () => fullVersionText),
     startHub: vi.fn(record('startHub')),
     setupHub: vi.fn(record('setupHub')),
     printConfig: vi.fn(record('printConfig')),
@@ -45,6 +50,7 @@ const mocks = vi.hoisted(() => {
     runAppCommand: vi.fn(record('runAppCommand')),
     runApiKeyCommand: vi.fn(record('runApiKeyCommand')),
     runHostUpdate: vi.fn(record('runHostUpdate')),
+    runSelfUpdateCommand: vi.fn(record('runSelfUpdateCommand')),
     runConnectCommand: vi.fn(record('runConnectCommand')),
     runWizard: vi.fn(record('runWizard')),
     runCatalogLogin: vi.fn(record('runCatalogLogin')),
@@ -101,8 +107,10 @@ vi.mock('../lib/cli-prompt.js', () => ({ confirmDestructiveAction: mocks.confirm
 
 vi.mock('../lib/cli-update.js', () => ({
   renderVersion: mocks.renderVersion,
+  runVersionCommand: mocks.runVersionCommand,
   runConnectCommand: mocks.runConnectCommand,
   runHostUpdate: mocks.runHostUpdate,
+  runSelfUpdateCommand: mocks.runSelfUpdateCommand,
 }));
 
 vi.mock('../lib/catalog-submit.js', () => ({
@@ -132,6 +140,9 @@ const errorText = () => joinSpyOutput(errorSpy);
 
 beforeEach(() => {
   mocks.calls.length = 0;
+  // Not a recorder into `mocks.calls`: `runVersionCommand` returns a value the router prints, so it
+  // is asserted through its own call history and must start each test clean.
+  mocks.runVersionCommand.mockClear();
   mocks.state.appliance = false;
   mocks.state.confirm = true;
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
@@ -193,10 +204,23 @@ describe('runCli informational commands', () => {
     expect(mocks.calls).toEqual<Dispatch[]>([]);
   });
 
-  it.each(['version', '--version', '-v'])('%s prints the version and dispatches nothing', async (flag) => {
+  it.each(['version', '--version', '-v'])('%s prints this CLI and the running Hub build, and dispatches nothing', async (flag) => {
+    // Two artifacts that update independently: rolling the Hub image never updates this binary, so
+    // one number cannot describe both.
     await runCli([flag]);
 
+    expect(logSpy).toHaveBeenCalledWith(mocks.fullVersionText);
+    expect(mocks.runVersionCommand).toHaveBeenCalled();
+    expect(mocks.calls).toEqual<Dispatch[]>([]);
+  });
+
+  it('version --short keeps the single-line output and never probes the Hub', async () => {
+    // Scripts parse this. It must also stay usable when no Hub is running, which is why it skips
+    // the HTTP probe rather than waiting for it to time out.
+    await runCli(['version', '--short']);
+
     expect(logSpy).toHaveBeenCalledWith(mocks.versionText);
+    expect(mocks.runVersionCommand).not.toHaveBeenCalled();
     expect(mocks.calls).toEqual<Dispatch[]>([]);
   });
 });
@@ -253,6 +277,12 @@ describe('runCli command routing', () => {
     { argv: ['public-web', 'repair'], expected: [{ handler: 'runPublicWebCommand', args: [['repair']] }] },
     { argv: ['connect', '--yes'], expected: [{ handler: 'runConnectCommand', args: [['--yes']] }] },
     { argv: ['update', '--check'], expected: [{ handler: 'runHostUpdate', args: [['--check']] }] },
+    // The other distribution channel. `update` and `self-update` are near-identical strings and
+    // must never fall through to one another: one delegates to the desktop app, the other replaces
+    // this binary, and routing the wrong way would be silent.
+    { argv: ['self-update'], expected: [{ handler: 'runSelfUpdateCommand', args: [[]] }] },
+    { argv: ['self-update', '--to', '0.2.73'], expected: [{ handler: 'runSelfUpdateCommand', args: [['--to', '0.2.73']] }] },
+    { argv: ['self-update', '--check'], expected: [{ handler: 'runSelfUpdateCommand', args: [['--check']] }] },
     { argv: ['login', '--org', 'acme'], expected: [{ handler: 'runCatalogLogin', args: [['--org', 'acme']] }] },
     { argv: ['logout'], expected: [{ handler: 'runCatalogLogout', args: [] }] },
     { argv: ['submit', './bundle'], expected: [{ handler: 'runCatalogSubmit', args: [['./bundle']] }] },

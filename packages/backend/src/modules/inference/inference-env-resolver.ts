@@ -8,7 +8,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
-import { describeNoSuitableChatModel, handoutContextLength, selectPoolChatModel } from './app-model-handout';
+import { describeContextHandout, describeNoSuitableChatModel, handoutContextLength, selectPoolChatModel } from './app-model-handout';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /** Fallback keys for backends that do not expose a configured or desktop-managed key. */
@@ -53,8 +53,12 @@ export interface StandardizedAiEnv {
   CI_OLLAMA_EMBED_HOST?: string;
   /**
    * Hardware-aware default context window (num_ctx) for the chat model, in
-   * tokens, as a string. Scaled to the host's memory and capped by the model's
-   * window so apps don't inherit Ollama's oversized memory-based default.
+   * tokens, as a string. Scaled to the host's memory, capped by the model's
+   * window so apps don't inherit Ollama's oversized memory-based default, and
+   * capped by the operator's `inferenceMaxNumCtx` — the engine's own context —
+   * so an app never asks for a window that reloads the model. Through the pool
+   * the cap is the largest among the nodes serving the model, and the proxy
+   * places a request only on nodes whose cap can take its window.
    */
   CI_LLM_NUM_CTX?: string;
   /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `lucebox` | `cloud`). */
@@ -251,24 +255,44 @@ export class InferenceEnvResolver {
 
     // Context window for the chat model, so apps don't inherit Ollama's oversized memory-based
     // default (e.g. 262144 on unified-memory APUs). Sized from this node's memory only when this
-    // node serves the model; see handoutContextLength.
+    // node serves the model, and capped at what the engine that will serve it runs at; see
+    // handoutContextLength.
     if (chatCurated && chatModel) {
       // Ask the engine what a token of context costs THIS model before falling back to the fixed
       // ladder — see `model-geometry.util`. Only Ollama can be asked, and only about a model this
       // node serves: a peer's geometry is not measurable from here, so a pool-served model keeps
       // the heuristic, as do the other backends.
-      const cost =
-        chatServedLocally && backendType === 'ollama' ? ((await this.ollamaBackend.contextCostForModel(chatCurated.backendModelId)) ?? null) : null;
-      env.CI_LLM_NUM_CTX = String(
-        handoutContextLength({
-          model: chatCurated,
-          servedLocally: chatServedLocally,
-          effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
-          minContextLength: requirements.minContextLength,
-          kvMbPerToken: cost?.kvMbPerToken ?? null,
-          weightMb: cost?.weightMb ?? null,
-        }),
-      );
+      const askOllama = chatServedLocally && backendType === 'ollama';
+      const [cost, residentContextLength] = await Promise.all([
+        askOllama ? this.ollamaBackend.contextCostForModel(chatCurated.backendModelId) : null,
+        askOllama ? this.ollamaBackend.residentContextLength(chatCurated.backendModelId) : null,
+      ]);
+      // Through the pool, the largest cap among the nodes serving the model — the proxy places a
+      // request only on nodes whose cap can take its window, so no smaller node binds (see
+      // `poolContextCap`); this node's own cap on the direct path.
+      const localContextCap = this.endpoints.localContextCap();
+      const maxContextLength = poolChoice ? poolChoice.contextCap : localContextCap;
+      const numCtx = handoutContextLength({
+        model: chatCurated,
+        servedLocally: chatServedLocally,
+        effectiveInferenceMemoryMb: profile.effectiveInferenceMemoryMb,
+        minContextLength: requirements.minContextLength,
+        kvMbPerToken: cost?.kvMbPerToken ?? null,
+        weightMb: cost?.weightMb ?? null,
+        maxContextLength,
+      });
+      env.CI_LLM_NUM_CTX = String(numCtx);
+      for (const note of describeContextHandout({
+        appSlug: appLabel,
+        engineId: chatModel,
+        numCtx,
+        maxContextLength,
+        minContextLength: requirements.minContextLength,
+        residentContextLength: residentContextLength ?? null,
+        ...(poolChoice && chatServedLocally ? { localContextCap } : {}),
+      })) {
+        this.logger.warn(`[InferenceEnvResolver] ${note}`);
+      }
     }
 
     if (Object.keys(cloudProviderEnv).length > 0) {

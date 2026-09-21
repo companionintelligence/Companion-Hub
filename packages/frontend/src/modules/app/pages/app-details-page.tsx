@@ -17,6 +17,7 @@ import { getCategoryLabel } from '../helpers/category-label';
 import { AppMediaGallery } from '../components/app-media-gallery/app-media-gallery';
 import { useAppMedia } from '../hooks/use-app-media';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
+import { AppReadinessBadge, AppReadinessChecksCard } from '../components/app-readiness/app-readiness';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
@@ -219,6 +220,7 @@ export default () => {
                       {t('APP_PRICE_FREE')}
                     </span>
                     <MemoryStatusBadge appUrn={appUrn} />
+                    <AppReadinessBadge readiness={runtimeHealth.data?.readiness} />
                   </div>
                 </div>
 
@@ -273,6 +275,8 @@ export default () => {
       />
 
       <AppAccessPoints app={app} info={info} />
+
+      <AppReadinessChecksCard readiness={runtimeHealth.data?.readiness} />
 
       <McpAccessCard app={app} info={info} mcpRuntime={getApp.data.mcpRuntime ?? null} />
 

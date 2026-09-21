@@ -376,8 +376,21 @@ services:
       - |
         if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
           export TS_AUTHKEY="$TAILSCALE_AUTHKEY"
+          exec /usr/local/bin/containerboot
         fi
-        exec /usr/local/bin/containerboot
+        # No auth key: run tailscaled alone. containerboot would run `tailscale up`
+        # itself, kill it after 60 s (nobody can finish an interactive login in
+        # here) and exit; `restart: unless-stopped` then respawns it every minute,
+        # and every respawn re-creates the container's veth on the host, which
+        # the host's browsers see as a network change (Chrome: ERR_NETWORK_CHANGED).
+        # Hub runs `tailscale up` over `docker exec` and shows the auth URL, so
+        # the sidecar only has to keep the daemon alive. A persisted login is
+        # resumed by tailscaled by itself; the tun node is what containerboot
+        # would have created. `$$` keeps compose from interpolating the shell vars.
+        if [ ! -c /dev/net/tun ]; then
+          mkdir -p /dev/net && mknod /dev/net/tun c 10 200
+        fi
+        exec tailscaled --socket="$$TS_SOCKET" --statedir="$$TS_STATE_DIR"
     cap_add:
       - NET_ADMIN
       - SYS_MODULE

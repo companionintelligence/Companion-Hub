@@ -38,6 +38,7 @@ function app(appUrn: string, appName: string, cpuPercent: number): AppRuntimeHea
     sampledAt: '2026-09-10T02:31:00Z',
     containers: [],
     gpuVramMb: null,
+    readiness: null,
   };
 }
 
@@ -177,6 +178,59 @@ describe('WorkloadTrend', () => {
     expect(container.textContent).toContain('600 MB');
   });
 
+  it('says in words when per-process VRAM is absent on this node, whatever the rows show', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+    // The probe timer died mid-window: two real points, then nulls, and the newest snapshot says
+    // no source answered. The trace ends in a gap and the line says why — not a zero, not silence.
+    const history = [
+      sample(20, [{ ...engine, gpuVramMb: 512 }]),
+      sample(21, [{ ...engine, gpuVramMb: 512 }]),
+      sample(22, [engine]),
+      sample(23, [engine]),
+    ];
+
+    const { container } = render(
+      <WorkloadTrend metric="gpu" history={history} apps={[app(engine.appUrn, engine.appName, 5)]} state={READY} gpuVramSource="absent" />,
+    );
+
+    const note = container.querySelector('[data-testid="workload-trend-gpu-absent"]');
+    expect(note?.textContent).toContain('not read on this node');
+    expect(note?.textContent).toContain('cihub fleet update --gpu-probe');
+    // The rows are still there: the two real points are history worth keeping, and the gap after
+    // them is a gap — one run that never touches the baseline a fabricated zero would have drawn.
+    expect(container.textContent).toContain('Engine');
+    const runs = lineRuns(container, 'Engine — GPU memory by workload');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).not.toContain(',37');
+  });
+
+  it('prints the absent line even with no workloads or a single sample, and never for a source that answered', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+
+    const empty = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="absent" />);
+    expect(empty.container.querySelector('[data-testid="workload-trend-gpu-absent"]')).not.toBeNull();
+
+    const waiting = render(
+      <WorkloadTrend
+        metric="gpu"
+        history={[sample(20, [engine])]}
+        apps={[app(engine.appUrn, engine.appName, 5)]}
+        state={READY}
+        gpuVramSource="absent"
+      />,
+    );
+    expect(waiting.container.querySelector('[data-testid="workload-trend-gpu-absent"]')).not.toBeNull();
+
+    // A source that answered and found nothing holding VRAM is a measurement, not an absence.
+    for (const source of ['host-file', 'tool', null, undefined] as const) {
+      const { container } = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource={source} />);
+      expect(container.querySelector('[data-testid="workload-trend-gpu-absent"]')).toBeNull();
+    }
+    // And the line belongs to the GPU tile alone, whatever the source says.
+    const cpu = render(<WorkloadTrend metric="cpu" history={[]} apps={[]} state={READY} gpuVramSource="absent" />);
+    expect(cpu.container.querySelector('[data-testid="workload-trend-gpu-absent"]')).toBeNull();
+  });
+
   it('leaves a workload with no GPU VRAM found unmeasured, not drawn at zero — same rule as an absent workload', () => {
     const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
     const idle = { appUrn: 'urn:idle', appName: 'Idle', cpuPercent: 2 };
@@ -201,5 +255,37 @@ describe('WorkloadTrend', () => {
     expect(container.querySelector('svg[aria-label="Idle — GPU memory by workload"]')).toBeNull();
     expect(container.textContent).toContain('Idle');
     expect(lineRuns(container, 'Engine — GPU memory by workload')).toHaveLength(1);
+  });
+
+  /*
+   * The "scale to 256 TB" regression, pinned. `gpuVramMb` is megabytes and the axis scale takes
+   * bytes; the ceiling used to be computed from the raw megabytes and THEN multiplied by 1024² at
+   * render, so the scale's 256 MiB floor — 268,435,456 — was printed as 268,435,456 MB. Seen live
+   * on a 10 GB RTX 3080 on every node whose workloads held no VRAM, because that is exactly when
+   * the floor is the ceiling.
+   */
+  it('labels an empty GPU axis in gigabytes, never terabytes', () => {
+    // The Hub's own container: present in every sample, never holding VRAM.
+    const hub = { appUrn: 'urn:hub', appName: 'Hub', cpuPercent: 3, gpuVramMb: null };
+    const history = [sample(20, [hub]), sample(21, [hub]), sample(22, [hub])];
+
+    const { container } = render(<WorkloadTrend metric="gpu" history={history} apps={[app(hub.appUrn, hub.appName, 3)]} state={READY} />);
+
+    expect(container.textContent).toContain('scale to 1.0 GB');
+    expect(container.textContent).not.toMatch(/TB/);
+  });
+
+  it('scales a GPU axis from the megabytes it is given, in the same unit its label prints', () => {
+    const engine = { appUrn: 'urn:engine', appName: 'Engine', cpuPercent: 5 };
+    const history = [sample(20, [{ ...engine, gpuVramMb: 1_533 }]), sample(21, [{ ...engine, gpuVramMb: 1_533 }])];
+
+    const { container } = render(<WorkloadTrend metric="gpu" history={history} apps={[app(engine.appUrn, engine.appName, 5)]} state={READY} />);
+
+    // 1,533 MiB is the row's value; padded 10% and rounded up to the next 256 MiB step it is
+    // 1,792 MiB, which is the ceiling — a plausible figure one gridline above the peak, not
+    // 1,792 MiB re-read as megabytes-of-megabytes.
+    expect(container.textContent).toContain('1.5 GB');
+    expect(container.textContent).toContain('scale to 1.8 GB');
+    expect(container.textContent).not.toMatch(/TB/);
   });
 });
