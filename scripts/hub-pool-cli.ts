@@ -237,6 +237,19 @@ export interface PoolRoutingRecord {
   throughput?: PoolRoutingThroughput | null;
   /** What prefix affinity did to this decision, or `null` when it was off or did not apply. Absent on a Hub predating affinity. */
   affinity?: PoolRoutingAffinity | null;
+  /**
+   * What slot-aware placement did to this decision, or `null` when the knob is off or no candidate
+   * stated a slot count. Absent on a Hub predating slots.
+   */
+  slots?: PoolRoutingSlots | null;
+}
+
+/** Mirrors `PoolRoutingSlots` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingSlots {
+  /** Candidates whose known queue depth had reached their stated slots, in ranked order; `'local'` for this node. Moved behind every free one, never removed. */
+  demoted: { node: string; backend: string; inFlight: number; slots: number }[];
+  /** Placed on one of those anyway: every candidate was full, every free one failed first, or a ceiling put every free one behind it. */
+  overridden: boolean;
 }
 
 /** Mirrors `PoolRoutingAffinity` in `hub-pool-routing-log.service.ts`. */
@@ -1167,8 +1180,10 @@ export function formatOllamaSlotsResultLines(
       'with poolSlotAwareness=1 an entry node places behind every node with a free slot before this one',
       `once ${requested} ${requested === 1 ? 'is' : 'are'} in flight here.`,
       '',
-      `Match it to the daemon: OLLAMA_NUM_PARALLEL on this node should be ${requested} too —`,
-      `cihub fleet backends --ollama-parallel ${requested} --execute sets both, on every node.`,
+      `Match it to the daemon: OLLAMA_NUM_PARALLEL on this node should be ${requested} too. Across the fleet,`,
+      `cihub fleet backends --ollama-parallel ${requested} --ollama-context <n> --ollama-keep-alive <d> --execute sets both —`,
+      "passed with the node's other runtime flags: that file is rendered whole from the flags on the line, so",
+      `--ollama-parallel ${requested} alone would drop OLLAMA_KEEP_ALIVE and OLLAMA_CONTEXT_LENGTH from every node it touches.`,
       '',
       'Check it: cihub pool status',
     ],
@@ -1356,6 +1371,20 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         throughput.overridden
           ? `  ↳ ~${throughput.estimatedTokens}-token prompt placed anyway though ${nodes} ${slow.length === 1 ? 'is' : 'are'} expected to miss the ${budget} deadline: nothing faster could serve it`
           : `  ↳ ~${throughput.estimatedTokens}-token prompt moved ${nodes} behind nodes expected to answer within ${budget}`,
+      );
+    }
+    // Only when a full engine was moved: the record is present, with an empty `demoted`, on every
+    // request where some candidate stated a count, and a note on each of those would bury the one
+    // an operator reading why a burst skipped the 2-slot node needs.
+    const slots = entry.slots;
+    if (slots && slots.demoted.length > 0) {
+      const nodes = slots.demoted
+        .map((demoted) => `${sanitizeForBox(demoted.node)} (${demoted.inFlight} in flight, ${demoted.slots} slot${demoted.slots === 1 ? '' : 's'})`)
+        .join(', ');
+      lines.push(
+        slots.overridden
+          ? `  ↳ placed anyway with every slot full on ${nodes}: no node with a free slot was ahead of it`
+          : `  ↳ moved ${nodes} behind nodes with a free slot`,
       );
     }
     // Only when affinity changed something or stood aside: a `hit` is the line an operator watching

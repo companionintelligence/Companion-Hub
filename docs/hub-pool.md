@@ -164,9 +164,11 @@ the KV cache is `OLLAMA_NUM_PARALLEL` times that window. A 30B at 4 × 64k is th
 
 A per-node statement of how many requests the node's Ollama runs at once, and a pool knob that
 reads it. The statement is `cihub pool slots 4` on a node (`clear` withdraws it), or across the
-fleet `cihub fleet backends --ollama-parallel 4 --execute`, which writes the daemon's
-`OLLAMA_NUM_PARALLEL` and every node's statement in one run — see
-[`cihub pool slots`](./CLI.md#cihub-pool-slots). Over the API it is
+fleet `cihub fleet backends --ollama-parallel 4 --ollama-context 32768 --ollama-keep-alive 24h
+--execute`, which writes the daemon's `OLLAMA_NUM_PARALLEL` and every node's statement in one run —
+passed with the node's other runtime flags, never alone, because the runtime drop-in is rendered
+whole from the flags on the command line (see [the recipe below](#slot-aware-placement-recipe) and
+[`cihub pool slots`](./CLI.md#cihub-pool-slots)). Over the API it is
 `PATCH /api/user-settings {"inferenceOllamaSlots": 4}`, or `ollamaSlots` on
 `PATCH /api/inference/preferences` (the route that can clear it). Absent (the default) is not
 stated. The knob is `poolSlotAwareness` — `0` off, `1` on — in the table above.
@@ -193,8 +195,10 @@ the prompt ceiling's and the throughput placement's, because the risk is the sam
 - **Demoted, never removed.** Failover still reaches a full node when every free one fails, and the
   routing log then says the demotion was overridden rather than claiming the node was skipped.
 - **All full means nothing moves.** When every candidate's slots are full the ranker's order stands.
-- It is judged on every route, body or not: `OLLAMA_NUM_PARALLEL` queues an embedding exactly as it
-  queues a turn.
+- It is judged on every route that takes a slot, body or not: `OLLAMA_NUM_PARALLEL` queues an
+  embedding exactly as it queues a turn. The peer `POST /api/show` lookup is the one exemption, as it
+  is for the [prompt ceiling](#prompt-ceilings): it occupies no slot — the daemon answers it from
+  metadata on disk, busy or not — so a full node the ranker chose is still asked first.
 
 In the ranking order it sits inside the [prompt ceiling](#prompt-ceilings) split — the ceiling is an
 operator's statement about a prompt, this is an inference about a queue — and outside
@@ -208,14 +212,48 @@ a conservative error, and one the routing log shows.
 and `poolPressureWeight`: at `0` no slot count is read and a node that takes this image with its
 settings untouched ranks byte for byte as before, so it is a valid control for the one node where
 the knob is on. The statement is safe to make fleet-wide first — a peer with the knob off ignores
-it — so the canary is the knob alone. Validate it one node at a time:
+it — so the canary is the knob alone.
 
-```bash
-cihub fleet backends --backends ollama --ollama-parallel 4 --execute            # every node states its slots
-curl -X PATCH .../api/inference/pool/settings -d '{"poolSlotAwareness": 1}'     # on the canary only
-```
+<a id="slot-aware-placement-recipe"></a>
+**Recipe.** Three steps, in this order:
 
-then compare the canary's first-token wait under a 4-way burst against a node still at `0`, and
+1. **Update every Hub first.** `--ollama-parallel`'s Hub half writes `inferenceOllamaSlots` through
+   `/api/inference/preferences`, and a Hub that predates this build has no such key: its `hub` line
+   comes back `failed — this Hub's build predates the slot count … update it first`, the drop-in
+   on that node has already been applied, and the node ends the run with a daemon at 4 slots and a
+   Hub stating nothing. Roll the Hubs before the daemons:
+
+   ```bash
+   cihub fleet update --hub --execute                                            # to a build that carries inferenceOllamaSlots
+   ```
+
+2. **State the slots with the node's whole runtime set.** The runtime drop-in
+   (`zzzzz-cihub-runtime.conf`) is rendered whole from the flags on the command line, and a key you
+   did not pass is not in it: a bare `--ollama-parallel 4 --execute` would rewrite the file with
+   `OLLAMA_NUM_PARALLEL` alone and **drop `OLLAMA_KEEP_ALIVE` and `OLLAMA_CONTEXT_LENGTH`** (and every
+   other runtime key the node carries) on every node, then restart each daemon to make it so. Pass
+   every runtime value the node runs, and run it once per tier with that tier's values — the fleet's
+   tiers differ in slots and context, and one command line cannot describe two of them:
+
+   ```bash
+   # the 4-slot / 32k tier (beta-max, ci): slots, context and keep-alive on one line — one run per tier
+   cihub fleet backends --backends ollama --nodes beta-max,ci \
+     --ollama-parallel 4 --ollama-context 32768 --ollama-keep-alive 24h --execute
+   ```
+
+   The dry run (no `--execute`) prints `runtime: would write zzzzz-cihub-runtime.conf with
+   OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=32768 …` — exactly the keys
+   the file will carry. A key the node runs today that is missing from that line is one the run
+   removes; read it before applying. `--ollama-igpu on` belongs on the line too where a node sets
+   it.
+
+3. **Turn the knob on, on one node:**
+
+   ```bash
+   curl -X PATCH .../api/inference/pool/settings -d '{"poolSlotAwareness": 1}'     # on the canary only
+   ```
+
+Then compare the canary's first-token wait under a 4-way burst against a node still at `0`, and
 flip the default once the fleet has seen it.
 
 **Seeing it.** `GET /api/inference/pool/status` reports `localNode.ollamaSlots` and
@@ -223,7 +261,10 @@ flip the default once the fleet has seen it.
 `cihub pool status` shows this node's under **This node** with whether the knob is on here. Each
 routing-log entry carries `slots` next to `promptCeiling`: `null` when the knob is off or no
 candidate stated a count, otherwise the demoted nodes with their queue depth and slots, and
-`overridden` when the request was placed on one of them anyway.
+`overridden` when the request was placed on one of them anyway. `cihub pool log` prints a
+`↳ moved <node> (2 in flight, 2 slots) behind nodes with a free slot` line on the rows a full engine
+was moved on, and `↳ placed anyway with every slot full on …` when the request landed on one
+regardless; a row where every candidate had a free slot gets no line.
 
 ## Throughput-aware placement
 

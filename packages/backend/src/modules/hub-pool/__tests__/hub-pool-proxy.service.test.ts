@@ -101,7 +101,14 @@ function capabilitiesWithModel(model: string, overrides: Partial<PoolPeerCapabil
 function peerServing(
   id: string,
   model: string,
-  options: { inFlightRequests?: number; hardwareTier?: string; lastSeenAt?: string; gpuPressure?: unknown; maxPromptTokens?: number } = {},
+  options: {
+    inFlightRequests?: number;
+    hardwareTier?: string;
+    lastSeenAt?: string;
+    gpuPressure?: unknown;
+    maxPromptTokens?: number;
+    ollamaSlots?: number;
+  } = {},
 ): HubPoolPeer {
   return mockPeer({
     id,
@@ -111,6 +118,7 @@ function peerServing(
       inFlightRequests: options.inFlightRequests,
       ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
       ...('maxPromptTokens' in options ? { maxPromptTokens: options.maxPromptTokens } : {}),
+      ...('ollamaSlots' in options ? { ollamaSlots: options.ollamaSlots } : {}),
       // `unknown`, not `number`: the whole point of the peerPressure clamp is that this arrives as
       // free-form jsonb a paired peer controls, so the hostile cases have to be expressible here.
       ...('gpuPressure' in options ? { gpuPressure: options.gpuPressure as number } : {}),
@@ -4059,6 +4067,55 @@ describe('PoolProxyService', () => {
         expect(headersSetOn(res)[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe('peer-careful.tailxyz.ts.net');
         // The spare was never needed: the ceiling did not push the lookup down the list.
         expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('peer-spare'))).toHaveLength(0);
+      });
+
+      // Slot-aware placement is the third decision this lookup is exempt from, for the same reason
+      // as the ceiling: a full node is demoted because a forwarded request would queue behind its
+      // engine, and `/api/show` joins no queue — the daemon answers it from metadata on disk whether
+      // or not a model is busy. `peer-full` has the shorter queue, so the ranker puts it first, and
+      // its 2 in flight fill its 2 slots, so the slot pass would move it behind `peer-spare` — which
+      // is what makes the exemption observable rather than a no-op. The embedding case stays judged
+      // ("judges an embedding too", under slot-aware placement): an embedding occupies a slot.
+      it('exempts the lookup from slot-aware placement, so a full node the ranker chose is still asked first', async () => {
+        setPoolPreferences({ poolSlotAwareness: 1 });
+        const withCatalog = serviceWithCatalog();
+        localHas('nomic-embed-text:latest');
+        peersAre(
+          peerServing('peer-full', 'qwen3.6:27b', { inFlightRequests: 2, ollamaSlots: 2 }),
+          peerServing('peer-spare', 'qwen3.6:27b', { inFlightRequests: 3, ollamaSlots: 4 }),
+        );
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async (url) =>
+          String(url).includes('tailxyz.ts.net')
+            ? new Response(JSON.stringify({ details: { parameter_size: '27B' } }), { status: 200 })
+            : new Response('model not found', { status: 404 }),
+        );
+        const res = createMockResponse();
+
+        await withCatalog.proxyLocalOnlyRequest('/api/show', 'POST', { model: AUTO_MODEL }, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(headersSetOn(res)[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe('peer-full.tailxyz.ts.net');
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('peer-spare'))).toHaveLength(0);
+        // Still not a turn: no row, no queue depth.
+        expect(routingLog.list()).toHaveLength(0);
+        expect(loadService.get('peer-full')).toBe(0);
+
+        // The same fleet, and a request that does occupy a slot: the full node goes behind the spare.
+        const chat = createMockResponse();
+        fetchMock.mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+        await withCatalog.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: 'qwen3.6:27b', stream: true },
+          model: 'qwen3.6:27b',
+          res: chat,
+        });
+        expect(routingLog.list()[0]).toMatchObject({ node: 'peer-spare.tailxyz.ts.net', attempt: 1, failedOverFrom: [] });
+        expect(routingLog.list()[0]?.slots).toMatchObject({
+          demoted: [{ node: 'peer-full.tailxyz.ts.net', inFlight: 2, slots: 2 }],
+          overridden: false,
+        });
       });
 
       it('gives the same 502 as before when every peer holding the model 404s, as a build without local/api/show does', async () => {

@@ -580,9 +580,12 @@ is the half of `OLLAMA_CONTEXT_LENGTH`: the pool ranks by queue depth and cannot
 full 2-slot engine from a half-empty 4-slot one, and with `poolSlotAwareness` switched on an entry
 node places behind every node that still has a free slot before a node whose slots are full — see
 [Slot-aware placement](./hub-pool.md#slot-aware-placement) for the 0.47 s → 9.0 s first-token wait
-that made it a setting. Across a fleet, `cihub fleet backends --ollama-parallel N --execute` sets both
-halves on every node ([below](#ollamas-runtime-environment-a-second-file-restarted-only-on-change));
-this command is the single-node form.
+that made it a setting. Across a fleet, `cihub fleet backends --ollama-parallel N --ollama-context C
+--ollama-keep-alive D --execute` sets both halves on every node
+([below](#ollamas-runtime-environment-a-second-file-restarted-only-on-change)) — with the node's
+other runtime flags on the same line, because that file is rendered whole from the flags it is
+given and `--ollama-parallel N` alone would drop `OLLAMA_KEEP_ALIVE` and `OLLAMA_CONTEXT_LENGTH`
+from every node it touches; this command is the single-node form, and touches no daemon.
 
 The value is a whole number from 1 to 64, digits only, the bounds `--ollama-parallel` accepts.
 Confirmed like `context-cap`, because it is a state change — though unlike the cap it restarts
@@ -1177,11 +1180,18 @@ carry no `ollamaSlots` is failed as predating the setting. When both flags are g
 written first, then the slot count, each as its own `hub` line.
 
 ```bash
-cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context 16384 --execute   # drop-in + each Hub's inferenceOllamaSlots=4 and inferenceMaxNumCtx=16384
-cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context unset --execute   # drop key from the file, clear each Hub's cap; slots still 4
-cihub pool context-cap 16384                                                                   # the same cap, on this node only
-cihub pool slots 4                                                                             # the same slot count, on this node only
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context 16384 --ollama-keep-alive 24h --execute   # drop-in + each Hub's inferenceOllamaSlots=4 and inferenceMaxNumCtx=16384
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context unset --ollama-keep-alive 24h --execute   # drop the context key from the file, clear each Hub's cap; slots still 4
+cihub pool context-cap 16384                                                                                           # the same cap, on this node only
+cihub pool slots 4                                                                                                     # the same slot count, on this node only
 ```
+
+Both `fleet backends` lines carry `--ollama-keep-alive 24h` because the file is rendered whole from
+the flags on the line: a run that names only `--ollama-parallel` and `--ollama-context` would drop
+`OLLAMA_KEEP_ALIVE` from every node and restart each daemon to make it so. Roll the Hubs
+(`cihub fleet update --hub --execute`) before the first run that passes `--ollama-parallel`: on a
+Hub that predates the slot count, the drop-in applies and then the `hub` line fails as above, which
+leaves that node's daemon at N slots with its Hub stating nothing.
 
 #### Firewall rules for the Hub's engine probes
 

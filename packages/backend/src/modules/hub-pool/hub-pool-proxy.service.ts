@@ -1102,8 +1102,10 @@ export class PoolProxyService {
    *
    * Then slot-aware placement, within each of those groups and only with `poolSlotAwareness` on: an
    * Ollama candidate whose known queue depth already fills the slots its node advertised moves behind
-   * every candidate that still has one free — see {@link applySlotPlacement}. Judged on every route,
-   * body or not, because `OLLAMA_NUM_PARALLEL` queues an embedding exactly as it queues a turn. Inside
+   * every candidate that still has one free — see {@link applySlotPlacement}. Judged on every route
+   * that occupies a slot, body or not, because `OLLAMA_NUM_PARALLEL` queues an embedding exactly as
+   * it queues a turn; the one caller that occupies none — the peer `/api/show` lookup in
+   * {@link describeFromPeer}, answered from metadata on disk — says so and is not judged. Inside
    * the ceiling because the ceiling is an operator's statement about a prompt and this is an
    * inference about a queue; outside throughput because a full engine queues the request whole,
    * where a slow one merely reads it slowly. At 0, the shipped default, nothing here is read.
@@ -1141,6 +1143,13 @@ export class PoolProxyService {
       /** The request's session key, derived only if affinity is on — a header read and at most a 4 KB digest, but not for a fleet that has it off. */
       prefixKey?: () => PrefixKey | null;
     },
+    /**
+     * Whether the request being placed will occupy one of the engine's `OLLAMA_NUM_PARALLEL` slots.
+     * Every forwarded request does — a turn and an embedding alike — so this defaults on; a
+     * metadata lookup does not, and passing `false` keeps {@link applySlotPlacement} out of its
+     * ranking so a full node is still asked first when it is the one best placed to answer.
+     */
+    occupiesSlot = true,
   ): Promise<{
     candidates: PoolCandidate[];
     pin: HubPoolPin | null;
@@ -1176,7 +1185,7 @@ export class PoolProxyService {
     const ceiling = measurePromptBytes
       ? this.applyPromptCeilings(model, ordered, peers, measurePromptBytes)
       : { preferred: ordered, overCeiling: [], decision: null };
-    const slots = this.applyAdvertisedSlots(model, affinity.ordered, peers);
+    const slots = occupiesSlot ? this.applyAdvertisedSlots(model, affinity.ordered, peers) : { demoted: NOTHING_DEMOTED, decision: null };
     const throughput =
       prompt && measurePromptBytes
         ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming)
@@ -2077,7 +2086,15 @@ export class PoolProxyService {
     // Belt-and-braces with `PROMPT_CEILING_PATHS`, which lists only the four generation paths and so
     // already excludes every {@link MODEL_METADATA_PATHS} entry on the `proxyRequest` side; keep
     // both, because they guard different callers.
-    const { candidates } = await this.rankCandidates(model);
+    //
+    // `occupiesSlot: false` for the same reason, against the third placement decision: slot-aware
+    // placement moves a node whose `OLLAMA_NUM_PARALLEL` slots are full behind every node with a
+    // free one, because a forwarded request would queue behind the engine there. This lookup takes
+    // no slot — `/api/show` is answered by the daemon from metadata on disk, not by a loaded model —
+    // so a full node is exactly as quick to answer it as an idle one, and demoting it would walk
+    // past the node the ranker chose over a queue the lookup never joins. Embeddings keep the pass:
+    // they occupy a slot like any turn.
+    const { candidates } = await this.rankCandidates(model, undefined, false);
     for (const candidate of candidates) {
       if (clientClosed.aborted) {
         break;

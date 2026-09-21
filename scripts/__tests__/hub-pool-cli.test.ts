@@ -794,6 +794,17 @@ describe('hub-pool-cli Ollama slots', () => {
       expect(result.lines.join('\n')).toContain('cihub fleet backends --ollama-parallel 4');
     });
 
+    it('recommends the fleet command with the node’s other runtime flags, and says what the bare flag would drop', () => {
+      // The runtime drop-in is rendered whole from the flags on the line: `--ollama-parallel 4 --execute`
+      // alone would rewrite every node's file without OLLAMA_KEEP_ALIVE / OLLAMA_CONTEXT_LENGTH and
+      // restart the daemon to make it so. The box must never hand the operator that command bare.
+      const text = formatOllamaSlotsResultLines(4, prefs(null), prefs(4), true).lines.join('\n');
+      expect(text).toContain('--ollama-parallel 4 --ollama-context <n> --ollama-keep-alive <d> --execute');
+      expect(text).toContain('rendered whole from the flags');
+      expect(text).toContain('--ollama-parallel 4 alone would drop OLLAMA_KEEP_ALIVE and OLLAMA_CONTEXT_LENGTH');
+      expect(text).not.toMatch(/--ollama-parallel 4 --execute/);
+    });
+
     it('confirms a clear, saying what ranking goes back to', () => {
       const result = formatOllamaSlotsResultLines(null, prefs(2), prefs(null), true);
       expect(result).toMatchObject({ title: 'Slot count cleared', tone: 'yellow' });
@@ -815,6 +826,93 @@ describe('hub-pool-cli Ollama slots', () => {
       const result = formatOllamaSlotsResultLines(4, { preferredBackend: 'ollama' }, null, false);
       expect(result.tone).toBe('red');
       expect(result.lines.join('\n')).toContain('predates the slot count');
+    });
+  });
+
+  describe('pool log', () => {
+    const BETA_MAX = 'hub-c.example-tailnet.ts.net';
+
+    function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
+      return {
+        at: '2026-09-21T10:00:01.000Z',
+        direction: 'outbound',
+        path: '/v1/chat/completions',
+        model: 'qwen3-coder:30b',
+        node: PEER_A,
+        peerId: 'peer-1',
+        backend: 'ollama',
+        candidates: 3,
+        attempt: 1,
+        failedOverFrom: [],
+        outcome: 'served',
+        status: 200,
+        durationMs: 470,
+        ...overrides,
+      };
+    }
+
+    function logOf(entries: PoolRoutingLogResponse['entries']): string {
+      const summary = {
+        recorded: entries.length,
+        capacity: 200,
+        served: entries.length,
+        failed: 0,
+        failovers: 0,
+        lastAt: '2026-09-21T10:00:01.000Z',
+      };
+      return formatPoolRoutingLogLines({ summary, entries }).join('\n');
+    }
+
+    it('marks a row a full engine was moved on, with its queue depth and slots', () => {
+      const text = logOf([
+        routingEntry({
+          slots: { demoted: [{ node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 }], overridden: false },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ moved ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
+    });
+
+    it('names this node as local, lists every demoted node in ranked order, and says "slot" for one', () => {
+      const text = logOf([
+        routingEntry({
+          slots: {
+            demoted: [
+              { node: 'local', backend: 'ollama', inFlight: 3, slots: 1 },
+              { node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 },
+            ],
+            overridden: false,
+          },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ moved local (3 in flight, 1 slot), ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
+    });
+
+    it('says so when the request was placed on a full engine anyway', () => {
+      // Every candidate full, every free one failed first, or a ceiling put the free ones behind it:
+      // the log must read "placed anyway", never claim the node was skipped.
+      const text = logOf([
+        routingEntry({
+          node: BETA_MAX,
+          slots: { demoted: [{ node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 }], overridden: true },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ placed anyway with every slot full on ${BETA_MAX} (2 in flight, 2 slots): no node with a free slot was ahead of it`);
+      expect(text).not.toContain('moved');
+    });
+
+    it('adds nothing to a row the slots did not change, with the knob off, or from a Hub predating slots', () => {
+      const text = logOf([
+        // Some candidate stated a count, but every one had a free slot: the record is present and empty.
+        routingEntry({ slots: { demoted: [], overridden: false } }),
+        routingEntry({ slots: null }),
+        routingEntry(),
+      ]);
+
+      expect(text).not.toContain('slot');
+      expect(text).not.toContain('↳');
     });
   });
 });
