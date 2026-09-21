@@ -4689,6 +4689,95 @@ describe('PoolProxyService', () => {
       expect(loadService.get('peer-a')).toBe(0);
     });
 
+    /**
+     * The field report this came from: beta-max's `cihub pool log` showed four rows reading
+     * `qwen3-coder:30b  -  1/14  30031  x failed`, which an operator reads as "placement returned
+     * no candidate and then timed out" — nothing in the NODE column, and a duration suspiciously
+     * close to a 30 s deadline. Placement had in fact succeeded: fourteen candidates were ranked,
+     * the first was being tried, and the *caller* gave up 30 s later. Settling the row with a null
+     * node threw away the one fact that distinguishes the two, and it is the same null the
+     * dashboard buckets as `Unplaced`. Nothing else in the log tells them apart: `attempt` is 1 on
+     * a hang-up and `candidates.length` when every candidate really did fail, which is far too
+     * subtle to hang a diagnosis on.
+     */
+    it('keeps the node it was waiting on, so a hang-up cannot be read as "placement found nothing"', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 0 }), peerServing('peer-b', MODEL, { inFlightRequests: 0 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      res.destroy();
+      await inFlight;
+
+      // Local is first at the default affinity with nothing in flight, so this is the node that was
+      // holding the request: named on the row, with the engine that had it.
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        status: null,
+        node: LOCAL_CANDIDATE_KEY,
+        peerId: null,
+        backend: 'ollama',
+        attempt: 1,
+        candidates: 3,
+        clientClosed: true,
+      });
+    });
+
+    it('names the peer, not nothing, when the hang-up happened while a peer forward was in flight', async () => {
+      // Local busier than the affinity margin, so the peer ranks first and is the node being tried.
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 0 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      res.destroy();
+      await inFlight;
+
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        node: 'peer-a.tailxyz.ts.net',
+        peerId: 'peer-a',
+        backend: 'ollama',
+        attempt: 1,
+        clientClosed: true,
+      });
+    });
+
+    /**
+     * The counterpart, and the reason `clientClosed` is a field rather than a reading of `node`: a
+     * request that genuinely exhausted every candidate settles with no node too, and that one IS a
+     * routing failure. The flag is what separates the two on a row an operator is scanning.
+     */
+    it('still settles with no node, and without the flag, when every candidate really did fail', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await service.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: MODEL, stream: true },
+        model: MODEL,
+        res: createMockResponse(),
+      });
+
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', node: null, clientClosed: false, attempt: 1, candidates: 1 });
+    });
+
     it('sends the upstream an already-aborted request when the client left while candidates were still being ranked', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
       vllm.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
