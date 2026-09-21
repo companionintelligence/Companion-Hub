@@ -17,6 +17,27 @@
  *
  * Writes `key=value` lines to $GITHUB_OUTPUT when set, and always echoes them to stdout so
  * the resolution is visible in the run log and runnable locally.
+ *
+ * ## Where the release version comes from
+ *
+ * The RELEASE TAG is the single source of truth, and `package.json` is not a source at all. Follow
+ * the tag and nothing reads a version off disk:
+ *
+ *   desktop-release.yml `inputs.tag`
+ *     - build-container.yml -> this script -> the published image tag, the OCI version label, and
+ *       the `CI_HUB_BUILD_*` build args the Dockerfile bakes into the runtime image
+ *     - `CI_HUB_BUILD_VERSION` -> scripts/build-standalone-cli.cjs -> the `cihub` binary
+ *     - the "Bump Tauri version to match release tag" step -> tauri.conf.json + Cargo.toml
+ *
+ * Root `package.json` therefore carries the placeholder `0.0.0-dev` rather than a release number.
+ * It read `0.2.61` while published releases were at `0.2.73` (measured 2026-09-21), and since the
+ * Dockerfile copies it into the image, that stale number was the only version a running container
+ * had on disk. A placeholder cannot be mistaken for a release; a number that merely happens to be
+ * old can. `scripts/__tests__/release-version-source.test.ts` fails if one is put back.
+ *
+ * `tauri.conf.json` and `Cargo.toml` still carry a real-looking number on purpose: the release
+ * workflow overwrites both from the tag before bundling, and Windows MSI version parsing rejects a
+ * pre-release suffix, so a `0.0.0-dev` placeholder there would break local desktop bundling.
  */
 
 const fs = require('node:fs');
