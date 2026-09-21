@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   assessOllamaBind,
+  BIND_MARKERS,
   bindAddressFor,
   CANONICAL_BIND_DROPIN,
   canonicalBindDropinContent,
@@ -29,6 +30,7 @@ import {
   ollamaBindProbeScript,
   ollamaOwnershipGuardShell,
   parseOllamaBindProbe,
+  parseSsListeners,
   parseServiceEnvironment,
   parseShowEnvironment,
   planBindConsolidation,
@@ -428,6 +430,159 @@ describe('decideSystemUnitOwnership', () => {
   });
 });
 
+// core-2, 2026-09-21, as the unprivileged probe sees it: the system unit runs as `ollama` (uid 997),
+// so `ss -p` discloses no pid to `ci` — but `ss -e` prints the socket's cgroup for anyone. And a
+// user-scope unit whose name matches `ollama*` is active: an ssh forward to beta-1, not a daemon.
+const CORE2_SS = 'LISTEN 0 4096 *:11434 *:* uid:997 ino:81099226 sk:8006 cgroup:/system.slice/ollama.service v6only:0 <->';
+const CORE2_TUNNEL = 'ollama-tunnel.service loaded active running SSH tunnel: core-2 localhost:11435 -> beta-1 Ollama :11434';
+// beta-1 through the same `ss -e`: the pid is disclosed (the prober is the unit's user) and the
+// socket's cgroup says user scope even where /proc could not be read.
+const BETA1_SS_E =
+  'LISTEN 0 4096 *:11434 *:* users:(("ollama",pid=941661,fd=3)) uid:1000 ino:133057448 sk:9003 cgroup:/user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service v6only:0 <->';
+
+describe('decideSystemUnitOwnership goes by the listener, not by a unit name', () => {
+  it('core-2: a user-scope `ollama-tunnel.service` does not refuse when the system unit serves :11434', () => {
+    const d = decideSystemUnitOwnership({ ss: CORE2_SS, userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
+    expect(d.refuse).toBe(false);
+    if (d.refuse) throw new Error('unreachable');
+    expect(d.owners[0]).toMatchObject({ scope: 'system-ollama', unit: 'ollama.service', uid: 997, pid: undefined });
+    // The unit the operator can see is named, and told apart from the daemon.
+    expect(d.note).toBe(
+      "ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (uid 997) is what serves :11434 — that unit is not the daemon; managing the system unit",
+    );
+    expect(d.userUnits).toEqual([{ user: 'ci', unit: 'ollama-tunnel.service', active: true }]);
+  });
+
+  it('beta-1: the socket cgroup alone refuses, pid or no pid', () => {
+    const withPid = decideSystemUnitOwnership({
+      ss: BETA1_SS_E,
+      userUids: { ci: 1000 },
+      userUnits: [{ user: 'ci', text: 'ollama-local.service loaded active running Ollama local model server' }],
+    });
+    expect(withPid.refuse).toBe(true);
+    if (withPid.refuse)
+      expect(withPid.reason).toMatch(
+        /^ollama-local\.service under ci's systemd --user \(pid 941661\) already owns :11434; enabling the system ollama\.service would start a second daemon/,
+      );
+    // Same socket, pid withheld (another user probing): still the user unit, by cgroup; the socket's
+    // uid names the user when the probe dumped the login users, and reads `?` when it did not.
+    const noPid = decideSystemUnitOwnership({ ss: BETA1_SS_E.replace(/users:\(\([^)]*\)\) /, ''), userUids: { ci: 1000 } });
+    expect(noPid.refuse).toBe(true);
+    if (noPid.refuse) expect(noPid.reason).toMatch(/^ollama-local\.service under ci's systemd --user \(socket uid 1000\) already owns :11434/);
+    expect(noPid.owners[0]).toMatchObject({ scope: 'user-unit', unit: 'ollama-local.service', pid: undefined, uid: 1000, user: 'ci' });
+    const nameless = decideSystemUnitOwnership({ ss: BETA1_SS_E.replace(/users:\(\([^)]*\)\) /, '') });
+    if (nameless.refuse) expect(nameless.reason).toMatch(/^ollama-local\.service under \?'s systemd --user \(socket uid 1000\)/);
+  });
+
+  it('a system unit that is not the listener does not count as one', () => {
+    // No listener at all, but the unit file exists and is active per systemd — nothing to pin a socket to.
+    const d = decideSystemUnitOwnership({
+      ss: '',
+      systemUnit: { active: true, mainPid: 5, uid: 997 },
+      userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
+    });
+    expect(d.refuse).toBe(false);
+    if (!d.refuse) expect(d.note).toMatch(/nothing listens on :11434 — that unit is not an Ollama daemon on this port; managing the system unit$/);
+  });
+
+  it('without a socket cgroup (older iproute2), the system unit’s uid or main pid pins the listener', () => {
+    const noCgroup = 'LISTEN 0 4096 *:11434 *:* uid:997 ino:81099226 sk:8006 v6only:0 <->';
+    const byUid = decideSystemUnitOwnership({
+      ss: noCgroup,
+      systemUnit: { active: true, uid: 997 },
+      userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
+    });
+    expect(byUid.refuse).toBe(false);
+    if (!byUid.refuse) {
+      expect(byUid.owners[0]?.scope).toBe('system-ollama');
+      expect(byUid.note).toMatch(/the system ollama\.service \(uid 997\) is what serves :11434/);
+    }
+    const byPid = decideSystemUnitOwnership({
+      ss: 'LISTEN 0 4096 *:11434 *:* users:(("ollama",pid=3522669,fd=3))',
+      systemUnit: { active: true, mainPid: 3522669 },
+      userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
+    });
+    expect(byPid.refuse).toBe(false);
+    if (!byPid.refuse) expect(byPid.note).toMatch(/the system ollama\.service \(pid 3522669\) is what serves :11434/);
+    // An inactive system unit pins nothing: `UID` there is stale or `[not set]`.
+    const inactive = decideSystemUnitOwnership({
+      ss: noCgroup,
+      systemUnit: { active: false, uid: 997 },
+      userUnits: [{ user: 'ci', text: CORE2_TUNNEL }],
+    });
+    expect(inactive.owners[0]?.scope).toBe('unknown');
+  });
+
+  it('with only the socket uid, the unit’s user decides: theirs refuses, anyone else’s does not', () => {
+    const noCgroup = (uid: number) => `LISTEN 0 4096 *:11434 *:* uid:${uid} ino:1 sk:1 v6only:0 <->`;
+    const theirs = decideSystemUnitOwnership({ ss: noCgroup(1001), userUids: { ci: 1001 }, userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
+    expect(theirs.refuse).toBe(true);
+    if (theirs.refuse)
+      expect(theirs.reason).toBe(
+        "ollama-tunnel.service is running under ci's systemd --user; the system ollama.service path would start a second daemon and collide on :11434",
+      );
+    const notTheirs = decideSystemUnitOwnership({ ss: noCgroup(997), userUids: { ci: 1001 }, userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
+    expect(notTheirs.refuse).toBe(false);
+    if (!notTheirs.refuse)
+      expect(notTheirs.note).toBe(
+        "ollama-tunnel.service is active under ci's systemd --user, but :11434 is held by uid 997, not ci's (1001) — that unit is not the listener; managing the system unit",
+      );
+    // No uid to compare either: the listener may well be the unit's, and the old refusal stands.
+    const blind = decideSystemUnitOwnership({ ss: 'LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:*', userUnits: [{ user: 'ci', text: CORE2_TUNNEL }] });
+    expect(blind.refuse).toBe(true);
+    if (blind.refuse)
+      expect(blind.reason).toMatch(
+        /ollama-tunnel\.service is running under ci's systemd --user; the system ollama\.service path would start a second daemon/,
+      );
+  });
+
+  it('with no listener, only a unit whose own OLLAMA_HOST claims the port refuses', () => {
+    const claims = ['Id=ollama-local.service', 'ActiveState=active', 'Environment=OLLAMA_HOST=0.0.0.0:11434'].join('\n');
+    expect(decideSystemUnitOwnership({ ss: '', userUnits: [{ user: 'ci', text: claims }] }).refuse).toBe(true);
+    const elsewhere = ['Id=ollama-local.service', 'ActiveState=active', 'Environment=OLLAMA_HOST=127.0.0.1:11435'].join('\n');
+    const d = decideSystemUnitOwnership({ ss: '', userUnits: [{ user: 'ci', text: elsewhere }] });
+    expect(d.refuse).toBe(false);
+    if (!d.refuse) expect(d.note).toMatch(/nothing listens on :11434/);
+  });
+
+  it('no note when there is no user unit to explain', () => {
+    const d = decideSystemUnitOwnership({ ss: CORE2_SS });
+    expect(d.refuse).toBe(false);
+    if (!d.refuse) expect(d.note).toBeUndefined();
+  });
+});
+
+describe('parseSsListeners', () => {
+  it('reads the uid and cgroup `ss -e` prints, and classifies by the cgroup', () => {
+    expect(parseSsListeners(CORE2_SS)).toEqual([
+      {
+        address: '*:11434',
+        process: undefined,
+        pid: undefined,
+        uid: 997,
+        cgroup: '/system.slice/ollama.service',
+        scope: 'system-ollama',
+        unit: 'ollama.service',
+      },
+    ]);
+    expect(parseSsListeners(BETA1_SS_E)[0]).toMatchObject({
+      pid: 941661,
+      process: 'ollama',
+      uid: 1000,
+      scope: 'user-unit',
+      unit: 'ollama-local.service',
+    });
+    // Plain `ss -ltnp`: nothing to classify by.
+    expect(parseSsListeners(BETA1_SS)[0]).toMatchObject({ pid: 2417, uid: undefined, cgroup: undefined, scope: 'unknown' });
+    // Another cgroup namespace: `cgroup:unreachable:<id>` is not a path and names no unit.
+    expect(parseSsListeners('LISTEN 0 4096 *:11434 *:* uid:997 ino:1 sk:1 cgroup:unreachable:00000000000000001 v6only:0 <->')[0]).toMatchObject({
+      uid: 997,
+      cgroup: undefined,
+      scope: 'unknown',
+    });
+  });
+});
+
 // ─── Reading back ────────────────────────────────────────────────────────────
 
 describe('verifyEffectiveBind', () => {
@@ -472,6 +627,7 @@ const probeOutput = (parts: {
   ss?: string[];
   owners?: string[];
   userUnits?: string[];
+  userUids?: string[];
   entries?: string[];
   files?: DropinFile[];
   unit?: string;
@@ -487,6 +643,7 @@ const probeOutput = (parts: {
     ...(parts.ss ?? []).map((l) => `ss=${l}`),
     ...(parts.owners ?? []).map((l) => `owner=${l}`),
     ...(parts.userUnits ?? []).map((l) => `user_unit=${l}`),
+    ...(parts.userUids ?? []).map((l) => `user_uid=${l}`),
     ...(parts.entries ?? []).map((l) => `dir_entry=${l}`),
     ...(parts.files ?? []).flatMap((f) => [`===DROPIN /etc/systemd/system/ollama.service.d/${f.name}===`, f.content, '', '===END===']),
   ].join('\n');
@@ -559,6 +716,45 @@ describe('assessOllamaBind', () => {
     expect(a.ownership.refuse).toBe(true);
     expect(a.summary).toContain('user-scope ollama-local.service (ci)');
     expect(a.summary).toContain('system unit inactive/disabled');
+  });
+
+  it('core-2: a user-scope `ollama-tunnel.service` beside a serving system unit reads as managed, and the unit is named', () => {
+    // The unprivileged probe's actual dump on 2026-09-21: no `owner=` line (ss withheld the pid),
+    // the socket's cgroup on the ss line, the system unit active as uid 997, the tunnel unit active.
+    const out = probeOutput({
+      show: [
+        'ActiveState=active',
+        'UnitFileState=enabled',
+        'MainPID=3522669',
+        'UID=997',
+        'NeedDaemonReload=no',
+        'Environment=OLLAMA_HOST=0.0.0.0:11434',
+      ],
+      ss: [CORE2_SS],
+      userUnits: [`ci ${CORE2_TUNNEL}`],
+      userUids: ['ci 1001'],
+      guard: 'active',
+      files: [file(CANONICAL_BIND_DROPIN, host('0.0.0.0:11434'))],
+    });
+    const probe = parseOllamaBindProbe(out);
+    expect(probe.userUids).toEqual({ ci: 1001 });
+    expect(probe.show.UID).toBe('997');
+    const a = assessOllamaBind(probe);
+    expect(a.status).toBe('managed');
+    expect(a.ownership.refuse).toBe(false);
+    if (!a.ownership.refuse)
+      expect(a.ownership.note).toMatch(
+        /ollama-tunnel\.service is active under ci's systemd --user, but the system ollama\.service \(uid 997\) is what serves :11434/,
+      );
+    expect(a.summary).toBe(`0.0.0.0:11434 ← ${CANONICAL_BIND_DROPIN}  [guarded; ollama-tunnel.service (ci) is not the listener]`);
+  });
+
+  it('the probe asks `ss -e` for the socket cgroup and uid, and dumps the uids it can compare them to', () => {
+    const script = ollamaBindProbeScript();
+    expect(script).toContain('ss -ltnpe');
+    expect(script).toContain('-p UID');
+    expect(script).toContain('echo "user_uid=$me $(id -u 2>/dev/null)"');
+    expect(script).toContain('echo "user_uid=$u $uid"');
   });
 
   it('a managed node reads back as managed, with shadowed legacy files listed', () => {
@@ -813,5 +1009,106 @@ describe.skipIf(!bash)('ollamaBindApplyShell (sandboxed bash)', () => {
     expect(classifyBindApplyOutput(bad.stdout, bad.stderr).outcome).toBe('failed');
     expect(readdirSync(without.dropins)).toEqual(['override.conf']);
     expect(readFileSync(without.log, 'utf-8')).not.toContain('systemctl');
+  });
+});
+
+/**
+ * The guard shell against stubbed `ss`, `loginctl` and `systemctl`: the three listener shapes the
+ * fleet actually has. Run for real because the bug it fixes was in the shell's control flow — the
+ * user-manager loop refused after the listener loop had already found the system unit.
+ */
+describe.skipIf(!bash)('ollamaOwnershipGuardShell (sandboxed bash)', () => {
+  const sandboxes: string[] = [];
+  afterEach(() => {
+    for (const dir of sandboxes.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function runGuard(stubs: { ss: string; userUnits?: string }) {
+    const root = mkdtempSync(path.join(tmpdir(), 'cihub-guard-'));
+    sandboxes.push(root);
+    const bin = path.join(root, 'bin');
+    mkdirSync(bin);
+    const stub = (name: string, body: string) => {
+      const p = path.join(bin, name);
+      writeFileSync(p, `#!/bin/sh\n${body}\n`);
+      chmodSync(p, 0o755);
+    };
+    stub('ss', `printf '%s\\n' '${stubs.ss}'`);
+    stub('loginctl', "printf '%s\\n' ' 1001 ci          yes active' '60578 gdm-greeter no  active'");
+    stub('systemctl', ['case "$*" in', `  *"-M ci@"*"list-units"*) printf '%s\\n' '${stubs.userUnits ?? ''}' ;;`, 'esac'].join('\n'));
+    const res = spawnSync(bash as string, ['-e', '-c', `${ollamaOwnershipGuardShell()}\necho guard-passed`], {
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: '/tmp' },
+      encoding: 'utf-8',
+    });
+    return { status: res.status, out: res.stdout, err: res.stderr };
+  }
+
+  it('core-2: the system unit serves :11434 beside an active `ollama-tunnel.service` — passes, with the note', () => {
+    // Root's `ss -ltnpe` on core-2: pid disclosed AND the socket cgroup printed.
+    const res = runGuard({
+      ss: 'LISTEN 0 4096 *:11434 *:* users:(("ollama",pid=3522669,fd=3)) uid:997 ino:81099226 sk:8006 cgroup:/system.slice/ollama.service v6only:0 <->',
+      userUnits: CORE2_TUNNEL,
+    });
+    expect(res.status, res.err).toBe(0);
+    expect(res.out).not.toContain(BIND_MARKERS.refused);
+    expect(res.out).toContain(
+      "ollama-bind-note: ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (pid 3522669) is what serves :11434 — that unit is not the daemon; managing the system unit",
+    );
+    expect(res.out.trim().endsWith('guard-passed')).toBe(true);
+    // The apply-output classifier carries the note as detail and does not mistake it for a refusal.
+    const outcome = classifyBindApplyOutput(`${res.out}\n${BIND_MARKERS.complete}`, '');
+    expect(outcome.outcome).toBe('applied');
+    expect(outcome.detail.some((l) => l.startsWith(BIND_MARKERS.note))).toBe(true);
+  });
+
+  it('beta-1: a user-scope unit serves :11434 — refuses, by the socket cgroup, before asking any user manager', () => {
+    const res = runGuard({ ss: BETA1_SS_E, userUnits: 'ollama-local.service loaded active running Ollama local model server' });
+    expect(res.status, res.err).toBe(0);
+    expect(res.out).toContain(
+      "ollama-bind-refused: ollama-local.service under ?'s systemd --user (pid 941661) already owns :11434; enabling the system ollama.service would start a second daemon that collides on the port",
+    );
+    expect(res.out).not.toContain('guard-passed');
+    expect(res.out).not.toContain(BIND_MARKERS.note);
+  });
+
+  it('nothing listens: an active `ollama*` user unit is noted, not a reason to stop', () => {
+    const res = runGuard({ ss: '', userUnits: CORE2_TUNNEL });
+    expect(res.status, res.err).toBe(0);
+    expect(res.out).toContain(
+      "ollama-bind-note: ollama-tunnel.service is active under ci's systemd --user, but nothing listens on :11434 — that unit is not an Ollama daemon on this port; managing the system unit",
+    );
+    expect(res.out.trim().endsWith('guard-passed')).toBe(true);
+  });
+
+  it('a listener whose owner the guard cannot name, beside an active `ollama*` user unit, still refuses', () => {
+    // No pid, no cgroup: an `ss` too old for `-e` cgroups, on a box where the guard is not root.
+    const res = runGuard({ ss: 'LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:*', userUnits: CORE2_TUNNEL });
+    expect(res.status, res.err).toBe(0);
+    expect(res.out).toContain(
+      "ollama-bind-refused: ollama-tunnel.service is running under ci's systemd --user; the system ollama.service path would start a second daemon and collide on :11434",
+    );
+    expect(res.out).not.toContain('guard-passed');
+  });
+
+  it('an unreachable socket cgroup falls back to /proc, and with no pid to read it refuses on the name', () => {
+    const res = runGuard({
+      ss: 'LISTEN 0 4096 *:11434 *:* uid:997 ino:1 sk:1 cgroup:unreachable:00000000000000001 v6only:0 <->',
+      userUnits: CORE2_TUNNEL,
+    });
+    expect(res.out).not.toMatch(/owned by unreachable/);
+    expect(res.out).toMatch(/ollama-bind-refused: ollama-tunnel\.service is running under ci's systemd --user/);
+  });
+
+  it('a container or a foreign system unit on the port refuses, whatever the user managers say', () => {
+    const container = runGuard({
+      ss: 'LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("docker-proxy",pid=5,fd=4)) uid:0 cgroup:/system.slice/docker-1f2e3d.scope',
+    });
+    expect(container.out).toMatch(/ollama-bind-refused: :11434 is served by a container/);
+    const foreign = runGuard({
+      ss: 'LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=77,fd=4)) uid:0 cgroup:/system.slice/ollama-custom.service',
+      userUnits: CORE2_TUNNEL,
+    });
+    expect(foreign.out).toMatch(/ollama-bind-refused: :11434 is owned by ollama-custom\.service \(pid 77\), not ollama\.service/);
+    expect(foreign.out).not.toContain(BIND_MARKERS.note);
   });
 });
