@@ -493,6 +493,32 @@ export const MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 0;
 /** Same bound as `MAX_POOL_LOCAL_AFFINITY`: past this queue depth the wait behind it dwarfs any prefill saved. */
 export const MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 20;
 
+/**
+ * Whether placement reads each Ollama candidate's advertised slot count (`inferenceOllamaSlots`, the
+ * operator's statement of its `OLLAMA_NUM_PARALLEL`) and puts a candidate whose queue already fills
+ * its slots behind every candidate that still has one free.
+ *
+ * Queue depth alone cannot see this. Ollama serves `OLLAMA_NUM_PARALLEL` requests at once and queues
+ * the rest behind them, so two in flight is a full engine on a 2-slot node and half of one on a
+ * 4-slot node, and the ranker scores both the same. Measured 2026-09-21 (fleet-qa B5 cell, 4-way
+ * bursts): the nodes moved to 2 slots queued requests behind Ollama for 5–10 s to the first token —
+ * beta-max 0.47 s → 9.0 s — while 4-slot nodes sat idle, and the fleet aggregate at c=4 fell
+ * 14–16 %. A full node is demoted, never removed: failover still reaches it, a pin still applies
+ * within each group, and when every candidate is full nothing moves — see `applySlotPlacement`.
+ *
+ * Zero, deliberately, the same way `DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT` and
+ * `DEFAULT_POOL_PRESSURE_WEIGHT` are: at 0 no slot count is read and ranking is byte for byte the
+ * build before slots existed, so the canary node that PATCHes `poolSlotAwareness` to 1 can be
+ * measured against a node that took the same image and nothing else. There is no weight to tune —
+ * a slot is either free or it is not — so the knob is a switch that keeps the numeric shape of the
+ * others.
+ */
+export const DEFAULT_POOL_SLOT_AWARENESS = 0;
+/** `0` is off. */
+export const MIN_POOL_SLOT_AWARENESS = 0;
+/** `1` is on; there is no stronger form, because the demotion is already a whole ordering step rather than a weight. */
+export const MAX_POOL_SLOT_AWARENESS = 1;
+
 /** How often each `connected`/`unreachable` peer is probed for capabilities. */
 export const DEFAULT_POOL_HEALTH_POLL_SECONDS = 30;
 /** Below this the probes cost more than the routing accuracy they buy, and an 8s probe timeout would start overlapping ticks. */
@@ -557,6 +583,8 @@ export interface HubPoolPreferences {
   poolProbeSnapshotTtlMs: number;
   /** The queue depth up to which the node that last served a prompt prefix is preferred for it, counting the request being placed; `0` (the default) turns affinity off. See {@link DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT}. */
   poolPrefixAffinityMaxInFlight: number;
+  /** Whether an Ollama candidate whose queue fills its advertised slots is placed behind every candidate with a free one; `0` (the default) keeps slots out of ranking entirely. See {@link DEFAULT_POOL_SLOT_AWARENESS}. */
+  poolSlotAwareness: number;
   /**
    * Operator routing overrides, newest last. Empty (the default) means the ranker decides alone and
    * routing is byte-identical to a build without pinning — see {@link resolvePinFor}.

@@ -15,6 +15,7 @@ import {
   DEFAULT_POOL_PRESSURE_WEIGHT,
   DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
   POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
   type PoolContainerSampler,
@@ -85,6 +86,7 @@ describe('HubPoolPeerService', () => {
       poolMaxPromptTokens: null,
       poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
       poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+      poolSlotAwareness: DEFAULT_POOL_SLOT_AWARENESS,
       ...overrides,
     });
   }
@@ -1168,6 +1170,16 @@ describe('HubPoolPeerService', () => {
 
         configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: null } as never);
         expect(await service.getOwnCapabilities()).not.toHaveProperty('maxNumCtx');
+      });
+
+      it('advertises the Ollama slot count, and omits the key when none is stated, like the cap', async () => {
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 4 } as never);
+        expect((await service.getOwnCapabilities()).ollamaSlots).toBe(4);
+        // Refusing inbound work does not blank it: it describes the daemon, not an offer of work.
+        expect((await service.getOwnCapabilities(false)).ollamaSlots).toBe(4);
+
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: null } as never);
+        expect(await service.getOwnCapabilities()).not.toHaveProperty('ollamaSlots');
       });
 
       it('picks up a settings change on the next poll, not the next restart', async () => {

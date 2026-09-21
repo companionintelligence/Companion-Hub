@@ -124,6 +124,15 @@ export interface PoolRoutingRecord {
    * stood aside for a queue, or was overruled. Always `null` on `inbound` rows, like the others.
    */
   affinity: PoolRoutingAffinity | null;
+  /**
+   * What slot-aware placement did to this decision, or `null` when it is off
+   * (`poolSlotAwareness: 0`) or no candidate advertised a slot count. The fourth companion: when a
+   * burst lands on the 4-slot nodes and skips a 2-slot node that scored better, an operator has to be
+   * able to tell "its slots were full" from the ranker or a pin. Present (with an empty `demoted`)
+   * whenever some candidate carried a slot count, so the figures are visible for the requests that
+   * found a free slot too. Always `null` on `inbound` rows, like the others.
+   */
+  slots: PoolRoutingSlots | null;
   outcome: PoolRoutingOutcome;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
@@ -255,6 +264,33 @@ export interface PoolRoutingAffinity {
   inFlight: number | null;
   /** The `poolPrefixAffinityMaxInFlight` in force, counting the request being placed. */
   maxInFlight: number;
+}
+
+/**
+ * The slot-awareness half of a routing decision. Node names and counts only.
+ */
+export interface PoolRoutingSlots {
+  /**
+   * Candidates whose known queue depth had reached their advertised slots, in ranked order;
+   * `'local'` for this node. They were moved behind every candidate with a free slot, not removed,
+   * so failover can still reach them.
+   */
+  demoted: PoolRoutingSlotDemotion[];
+  /**
+   * `true` when the request was placed on one of those anyway: every candidate was full, every one
+   * with a free slot failed first, or a prompt ceiling put every free one behind it. A queued
+   * answer beats none.
+   */
+  overridden: boolean;
+}
+
+export interface PoolRoutingSlotDemotion {
+  node: string;
+  backend: InferenceBackendType;
+  /** The queue depth the ranker knew at the decision — the same figure it sorted on. */
+  inFlight: number;
+  /** The slot count the node advertised. */
+  slots: number;
 }
 
 export interface PoolRoutingSummary {

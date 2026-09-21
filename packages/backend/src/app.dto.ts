@@ -10,12 +10,14 @@ import {
   MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   MAX_POOL_PRESSURE_WEIGHT,
   MAX_POOL_PROBE_SNAPSHOT_TTL_MS,
+  MAX_POOL_SLOT_AWARENESS,
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_MAX_PROMPT_TOKENS,
   MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   MIN_POOL_PRESSURE_WEIGHT,
   MIN_POOL_PROBE_SNAPSHOT_TTL_MS,
+  MIN_POOL_SLOT_AWARENESS,
   MAX_POOL_PINS,
   MAX_PINNED_MODEL_LENGTH,
   POOL_PIN_MODES,
@@ -24,6 +26,7 @@ import {
 } from '@/common/helpers/hub-pool';
 import { INFERENCE_SUPERVISION_MODES, MAX_SUPERVISION_POLL_SECONDS, MIN_SUPERVISION_POLL_SECONDS } from '@/common/helpers/inference-supervision';
 import { MAX_INFERENCE_MAX_NUM_CTX, MIN_INFERENCE_MAX_NUM_CTX } from '@/common/helpers/inference-context-cap';
+import { MAX_INFERENCE_OLLAMA_SLOTS, MIN_INFERENCE_OLLAMA_SLOTS } from '@/common/helpers/inference-ollama-slots';
 
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { userSchema } from './modules/user/dto/user.dto';
@@ -63,6 +66,10 @@ const poolPrefixAffinityMaxInFlightSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT).max(MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT));
 
+const poolSlotAwarenessSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_POOL_SLOT_AWARENESS).max(MAX_POOL_SLOT_AWARENESS));
+
 /**
  * The prompt ceiling as persisted: a number or nothing. There is no stored `null` — clearing it
  * removes the key, the way an unset inference URL is removed — so `.optional()` is the whole
@@ -80,6 +87,14 @@ const poolMaxPromptTokensSchema = z
 const inferenceMaxNumCtxSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_INFERENCE_MAX_NUM_CTX).max(MAX_INFERENCE_MAX_NUM_CTX));
+/**
+ * This node's Ollama slot count as persisted, encoded like the context cap above: a number or
+ * nothing, cleared by removing the key, and an out-of-range value degrading to "not stated" on the
+ * read path — which leaves the node ranked exactly as the build before slots did.
+ */
+const inferenceOllamaSlotsSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_INFERENCE_OLLAMA_SLOTS).max(MAX_INFERENCE_OLLAMA_SLOTS));
 /** Same read/write split as the two pool knobs above, for the inference observation interval. */
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -159,6 +174,10 @@ export const settingsSchema = z.object({
   // (`OLLAMA_CONTEXT_LENGTH`). Absent means no cap, which sizes exactly as the build before it.
   // `.catch(undefined)` on the read path for the reason the pool knobs below give.
   inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional().catch(undefined),
+  // How many requests this node's Ollama runs at once (`OLLAMA_NUM_PARALLEL`), as the operator
+  // stated it. Absent means not stated, which ranks exactly as the build before it. Same read-path
+  // `.catch(undefined)` as the cap above.
+  inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional().catch(undefined),
   // Multi-Hub inference pooling. `hubPoolEnabled` is opt-out (absent = on) and is the in-product
   // half of the kill switch; `HUB_POOL_USER_DISABLED=true` in the environment still overrides it
   // (see resolveHubPoolEnabled). Absent numeric values fall back to the DEFAULT_POOL_* constants.
@@ -189,6 +208,7 @@ export const settingsSchema = z.object({
   hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional().catch(undefined),
   hubPoolProbeSnapshotTtlMs: poolProbeSnapshotTtlMsSchema.optional().catch(undefined),
   hubPoolPrefixAffinityMaxInFlight: poolPrefixAffinityMaxInFlightSchema.optional().catch(undefined),
+  hubPoolSlotAwareness: poolSlotAwarenessSchema.optional().catch(undefined),
   // Opt-OUT: absent means every app is handed this Hub's proxy as its inference endpoint, peers or
   // not. See `HubPoolPreferences.poolRouteAppsAlways`.
   hubPoolRouteAppsAlways: z.boolean().optional(),
@@ -371,8 +391,10 @@ export class UserSettingsBody extends createZodDto(
     hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional(),
     hubPoolProbeSnapshotTtlMs: poolProbeSnapshotTtlMsSchema.optional(),
     hubPoolPrefixAffinityMaxInFlight: poolPrefixAffinityMaxInFlightSchema.optional(),
+    hubPoolSlotAwareness: poolSlotAwarenessSchema.optional(),
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
     inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional(),
+    inferenceOllamaSlots: inferenceOllamaSlotsSchema.optional(),
     hubPoolPins: poolPinsSchema.optional(),
   }),
 ) {}

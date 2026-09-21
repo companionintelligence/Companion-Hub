@@ -80,6 +80,8 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   inferenceDsparkUrl: 'http://dspark:8080',
   // The handout context cap (core-2, 2026-09-20). Non-default: the default is no cap.
   inferenceMaxNumCtx: 16384,
+  // The node's Ollama slot count (fleet-qa B5, 2026-09-21). Non-default: the default is not stated.
+  inferenceOllamaSlots: 4,
   hubPoolEnabled: false,
   hubPoolOutboundEnabled: false,
   hubPoolInboundEnabled: false,
@@ -97,6 +99,8 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   // Non-default, like the rest: the default is 0.
   hubPoolProbeSnapshotTtlMs: 2500,
   hubPoolPrefixAffinityMaxInFlight: 3,
+  // Non-default: the default is 0 (off).
+  hubPoolSlotAwareness: 1,
   inferenceSupervisionMode: 'observe',
   inferenceSupervisionPollSeconds: 45,
   hubPoolPins: [{ scope: 'model', model: 'qwen3.6:27b', targetKind: 'peer', peerId: 'peer-1', mode: 'prefer' }],

@@ -35,6 +35,7 @@ import {
   type PoolContainerSampler,
 } from '@/common/helpers/hub-pool';
 import { clampContextCap } from '@/common/helpers/inference-context-cap';
+import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -507,6 +508,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         identity,
         ...this.localPromptCeilingStatus(),
         maxNumCtx: this.configuration.getInferencePreferences()?.maxNumCtx ?? null,
+        ollamaSlots: this.configuration.getInferencePreferences()?.ollamaSlots ?? null,
         throughput: this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [],
       },
       // `peerKeyFingerprint`, never the key: the fingerprint is what an operator compares across two
@@ -529,6 +531,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // Through the same clamp the ranker reads it with, so a value routing ignores shows as none.
         maxPromptTokens: clampPromptCeiling((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxPromptTokens),
         maxNumCtx: clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx),
+        ollamaSlots: clampOllamaSlots((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.ollamaSlots),
         throughput: this.peerThroughput(peer),
       })),
       peerCounts: {
@@ -1203,6 +1206,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const containers = this.ownContainerRollup();
     const promptCeiling = resolvePoolMaxPromptTokens(this.configuration.getHubPoolPreferences().poolMaxPromptTokens).maxPromptTokens;
     const contextCap = this.configuration.getInferencePreferences()?.maxNumCtx ?? null;
+    const ollamaSlots = this.configuration.getInferencePreferences()?.ollamaSlots ?? null;
     const throughput = this.throughput?.estimatesFor(LOCAL_CANDIDATE_KEY) ?? [];
     return {
       hardwareTier: inventory.hardwareTier,
@@ -1245,6 +1249,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // describes the engine rather than an offer of work, and a PATCH reaches peers on their next
       // poll. An entry node reads it to cap what it hands an app the pool may send here.
       ...(contextCap === null ? {} : { maxNumCtx: contextCap }),
+      // Same encoding again: absent is "not stated" on every build and ranks by queue depth alone,
+      // it describes the daemon rather than an offer of work, and a PATCH reaches peers on their next
+      // poll. An entry node with `poolSlotAwareness` on reads it to tell a full engine from a free one.
+      ...(ollamaSlots === null ? {} : { ollamaSlots }),
       // Omitted when nothing has been timed, like every other measurement here: absence is what an
       // older build sends and what a reader ranks as unmeasured. Advertised whether or not this node
       // is accepting work, like the ceiling, because it describes the hardware rather than an offer.

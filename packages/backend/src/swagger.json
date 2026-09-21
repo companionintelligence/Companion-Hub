@@ -6917,6 +6917,11 @@
                 "minimum": 2048,
                 "maximum": 1048576
               },
+              "inferenceOllamaSlots": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
               "hubPoolEnabled": {
                 "type": "boolean"
               },
@@ -6961,6 +6966,11 @@
                 "type": "integer",
                 "minimum": 0,
                 "maximum": 20
+              },
+              "hubPoolSlotAwareness": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1
               },
               "hubPoolRouteAppsAlways": {
                 "type": "boolean"
@@ -7440,6 +7450,11 @@
             "minimum": 2048,
             "maximum": 1048576
           },
+          "inferenceOllamaSlots": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
+          },
           "hubPoolEnabled": {
             "type": "boolean"
           },
@@ -7484,6 +7499,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 20
+          },
+          "hubPoolSlotAwareness": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
           },
           "hubPoolRouteAppsAlways": {
             "type": "boolean"
@@ -12700,6 +12720,12 @@
             "type": "integer",
             "minimum": 2048,
             "maximum": 1048576
+          },
+          "ollamaSlots": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
           }
         },
         "required": [
@@ -12819,6 +12845,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 20
+          },
+          "poolSlotAwareness": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
           },
           "poolRouteAppsAlways": {
             "type": "boolean"
