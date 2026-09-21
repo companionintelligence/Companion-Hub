@@ -123,6 +123,20 @@ describe('ufwSourceCoversBridge', () => {
 });
 
 describe('ufwBridgeVerdict', () => {
+  it('reads an all-ports `Anywhere ALLOW IN 172.16.0.0/12` as covering every probe port — the rule ci and core-17 carry', () => {
+    // A `To` of `Anywhere` parses to an empty port list; read as "not this port" it planned a redundant
+    // allow behind a rule that already admitted the bridge to everything (2026-09-20 dry run on ci).
+    const rules = parseUfwStatus(
+      ['172.17.0.1 11434/tcp       ALLOW IN    10.128.0.0/9', 'Anywhere                   ALLOW IN    172.16.0.0/12'].join('\n'),
+    );
+    for (const port of [8000, 8080, 13305, 8216]) expect(ufwBridgeVerdict(rules, port)).toBe('ALLOW');
+  });
+
+  it('does not let a port-less rule from a narrower source count', () => {
+    const rules = parseUfwStatus('Anywhere                   ALLOW IN    172.17.0.0/16');
+    expect(ufwBridgeVerdict(rules, 8000)).toBeUndefined();
+  });
+
   it('is the first rule that names the port for the bridge — a reject above an allow wins, and the other way round', () => {
     const rejectFirst = parseUfwStatus(
       ['8000/tcp                   REJECT      172.16.0.0/12', '8000/tcp                   ALLOW       172.16.0.0/12'].join('\n'),
@@ -347,6 +361,7 @@ describe.skipIf(!bash)('cihub_ufw_verdict (the shell copy of ufwBridgeVerdict)',
     '9400/tcp                   ALLOW OUT   172.16.0.0/12',
     '9500/tcp (v6)              ALLOW IN    Anywhere (v6)',
     '9600/tcp                   ALLOW       10.0.0.1',
+    'Anywhere                   ALLOW IN    172.16.0.0/12', // ci / core-17 shape: every port, for the bridge
     '',
   ].join('\n');
   const verdicts = (awk?: string) => {
@@ -358,7 +373,7 @@ describe.skipIf(!bash)('cihub_ufw_verdict (the shell copy of ufwBridgeVerdict)',
         writeFileSync(path.join(dir, 'awk'), `#!/bin/sh\nexec ${awk} "$@"\n`);
         chmodSync(path.join(dir, 'awk'), 0o755);
       }
-      const ports = [8000, 8080, 13305, 8216, 8400, 9000, 9100, 9200, 9300, 9400, 9500, 9600];
+      const ports = [8000, 8080, 13305, 8216, 8400, 9000, 9100, 9200, 9300, 9400, 9500, 9600, 8700];
       const script = `${ufwVerdictShellFunction()}\nfor p in ${ports.join(' ')}; do echo "$p=$(cihub_ufw_verdict $p)"; done`;
       const res = spawnSync(bash as string, ['-e', '-c', script], { env: { PATH: `${dir}:/usr/bin:/bin`, HOME: '/tmp' }, encoding: 'utf-8' });
       expect(res.status, res.stderr).toBe(0);
@@ -372,14 +387,15 @@ describe.skipIf(!bash)('cihub_ufw_verdict (the shell copy of ufwBridgeVerdict)',
     '8080=REJECT',
     '13305=REJECT',
     '8216=DENY', // inside the range, from a wider source
-    '8400=', // nothing names it: a silent drop
+    '8400=ALLOW', // no port names it, but the trailing all-ports Anywhere rule admits the bridge
     '9000=ALLOW', // bare port covers tcp
     '9100=LIMIT',
-    '9200=', // udp only
-    '9300=', // default bridge only
-    '9400=', // outbound
-    '9500=', // v6
-    '9600=', // one host
+    '9200=ALLOW', // udp-only rule skipped; the trailing all-ports rule admits tcp
+    '9300=ALLOW', // default-bridge rule skipped; the trailing all-ports rule admits the bridge
+    '9400=ALLOW', // outbound rule skipped; same
+    '9500=ALLOW', // v6 rule skipped; same
+    '9600=ALLOW', // one host names it; the all-ports bridge rule below still admits it
+    '8700=ALLOW', // only the all-ports Anywhere rule covers it
   ];
 
   it('agrees with the TypeScript verdict on every row shape', () => {
