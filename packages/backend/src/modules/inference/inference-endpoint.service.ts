@@ -258,7 +258,7 @@ export class InferenceEndpointService {
         const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
         if (!capabilities || capabilities.acceptingWork === false) continue;
         // A peer's cap is what its operator set its engine to; clamped because it arrives over the
-        // wire, and null (absent on an older build) leaves it out of the pool-wide minimum.
+        // wire, and null (absent on an older build) reads as "takes any window" — see poolContextCap.
         const maxNumCtx = clampContextCap(capabilities.maxNumCtx);
         for (const backend of capabilities.backends ?? []) {
           if (!backend.healthy) continue;

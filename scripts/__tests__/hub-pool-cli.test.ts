@@ -641,6 +641,26 @@ describe('hub-pool-cli prompt ceiling', () => {
     expect(text).not.toContain('prompt');
   });
 
+  it('marks a routing-log row a context cap changed, naming the node it skipped, its cap, and the window asked for', () => {
+    const text = logOf([
+      routingEntry({ contextCap: { numCtx: 65_536, source: 'request', excluded: [{ node: FZZY, maxNumCtx: 16_384 }], overridden: false } }),
+      routingEntry({ contextCap: { numCtx: 46_031, source: 'estimated', excluded: [{ node: FZZY, maxNumCtx: 16_384 }], overridden: false } }),
+      routingEntry({
+        node: FZZY,
+        contextCap: { numCtx: 65_536, source: 'request', excluded: [{ node: FZZY, maxNumCtx: 16_384 }], overridden: true },
+      }),
+      routingEntry({ contextCap: { numCtx: 4096, source: 'request', excluded: [], overridden: false } }),
+      routingEntry({ contextCap: null }),
+      routingEntry(),
+    ]);
+
+    expect(text).toContain(`num_ctx 65536 skipped ${FZZY} (cap 16384)`);
+    expect(text).toContain(`~46031-token prompt with no num_ctx skipped ${FZZY} (cap 16384)`);
+    expect(text).toContain(`num_ctx 65536 placed anyway over the context cap of ${FZZY} (cap 16384)`);
+    // A row every node could take, an uncapped fleet, and a Hub predating cap placement add nothing.
+    expect(text.match(/cap 16384/g)).toHaveLength(3);
+  });
+
   describe('formatPromptCeilingResultLines', () => {
     const settings = (poolMaxPromptTokens: number | null) => ({ ...status().settings, poolMaxPromptTokens });
     const statusIn = (maxPromptTokens: number | null, maxPromptTokensSetBy: 'env' | 'setting' | null) => {

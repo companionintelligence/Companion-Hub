@@ -227,6 +227,8 @@ export interface PoolRoutingRecord {
   pin?: { scope: PoolPinScope; mode: 'prefer'; targetKind: PoolPinTargetKind } | null;
   /** What the prompt ceilings did to this decision, or `null` when no candidate had one. Absent on a Hub predating ceilings. */
   promptCeiling?: PoolRoutingPromptCeiling | null;
+  /** What the nodes' context caps did to this decision, or `null` when no candidate had one. Absent on a Hub predating cap placement. */
+  contextCap?: PoolRoutingContextCap | null;
   /** What measured prefill rates did to this decision, or `null` when nothing applicable was measured. Absent on a Hub predating throughput. */
   throughput?: PoolRoutingThroughput | null;
   /** What prefix affinity did to this decision, or `null` when it was off or did not apply. Absent on a Hub predating affinity. */
@@ -270,6 +272,16 @@ export interface PoolRoutingPromptCeiling {
   estimatedTokens: number;
   excluded: { node: string; maxPromptTokens: number }[];
   /** Placed on an over-ceiling node anyway: every candidate was over its ceiling, or every one under a ceiling failed first. */
+  overridden: boolean;
+}
+
+/** Mirrors `PoolRoutingContextCap` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingContextCap {
+  /** The window the request asked for: its `options.num_ctx`, or the prompt estimate when it carried none. */
+  numCtx: number;
+  source: 'request' | 'estimated';
+  excluded: { node: string; maxNumCtx: number }[];
+  /** Placed on a node capped below the window anyway: every candidate was, or every one that could take it failed first. */
   overridden: boolean;
 }
 
@@ -1234,6 +1246,17 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         ceiling.overridden
           ? `  ↳ ~${ceiling.estimatedTokens}-token prompt placed anyway over the ceiling of ${nodes}: no node under its ceiling could serve it`
           : `  ↳ ~${ceiling.estimatedTokens}-token prompt skipped ${nodes}`,
+      );
+    }
+    // Only when a cap changed something, for the same reason as the ceiling line above.
+    const cap = entry.contextCap;
+    if (cap && cap.excluded.length > 0) {
+      const nodes = cap.excluded.map((excluded) => `${sanitizeForBox(excluded.node)} (cap ${excluded.maxNumCtx})`).join(', ');
+      const window = cap.source === 'request' ? `num_ctx ${cap.numCtx}` : `~${cap.numCtx}-token prompt with no num_ctx`;
+      lines.push(
+        cap.overridden
+          ? `  ↳ ${window} placed anyway over the context cap of ${nodes}: no node whose cap could take it could serve it`
+          : `  ↳ ${window} skipped ${nodes}`,
       );
     }
     // Only when a measurement changed something, for the same reason as the ceiling line above.

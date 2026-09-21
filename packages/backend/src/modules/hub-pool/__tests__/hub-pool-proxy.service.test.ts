@@ -38,9 +38,11 @@ import {
   POOL_SERVED_LOCALLY,
   PoolForwardDeadlineError,
   PoolProxyService,
+  applyContextCap,
   applyPromptCeiling,
   applyThroughputPlacement,
   describeUnresolvableAuto,
+  requestedNumCtx,
   firstByteBudgetMs,
   forwardBudgetMs,
   normalizePoolRequestId,
@@ -2639,6 +2641,349 @@ describe('PoolProxyService', () => {
         expect(result.decision).toEqual({
           estimatedTokens: 46_000,
           excluded: [{ node: LOCAL_CANDIDATE_KEY, maxPromptTokens: FZZY_CEILING }],
+          overridden: false,
+        });
+      });
+    });
+  });
+
+  /**
+   * Context caps at placement, with the fleet's own numbers (2026-09-21, `qwen3-coder:30b`): core-17
+   * is a 4×16384 batch node and advertises `maxNumCtx: 16384`; beta-max runs 4×32768; the agent tier
+   * (core-2/4/5/6) runs 4×65536 and advertises no cap. A Hermes turn carries `options.num_ctx: 65536`
+   * on the native Ollama dialect. Placing it on core-17 reloads core-17's model at 65536 (the core-2
+   * flip of 2026-09-20, on a smaller card), so the cap moves core-17 back the way a prompt ceiling
+   * does — and that is what lets the handout stop using core-17's number for the whole fleet.
+   */
+  describe('context cap', () => {
+    const MODEL = 'qwen3-coder:30b';
+    const SHORT_PROMPT_BYTES = 8_000; // ~2k tokens
+    const LONG_PROMPT_BYTES = 184_000; // ~46k tokens
+    const CORE17_CAP = 16_384;
+
+    /** A connected, idle peer holding MODEL, optionally advertising a context cap and a ceiling. */
+    function node(id: string, options: { maxNumCtx?: unknown; maxPromptTokens?: number; inFlightRequests?: number } = {}): HubPoolPeer {
+      return mockPeer({
+        id,
+        nodeFqdn: `${id}.tailxyz.ts.net`,
+        lastCapabilities: capabilitiesWithModel(MODEL, {
+          inFlightRequests: options.inFlightRequests ?? 0,
+          ...('maxNumCtx' in options ? { maxNumCtx: options.maxNumCtx as number } : {}),
+          ...('maxPromptTokens' in options ? { maxPromptTokens: options.maxPromptTokens } : {}),
+        }) as unknown as Record<string, unknown>,
+      });
+    }
+
+    /** core-17 idle and first by score; core-2 busier and uncapped, so without a cap the ranker picks core-17. */
+    function core17AndCore2(): HubPoolPeer[] {
+      return [node('core-17', { maxNumCtx: CORE17_CAP }), node('core-2', { inFlightRequests: 2 })];
+    }
+
+    const ids = (candidates: { peerId: string | null }[]) => candidates.map((candidate) => candidate.peerId);
+    const setLocalCap = (maxNumCtx: number | null) => configuration.getInferencePreferences.mockReturnValue({ maxNumCtx } as never);
+
+    it('puts a peer capped below the num_ctx a request carries behind the rest, even though the ranker put it first', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-17', 'core-2']);
+      // Last, not gone: a request still has somewhere to go if core-2 fails.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('leaves the ranked list untouched for a num_ctx every cap can take', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'core-2']);
+    });
+
+    it('keeps a candidate whose cap the request exactly meets — the cap is the window its engine runs', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, CORE17_CAP))).toEqual(['core-17', 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, CORE17_CAP + 1))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('puts THIS node behind a peer for a num_ctx above its own cap', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([node('core-2')]);
+      setLocalCap(CORE17_CAP);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual([null, 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', null]);
+    });
+
+    it('judges a request with no num_ctx by its prompt estimate: an engine runs it at the window the cap records', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      // ~2k tokens fits a 16384 window; ~46k does not, and core-17 would truncate it.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES))).toEqual(['core-17', 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('believes an explicit num_ctx over the estimate, in both directions', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      // A long prompt that says it wants a small window is the app's business, not the proxy's...
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'core-2']);
+      // ...and a short one asking for 65536 still reloads core-17's model at 65536.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('keeps the whole list when every candidate is capped below the window — a reload beats a 502', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([
+        node('core-17', { maxNumCtx: CORE17_CAP }),
+        node('beta-max', { maxNumCtx: 32_768, inFlightRequests: 1 }),
+      ]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-17', 'beta-max']);
+    });
+
+    it('treats a peer with no cap — none set, or an older build — as taking any window', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([node('core-2-old-build'), node('core-6', { inFlightRequests: 2 })]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 262_144))).toEqual(['core-2-old-build', 'core-6']);
+    });
+
+    it.each([
+      ['a string', '16384'],
+      ['a value below the floor', 16],
+      ['a negative', -1],
+      ['a fraction', 16_384.5],
+    ])('lets a malformed advertised cap (%s) exclude nothing', async (_label, hostile) => {
+      peerService.listConnectedPeers.mockResolvedValue([node('core-17', { maxNumCtx: hostile }), node('core-2', { inFlightRequests: 2 })]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-17', 'core-2']);
+    });
+
+    it('judges nothing when the caller has no body to measure, so ranking-only callers see the old order', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+      setLocalCap(CORE17_CAP);
+
+      expect(ids(await service.buildCandidateList(MODEL))).toEqual([null, 'core-17', 'core-2']);
+    });
+
+    it('is the outer split over the prompt ceiling: a node over its cap goes behind one merely over its ceiling', async () => {
+      // core-17: under its 14000 ceiling for this prompt, but capped at 16384 — a 65536 request reloads it.
+      // fzzy: over its ceiling (slow), but uncapped — it can take the window without a reload.
+      peerService.listConnectedPeers.mockResolvedValue([
+        node('core-17', { maxNumCtx: CORE17_CAP, maxPromptTokens: 14_000 }),
+        node('fzzy', { maxPromptTokens: 1024, inFlightRequests: 1 }),
+      ]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['fzzy', 'core-17']);
+      // With a window core-17 can take, the ceiling decides as before.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'fzzy']);
+    });
+
+    it('does not let a pin at an over-cap node put the request back at the front', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'core-17', mode: 'prefer' }] });
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', 'core-17']);
+    });
+
+    describe('in the routing log', () => {
+      const hermesTurn = {
+        model: MODEL,
+        stream: true,
+        messages: [{ role: 'user', content: 'x'.repeat(SHORT_PROMPT_BYTES) }],
+        options: { num_ctx: 65_536 },
+      };
+
+      function answerWith200(): void {
+        vi.mocked(global.fetch).mockImplementation(async () => new Response('{"done":true}\n', { status: 200 }));
+      }
+
+      function servePeers(peers: HubPoolPeer[]): void {
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+      }
+
+      it('says which node its cap moved back, at what cap, for what window — so a skip is not read as the ranker', async () => {
+        servePeers(core17AndCore2());
+        answerWith200();
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net', candidates: 2, attempt: 1, outcome: 'served', failedOverFrom: [] });
+        expect(entry?.contextCap).toEqual({
+          numCtx: 65_536,
+          source: 'request',
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: false,
+        });
+      });
+
+      it('records the estimate as the window for a /v1 request, which cannot carry num_ctx', async () => {
+        // core-2 carries a ceiling too, so the ceiling half of the record is present to compare against.
+        servePeers([node('core-17', { maxNumCtx: CORE17_CAP }), node('core-2', { inFlightRequests: 2, maxPromptTokens: 100_000 })]);
+        answerWith200();
+        const longTurn = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'x'.repeat(LONG_PROMPT_BYTES) }] };
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+        // bytes / 4 of what actually went out — after the proxy's own usage opt-in — written out rather
+        // than through `estimatePromptTokens`, so a change to the estimate cannot pass by agreeing with itself.
+        const sent = String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body);
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net' });
+        expect(entry?.contextCap).toEqual({
+          numCtx: Math.ceil(sent.length / 4),
+          source: 'estimated',
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: false,
+        });
+        // The same estimate the ceiling and the deadline use, so a request is never judged small for one and large for another.
+        expect(entry?.promptCeiling?.estimatedTokens).toBe(entry?.contextCap?.numCtx);
+      });
+
+      it('still fails over to the capped node when every node that can take the window fails — a cap must never turn a served request into a 502', async () => {
+        servePeers(core17AndCore2());
+        vi.mocked(global.fetch).mockImplementation(async (url) =>
+          String(url).includes('core-2') ? new Response('model not loaded', { status: 503 }) : new Response('{"done":true}\n', { status: 200 }),
+        );
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-17.tailxyz.ts.net', outcome: 'served', status: 200, failedOverFrom: ['core-2.tailxyz.ts.net'] });
+        // Placed over core-17's cap after all, and the record says so instead of reading as a skip.
+        expect(entry?.contextCap).toMatchObject({ excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }], overridden: true });
+      });
+
+      it('marks the decision overridden when every candidate was capped below the window, and still serves it', async () => {
+        const core17 = node('core-17', { maxNumCtx: CORE17_CAP });
+        servePeers([core17]);
+        answerWith200();
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-17.tailxyz.ts.net', outcome: 'served', status: 200 });
+        expect(entry?.contextCap).toMatchObject({
+          numCtx: 65_536,
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: true,
+        });
+      });
+
+      it('records the window with nothing excluded when a cap was in play but every node could take it', async () => {
+        servePeers(core17AndCore2());
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/api/chat',
+          method: 'POST',
+          body: { ...hermesTurn, options: { num_ctx: 4096 } },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(routingLog.list()[0]).toMatchObject({ node: 'core-17.tailxyz.ts.net' });
+        expect(routingLog.list()[0]?.contextCap).toEqual({ numCtx: 4096, source: 'request', excluded: [], overridden: false });
+      });
+
+      it('stays null on a fleet where no node has a cap, and on an embeddings batch', async () => {
+        servePeers([node('core-2'), node('core-6', { inFlightRequests: 1 })]);
+        answerWith200();
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+        expect(routingLog.list()[0]?.contextCap).toBeNull();
+
+        servePeers(core17AndCore2());
+        await service.proxyRequest({
+          path: '/v1/embeddings',
+          method: 'POST',
+          body: { model: MODEL, input: ['x'] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        expect(routingLog.list()[0]?.contextCap).toBeNull();
+      });
+
+      it('logs one debug line for a request the cap changed, naming the window and the cap, and none for one it did not', async () => {
+        const debugSpy = vi.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+        servePeers(core17AndCore2());
+        answerWith200();
+        try {
+          await service.proxyRequest({
+            path: '/api/chat',
+            method: 'POST',
+            body: { ...hermesTurn, options: { num_ctx: 4096 } },
+            model: MODEL,
+            res: createMockResponse(),
+          });
+          expect(debugSpy.mock.calls.filter(([line]) => String(line).includes('context cap') || String(line).includes('whose cap'))).toHaveLength(0);
+
+          await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+          const lines = debugSpy.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('whose cap'));
+          expect(lines).toHaveLength(1);
+          expect(lines[0]).toContain(
+            'num_ctx 65536 for "qwen3-coder:30b" put core-17.tailxyz.ts.net (cap 16384) behind every candidate whose cap can take it',
+          );
+          expect(lines[0]).not.toContain('xxxx');
+        } finally {
+          debugSpy.mockRestore();
+        }
+      });
+    });
+
+    describe('requestedNumCtx', () => {
+      it('reads a positive integer options.num_ctx and nothing else', () => {
+        expect(requestedNumCtx({ options: { num_ctx: 65_536 } })).toBe(65_536);
+        expect(requestedNumCtx({ options: { num_ctx: 0 } })).toBeNull();
+        expect(requestedNumCtx({ options: { num_ctx: -1 } })).toBeNull();
+        expect(requestedNumCtx({ options: { num_ctx: 16_384.5 } })).toBeNull();
+        expect(requestedNumCtx({ options: { num_ctx: '65536' } })).toBeNull();
+        expect(requestedNumCtx({ options: {} })).toBeNull();
+        expect(requestedNumCtx({ num_ctx: 65_536 })).toBeNull();
+        expect(requestedNumCtx({ options: null })).toBeNull();
+        expect(requestedNumCtx(null)).toBeNull();
+        expect(requestedNumCtx('options')).toBeNull();
+      });
+    });
+
+    describe('applyContextCap', () => {
+      const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+      const localVllm = { peerId: null, nodeFqdn: null, backend: 'vllm' } as const;
+      const core2 = { peerId: 'core-2', nodeFqdn: 'core-2.tailxyz.ts.net', backend: 'ollama' } as const;
+      const core17 = { peerId: 'core-17', nodeFqdn: 'core-17.tailxyz.ts.net', backend: 'ollama' } as const;
+      const request = { numCtx: 65_536, source: 'request' as const };
+
+      it('returns the ranked list, and no decision, when no candidate has a cap', () => {
+        expect(applyContextCap([local, core2], () => null, request)).toEqual({ preferred: [local, core2], overCap: [], decision: null });
+      });
+
+      it('keeps every over-cap candidate, in ranked order, for the failover tail', () => {
+        const result = applyContextCap([core17, local, core2], (candidate) => (candidate.peerId === 'core-2' ? null : CORE17_CAP), request);
+
+        expect(result.preferred).toEqual([core2]);
+        expect(result.overCap).toEqual([core17, local]);
+      });
+
+      it('moves nothing, and says it was overridden, when every candidate is capped below the window', () => {
+        const result = applyContextCap([local, core2], () => CORE17_CAP, request);
+
+        expect(result.preferred).toEqual([local, core2]);
+        expect(result.overCap).toEqual([]);
+        expect(result.decision?.overridden).toBe(true);
+      });
+
+      it('names this node once however many of its engines the cap moved back, and carries the source', () => {
+        const result = applyContextCap([local, localVllm, core2], (candidate) => (candidate.peerId === null ? CORE17_CAP : null), {
+          numCtx: 46_000,
+          source: 'estimated',
+        });
+
+        expect(result.preferred).toEqual([core2]);
+        expect(result.overCap).toEqual([local, localVllm]);
+        expect(result.decision).toEqual({
+          numCtx: 46_000,
+          source: 'estimated',
+          excluded: [{ node: LOCAL_CANDIDATE_KEY, maxNumCtx: CORE17_CAP }],
           overridden: false,
         });
       });

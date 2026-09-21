@@ -109,6 +109,16 @@ export interface PoolRoutingRecord {
    */
   promptCeiling: PoolRoutingPromptCeiling | null;
   /**
+   * What the nodes' context caps did to this decision, or `null` when no candidate had a cap at all.
+   *
+   * The ceiling's twin for the context window: when an agent turn carrying `num_ctx: 65536` skips
+   * core-17, an operator has to be able to tell "its 16384 cap excluded it" from "the ranker
+   * preferred another node". Present (with an empty `excluded`) whenever some candidate carried a
+   * cap, so the window the request asked for is visible for the requests every node could take
+   * too. Always `null` on `inbound` rows — the cap is applied by the node that chooses.
+   */
+  contextCap: PoolRoutingContextCap | null;
+  /**
    * What measured prefill rates did to this decision, or `null` when no candidate had a measurement
    * that applies to a prompt this size — which is every request on a fleet nothing has been timed on.
    * The ceiling's twin for the automatic case: it answers "why did the long turn skip fzzy" with the
@@ -199,6 +209,33 @@ export interface PoolRoutingPromptCeiling {
 export interface PoolRoutingCeilingExclusion {
   node: string;
   maxPromptTokens: number;
+}
+
+/** The context-cap half of a routing decision. Sizes and node names only — never any of the prompt. */
+export interface PoolRoutingContextCap {
+  /**
+   * The window the request needs: its `options.num_ctx` when it carried one, else the prompt
+   * estimate (`bytes / 4`, the same figure the ceiling judges), since an engine runs a request
+   * without `num_ctx` at its own default window and a prompt over that window is truncated.
+   */
+  numCtx: number;
+  /** `request`: the body carried `options.num_ctx`. `estimated`: it did not, so its prompt estimate stood in. */
+  source: 'request' | 'estimated';
+  /**
+   * Nodes whose cap was below `numCtx`, in ranked order; `'local'` for this node. They were moved
+   * behind every node that can take the window, not removed, so failover can still reach them.
+   */
+  excluded: PoolRoutingContextCapExclusion[];
+  /**
+   * `true` when the request was placed on one of those nodes anyway: every candidate was capped
+   * below it, or every candidate that was not failed first. A reload or a truncation beats a 502.
+   */
+  overridden: boolean;
+}
+
+export interface PoolRoutingContextCapExclusion {
+  node: string;
+  maxNumCtx: number;
 }
 
 /** The throughput half of a routing decision. Rates, sizes and node names only. */
