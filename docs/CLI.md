@@ -1213,6 +1213,27 @@ starts a second daemon that collides on the port — and ollama.com's own instal
 so the check happens *before* anything is downloaded. And `--bind tailnet` on a node with no tailnet
 address fails rather than silently binding somewhere else.
 
+That skip is decided by **who holds the listening socket**, not by a unit's name. The probe reads
+the cgroup `ss -e` reports for the socket on `:11434` (printed to any user, pid or no pid) and
+classifies it: the system `ollama.service`, a user unit, a container, some other system unit. A
+user-scope unit whose name matches `ollama*` is only the reason to skip when it is the thing
+serving the port. core-2 is the case that taught this (2026-09-21): it runs `ollama-tunnel.service`
+under `ci`'s `systemd --user` — an `ssh -L` to beta-1, listening on `:11435` — while the system
+`ollama.service` serves `:11434`; a guard that went by the name printed *"ollama-tunnel.service is
+running under ci's systemd --user; the system ollama.service path would start a second daemon"* and
+managed nothing on the node. Now the system unit there is managed, and the line says why the unit
+you can see in `systemctl --user` did not stop the run:
+
+```
+bind: ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (uid 997) is what serves :11434 — that unit is not the daemon; managing the system unit
+```
+
+The name still decides in two narrow cases, both conservative: something listens on `:11434` and
+the probe can see neither its pid nor its cgroup (an `ss` too old to print one — iproute2 before
+5.10 — with nothing to compare the socket's uid against), or nothing listens at all and the unit's
+own `OLLAMA_HOST` names this port. On `--execute` the same guard runs as root at the top of the
+install and adopt shells, and refuses or notes on the same evidence.
+
 An Ollama that is already answering is **adopted**, and the same bind policy is applied to it — the
 nodes that already run one are exactly where the arrangements diverge. A node that already reads back
 as `zzzzz-cihub-bind.conf` with the requested bind — and, for `all`, with `ollama-tailnet-guard.service`
@@ -1296,8 +1317,10 @@ still applied — if systemd reports it never loaded the file (a previous run cu
 `daemon-reload`), it is reloaded and Ollama restarted; otherwise the read-back fails the node as
 above. The dry run prints the same plan — what is in effect now, whether the file would change, or
 what the daemon resolves instead — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
-`ollama-local.service`, core-2's `ollama-tunnel.service`) is skipped with the reason: a drop-in
-under `ollama.service.d/` configures nothing there, and those units carry their own environment.
+`ollama-local.service`) is skipped with the reason: a drop-in under `ollama.service.d/` configures
+nothing there, and that unit carries its own environment. A user-scope unit that merely *looks* like
+one (core-2's `ollama-tunnel.service`, an ssh forward beside a serving system unit) is not a skip —
+[the listener decides](#ollamas-bind-one-file-read-back).
 
 ```bash
 cihub fleet backends --backends ollama                                                        # inventory only: every node's runtime env, nothing written
