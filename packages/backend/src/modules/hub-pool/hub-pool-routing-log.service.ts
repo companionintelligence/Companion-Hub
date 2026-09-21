@@ -115,6 +115,15 @@ export interface PoolRoutingRecord {
    * numbers. Always `null` on `inbound` rows, for the same reason.
    */
   throughput: PoolRoutingThroughput | null;
+  /**
+   * What prefix affinity did to this decision, or `null` when affinity is off
+   * (`poolPrefixAffinityMaxInFlight: 0`), the route is not one it judges, or the body had nothing to
+   * key on. The third companion to `pin` and `promptCeiling`: when every turn of an agent session
+   * lands on one node, an operator has to be able to tell "it followed its prefix" from the ranker
+   * or a pin deciding the same thing — and when a turn re-prefilled cold, whether affinity missed,
+   * stood aside for a queue, or was overruled. Always `null` on `inbound` rows, like the others.
+   */
+  affinity: PoolRoutingAffinity | null;
   outcome: PoolRoutingOutcome;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
@@ -224,6 +233,28 @@ export interface PoolRoutingThroughputEstimate {
   deadline: boolean;
   /** Predicted to miss `budgetMs`, so moved behind every candidate that was not. */
   slow: boolean;
+}
+
+/**
+ * The prefix-affinity half of a routing decision. Node names and counts only — never the session
+ * key, which is either an app's own identifier or a digest of its prompt.
+ */
+export interface PoolRoutingAffinity {
+  /** Where the key came from: the app's `X-Hub-Pool-Session` header, or a digest of the prompt's head. */
+  key: 'header' | 'hashed';
+  /**
+   * `hit`: the remembered node was under the limit and is the first candidate. `skipped`: it is a
+   * candidate but was not placed first — at or over `maxInFlight` when `inFlight >= maxInFlight`,
+   * otherwise displaced by a later step (a ceiling, a throughput demotion, or a pin). `miss`: nothing
+   * is remembered for this prefix, or the remembered node and engine can no longer serve the model.
+   */
+  outcome: 'hit' | 'miss' | 'skipped';
+  /** The node remembered for this prefix, `'local'` for this one; `null` when nothing was. */
+  remembered: string | null;
+  /** The remembered node's queue depth at the decision, `null` when it was not a candidate. */
+  inFlight: number | null;
+  /** The `poolPrefixAffinityMaxInFlight` in force, counting the request being placed. */
+  maxInFlight: number;
 }
 
 export interface PoolRoutingSummary {

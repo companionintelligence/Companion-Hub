@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_POOL_MAX_PROMPT_TOKENS, MAX_POOL_PROBE_SNAPSHOT_TTL_MS, MIN_POOL_MAX_PROMPT_TOKENS } from '@/common/helpers/hub-pool';
+import {
+  MAX_POOL_MAX_PROMPT_TOKENS,
+  MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+  MAX_POOL_PROBE_SNAPSHOT_TTL_MS,
+  MIN_POOL_MAX_PROMPT_TOKENS,
+} from '@/common/helpers/hub-pool';
 import { UpdateHubPoolPreferencesBody } from '../hub-pool.dto';
 
 describe('UpdateHubPoolPreferencesBody — poolMaxPromptTokens', () => {
@@ -58,5 +63,31 @@ describe('UpdateHubPoolPreferencesBody — poolProbeSnapshotTtlMs', () => {
     ['null', null],
   ])('rejects %s with a 400', (_label, value) => {
     expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolProbeSnapshotTtlMs: value }).success).toBe(false);
+  });
+});
+
+describe('UpdateHubPoolPreferencesBody — poolPrefixAffinityMaxInFlight', () => {
+  it('accepts 0, which switches prefix affinity off', () => {
+    const result = UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: 0 });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ poolPrefixAffinityMaxInFlight: 0 });
+  });
+
+  it('accepts the value it is validated at, and the upper bound', () => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: 2 }).success).toBe(true);
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT }).success).toBe(
+      true,
+    );
+  });
+
+  it.each([
+    ['negative', -1],
+    ['above the bound', MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT + 1],
+    ['fractional', 1.5],
+    ['a string', '2'],
+    ['null', null],
+  ])('rejects %s with a 400', (_label, value) => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMaxInFlight: value }).success).toBe(false);
   });
 });
