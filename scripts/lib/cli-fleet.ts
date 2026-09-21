@@ -59,6 +59,7 @@ import {
   describeHubContextCapPlan,
   HUB_CONTEXT_CAP_SETTING,
   HUB_OLLAMA_SLOTS_SETTING,
+  describeRuntimeEnvironment,
   describeRuntimeTransition,
   type HubContextCap,
   type HubInferenceSetting,
@@ -67,6 +68,7 @@ import {
   type OllamaRuntimeSettings,
   parseOllamaRuntimeValue,
   planOllamaRuntime,
+  readRuntimeEnvironment,
   RUNTIME_DROPIN,
 } from './fleet-ollama-runtime.js';
 import { firewallProbeScript, HUB_PROBE_PORTS, parseFirewallProbe, planProbeFirewall, type ProbeFirewallPlan } from './fleet-probe-firewall.js';
@@ -1175,6 +1177,11 @@ async function planOllamaBindOnNode(
   const probe = parseOllamaBindProbe(res.out);
   const assessment = assessOllamaBind(probe);
   const current = `${assessment.summary}`;
+  // What the daemon runs right now. Read from the same probe on EVERY readable node, including the
+  // ones this run may not touch: a node whose unit is refused still serves inference, and its
+  // context is exactly what an operator comparing the fleet needs. See describeRuntimeEnvironment.
+  const runtimeNow = readRuntimeEnvironment(probe.show.Environment);
+  const runtimeNowLine = `runtime: now ${describeRuntimeEnvironment(runtimeNow)}`;
   if (!probe.present) {
     return {
       lines: ['bind: could not read the node (probe produced no output)'],
@@ -1186,12 +1193,12 @@ async function planOllamaBindOnNode(
   }
   if (assessment.ownership.refuse) {
     return {
-      lines: [`bind: now ${current}`, `bind: would refuse — ${assessment.ownership.reason}`],
+      lines: [`bind: now ${current}`, `bind: would refuse — ${assessment.ownership.reason}`, runtimeNowLine],
       tone: 'yellow',
       noop: false,
       refused: assessment.ownership.reason,
       effective: assessment.resolution.effective.address,
-      json: { now: assessment.summary, refused: assessment.ownership.reason },
+      json: { now: assessment.summary, refused: assessment.ownership.reason, runtime: { now: runtimeNow } },
     };
   }
   const target_ = bindAddressFor(bind, probe.tailscaleIp);
@@ -1200,11 +1207,12 @@ async function planOllamaBindOnNode(
       lines: [
         `bind: now ${current}`,
         `bind: would fail — ${describeBind(bind)} requested and 'tailscale ip -4' returned nothing on this node; pass --bind all or --bind local`,
+        runtimeNowLine,
       ],
       tone: 'yellow',
       noop: false,
       effective: assessment.resolution.effective.address,
-      json: { now: assessment.summary, error: 'no tailnet address' },
+      json: { now: assessment.summary, error: 'no tailnet address', runtime: { now: runtimeNow } },
     };
   }
   const plan = planBindConsolidation(
@@ -1221,11 +1229,15 @@ async function planOllamaBindOnNode(
     lines.push(`bind: would set OLLAMA_HOST=${target_.address} (${bind}) and verify it after restart`);
     for (const line of plan.summary) lines.push(`bind:   ${line}`);
   }
+  // The environment goes out on every run, flags or no flags: a run that read it and said nothing is
+  // why `OLLAMA_CONTEXT_LENGTH` could differ by 8x across this fleet unnoticed. `cihub fleet
+  // backends` with no flags now prints every node's context, parallelism, keep-alive, iGPU and
+  // resident-model cap in one read-only pass.
+  lines.push(runtimeNowLine);
   // The runtime drop-in is planned from the same probe: the dump already carries every *.conf and the
   // merged environment, which is all "would the file change, and what is in effect now" needs.
   const runtimePlan = runtime ? planOllamaRuntime(probe.dropins, probe.show.Environment, runtime) : undefined;
   if (runtimePlan) {
-    lines.push(`runtime: now ${describeRuntimeTransition(runtimePlan.current, runtimePlan.current, runtime ?? {})}`);
     for (const line of runtimePlan.summary) lines.push(`runtime: ${runtimePlan.noop ? '' : 'would '}${line}`);
   }
   return {
@@ -1246,17 +1258,19 @@ async function planOllamaBindOnNode(
       shadowed: plan.shadowed,
       unfixable: plan.unfixable,
       guard: plan.guard,
-      ...(runtimePlan
-        ? {
-            runtime: {
-              now: runtimePlan.current,
+      // `runtime.now` is in the report whether or not a flag was passed, so `--json` on a read-only
+      // run is a machine-readable inventory of every node's OLLAMA_CONTEXT_LENGTH.
+      runtime: {
+        now: runtimeNow,
+        ...(runtimePlan
+          ? {
               target: runtimePlan.target,
               file: runtimePlan.file.action,
               restart: runtimePlan.restart,
               outranked: runtimePlan.outranked,
-            },
-          }
-        : {}),
+            }
+          : {}),
+      },
     },
     runtime: runtimePlan,
   };

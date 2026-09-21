@@ -188,8 +188,29 @@ engine's context (`cihub fleet backends --ollama-context N --execute` writes the
 handout is bound by the largest of them. A peer on an older build routes and serves as before.
 
 **Seeing it.** `GET /api/inference/pool/status` reports `localNode.maxNumCtx` and
-`peers[].maxNumCtx` (`null` for none, through the same clamp a handout reads); `cihub pool status`
-shows this node's under **This node**. Each routing-log entry carries `contextCap`: `null` when no
+`peers[].maxNumCtx`, and `GET /api/inference/pool/peers` carries `maxNumCtx` on each row too (`null`
+for none, through the same clamp a handout reads, on both routes — never the raw jsonb, which the
+peer writes).
+
+`cihub pool status` shows this node's cap under **This node**, every peer's in the peer table's
+`CONTEXT` column, and — once any node is capped — a **Context caps** block putting this node and
+every connected peer side by side. `cihub pool peers` carries the same column. Three readings, and
+they never share a cell: a **number** is the cap routing applies, **`none`** is a peer that answered
+and named no cap, and **`?`** is a cap nobody here knows (a peer never probed, or a Hub predating the
+field). An absent cap is never drawn as a number, and `none` is never drawn as `?` — the difference
+is the whole finding, because `none` means "takes any window" to the two rules above while `?` means
+nothing at all.
+
+The block warns on two states, and they are different faults. **Caps that disagree** are reported
+rather than failed: a batch-tier node capped low is deliberate and placement is built for it, but the
+consequence — that it stops taking the fleet's agent traffic while passing every health check — is
+invisible otherwise. **A node with no cap among capped ones** is the harder finding: it reads as
+"takes any window" in both rules, so it collects exactly the windows its own `OLLAMA_CONTEXT_LENGTH`
+may not run. `cihub pool doctor` decides the same question as check **F2**, and
+`cihub fleet backends --backends ollama` (no flags, nothing written) prints every node's actual
+`OLLAMA_CONTEXT_LENGTH` in one read-only pass.
+
+Each routing-log entry carries `contextCap`: `null` when no
 candidate had a cap, otherwise `{ numCtx, source, excluded: [{ node, maxNumCtx }], overridden }` —
 `source` is `request` when the body carried `options.num_ctx` and `estimated` when the prompt estimate
 stood in — so "its cap skipped that node" can be told apart from "the ranker preferred another".
