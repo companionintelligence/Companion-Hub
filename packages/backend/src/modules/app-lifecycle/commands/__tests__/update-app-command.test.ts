@@ -134,4 +134,97 @@ describe('UpdateAppCommand', () => {
     expect(backupManager.restoreApp).not.toHaveBeenCalled();
     expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-data', '/data/app-data/test-app');
   });
+
+  it('also restores the installed app files from the snapshot, not just app data', async () => {
+    command = new UpdateAppCommand(moduleRef, docker, false);
+    (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+    (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+
+    dockerService.createPreUpdateVolumeSnapshot.mockResolvedValue({
+      appUrn,
+      snapshotId: 'snap-1',
+      timestamp: new Date().toISOString(),
+      snapshotPath: '/data/snapshots/test-app/snap-1/app-data',
+      appFilesSnapshotPath: '/data/snapshots/test-app/snap-1/app-files',
+      volumes: [],
+      success: true,
+    } as any);
+    filesystem.pathExists.mockResolvedValue(true);
+    dockerService.verifyContainerHealthProbe.mockResolvedValue({
+      ok: false,
+      healthy: false,
+      containers: [],
+      message: 'Container app-backend is restarting',
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(filesystem.copyDirectory).toHaveBeenCalledWith('/data/snapshots/test-app/snap-1/app-files', '/data/installed/test-app');
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
+  });
+
+  it('still attempts to bring the app back up when the data/files restore itself fails, rather than leaving it torn down', async () => {
+    command = new UpdateAppCommand(moduleRef, docker, false);
+    (command as any).assertMarketplaceEntitlement = vi.fn().mockResolvedValue(undefined);
+    (command as any).ensureAppDir = vi.fn().mockResolvedValue(undefined);
+
+    filesystem.pathExists.mockResolvedValue(true);
+    filesystem.copyDirectory.mockRejectedValue(new Error('disk full'));
+    dockerService.verifyContainerHealthProbe.mockResolvedValue({
+      ok: false,
+      healthy: false,
+      containers: [],
+      message: 'Container app-backend is restarting',
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    // `down` happened, the restore failed, but we must still try to recreate the app rather
+    // than leaving it fully offline.
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
+  });
+
+  it('still attempts to bring the app back up when restoreApp itself throws', async () => {
+    backupManager.restoreApp.mockRejectedValue(new Error('backup archive is corrupt'));
+    dockerService.verifyContainerHealthProbe.mockResolvedValue({
+      ok: false,
+      healthy: false,
+      containers: [],
+      message: 'Container app-backend exited with code 1',
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(dockerService.composeApp).toHaveBeenCalledWith(appUrn, 'up --detach --force-recreate --remove-orphans');
+  });
+
+  it('does not roll back at all when only one-shot init containers are non-running and the app is otherwise healthy', async () => {
+    dockerService.verifyContainerHealthProbe.mockResolvedValue({
+      ok: true,
+      healthy: true,
+      containers: [
+        { id: 'c1', name: 'ci-memory-api-1', status: 'Up', state: 'running', healthStatus: null, hasHealthCheck: false, exitCode: null },
+        {
+          id: 'c2',
+          name: 'ci-memory-migrate-database-1',
+          status: 'Exited (0)',
+          state: 'exited',
+          healthStatus: null,
+          hasHealthCheck: false,
+          exitCode: 0,
+        },
+      ],
+      message: 'All containers for ci-memory:ci-marketplace passed health probes',
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result).toEqual({ success: true, message: `App ${appUrn} updated successfully` });
+    expect(backupManager.restoreApp).not.toHaveBeenCalled();
+    expect(dockerService.composeApp).not.toHaveBeenCalledWith(appUrn, 'down --remove-orphans');
+  });
 });
