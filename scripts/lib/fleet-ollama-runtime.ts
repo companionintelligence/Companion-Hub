@@ -1,5 +1,6 @@
 /**
- * Ollama's runtime environment — parallelism, keep-alive, context, iGPU — in a file of its own.
+ * Ollama's runtime environment — parallelism, keep-alive, context, iGPU, resident-model cap — in a
+ * file of its own.
  *
  * Measured on the 2026-09-20 fleet: no node sets `OLLAMA_NUM_PARALLEL`, so every Ollama serves ONE
  * sequence at a time and the pool's ceiling is the sum of fifteen single streams (~450-550 tok/s on
@@ -8,13 +9,19 @@
  * `OLLAMA_CONTEXT_LENGTH` (a node whose default context is too large for its GTT spills to CPU with
  * HTTP 200s) and `OLLAMA_IGPU_ENABLE` (3-5x single-stream on the B2-flagged Strix Halo boxes) belong.
  *
+ * `OLLAMA_MAX_LOADED_MODELS` joined them on 2026-09-21: a 24h keep-alive with no cap on resident
+ * models let three 27-30B models pile up on batch-tier Strix Halo nodes next to vLLM, Lucebox and
+ * Lemonade — core-7 at 122/123 GB with swap full, core-17's kernel OOM-killing llama-server and
+ * dbus. A cap of 2 freed 122 → 56 GB (core-7), 109 → 72 (core-17), 95 → 49 (core-14) and 102 → 56
+ * (fzzy) by hand; managing it here makes the tiering rule reproducible from the command line.
+ *
  * A SEPARATE drop-in from the bind, on purpose. `zzzzz-cihub-bind.conf` is the one file that sets
  * the bind, and the bind step moves aside any drop-in that sets the bind and nothing the canonical
  * file does not — so a runtime file that also carried it would be a file the bind step fights with,
  * and a bind change would restart the daemon over a runtime change and vice versa. This file never
  * mentions the bind variable, and a test keeps it that way.
  *
- * The whole file is rendered from the four flags every time: a key the operator did not pass (or
+ * The whole file is rendered from the five flags every time: a key the operator did not pass (or
  * passed as `unset`) is simply not in it, and falls back to whatever Ollama or another drop-in
  * decides. That makes a run reproducible from its command line, and makes "revert" a run with the
  * keys left out. The daemon is restarted only when the rendered bytes differ from what is on disk,
@@ -47,7 +54,13 @@ import {
  */
 export const RUNTIME_DROPIN = 'zzzzz-cihub-runtime.conf';
 
-export const OLLAMA_RUNTIME_KEYS = ['OLLAMA_NUM_PARALLEL', 'OLLAMA_KEEP_ALIVE', 'OLLAMA_CONTEXT_LENGTH', 'OLLAMA_IGPU_ENABLE'] as const;
+export const OLLAMA_RUNTIME_KEYS = [
+  'OLLAMA_NUM_PARALLEL',
+  'OLLAMA_KEEP_ALIVE',
+  'OLLAMA_CONTEXT_LENGTH',
+  'OLLAMA_IGPU_ENABLE',
+  'OLLAMA_MAX_LOADED_MODELS',
+] as const;
 export type OllamaRuntimeKey = (typeof OLLAMA_RUNTIME_KEYS)[number];
 
 /**
@@ -61,6 +74,7 @@ export interface OllamaRuntimeSettings {
   keepAlive?: string;
   contextLength?: number;
   igpu?: boolean;
+  maxLoaded?: number;
 }
 
 /** The word that leaves a key out. Accepted by every runtime flag. */
@@ -87,6 +101,7 @@ export function parseOllamaRuntimeValue(flag: '--ollama-parallel', raw: string):
 export function parseOllamaRuntimeValue(flag: '--ollama-context', raw: string): number | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-keep-alive', raw: string): string | undefined;
 export function parseOllamaRuntimeValue(flag: '--ollama-igpu', raw: string): boolean | undefined;
+export function parseOllamaRuntimeValue(flag: '--ollama-max-loaded', raw: string): number | undefined;
 export function parseOllamaRuntimeValue(flag: string, raw: string): number | string | boolean | undefined {
   const value = raw.trim();
   if (value === RUNTIME_UNSET) return undefined;
@@ -105,6 +120,10 @@ export function parseOllamaRuntimeValue(flag: string, raw: string): number | str
       if (value === 'on') return true;
       if (value === 'off') return false;
       throw new OllamaRuntimeFlagError(`${flag} must be on, off or '${RUNTIME_UNSET}' (got '${raw}').`);
+    case '--ollama-max-loaded':
+      // Ollama reads 0 as "3 × GPU count" — not a cap, and not what an operator typing 0 means; the
+      // way to hand the key back to Ollama is `unset`. 16 is past any node's memory for real models.
+      return parseBoundedInt(flag, value, 1, 16);
     default:
       throw new OllamaRuntimeFlagError(`Unknown Ollama runtime flag '${flag}'.`);
   }
@@ -117,6 +136,7 @@ export function ollamaRuntimeEnvironment(settings: OllamaRuntimeSettings): Array
   if (settings.keepAlive !== undefined) env.push(['OLLAMA_KEEP_ALIVE', settings.keepAlive]);
   if (settings.contextLength !== undefined) env.push(['OLLAMA_CONTEXT_LENGTH', String(settings.contextLength)]);
   if (settings.igpu !== undefined) env.push(['OLLAMA_IGPU_ENABLE', settings.igpu ? '1' : '0']);
+  if (settings.maxLoaded !== undefined) env.push(['OLLAMA_MAX_LOADED_MODELS', String(settings.maxLoaded)]);
   return env;
 }
 
@@ -128,6 +148,10 @@ export function ollamaRuntimeTargets(settings: OllamaRuntimeSettings): Partial<R
 /**
  * Content of the runtime drop-in. Every line is a plain `Environment="K=V"`; the header says what
  * wrote it and how to change it, and deliberately never names the bind or its variable.
+ *
+ * The header is frozen at the four flags it first named. It is compared byte for byte with the file
+ * on disk, so rewording it — even to list `--ollama-max-loaded` — would restart every Ollama on the
+ * fleet the next time the same flags are re-run, for a comment.
  */
 export function ollamaRuntimeDropinContent(settings: OllamaRuntimeSettings): string {
   const lines = [
@@ -140,7 +164,7 @@ export function ollamaRuntimeDropinContent(settings: OllamaRuntimeSettings): str
   return `${lines.join('\n')}\n`;
 }
 
-/** The four managed keys as `systemctl show -p Environment` currently resolves them. */
+/** The five managed keys as `systemctl show -p Environment` currently resolves them. */
 export function readRuntimeEnvironment(showEnvironment: string | undefined): Partial<Record<OllamaRuntimeKey, string>> {
   if (showEnvironment === undefined) return {};
   const env = parseShowEnvironment(showEnvironment.startsWith('Environment=') ? showEnvironment : `Environment=${showEnvironment}`);
