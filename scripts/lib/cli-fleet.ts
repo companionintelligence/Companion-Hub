@@ -42,6 +42,7 @@ import {
 import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
+  applyHubContextCap,
   applyOllamaBindPolicy,
   applyOllamaRuntimeSettings,
   applyProbeFirewall,
@@ -55,7 +56,9 @@ import {
   type ProbeFirewallResult,
 } from './fleet-backends.js';
 import {
+  describeHubContextCapPlan,
   describeRuntimeTransition,
+  type HubContextCap,
   OllamaRuntimeFlagError,
   type OllamaRuntimePlan,
   type OllamaRuntimeSettings,
@@ -274,6 +277,13 @@ export interface FleetArgs {
    * is, and then the whole file is rendered from these four values — see `fleet-ollama-runtime.ts`.
    */
   ollamaRuntime?: OllamaRuntimeSettings;
+  /**
+   * `backends` only: the Hub's half of `--ollama-context`. A number writes `inferenceMaxNumCtx` on
+   * each node's Hub after the runtime drop-in applies; `null` (`--ollama-context unset`) clears it.
+   * Absent when the flag was not given — then the Hub's cap is not touched, even though the runtime
+   * file is rendered without `OLLAMA_CONTEXT_LENGTH`, so pass the flag on every run that manages it.
+   */
+  hubContextCap?: HubContextCap;
 }
 
 export class FleetArgError extends Error {}
@@ -325,6 +335,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     touchesBoot: false,
     bind: DEFAULT_OLLAMA_BIND,
     ollamaRuntime: undefined,
+    hubContextCap: undefined,
   };
 
   const rest = [...argv];
@@ -413,8 +424,11 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
       try {
         if (flag === '--ollama-parallel') runtime.parallel = parseOllamaRuntimeValue(flag, readValue(flag));
         else if (flag === '--ollama-keep-alive') runtime.keepAlive = parseOllamaRuntimeValue(flag, readValue(flag));
-        else if (flag === '--ollama-context') runtime.contextLength = parseOllamaRuntimeValue(flag, readValue(flag));
-        else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
+        else if (flag === '--ollama-context') {
+          runtime.contextLength = parseOllamaRuntimeValue(flag, readValue(flag));
+          // The same number goes to the node's Hub as `inferenceMaxNumCtx`; `unset` clears it there too.
+          args.hubContextCap = runtime.contextLength ?? null;
+        } else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
       } catch (error) {
         if (error instanceof OllamaRuntimeFlagError) throw new FleetArgError(error.message);
         throw error;
@@ -1313,7 +1327,18 @@ async function runBackends(args: FleetArgs): Promise<void> {
         const tag = plan.action === 'install' ? colorize('would install', 'green') : plan.action;
         console.log(`  ${plan.backend.padEnd(9)} ${tag} — ${plan.why}`);
         if (bindPlan) for (const line of bindPlan.lines) console.log(colorize(`            ${line}`, bindPlan.tone));
-        report.push({ node: node.name, backend: plan.backend, action: plan.action, why: plan.why, ...(bindPlan ? { bind: bindPlan.json } : {}) });
+        // The Hub's cap follows the runtime step, so it is planned only where that step is: a node
+        // whose unit this run may not edit gets neither line.
+        const hubCap = plan.backend === 'ollama' && bindPlan?.runtime !== undefined ? args.hubContextCap : undefined;
+        if (hubCap !== undefined) console.log(colorize(`            ${describeHubContextCapPlan(hubCap)}`, 'green'));
+        report.push({
+          node: node.name,
+          backend: plan.backend,
+          action: plan.action,
+          why: plan.why,
+          ...(bindPlan ? { bind: bindPlan.json } : {}),
+          ...(hubCap === undefined ? {} : { hubContextCap: hubCap }),
+        });
         continue;
       }
 
@@ -1357,6 +1382,24 @@ async function runBackends(args: FleetArgs): Promise<void> {
       console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
       if (result.detail && (result.outcome === 'failed' || plan.backend === 'ollama')) console.log(colorize(`    ${result.detail}`, 'dim'));
       report.push({ node: node.name, ...result });
+
+      // The Hub's half of --ollama-context, once the daemon runs that context: `inferenceMaxNumCtx`
+      // on this node's Hub, over its loopback with its own key. Only where the runtime step applied
+      // or was already in effect — a skipped or failed node keeps whatever cap it had, and its line
+      // above already says why. A cap nobody could read back is a failure, never a "done".
+      if (
+        plan.backend === 'ollama' &&
+        args.hubContextCap !== undefined &&
+        bindPlan?.runtime &&
+        (result.outcome === 'installed' || result.outcome === 'adopted')
+      ) {
+        const cap = await applyHubContextCap(target, args.hubContextCap, args.dataDir);
+        if (cap.outcome === 'failed') failed += 1;
+        const capTone = cap.outcome === 'failed' ? 'red' : cap.outcome === 'applied' ? 'green' : 'dim';
+        const capTook = cap.ms ? ` (${Math.round(cap.ms / 1000)}s)` : '';
+        console.log(`  ${'hub'.padEnd(9)} ${colorize(cap.outcome, capTone)}${capTook} — ${cap.why}`);
+        report.push({ node: node.name, hubContextCap: { requested: args.hubContextCap, ...cap } });
+      }
     }
 
     // The Hub's engine probes, whatever backends this run touched: on a ufw node that drops the

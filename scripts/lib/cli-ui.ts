@@ -114,9 +114,9 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Is each node safe to hand a package transaction? sudo, dpkg, grub, boot recovery, apt lock. Reads only',
       },
       {
-        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--execute]`,
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--ollama-context N] [--execute]`,
         description:
-          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env; ufw rules for the Hub's engine probes. Prints the plan unless --execute",
+          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env (--ollama-context also sets each Hub's context cap); ufw rules for the Hub's engine probes. Prints the plan unless --execute",
       },
       {
         command: `${BASE_COMMAND} fleet devices list | release <device> [--yes] | re-register <device>`,
@@ -184,6 +184,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       {
         command: `${BASE_COMMAND} pool ceiling <tokens>|clear [env] [--yes]`,
         description: 'Send prompts longer than this to another node when one can serve them (a preference, never a refusal)',
+      },
+      {
+        command: `${BASE_COMMAND} pool context-cap <tokens>|clear [env] [--yes]`,
+        description: "Cap the num_ctx handed to this node's apps at the context the engine runs (OLLAMA_CONTEXT_LENGTH)",
       },
       { command: `${BASE_COMMAND} pool log [env] [--limit N]`, description: 'Recent routing decisions, with failovers called out' },
       {

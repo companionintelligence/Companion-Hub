@@ -34,7 +34,7 @@ vi.mock('../lib/fleet-hardware.js', async (importOriginal) => ({
 import { runFleetCommand } from '../lib/cli-fleet.js';
 import type { HostFacts } from '../lib/fleet-hardware.js';
 import { CANONICAL_BIND_DROPIN, canonicalBindDropinContent, normalizeOllamaHost } from '../lib/fleet-ollama-bind.js';
-import { ollamaRuntimeDropinContent, RUNTIME_DROPIN } from '../lib/fleet-ollama-runtime.js';
+import { HUB_CONTEXT_CAP_MARKERS, ollamaRuntimeDropinContent, RUNTIME_DROPIN } from '../lib/fleet-ollama-runtime.js';
 import type { SshTarget } from '../lib/fleet-ssh.js';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────────────────────────
@@ -114,6 +114,24 @@ const sudoCalls = () =>
     .map(([t, c]) => ({ host: (t as SshTarget).host, command: String(c) }));
 const runtimeCalls = () => sudoCalls().filter((c) => c.command.includes('CIHUB_OLLAMA_RUNTIME_EOF'));
 const firewallCalls = () => sudoCalls().filter((c) => c.command.includes('CIHUB_PROBE_FIREWALL_EOF'));
+/** The Hub cap step runs unprivileged: the node's own key on its own loopback, no sudo. */
+const capCalls = () =>
+  mocks.sshCapture.mock.calls
+    .filter(([, command]) => String(command).includes('CIHUB_HUB_CONTEXT_CAP_EOF'))
+    .map(([t, c]) => ({ host: (t as SshTarget).host, command: String(c) }));
+
+/** What the node's Hub answered: the marker lines of a cap step that read `now`, wrote `write`, and read back `after`. */
+const capApplied = (now: string, write: string, after?: string) => {
+  const m = HUB_CONTEXT_CAP_MARKERS;
+  return [
+    `${m.key} present`,
+    `${m.get} 200`,
+    `${m.now} ${now}`,
+    `${m.write} ${write}`,
+    ...(after === undefined ? [] : [`${m.after} ${after}`]),
+    m.complete,
+  ].join('\n');
+};
 
 const runtimeApplied = (settings: string) =>
   [
@@ -156,6 +174,7 @@ beforeEach(() => {
     if (command.includes('firewall_probe=1')) return ok(h.ufw);
     if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
     if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+    if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
     throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
   });
   vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
@@ -394,6 +413,164 @@ describe('fleet backends --execute', () => {
     });
     await runFleetCommand(['backends', '--backends', 'ollama', '--execute', '--nodes', 'core-1']);
     expect(printed()).toMatch(/firewall\s+failed.*still does not admit 172\.16\.0\.0\/12/);
+    expect(process.exitCode).toBe(1);
+  });
+});
+
+// ─── --ollama-context and the Hub's cap ────────────────────────────────────────────────────────────
+
+describe('fleet backends --ollama-context', () => {
+  it('plans the Hub write under the runtime plan on a dry run, and dials no Hub', async () => {
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384']);
+    const text = printed();
+    expect(text).toContain(`runtime: would write ${RUNTIME_DROPIN} with OLLAMA_CONTEXT_LENGTH=16384`);
+    expect(text).toContain("hub: would set inferenceMaxNumCtx=16384 on this node's Hub (PATCH /api/user-settings)");
+    expect(capCalls()).toHaveLength(0);
+    // beta-1's unit is not ours to edit: no runtime line, and so no Hub line either.
+    const beta = text.slice(text.indexOf('beta-1'));
+    expect(beta).not.toContain('hub: would');
+
+    output = [];
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', 'unset']);
+    expect(printed()).toContain("hub: would clear the context cap on this node's Hub (PATCH /api/inference/preferences maxNumCtx=null)");
+    expect(capCalls()).toHaveLength(0);
+  });
+
+  it('leaves the Hub alone when --ollama-context was not given, even with other runtime flags', async () => {
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'core-1']);
+    expect(printed()).not.toContain('hub ');
+    expect(capCalls()).toHaveLength(0);
+  });
+
+  it('writes the cap on every node where the runtime step applied or was already in effect, unprivileged, reporting was → is', async () => {
+    hosts['10.0.0.2'] = {
+      bind: bindProbe({ runtime: ollamaRuntimeDropinContent({ contextLength: 16384 }).trimEnd(), env: 'OLLAMA_CONTEXT_LENGTH=16384' }),
+      ufw: firewallProbe(UFW_FULL),
+    };
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      // core-1's Hub had no cap; core-2's already carried it.
+      if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF'))
+        return ok(t.host === '10.0.0.1' ? capApplied('none', '200', '16384') : capApplied('16384', 'skipped'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384', '--execute', '--nodes', 'core-1,core-2']);
+    const text = printed();
+    // core-1: runtime written → cap written. core-2: runtime already in effect → cap step still runs, finds it in force.
+    expect(runtimeCalls().map((c) => c.host)).toEqual(['10.0.0.1']);
+    expect(capCalls().map((c) => c.host)).toEqual(['10.0.0.1', '10.0.0.2']);
+    for (const call of capCalls()) {
+      expect(call.command.startsWith('bash <<')).toBe(true);
+      expect(call.command).not.toContain('sudo');
+      expect(call.command).toContain('{"inferenceMaxNumCtx":16384}');
+      expect(call.command).toContain("'/var/lib/companion-hub/state/settings.json'");
+    }
+    expect(text).toMatch(/hub\s+applied.*context cap none → 16384 \(PATCH \/api\/user-settings 200\)/);
+    expect(text).toMatch(/hub\s+unchanged.*context cap already 16384/);
+    // The runtime step comes first: the daemon runs the context before the Hub is told about it.
+    const core1 = mocks.sshCapture.mock.calls.filter(([t]) => (t as SshTarget).host === '10.0.0.1').map(([, c]) => String(c));
+    expect(core1.findIndex((c) => c.includes('CIHUB_OLLAMA_RUNTIME_EOF'))).toBeLessThan(
+      core1.findIndex((c) => c.includes('CIHUB_HUB_CONTEXT_CAP_EOF')),
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('honours --data-dir for the host fallback, and clears through the preferences route on `unset`', async () => {
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied(''));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('65536', '200', 'none'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand([
+      'backends',
+      '--backends',
+      'ollama',
+      '--ollama-context',
+      'unset',
+      '--data-dir',
+      '/srv/hub',
+      '--execute',
+      '--nodes',
+      'core-1',
+    ]);
+    expect(capCalls()).toHaveLength(1);
+    expect(capCalls()[0]?.command).toContain("'/srv/hub/state/settings.json'");
+    expect(capCalls()[0]?.command).toContain('"$cihub_cap_url/inference/preferences"');
+    expect(capCalls()[0]?.command).not.toContain('user-settings');
+    expect(printed()).toMatch(/hub\s+applied.*context cap 65536 → none \(PATCH \/api\/inference\/preferences 200\)/);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails the node on a non-2xx from the Hub, naming the code, and on a 200 the read-back contradicts', async () => {
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '401'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384', '--execute', '--nodes', 'core-1']);
+    expect(printed()).toMatch(/hub\s+failed.*PATCH \/api\/user-settings answered HTTP 401/);
+    expect(process.exitCode).toBe(1);
+
+    output = [];
+    process.exitCode = undefined;
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      // An older Hub strips the key it does not know and answers 200 having stored nothing.
+      if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', 'none'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384', '--execute', '--nodes', 'core-1']);
+    expect(printed()).toMatch(/hub\s+failed.*reads back none, not 16384/);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('does not touch the Hub on a node the runtime step skipped or failed', async () => {
+    // beta-1: user-scope unit → runtime refused → no cap step.
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384', '--execute', '--nodes', 'beta-1']);
+    expect(capCalls()).toHaveLength(0);
+    expect(printed()).not.toContain('hub ');
+
+    // core-2: the drop-in read back wrong → the node failed → the Hub is not told a context the daemon does not run.
+    output = [];
+    hosts['10.0.0.2'] = {
+      bind: bindProbe({ runtime: ollamaRuntimeDropinContent({ contextLength: 16384 }).trimEnd() }),
+      ufw: firewallProbe(UFW_FULL),
+    };
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host] as NodeFixture;
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF'))
+        return ok(
+          [
+            'ollama-runtime-before: OLLAMA_HOST=0.0.0.0:11434',
+            `ollama-runtime-unchanged: ${RUNTIME_DROPIN} already carries OLLAMA_CONTEXT_LENGTH=16384; ollama not restarted`,
+            'ollama-runtime-after: OLLAMA_HOST=0.0.0.0:11434',
+            'ollama-runtime-complete',
+          ].join('\n'),
+        );
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384', '--execute', '--nodes', 'core-2']);
+    expect(printed()).toMatch(/ollama\s+failed/);
+    expect(capCalls()).toHaveLength(0);
     expect(process.exitCode).toBe(1);
   });
 });
