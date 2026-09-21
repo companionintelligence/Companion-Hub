@@ -115,6 +115,42 @@ describe('memoryBudgetRows', () => {
   it('returns nothing at all when the budget never arrived, so a caller cannot render zeros', () => {
     expect(memoryBudgetRows(undefined)).toEqual([]);
   });
+
+  it('files each engine under the pool its figure was counted against', () => {
+    const rows = memoryBudgetRows({
+      ...budget,
+      usage: {
+        sampledAt: '2026-09-20T00:00:00Z',
+        backends: [
+          { backend: 'ollama', models: ['gemma4:e4b'], pool: 'vram', usedMb: 1533, source: 'engine' },
+          { backend: 'vllm', models: ['Qwen/Qwen2.5-3B-Instruct-AWQ'], pool: 'vram', usedMb: 6104, source: 'process' },
+        ],
+      },
+    });
+
+    expect(rows.find((row) => row.kind === 'vram')?.engines.map((entry) => entry.backend)).toEqual(['ollama', 'vllm']);
+    expect(rows.find((row) => row.kind === 'ram')?.engines).toEqual([]);
+    expect(rows.every((row) => row.incomplete === false)).toBe(true);
+  });
+
+  it('marks a pool incomplete when an engine in it holds a model nobody could size', () => {
+    // The used figure is then a floor: the engine is resident, its footprint is unknown, and a
+    // reader treating the remainder as free would over-admit — so the row says so.
+    const rows = memoryBudgetRows({
+      ...budget,
+      usage: {
+        sampledAt: '2026-09-20T00:00:00Z',
+        backends: [{ backend: 'lucebox', models: ['qwen3.6-27b'], pool: 'vram', usedMb: null, source: 'unmeasured' }],
+      },
+    });
+
+    expect(rows.find((row) => row.kind === 'vram')?.incomplete).toBe(true);
+    expect(rows.find((row) => row.kind === 'ram')?.incomplete).toBe(false);
+  });
+
+  it('treats a budget from an older Hub, with no usage block, as complete rather than unknown', () => {
+    expect(memoryBudgetRows(budget).every((row) => row.incomplete === false && row.engines.length === 0)).toBe(true);
+  });
 });
 
 describe('budgetPercent', () => {
