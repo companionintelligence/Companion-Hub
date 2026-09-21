@@ -171,7 +171,7 @@ describe('InferenceRouterService', () => {
 
   describe('Status', () => {
     it('should return full inference status', async () => {
-      memoryManager.calculateBudget.mockReturnValue({
+      memoryManager.calculateBudget.mockResolvedValue({
         totalVramMb: 24576,
         totalRamMb: 65536,
         systemReservedRamMb: 2048,
@@ -183,6 +183,7 @@ describe('InferenceRouterService', () => {
         modelUsedRamMb: 0,
         pinnedVramMb: 0,
         pinnedRamMb: 0,
+        usage: { sampledAt: '2026-09-20T00:00:00.000Z', backends: [] },
       });
 
       const status = await service.getStatus();
@@ -193,7 +194,7 @@ describe('InferenceRouterService', () => {
     });
 
     it('reports each backend health + url', async () => {
-      memoryManager.calculateBudget.mockReturnValue({
+      memoryManager.calculateBudget.mockResolvedValue({
         totalVramMb: 0,
         totalRamMb: 0,
         systemReservedRamMb: 0,
@@ -205,6 +206,7 @@ describe('InferenceRouterService', () => {
         modelUsedRamMb: 0,
         pinnedVramMb: 0,
         pinnedRamMb: 0,
+        usage: { sampledAt: '2026-09-20T00:00:00.000Z', backends: [] },
       });
 
       const status = await service.getStatus();
@@ -413,7 +415,7 @@ describe('InferenceRouterService', () => {
       modelRegistry.getTrackedModel.mockReturnValue(pulled);
       modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
-      memoryManager.canFitModel.mockReturnValue({ fits: true, availableMb: 24_000, requiredMb: 20_000 });
+      memoryManager.canFitModel.mockResolvedValue({ fits: true, availableMb: 24_000, requiredMb: 20_000 });
 
       await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toEqual({ backend: 'ollama', backendModelId: 'qwen3.8:27b-mtp-q4_K_M' });
       expect(modelPuller.loadModel).toHaveBeenCalledWith('qwen3-8-27b-mtp');
@@ -423,7 +425,7 @@ describe('InferenceRouterService', () => {
       modelRegistry.getTrackedModel.mockReturnValue(pulled);
       modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
-      memoryManager.canFitModel.mockReturnValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
       memoryManager.getModelsToEvict.mockReturnValue({ canFree: true, modelsToEvict: ['gemma4-e4b'], freedMb: 12_000 });
 
       await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.not.toBeNull();
@@ -435,7 +437,7 @@ describe('InferenceRouterService', () => {
       modelRegistry.getTrackedModel.mockReturnValue(pulled);
       modelRegistry.getCuratedModel.mockReturnValue({ runtime: { memoryFootprintMb: 20_000 } } as CuratedModel);
       ollamaBackend.isModelLoaded.mockResolvedValue(false);
-      memoryManager.canFitModel.mockReturnValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
+      memoryManager.canFitModel.mockResolvedValue({ fits: false, availableMb: 8_000, requiredMb: 20_000 });
       memoryManager.getModelsToEvict.mockReturnValue({ canFree: false, modelsToEvict: [], freedMb: 0 });
 
       await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toBeNull();

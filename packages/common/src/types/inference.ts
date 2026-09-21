@@ -74,10 +74,61 @@ export interface MemoryBudget {
   appContainerBudgetMb: number;
   modelBudgetVramMb: number;
   modelBudgetRamMb: number;
+  /**
+   * What every engine on this node holds right now, summed from {@link usage} — NOT what the
+   * Hub's own router loaded. A model loaded by pool traffic, by an app calling the engine
+   * directly, or by an out-of-band vLLM the operator started by hand is in here. Measured on
+   * beta-red before this: the router had loaded nothing, so the budget read 0 of 10G while
+   * nvidia-smi showed 9G held by vLLM and an Ollama runner.
+   */
   modelUsedVramMb: number;
   modelUsedRamMb: number;
+  /** Pinned figures are the Hub's own bookkeeping: only the router pins, so only it knows. */
   pinnedVramMb: number;
   pinnedRamMb: number;
+  usage: ModelMemoryUsage;
+}
+
+/**
+ * How one engine's share of `modelUsedVramMb` / `modelUsedRamMb` was established, in order of
+ * preference: `process` is the only measurement, and the others stand in when there is none.
+ */
+export type ModelMemoryUsageSource =
+  /** The engine's process as the vendor tool sees it (`nvidia-smi` / `rocm-smi` per-process VRAM). */
+  | 'process'
+  /**
+   * The engine's own accounting — Ollama `/api/ps` (`size_vram` on a discrete GPU, `size`
+   * elsewhere). A plan, not a reading: on beta-red it said 1,533 MiB for a runner nvidia-smi
+   * held at 2,926 MiB, the CUDA context and compute buffers being real VRAM it does not count.
+   */
+  | 'engine'
+  /** The Hub's bookkeeping of models its own router loaded — used only when the engine cannot be asked. */
+  | 'registry'
+  /** The engine holds a model, but nothing on this node can size it. It contributes 0 and says so. */
+  | 'unmeasured';
+
+export interface ModelMemoryUsageEntry {
+  backend: InferenceBackendType;
+  /** Engine-native ids the engine holds in memory — or serves, for an engine started with its model. */
+  models: string[];
+  /** The pool the figure was counted against: RAM on a unified-memory or CPU-only node, VRAM otherwise. */
+  pool: 'vram' | 'ram';
+  /** MB added to the pool's used figure. `null`, never 0, when `source` is `unmeasured`. */
+  usedMb: number | null;
+  source: ModelMemoryUsageSource;
+}
+
+/**
+ * Where the budget's used figures came from, engine by engine.
+ *
+ * An `unmeasured` entry means the used figures are a floor, not the total: the engine is
+ * holding a model this node has no way to size, so a reader that treats the remainder as free
+ * will over-admit. The dashboard says so; so should any other consumer.
+ */
+export interface ModelMemoryUsage {
+  sampledAt: string;
+  /** One entry per engine holding a model. An engine with nothing resident is absent, not zero. */
+  backends: ModelMemoryUsageEntry[];
 }
 
 // ─── Model Registry ─────────────────────────────────────────────────────────

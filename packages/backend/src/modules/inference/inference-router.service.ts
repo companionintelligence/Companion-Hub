@@ -60,9 +60,9 @@ export class InferenceRouterService {
   /** Get full inference status for MCP / API */
   async getStatus(): Promise<InferenceStatus> {
     const profile = await this.hardwareInspector.getProfile();
-    const budget = this.memoryManager.calculateBudget(profile);
-
-    const probed = await this.probeBackends();
+    // Side by side, not in sequence: the budget now asks the engines what they hold, which on a
+    // node with one stalled backend costs the same probe timeout the health sweep is about to pay.
+    const [budget, probed] = await Promise.all([this.memoryManager.calculateBudget(profile), this.probeBackends()]);
     const backends = probed.map(([type, backend, health]) => {
       const unservableModels = this.inBothIdSpaces(health.unservableModels ?? []);
       return {
@@ -468,7 +468,7 @@ export class InferenceRouterService {
     const profile = await this.hardwareInspector.getProfile();
     const curated = this.modelRegistry.getCuratedModel(tracked.catalogId);
     const footprint = curated?.runtime.memoryFootprintMb || 0;
-    const fit = this.memoryManager.canFitModel(profile, footprint);
+    const fit = await this.memoryManager.canFitModel(profile, footprint);
     if (fit.fits) {
       await this.modelPuller.loadModel(tracked.catalogId);
       return served;
