@@ -220,6 +220,52 @@ describe('hub-pool-cli formatters', () => {
     expect(text).toContain(PEER_A);
   });
 
+  /**
+   * The row this whole change exists for. Reproduced from beta-max, 2026-09-21: four rows reading
+   * `qwen3-coder:30b  -  1/14  30031  x failed` were reported as "placement returns no candidate and
+   * times out", when placement had ranked fourteen and the app had hung up on the first after 30 s.
+   * The NODE column and the summary are where that misreading happened, so both are asserted here.
+   */
+  it('says the caller left, and names the node it left waiting, instead of an anonymous failure', () => {
+    const text = formatPoolRoutingLogLines({
+      entries: [
+        {
+          at: '2026-09-21T20:09:06.000Z',
+          direction: 'outbound',
+          path: '/v1/chat/completions',
+          model: 'qwen3-coder:30b',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 14,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'failed',
+          status: null,
+          durationMs: 30031,
+          clientClosed: true,
+        },
+      ],
+      summary: { recorded: 26, capacity: 200, served: 22, failed: 4, clientClosed: 4, failovers: 0, lastAt: '2026-09-21T20:09:06.000Z' },
+    }).join('\n');
+
+    expect(text).toContain('4 failed (4 abandoned by the caller)');
+    expect(text).toContain('↳ the app closed its connection after 30031 ms; local had not answered yet');
+    expect(text).toContain('not a routing failure');
+    // The node the request was placed on, where an operator looks first — not the `-` that says
+    // nothing was selected.
+    expect(text).not.toMatch(/qwen3-coder:30b\s+-\s/);
+  });
+
+  it('leaves the counts line alone on a Hub that reports no hang-ups, and on one too old to report them', () => {
+    const entries: PoolRoutingLogResponse['entries'] = [];
+    const base = { recorded: 3, capacity: 200, served: 3, failed: 0, failovers: 0, lastAt: null };
+
+    expect(formatPoolRoutingLogLines({ entries, summary: { ...base, clientClosed: 0 } }).join('\n')).toContain('0 failed ·');
+    // Absent, not zero: an older Hub must not be made to claim none of its failures were hang-ups.
+    expect(formatPoolRoutingLogLines({ entries, summary: base }).join('\n')).toContain('0 failed ·');
+  });
+
   it('explains an empty routing log rather than showing an empty table', () => {
     const text = formatPoolRoutingLogLines({
       entries: [],

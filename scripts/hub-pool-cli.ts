@@ -113,6 +113,11 @@ export interface PoolRoutingSummary {
   capacity: number;
   served: number;
   failed: number;
+  /**
+   * How many of `failed` ended because the CALLER hung up rather than because routing failed.
+   * Absent on a Hub predating the flag, which is why nothing here infers it from `failed`.
+   */
+  clientClosed?: number;
   failovers: number;
   lastAt: string | null;
 }
@@ -229,6 +234,12 @@ export interface PoolRoutingRecord {
   outcome: 'served' | 'failed';
   status: number | null;
   durationMs: number;
+  /**
+   * `true` when the app closed its connection before any candidate answered. The row still names the
+   * node that was working on it — absent this flag, that node and a genuine routing failure's `-`
+   * were the same row. Absent on a Hub predating the flag.
+   */
+  clientClosed?: boolean;
   /** Which operator pin shaped this decision, if any. Absent on a Hub predating pinning. */
   pin?: { scope: PoolPinScope; mode: 'prefer'; targetKind: PoolPinTargetKind } | null;
   /** What the prompt ceilings did to this decision, or `null` when no candidate had one. Absent on a Hub predating ceilings. */
@@ -760,7 +771,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
         : 'no Admin API credential — cihub pool discover still lists the tailnet peers this node can see'
     }`,
     `Settings     poolEnabled=${status.settings.poolEnabled} · outbound=${status.settings.poolOutboundEnabled} · inbound=${status.settings.poolInboundEnabled} · localAffinity=${status.settings.poolLocalAffinity} · healthPoll=${status.settings.poolHealthPollSeconds}s`,
-    `Routing log  ${routing.recorded}/${routing.capacity} recorded · ${routing.served} served · ${routing.failed} failed · ${routing.failovers} failover(s)`,
+    `Routing log  ${formatRoutingCounts(routing)}`,
     '',
     'This node',
     `  Node       ${sanitizeForBox(status.localNode.nodeFqdn ?? '(unknown)')}${status.localNode.tailnet ? `  tailnet ${sanitizeForBox(status.localNode.tailnet)}` : ''}`,
@@ -1311,15 +1322,34 @@ export function formatPoolProbeLines(result: PoolProbeResult): string[] {
 
 // --- routing log ---
 
+/**
+ * The counts line both `pool status` and `pool log` print.
+ *
+ * The hang-up breakdown is the whole reason this is a function: `4 failed` on a pool whose peers are
+ * all connected reads as "the pool cannot place work", and on beta-max (2026-09-21) that is exactly
+ * how it was read. Every one of those four was a caller that gave up at 30 s on a turn a node was
+ * still prefilling — a statement about how long the fleet takes to first byte, not about routing.
+ * Only printed when the Hub reported the figure and it is non-zero: an older Hub says nothing rather
+ * than implying zero, and a fleet where no caller ever left keeps the line it has always had.
+ */
+function formatRoutingCounts(summary: {
+  recorded: number;
+  capacity: number;
+  served: number;
+  failed: number;
+  clientClosed?: number;
+  failovers: number;
+}): string {
+  const abandoned = summary.clientClosed ?? 0;
+  const failed = abandoned > 0 ? `${summary.failed} failed (${abandoned} abandoned by the caller)` : `${summary.failed} failed`;
+  return `${summary.recorded}/${summary.capacity} recorded · ${summary.served} served · ${failed} · ${summary.failovers} failover(s)`;
+}
+
 const LOG_WIDTHS = [20, 4, 20, 34, 5, 7] as const;
 
 export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
   const summary = log.summary;
-  const header = [
-    `${summary.recorded}/${summary.capacity} recorded · ${summary.served} served · ${summary.failed} failed · ${summary.failovers} failover(s)`,
-    `Last decision  ${formatPoolTimestamp(summary.lastAt)}`,
-    '',
-  ];
+  const header = [formatRoutingCounts(summary), `Last decision  ${formatPoolTimestamp(summary.lastAt)}`, ''];
 
   if (log.entries.length === 0) {
     return [
@@ -1352,6 +1382,15 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         `${outcome}${status}`,
       ].join(' '),
     );
+    // First, and before every other annotation: it is the one that changes what the row MEANS. A
+    // `x failed` with no status is otherwise read as the pool failing to place the request, and the
+    // NODE column beside it — which now names the node that was still working — would then read as
+    // the node that broke. Neither is true: nobody was waiting for the answer any more.
+    if (entry.clientClosed) {
+      lines.push(
+        `  ↳ the app closed its connection after ${entry.durationMs} ms; ${sanitizeForBox(entry.node ?? '?')} had not answered yet — not a routing failure`,
+      );
+    }
     // Named on the row it shaped: an operator seeing everything land on one node cannot otherwise
     // tell a pin from the ranker having decided the same thing.
     if (entry.pin) {

@@ -1848,6 +1848,14 @@ export class PoolProxyService {
    * settled as failed with no status — nothing was served — and it is logged, because a client giving
    * up on a turn that had not started answering is the one symptom of a queue too slow for its callers.
    * After headers the row already says served, which it was, and a stopped generation is routine.
+   *
+   * The row KEEPS the node, peer and engine it was waiting on, and says `clientClosed`. Nulling them
+   * — which this did until beta-max, 2026-09-21 — left a row identical to the one a request that
+   * exhausted every candidate settles as, and the log's NODE column is where an operator looks first:
+   * four rows reading `qwen3-coder:30b  -  1/14  30031  x failed` were reported as "placement returns
+   * no candidate and times out" when placement had ranked fourteen candidates and the caller had
+   * given up on the first after 30 s. A request that ends because nobody is waiting for it is not a
+   * routing failure, and the log has to be able to say which of the two it is looking at.
    */
   private noteClientClosed(
     row: ReturnType<HubPoolRoutingLogService['open']>,
@@ -1862,11 +1870,11 @@ export class PoolProxyService {
     }
     const waitedMs = Date.now() - startedAt;
     this.routingLog.settle(row, {
-      node: null,
-      peerId: null,
-      backend: null,
+      // `node`, `peerId` and `backend` are deliberately absent: `settle` keeps what placement wrote,
+      // and what placement wrote is the candidate that was still holding this request.
       attempt: index + 1,
       outcome: 'failed',
+      clientClosed: true,
       status: null,
       durationMs: waitedMs,
     });
