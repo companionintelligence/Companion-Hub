@@ -58,6 +58,9 @@ const appRuntimeMonitorSchema = z.object({
   apps: z.array(appRuntimeHealthSchema),
   history: z.array(appRuntimeHistorySampleSchema),
   unattributedGpu: z.array(unattributedGpuProcessSchema).nullable(),
+  // `absent` is a real answer ("nothing on this node could measure it"); `null` is the empty
+  // snapshot, where no collection happened. See `AppRuntimeMonitorSnapshot.gpuVramSource`.
+  gpuVramSource: z.enum(['host-file', 'tool', 'absent']).nullable(),
 });
 
 export class AppRuntimeHealthDto extends createZodDto(appRuntimeHealthSchema) {}

@@ -78,7 +78,7 @@ import {
   parseOllamaBindProbe,
   planBindConsolidation,
 } from './fleet-ollama-bind.js';
-import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { gpuProbeTimerStep, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
 import {
   clearPendingPairingCode,
@@ -239,6 +239,12 @@ export interface FleetArgs {
   /** Bring each node's Ollama to the pinned (or `--ollama-version`) release during `update`. */
   ollama: boolean;
   /**
+   * `update` only: install (or refresh) the per-process GPU VRAM probe timer on each node — the
+   * same step `install` runs, alone, so it can be rolled onto a fleet that is otherwise untouched.
+   * See `gpu-probe-timer.ts` and docs/fleet-setup.md, "Per-process GPU VRAM".
+   */
+  gpuProbe: boolean;
+  /**
    * Exact Ollama release for `backends` and `update --ollama`, already validated. Absent means the
    * pin in `fleet-ollama-version.ts`; there is deliberately no way to ask for "latest".
    */
@@ -325,6 +331,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     pinDigest: undefined,
     toMajority: false,
     ollama: false,
+    gpuProbe: false,
     ollamaVersion: undefined,
     apps: [],
     // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
@@ -407,6 +414,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
       args.pinDigest = pin.ref;
     } else if (arg === '--to-majority') args.toMajority = true;
     else if (arg === '--ollama') args.ollama = true;
+    else if (arg === '--gpu-probe') args.gpuProbe = true;
     else if (isFlag('--ollama-version')) {
       // Validated here so a typo fails before any machine is dialled, and so 'latest' is refused in
       // words rather than handed to the installer, which would honour it.
@@ -1681,9 +1689,9 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     : args.models.length > 0
       ? { kind: 'explicit', models: args.models }
       : undefined;
-  if (!args.hub && !args.ollama && !modelRequest) {
+  if (!args.hub && !args.ollama && !args.gpuProbe && !modelRequest) {
     console.log(
-      `Nothing to do. Pass --hub to update the Hub image, --ollama to bring Ollama to the pinned release, --models a,b or --models ${RECOMMENDED_MODELS_KEYWORD} to pull models, or any combination.`,
+      `Nothing to do. Pass --hub to update the Hub image, --ollama to bring Ollama to the pinned release, --gpu-probe to install the per-process GPU VRAM probe timer, --models a,b or --models ${RECOMMENDED_MODELS_KEYWORD} to pull models, or any combination.`,
     );
     return;
   }
@@ -1723,6 +1731,12 @@ async function runUpdate(args: FleetArgs): Promise<void> {
       );
       console.log(colorize('    nodes already serving that version are left alone; nodes with no Ollama are reported, not installed', 'dim'));
     }
+    if (args.gpuProbe) {
+      console.log(
+        '  would install the per-process GPU VRAM probe (cihub-gpu-processes.timer, a systemd --user unit) on each node that has nvidia-smi or rocm-smi',
+      );
+      console.log(colorize('    nodes with neither tool are reported as skipped; the Hub reads the file it writes and needs no restart', 'dim'));
+    }
     if (modelRequest?.kind === 'recommended') console.log(colorize("  asking each node's Hub for its list — reads only, changes nothing", 'dim'));
     for (const node of run) {
       const plan = await planFor(node, { host: node.ip, user: node.user ?? args.user });
@@ -1760,6 +1774,15 @@ async function runUpdate(args: FleetArgs): Promise<void> {
       const { ok, after } = await updateHubImageOnNode(target, pin);
       if (!ok) failed += 1;
       afterImages.push({ node: node.name, probe: after });
+    }
+    if (args.gpuProbe) {
+      // After the image, before the models: the probe touches nothing the other steps depend on,
+      // and its first sample is more useful once whatever this run restarted is back.
+      const probe = await gpuProbeTimerStep(target);
+      if (!probe.ok) failed += 1;
+      const icon = probe.ok ? (probe.skipped ? colorize('·', 'dim') : colorize('✓', 'green')) : colorize('✗', 'red');
+      const took = probe.ms ? colorize(` (${Math.round(probe.ms / 1000)}s)`, 'dim') : '';
+      console.log(`  ${icon} ${probe.name}${took} — ${probe.detail}`);
     }
     const plan = await planFor(node, target);
     if (!plan) continue;

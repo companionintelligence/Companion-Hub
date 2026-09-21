@@ -10859,13 +10859,23 @@
               ],
               "additionalProperties": false
             }
+          },
+          "gpuVramSource": {
+            "nullable": true,
+            "type": "string",
+            "enum": [
+              "host-file",
+              "tool",
+              "absent"
+            ]
           }
         },
         "required": [
           "sampledAt",
           "apps",
           "history",
-          "unattributedGpu"
+          "unattributedGpu",
+          "gpuVramSource"
         ],
         "additionalProperties": false
       },

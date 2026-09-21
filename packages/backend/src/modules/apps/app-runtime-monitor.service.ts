@@ -11,7 +11,7 @@ import { DockerReadFacade, type AppContainerRuntimeStats } from '../docker/docke
 import { HostTelemetryService } from '../system/host-telemetry.service';
 import type { PoolContainerRollup, PoolContainerSampler } from '@/common/helpers/hub-pool';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
-import { GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
+import { type GpuProcessSampleSource, GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
@@ -74,8 +74,10 @@ export type AppRuntimeHealth = {
    * `DockerReadFacade.mapPidsToContainers`). `null`, never `0`: the underlying tools are a
    * presence list, not a per-container gauge, so there is no way to positively confirm "measured
    * and definitely zero" — `null` covers both "nothing found for this workload" and "the sampler
-   * did not run at all" (no supported GPU vendor), which look identical from here either way.
-   * Compute UTILIZATION per workload is not represented anywhere — see `workload-coverage.tsx`.
+   * had no source at all", which look identical from here either way. Whether a source existed
+   * is on the snapshot as {@link AppRuntimeMonitorSnapshot.gpuVramSource}, once per tick rather
+   * than once per row. Compute UTILIZATION per workload is not represented anywhere — see
+   * `workload-coverage.tsx`.
    */
   gpuVramMb: number | null;
 };
@@ -114,6 +116,15 @@ export type AppRuntimeMonitorSnapshot = {
    * nothing unattributed this tick — including when it did not run at all.
    */
   unattributedGpu: UnattributedGpuProcess[] | null;
+  /**
+   * Where this tick's per-process VRAM came from: the host probe file, the vendor tool run by
+   * this process, or `absent` — nothing on this node could answer, so every `gpuVramMb` above is
+   * `null` for want of a measurement rather than for want of a workload. `null` only on the empty
+   * snapshot, when the collection itself did not happen. The dashboard says `absent` in words
+   * (`workload-trends.tsx`, `workload-coverage.tsx`) instead of drawing an empty chart that reads
+   * as "nothing holds VRAM".
+   */
+  gpuVramSource: GpuProcessSampleSource | 'absent' | null;
 };
 
 const HUB_RUNTIME_URN = 'ci-hub:system';
@@ -252,6 +263,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       apps: [],
       history: [...this.history],
       unattributedGpu: null,
+      gpuVramSource: null,
     };
   }
 
@@ -314,6 +326,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       apps: entities.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
       history: [...this.history],
       unattributedGpu: gpu.unattributed.length > 0 ? gpu.unattributed : null,
+      gpuVramSource: gpu.source ?? 'absent',
     };
     this.latestSnapshotAtMs = Date.now();
     return this.latestSnapshot;
@@ -324,16 +337,27 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    * workload owns the container holding it, via `docker top`-based PID attribution (see
    * `DockerReadFacade.mapPidsToContainers`). Never throws: a GPU-sampling failure must not take
    * down CPU/memory monitoring it rides alongside on the same 60s tick, so every entity simply
-   * gets no GPU figure this round, same as a host with no supported vendor at all.
+   * gets no GPU figure this round, same as a host with no source at all — and `source` says
+   * which of the two it was.
+   *
+   * PIDs match across the two sources by construction: the host probe writes host-namespace
+   * PIDs, and `docker top` over the mounted socket reports host-namespace PIDs too.
    */
-  private async attributeGpuVram(entities: AppRuntimeHealth[]): Promise<{ byAppUrn: Map<string, number>; unattributed: UnattributedGpuProcess[] }> {
+  private async attributeGpuVram(
+    entities: AppRuntimeHealth[],
+  ): Promise<{ byAppUrn: Map<string, number>; unattributed: UnattributedGpuProcess[]; source: GpuProcessSampleSource | null }> {
     const byAppUrn = new Map<string, number>();
     const unattributed: UnattributedGpuProcess[] = [];
+    let source: GpuProcessSampleSource | null = null;
     try {
       const hardware = await this.hardwareInspector.getProfile();
-      const samples = await this.gpuSampler.sampleVramByProcess(hardware.gpu?.vendor);
+      const observation = await this.gpuSampler.observeVramByProcess(hardware.gpu?.vendor);
+      // Recorded before the early return: a source that answered "nothing holds VRAM" is still a
+      // source, and the difference between that and "no source" is what the dashboard reports.
+      source = observation.source;
+      const samples = observation.samples;
       if (samples.length === 0) {
-        return { byAppUrn, unattributed };
+        return { byAppUrn, unattributed, source };
       }
 
       const pidToContainer = await this.dockerReadFacade.mapPidsToContainers(samples.map((sample) => sample.pid));
@@ -356,7 +380,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     } catch (error) {
       this.logger.warn(`GPU VRAM attribution failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return { byAppUrn, unattributed };
+    return { byAppUrn, unattributed, source };
   }
 
   private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {

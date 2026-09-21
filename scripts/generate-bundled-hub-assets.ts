@@ -26,6 +26,11 @@ export const BUNDLED_HUB_ASSET_SOURCES = {
   BUNDLED_HUB_COMPOSE: 'packages/desktop/src-tauri/resources/docker-compose.prod.yml',
   BUNDLED_TRAEFIK_YML: 'packages/backend/assets/traefik/traefik.yml',
   BUNDLED_TRAEFIK_DYNAMIC_YML: 'packages/backend/assets/traefik/dynamic/dynamic.yml',
+  // The host GPU probe `cihub fleet` installs on each node (scripts/lib/gpu-probe-timer.ts). Bundled
+  // for the same reason as the compose: the operator's `cihub` may be the standalone binary.
+  BUNDLED_GPU_PROBE_SCRIPT: 'scripts/host-probes/cihub-gpu-processes.sh',
+  BUNDLED_GPU_PROBE_SERVICE: 'scripts/host-probes/cihub-gpu-processes.service',
+  BUNDLED_GPU_PROBE_TIMER: 'scripts/host-probes/cihub-gpu-processes.timer',
 } as const;
 
 export const BUNDLED_HUB_ASSETS_MODULE = 'scripts/lib/bundled-hub-assets.generated.ts';
