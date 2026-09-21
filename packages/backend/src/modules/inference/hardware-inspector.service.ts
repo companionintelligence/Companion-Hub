@@ -3,6 +3,11 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { isHostRocmStackProbe, isRocmKfdPassthroughProbe } from '@/modules/inference/host-rocm-availability';
+import {
+  HOST_GPU_PROCESSES_FILE_PATH,
+  hostGpuProcessesFileSchema,
+  samplesFromHostGpuProcessesFile,
+} from '@/modules/inference/gpu-process-sampler.service';
 import type { HardwareProfile, HardwareTier } from '@ci-hub/common/types';
 import si from 'systeminformation';
 import os from 'node:os';
@@ -26,6 +31,14 @@ const HOST_MEMINFO_PATH = '/host/proc/meminfo';
 // of actual GDDR VRAM when GPU device passthrough is unavailable inside a container.
 // Any reading below this threshold is treated as unreliable for a discrete GPU.
 const MIN_PLAUSIBLE_DISCRETE_VRAM_MB = 512;
+// What nvidia-smi / sysfs report as the card's total is the card minus what the driver keeps
+// back: the 8 GB RTX A1000 on beta-nas answers `memory.total` 8188 MiB (nvidia.json, 2026-09-21),
+// a 24 GB RTX 4090 24564, a 16 GB RTX A4000 16376, a 24 GB RX 7900 XTX 24560 via
+// mem_info_vram_total. Read against exact power-of-two tier lines, each lands one tier below the
+// card it is. No standard card size (4, 6, 8, 10, 11, 12, 16, 20, 24, 32 GB …) other than the
+// one AT a line reports within this much below it, so the slack cannot lift a smaller card over
+// one. Discrete VRAM only: a unified-memory node is tiered on `ram.totalMb`, untouched here.
+const DISCRETE_VRAM_TIER_SLACK_MB = 256;
 // Windows WMI Win32_VideoController.AdapterRAM is a 32-bit field that NVIDIA saturates at exactly
 // 4095 MB, so any GPU with >=4 GB VRAM reports ~4095 MB there. Readings in this band on Windows are
 // treated as suspect and cross-checked against nvidia-smi. A reading of 4096+ MB instead comes from
@@ -337,8 +350,16 @@ export class HardwareInspectorService {
     }
 
     if (gpu.vendor === 'nvidia') {
+      // Same shape as the AMD block above: the host's own proof that the card is driven, kept
+      // apart from `runtimeAvailable`, which stays the container's view. See gpuRuntimeReady().
+      const hostNvidiaAvailable = nvidiaHostProbe !== null || (await this.hostGpuProcessesFileNamesNvidia());
+      gpu = { ...gpu, hostNvidiaAvailable };
       if (gpu.runtimeAvailable) {
         this.logger.info('[HardwareInspector] NVIDIA GPU detected and NVIDIA container runtime is available.');
+      } else if (hostNvidiaAvailable) {
+        this.logger.info(
+          `[HardwareInspector] NVIDIA GPU detected; the host driver answers nvidia-smi (${gpu.vramMb} MB) but the Hub container has no NVIDIA runtime — tiering from the host card; CUDA stays unavailable to container apps until nvidia-container-toolkit is installed.`,
+        );
       } else {
         this.logger.warn(
           '[HardwareInspector] NVIDIA GPU detected but NVIDIA container runtime is unavailable. Verify NVIDIA drivers, nvidia-container-toolkit, and container GPU passthrough configuration.',
@@ -478,17 +499,47 @@ export class HardwareInspectorService {
    * Measured 2026-09-17 on an RX 7900 XTX: `runtimeAvailable=false`, `hostRocmKfdAvailable=true`,
    * tier computed as `cpu-only`, so the 27B the operator had pinned was rejected as "not
    * runnable" and every app was handed a 4B model. The tier must follow the host probe.
+   *
+   * NVIDIA has the same split. The container's view is `docker info`'s runtime list, and a fleet
+   * node without nvidia-container-toolkit reports `runtimeAvailable=false` — while the host's
+   * driver runs the card for the engine that actually serves models. Measured 2026-09-21 on
+   * beta-nas (RTX A1000 8 GB, driver 595, no `nvidia` runtime): the host wrote `nvidia.json`
+   * (name + 8188 MB) and a fresh `gpu_processes.json` showing the host's llama-server and
+   * vLLM holding VRAM, yet the tier was `cpu-only` and every app got the CPU catalog, next to
+   * beta-red (RTX 3080, runtime installed) on `medium`. `hostNvidiaAvailable` is that host
+   * proof; `runtimeAvailable` is left false so the router and the setup card still say the
+   * container has no CUDA.
    */
   private gpuRuntimeReady(gpu: HardwareProfile['gpu']): boolean {
-    return gpu.runtimeAvailable || (gpu.vendor === 'amd' && gpu.hostRocmKfdAvailable === true);
+    if (gpu.runtimeAvailable) return true;
+    if (gpu.vendor === 'amd') return gpu.hostRocmKfdAvailable === true;
+    if (gpu.vendor === 'nvidia') return gpu.hostNvidiaAvailable === true;
+    return false;
+  }
+
+  /**
+   * Whether the host GPU-process timer file names an NVIDIA writer — `cihub fleet update
+   * --gpu-probe` installs `cihub-gpu-processes.sh`, which only writes when `nvidia-smi`
+   * answered on the host. A stale or foreign-schema file counts for nothing, same as it does
+   * for the sampler that reads it for VRAM.
+   */
+  private async hostGpuProcessesFileNamesNvidia(): Promise<boolean> {
+    try {
+      const file = await this.filesystem.readJsonFile(HOST_GPU_PROCESSES_FILE_PATH, hostGpuProcessesFileSchema);
+      if (!file || file.vendor !== 'nvidia') return false;
+      return samplesFromHostGpuProcessesFile(file) !== null;
+    } catch {
+      return false;
+    }
   }
 
   computeTier(gpu: HardwareProfile['gpu'], ram: HardwareProfile['ram']): HardwareTier {
     if (gpu.available && this.gpuRuntimeReady(gpu)) {
       const effectiveVram = gpu.unifiedMemory ? ram.totalMb : gpu.vramMb;
-      if (effectiveVram >= 16384) return 'high';
-      if (effectiveVram >= 8192) return 'medium';
-      if (effectiveVram >= 4096) return 'low';
+      const tieredVram = gpu.unifiedMemory ? effectiveVram : effectiveVram + DISCRETE_VRAM_TIER_SLACK_MB;
+      if (tieredVram >= 16384) return 'high';
+      if (tieredVram >= 8192) return 'medium';
+      if (tieredVram >= 4096) return 'low';
       if (!gpu.unifiedMemory && effectiveVram < MIN_PLAUSIBLE_DISCRETE_VRAM_MB && (gpu.vendor === 'nvidia' || gpu.vendor === 'amd')) {
         this.logger.warn(
           `[HardwareInspector] ${gpu.vendor.toUpperCase()} GPU detected with unreliable VRAM reading (${effectiveVram} MB); defaulting tier to low until probe data is available.`,
@@ -1096,7 +1147,7 @@ export class HardwareInspectorService {
   private hasIncompleteDiscreteGpuProfile(profile: HardwareProfile): boolean {
     return (
       profile.gpu.available &&
-      profile.gpu.runtimeAvailable &&
+      this.gpuRuntimeReady(profile.gpu) &&
       !profile.gpu.unifiedMemory &&
       (profile.gpu.vendor === 'nvidia' || profile.gpu.vendor === 'amd') &&
       profile.gpu.vramMb < MIN_PLAUSIBLE_DISCRETE_VRAM_MB

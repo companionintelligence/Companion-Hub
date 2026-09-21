@@ -514,6 +514,16 @@ for want of a workload. The resource dashboard's GPU trend tile and coverage til
 words, with this install step beside it, instead of drawing an empty chart that reads as "nothing
 holds VRAM". A fresh file listing no processes is `host-file` with no rows: measured, and idle.
 
+The same file is the Hub's second proof that the host drives an NVIDIA card. The hardware tier
+(`GET /api/inference/hardware` → `tier`, which sizes the models every app is handed) used to need
+the `nvidia` Docker runtime in `docker info` before it would tier an NVIDIA card by its VRAM, so a
+node with the driver but without nvidia-container-toolkit — beta-nas, RTX A1000 8 GB, 2026-09-21 —
+sat on `cpu-only` while the host's Ollama and vLLM held the card. Now the tier follows the host:
+init-gpu-runtime's `nvidia.json` (name + VRAM) or a fresh `gpu_processes.json` with
+`"vendor":"nvidia"` sets `gpu.hostNvidiaAvailable`, and the tier is read from the VRAM. The profile
+keeps `gpu.runtimeAvailable: false` on such a node: that is still the container's own view, and it
+still means container apps get no CUDA until the toolkit is installed.
+
 ## Before touching a node: preflight
 
 Run this before a fleet install, update, or anything that will install a kernel, a driver or a
