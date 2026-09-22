@@ -29,12 +29,14 @@
  */
 
 /**
- * The host ports the Hub container probes for engines other than Ollama: the shared 8000 space
- * (vllm, mtplx, lucebox), dspark's 8080, the fleet's llama-server on 8081 (`LLAMACPP_URL`, see
- * `fleet-llamacpp.ts`), lemonade's 13305 and the lucebox-hub stack's 8216. Ollama's 11434 is not
- * here: `ollama-tailnet-guard.service` already admits the bridges to it ahead of ufw.
+ * The host ports the Hub container probes for engines other than Ollama, on every node: the shared
+ * 8000 space (vllm, mtplx, lucebox), dspark's 8080, lemonade's 13305 and the lucebox-hub stack's
+ * 8216. Ollama's 11434 is not here: `ollama-tailnet-guard.service` already admits the bridges to it
+ * ahead of ufw. Neither is the fleet's llama-server on 8081: the Hub probes `LLAMACPP_URL` only
+ * where it is set, so that port joins the list per node — see `hubProbePortsFor` in
+ * `fleet-backends.ts` — rather than fleet-wide.
  */
-export const HUB_PROBE_PORTS: readonly number[] = [8000, 8080, 8081, 13305, 8216];
+export const HUB_PROBE_PORTS: readonly number[] = [8000, 8080, 13305, 8216];
 
 /** Docker's default address pool. Every bridge it creates, default or compose, lands inside it. */
 export const DOCKER_BRIDGE_CIDR = '172.16.0.0/12';

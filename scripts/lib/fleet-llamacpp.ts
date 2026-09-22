@@ -10,7 +10,7 @@
  * choice on gfx11; the Vulkan image is the fallback (604 prefill, 81 decode, a 3-minute cold start).
  * Speculative decoding was a net loss and is deliberately not offered.
  *
- * Three decisions worth stating, because each one was the alternative that did not hold up:
+ * Four decisions worth stating, because each one was the alternative that did not hold up:
  *
  * 1. **The model is Ollama's blob, mounted read-only — never a second download.** The Ollama store
  *    is resolved on the node (`OLLAMA_MODELS` from the daemon's own environment, then the account's,
@@ -20,9 +20,18 @@
  *    dashboard on every appliance — `ss` shows it taken on a node that runs no llama-server at all.
  *    `LLAMACPP_URL` in the Hub is opt-in for the same collision; the fleet writes it explicitly.
  * 3. **One systemd unit running one container, restarted only when its bytes change.** The unit is
- *    rendered on the node from facts the node knows (group ids, the docker binary, the blob), then
- *    compared with what is installed. Identical bytes on an active unit run nothing — a restart
- *    unloads the model, and a fleet command WILL be re-run.
+ *    rendered on the node from facts the node knows (group ids, the docker binary, the blob, the
+ *    addresses to publish on), then compared with what is installed. Identical bytes on an active
+ *    unit run nothing — a restart unloads the model, and a fleet command WILL be re-run.
+ * 4. **Published on three addresses, never on 0.0.0.0.** llama-server has no authentication, and
+ *    `-p 8081:8080` is a `0.0.0.0` (and `[::]`) bind whose traffic Docker DNATs in PREROUTING: it
+ *    never reaches ufw's INPUT chain, so the fleet's port guard, which keeps the LAN out of Ollama,
+ *    would not keep it out of this. The unit publishes on loopback, on the node's tailnet address
+ *    (`tailscale ip -4`, resolved when the unit is rendered), and on the docker0 gateway, which is
+ *    what `host.docker.internal` resolves to inside `ci-hub` (compose maps it to Docker's
+ *    `host-gateway`: the default bridge's address unless the daemon's `--host-gateway-ip` says
+ *    otherwise). Peers reach it through the Hub, never directly, so the tailnet entry is for the
+ *    operator's own `curl`; a LAN host gets a refused connection.
  *
  * NOTHING HERE RUNS ANYTHING. The shells are executed by `cihub fleet backends --execute`.
  */
@@ -137,6 +146,13 @@ export function llamacppServerArgs(spec: Pick<LlamacppSpec, 'parallel' | 'contex
  * than named: `--group-add video` is looked up in the CONTAINER's /etc/group, where the id may
  * differ or the group may not exist, while a numeric id is passed through as-is. ROCm needs the
  * KFD node and the render nodes; Vulkan the render nodes; CUDA the runtime hook; the CPU image nothing.
+ *
+ * ROCm also gets `--security-opt seccomp=unconfined`, which REMOVES THE SYSCALL FILTER. Copied from
+ * the Lucebox runner (`lucebox.backend.ts`) and the ROCm app allowlist (`dynamic-compose.ts`), for
+ * the reason recorded there: ROCm's userspace queues issue ioctls the default profile blocks. The
+ * core-6 measurement ran with it; whether llama-server's ROCm build needs it has not been tested
+ * on a node without it, and until it is the measured configuration stands. Vulkan, CUDA and CPU
+ * keep the default profile.
  */
 export function llamacppGpuFlagsShell(flavour: LlamacppFlavour): string[] {
   const groups = [
@@ -157,9 +173,31 @@ export function llamacppGpuFlagsShell(flavour: LlamacppFlavour): string[] {
   }
 }
 
+/**
+ * The addresses the unit publishes `:8081` on, resolved on the node: loopback always; the tailnet
+ * address when `tailscale ip -4` names one; the docker0 gateway from `ip -4 addr show docker0`,
+ * falling back to Docker's own view of its default bridge. Each is kept only when it looks like an
+ * IPv4 address — `tailscale ip` on a node whose tailscaled is down prints a sentence, and a sentence
+ * in a `-p` would fail the unit at start. Never `0.0.0.0`; see decision 4 in the file comment.
+ */
+export function llamacppPublishShell(): string[] {
+  const p = `${LLAMACPP_FLEET_PORT}:${LLAMACPP_CONTAINER_PORT}`;
+  return [
+    'cihub_lc_ts="$(tailscale ip -4 2>/dev/null | head -1)"',
+    'case "$cihub_lc_ts" in *[!0-9.]*|"") cihub_lc_ts="" ;; esac',
+    `cihub_lc_gw="$(ip -4 addr show docker0 2>/dev/null | sed -n 's/.*inet \\([0-9.]*\\)\\/.*/\\1/p' | head -1)"`,
+    `[ -n "$cihub_lc_gw" ] || cihub_lc_gw="$(docker network inspect bridge --format '{{ (index .IPAM.Config 0).Gateway }}' 2>/dev/null)"`,
+    'case "$cihub_lc_gw" in *[!0-9.]*|"") cihub_lc_gw="" ;; esac',
+    `cihub_lc_publish="-p 127.0.0.1:${p}\${cihub_lc_ts:+ -p $cihub_lc_ts:${p}}\${cihub_lc_gw:+ -p $cihub_lc_gw:${p}}"`,
+    `echo "${LLAMACPP_MARKERS.publish} tailnet=\${cihub_lc_ts:-?} gateway=\${cihub_lc_gw:-?}"`,
+  ];
+}
+
 export const LLAMACPP_MARKERS = {
   modelsDir: 'llamacpp-models-dir:',
   model: 'llamacpp-model:',
+  /** `tailnet=<ip|?> gateway=<ip|?>` — the two resolved addresses beside loopback that `:8081` is published on. */
+  publish: 'llamacpp-publish:',
   /** `unchanged` / `differs` / `absent` — the rendered unit against the installed one. */
   unit: 'llamacpp-unit:',
   unitState: 'llamacpp-unit-state:',
@@ -223,6 +261,7 @@ function llamacppRenderShell(spec: LlamacppSpec): string[] {
     '  fi',
     `  echo "${m.model} ${spec.model} sha256-$cihub_lc_digest"`,
     ...llamacppGpuFlagsShell(spec.flavour).map((l) => `  ${l}`),
+    ...llamacppPublishShell().map((l) => `  ${l}`),
     '  cihub_lc_docker="$(command -v docker 2>/dev/null || echo /usr/bin/docker)"',
     '  cihub_lc_tmp="$(mktemp)"',
     // Unquoted heredoc on purpose: the node's values are what the unit must carry. Nothing else in
@@ -240,7 +279,8 @@ function llamacppRenderShell(spec: LlamacppSpec): string[] {
     'TimeoutStartSec=0',
     'TimeoutStopSec=90',
     `ExecStartPre=-$cihub_lc_docker rm -f ${LLAMACPP_CONTAINER}`,
-    `ExecStart=$cihub_lc_docker run --rm --name ${LLAMACPP_CONTAINER} -p ${LLAMACPP_FLEET_PORT}:${LLAMACPP_CONTAINER_PORT}$cihub_lc_gpu -v $cihub_lc_models:/models:ro ${image} --model /models/blobs/sha256-$cihub_lc_digest --alias ${spec.model} --host 0.0.0.0 --port ${LLAMACPP_CONTAINER_PORT} ${llamacppServerArgs(spec)}`,
+    // `--host 0.0.0.0` is the CONTAINER's bind; what the host exposes is `$cihub_lc_publish`.
+    `ExecStart=$cihub_lc_docker run --rm --name ${LLAMACPP_CONTAINER} $cihub_lc_publish$cihub_lc_gpu -v $cihub_lc_models:/models:ro ${image} --model /models/blobs/sha256-$cihub_lc_digest --alias ${spec.model} --host 0.0.0.0 --port ${LLAMACPP_CONTAINER_PORT} ${llamacppServerArgs(spec)}`,
     `ExecStop=$cihub_lc_docker stop -t 60 ${LLAMACPP_CONTAINER}`,
     '',
     '[Install]',
@@ -249,10 +289,22 @@ function llamacppRenderShell(spec: LlamacppSpec): string[] {
     `  if [ ! -e "$cihub_lc_unit" ]; then echo "${m.unit} absent"`,
     `  elif cmp -s "$cihub_lc_tmp" "$cihub_lc_unit"; then echo "${m.unit} unchanged"`,
     `  else echo "${m.unit} differs"; fi`,
-    `  echo "${m.unitState} $(systemctl is-active ${LLAMACPP_UNIT} 2>/dev/null || echo inactive)"`,
+    ...llamacppUnitStateShell('cihub_lc_state').map((l) => `  ${l}`),
+    `  echo "${m.unitState} $cihub_lc_state"`,
     '  return 0',
     '}',
   ];
+}
+
+/**
+ * `systemctl is-active` into a variable, once. The real command prints `inactive` (or `failed`,
+ * `activating`) AND exits non-zero for anything but `active`, so the obvious
+ * `$(systemctl is-active … || echo inactive)` yields `inactive\ninactive`; the sandbox stub mirrors
+ * the exit code so a test would see the same. Empty output — no systemd, or a name it cannot
+ * parse — reads as `inactive`, which is also what systemd prints for a unit it has never heard of.
+ */
+function llamacppUnitStateShell(variable: string): string[] {
+  return [`${variable}="$(systemctl is-active ${LLAMACPP_UNIT} 2>/dev/null)"`, `[ -n "$${variable}" ] || ${variable}=inactive`];
 }
 
 /** The two GETs a running llama-server answers with its identity and its shape, as marker lines. */
@@ -298,6 +350,15 @@ export function llamacppProbeShell(spec: LlamacppSpec): string {
 
 /** How long the apply waits for `/health` to turn 200: a cold Vulkan start measured 3 minutes; a bigger blob or a slower disk needs more. */
 export const LLAMACPP_HEALTH_WAIT_S = 600;
+/**
+ * Automatic restarts (`systemctl show -p NRestarts`, reset by the `systemctl restart` the apply
+ * issues) after which the health wait stops early: a container that dies at start under
+ * `Restart=always`/`RestartSec=5` is a crash loop, not a slow load, and each turn of it burns the
+ * whole wait otherwise. Two restarts could be one bad start and a slow disk; three is a loop.
+ */
+export const LLAMACPP_CRASH_LOOP_RESTARTS = 2;
+/** Where a crashed container's output is: `docker run --rm` removes it, so `docker logs` answers "No such container", while the unit's journal keeps what it printed. */
+export const LLAMACPP_JOURNAL_LINES = 20;
 
 /**
  * Privileged: pull the image if absent, install the unit if its bytes differ, restart only then
@@ -317,7 +378,7 @@ export function llamacppApplyShell(spec: LlamacppSpec): string {
     `if docker image inspect '${image}' >/dev/null 2>&1; then echo "${m.image} present"`,
     `elif docker pull '${image}' >/dev/null 2>&1; then echo "${m.image} pulled"`,
     `else echo "${m.image} pull-failed ${image}"; rm -f "$cihub_lc_tmp"; echo "${m.complete}"; exit 0; fi`,
-    `cihub_lc_active="$(systemctl is-active ${LLAMACPP_UNIT} 2>/dev/null || echo inactive)"`,
+    ...llamacppUnitStateShell('cihub_lc_active'),
     `if cmp -s "$cihub_lc_tmp" "$cihub_lc_unit" && [ "$cihub_lc_active" = active ]; then`,
     `  echo "${m.restart} not-needed"`,
     'else',
@@ -334,19 +395,31 @@ export function llamacppApplyShell(spec: LlamacppSpec): string {
     // minutes is not up.
     'cihub_lc_waited=0',
     'cihub_lc_code=000',
+    'cihub_lc_why=timeout',
+    'cihub_lc_restarts=0',
     `while [ "$cihub_lc_waited" -lt ${LLAMACPP_HEALTH_WAIT_S} ]; do`,
     `  cihub_lc_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${LLAMACPP_FLEET_PORT}/health 2>/dev/null)"`,
     '  [ "$cihub_lc_code" = 200 ] && break',
-    // A unit that has already died is not going to answer; say so now rather than in ten minutes.
-    `  if [ "$(systemctl is-active ${LLAMACPP_UNIT} 2>/dev/null)" = failed ]; then break; fi`,
+    // A container that dies at start is restarted by the unit every 5 s and never reads `failed`
+    // (Restart=always), so the restart counter is what says the load is not slow but looping; a
+    // unit that did reach `failed` (start limit hit) is not going to answer either.
+    `  cihub_lc_restarts="$(systemctl show -p NRestarts --value ${LLAMACPP_UNIT} 2>/dev/null)"`,
+    '  case "$cihub_lc_restarts" in *[!0-9]*|"") cihub_lc_restarts=0 ;; esac',
+    `  if [ "$cihub_lc_restarts" -gt ${LLAMACPP_CRASH_LOOP_RESTARTS} ]; then cihub_lc_why=crash-loop; break; fi`,
+    ...llamacppUnitStateShell('cihub_lc_state').map((l) => `  ${l}`),
+    '  if [ "$cihub_lc_state" = failed ]; then cihub_lc_why=unit-failed; break; fi',
     '  sleep 5',
     '  cihub_lc_waited=$((cihub_lc_waited + 5))',
     'done',
     'if [ "$cihub_lc_code" = 200 ]; then',
     `  echo "${m.health} ok \${cihub_lc_waited}s"`,
     'else',
-    `  echo "${m.health} timeout \${cihub_lc_waited}s (unit $(systemctl is-active ${LLAMACPP_UNIT} 2>/dev/null || echo inactive), last /health \${cihub_lc_code:-000})"`,
-    `  echo "${m.log} $(docker logs --tail 6 ${LLAMACPP_CONTAINER} 2>&1 | tr '\\n' '|' | cut -c1-600)"`,
+    ...llamacppUnitStateShell('cihub_lc_state').map((l) => `  ${l}`),
+    `  echo "${m.health} $cihub_lc_why \${cihub_lc_waited}s (unit $cihub_lc_state, restarted $cihub_lc_restarts times, last /health \${cihub_lc_code:-000})"`,
+    // The unit's journal, not `docker logs`: `docker run --rm` has removed a container that died,
+    // and `docker logs` would answer "No such container". `-o cat` drops the timestamp and unit
+    // prefix so the bounded tail holds the lines that matter (a ROCm allocation failure, a bad flag).
+    `  echo "${m.log} $(journalctl -u ${LLAMACPP_UNIT} -n ${LLAMACPP_JOURNAL_LINES} --no-pager -o cat 2>&1 | tr '\\n' '|' | cut -c1-1500)"`,
     `  echo "${m.complete}"`,
     '  exit 0',
     'fi',
@@ -402,8 +475,46 @@ export interface LlamacppProbeResult {
   unitState?: string;
   /** The rendered unit's `ExecStart=` line, so a dry run shows the exact command. */
   execStart?: string;
+  /** The two addresses beside loopback that the unit publishes `:8081` on, as resolved on the node; each absent when the node named none. */
+  publish?: LlamacppPublish;
   /** Whoever answered on :8081, when something did. */
   server?: LlamacppServerIdentity;
+}
+
+export interface LlamacppPublish {
+  /** `tailscale ip -4`. */
+  tailnet?: string;
+  /** docker0's address — what `host.docker.internal` resolves to inside `ci-hub`. */
+  gateway?: string;
+}
+
+/** The `llamacpp-publish:` line, when the render got that far. */
+export function readLlamacppPublish(out: string): LlamacppPublish | undefined {
+  const line = pickMarker(
+    out.split('\n').map((l) => l.trim()),
+    LLAMACPP_MARKERS.publish,
+  );
+  if (line === undefined) return undefined;
+  const field = (key: string): string | undefined => {
+    const value = new RegExp(`(?:^|\\s)${key}=(\\S*)`).exec(line)?.[1];
+    return value && value !== '?' ? value : undefined;
+  };
+  return { tailnet: field('tailnet'), gateway: field('gateway') };
+}
+
+/**
+ * What a dry run says about the addresses: which were resolved, and which the Hub needs. A missing
+ * docker0 gateway is the one that matters — `host.docker.internal:8081` inside `ci-hub` would then
+ * reach nothing — so it is called out; a missing tailnet address only costs the operator's own
+ * `curl` from another machine.
+ */
+export function describeLlamacppPublish(publish: LlamacppPublish | undefined): { text: string; tone: 'dim' | 'yellow' } {
+  const parts = ['127.0.0.1'];
+  if (publish?.tailnet) parts.push(`${publish.tailnet} (tailnet)`);
+  if (publish?.gateway) parts.push(`${publish.gateway} (docker0 — host.docker.internal inside ci-hub)`);
+  const text = `published on ${parts.join(', ')}; never on 0.0.0.0 — Docker's DNAT would bypass ufw and the port guard`;
+  if (!publish?.gateway) return { text: `${text}. No docker0 gateway was found: ci-hub could not reach it at ${HUB_LLAMACPP_URL}`, tone: 'yellow' };
+  return { text, tone: 'dim' };
 }
 
 export function classifyLlamacppProbeOutput(out: string): LlamacppProbeResult {
@@ -425,7 +536,17 @@ export function classifyLlamacppProbeOutput(out: string): LlamacppProbeResult {
     .split('\n')
     .find((l) => l.startsWith('ExecStart='))
     ?.slice('ExecStart='.length);
-  return { state: 'ok', why: `resolved ${model}`, modelsDir, blob, unit, unitState: pickMarker(lines, m.unitState), execStart, server };
+  return {
+    state: 'ok',
+    why: `resolved ${model}`,
+    modelsDir,
+    blob,
+    unit,
+    unitState: pickMarker(lines, m.unitState),
+    execStart,
+    publish: readLlamacppPublish(out),
+    server,
+  };
 }
 
 export interface LlamacppApplyOutcome {
@@ -455,10 +576,34 @@ export function classifyLlamacppApplyOutput(out: string, err: string, spec: Llam
   const health = pickMarker(lines, m.health) ?? '';
   if (!health.startsWith('ok')) {
     const log = pickMarker(lines, m.log);
+    const detail = log ? `journalctl -u ${LLAMACPP_UNIT}: ${log}` : undefined;
+    // `<why> <waited>s (unit <state>, restarted <n> times, last /health <code>)`: the loop's own
+    // account of why it stopped. A crash loop is named as one, because "did not answer within
+    // 600 s" on a node the loop left after 15 s would send the operator looking at the wrong thing.
+    const account = /^(\S+) (\d+)s(?: \((.*)\))?$/.exec(health);
+    const why = account?.[1];
+    const waited = account?.[2];
+    const inside = account?.[3] ?? '';
+    const restarts = /restarted (\d+) times/.exec(inside)?.[1];
+    const rest = inside.replace(/restarted \d+ times, /, '');
+    if (why === 'crash-loop') {
+      return {
+        outcome: 'failed',
+        why: `llama-server is crash-looping: systemd restarted ${LLAMACPP_UNIT} ${restarts ?? '?'} times in ${waited} s and /health never answered 200${rest ? ` (${rest})` : ''} — its journal is below`,
+        detail,
+      };
+    }
+    if (why === 'unit-failed') {
+      return {
+        outcome: 'failed',
+        why: `${LLAMACPP_UNIT} reached failed after ${waited} s${rest ? ` (${rest})` : ''} — its journal is below`,
+        detail,
+      };
+    }
     return {
       outcome: 'failed',
       why: `llama-server did not answer /health 200 within ${LLAMACPP_HEALTH_WAIT_S} s${health ? ` (${health.replace(/^timeout /, 'waited ')})` : ''}`,
-      detail: log || undefined,
+      detail,
     };
   }
   if (server?.ownedBy !== 'llamacpp') {

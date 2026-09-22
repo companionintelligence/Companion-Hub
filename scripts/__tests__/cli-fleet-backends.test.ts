@@ -211,7 +211,7 @@ beforeEach(() => {
     if (command.includes('firewall_probe=1')) return ok(h.ufw);
     if (command.includes('ollama-ps-probe=1')) return ok(h.ps ?? psProbe());
     if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
-    if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+    if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
     if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
     if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('none', '200', '4'));
     throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
@@ -246,14 +246,14 @@ describe('fleet backends (dry run)', () => {
       'runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
     );
     expect(text).toContain(`runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4, then daemon-reload and restart ollama`);
-    expect(text).toContain('firewall: ufw active and dropping the bridge on :8080, :8081, :8216 (:8000, :13305 already allowed)');
+    expect(text).toContain('firewall: ufw active and dropping the bridge on :8080, :8216 (:8000, :13305 already allowed)');
     expect(text).toContain(
       "firewall:   would run ufw allow from 172.16.0.0/12 to any port 8080 proto tcp comment 'ci-hub container -> host engine :8080'",
     );
     expect(text).not.toContain('port 8000 proto tcp');
     // core-2: already carries it → nothing to change, and every port already allowed.
     expect(text).toContain(`runtime: ${RUNTIME_DROPIN} already carries OLLAMA_NUM_PARALLEL; ollama not restarted`);
-    expect(text).toContain('firewall: ufw active; bridge → :8000, :8080, :8081, :13305, :8216 already allowed');
+    expect(text).toContain('firewall: ufw active; bridge → :8000, :8080, :13305, :8216 already allowed');
     // beta-1: the user-scope unit is named and nothing about the runtime is planned for it.
     expect(text).toMatch(/bind: would refuse — ollama-local\.service under ci's systemd --user/);
     expect(process.exitCode).toBeUndefined();
@@ -442,7 +442,7 @@ describe('fleet backends --execute', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       // `--ollama-parallel --execute` also tells each node's Hub its slot count (#1554); this
       // test predates that step, and without an answer here the run died on the first Hub dial.
       if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('none', '200', '4'));
@@ -605,8 +605,8 @@ describe('fleet backends --execute', () => {
     expect(script).toContain('to any port 8216 proto tcp');
     expect(script).not.toContain('to any port 8000 proto tcp');
     expect(script).not.toContain('to any port 13305 proto tcp');
-    expect(text).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8080, :8081, :8216/);
-    expect(text).toMatch(/firewall\s+present — ufw active; bridge → :8000, :8080, :8081, :13305, :8216 already allowed/);
+    expect(text).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8080, :8216/);
+    expect(text).toMatch(/firewall\s+present — ufw active; bridge → :8000, :8080, :13305, :8216 already allowed/);
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -635,12 +635,10 @@ describe('fleet backends --execute', () => {
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
         return ok(
           [
-            'ufw-probe-added: 8081 (Rule added)',
             'ufw-probe-added: 8216 (Rule added)',
             'ufw-status-begin',
             '8000,8080,13305/tcp        REJECT      172.16.0.0/12',
             '11434/tcp                  ALLOW       172.16.0.0/12',
-            '8081/tcp                   ALLOW       172.16.0.0/12',
             '8216/tcp                   ALLOW       172.16.0.0/12',
             'ufw-status-end',
             'ufw-probe-complete',
@@ -650,7 +648,7 @@ describe('fleet backends --execute', () => {
     });
     await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-1']);
     expect(printed()).toContain(
-      'firewall: ufw active and dropping the bridge on :8081, :8216 (:8000, :8080, :13305 refused by a rule of its own, which fails fast and is left alone)',
+      'firewall: ufw active and dropping the bridge on :8216 (:8000, :8080, :13305 refused by a rule of its own, which fails fast and is left alone)',
     );
     expect(printed()).toContain('would run ufw allow from 172.16.0.0/12 to any port 8216 proto tcp');
     expect(printed()).not.toContain('to any port 8000 proto tcp');
@@ -660,7 +658,7 @@ describe('fleet backends --execute', () => {
     const script = firewallCalls()[0]?.command ?? '';
     expect(script).toContain('to any port 8216 proto tcp');
     for (const port of [8000, 8080, 13305]) expect(script).not.toContain(`to any port ${port} proto tcp`);
-    expect(printed()).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8081, :8216/);
+    expect(printed()).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8216/);
     expect(printed()).not.toMatch(/→ :8000/);
     expect(process.exitCode).toBeUndefined();
   });
@@ -675,12 +673,10 @@ describe('fleet backends --execute', () => {
         return ok(
           [
             'ufw-probe-added: 8080 (Rule added)',
-            'ufw-probe-added: 8081 (Rule added)',
             'ufw-probe-added: 8216 (Rule added)',
             'ufw-status-begin',
             '8080/tcp                   REJECT      172.16.0.0/12',
             '8080/tcp                   ALLOW       172.16.0.0/12',
-            '8081/tcp                   ALLOW       172.16.0.0/12',
             '8216/tcp                   ALLOW       172.16.0.0/12',
             'ufw-status-end',
             'ufw-probe-complete',
@@ -760,7 +756,7 @@ describe('fleet backends --ollama-parallel', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       // core-1's Hub had no slot count; core-2's already carried it.
       if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF'))
         return ok(t.host === '10.0.0.1' ? capApplied('none', '200', '4') : capApplied('4', 'skipped'));
@@ -794,7 +790,7 @@ describe('fleet backends --ollama-parallel', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_CONTEXT_LENGTH=16384'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
       if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('none', '200', '4'));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
@@ -836,7 +832,7 @@ describe('fleet backends --ollama-parallel', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('absent', 'skipped'));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
     });
@@ -880,7 +876,7 @@ describe('fleet backends --ollama-context', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
     });
@@ -901,7 +897,7 @@ describe('fleet backends --ollama-context', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       // core-1's Hub had no cap; core-2's already carried it.
       if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF'))
         return ok(t.host === '10.0.0.1' ? capApplied('none', '200', '16384') : capApplied('16384', 'skipped'));
@@ -935,7 +931,7 @@ describe('fleet backends --ollama-context', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied(''));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('65536', '200', 'none'));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
     });
@@ -966,7 +962,7 @@ describe('fleet backends --ollama-context', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '401'));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
     });
@@ -982,7 +978,7 @@ describe('fleet backends --ollama-context', () => {
       if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       // An older Hub strips the key it does not know and answers 200 having stored nothing.
       if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', 'none'));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
@@ -1018,7 +1014,7 @@ describe('fleet backends --ollama-context', () => {
             'ollama-runtime-complete',
           ].join('\n'),
         );
-      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
       throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
     });
     await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-context', '16384', '--execute', '--nodes', 'core-2']);
@@ -1057,10 +1053,11 @@ describe('fleet backends --backends llamacpp', () => {
     [
       'llamacpp-models-dir: /mnt/cache/ollama',
       `llamacpp-model: ${model} sha256-${DIGEST}`,
+      'llamacpp-publish: tailnet=100.64.0.6 gateway=172.17.0.1',
       `llamacpp-unit: ${unit}`,
       `llamacpp-unit-state: ${state}`,
       LLAMACPP_MARKERS.unitBegin,
-      `ExecStart=/usr/bin/docker run --rm --name cihub-llamacpp -p 8081:8080 ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 --model /models/blobs/sha256-${DIGEST} --alias ${model}`,
+      `ExecStart=/usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080 ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 --model /models/blobs/sha256-${DIGEST} --alias ${model}`,
       LLAMACPP_MARKERS.unitEnd,
       ...(state === 'active' ? [`llamacpp-models: id=${model} owned_by=llamacpp`, 'llamacpp-props: n_ctx=32768 total_slots=4'] : []),
       LLAMACPP_MARKERS.complete,
@@ -1126,7 +1123,12 @@ describe('fleet backends --backends llamacpp', () => {
       "serving Ollama's qwen3-coder:30b (this node's Hub pins qwen3-coder-30b for auto) as 4 × 32768 (-np 4 -c 131072) on :8081",
     );
     expect(text).toContain(`llamacpp: model sha256-${DIGEST} under /mnt/cache/ollama, mounted read-only`);
-    expect(text).toContain('llamacpp: /usr/bin/docker run --rm --name cihub-llamacpp -p 8081:8080');
+    expect(text).toContain(
+      'llamacpp: /usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080',
+    );
+    expect(text).toContain(
+      "llamacpp: published on 127.0.0.1, 100.64.0.6 (tailnet), 172.17.0.1 (docker0 — host.docker.internal inside ci-hub); never on 0.0.0.0 — Docker's DNAT would bypass ufw and the port guard",
+    );
     expect(text).toContain(`llamacpp: would write ${LLAMACPP_UNIT}, then daemon-reload and restart it (the model reloads)`);
     expect(text).toContain(`hub: would set LLAMACPP_URL=${HUB_LLAMACPP_URL} in the env file compose reads and recreate ci-hub`);
     // No runtime flag: the Hub halves are not planned, on the same terms as for Ollama.
@@ -1259,6 +1261,84 @@ describe('fleet backends --backends llamacpp', () => {
     expect(capCalls()).toHaveLength(1);
     expect(slotCalls()).toHaveLength(1);
     expect(hubUrlCalls()).toHaveLength(1);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('a run that did not name llamacpp reports a llama-server on :8081 and leaves the Hub alone: no LLAMACPP_URL, no recreate, no auto-model round trip', async () => {
+    // Before the gate, `cihub fleet backends` on a node with a hand-run llama-server (or any listener
+    // on :8081 that named no engine) planned "adopt" and went on to rewrite the node's env file and
+    // recreate ci-hub — a run nobody asked to touch the Hub.
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ enginesListening: [11434, 8081], engineOwners: { 8081: 'llamacpp' } }) }));
+    await runFleetCommand(['backends', '--nodes', 'core-6']);
+    let text = printed();
+    expect(text).toContain('llamacpp  adopt — already answering on :8081 (owned_by llamacpp) — adopted, nothing installed');
+    expect(text).not.toContain('LLAMACPP_URL');
+    expect(autoModelCalls()).toHaveLength(0);
+    expect(sudoCalls()).toHaveLength(0);
+
+    output = [];
+    await runFleetCommand(['backends', '--nodes', 'core-6', '--execute']);
+    text = printed();
+    expect(text).toMatch(/llamacpp\s+adopted/);
+    expect(hubUrlCalls()).toHaveLength(0);
+    expect(autoModelCalls()).toHaveLength(0);
+    expect(capCalls()).toHaveLength(0);
+    expect(slotCalls()).toHaveLength(0);
+    expect(process.exitCode).toBeUndefined();
+
+    // A listener that names nothing is not adopted at all — and, named or not, never a reason to touch the Hub.
+    output = [];
+    mocks.sshCapture.mock.calls.length = 0;
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ enginesListening: [11434, 8081] }) }));
+    await runFleetCommand(['backends', '--nodes', 'core-6', '--execute']);
+    text = printed();
+    expect(text).toMatch(/llamacpp\s+skipped.*something answers on :8081 but does not name itself llamacpp on \/v1\/models — not adopted/);
+    expect(hubUrlCalls()).toHaveLength(0);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('opens :8081 on the firewall only where llamacpp was named or its unit already runs, never fleet-wide', async () => {
+    // Ollama-only run on a node that has never seen llama-server: the four fixed probe ports, no :8081.
+    hosts['10.0.0.6'] = { bind: bindProbe({}), ufw: firewallProbe(UFW_PARTIAL) };
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts() }));
+    await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-6']);
+    expect(printed()).toContain('firewall: ufw active and dropping the bridge on :8080, :8216 (:8000, :13305 already allowed)');
+    expect(printed()).not.toContain('port 8081');
+
+    // Named in the run: :8081 joins the list on this node.
+    output = [];
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ gpus: [strixHalo] }) }));
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--nodes', 'core-6']);
+    expect(printed()).toContain('firewall: ufw active and dropping the bridge on :8080, :8081, :8216 (:8000, :13305 already allowed)');
+    expect(printed()).toContain("would run ufw allow from 172.16.0.0/12 to any port 8081 proto tcp comment 'ci-hub container -> host engine :8081'");
+
+    // Not named, but this CLI's unit already runs there (an earlier run set LLAMACPP_URL): still this node's rule.
+    output = [];
+    mocks.readHostFacts.mockImplementation(async () => ({
+      facts: facts({ enginesListening: [11434, 8081], engineOwners: { 8081: 'llamacpp' }, managedUnits: { [LLAMACPP_UNIT]: 'active' } }),
+    }));
+    await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-6']);
+    expect(printed()).toContain('firewall: ufw active and dropping the bridge on :8080, :8081, :8216 (:8000, :13305 already allowed)');
+
+    // --execute on the named run adds exactly the missing three, :8081 among them, and the report says which list was used.
+    output = [];
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ gpus: [strixHalo] }) }));
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host];
+      if (!h) return { ok: false, out: '', err: 'no route', code: 255, ms: 5 };
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_HUB_AUTO_MODEL_EOF')) return ok(node.auto);
+      if (command.includes('CIHUB_LLAMACPP_EOF')) return ok(node.apply);
+      if (command.includes('CIHUB_HUB_LLAMACPP_URL_EOF')) return ok(node.hubUrl);
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--nodes', 'core-6', '--execute', '--json']);
+    const script = firewallCalls()[0]?.command ?? '';
+    expect(script).toContain('to any port 8081 proto tcp');
+    expect(printed()).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8080, :8081, :8216/);
+    const report = JSON.parse(printed().slice(printed().indexOf('[')));
+    expect(report.find((r: { firewall?: { ports?: number[] } }) => r.firewall)?.firewall.ports).toEqual([8000, 8080, 8081, 13305, 8216]);
     expect(process.exitCode).toBeUndefined();
   });
 });

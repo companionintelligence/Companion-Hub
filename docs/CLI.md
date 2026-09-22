@@ -1470,8 +1470,13 @@ loss: the CLI never enables it.
 **Only when named.** Every other backend here is planned by a run that names none; this one is not,
 because a llama-server holds a whole model in memory beside Ollama's copy, and a run that did not
 ask must not double a node's residency. `cihub fleet backends` without `--backends llamacpp` still
-*reports* what is on the port — a server answering there, or this CLI's own unit — and installs
-nothing. The gates are Lucebox's: Linux, a usable Docker.
+*reports* what is on the port and installs nothing: a server that names itself `llamacpp` on
+`/v1/models` reads `adopt` (with this CLI's own unit named when it is the one serving), a listener
+that names nothing reads `skip — something answers on :8081 but does not name itself llamacpp … —
+not adopted`, and neither touches the Hub. The `hub` steps below — `LLAMACPP_URL`, the `ci-hub`
+recreate, the slot count and cap, the `:8081` firewall rule — run only on a run that named the
+backend, so a plain `fleet backends` never re-adds a `LLAMACPP_URL` an operator removed. The gates
+are Lucebox's: Linux, a usable Docker.
 
 **The model is Ollama's blob, mounted read-only — never a second download.** The node resolves its
 own store (`OLLAMA_MODELS` from the daemon's merged environment, then the account's, then
@@ -1514,8 +1519,27 @@ run the same shape.
 **Port 8081, not llama-server's own 8080.** 8080 is mlx-dspark's default *and* the Traefik
 dashboard on every appliance — `ss` shows it taken on a node that runs no llama-server at all. The
 container listens on 8080 inside and the unit publishes it on `:8081`; the Hub's `LLAMACPP_URL` is
-opt-in for the same reason, and this step writes it explicitly (below). The firewall step admits the
-Docker bridge to `:8081` beside the other engine ports.
+opt-in for the same reason, and this step writes it explicitly (below).
+
+**Published on three addresses, never on 0.0.0.0.** llama-server has no authentication, and a bare
+`-p 8081:8080` is a `0.0.0.0` (and `[::]`) bind whose traffic Docker DNATs in PREROUTING — it never
+reaches ufw's INPUT chain, so the port guard that keeps the LAN out of Ollama would not keep it out
+of this. The unit carries three `-p` entries, resolved on the node when it is rendered: `127.0.0.1`,
+the node's tailnet address (`tailscale ip -4`, kept only when it looks like an address — a stopped
+tailscaled prints a sentence), and the docker0 gateway (`ip -4 addr show docker0`, falling back to
+`docker network inspect bridge`), which is what `host.docker.internal` resolves to inside `ci-hub`.
+Peers reach the server through the node's Hub, never directly, so the tailnet entry is for the
+operator's own `curl`; a LAN host gets a refused connection. The dry run prints the three and warns
+in yellow when the docker0 gateway could not be found, because the Hub would then reach nothing at
+`LLAMACPP_URL`. A tailnet address that changes rewrites the unit and restarts it, the same as any
+other change to its bytes. The firewall step admits the Docker bridge to `:8081` **on this node
+only** — see [Firewall rules](#firewall-rules-for-the-hubs-engine-probes).
+
+The ROCm image alone also runs `--security-opt seccomp=unconfined`, copied from the Lucebox runner
+for the reason recorded there: ROCm's userspace queues issue ioctls the default seccomp profile
+blocks. The core-6 measurement ran with it; whether llama-server's ROCm build needs it has not been
+tested on a node without it, so the measured configuration stands until it is. Vulkan, CUDA and the
+CPU image keep the default profile.
 
 **One unit, restarted only when its bytes change.** The unit is `cihub-llamacpp.service`, rendered
 on the node from what the node knows — the store, the digest, the group ids, the docker binary —
@@ -1529,7 +1553,8 @@ exact `docker run` it would install, and whether the installed unit already carr
 core-6  linux/x86_64 · amd/gfx1151 · load 0.4
   llamacpp  would install — AMD gfx1151 — ROCm image (measured on gfx1151) — installing cihub-llamacpp.service: ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 serving Ollama's qwen3-coder:30b (this node's Hub pins qwen3-coder-30b for auto) as 4 × 32768 (-np 4 -c 131072) on :8081
             llamacpp: model sha256-1194…006a under /mnt/cache/ollama, mounted read-only
-            llamacpp: /usr/bin/docker run --rm --name cihub-llamacpp -p 8081:8080 --device /dev/kfd --device /dev/dri --group-add 44 --group-add 992 --security-opt seccomp=unconfined -v /mnt/cache/ollama:/models:ro ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 --model /models/blobs/sha256-1194…006a --alias qwen3-coder:30b --host 0.0.0.0 --port 8080 -ngl 999 -fa on -np 4 -ub 2048 -b 2048 --cache-reuse 256 --jinja --metrics -c 131072
+            llamacpp: /usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080 --device /dev/kfd --device /dev/dri --group-add 44 --group-add 992 --security-opt seccomp=unconfined -v /mnt/cache/ollama:/models:ro ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 --model /models/blobs/sha256-1194…006a --alias qwen3-coder:30b --host 0.0.0.0 --port 8080 -ngl 999 -fa on -np 4 -ub 2048 -b 2048 --cache-reuse 256 --jinja --metrics -c 131072
+            llamacpp: published on 127.0.0.1, 100.64.0.6 (tailnet), 172.17.0.1 (docker0 — host.docker.internal inside ci-hub); never on 0.0.0.0 — Docker's DNAT would bypass ufw and the port guard
             llamacpp: would write cihub-llamacpp.service, then daemon-reload and restart it (the model reloads)
             hub: would set LLAMACPP_URL=http://host.docker.internal:8081 in the env file compose reads and recreate ci-hub, unless the running Hub already carries it
 ```
@@ -1547,9 +1572,16 @@ rather than restarted from under itself.
 accepts a connection and then makes the first request wait minutes is not up — and reads back
 `/v1/models` and `/props`. The node is reported `installed` only when the server answers 200,
 names itself `llamacpp` under the requested alias, and reads back the requested slots × context;
-`adopted` when the unit already carried all of it and nothing restarted. A unit that dies, a server
-that came up as somebody else, or a shape that does not match fails the node with the difference
-in the sentence and the container's last log lines (a ROCm allocation failure shows there).
+`adopted` when the unit already carried all of it and nothing restarted. A server that came up as
+somebody else, or a shape that does not match, fails the node with the difference in the sentence.
+A container that dies at start is a **crash loop**, not a slow load: the unit is `docker run --rm`
+under `Restart=always`/`RestartSec=5`, so systemd starts it again every five seconds, `is-active`
+never reads `failed`, and `docker logs` answers "No such container" because `--rm` already removed
+it. The wait watches `systemctl show -p NRestarts` and stops after the third automatic restart —
+seconds, not ten minutes per node — and the failure line names it (`llama-server is crash-looping:
+systemd restarted cihub-llamacpp.service 3 times in 15 s …`) with the last twenty lines of
+`journalctl -u cihub-llamacpp.service` beneath it, which is where a ROCm allocation failure or a
+bad flag shows.
 
 **Then the Hub's half.** A llama-server the Hub cannot see is a candidate the pool never offers —
 the case [Hub Pool spends a section on](./hub-pool.md#when-a-node-runs-the-model-and-the-hub-cannot-see-the-engine)
@@ -1599,10 +1631,15 @@ measured 2026-09-20 as a flat 5.0 s pool TTFT on beta-nas, beta-1, core-6 and co
 
 So `backends` also plans, for every node where ufw is active,
 `ufw allow from 172.16.0.0/12 to any port <p> proto tcp` for each port the Hub probes — **8000**
-(vllm/mtplx/lucebox), **8080** (dspark), **8081** (the fleet's llama-server, `LLAMACPP_URL`),
-**13305** (lemonade) and **8216** (the lucebox-hub stack) — next to the existing bridge → `:11434`
-rule. `172.16.0.0/12` is Docker's whole default address
-pool, so compose networks are covered without enumerating them. It reads `ufw status` the way ufw
+(vllm/mtplx/lucebox), **8080** (dspark), **13305** (lemonade) and **8216** (the lucebox-hub stack) —
+next to the existing bridge → `:11434` rule, plus **8081** (the fleet's llama-server) **only on a
+node where the Hub will probe it**: one where `--backends llamacpp` was named in the run, or where
+`cihub-llamacpp.service` already runs. The Hub probes `LLAMACPP_URL` only when it is set, and the
+llamacpp step is what sets it, so fleet-wide the rule would match nothing and read "would add 1
+rule" on every node. Where it is set, the rule matters exactly when the server is down — a running
+unit's published port is DNATed before ufw sees it, but with nothing published the probe hits
+INPUT and a silent DROP costs 5 s per pooled request. `172.16.0.0/12` is Docker's whole default
+address pool, so compose networks are covered without enumerating them. It reads `ufw status` the way ufw
 does — top down, first match wins, and `ufw allow` appends — so a port the table already decides
 for the bridge gets nothing added: an `ALLOW` (from that CIDR or wider, or from `Anywhere`, alone
 or in a list such as `8000,8080,13305/tcp`) is reported as present, and a `DENY` or `REJECT` the

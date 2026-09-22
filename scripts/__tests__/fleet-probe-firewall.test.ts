@@ -196,15 +196,13 @@ describe('ufwAdmitsBridgeTo', () => {
 });
 
 describe('planProbeFirewall', () => {
-  it('beta-nas after the hand fix: adds only the ports still missing, and says which are there', () => {
-    // :8081 (the fleet's llama-server) joined the probe list after the hand fix, so it is missing too.
+  it('beta-nas after the hand fix: adds only the two ports still missing, and says which are there', () => {
     const plan = planProbeFirewall(parseFirewallProbe(probeOut({ status: BETA_NAS_STATUS })));
     expect(plan.state).toBe('add');
     expect(plan.present).toEqual([8000, 13305]);
-    expect(plan.missing).toEqual([8080, 8081, 8216]);
+    expect(plan.missing).toEqual([8080, 8216]);
     expect(plan.commands).toEqual([
       `ufw allow from ${DOCKER_BRIDGE_CIDR} to any port 8080 proto tcp comment 'ci-hub container -> host engine :8080'`,
-      `ufw allow from ${DOCKER_BRIDGE_CIDR} to any port 8081 proto tcp comment 'ci-hub container -> host engine :8081'`,
       `ufw allow from ${DOCKER_BRIDGE_CIDR} to any port 8216 proto tcp comment 'ci-hub container -> host engine :8216'`,
     ]);
     expect(plan.why).toContain('waits the full 5 s');
@@ -225,35 +223,30 @@ describe('planProbeFirewall', () => {
     );
     expect(plan.state).toBe('add');
     expect(plan.blocked).toEqual([8000]);
-    expect(plan.missing).toEqual([8080, 8081, 13305, 8216]);
+    expect(plan.missing).toEqual([8080, 13305, 8216]);
     expect(plan.commands.join('\n')).not.toContain('port 8000 ');
     expect(plan.why).toBe(
-      'ufw active and dropping the bridge on :8080, :8081, :13305, :8216 (:8000 refused by a rule of its own, which fails fast and is left alone) — every Hub probe there waits the full 5 s',
+      'ufw active and dropping the bridge on :8080, :13305, :8216 (:8000 refused by a rule of its own, which fails fast and is left alone) — every Hub probe there waits the full 5 s',
     );
 
-    // core-6 after O1: one reject row covers three of the five ports; :8081 and :8216 are still dropped.
+    // core-6 after O1: one reject row covers three of the four ports; only :8216 is still dropped.
     const o1 = planProbeFirewall(parseFirewallProbe(probeOut({ status: O1_REJECT_STATUS })));
     expect(o1.blocked).toEqual([8000, 8080, 13305]);
-    expect(o1.missing).toEqual([8081, 8216]);
-    expect(o1.commands).toHaveLength(2);
+    expect(o1.missing).toEqual([8216]);
+    expect(o1.commands).toHaveLength(1);
 
     // Every port decided, none by an allow: nothing to add, and the plan says why each is fine.
-    const all = planProbeFirewall(
-      parseFirewallProbe(
-        probeOut({ status: `${O1_REJECT_STATUS}\n8081/tcp                   DENY        Anywhere\n8216/tcp                   DENY        Anywhere` }),
-      ),
-    );
+    const all = planProbeFirewall(parseFirewallProbe(probeOut({ status: `${O1_REJECT_STATUS}\n8216/tcp                   DENY        Anywhere` })));
     expect(all.state).toBe('present');
     expect(all.present).toEqual([]);
-    expect(all.blocked).toEqual([8000, 8080, 8081, 13305, 8216]);
-    expect(all.why).toBe('ufw active; bridge → :8000, :8080, :8081, :13305, :8216 refused by a rule of its own, which fails fast and is left alone');
+    expect(all.blocked).toEqual([8000, 8080, 13305, 8216]);
+    expect(all.why).toBe('ufw active; bridge → :8000, :8080, :13305, :8216 refused by a rule of its own, which fails fast and is left alone');
   });
 
   it('is idempotent: a table that already admits every port plans nothing', () => {
     const full = [
       BETA_NAS_STATUS,
       '8080/tcp                   ALLOW       172.16.0.0/12',
-      '8081/tcp                   ALLOW       172.16.0.0/12',
       '8216/tcp                   ALLOW       172.16.0.0/12',
     ].join('\n');
     const plan = planProbeFirewall(parseFirewallProbe(probeOut({ status: full })));

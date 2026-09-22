@@ -50,6 +50,7 @@ import {
   DEFAULT_OLLAMA_BIND,
   describeBind,
   executeBackendPlan,
+  hubProbePortsFor,
   INSTALLABLE_BACKENDS,
   type InstallableBackend,
   type LlamacppPlanOptions,
@@ -61,6 +62,7 @@ import {
 import {
   classifyLlamacppProbeOutput,
   describeHubLlamacppUrlPlan,
+  describeLlamacppPublish,
   HUB_LLAMACPP_URL,
   hubAutoModelShell,
   isSafeOllamaTag,
@@ -84,7 +86,7 @@ import {
   readRuntimeEnvironment,
   RUNTIME_DROPIN,
 } from './fleet-ollama-runtime.js';
-import { firewallProbeScript, HUB_PROBE_PORTS, parseFirewallProbe, planProbeFirewall, type ProbeFirewallPlan } from './fleet-probe-firewall.js';
+import { firewallProbeScript, parseFirewallProbe, planProbeFirewall, type ProbeFirewallPlan } from './fleet-probe-firewall.js';
 import {
   assessOllamaBind,
   bindAddressFor,
@@ -1385,11 +1387,13 @@ async function reportOllamaResidency(
 
 /**
  * What the firewall step would do on this node: the Hub's engine probes must not hang on a ufw
- * DROP. Read-only; `ufw status` is read under `sudo -n` when the account allows it.
+ * DROP. Read-only; `ufw status` is read under `sudo -n` when the account allows it. `ports` is the
+ * node's own list (`hubProbePortsFor`): the fixed probe ports, and llama-server's only where the
+ * Hub will probe it.
  */
-async function planProbeFirewallOnNode(target: { host: string; user?: string }): Promise<ProbeFirewallPlan> {
+async function planProbeFirewallOnNode(target: { host: string; user?: string }, ports: readonly number[]): Promise<ProbeFirewallPlan> {
   const res = await sshCapture(target, firewallProbeScript(), 20_000);
-  return planProbeFirewall(parseFirewallProbe(res.out));
+  return planProbeFirewall(parseFirewallProbe(res.out), ports);
 }
 
 function describeFirewallPlan(plan: ProbeFirewallPlan): { lines: string[]; tone: 'dim' | 'yellow' | 'green' } {
@@ -1481,6 +1485,9 @@ async function planLlamacppOnNode(
   if (probe.state !== 'ok') return { lines: [`llamacpp: would skip — ${probe.why}`], tone: 'yellow', json };
   const lines = [`llamacpp: model ${probe.blob} under ${probe.modelsDir}, mounted read-only`];
   if (probe.execStart) lines.push(`llamacpp: ${probe.execStart}`);
+  // The three addresses the port is published on, and a warning when the one the Hub needs is missing.
+  const publish = describeLlamacppPublish(probe.publish);
+  lines.push(`llamacpp: ${publish.text}`);
   const state = probe.unitState ?? 'inactive';
   if (probe.unit === 'unchanged' && state === 'active') {
     lines.push(`llamacpp: ${LLAMACPP_UNIT} already carries this; not restarted`);
@@ -1496,6 +1503,7 @@ async function planLlamacppOnNode(
       `llamacpp: now serving ${probe.server.id ?? '?'} (owned_by ${probe.server.ownedBy ?? '?'}) as ${probe.server.totalSlots ?? '?'} × ${probe.server.nCtx ?? '?'}`,
     );
   }
+  if (publish.tone === 'yellow') return { lines, tone: 'yellow', json };
   return { lines, tone: probe.unit === 'unchanged' && state === 'active' ? 'dim' : 'green', json };
 }
 
@@ -1538,8 +1546,14 @@ async function runBackends(args: FleetArgs): Promise<void> {
 
     const busy = isTooBusyForMaintenance(facts);
     // llama-server's model is decided per node BEFORE planning: the default is what this node's own
-    // Hub hands out for `auto`, and that is a round trip the pure planner cannot make.
+    // Hub hands out for `auto`, and that is a round trip the pure planner cannot make. `llamacppOpts`
+    // is also the one fact every Hub-side step for llama-server below is gated on: a run that did
+    // not say `--backends llamacpp` still PLANS the backend (the plan line reports what is on the
+    // port), but must not write `LLAMACPP_URL`, recreate `ci-hub`, state slots for it, or open
+    // `:8081` on the firewall — a plain `fleet backends` on a node with a stray listener on :8081
+    // once rewrote the node's env file and recreated its Hub, which nobody asked for.
     const llamacppOpts = args.backends.includes('llamacpp') ? await resolveLlamacppOptionsOnNode(target, args) : undefined;
+    const llamacppNamed = llamacppOpts !== undefined;
     const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined, {
       ollamaBind: args.bind,
       ollamaVersion: args.ollamaVersion,
@@ -1549,6 +1563,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
     // brought to those numbers. When Ollama is in the run they follow its runtime step, as before;
     // otherwise a llama-server that read back the same slots × context states them for the node.
     const ollamaInRun = plans.some((p) => p.backend === 'ollama' && p.action !== 'skip');
+    const probePorts = hubProbePortsFor(facts, llamacppNamed);
     const gpu = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}${g.driverWorking ? '' : ' [driver dead]'}`).join(', ') || 'no gpu';
     console.log(`${node.name}  ${colorize(`${facts.os}/${facts.arch} · ${gpu} · load ${facts.load1 ?? '?'}`, 'dim')}`);
     for (const note of facts.notes) console.log(colorize(`  ! ${note}`, 'yellow'));
@@ -1582,12 +1597,11 @@ async function runBackends(args: FleetArgs): Promise<void> {
         if (llamacppPlan) for (const line of llamacppPlan.lines) console.log(colorize(`            ${line}`, llamacppPlan.tone));
         // The Hub's cap and slot count follow the runtime step, so they are planned only where that
         // step is: a node whose unit this run may not edit gets none of these lines. Without Ollama
-        // in the run they follow llama-server, whose slots × context are the same two numbers.
-        const hubHalves =
-          (plan.backend === 'ollama' && bindPlan?.runtime !== undefined) || (plan.backend === 'llamacpp' && !ollamaInRun && plan.action !== 'skip')
-            ? hubHalvesOf(args)
-            : [];
-        if (plan.backend === 'llamacpp' && plan.action !== 'skip') console.log(colorize(`            ${describeHubLlamacppUrlPlan()}`, 'green'));
+        // in the run they follow llama-server, whose slots × context are the same two numbers —
+        // when it was named; a run that did not name it plans nothing on the Hub for it.
+        const llamacppHub = plan.backend === 'llamacpp' && llamacppNamed && plan.action !== 'skip';
+        const hubHalves = (plan.backend === 'ollama' && bindPlan?.runtime !== undefined) || (llamacppHub && !ollamaInRun) ? hubHalvesOf(args) : [];
+        if (llamacppHub) console.log(colorize(`            ${describeHubLlamacppUrlPlan()}`, 'green'));
         for (const half of hubHalves) console.log(colorize(`            ${describeHubContextCapPlan(half.value, half.setting)}`, 'green'));
         // What is loaded and where, on every readable Ollama — the plan's one line that can say a
         // node is serving from the CPU while its GPU sits idle.
@@ -1600,7 +1614,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
           why: plan.why,
           ...(bindPlan ? { bind: bindPlan.json } : {}),
           ...(llamacppPlan ? { llamacpp: llamacppPlan.json } : {}),
-          ...(plan.backend === 'llamacpp' && plan.action !== 'skip' ? { hubLlamacppUrl: HUB_LLAMACPP_URL } : {}),
+          ...(llamacppHub ? { hubLlamacppUrl: HUB_LLAMACPP_URL } : {}),
           ...Object.fromEntries(hubHalves.map((half) => [half.key, half.value])),
           ...(residency ? { residency: residency.json } : {}),
         });
@@ -1653,11 +1667,13 @@ async function runBackends(args: FleetArgs): Promise<void> {
 
       // The Hub's half of llama-server: LLAMACPP_URL in the node's env file and ci-hub recreated
       // with it, once the server answers — an adopted one included, since a Hub that cannot see the
-      // engine is the case docs/hub-pool.md spends a section on. Then the slot count and cap, only
-      // where Ollama's runtime step is not in this run to state them, and only from a server that
-      // read back the requested shape on /props — an adopted server whose shape nobody read states
-      // nothing.
-      if (plan.backend === 'llamacpp' && (result.outcome === 'installed' || result.outcome === 'adopted')) {
+      // engine is the case docs/hub-pool.md spends a section on. ONLY when the backend was named in
+      // this run: a plain `fleet backends` reports an adopted llama-server and leaves the Hub alone,
+      // never re-adding a `LLAMACPP_URL` the operator may have removed. Then the slot count and cap,
+      // only where Ollama's runtime step is not in this run to state them, and only from a server
+      // that read back the requested shape on /props — an adopted server whose shape nobody read
+      // states nothing.
+      if (plan.backend === 'llamacpp' && llamacppNamed && (result.outcome === 'installed' || result.outcome === 'adopted')) {
         const hub = await applyHubLlamacppUrl(target);
         if (hub.outcome === 'failed') failed += 1;
         const hubTone = hub.outcome === 'failed' ? 'red' : hub.outcome === 'applied' ? 'green' : 'dim';
@@ -1705,7 +1721,9 @@ async function runBackends(args: FleetArgs): Promise<void> {
 
     // The Hub's engine probes, whatever backends this run touched: on a ufw node that drops the
     // Docker bridge, every pooled request pays a 5 s timeout per unreachable port before ranking.
-    const firewallPlan = await planProbeFirewallOnNode(target);
+    // llama-server's :8081 is in the list only where this node's Hub will probe it (named in this
+    // run, or its unit already runs), never fleet-wide.
+    const firewallPlan = await planProbeFirewallOnNode(target, probePorts);
     if (args.execute) {
       // ufw enabled but its table needs root this account lacks: a failure with a fix, not a skip —
       // the rules may well be missing, and "done" on that node would leave the 5 s stall unmentioned.
@@ -1724,7 +1742,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
         applied.outcome === 'failed' ? 'red' : applied.outcome === 'applied' ? 'green' : firewallPlan.state === 'unknown' ? 'yellow' : 'dim';
       const took = applied.ms ? ` (${Math.round(applied.ms / 1000)}s)` : '';
       console.log(`  ${'firewall'.padEnd(9)} ${colorize(applied.outcome, tone)}${took} — ${applied.why}`);
-      report.push({ node: node.name, firewall: { ...applied, ports: HUB_PROBE_PORTS } });
+      report.push({ node: node.name, firewall: { ...applied, ports: probePorts } });
     } else {
       const described = describeFirewallPlan(firewallPlan);
       for (const line of described.lines) console.log(colorize(`  ${line}`, described.tone));

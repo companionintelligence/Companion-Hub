@@ -59,7 +59,7 @@ import {
   type LlamacppSpec,
   isSafeOllamaTag,
 } from './fleet-llamacpp.js';
-import { classifyProbeFirewallOutput, probeFirewallApplyShell } from './fleet-probe-firewall.js';
+import { classifyProbeFirewallOutput, HUB_PROBE_PORTS, probeFirewallApplyShell } from './fleet-probe-firewall.js';
 
 export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade', 'llamacpp'] as const;
 export type InstallableBackend = (typeof INSTALLABLE_BACKENDS)[number];
@@ -448,11 +448,15 @@ export function llamacppSpecFor(facts: HostFacts, opts: LlamacppPlanOptions & { 
 
 /**
  * llama-server as a systemd-managed container on `:8081`, serving the GGUF Ollama already holds —
- * see `fleet-llamacpp.ts` for the measurements and the three decisions.
+ * see `fleet-llamacpp.ts` for the measurements and the four decisions.
  *
  * Only when named. Unlike every other backend here, this one holds a whole model in memory beside
  * Ollama's copy, so a run that did not say `--backends llamacpp` reports what is there and installs
- * nothing. The gates are lucebox's (Linux, a usable Docker) plus the model: a tag Ollama has not
+ * nothing — and adopts only a server that NAMED itself `llamacpp` on `/v1/models`, because a plan
+ * line that reads "adopted" is read by the caller as "there is a llama-server here". An unnamed
+ * listener on the port is reported as exactly that. (The Hub half — `LLAMACPP_URL` and a `ci-hub`
+ * recreate — is gated in `cli-fleet.ts` on the backend being named in the run, whatever this
+ * returns.) The gates are lucebox's (Linux, a usable Docker) plus the model: a tag Ollama has not
  * pulled, or a Hub that cannot name its auto model, is a skip that says which. The listener on the
  * port is read three ways — this CLI's own unit (converge: the apply shell rewrites the unit only if
  * its bytes differ, and restarts only then), a server that names itself `llamacpp` (adopt, nothing
@@ -475,20 +479,28 @@ function planLlamacpp(facts: HostFacts, opts: LlamacppPlanOptions | undefined): 
     };
   }
   if (!opts) {
-    if (listening && !ours)
+    // Not named in this run: report, never install, and adopt only on the server's own word.
+    const converge = 'name it with --backends llamacpp to converge its model and flags';
+    if (listening && owner === 'llamacpp') {
       return {
         backend,
         action: 'adopt',
-        why: `already answering on :${port}${owner ? ' (owned_by llamacpp)' : ''} — adopted, nothing installed`,
+        why: ours
+          ? `${LLAMACPP_UNIT} is ${unit} and answers on :${port} (owned_by llamacpp) — left as it is; ${converge}`
+          : `already answering on :${port} (owned_by llamacpp) — adopted, nothing installed`,
         port,
       };
+    }
+    if (listening) {
+      return {
+        backend,
+        action: 'skip',
+        why: `something answers on :${port} but does not name itself llamacpp on /v1/models — not adopted${ours ? ` (${LLAMACPP_UNIT} is ${unit}; a llama-server still loading names nothing yet)` : ''}`,
+        port,
+      };
+    }
     if (ours)
-      return {
-        backend,
-        action: 'adopt',
-        why: `${LLAMACPP_UNIT} is ${unit} — left as it is; name it with --backends llamacpp to converge its model and flags`,
-        port,
-      };
+      return { backend, action: 'skip', why: `${LLAMACPP_UNIT} is ${unit} but nothing answers on :${port} yet — not adopted; ${converge}`, port };
     return { backend, action: 'skip', why: 'installed only when named: pass --backends llamacpp — it holds a model in memory beside Ollama', port };
   }
   if (facts.os !== 'linux') {
@@ -841,6 +853,26 @@ export async function applyHubContextCap(
 }
 
 // ─── Firewall rules for the Hub's engine probes ─────────────────────────────
+
+/**
+ * The ports the firewall step admits the Docker bridges to on one node: the Hub's fixed probe
+ * list, plus llama-server's `:8081` only where the Hub will probe it. The Hub probes `LLAMACPP_URL`
+ * only when it is set, and this CLI sets it on a node where the backend was named in the run or its
+ * unit already runs — so on every other node an allow for `:8081` would be a rule nothing ever
+ * matches, and a fleet-wide "would add 1 rule" nobody asked for. Where it IS set the rule matters
+ * exactly when the server is down: a running unit's published port is DNATed before ufw sees it,
+ * but with nothing published the probe hits INPUT and a silent DROP costs 5 s per pooled request.
+ */
+export function hubProbePortsFor(facts: HostFacts, llamacppNamed: boolean): number[] {
+  const unit = facts.managedUnits?.[LLAMACPP_UNIT];
+  const installed = unit === 'active' || unit === 'activating';
+  const ports = [...HUB_PROBE_PORTS];
+  if (!llamacppNamed && !installed) return ports;
+  // In numeric place, so the plan line reads `:8080, :8081, :8216` beside the fixed list's own order.
+  const at = ports.findIndex((p) => p > LLAMACPP_FLEET_PORT);
+  ports.splice(at < 0 ? ports.length : at, 0, LLAMACPP_FLEET_PORT);
+  return ports;
+}
 
 export interface ProbeFirewallResult {
   outcome: 'applied' | 'present' | 'skipped' | 'failed';

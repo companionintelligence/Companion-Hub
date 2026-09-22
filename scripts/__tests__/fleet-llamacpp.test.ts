@@ -17,6 +17,7 @@ import {
   classifyHubLlamacppUrlOutput,
   classifyLlamacppApplyOutput,
   classifyLlamacppProbeOutput,
+  describeLlamacppPublish,
   HUB_AUTO_MODEL_MARKERS,
   HUB_LLAMACPP_URL,
   hubAutoModelShell,
@@ -33,6 +34,7 @@ import {
   type LlamacppSpec,
   ollamaManifestRelativePath,
   readLlamacppIdentity,
+  readLlamacppPublish,
   resolveHubAutoModel,
 } from '../lib/fleet-llamacpp.js';
 
@@ -155,15 +157,18 @@ describe('reading the shells back', () => {
     expect(missing.state).toBe('model-missing');
     expect(missing.why).toContain('ollama pull qwen3-coder:30b');
 
+    const execStart =
+      '/usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080 ghcr.io/ggml-org/llama.cpp:server-rocm-b11065';
     const ok = classifyLlamacppProbeOutput(
       [
         'llamacpp-models-dir: /mnt/cache/ollama',
         `llamacpp-model: qwen3-coder:30b sha256-${DIGEST}`,
+        'llamacpp-publish: tailnet=100.64.0.6 gateway=172.17.0.1',
         'llamacpp-unit: unchanged',
         'llamacpp-unit-state: active',
         LLAMACPP_MARKERS.unitBegin,
         '[Service]',
-        'ExecStart=/usr/bin/docker run --rm --name cihub-llamacpp -p 8081:8080 ghcr.io/ggml-org/llama.cpp:server-rocm-b11065',
+        `ExecStart=${execStart}`,
         LLAMACPP_MARKERS.unitEnd,
         'llamacpp-models: id=qwen3-coder:30b owned_by=llamacpp',
         'llamacpp-props: n_ctx=32768 total_slots=4',
@@ -171,9 +176,26 @@ describe('reading the shells back', () => {
       ].join('\n'),
     );
     expect(ok).toMatchObject({ state: 'ok', blob: `sha256-${DIGEST}`, unit: 'unchanged', unitState: 'active', modelsDir: '/mnt/cache/ollama' });
-    expect(ok.execStart).toBe('/usr/bin/docker run --rm --name cihub-llamacpp -p 8081:8080 ghcr.io/ggml-org/llama.cpp:server-rocm-b11065');
+    expect(ok.execStart).toBe(execStart);
+    expect(ok.publish).toEqual({ tailnet: '100.64.0.6', gateway: '172.17.0.1' });
     expect(ok.server).toEqual({ id: 'qwen3-coder:30b', ownedBy: 'llamacpp', nCtx: 32768, totalSlots: 4 });
     expect(classifyLlamacppProbeOutput('').state).toBe('incomplete');
+  });
+
+  it('says which addresses the port is published on, and warns when the one the Hub needs is missing', () => {
+    expect(readLlamacppPublish('llamacpp-publish: tailnet=? gateway=172.17.0.1')).toEqual({ tailnet: undefined, gateway: '172.17.0.1' });
+    expect(readLlamacppPublish('nothing')).toBeUndefined();
+    const full = describeLlamacppPublish({ tailnet: '100.64.0.6', gateway: '172.17.0.1' });
+    expect(full.tone).toBe('dim');
+    expect(full.text).toBe(
+      "published on 127.0.0.1, 100.64.0.6 (tailnet), 172.17.0.1 (docker0 — host.docker.internal inside ci-hub); never on 0.0.0.0 — Docker's DNAT would bypass ufw and the port guard",
+    );
+    // No tailnet address only costs the operator's own curl; no docker0 gateway means the Hub reaches nothing.
+    expect(describeLlamacppPublish({ gateway: '172.17.0.1' })).toMatchObject({ tone: 'dim', text: expect.stringContaining('127.0.0.1, 172.17.0.1') });
+    const noGateway = describeLlamacppPublish({ tailnet: '100.64.0.6' });
+    expect(noGateway.tone).toBe('yellow');
+    expect(noGateway.text).toContain(`No docker0 gateway was found: ci-hub could not reach it at ${HUB_LLAMACPP_URL}`);
+    expect(describeLlamacppPublish(undefined).tone).toBe('yellow');
   });
 
   it('never calls an apply done on the completion marker alone', () => {
@@ -223,19 +245,43 @@ describe('reading the shells back', () => {
         spec,
       ),
     ).toMatchObject({ outcome: 'failed', why: expect.stringContaining('8 slots × 16384') });
-    // The timeout carries the container's last lines, which is where a ROCm allocation failure shows.
+    // The timeout carries the unit's journal tail, which is where a ROCm allocation failure shows.
     const timeout = classifyLlamacppApplyOutput(
       [
         ...base,
-        'llamacpp-health: timeout 600s (unit failed, last /health 503)',
+        'llamacpp-health: timeout 600s (unit activating, restarted 0 times, last /health 503)',
         'llamacpp-log: ggml_cuda_init: failed|exit 1',
         'llamacpp-complete',
       ].join('\n'),
       '',
       spec,
     );
-    expect(timeout).toMatchObject({ outcome: 'failed', detail: 'ggml_cuda_init: failed|exit 1' });
+    expect(timeout).toMatchObject({ outcome: 'failed', detail: `journalctl -u ${LLAMACPP_UNIT}: ggml_cuda_init: failed|exit 1` });
     expect(timeout.why).toContain('waited 600s');
+    // A crash loop is named as one: the loop left after three automatic restarts, not after 600 s,
+    // and "did not answer within 600 s" would send the operator looking at a slow disk.
+    const loop = classifyLlamacppApplyOutput(
+      [
+        ...base,
+        'llamacpp-health: crash-loop 15s (unit activating, restarted 3 times, last /health 000)',
+        'llamacpp-log: error: unable to load model|exit 1|error: unable to load model|exit 1',
+        'llamacpp-complete',
+      ].join('\n'),
+      '',
+      spec,
+    );
+    expect(loop.outcome).toBe('failed');
+    expect(loop.why).toBe(
+      `llama-server is crash-looping: systemd restarted ${LLAMACPP_UNIT} 3 times in 15 s and /health never answered 200 (unit activating, last /health 000) — its journal is below`,
+    );
+    expect(loop.detail).toContain('unable to load model');
+    expect(
+      classifyLlamacppApplyOutput(
+        [...base, 'llamacpp-health: unit-failed 10s (unit failed, restarted 0 times, last /health 000)', 'llamacpp-complete'].join('\n'),
+        '',
+        spec,
+      ).why,
+    ).toBe(`${LLAMACPP_UNIT} reached failed after 10 s (unit failed, last /health 000) — its journal is below`);
     expect(
       classifyLlamacppApplyOutput(
         'llamacpp-model: missing qwen3-coder:30b — no manifest at /x (ollama pull qwen3-coder:30b on this node first)\nllamacpp-complete',
@@ -445,12 +491,30 @@ describe.skipIf(!bash)('llamacppApplyShell / llamacppProbeShell (sandboxed bash)
 
   /**
    * A node in a directory: an Ollama store with one manifest and its blob, a `systemctl` whose
-   * `show ollama` names that store (core-6's shape) and whose unit state lives in a file, a
-   * `docker` that remembers whether the image was pulled, and a `curl` that answers the server's
-   * three routes — /health 503 until the unit is active, then 200.
+   * `show ollama` names that store (core-6's shape), whose unit state lives in a file and whose
+   * `is-active` exits non-zero for anything but `active` (as the real one does — the shape that
+   * turned `$(systemctl is-active … || echo inactive)` into `inactive\ninactive`), a `docker` that
+   * remembers whether the image was pulled, a `curl` that answers the server's three routes —
+   * /health 503 until the unit is active, then 200 — and a `tailscale`/`ip` pair naming the two
+   * addresses the unit publishes on beside loopback. `crashLoop` is a container that dies at start:
+   * a restart leaves the unit `activating (auto-restart)` with NRestarts climbing and /health never
+   * answering, and the journal holds what it printed.
    */
   function node(
-    options: { storeInEnv?: boolean; manifest?: boolean; blob?: boolean; ownedBy?: string; alias?: string; nCtx?: number; slots?: number } = {},
+    options: {
+      storeInEnv?: boolean;
+      manifest?: boolean;
+      blob?: boolean;
+      ownedBy?: string;
+      alias?: string;
+      nCtx?: number;
+      slots?: number;
+      crashLoop?: boolean;
+      /** What `tailscale ip -4` prints; `''` is a node whose tailscaled is down (an error sentence). */
+      tailnet?: string;
+      /** What `ip -4 addr show docker0` prints; `false` is no docker0 at all (then Docker's own view of its bridge is asked). */
+      docker0?: string | false;
+    } = {},
   ) {
     const root = mkdtempSync(path.join(tmpdir(), 'cihub-llamacpp-'));
     sandboxes.push(root);
@@ -482,13 +546,21 @@ describe.skipIf(!bash)('llamacppApplyShell / llamacppProbeShell (sandboxed bash)
     };
     const env =
       options.storeInEnv === false ? 'PATH=/usr/bin OLLAMA_HOST=0.0.0.0:11434' : `PATH=/usr/bin OLLAMA_MODELS=${store} OLLAMA_HOST=0.0.0.0:11434`;
+    // A restart brings a healthy unit to `active`; a crash-looping one sits in `activating` with the
+    // restart counter already past the threshold, the way `systemctl show` reads it mid-loop.
+    const afterRestart = options.crashLoop ? `echo activating > "${root}/state"; echo 3 > "${root}/nrestarts"` : `echo active > "${root}/state"`;
     stub(
       'systemctl',
       [
         'case "$1" in',
-        `  show) echo "${env}" ;;`,
-        `  is-active) cat "${root}/state" 2>/dev/null || echo inactive ;;`,
-        `  restart|enable) echo active > "${root}/state" ;;`,
+        '  show) case "$*" in',
+        `    *NRestarts*) cat "${root}/nrestarts" 2>/dev/null || echo 0 ;;`,
+        `    *) echo "${env}" ;;`,
+        '  esac ;;',
+        // Real `is-active`: the state on stdout, exit 0 only for `active`.
+        `  is-active) st="$(cat "${root}/state" 2>/dev/null)"; [ -n "$st" ] || st=inactive; echo "$st"; [ "$st" = active ] ;;`,
+        `  restart) ${afterRestart} ;;`,
+        '  enable) true ;;',
         'esac',
       ].join('\n'),
     );
@@ -498,9 +570,27 @@ describe.skipIf(!bash)('llamacppApplyShell / llamacppProbeShell (sandboxed bash)
         'case "$1" in',
         `  image) [ -e "${root}/image-present" ] ;;`,
         `  pull) touch "${root}/image-present" ;;`,
-        '  logs) echo "ggml_cuda_init: no device" ;;',
+        // `docker run --rm` has removed a container that died: the real answer, verbatim.
+        '  logs) echo "Error response from daemon: No such container: cihub-llamacpp" >&2; exit 1 ;;',
+        `  network) echo "${options.docker0 === false ? '172.17.0.1' : ''}" ;;`,
         'esac',
       ].join('\n'),
+    );
+    // The unit's own output lives here — a container that dies at start is gone by the time anyone
+    // asks `docker logs`, and this is what the real journal holds after three attempts.
+    stub(
+      'journalctl',
+      options.crashLoop
+        ? 'printf "%s\\n" "ggml_cuda_init: failed to initialize ROCm: no ROCm-capable device is detected" "error: unable to load model" "cihub-llamacpp.service: Main process exited, code=exited, status=1/FAILURE"'
+        : 'echo "srv  load_model: loading model /models/blobs/sha256-..."',
+    );
+    // `tailscale ip -4` with tailscaled down prints a sentence, not an address; the unit must not carry it.
+    stub('tailscale', options.tailnet === '' ? 'echo "Tailscale is stopped."; exit 1' : `echo "${options.tailnet ?? '100.64.0.6'}"`);
+    stub(
+      'ip',
+      options.docker0 === false
+        ? 'echo "Device \\"docker0\\" does not exist." >&2; exit 1'
+        : `printf "%s\\n" "5: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN group default" "    inet ${options.docker0 ?? '172.17.0.1'}/16 brd 172.17.255.255 scope global docker0" "       valid_lft forever preferred_lft forever"`,
     );
     const models = JSON.stringify({
       object: 'list',
@@ -552,7 +642,14 @@ describe.skipIf(!bash)('llamacppApplyShell / llamacppProbeShell (sandboxed bash)
     expect(unit).toContain(`-v ${box.store}:/models:ro`);
     expect(unit).toContain(`--model /models/blobs/sha256-${DIGEST} --alias qwen3-coder:30b`);
     expect(unit).toContain('--device /dev/kfd --device /dev/dri --group-add 44 --group-add 992 --security-opt seccomp=unconfined');
-    expect(unit).toContain(`-p ${LLAMACPP_FLEET_PORT}:8080`);
+    // Published on loopback, the tailnet address and the docker0 gateway the node reported — three
+    // `-p` entries, never a bare one (0.0.0.0, DNATed past ufw and the port guard, open to the LAN).
+    expect(unit).toContain(
+      `--name cihub-llamacpp -p 127.0.0.1:${LLAMACPP_FLEET_PORT}:8080 -p 100.64.0.6:${LLAMACPP_FLEET_PORT}:8080 -p 172.17.0.1:${LLAMACPP_FLEET_PORT}:8080 --device`,
+    );
+    expect(unit).not.toContain(` -p ${LLAMACPP_FLEET_PORT}:8080`);
+    expect(unit).not.toContain('0.0.0.0:8081');
+    expect(first.stdout).toContain('llamacpp-publish: tailnet=100.64.0.6 gateway=172.17.0.1');
     expect(unit).toContain('ghcr.io/ggml-org/llama.cpp:server-rocm-b11065');
     expect(unit).toContain('-np 4 -ub 2048 -b 2048 --cache-reuse 256 --jinja --metrics -c 131072');
     expect(unit).toMatch(/^Restart=always$/m);
@@ -631,12 +728,67 @@ describe.skipIf(!bash)('llamacppApplyShell / llamacppProbeShell (sandboxed bash)
     expect(classifyLlamacppProbeOutput(box.run(llamacppProbeShell({ ...spec, parallel: 2 })).stdout).unit).toBe('differs');
   });
 
-  it('fails a server that came up as somebody else, with the container log', () => {
+  it('fails a server that came up as somebody else', () => {
     const box = node({ ownedBy: 'dflash', alias: 'lucebox-model' });
     const res = box.run(llamacppApplyShell(spec));
     const outcome = classifyLlamacppApplyOutput(res.stdout, res.stderr, spec);
     expect(outcome.outcome).toBe('failed');
     expect(outcome.why).toContain('names itself "dflash"');
+  });
+
+  it('stops waiting on a crash loop after three automatic restarts and reports the journal, not a container docker has already removed', () => {
+    // The unit is `docker run --rm` under Restart=always/RestartSec=5: a container that dies at start
+    // is removed, restarted, removed again — `is-active` never reads `failed`, `docker logs` answers
+    // "No such container", and a 600 s health wait per node is what the loop used to cost.
+    const box = node({ crashLoop: true });
+    const res = box.run(llamacppApplyShell(spec));
+    expect(res.status, res.stderr).toBe(0);
+    const outcome = classifyLlamacppApplyOutput(res.stdout, res.stderr, spec);
+    expect(outcome.outcome).toBe('failed');
+    expect(outcome.why).toContain(`crash-looping: systemd restarted ${LLAMACPP_UNIT} 3 times in 0 s`);
+    expect(outcome.why).toContain('unit activating');
+    expect(outcome.detail).toContain('ggml_cuda_init: failed to initialize ROCm');
+    expect(outcome.detail).toContain('error: unable to load model');
+    // One health poll, then the restart counter ended it — not 120 polls with a stubbed sleep.
+    const healthPolls = box
+      .calls()
+      .split('\n')
+      .filter((l) => l.startsWith('curl') && l.includes('/health'));
+    expect(healthPolls).toHaveLength(1);
+    expect(box.calls()).toContain(`systemctl show -p NRestarts --value ${LLAMACPP_UNIT}`);
+    expect(box.calls()).toContain(`journalctl -u ${LLAMACPP_UNIT} -n 20 --no-pager -o cat`);
+    expect(box.calls()).not.toContain('docker logs');
+  });
+
+  it('reads the unit state once: a real `is-active` prints inactive AND exits non-zero, and the marker must not read inactive twice', () => {
+    // `$(systemctl is-active … || echo inactive)` yields `inactive\ninactive` against the real
+    // command; the stub exits the way it does, so this would catch the shape coming back.
+    const box = node();
+    const res = box.run(llamacppProbeShell(spec));
+    expect(res.stdout).toMatch(/^llamacpp-unit-state: inactive$/m);
+    expect(res.stdout.split('\n').filter((l) => l === 'inactive')).toEqual([]);
+    expect(classifyLlamacppProbeOutput(res.stdout).unitState).toBe('inactive');
+    // The apply on a fresh node goes through the same read before it decides to write.
+    const applied = box.run(llamacppApplyShell(spec));
+    expect(applied.stdout).not.toContain('inactive\ninactive');
+    expect(applied.stdout).toContain('llamacpp-restart: restarted (unit written)');
+  });
+
+  it('publishes on loopback alone when the node names no tailnet address and no docker0, and takes the gateway from Docker when the interface is missing', () => {
+    // tailscaled down: `tailscale ip` prints a sentence, which must not land in a `-p`.
+    const noTailnet = node({ tailnet: '' });
+    const first = noTailnet.run(llamacppProbeShell(spec));
+    expect(first.stdout).toContain('llamacpp-publish: tailnet=? gateway=172.17.0.1');
+    const probe = classifyLlamacppProbeOutput(first.stdout);
+    expect(probe.publish).toEqual({ tailnet: undefined, gateway: '172.17.0.1' });
+    expect(probe.execStart).toContain('-p 127.0.0.1:8081:8080 -p 172.17.0.1:8081:8080 ');
+    expect(probe.execStart).not.toContain('Tailscale');
+    // No docker0 interface (a daemon on a custom bridge): Docker's own view of its default bridge.
+    const noDocker0 = node({ docker0: false });
+    const second = classifyLlamacppProbeOutput(noDocker0.run(llamacppProbeShell(spec)).stdout);
+    expect(second.publish).toEqual({ tailnet: '100.64.0.6', gateway: '172.17.0.1' });
+    expect(noDocker0.calls()).toContain('docker network inspect bridge');
+    expect(describeLlamacppPublish(second.publish).tone).toBe('dim');
   });
 });
 
