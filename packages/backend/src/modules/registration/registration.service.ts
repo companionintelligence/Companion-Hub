@@ -76,22 +76,28 @@ const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 /**
  * How long to wait for `POST /api/devices/pair`.
  *
- * This is not a read: the Portal claims the pairing code, writes the device rows, then
- * lists/adopts or CREATES a Cloudflare tunnel and writes a DNS record. Overshooting is not a
- * clean no-op — by then it has spent the code and minted a device key this Hub never receives
- * (companionintelligence/CI-Portal#748) — so 60s is deliberately generous rather than tuned to
+ * This is not a read: the Portal claims the pairing code first, then lists/adopts or CREATES a
+ * Cloudflare tunnel and writes a DNS record. Overshooting costs the code — it is claimed before
+ * any of that work and is not given back — so 60s is deliberately generous rather than tuned to
  * the staging run behind it, where a from-scratch tunnel reached Cloudflare at 13.8s and the
  * rest of the request still followed.
  *
- * Every caller's own deadline must stay above this one, or it reports a failure for a pair the
- * Hub goes on to complete: see `submitPairingCode` in `scripts/lib/register-hub.ts` and the
- * cross-domain registration e2e. The Hub's own `httpServer.requestTimeout` is not such a
- * deadline — `hub-pool-proxy-timeout.test.ts` pins that it does not cut a slow response — and
- * Traefik responds up to 300s.
+ * What a bigger budget does NOT buy: the Portal writes the device's new api_key only in its
+ * final update, after the tunnel and DNS work, so a response lost after that point strands a key
+ * this Hub never receives however long we wait. Only that last window is unrecoverable; widen
+ * this value to avoid spending codes, not to avoid that.
  *
- * Caveat: this bounds time to response HEADERS, not the whole exchange. axios hands the value to
- * follow-redirects, which clears its wall-clock timer on `response` and leaves only a socket
- * idle timeout after that.
+ * Keep every caller's own deadline above this one, or it reports a failure for a pair the Hub
+ * goes on to complete: see `submitPairingCode` in `scripts/lib/register-hub.ts` and the
+ * cross-domain registration e2e. That ordering is a margin, not a guarantee — see the caveat
+ * below. The Hub's own `httpServer.requestTimeout` is not such a deadline
+ * (`hub-pool-proxy-timeout.test.ts` pins that it does not cut a slow response), and Traefik
+ * responds up to 300s.
+ *
+ * Caveat: this bounds a response that STALLS, not one that trickles. axios hands the value to
+ * follow-redirects, which clears its wall-clock timer once headers arrive and leaves a socket
+ * idle timeout; a body arriving in chunks keeps resetting it. Verified against the resolved
+ * axios, and unchanged from the previous 15s — a property of the transport, not of this number.
  */
 const PORTAL_PAIR_TIMEOUT_MS = 60 * 1000;
 
