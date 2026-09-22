@@ -716,12 +716,15 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
-      // No `ciHubApiKey` in this config: a first pair sends no device key.
+      // No `ciHubApiKey` in this config: a first pair sends no device key. The deadline rides on
+      // the test that also proves the pair succeeded, so trimming it cannot leave a green
+      // assertion over a broken pairing path.
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://cloud.api/api/devices/pair',
         { pairing_code: 'ABC123', device_id: 'test-device' },
         expect.objectContaining({
           headers: { 'Content-Type': 'application/json' },
+          timeout: 60_000,
         }),
       );
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
