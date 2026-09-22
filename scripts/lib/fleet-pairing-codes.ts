@@ -258,3 +258,44 @@ export function describeDeviceNameConflict(name: string, reRegistered?: ReRegist
     'or this node is registered under another org, whose owner must release it there first.',
   ].join(' ');
 }
+
+/**
+ * What a failed `hub up + register` proves about the code it sent.
+ *
+ * `refused` — Portal never accepted it. The code is dead and nothing this file keeps can revive it,
+ * but the device row it belongs to is still there, so a re-register mints a replacement worth
+ * sending. On 2026-09-22 fifteen nodes failed this way and `fleet install` handed the same dead code
+ * back on every retry, including after the devices were released, because nothing here ever read the
+ * refusal (CI-Hub#1582).
+ *
+ * `claimed` — Portal took the code and then failed: the DNS/tunnel provisioning that follows pairing,
+ * or an answer that never arrived. The code is spent either way — Portal claims it before it
+ * provisions — so keeping it is wrong, and so is minting a replacement, which meets the same wall.
+ * That is the loop beta-max was in: every attempt burned a fresh code on a failure that was never
+ * about the code.
+ *
+ * Anything else — `hub up` died before `register`, the Portal was unreachable, docker refused —
+ * leaves the code unspent and is not this function's business: it returns undefined and the kept
+ * code stays kept.
+ */
+export type PairingCodeOutcome = { kind: 'refused' | 'claimed'; why: string };
+
+export function classifyPairingFailure(output: string): PairingCodeOutcome | undefined {
+  const text = output.replace(/\s+/g, ' ');
+  // Checked first: `cihub register` prints this box only after Portal has answered the pair, so
+  // whatever went wrong below it went wrong with the code already spent.
+  if (/Pairing accepted/i.test(text)) return { kind: 'claimed', why: 'Portal accepted the code and the registration failed after it' };
+  if (/DNS provider error/i.test(text)) return { kind: 'claimed', why: 'Portal accepted the code and then failed to create the DNS record' };
+  if (/did not answer in time/i.test(text)) return { kind: 'claimed', why: 'Portal took the code and never answered, so it may be provisioning' };
+  if (/incomplete registration data/i.test(text))
+    return { kind: 'claimed', why: 'Portal accepted the code and answered with incomplete registration data' };
+  if (/no longer valid|PAIRING_CODE_INVALID|Ask for a new one/i.test(text))
+    return { kind: 'refused', why: 'Portal refused the code as no longer valid' };
+  if (/PAIRING_CODE_WRONG_DEVICE|code is for another device/i.test(text))
+    return { kind: 'refused', why: 'Portal says that code belongs to another device' };
+  // The wipe destroyed the key that proves this machine owns the device row, and a keyless re-pair
+  // is refused. An owner-led re-register is exactly the fix, and it arrives with a new code.
+  if (/DEVICE_PROOF_REQUIRED/i.test(text))
+    return { kind: 'refused', why: 'Portal wants proof this machine owns the device row, which only a re-register gives' };
+  return undefined;
+}

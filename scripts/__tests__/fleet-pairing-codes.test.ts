@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  classifyPairingFailure,
   clearPendingPairingCode,
   describeDeviceNameConflict,
   describeInvalidatedPairingCode,
@@ -169,5 +170,44 @@ describe('the store file', () => {
     clearPendingPairingCode('10.0.0.1', file);
     expect(store().codes).toEqual({});
     expect(findReRegistration('core-1', 'org-1', file)).toBeDefined();
+  });
+});
+
+/**
+ * The three answers a failed `register` can give about its code, read off the real output. The
+ * fleet run on 2026-09-22 produced all three on the same fifteen nodes within an hour.
+ */
+describe('classifyPairingFailure', () => {
+  it('calls a 410 a refusal: the code is dead, and the device row is still there to re-register', () => {
+    expect(classifyPairingFailure('Pairing failed\n  That pairing code is no longer valid. Ask for a new one.')).toMatchObject({ kind: 'refused' });
+    expect(classifyPairingFailure('Portal pairing request failed: status=410 body={"code":"PAIRING_CODE_INVALID"}')).toMatchObject({
+      kind: 'refused',
+    });
+    // The wipe took the key that proves this machine owns the row; only an owner-led re-register
+    // gets past it, and it comes with a code.
+    expect(classifyPairingFailure('status=403 body={"code":"DEVICE_PROOF_REQUIRED"}')).toMatchObject({ kind: 'refused' });
+  });
+
+  it('calls everything past acceptance a claim, because Portal takes the code before it provisions', () => {
+    // beta-max: three separately minted codes, three identical DNS errors. The code was gone each
+    // time and never the reason, which is why a replacement is the wrong move here.
+    expect(
+      classifyPairingFailure('Pairing accepted\nProvisioning tunnel and DNS\nDNS provider error while creating record. Please retry.'),
+    ).toMatchObject({ kind: 'claimed' });
+    expect(classifyPairingFailure('Pairing failed\n  DNS provider error while creating record. Please retry.')).toMatchObject({ kind: 'claimed' });
+    expect(classifyPairingFailure('CI Portal did not answer in time.')).toMatchObject({ kind: 'claimed' });
+    expect(classifyPairingFailure('Portal returned incomplete registration data.')).toMatchObject({ kind: 'claimed' });
+  });
+
+  it('says nothing about a failure that never reached the code, so the kept code stays kept', () => {
+    expect(classifyPairingFailure('Unable to reach CI Portal. Please check your network connection.')).toBeUndefined();
+    expect(classifyPairingFailure('hub-up-failed: nothing answered http://127.0.0.1:5002/api/registration/phase after cihub up')).toBeUndefined();
+    expect(classifyPairingFailure('Error response from daemon: no such image')).toBeUndefined();
+    expect(classifyPairingFailure('')).toBeUndefined();
+  });
+
+  it('reads across the line breaks a captured step has already mangled', () => {
+    const boxed = ['┌─ Pairing failed ─┐', '│  That pairing code is no', '│  longer valid. Ask for a new one.', '└──┘'].join('\n');
+    expect(classifyPairingFailure(boxed.replace(/[│┌┐└┘─]/g, ' '))).toMatchObject({ kind: 'refused' });
   });
 });
