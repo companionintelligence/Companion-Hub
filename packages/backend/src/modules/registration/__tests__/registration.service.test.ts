@@ -1134,30 +1134,66 @@ describe('RegistrationService', () => {
       expect(result.message).toContain('Unable to reach CI Portal');
     });
 
-    it('tells a Portal timeout apart from a Portal it could not reach', async () => {
-      // What our own 15s deadline actually throws: axios leaves
-      // `transitional.clarifyTimeoutError` off, so a timeout is ECONNABORTED and,
-      // like every transport failure, carries no `response`. The Portal WAS
-      // reached here and may still be provisioning, so the network copy is wrong.
-      mockedAxios.post.mockRejectedValue(Object.assign(new Error('timeout of 15000ms exceeded'), { isAxiosError: true, code: 'ECONNABORTED' }));
+    // Shapes measured against the axios 1.18 this package resolves, not invented:
+    // a failed connection attempt keeps Node's `syscall` on `cause`, while axios's
+    // own expired deadline is a bare `AxiosError` with no `cause` at all.
+    it.each([
+      // Our own deadline. Identical whether the SYN went unanswered or the Portal
+      // is still provisioning, so the copy must not assert either one.
+      ['our expired deadline', Object.assign(new Error('timeout of 15000ms exceeded'), { isAxiosError: true, code: 'ECONNABORTED' })],
+      // The same deadline once axios's `transitional.clarifyTimeoutError` default flips.
+      ['a clarified deadline', Object.assign(new Error('timeout of 15000ms exceeded'), { isAxiosError: true, code: 'ETIMEDOUT' })],
+      // The request went out in full and the peer hung up afterwards, so the Portal
+      // may already hold it — the network copy would be just as wrong here.
+      [
+        'a socket hang up after the request was sent',
+        Object.assign(new Error('socket hang up'), { isAxiosError: true, code: 'ECONNRESET', cause: { code: 'ECONNRESET' } }),
+      ],
+      // A syscall that is not `connect`/`getaddrinfo` means we were already past
+      // the connection and writing to the Portal, so it may hold a partial request.
+      [
+        'a write that failed mid-request',
+        Object.assign(new Error('write EPIPE'), { isAxiosError: true, code: 'EPIPE', cause: { code: 'EPIPE', syscall: 'write' } }),
+      ],
+    ])('says the Portal may hold the request when pairing fails on %s', async (_label, error) => {
+      mockedAxios.post.mockRejectedValue(error);
 
       const result = await service.pairDevice('ABC123');
 
       expect(result.success).toBe(false);
-      expect(result.message).toContain('did not respond in time');
+      expect(result.message).toContain('did not answer in time');
+      // Both halves of the ambiguity, and the action. Asserting only the first
+      // let a copy edit drop either of the others with the suite still green.
+      expect(result.message).toContain('still be provisioning');
+      expect(result.message).toContain('may not be reaching it');
       expect(result.message).toContain('new pairing code');
-      expect(result.message).not.toContain('network connection');
+      expect(result.message).not.toContain('Unable to reach CI Portal');
     });
 
-    it('treats a clarified ETIMEDOUT as a timeout as well', async () => {
-      // Guards the case where axios's `clarifyTimeoutError` default flips.
-      mockedAxios.post.mockRejectedValue(Object.assign(new Error('timeout of 15000ms exceeded'), { isAxiosError: true, code: 'ETIMEDOUT' }));
+    it.each([
+      // `connect ETIMEDOUT` is a firewall dropping our SYN, NOT our own deadline:
+      // the Portal never saw the request and the pairing code is still good.
+      ['connect ETIMEDOUT 10.255.255.1:443', 'ETIMEDOUT', 'connect'],
+      ['getaddrinfo ENOTFOUND portal.example.com', 'ENOTFOUND', 'getaddrinfo'],
+    ])('reports %s as a Portal it could not reach', async (message, code, syscall) => {
+      mockedAxios.post.mockRejectedValue(Object.assign(new Error(message), { isAxiosError: true, code, cause: { code, syscall } }));
 
       const result = await service.pairDevice('ABC123');
 
       expect(result.success).toBe(false);
-      expect(result.message).toContain('did not respond in time');
-      expect(result.message).not.toContain('network connection');
+      expect(result.message).toContain('Unable to reach CI Portal');
+      expect(result.message).not.toContain('new pairing code');
+    });
+
+    it('leaves a failure that is not an axios error on the generic branch', async () => {
+      // Pins the `isAxiosError` guard: without it a local bug thrown inside the try
+      // would be reported as the Portal holding the request, burning a pairing code.
+      mockedAxios.post.mockRejectedValue(new Error('boom'));
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Pairing failed: boom');
     });
 
     it('returns error when CI Cloud URL is not configured', async () => {

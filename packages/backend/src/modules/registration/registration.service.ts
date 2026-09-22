@@ -107,53 +107,69 @@ function describeRegistrationError(error: unknown): string {
 }
 
 /**
- * True for a request that never got an HTTP response. Portal calls set
- * `validateStatus: () => true`, so a thrown axios error means DNS, TCP, TLS or
- * the timeout failed rather than the Portal answering.
+ * The syscalls that fail before any byte of the request is on the wire. Node
+ * names the failing syscall on the underlying error and axios 1.18 keeps it on
+ * `cause` rather than copying it up, so this is the only positive proof we get
+ * that the Portal never saw the request.
  */
-function isPortalTransportError(error: unknown): boolean {
+const PORTAL_CONNECT_SYSCALLS = new Set(['getaddrinfo', 'connect']);
+
+/**
+ * Errno codes only a failed connection attempt produces, for the case where a
+ * wrapper stripped `cause`. `ETIMEDOUT` is deliberately absent: it is both the
+ * OS connect timeout and what axios reports for its own expired deadline when
+ * `transitional.clarifyTimeoutError` is on, so with no `connect` syscall to go
+ * by it proves nothing either way.
+ */
+const PORTAL_CONNECT_FAILURE_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH']);
+
+/**
+ * How far a thrown Portal call got. Portal calls set `validateStatus: () => true`,
+ * so a refusal is an answer rather than a throw: anything thrown failed below HTTP.
+ *
+ * - `never_reached` — the connection attempt itself failed, so nothing was sent
+ *   and the pairing code is untouched. The fault is on this side.
+ * - `no_answer` — everything else, including our own expired deadline. The
+ *   request may be sitting at the Portal: pairing provisions a Cloudflare tunnel
+ *   and a DNS record there, and the Portal claims the pairing code before that
+ *   work starts (companionintelligence/CI-Portal#748).
+ *
+ * The two are NOT separable by errno, which is why `no_answer` names both
+ * possibilities to the operator instead of asserting one. Measured against axios
+ * 1.18: a deadline that expires while the SYN goes unanswered and one that
+ * expires while the Portal provisions are byte-identical — both `AxiosError`,
+ * `code: 'ECONNABORTED'`, `message: 'timeout of Nms exceeded'`, no `cause`, and
+ * both with a non-zero `socket.bytesWritten`. Claiming a bare `ECONNABORTED`
+ * means the Portal was reached sends firewalled operators away from the one
+ * thing at fault.
+ */
+function classifyPortalTransportFailure(error: unknown): 'never_reached' | 'no_answer' | null {
   if (typeof error !== 'object' || error === null) {
-    return false;
+    return null;
   }
 
-  const candidate = error as { isAxiosError?: boolean; response?: unknown };
-  return candidate.isAxiosError === true && !candidate.response;
-}
-
-/**
- * Axios codes for "our own deadline expired". A timeout is `ECONNABORTED`
- * unless `transitional.clarifyTimeoutError` is on, which we never set — see the
- * same note in `inference/backends/ollama-host-bridge.ts`. `ETIMEDOUT` is
- * accepted too so this keeps working if that default ever flips.
- */
-const PORTAL_TIMEOUT_CODES = new Set(['ECONNABORTED', 'ETIMEDOUT']);
-
-/**
- * True when the Portal was reached and simply did not answer inside our own
- * deadline. It is NOT interchangeable with {@link isPortalUnreachableError}:
- * pairing provisions a Cloudflare tunnel and a DNS record Portal-side, so a
- * timeout here routinely means the Portal is still working — and, because the
- * Portal claims the pairing code before that work starts, that the code is
- * already spent (companionintelligence/CI-Portal#748). Telling the operator to
- * check their network sends them to the one place the fault is not.
- */
-function isPortalTimeoutError(error: unknown): boolean {
-  if (!isPortalTransportError(error)) {
-    return false;
+  const candidate = error as { isAxiosError?: boolean; code?: unknown; cause?: { syscall?: unknown } };
+  if (candidate.isAxiosError !== true) {
+    return null;
   }
 
-  const candidate = error as { code?: unknown };
-  return typeof candidate.code === 'string' && PORTAL_TIMEOUT_CODES.has(candidate.code);
+  const syscall = candidate.cause?.syscall;
+  if (typeof syscall === 'string') {
+    return PORTAL_CONNECT_SYSCALLS.has(syscall) ? 'never_reached' : 'no_answer';
+  }
+
+  return typeof candidate.code === 'string' && PORTAL_CONNECT_FAILURE_CODES.has(candidate.code) ? 'never_reached' : 'no_answer';
 }
 
 /**
- * True for a transport failure that is NOT a timeout: DNS, TCP or TLS never got
- * us to the Portal at all. Deliberately excludes timeouts rather than relying on
- * call-site ordering, so both predicates stay correct on their own.
+ * What a `no_answer` pairing failure tells the operator. It names both
+ * possibilities on purpose: the errno cannot separate "the Portal has the
+ * request and is still provisioning" from "nothing this machine sent ever
+ * arrived", and asserting either one sends half the operators who see it to the
+ * wrong place.
  */
-function isPortalUnreachableError(error: unknown): boolean {
-  return isPortalTransportError(error) && !isPortalTimeoutError(error);
-}
+const PORTAL_NO_ANSWER_PAIRING_MESSAGE =
+  'CI Portal did not answer in time. It may still be provisioning this Hub, or this machine may not be reaching it. Get a new pairing code before trying again.';
 
 function describePortalPairingResponse(data: unknown): string {
   if (!data || typeof data !== 'object') {
@@ -2194,15 +2210,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         domain: data.domain,
       });
     } catch (error) {
+      const transportFailure = classifyPortalTransportFailure(error);
       this.logger.error(`Pairing request failed before local registration completed: ${describeRegistrationError(error)}`);
-      if (isPortalTimeoutError(error)) {
+
+      if (transportFailure === 'no_answer') {
+        // CI-Hub#1578: the log is half the complaint, so the durable artifact has to
+        // carry the diagnosis and not just the toast the operator already dismissed.
+        this.logger.error(
+          'The pairing request may have reached CI Portal, which claims the pairing code before it provisions the tunnel and DNS record. ' +
+            'Check the Portal for a device row for this Hub before retrying; a device row it left active refuses a keyless re-pair with DEVICE_PROOF_REQUIRED.',
+        );
         return {
           success: false,
-          message: 'CI Portal did not respond in time. It may have partly completed — get a new pairing code before trying again.',
+          message: PORTAL_NO_ANSWER_PAIRING_MESSAGE,
         };
       }
 
-      if (isPortalUnreachableError(error)) {
+      if (transportFailure === 'never_reached') {
+        this.logger.error('The connection to CI Portal never completed, so it never saw the request and the pairing code is still unclaimed.');
         return { success: false, message: 'Unable to reach CI Portal. Please check your network connection.' };
       }
       return {
