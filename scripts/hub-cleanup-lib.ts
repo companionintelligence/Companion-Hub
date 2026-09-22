@@ -3,8 +3,6 @@ import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:f
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-/** Legacy CIHub Docker project/volume names — kept for appliances upgraded from CIHub. See scripts/LEGACY_MIGRATION.md. */
-
 type CleanupLevel = 'INFO' | 'WARN' | 'ERROR';
 
 export type CleanupLogger = {
@@ -88,6 +86,10 @@ export function isRelatedVolume(volumeName: string): boolean {
   return (
     volumeName.includes('ci_os_hub') ||
     volumeName.includes('ci-os-hub') ||
+    // Both legacy prefixes: appliances created `runtipi_*` volumes, and #1143
+    // (c88a83580) renamed the string to `runcihub_` by substring. Docker volume
+    // names are fixed at create time, so only `runtipi_` is actually out there.
+    volumeName.startsWith('runtipi_') ||
     volumeName.startsWith('runcihub_') ||
     volumeName.includes('ci_hub_pgdata') ||
     volumeName.includes('ci_hub_app_data') ||
@@ -105,8 +107,15 @@ export function parseNames(output: string): string[] {
     .filter(Boolean);
 }
 
-/** The Hub's own compose projects. Their services carry the managed labels too, but they are not apps. */
-const HUB_STACK_PROJECTS = new Set(['ci-os-hub', 'ci-hub', 'runcihub']);
+/**
+ * The Hub's own compose projects. Their services carry the managed labels too, but they are not apps.
+ *
+ * `runtipi` is the project name real appliances were installed under — CI-Portal's production
+ * runbook still uses it. #1143 (c88a83580) renamed it to `runcihub` by substring; both are kept
+ * because a compose project name is fixed at install time and cannot be renamed in place.
+ */
+export const HUB_STACK_PROJECT_NAMES = ['ci-os-hub', 'ci-hub', 'runtipi', 'runcihub'] as const;
+const HUB_STACK_PROJECTS = new Set<string>(HUB_STACK_PROJECT_NAMES);
 const COMPOSE_PROJECT_LABEL_PREFIX = 'com.docker.compose.project=';
 
 /**
@@ -440,9 +449,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     'docker ps -a --filter network=ci-hub_network --format "{{.Names}}"',
     'docker ps -a --filter network=ci_os_hub_network --format "{{.Names}}"',
     'docker ps -a --filter network=ci-os-hub_network --format "{{.Names}}"',
-    'docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.Names}}"',
-    'docker ps -a --filter label=com.docker.compose.project=ci-hub --format "{{.Names}}"',
-    'docker ps -a --filter label=com.docker.compose.project=runcihub --format "{{.Names}}"',
+    ...HUB_STACK_PROJECT_NAMES.map((project) => `docker ps -a --filter label=com.docker.compose.project=${project} --format "{{.Names}}"`),
     'docker ps -a --filter "name=e2e-" --format "{{.Names}}"',
   ];
 
@@ -454,7 +461,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   }
 
   // Snapshot Hub stack image IDs before any containers are removed.
-  const hubImages = [...new Set(['ci-os-hub', 'ci-hub', 'runcihub'].flatMap(snapshotProjectImages))];
+  const hubImages = [...new Set(HUB_STACK_PROJECT_NAMES.flatMap(snapshotProjectImages))];
 
   // Marketplace apps installed by Hub run as their own compose projects (<app>_<store>),
   // separate from the Hub stack. Hub stamps every managed app container with canonical and
@@ -518,9 +525,9 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     runCommand(`docker image rm -f ${imageId}`, commandContext);
   }
 
-  runCommand('docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v', commandContext);
-  runCommand('docker compose --project-name ci-hub -f docker-compose.prod.yml down -v', commandContext);
-  runCommand('docker compose --project-name runcihub -f docker-compose.prod.yml down -v', commandContext);
+  for (const project of HUB_STACK_PROJECT_NAMES) {
+    runCommand(`docker compose --project-name ${project} -f docker-compose.prod.yml down -v`, commandContext);
+  }
   runCommand('docker compose --project-name ci-hub -f docker-compose.local.yml down -v', commandContext);
 
   if (platform !== 'win32' && exists('/tmp/.buildx-cache')) {
