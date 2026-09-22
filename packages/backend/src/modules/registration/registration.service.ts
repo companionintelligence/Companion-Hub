@@ -93,6 +93,12 @@ const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
  * (companionintelligence/CI-Portal#748). Waiting longer is cheaper than that
  * split state, so this is deliberately generous rather than tuned to the
  * measurements above.
+ *
+ * Nothing in front of us cuts it short. `main.ts` sets
+ * `httpServer.requestTimeout = 30_000`, but that bounds how long the CLIENT may
+ * take to SEND a request, not how long a handler may take to answer one — a
+ * handler outliving it still responds normally. Traefik's responding timeouts
+ * are 300s, and the frontend's generated fetch client sets none.
  */
 const PORTAL_PAIR_TIMEOUT_MS = 60 * 1000;
 
