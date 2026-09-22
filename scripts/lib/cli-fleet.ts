@@ -91,6 +91,7 @@ import {
   describeInvalidatedPairingCode,
   findInvalidatingReRegistration,
   findReRegistration,
+  isDeadPairingCodeFailure,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
   savePendingPairingCode,
@@ -1795,6 +1796,13 @@ async function runInstall(args: FleetArgs): Promise<void> {
       },
       args.user,
     );
+    // Portal declaring the code dead is not one of the retry-safe failures this store is built to
+    // survive (a slow tunnel-provisioning timeout, a dropped SSH session) — those may still succeed
+    // if resent, but a confirmed-dead code never will, and resending it is the whole bug this closes.
+    const registerStep = report.steps.find((st) => st.name === 'hub up + register');
+    if (registerStep && !registerStep.ok && isDeadPairingCodeFailure(registerStep.detail)) {
+      clearPendingPairingCode(node.ip);
+    }
     for (const st of report.steps) {
       const icon = st.skipped ? colorize('·', 'dim') : st.ok ? colorize('✓', 'green') : colorize('✗', 'red');
       const took = st.ms ? colorize(` (${Math.round(st.ms / 1000)}s)`, 'dim') : '';

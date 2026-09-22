@@ -110,6 +110,58 @@ describe('fleet install and the pairing code', () => {
     expect(readStore().codes).toEqual({});
   });
 
+  it('forgets a kept code the moment Portal declares it dead, so the next attempt mints fresh', async () => {
+    // What beta-max looked like on 2026-09-22: three independently-minted codes, two domains, all
+    // rejected 410 PAIRING_CODE_INVALID — including one used within seconds of being minted. With no
+    // `fleet devices re-register` involved, nothing before this fix ever forgot the code.
+    mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+      const minted = await opts.mintPairingCode?.();
+      expect(minted?.code).toBe('ABC123');
+      return {
+        node: node.name,
+        ok: false,
+        steps: [{ name: 'hub up + register', ok: false, detail: 'That pairing code is no longer valid. Ask for a new one.' }],
+      };
+    });
+    await runFleetCommand(['install', '--execute']);
+    expect(mocks.mintPairingCode).toHaveBeenCalledTimes(1);
+    expect(readStore().codes).toEqual({});
+
+    // The retry mints again rather than resending the code Portal already refused.
+    mocks.mintPairingCode.mockResolvedValueOnce({ pairingCode: 'FRESH01', deviceId: 'dev-1', slug: 'core-7', name: 'core-7' });
+    mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+      const minted = await opts.mintPairingCode?.();
+      expect(minted?.code).toBe('FRESH01');
+      opts.onRegistered?.();
+      return { node: node.name, ok: true, steps: [] };
+    });
+    await runFleetCommand(['install', '--execute']);
+    expect(mocks.mintPairingCode).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the kept code through a slow-tunnel timeout, since the same code may yet succeed (#1580)', async () => {
+    mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+      await opts.mintPairingCode?.();
+      return {
+        node: node.name,
+        ok: false,
+        steps: [{ name: 'hub up + register', ok: false, detail: 'CI Portal did not respond in time. It may have partly completed.' }],
+      };
+    });
+    await runFleetCommand(['install', '--execute']);
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'ABC123' });
+
+    mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+      const minted = await opts.mintPairingCode?.();
+      expect(minted?.code).toBe('ABC123');
+      expect(minted?.detail).toMatch(/reusing/);
+      opts.onRegistered?.();
+      return { node: node.name, ok: true, steps: [] };
+    });
+    await runFleetCommand(['install', '--execute']);
+    expect(mocks.mintPairingCode).toHaveBeenCalledTimes(1);
+  });
+
   it('turns a 409 into the two things it can mean', async () => {
     mocks.mintPairingCode.mockRejectedValue(new Error('a device named "core-7" already exists in this org'));
     let seen = '';
