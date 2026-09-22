@@ -521,7 +521,7 @@ export function hubContextCapShell(
           'else',
           // The stored preference, or Ollama — the Hub-managed default an absent preference already resolves to.
           `  cihub_cap_backend="$(sed -n 's/.*"preferredBackend"[[:space:]]*:[[:space:]]*"\\([a-z]*\\)".*/\\1/p' "$cihub_cap_body" | head -1)"`,
-          '  case "$cihub_cap_backend" in ollama|vllm|lemonade|mtplx|dspark|lucebox) ;; *) cihub_cap_backend=ollama ;; esac',
+          '  case "$cihub_cap_backend" in ollama|vllm|lemonade|mtplx|dspark|lucebox|llamacpp|lmstudio) ;; *) cihub_cap_backend=ollama ;; esac',
           `  echo "${m.backend} $cihub_cap_backend"`,
           `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d "{\\"backend\\":\\"$cihub_cap_backend\\",\\"${preferenceKey}\\":null}" "$cihub_cap_url/inference/preferences")"`,
           '  [ -n "$cihub_cap_code" ] || cihub_cap_code=000',

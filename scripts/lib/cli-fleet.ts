@@ -43,6 +43,7 @@ import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } fr
 import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
   applyHubContextCap,
+  applyHubLlamacppUrl,
   applyOllamaBindPolicy,
   applyOllamaRuntimeSettings,
   applyProbeFirewall,
@@ -50,11 +51,23 @@ import {
   describeBind,
   executeBackendPlan,
   INSTALLABLE_BACKENDS,
+  type InstallableBackend,
+  type LlamacppPlanOptions,
+  llamacppSpecFor,
   ollamaManagedEnvironment,
   planAllBackends,
-  type InstallableBackend,
   type ProbeFirewallResult,
 } from './fleet-backends.js';
+import {
+  classifyLlamacppProbeOutput,
+  describeHubLlamacppUrlPlan,
+  HUB_LLAMACPP_URL,
+  hubAutoModelShell,
+  isSafeOllamaTag,
+  LLAMACPP_UNIT,
+  llamacppProbeShell,
+  resolveHubAutoModel,
+} from './fleet-llamacpp.js';
 import {
   describeHubContextCapPlan,
   HUB_CONTEXT_CAP_SETTING,
@@ -303,6 +316,12 @@ export interface FleetArgs {
    * flag was not given, on the same terms as the cap above.
    */
   hubOllamaSlots?: HubContextCap;
+  /**
+   * `backends` only: the Ollama tag llama-server serves (`--llamacpp-model`). Absent means each
+   * node's own Hub is asked which model it hands out for `auto`, and that tag is used — so a fleet
+   * whose nodes pin different models gets each node's own. Ignored unless `--backends` names llamacpp.
+   */
+  llamacppModel?: string;
 }
 
 /** The two Hub halves a runtime flag carries, in the order they are planned and applied after the drop-in. */
@@ -481,6 +500,13 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         throw error;
       }
       args.ollamaRuntime = runtime;
+    } else if (isFlag('--llamacpp-model')) {
+      // Validated here for the same reason the runtime flags are: the tag lands in a unit file's
+      // ExecStart and in a manifest path, so anything that could escape either is refused before a
+      // machine is dialled.
+      const tag = readValue('--llamacpp-model').trim();
+      if (!isSafeOllamaTag(tag)) throw new FleetArgError(`--llamacpp-model must be an Ollama tag such as qwen3-coder:30b (got '${tag}').`);
+      args.llamacppModel = tag;
     } else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
@@ -563,6 +589,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     throw new FleetArgError(
       '--ollama-parallel, --ollama-keep-alive, --ollama-context, --ollama-igpu and --ollama-max-loaded only apply to `fleet backends`.',
     );
+  }
+  if (args.llamacppModel !== undefined && args.subcommand !== 'backends') {
+    throw new FleetArgError('--llamacpp-model only applies to `fleet backends`.');
   }
 
   return args;
@@ -1332,6 +1361,76 @@ function describeHostFactsFailure(node: FleetNode, target: SshTarget, error: unk
 }
 
 /**
+ * What llama-server on one node should serve, from the flags and — for the model — the node's own
+ * Hub. Never throws: a Hub that cannot be asked becomes a `modelError` the planner turns into a
+ * skip that quotes it, and the fleet run continues.
+ */
+async function resolveLlamacppOptionsOnNode(target: { host: string; user?: string }, args: FleetArgs): Promise<LlamacppPlanOptions> {
+  const shape = { parallel: args.ollamaRuntime?.parallel, contextLength: args.ollamaRuntime?.contextLength };
+  if (args.llamacppModel) return { ...shape, model: args.llamacppModel, modelWhy: '--llamacpp-model' };
+  const res = await sshCapture(target, `bash <<'CIHUB_HUB_AUTO_MODEL_EOF'\n${hubAutoModelShell(args.dataDir)}\nCIHUB_HUB_AUTO_MODEL_EOF`, 90_000);
+  if (!res.ok && !res.out.includes('hub-auto-model-')) {
+    return {
+      ...shape,
+      modelError: `no --llamacpp-model, and this node's Hub could not be asked for its auto model: ${describeSshFailure(classifySshFailure(res), target.host)}`,
+    };
+  }
+  const auto = resolveHubAutoModel(res.out);
+  if (auto.kind === 'failed') return { ...shape, modelError: `no --llamacpp-model, and ${auto.why}` };
+  return { ...shape, model: auto.tag, modelWhy: auto.why };
+}
+
+interface LlamacppPlanOnNode {
+  lines: string[];
+  tone: 'green' | 'yellow' | 'dim';
+  json: Record<string, unknown>;
+}
+
+/**
+ * The dry run's read of one node for llama-server: the blob the tag resolves to, whether the unit
+ * the apply would write is already the one installed, and who answers on the port now. Unprivileged;
+ * runs the same resolution the apply does, so the two agree.
+ */
+async function planLlamacppOnNode(
+  target: { host: string; user?: string },
+  facts: HostFacts,
+  opts: LlamacppPlanOptions & { model: string },
+): Promise<LlamacppPlanOnNode> {
+  const spec = llamacppSpecFor(facts, opts);
+  const res = await sshCapture(target, `bash <<'CIHUB_LLAMACPP_PROBE_EOF'\n${llamacppProbeShell(spec)}\nCIHUB_LLAMACPP_PROBE_EOF`, 60_000);
+  const probe = classifyLlamacppProbeOutput(res.out);
+  const json: Record<string, unknown> = {
+    spec,
+    state: probe.state,
+    modelsDir: probe.modelsDir,
+    blob: probe.blob,
+    unit: probe.unit,
+    unitState: probe.unitState,
+    server: probe.server,
+  };
+  if (probe.state === 'incomplete') return { lines: ['llamacpp: could not read the node (probe produced no output)'], tone: 'yellow', json };
+  if (probe.state !== 'ok') return { lines: [`llamacpp: would skip — ${probe.why}`], tone: 'yellow', json };
+  const lines = [`llamacpp: model ${probe.blob} under ${probe.modelsDir}, mounted read-only`];
+  if (probe.execStart) lines.push(`llamacpp: ${probe.execStart}`);
+  const state = probe.unitState ?? 'inactive';
+  if (probe.unit === 'unchanged' && state === 'active') {
+    lines.push(`llamacpp: ${LLAMACPP_UNIT} already carries this; not restarted`);
+  } else if (probe.unit === 'unchanged') {
+    lines.push(`llamacpp: ${LLAMACPP_UNIT} already carries this but is ${state}; would start it`);
+  } else {
+    lines.push(
+      `llamacpp: would ${probe.unit === 'absent' ? 'write' : 'rewrite'} ${LLAMACPP_UNIT}, then daemon-reload and restart it (the model reloads)`,
+    );
+  }
+  if (probe.server) {
+    lines.push(
+      `llamacpp: now serving ${probe.server.id ?? '?'} (owned_by ${probe.server.ownedBy ?? '?'}) as ${probe.server.totalSlots ?? '?'} × ${probe.server.nCtx ?? '?'}`,
+    );
+  }
+  return { lines, tone: probe.unit === 'unchanged' && state === 'active' ? 'dim' : 'green', json };
+}
+
+/**
  * `cihub fleet backends` — install or adopt inference backends across the fleet.
  *
  * Read-only unless `--execute`. The dry run is the useful default: it reports what each machine can
@@ -1369,10 +1468,18 @@ async function runBackends(args: FleetArgs): Promise<void> {
     }
 
     const busy = isTooBusyForMaintenance(facts);
+    // llama-server's model is decided per node BEFORE planning: the default is what this node's own
+    // Hub hands out for `auto`, and that is a round trip the pure planner cannot make.
+    const llamacppOpts = args.backends.includes('llamacpp') ? await resolveLlamacppOptionsOnNode(target, args) : undefined;
     const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined, {
       ollamaBind: args.bind,
       ollamaVersion: args.ollamaVersion,
+      ...(llamacppOpts ? { llamacpp: llamacppOpts } : {}),
     });
+    // The Hub halves (`inferenceOllamaSlots`, `inferenceMaxNumCtx`) follow whichever engine this run
+    // brought to those numbers. When Ollama is in the run they follow its runtime step, as before;
+    // otherwise a llama-server that read back the same slots × context states them for the node.
+    const ollamaInRun = plans.some((p) => p.backend === 'ollama' && p.action !== 'skip');
     const gpu = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}${g.driverWorking ? '' : ' [driver dead]'}`).join(', ') || 'no gpu';
     console.log(`${node.name}  ${colorize(`${facts.os}/${facts.arch} · ${gpu} · load ${facts.load1 ?? '?'}`, 'dim')}`);
     for (const note of facts.notes) console.log(colorize(`  ! ${note}`, 'yellow'));
@@ -1392,14 +1499,26 @@ async function runBackends(args: FleetArgs): Promise<void> {
       // nothing to do.
       const bindPlan =
         plan.backend === 'ollama' && plan.action !== 'skip' ? await planOllamaBindOnNode(target, args.bind, facts, args.ollamaRuntime) : undefined;
+      // llama-server's dry run reads the node too: the tag has to resolve to a blob Ollama holds,
+      // and "unchanged" is only worth printing if the unit the apply would write is the one installed.
+      const llamacppPlan =
+        plan.backend === 'llamacpp' && plan.action === 'install' && llamacppOpts?.model && !args.execute
+          ? await planLlamacppOnNode(target, facts, { ...llamacppOpts, model: llamacppOpts.model })
+          : undefined;
 
       if (!args.execute) {
         const tag = plan.action === 'install' ? colorize('would install', 'green') : plan.action;
         console.log(`  ${plan.backend.padEnd(9)} ${tag} — ${plan.why}`);
         if (bindPlan) for (const line of bindPlan.lines) console.log(colorize(`            ${line}`, bindPlan.tone));
+        if (llamacppPlan) for (const line of llamacppPlan.lines) console.log(colorize(`            ${line}`, llamacppPlan.tone));
         // The Hub's cap and slot count follow the runtime step, so they are planned only where that
-        // step is: a node whose unit this run may not edit gets none of these lines.
-        const hubHalves = plan.backend === 'ollama' && bindPlan?.runtime !== undefined ? hubHalvesOf(args) : [];
+        // step is: a node whose unit this run may not edit gets none of these lines. Without Ollama
+        // in the run they follow llama-server, whose slots × context are the same two numbers.
+        const hubHalves =
+          (plan.backend === 'ollama' && bindPlan?.runtime !== undefined) || (plan.backend === 'llamacpp' && !ollamaInRun && plan.action !== 'skip')
+            ? hubHalvesOf(args)
+            : [];
+        if (plan.backend === 'llamacpp' && plan.action !== 'skip') console.log(colorize(`            ${describeHubLlamacppUrlPlan()}`, 'green'));
         for (const half of hubHalves) console.log(colorize(`            ${describeHubContextCapPlan(half.value, half.setting)}`, 'green'));
         report.push({
           node: node.name,
@@ -1407,6 +1526,8 @@ async function runBackends(args: FleetArgs): Promise<void> {
           action: plan.action,
           why: plan.why,
           ...(bindPlan ? { bind: bindPlan.json } : {}),
+          ...(llamacppPlan ? { llamacpp: llamacppPlan.json } : {}),
+          ...(plan.backend === 'llamacpp' && plan.action !== 'skip' ? { hubLlamacppUrl: HUB_LLAMACPP_URL } : {}),
           ...Object.fromEntries(hubHalves.map((half) => [half.key, half.value])),
         });
         continue;
@@ -1455,6 +1576,33 @@ async function runBackends(args: FleetArgs): Promise<void> {
       console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
       if (result.detail && (result.outcome === 'failed' || plan.backend === 'ollama')) console.log(colorize(`    ${result.detail}`, 'dim'));
       report.push({ node: node.name, ...result });
+
+      // The Hub's half of llama-server: LLAMACPP_URL in the node's env file and ci-hub recreated
+      // with it, once the server answers — an adopted one included, since a Hub that cannot see the
+      // engine is the case docs/hub-pool.md spends a section on. Then the slot count and cap, only
+      // where Ollama's runtime step is not in this run to state them, and only from a server that
+      // read back the requested shape on /props — an adopted server whose shape nobody read states
+      // nothing.
+      if (plan.backend === 'llamacpp' && (result.outcome === 'installed' || result.outcome === 'adopted')) {
+        const hub = await applyHubLlamacppUrl(target);
+        if (hub.outcome === 'failed') failed += 1;
+        const hubTone = hub.outcome === 'failed' ? 'red' : hub.outcome === 'applied' ? 'green' : 'dim';
+        const hubTook = hub.ms ? ` (${Math.round(hub.ms / 1000)}s)` : '';
+        console.log(`  ${'hub'.padEnd(9)} ${colorize(hub.outcome, hubTone)}${hubTook} — ${hub.why}`);
+        report.push({ node: node.name, hubLlamacppUrl: { requested: HUB_LLAMACPP_URL, ...hub } });
+        const shapeRead =
+          plan.llamacpp && result.llamacpp?.totalSlots === plan.llamacpp.parallel && result.llamacpp?.nCtx === plan.llamacpp.contextLength;
+        if (!ollamaInRun && shapeRead) {
+          for (const half of hubHalvesOf(args)) {
+            const cap = await applyHubContextCap(target, half.value, args.dataDir, undefined, half.setting);
+            if (cap.outcome === 'failed') failed += 1;
+            const capTone = cap.outcome === 'failed' ? 'red' : cap.outcome === 'applied' ? 'green' : 'dim';
+            const capTook = cap.ms ? ` (${Math.round(cap.ms / 1000)}s)` : '';
+            console.log(`  ${'hub'.padEnd(9)} ${colorize(cap.outcome, capTone)}${capTook} — ${cap.why}`);
+            report.push({ node: node.name, [half.key]: { requested: half.value, ...cap } });
+          }
+        }
+      }
 
       // The Hub's half of --ollama-context and --ollama-parallel, once the daemon runs that
       // context and those slots: `inferenceMaxNumCtx` and `inferenceOllamaSlots` on this node's Hub,

@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { BackendHealthStatus, BackendModelInfo, BackendResidency, PullProgress } from '@ci-hub/common/types';
-import type { InferenceBackend } from './backend.interface';
+import type { EngineCapabilities, InferenceBackend } from './backend.interface';
 import { detectHubContainer, resolveHostBackendProbeUrl } from './host-url.util';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
 import { QUARANTINE_STRIKES, ServingQuarantine } from './serving-quarantine';
@@ -20,6 +21,12 @@ import { QUARANTINE_STRIKES, ServingQuarantine } from './serving-quarantine';
  * container would need a GGUF on disk, a `-m` path, and per-model flags — model management Ollama
  * already does better and which this backend has no way to do at all (see {@link pullModel}). So
  * this is a URL and a health check, like {@link MtplxBackend} and the host-run vLLM path.
+ *
+ * The FLEET manages one, though: `cihub fleet backends --backends llamacpp` runs llama-server as a
+ * systemd unit on host port 8081, serving the very GGUF the node's Ollama holds (mounted read-only
+ * out of Ollama's store), and writes `LLAMACPP_URL` into the node's env file — see
+ * `scripts/lib/fleet-llamacpp.ts` for the measurements that justify it. From here it is still a
+ * URL: this backend cannot tell a fleet-run server from a hand-run one, and does not need to.
  */
 
 /** `llama-server`'s own default listen port. */
@@ -33,12 +40,39 @@ export const LLAMACPP_DEFAULT_PORT = 8080;
  */
 const LLAMACPP_HEALTH_PATH = '/health';
 
+/**
+ * `/props`: llama-server's own statement of what it is running. Verified against a live server
+ * (Ollama's bundled build and b11065): `model_path`, `total_slots` (`-np`), and
+ * `default_generation_settings.n_ctx` — the context EACH SLOT gets, which is `-c` divided by the
+ * slot count. Read after a healthy probe and kept, so the pool proxy can rank against it without a
+ * request of its own; a server that does not answer it (an older build) simply reports nothing.
+ */
+const LLAMACPP_PROPS_PATH = '/props';
+
+/** The two figures {@link EngineCapabilities} carries, plus the path the server says it loaded — for a log line, never for routing. */
+interface LlamacppProps extends EngineCapabilities {
+  modelPath: string | null;
+}
+
+/** `/props` as this backend reads it. Anything not a positive integer reads as not reported. */
+export function parseLlamacppProps(body: unknown): LlamacppProps {
+  const props = (body ?? {}) as { total_slots?: unknown; default_generation_settings?: { n_ctx?: unknown } | null; model_path?: unknown };
+  const int = (value: unknown): number | null => (typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null);
+  return {
+    slots: int(props.total_slots),
+    contextLength: int(props.default_generation_settings?.n_ctx),
+    modelPath: typeof props.model_path === 'string' && props.model_path ? props.model_path : null,
+  };
+}
+
 @Injectable()
 export class LlamacppBackend implements InferenceBackend {
   readonly type = 'llamacpp' as const;
   private readonly api = new OpenAiCompatibleClient();
   /** See {@link ServingQuarantine}: a listed model that fails every request must stop being routed to. */
   private readonly quarantine = new ServingQuarantine();
+  /** What the last healthy probe read on `/props`; `null` until one has, and again after one that did not reach the server. */
+  private props: LlamacppProps | null = null;
 
   constructor(private readonly logger: LoggerService) {}
 
@@ -106,14 +140,44 @@ export class LlamacppBackend implements InferenceBackend {
       };
     }
     const baseUrl = baseUrlOverride ? resolveHostBackendProbeUrl(baseUrlOverride) : this.getBaseUrl();
-    const health = await this.api.healthCheck(baseUrl, { apiKey: this.getApiKey(), healthPath: LLAMACPP_HEALTH_PATH });
+    // `claimedBy`: the fleet's llama-server sits on :8081 and a hand-started one on 8080, dspark's
+    // port. Whoever answers says so in `owned_by`, and only its own backend offers its models.
+    const health = await this.api.healthCheck(baseUrl, { apiKey: this.getApiKey(), healthPath: LLAMACPP_HEALTH_PATH, claimedBy: 'llamacpp' });
+    // The shape of a server that is ours: read on the same probe, never on the ranking path.
+    // An override is a typed address under test, not the configured server — leave the cache alone.
+    if (!baseUrlOverride) this.props = health.healthy ? await this.readProps(baseUrl) : null;
     const withheld = this.quarantine.list();
     return withheld.length > 0 ? { ...health, unservableModels: withheld } : health;
   }
 
+  /** `/props`, or `null` when the server does not answer it (an older build, or gone since the health check). */
+  private async readProps(baseUrl: string): Promise<LlamacppProps | null> {
+    try {
+      const apiKey = this.getApiKey();
+      const response = await axios.get(`${baseUrl}${LLAMACPP_PROPS_PATH}`, {
+        timeout: 5000,
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      });
+      return parseLlamacppProps(response.data);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * `total_slots` and per-slot `n_ctx` from the last healthy probe's `/props`. The pool's
+   * slot-aware placement and context caps read these for a local llama-server the way they read
+   * the operator's `inferenceOllamaSlots` / `inferenceMaxNumCtx` for Ollama — see
+   * `hub-pool-proxy.service.ts` — and `cihub fleet backends` writes those same two settings after
+   * an install so peers, which only see the statement, rank this node the same way.
+   */
+  engineCapabilities(): EngineCapabilities | null {
+    return this.props ? { slots: this.props.slots, contextLength: this.props.contextLength } : null;
+  }
+
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      return await this.api.listModels(this.getBaseUrl(), { apiKey: this.getApiKey() });
+      return await this.api.listModels(this.getBaseUrl(), { apiKey: this.getApiKey(), claimedBy: 'llamacpp' });
     } catch {
       return [];
     }
@@ -123,13 +187,16 @@ export class LlamacppBackend implements InferenceBackend {
    * `llama-server` serves exactly the GGUF it was started with, so its inventory IS its residency —
    * the `'implicit'` case the interface docblock names. Reporting `'measured'` would claim the
    * engine was asked, and there is nothing to ask: llama.cpp exposes no residency endpoint, and
-   * every field of {@link ResidentModel} would be a null this backend invented.
+   * every field of {@link ResidentModel} would be a null this backend invented — except the
+   * context, which `/props` does state per slot, and which is exactly what an operator debugging a
+   * truncated prompt needs to see.
    */
   async listResident(): Promise<BackendResidency> {
     const health = await this.healthCheck();
     if (!health.running || !health.healthy) {
       return { backend: this.type, source: 'unreachable', models: null, error: health.error };
     }
+    const contextLength = this.props?.contextLength ?? null;
     return {
       backend: this.type,
       source: 'implicit',
@@ -138,7 +205,7 @@ export class LlamacppBackend implements InferenceBackend {
         engineGpuBytes: null,
         totalBytes: null,
         expiresAt: null,
-        contextLength: null,
+        contextLength,
         quantization: null,
       })),
     };
@@ -194,7 +261,8 @@ export class LlamacppBackend implements InferenceBackend {
   getDockerImage(): string {
     throw new Error(
       'The Hub does not manage llama-server. llama.cpp publishes images, but a Hub-managed container would need a GGUF on ' +
-        'disk and per-model flags the Hub has no way to choose. Run it yourself and set LLAMACPP_URL.',
+        'disk and per-model flags the Hub has no way to choose. Run it yourself and set LLAMACPP_URL, or on a fleet node ' +
+        'let `cihub fleet backends --backends llamacpp` run it against the GGUF Ollama already holds.',
     );
   }
 
@@ -210,7 +278,8 @@ export class LlamacppBackend implements InferenceBackend {
   getComposeConfig(): Record<string, unknown> {
     throw new Error(
       'The Hub does not deploy llama-server: it cannot pull a GGUF, so a container it started would have no weights. ' +
-        'Start it yourself (llama-server -m <model.gguf> --port 8080) and point LLAMACPP_URL at it, or use Ollama for a Hub-managed engine.',
+        'Start it yourself (llama-server -m <model.gguf> --port 8080) and point LLAMACPP_URL at it, use Ollama for a Hub-managed engine, ' +
+        'or on a fleet node run `cihub fleet backends --backends llamacpp --execute`, which serves the GGUF Ollama already holds.',
     );
   }
 }

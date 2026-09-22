@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { planBackend, planAllBackends, INSTALLABLE_BACKENDS, ollamaManagedEnvironment } from '../lib/fleet-backends.js';
+import { LLAMACPP_FLEET_PORT, LLAMACPP_UNIT } from '../lib/fleet-llamacpp.js';
 import { CANONICAL_BIND_DROPIN } from '../lib/fleet-ollama-bind.js';
 import type { HostFacts } from '../lib/fleet-hardware.js';
 
@@ -224,5 +225,93 @@ describe('planAllBackends', () => {
 
   it('honours an explicit subset', () => {
     expect(planAllBackends(host(), '/data', ['ollama']).map((p) => p.backend)).toEqual(['ollama']);
+  });
+});
+
+describe('llamacpp', () => {
+  const named = { model: 'qwen3-coder:30b', modelWhy: '--llamacpp-model' };
+
+  it('is never installed by a run that did not name it — it holds a model in memory beside Ollama', () => {
+    const plan = planBackend('llamacpp', host({ gpus: [strixHalo] }), '/data');
+    expect(plan.action).toBe('skip');
+    expect(plan.why).toContain('--backends llamacpp');
+    expect(planAllBackends(host({ gpus: [strixHalo] }), '/data').find((p) => p.backend === 'llamacpp')?.action).toBe('skip');
+    // What is there is still reported: a server on the port, or this CLI's own unit.
+    expect(
+      planBackend('llamacpp', host({ enginesListening: [LLAMACPP_FLEET_PORT], engineOwners: { [LLAMACPP_FLEET_PORT]: 'llamacpp' } }), '/data').action,
+    ).toBe('adopt');
+    expect(
+      planBackend('llamacpp', host({ enginesListening: [LLAMACPP_FLEET_PORT], managedUnits: { [LLAMACPP_UNIT]: 'active' } }), '/data').why,
+    ).toContain('left as it is');
+  });
+
+  it('renders the unit and the measured flags for the image the GPU decides, on :8081', () => {
+    const plan = planBackend('llamacpp', host({ gpus: [strixHalo] }), '/data', { llamacpp: named });
+    expect(plan.action).toBe('install');
+    expect(plan.needsSudo).toBe(true);
+    expect(plan.port).toBe(8081);
+    expect(plan.why).toContain('ROCm image');
+    expect(plan.why).toContain("serving Ollama's qwen3-coder:30b (--llamacpp-model) as 4 × 32768 (-np 4 -c 131072)");
+    expect(plan.script).toContain('server-rocm-b11065');
+    expect(plan.script).toContain('--device /dev/kfd --device /dev/dri');
+    expect(plan.script).toContain('-p 8081:8080');
+    expect(plan.script).toContain('manifests/registry.ollama.ai/library/qwen3-coder/30b');
+    expect(plan.llamacpp).toEqual({ flavour: 'server-rocm', model: 'qwen3-coder:30b', parallel: 4, contextLength: 32768 });
+
+    expect(planBackend('llamacpp', host({ gpus: [nvidia] }), '/data', { llamacpp: named }).script).toContain('server-cuda-b11065');
+    expect(planBackend('llamacpp', host({ gpus: [nvidia] }), '/data', { llamacpp: named }).script).toContain('--gpus all');
+    expect(planBackend('llamacpp', host(), '/data', { llamacpp: named }).script).toContain(':server-b11065');
+  });
+
+  it('takes -np and -c from the same --ollama-parallel / --ollama-context values, four slots of 32k by default', () => {
+    const plan = planBackend('llamacpp', host({ gpus: [strixHalo] }), '/data', { llamacpp: { ...named, parallel: 2, contextLength: 16384 } });
+    expect(plan.why).toContain('as 2 × 16384 (-np 2 -c 32768)');
+    expect(plan.script).toContain('-np 2 -ub 2048 -b 2048 --cache-reuse 256 --jinja --metrics -c 32768');
+  });
+
+  it('gates like lucebox: Linux with a usable Docker', () => {
+    expect(planBackend('llamacpp', host({ os: 'darwin', appleSilicon: true, arch: 'arm64' }), '/data', { llamacpp: named }).why).toContain(
+      'LLAMACPP_URL',
+    );
+    const plan = planBackend('llamacpp', host({ docker: { present: true, usable: false } }), '/data', { llamacpp: named });
+    expect(plan.action).toBe('skip');
+    expect(plan.why).toMatch(/docker info` failed/);
+  });
+
+  it('skips with the reason when no model could be had, and refuses a tag that could escape the unit', () => {
+    const noModel = planBackend('llamacpp', host({ gpus: [strixHalo] }), '/data', {
+      llamacpp: { modelError: "no --llamacpp-model, and this node's Hub pins nothing" },
+    });
+    expect(noModel.action).toBe('skip');
+    expect(noModel.why).toBe("no --llamacpp-model, and this node's Hub pins nothing");
+    expect(planBackend('llamacpp', host({ gpus: [strixHalo] }), '/data', { llamacpp: { model: "x'; rm -rf /" } }).action).toBe('skip');
+  });
+
+  it('reads the listener three ways: its own unit converges, a llama-server adopts, another engine refuses', () => {
+    const listening = { enginesListening: [LLAMACPP_FLEET_PORT] };
+    // This CLI's unit: converge. The apply shell restarts only if the unit's bytes change.
+    const own = planBackend(
+      'llamacpp',
+      host({ ...listening, gpus: [strixHalo], engineOwners: { 8081: 'llamacpp' }, managedUnits: { [LLAMACPP_UNIT]: 'active' } }),
+      '/data',
+      { llamacpp: named },
+    );
+    expect(own.action).toBe('install');
+    expect(own.why).toContain(`converging ${LLAMACPP_UNIT} (restart only if its unit changes)`);
+    // A hand-started llama-server: adopted, like an Ollama on :11434.
+    const hand = planBackend('llamacpp', host({ ...listening, gpus: [strixHalo], engineOwners: { 8081: 'llamacpp' } }), '/data', { llamacpp: named });
+    expect(hand.action).toBe('adopt');
+    expect(hand.script).toBeUndefined();
+    // Something that names itself: refused, whatever unit state says.
+    const foreign = planBackend('llamacpp', host({ ...listening, gpus: [strixHalo], engineOwners: { 8081: 'dflash' } }), '/data', {
+      llamacpp: named,
+    });
+    expect(foreign.action).toBe('skip');
+    expect(foreign.why).toContain('naming itself "dflash"');
+    // A listener that names nothing (a llama-server still loading answers 503 on /v1/models): adopted
+    // on port evidence, the way the unambiguous ports are, rather than fought for.
+    const loading = planBackend('llamacpp', host({ ...listening, gpus: [strixHalo] }), '/data', { llamacpp: named });
+    expect(loading.action).toBe('adopt');
+    expect(loading.why).toContain(`not run by ${LLAMACPP_UNIT}`);
   });
 });

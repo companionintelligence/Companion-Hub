@@ -127,9 +127,9 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Is each node safe to hand a package transaction? sudo, dpkg, grub, boot recovery, apt lock. Reads only',
       },
       {
-        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--ollama-context N] [--ollama-max-loaded N] [--execute]`,
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--ollama-context N] [--ollama-max-loaded N] [--llamacpp-model tag] [--execute]`,
         description:
-          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env (--ollama-context also sets each Hub's context cap; --ollama-max-loaded caps resident models); ufw rules for the Hub's engine probes. Prints the plan unless --execute",
+          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env (--ollama-context also sets each Hub's context cap; --ollama-max-loaded caps resident models); llama-server on :8081 serving Ollama's own GGUF (--backends llamacpp, --llamacpp-model); ufw rules for the Hub's engine probes. Prints the plan unless --execute",
       },
       {
         command: `${BASE_COMMAND} fleet devices list | release <device> [--yes] | re-register <device>`,

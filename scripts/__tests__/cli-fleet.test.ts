@@ -50,6 +50,16 @@ describe('parseFleetArgs', () => {
     expect(() => parseFleetArgs(['backends', '--bind', 'everywhere'])).toThrow(/--bind must be one of tailnet, all, local/);
   });
 
+  it('takes --llamacpp-model on backends only, as an Ollama tag, and --backends llamacpp by name', () => {
+    expect(parseFleetArgs(['backends', '--backends', 'llamacpp']).backends).toEqual(['llamacpp']);
+    expect(parseFleetArgs(['backends']).llamacppModel).toBeUndefined();
+    expect(parseFleetArgs(['backends', '--llamacpp-model', 'qwen3-coder:30b']).llamacppModel).toBe('qwen3-coder:30b');
+    expect(parseFleetArgs(['backends', '--llamacpp-model=hf.co/org/repo:Q4_K_M']).llamacppModel).toBe('hf.co/org/repo:Q4_K_M');
+    // The tag lands in a unit file's ExecStart and a manifest path: nothing that could escape either.
+    expect(() => parseFleetArgs(['backends', '--llamacpp-model', "x'; rm -rf /"])).toThrow(/--llamacpp-model must be an Ollama tag/);
+    expect(() => parseFleetArgs(['scan', '--llamacpp-model', 'qwen3-coder:30b'])).toThrow(/only applies to `fleet backends`/);
+  });
+
   it('takes the five Ollama runtime flags on backends only, validated before any machine is dialled', () => {
     // No runtime flag: the runtime drop-in is not touched at all — a run's existing behaviour.
     expect(parseFleetArgs(['backends']).ollamaRuntime).toBeUndefined();

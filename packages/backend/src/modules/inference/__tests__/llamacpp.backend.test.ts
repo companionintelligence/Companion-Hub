@@ -3,7 +3,7 @@ import axios from 'axios';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
-import { LLAMACPP_DEFAULT_PORT, LlamacppBackend } from '../backends/llamacpp.backend';
+import { LLAMACPP_DEFAULT_PORT, LlamacppBackend, parseLlamacppProps } from '../backends/llamacpp.backend';
 
 vi.mock('axios');
 
@@ -89,6 +89,7 @@ describe('LlamacppBackend', () => {
     it('probes /health as well as /v1/models, and reports the model it was started with', async () => {
       (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockImplementation((url: string) => {
         if (url.endsWith('/health')) return Promise.resolve({ status: 200, data: { status: 'ok' } });
+        if (url.endsWith('/props')) return Promise.reject(new Error('404'));
         return Promise.resolve({ data: { data: [{ id: 'qwen3.6-27b-q4_k_m' }] } });
       });
 
@@ -97,6 +98,102 @@ describe('LlamacppBackend', () => {
       expect(axios.get).toHaveBeenNthCalledWith(1, expect.stringContaining('/health'), expect.any(Object));
       expect(axios.get).toHaveBeenNthCalledWith(2, expect.stringContaining('/v1/models'), expect.any(Object));
       expect(health).toEqual({ running: true, healthy: true, modelsLoaded: ['qwen3.6-27b-q4_k_m'] });
+      // An older build without /props: healthy, and no statement — never an invented one.
+      expect(backend.engineCapabilities()).toBeNull();
+    });
+
+    /*
+     * The fleet's llama-server is on :8081 and a hand-started one on 8080, dspark's port. Whoever
+     * answers says so in `owned_by`; a server that names another engine is that engine's, and this
+     * backend must not offer its models a second time.
+     */
+    it('stands down when the server names another engine, and says which variable points it at its own', async () => {
+      (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/health')) return Promise.resolve({ status: 200 });
+        return Promise.resolve({ data: { data: [{ id: 'Qwen/Qwen3.5-9B', owned_by: 'vllm' }] } });
+      });
+
+      const health = await backend.healthCheck();
+
+      expect(health).toMatchObject({ running: true, healthy: false, modelsLoaded: [] });
+      expect(health.error).toContain('set LLAMACPP_URL');
+      await expect(backend.listModels()).resolves.toEqual([]);
+      expect(backend.engineCapabilities()).toBeNull();
+    });
+  });
+
+  describe('/props', () => {
+    /*
+     * Verified against a live llama-server (Ollama's bundled build, `-c 131072 -np 4`): `total_slots`
+     * is the slot count and `default_generation_settings.n_ctx` the window EACH slot gets — 32768,
+     * not the 131072 the server was started with.
+     */
+    const props = {
+      default_generation_settings: { id: 0, id_task: -1, n_ctx: 32768, speculative: false, params: { n_predict: -1 } },
+      total_slots: 4,
+      model_path: '/models/blobs/sha256-1194192cf2a187eb02722edcc3f77b11d21f537048ce04b67ccf8ba78863006a',
+      model_alias: 'qwen3-coder:30b',
+      build_info: 'b11065-ce8caa6e6',
+    };
+
+    it('reads the slot count and the per-slot window, and nothing that is not a positive integer', () => {
+      expect(parseLlamacppProps(props)).toEqual({ slots: 4, contextLength: 32768, modelPath: props.model_path });
+      expect(parseLlamacppProps({ total_slots: '4', default_generation_settings: { n_ctx: 0 } })).toEqual({
+        slots: null,
+        contextLength: null,
+        modelPath: null,
+      });
+      expect(parseLlamacppProps(null)).toEqual({ slots: null, contextLength: null, modelPath: null });
+    });
+
+    it('is read on a healthy probe and answered from memory afterwards — never a request of its own', async () => {
+      (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/health')) return Promise.resolve({ status: 200 });
+        if (url.endsWith('/props')) return Promise.resolve({ data: props });
+        return Promise.resolve({ data: { data: [{ id: 'qwen3-coder:30b', owned_by: 'llamacpp' }] } });
+      });
+      expect(backend.engineCapabilities()).toBeNull();
+
+      await backend.healthCheck();
+
+      expect(axios.get).toHaveBeenCalledTimes(3);
+      expect(axios.get).toHaveBeenNthCalledWith(3, 'http://llama-host:8080/props', expect.objectContaining({ timeout: 5000 }));
+      expect(backend.engineCapabilities()).toEqual({ slots: 4, contextLength: 32768 });
+      expect(backend.engineCapabilities()).toEqual({ slots: 4, contextLength: 32768 });
+      expect(axios.get).toHaveBeenCalledTimes(3);
+
+      // The window it was loaded with is the one residency reports.
+      const residency = await backend.listResident();
+      expect(residency.models?.[0]?.contextLength).toBe(32768);
+    });
+
+    it('forgets the statement when the server stops answering, so the pool never ranks against a dead server’s slots', async () => {
+      (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/health')) return Promise.resolve({ status: 200 });
+        if (url.endsWith('/props')) return Promise.resolve({ data: props });
+        return Promise.resolve({ data: { data: [{ id: 'qwen3-coder:30b', owned_by: 'llamacpp' }] } });
+      });
+      await backend.healthCheck();
+      expect(backend.engineCapabilities()).not.toBeNull();
+
+      (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+      await backend.healthCheck();
+
+      expect(backend.engineCapabilities()).toBeNull();
+    });
+
+    it('does not let a typed Settings address overwrite what the configured server said', async () => {
+      (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockImplementation((url: string) => {
+        if (url.endsWith('/health')) return Promise.resolve({ status: 200 });
+        if (url.endsWith('/props')) return Promise.resolve({ data: props });
+        return Promise.resolve({ data: { data: [{ id: 'qwen3-coder:30b', owned_by: 'llamacpp' }] } });
+      });
+      await backend.healthCheck();
+      (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await backend.healthCheck('http://typed-host:9999');
+
+      expect(backend.engineCapabilities()).toEqual({ slots: 4, contextLength: 32768 });
     });
 
     it('is unreachable, not merely empty, when nothing answers', async () => {
@@ -118,6 +215,7 @@ describe('LlamacppBackend', () => {
     it("reports 'implicit' residency, with the fields it cannot know left null", async () => {
       (axios.get as never as ReturnType<typeof vi.fn>) = vi.fn().mockImplementation((url: string) => {
         if (url.endsWith('/health')) return Promise.resolve({ status: 200 });
+        if (url.endsWith('/props')) return Promise.reject(new Error('404'));
         return Promise.resolve({ data: { data: [{ id: 'qwen3.6-27b-q4_k_m' }] } });
       });
 
