@@ -637,3 +637,85 @@ describe('env-helpers — ALLOW_ERROR_MONITORING precedence', () => {
     expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('true');
   });
 });
+
+describe('env-helpers — legacy env aliases (RUNTIPI_* / TIPI_*)', () => {
+  // #1143 (c88a83580) renamed "Runtipi" to "CIHub" by substring, turning the
+  // legacy alias RUNTIPI_APP_DATA_PATH into RUNCIHUB_APP_DATA_PATH — a name no
+  // appliance has ever set. CI-OS still writes RUNTIPI_* (core/lib/ci-hub.sh),
+  // so the fallback silently resolved nothing. Nothing covered it, so it shipped.
+  const LEGACY_KEYS = [
+    'CI_HUB_APP_DATA_PATH',
+    'RUNTIPI_APP_DATA_PATH',
+    'RUNCIHUB_APP_DATA_PATH',
+    'ROOT_FOLDER_HOST',
+    'CI_CLOUD_URL',
+    'DOMAIN',
+    'JWT_SECRET',
+    'MCP_API_KEY',
+  ];
+  const saved: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const key of LEGACY_KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+    process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
+    process.env.CI_CLOUD_URL = 'https://cloud.example.com';
+    mockedFs.existsSync.mockReturnValue(true);
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return '{}';
+      if (p.includes('.env')) return '';
+      if (p.includes('seed')) return 'a'.repeat(64);
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+  });
+
+  afterEach(() => {
+    for (const [key, val] of Object.entries(saved)) {
+      if (val === undefined) delete process.env[key];
+      else process.env[key] = val;
+    }
+  });
+
+  it('MUST resolve RUNTIPI_APP_DATA_PATH — the name CI-OS actually writes', async () => {
+    process.env.RUNTIPI_APP_DATA_PATH = '/home/user/legacy-runtipi';
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('CI_HUB_APP_DATA_PATH')).toBe('/home/user/legacy-runtipi');
+  });
+
+  it('MUST still resolve RUNCIHUB_APP_DATA_PATH, shipped since v0.2.68', async () => {
+    process.env.RUNCIHUB_APP_DATA_PATH = '/home/user/legacy-runcihub';
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('CI_HUB_APP_DATA_PATH')).toBe('/home/user/legacy-runcihub');
+  });
+
+  it('MUST prefer the current name over every legacy alias', async () => {
+    process.env.CI_HUB_APP_DATA_PATH = '/home/user/current';
+    process.env.RUNTIPI_APP_DATA_PATH = '/home/user/legacy-runtipi';
+    process.env.RUNCIHUB_APP_DATA_PATH = '/home/user/legacy-runcihub';
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('CI_HUB_APP_DATA_PATH')).toBe('/home/user/current');
+  });
+
+  it('MUST prefer RUNTIPI_* over RUNCIHUB_* when both are set', async () => {
+    process.env.RUNTIPI_APP_DATA_PATH = '/home/user/legacy-runtipi';
+    process.env.RUNCIHUB_APP_DATA_PATH = '/home/user/legacy-runcihub';
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('CI_HUB_APP_DATA_PATH')).toBe('/home/user/legacy-runtipi');
+  });
+
+  it('MUST resolve a legacy alias out of the persisted .env, not just process.env', async () => {
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return '{}';
+      if (p.includes('.env')) return 'RUNTIPI_APP_DATA_PATH=/home/user/persisted-legacy';
+      if (p.includes('seed')) return 'a'.repeat(64);
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+    const envMap = await generateSystemEnvFile();
+    expect(envMap.get('CI_HUB_APP_DATA_PATH')).toBe('/home/user/persisted-legacy');
+  });
+});
