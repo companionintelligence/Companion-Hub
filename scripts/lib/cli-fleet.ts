@@ -164,6 +164,17 @@ import {
   summariseOllamaVersions,
   upgradeOllamaOnNode,
 } from './fleet-ollama-version.js';
+import {
+  type CpuResidentFinding,
+  describeCpuResident,
+  describeResidency,
+  judgeOllamaResidency,
+  type OllamaResidencyReading,
+  readOllamaResidencies,
+  readOllamaResidencyOnNode,
+  renderResidencyCell,
+  residencyGpuFromFacts,
+} from './fleet-ollama-residency.js';
 import { colorize, stripAnsi } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
@@ -930,23 +941,40 @@ async function runStatus(args: FleetArgs): Promise<void> {
   // spread this column exists to expose (0.12.11 → 0.33.3 across eighteen nodes) went unnoticed
   // precisely because nothing printed it. `--ollama-version` sets the pin the fleet is measured against.
   const pin = resolveOllamaVersion(args.ollamaVersion);
-  const versions = await readOllamaVersions(
-    probed.map((n) => ({ node: n, sshOk: n.local ? undefined : n.probe.ssh, sshFailure: n.probe.sshFailure })),
-    { user: args.user, timeoutMs: args.timeoutMs, concurrency: args.concurrency },
-  );
+  // Beside the version, what each Ollama has loaded and whether it is on the GPU. Six Strix Halo
+  // nodes served qwen3-coder:30b from the CPU at half speed for a day with every other column here
+  // green: version at pin, bind managed, engine answering. `size_vram 0` was the only tell. The two
+  // readings dial the same nodes and are taken together so a node that answers neither costs one
+  // timeout, not two.
+  const ollamaInputs = probed.map((n) => ({ node: n, sshOk: n.local ? undefined : n.probe.ssh, sshFailure: n.probe.sshFailure }));
+  const ollamaOpts = { user: args.user, timeoutMs: args.timeoutMs, concurrency: args.concurrency };
+  const [versions, residencies] = await Promise.all([readOllamaVersions(ollamaInputs, ollamaOpts), readOllamaResidencies(ollamaInputs, ollamaOpts)]);
   const ollamaSummary = summariseOllamaVersions(versions, pin);
-  const rows = probed.map((n, i) => ({ n, v: versions[i] ?? { node: n.name, reason: 'no reading was taken' } }));
+  const rows = probed.map((n, i) => {
+    const r: OllamaResidencyReading = residencies[i] ?? { node: n.name, reason: 'no reading was taken' };
+    // The environment the probe read is the system unit's; where a user-scope unit serves the port
+    // (beta-1) it is not the daemon's, and a reason built on it would name the wrong file.
+    const status = binds.get(n.ip)?.status;
+    const systemUnitServes = status !== 'user-scope' && status !== 'foreign-owner';
+    return {
+      n,
+      v: versions[i] ?? { node: n.name, reason: 'no reading was taken' },
+      r,
+      cpu: judgeOllamaResidency(systemUnitServes ? r : { ...r, env: undefined }),
+    };
+  });
 
   if (args.json) {
     console.log(
       JSON.stringify(
         {
-          nodes: rows.map(({ n, v }) => ({
+          nodes: rows.map(({ n, v, r, cpu }) => ({
             ...n,
             ollamaBind: binds.get(n.ip) ?? null,
             tailscaleCert: certs.get(n.name),
             image: imageOf.get(n.name) ?? null,
             ollama: { ...v, pin, standing: renderOllamaCell(v, pin).standing },
+            residency: { ...r, cpuResident: cpu },
           })),
           image: { majority: summary.majority, tie: summary.tie, known: summary.known, total: summary.total },
           ollama: { pin, summary: ollamaSummary },
@@ -960,12 +988,13 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
   console.log(
     renderTable(
-      rows.map(({ n, v }) => {
+      rows.map(({ n, v, r, cpu }) => {
         const cert = renderCertCell(certs.get(n.name) ?? unmeasuredCert('not probed'));
         const image = imageOf.get(n.name);
         const cell = renderOllamaCell(v, pin);
         const tone = cell.standing === 'behind' ? 'yellow' : cell.standing === 'at-pin' ? 'green' : 'dim';
         const portal = renderPortalCell(n.probe.portal);
+        const resident = renderResidencyCell(r, cpu);
         return [
           n.name,
           n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
@@ -980,11 +1009,14 @@ async function runStatus(args: FleetArgs): Promise<void> {
           describeBindCell(binds.get(n.ip), n),
           colorize(cert.text, cert.tone),
           colorize(cell.text, tone),
+          // Every loaded model by name; one on the CPU is marked, because nothing else here shows it.
+          resident.tone ? colorize(resident.text, resident.tone) : resident.text,
         ];
       }),
-      ['NODE', 'SSH', 'HUB', 'PORTAL', 'IMAGE', 'ENGINES', 'OLLAMA BIND', 'TLS CERT', 'OLLAMA'],
+      ['NODE', 'SSH', 'HUB', 'PORTAL', 'IMAGE', 'ENGINES', 'OLLAMA BIND', 'TLS CERT', 'OLLAMA', 'RESIDENT'],
     ),
   );
+  printCpuResidentFooter(rows.map(({ n, cpu }) => ({ node: n.name, findings: cpu })));
   const conflicts = probed.filter((n) => binds.get(n.ip)?.status === 'conflict');
   if (conflicts.length) {
     console.log('');
@@ -1028,6 +1060,18 @@ async function runStatus(args: FleetArgs): Promise<void> {
     console.log('');
     for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
   }
+}
+
+/**
+ * Name every model `status` found resident on a CPU next to an idle GPU, with the reason and the
+ * fix. Under the table rather than in it: the cell says which node, this says why.
+ */
+function printCpuResidentFooter(rows: ReadonlyArray<{ node: string; findings: readonly CpuResidentFinding[] }>): void {
+  const hit = rows.filter((r) => r.findings.length);
+  if (!hit.length) return;
+  console.log('');
+  console.log(colorize(`${hit.length} node(s) have a model resident on the CPU while the node has a GPU — HTTP 200 at half speed:`, 'yellow'));
+  for (const r of hit) for (const f of r.findings) console.log(colorize(`  ${r.node}: ${describeCpuResident(f)}`, 'dim'));
 }
 
 /** One cell of the preflight table: what the column is about, at a glance; the detail lines carry the rest. */
@@ -1315,6 +1359,31 @@ async function planOllamaBindOnNode(
 }
 
 /**
+ * What this node's Ollama has resident right now, and whether any of it is on the CPU.
+ *
+ * Read on every run, flags or no flags, like the runtime line — and for the same reason: the
+ * vulkan/iGPU combination that parked qwen3-coder:30b on six Strix Halo CPUs answered every "is it
+ * up" probe with a 200, and only `/api/ps`'s `size_vram` said otherwise. The GPU half of the
+ * judgement comes from the hardware facts this run already read, so a CPU-only box is not flagged
+ * for running a model on its CPU; the environment half comes from the node, as the daemon resolved it.
+ */
+async function reportOllamaResidency(
+  target: { host: string; user?: string },
+  facts: HostFacts,
+  opts: { systemUnitServes: boolean },
+): Promise<{ lines: Array<{ text: string; tone: 'dim' | 'yellow' }>; json: Record<string, unknown> }> {
+  const reading = await readOllamaResidencyOnNode(target);
+  // Facts outrank the probe's own GPU read where both exist: `facts` distinguishes present from
+  // working. The environment is the SYSTEM unit's; on a node the bind step refused because a
+  // user-scope unit serves the port (beta-1), it is not the daemon's, so it explains nothing.
+  const judged = { ...reading, gpu: residencyGpuFromFacts(facts), ...(opts.systemUnitServes ? {} : { env: undefined }) };
+  const findings = judgeOllamaResidency(judged);
+  const lines: Array<{ text: string; tone: 'dim' | 'yellow' }> = [{ text: describeResidency(reading), tone: 'dim' }];
+  for (const f of findings) lines.push({ text: `! ${describeCpuResident(f)}`, tone: 'yellow' });
+  return { lines, json: { ...reading, gpu: judged.gpu, cpuResident: findings } };
+}
+
+/**
  * What the firewall step would do on this node: the Hub's engine probes must not hang on a ufw
  * DROP. Read-only; `ufw status` is read under `sudo -n` when the account allows it.
  */
@@ -1520,6 +1589,10 @@ async function runBackends(args: FleetArgs): Promise<void> {
             : [];
         if (plan.backend === 'llamacpp' && plan.action !== 'skip') console.log(colorize(`            ${describeHubLlamacppUrlPlan()}`, 'green'));
         for (const half of hubHalves) console.log(colorize(`            ${describeHubContextCapPlan(half.value, half.setting)}`, 'green'));
+        // What is loaded and where, on every readable Ollama — the plan's one line that can say a
+        // node is serving from the CPU while its GPU sits idle.
+        const residency = bindPlan ? await reportOllamaResidency(target, facts, { systemUnitServes: !bindPlan.refused }) : undefined;
+        if (residency) for (const line of residency.lines) console.log(colorize(`            ${line.text}`, line.tone));
         report.push({
           node: node.name,
           backend: plan.backend,
@@ -1529,6 +1602,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
           ...(llamacppPlan ? { llamacpp: llamacppPlan.json } : {}),
           ...(plan.backend === 'llamacpp' && plan.action !== 'skip' ? { hubLlamacppUrl: HUB_LLAMACPP_URL } : {}),
           ...Object.fromEntries(hubHalves.map((half) => [half.key, half.value])),
+          ...(residency ? { residency: residency.json } : {}),
         });
         continue;
       }
@@ -1618,6 +1692,14 @@ async function runBackends(args: FleetArgs): Promise<void> {
           console.log(`  ${'hub'.padEnd(9)} ${colorize(cap.outcome, capTone)}${capTook} — ${cap.why}`);
           report.push({ node: node.name, [half.key]: { requested: half.value, ...cap } });
         }
+      }
+      // After the daemon is up — installed, adopted, restarted or left alone — what it has resident
+      // and where. A restart unloads everything, so a run that restarted reads `none` here; a run
+      // that touched nothing is where a CPU-resident model shows, with the reason and the fix.
+      if (plan.backend === 'ollama' && bindPlan && result.outcome !== 'failed') {
+        const residency = await reportOllamaResidency(target, facts, { systemUnitServes: !bindPlan.refused });
+        for (const line of residency.lines) console.log(colorize(`    ${line.text}`, line.tone));
+        report.push({ node: node.name, residency: residency.json });
       }
     }
 

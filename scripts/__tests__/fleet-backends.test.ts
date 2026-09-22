@@ -10,8 +10,15 @@
 import { describe, expect, it } from 'vitest';
 import { planBackend, planAllBackends, INSTALLABLE_BACKENDS, ollamaManagedEnvironment } from '../lib/fleet-backends.js';
 import { LLAMACPP_FLEET_PORT, LLAMACPP_UNIT } from '../lib/fleet-llamacpp.js';
-import { CANONICAL_BIND_DROPIN } from '../lib/fleet-ollama-bind.js';
-import type { HostFacts } from '../lib/fleet-hardware.js';
+import {
+  CANONICAL_BIND_DROPIN,
+  canonicalBindDropinContent,
+  normalizeOllamaHost,
+  parseServiceEnvironment,
+  systemdNameCompare,
+} from '../lib/fleet-ollama-bind.js';
+import { ollamaRuntimeDropinContent, RUNTIME_DROPIN } from '../lib/fleet-ollama-runtime.js';
+import { type HostFacts, isIntegratedAmdGpu } from '../lib/fleet-hardware.js';
 
 const host = (over: Partial<HostFacts> = {}): HostFacts => ({
   os: 'linux',
@@ -28,6 +35,8 @@ const host = (over: Partial<HostFacts> = {}): HostFacts => ({
 
 const nvidia = { vendor: 'nvidia' as const, name: 'RTX 3080', reportedVramMib: 10240, driverWorking: true };
 const strixHalo = { vendor: 'amd' as const, gfx: 'gfx1151', reportedVramMib: 2048, gttMib: 62061, driverWorking: true };
+/** A discrete RDNA3 card: the same vendor, the same driver, its own memory. Neither key applies. */
+const radeon7900 = { vendor: 'amd' as const, gfx: 'gfx1100', name: 'Radeon RX 7900 XTX', reportedVramMib: 24576, gttMib: 32768, driverWorking: true };
 
 describe('adoption', () => {
   it('adopts a backend already answering on its own unambiguous port', () => {
@@ -85,12 +94,16 @@ describe('gates', () => {
 });
 
 describe('the gfx1151 Vulkan override', () => {
-  it('is written into the unit file on Strix Halo', () => {
+  it('is written into the unit file on Strix Halo, with the iGPU key beside it', () => {
     // ROCm there runs NO_VMM: the driver advertises the whole ~60 GB GTT pool as free and then fails
     // to allocate 21 GB, so every real model 500s. Six nodes were dead this way until it was forced.
+    // And Vulkan alone is not enough: Ollama 0.34 drops an integrated GPU unless OLLAMA_IGPU_ENABLE=1,
+    // so the same six nodes then served qwen3-coder:30b from the CPU (size_vram 0, 37.5 tok/s against
+    // 75–79 with the key) with every health check green. Both keys, one file, or neither is safe.
     const plan = planBackend('ollama', host({ gpus: [strixHalo] }), '/data');
     expect(plan.action).toBe('install');
-    expect(plan.script).toContain('OLLAMA_LLM_LIBRARY=vulkan');
+    expect(plan.script).toContain('Environment="OLLAMA_LLM_LIBRARY=vulkan"');
+    expect(plan.script).toContain('Environment="OLLAMA_IGPU_ENABLE=1"');
   });
 
   it('is NOT written on hardware that does not need it', () => {
@@ -98,11 +111,42 @@ describe('the gfx1151 Vulkan override', () => {
     // everywhere would be a change nobody measured on the nodes that never had the problem.
     const plan = planBackend('ollama', host({ gpus: [nvidia] }), '/data');
     expect(plan.script).not.toContain('OLLAMA_LLM_LIBRARY=vulkan');
+    expect(plan.script).not.toContain('OLLAMA_IGPU_ENABLE');
   });
 
-  it('is the same environment on the adopt path, so a re-run never strips it', () => {
-    expect(ollamaManagedEnvironment(host({ gpus: [strixHalo] }))).toEqual(['OLLAMA_LLM_LIBRARY=vulkan']);
+  it('writes neither key for a discrete AMD card — same vendor, its own memory, no iGPU to enable', () => {
+    expect(isIntegratedAmdGpu(radeon7900)).toBe(false);
+    expect(ollamaManagedEnvironment(host({ gpus: [radeon7900] }))).toEqual([]);
+    const plan = planBackend('ollama', host({ gpus: [radeon7900] }), '/data');
+    expect(plan.script).not.toContain('OLLAMA_LLM_LIBRARY');
+    expect(plan.script).not.toContain('OLLAMA_IGPU_ENABLE');
+  });
+
+  it('is the same environment on the adopt path, so a re-run never strips either key', () => {
+    expect(ollamaManagedEnvironment(host({ gpus: [strixHalo] }))).toEqual(['OLLAMA_LLM_LIBRARY=vulkan', 'OLLAMA_IGPU_ENABLE=1']);
     expect(ollamaManagedEnvironment(host({ gpus: [nvidia] }))).toEqual([]);
+    expect(ollamaManagedEnvironment(host({ gpus: [] }))).toEqual([]);
+  });
+
+  it('cannot be dropped by a runtime run that omits --ollama-igpu: the key lives in the bind file', () => {
+    // The failure mode measured 2026-09-21: the key was in the runtime file, rendered whole from
+    // the flags on every run, and a run with `--ollama-parallel` alone rendered it away. The bind
+    // file is rendered from the hardware, and the hardware does not change between runs.
+    const bind = canonicalBindDropinContent(normalizeOllamaHost('0.0.0.0'), ollamaManagedEnvironment(host({ gpus: [strixHalo] })));
+    const bindKeys = parseServiceEnvironment(bind).flatMap((d) => (d.kind === 'set' ? [d.key] : []));
+    expect(bindKeys).toEqual(['OLLAMA_HOST', 'OLLAMA_LLM_LIBRARY', 'OLLAMA_IGPU_ENABLE']);
+    const runtimeWithoutIgpu = ollamaRuntimeDropinContent({ parallel: 4, keepAlive: '24h' });
+    expect(runtimeWithoutIgpu).not.toContain('OLLAMA_IGPU_ENABLE');
+  });
+
+  it('pins the precedence: the bind file sorts before the runtime file, so --ollama-igpu on|off is the override that wins', () => {
+    // systemd applies drop-ins in byte order of filename, last assignment winning. `b` < `r`, so the
+    // bind file's OLLAMA_IGPU_ENABLE=1 is the hardware default and the runtime file's explicit
+    // `--ollama-igpu off` (=0) outranks it — the operator's word beats the installer's. If either
+    // file is ever renamed, this is the test that says the override silently stopped working.
+    expect(systemdNameCompare(CANONICAL_BIND_DROPIN, RUNTIME_DROPIN)).toBeLessThan(0);
+    // And the override is a real value, not an absence: `off` writes 0, which is what outranks 1.
+    expect(ollamaRuntimeDropinContent({ igpu: false })).toContain('Environment="OLLAMA_IGPU_ENABLE=0"');
   });
 });
 
@@ -133,6 +177,7 @@ describe('the ollama bind policy', () => {
     expect(script).not.toContain('companionhub.conf');
     // The managed environment rides in the same file.
     expect(script).toContain('Environment="OLLAMA_LLM_LIBRARY=vulkan"');
+    expect(script).toContain('Environment="OLLAMA_IGPU_ENABLE=1"');
     expect((script.match(/cat >"\$cihub_bind_dir\/\$cihub_bind_file"/g) ?? []).length).toBe(1);
   });
 

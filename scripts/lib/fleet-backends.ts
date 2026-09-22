@@ -21,7 +21,7 @@
  * NOTHING HERE RUNS AUTOMATICALLY. Every function is invoked by an explicit `--execute`.
  */
 
-import type { HostFacts } from './fleet-hardware.js';
+import { type HostFacts, isIntegratedAmdGpu } from './fleet-hardware.js';
 import { confirmOllamaVersion, resolveOllamaVersion } from './fleet-ollama-version.js';
 import {
   BIND_MARKERS,
@@ -156,20 +156,37 @@ const PORTS: Record<InstallableBackend, number> = {
  * nodes on this fleet returned HTTP 500 on every real model until this was forced. Measured after:
  * 0 → 53.4 tok/s on the exact model that had been failing.
  *
+ * `OLLAMA_IGPU_ENABLE=1` beside it, in the SAME file, whenever Vulkan is forced on an integrated
+ * AMD part. Ollama 0.34's runner drops an integrated GPU unless that key is set ("dropping
+ * integrated GPU; to enable, set OLLAMA_IGPU_ENABLE=1"), so Vulkan forced with the key unset loads
+ * the model on the CPU and serves it at HTTP 200: measured 2026-09-21 on six Strix Halo nodes (ci,
+ * core-4, core-6, core-14, core-17, fzzy), qwen3-coder:30b sat at `size_vram 0` — 37.5 tok/s decode,
+ * 109 tok/s prefill — against 75–79 tok/s and ~530 tok/s prefill with the key. It used to be written
+ * only when an operator passed `--ollama-igpu on` to the runtime drop-in, and a runtime run that
+ * omitted the flag rendered that file without it — which is exactly how six nodes lost it. A key the
+ * hardware requires belongs with the other key the hardware requires.
+ *
+ * Precedence, made explicit: systemd applies drop-ins in byte order of filename and the last
+ * assignment wins. `zzzzz-cihub-bind.conf` sorts BEFORE `zzzzz-cihub-runtime.conf` (`b` < `r`), so
+ * the value here is the hardware default and `--ollama-igpu on|off` in the runtime file is the
+ * operator override that wins when given; `--ollama-igpu unset` (or no flag) leaves this default in
+ * force. A test in `fleet-backends.test.ts` pins that ordering.
+ *
  * Exported because the adopt path writes the same canonical file as the install path, and the two
  * must agree on its contents or a re-run would strip a setting the previous run added.
  *
- * Deliberately NOT where `OLLAMA_NUM_PARALLEL`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_CONTEXT_LENGTH`,
- * `OLLAMA_IGPU_ENABLE` or `OLLAMA_MAX_LOADED_MODELS` live: those are per-run operator choices,
- * written to their own drop-in by `fleet-ollama-runtime.ts` so that changing one never rewrites (or
- * restarts over) the bind.
+ * Deliberately NOT where `OLLAMA_NUM_PARALLEL`, `OLLAMA_KEEP_ALIVE`, `OLLAMA_CONTEXT_LENGTH` or
+ * `OLLAMA_MAX_LOADED_MODELS` live: those are per-run operator choices, written to their own drop-in
+ * by `fleet-ollama-runtime.ts` so that changing one never rewrites (or restarts over) the bind.
  */
 export function ollamaManagedEnvironment(facts: HostFacts): string[] {
-  const gfx = facts.gpus.find((g) => g.vendor === 'amd')?.gfx;
+  const amd = facts.gpus.find((g) => g.vendor === 'amd');
   const env: string[] = [];
-  if (gfx === 'gfx1151') {
+  if (amd?.gfx === 'gfx1151') {
     // Load-bearing, and the reason is not obvious from the symptom: see the doc comment above.
     env.push('OLLAMA_LLM_LIBRARY=vulkan');
+    // Vulkan on an integrated part without this is a CPU-resident model behind a green health check.
+    if (isIntegratedAmdGpu(amd)) env.push('OLLAMA_IGPU_ENABLE=1');
   }
   return env;
 }

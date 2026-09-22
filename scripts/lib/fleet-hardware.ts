@@ -150,11 +150,43 @@ const num = (value: string | undefined): number | undefined => {
 };
 
 /**
+ * AMD parts whose "VRAM" is a carve-out of system memory — APUs, where the GPU shares the pool with
+ * the CPU. Ollama's runner treats these as *integrated* and, since 0.34, DROPS them unless
+ * `OLLAMA_IGPU_ENABLE=1` ("dropping integrated GPU; to enable, set OLLAMA_IGPU_ENABLE=1"), so a
+ * daemon forced onto Vulkan there loads every model on the CPU and answers HTTP 200 at half speed.
+ * gfx1151 (Strix Halo) is the one measured on this fleet; the rest are the same silicon family and
+ * are listed so the vulkan/iGPU pairing and the residency reason apply to them by target, not by
+ * a name string that varies with the driver.
+ */
+const AMD_INTEGRATED_GFX_TARGETS: ReadonlySet<string> = new Set([
+  'gfx1151', // Strix Halo — measured 2026-09-21
+  'gfx1150', // Strix Point
+  'gfx1152', // Krackan Point
+  'gfx1103', // Phoenix / Hawk Point
+  'gfx1035', // Rembrandt
+  'gfx1036', // Raphael / Granite Ridge
+  'gfx1037', // Mendocino
+  'gfx90c', // Renoir / Cezanne / Lucienne
+]);
+
+/**
+ * Is this AMD GPU an integrated, unified-memory part?
+ *
+ * Decided by the amdgpu target alone. A memory-ratio heuristic (GTT several times the VRAM
+ * carve-out) was considered and rejected: a discrete 4 GB card on a 64 GB box shows the same ratio,
+ * and a wrong `true` here would put a managed environment key on a card that does not need it.
+ * Unknown target, other vendor: `false`.
+ */
+export function isIntegratedAmdGpu(gpu: Pick<GpuInfo, 'vendor' | 'gfx'>): boolean {
+  return gpu.vendor === 'amd' && gpu.gfx !== undefined && AMD_INTEGRATED_GFX_TARGETS.has(gpu.gfx);
+}
+
+/**
  * `gfx_target_version` is a packed integer — 110501 means gfx1105... except the encoding is
  * major/minor/step in pairs, so 110501 is gfx1151 written as 11,05,01 reversed in the middle.
  * Decoding it explicitly beats guessing from a card name, which varies by driver version.
  */
-function decodeGfx(raw: string | undefined): string | undefined {
+export function decodeGfx(raw: string | undefined): string | undefined {
   if (!raw || raw === 'none') return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return undefined;
