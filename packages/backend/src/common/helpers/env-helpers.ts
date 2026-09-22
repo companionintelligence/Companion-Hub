@@ -89,21 +89,38 @@ const isAbsoluteHostPath = (value: string) => path.isAbsolute(value) || path.win
  * Resolves configuration from the process environment, settings, persisted
  * environment, then the default. New variable names take precedence over legacy aliases.
  */
-// Keep legacy names readable while existing installations migrate.
-const LEGACY_ENV_MAP: Record<string, string> = {
-  CI_HUB_STATE_PATH: 'RUNCIHUB_STATE_PATH',
-  CI_HUB_APP_DATA_PATH: 'RUNCIHUB_APP_DATA_PATH',
-  CI_HUB_FORWARD_AUTH_URL: 'RUNCIHUB_FORWARD_AUTH_URL',
-  CI_HUB_DATA_DIR: 'CIHUB_DATA_DIR',
-  CI_HUB_APP_DIR: 'CIHUB_APP_DIR',
-  CI_HUB_APP_DATA_DIR: 'CIHUB_APP_DATA_DIR',
+/**
+ * Keep legacy names readable while existing installations migrate.
+ *
+ * Aliases are listed oldest-first. The `RUNTIPI_*` / `TIPI_*` names are the ones
+ * appliances actually have on disk — CI-OS still writes them today, in
+ * `core/lib/ci-hub.sh`. They were lost in #1143 (`c88a83580`), which renamed
+ * "Runtipi" to "CIHub" by substring and turned `RUNTIPI_` into `RUNCIHUB_` — a
+ * prefix that was never shipped, so nothing ever set it and this whole fallback
+ * silently stopped resolving. The `RUNCIHUB_*` / `CIHUB_*` spellings are kept
+ * because they have been in released builds since v0.2.60 and cost nothing.
+ */
+const LEGACY_ENV_MAP: Record<string, readonly string[]> = {
+  CI_HUB_STATE_PATH: ['RUNTIPI_STATE_PATH', 'RUNCIHUB_STATE_PATH'],
+  CI_HUB_APP_DATA_PATH: ['RUNTIPI_APP_DATA_PATH', 'RUNCIHUB_APP_DATA_PATH'],
+  CI_HUB_FORWARD_AUTH_URL: ['RUNTIPI_FORWARD_AUTH_URL', 'RUNCIHUB_FORWARD_AUTH_URL'],
+  CI_HUB_DATA_DIR: ['TIPI_DATA_DIR', 'CIHUB_DATA_DIR'],
+  CI_HUB_APP_DIR: ['TIPI_APP_DIR', 'CIHUB_APP_DIR'],
+  CI_HUB_APP_DATA_DIR: ['TIPI_APP_DATA_DIR', 'CIHUB_APP_DATA_DIR'],
 
-  CI_HUB_MEDIA_PATH: 'RUNCIHUB_MEDIA_PATH',
-  CI_HUB_REPOS_PATH: 'RUNCIHUB_REPOS_PATH',
-  CI_HUB_APPS_PATH: 'RUNCIHUB_APPS_PATH',
-  CI_HUB_LOGS_PATH: 'RUNCIHUB_LOGS_PATH',
-  CI_HUB_USER_CONFIG_PATH: 'RUNCIHUB_USER_CONFIG_PATH',
-  CI_HUB_BACKUPS_PATH: 'RUNCIHUB_BACKUPS_PATH',
+  CI_HUB_MEDIA_PATH: ['RUNTIPI_MEDIA_PATH', 'RUNCIHUB_MEDIA_PATH'],
+  CI_HUB_REPOS_PATH: ['RUNTIPI_REPOS_PATH', 'RUNCIHUB_REPOS_PATH'],
+  CI_HUB_APPS_PATH: ['RUNTIPI_APPS_PATH', 'RUNCIHUB_APPS_PATH'],
+  CI_HUB_LOGS_PATH: ['RUNTIPI_LOGS_PATH', 'RUNCIHUB_LOGS_PATH'],
+  CI_HUB_USER_CONFIG_PATH: ['RUNTIPI_USER_CONFIG_PATH', 'RUNCIHUB_USER_CONFIG_PATH'],
+  CI_HUB_BACKUPS_PATH: ['RUNTIPI_BACKUPS_PATH', 'RUNCIHUB_BACKUPS_PATH'],
+};
+
+const legacyKeysFor = (key: string): readonly string[] => LEGACY_ENV_MAP[key] ?? [];
+
+const envValue = (key: string): string | undefined => {
+  const val = process.env[key];
+  return val !== undefined && val !== '' ? val : undefined;
 };
 
 function resolve(
@@ -114,12 +131,16 @@ function resolve(
     fallback: string;
   },
 ): string {
-  if (process.env[key] !== undefined && process.env[key] !== '') {
-    return process.env[key] as string;
+  const current = envValue(key);
+  if (current !== undefined) {
+    return current;
   }
-  const legacyKey = LEGACY_ENV_MAP[key];
-  if (legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '') {
-    return process.env[legacyKey] as string;
+  const legacyKeys = legacyKeysFor(key);
+  for (const legacyKey of legacyKeys) {
+    const legacy = envValue(legacyKey);
+    if (legacy !== undefined) {
+      return legacy;
+    }
   }
   if (opts.settingsVal !== undefined && opts.settingsVal !== '') {
     return opts.settingsVal;
@@ -128,7 +149,7 @@ function resolve(
   if (persisted !== undefined && persisted !== '') {
     return persisted;
   }
-  if (legacyKey) {
+  for (const legacyKey of legacyKeys) {
     const legacyPersisted = opts.envMap.get(legacyKey);
     if (legacyPersisted !== undefined && legacyPersisted !== '') {
       return legacyPersisted;
@@ -138,11 +159,10 @@ function resolve(
 }
 
 function processEnvHasValue(key: string): boolean {
-  if (process.env[key] !== undefined && process.env[key] !== '') {
+  if (envValue(key) !== undefined) {
     return true;
   }
-  const legacyKey = LEGACY_ENV_MAP[key];
-  return Boolean(legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '');
+  return legacyKeysFor(key).some((legacyKey) => envValue(legacyKey) !== undefined);
 }
 
 function boolStr(val: boolean | undefined): string | undefined {

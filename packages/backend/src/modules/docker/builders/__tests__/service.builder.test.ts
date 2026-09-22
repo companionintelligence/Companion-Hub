@@ -102,6 +102,53 @@ describe('ServiceBuilder', () => {
 
       expect(service.labels).toEqual({ test: 'my-app-my-app' });
     });
+
+    // The catalog's own manifests use {{RUNTIPI_APP_ID}} — #1143 (c88a83580) renamed the
+    // legacy branch of this pattern to RUNCIHUB_APP_ID by substring, a spelling no manifest
+    // has ever contained, so real labels stopped interpolating and shipped as literals.
+    it('should replace RUNTIPI_APP_ID — the placeholder real catalog manifests use', () => {
+      const service = serviceBuilder
+        .setName('name')
+        .setImage('image')
+        .setLabels({ 'runtipi.app_id': '{{RUNTIPI_APP_ID}}' })
+        .interpolateVariables('my-app')
+        .build();
+
+      expect(service.labels).toEqual({ 'runtipi.app_id': 'my-app' });
+    });
+
+    it('should replace RUNTIPI_APP_ID in label keys', () => {
+      const service = serviceBuilder
+        .setName('name')
+        .setImage('image')
+        .setLabels({ '{{RUNTIPI_APP_ID}}': 'value' })
+        .interpolateVariables('my-app')
+        .build();
+
+      expect(service.labels).toEqual({ 'my-app': 'value' });
+    });
+
+    it('should handle spaces in a RUNTIPI_APP_ID placeholder', () => {
+      const service = serviceBuilder
+        .setName('name')
+        .setImage('image')
+        .setLabels({ '{{ RUNTIPI_APP_ID }}': '{{ RUNTIPI_APP_ID }}' })
+        .interpolateVariables('my-app')
+        .build();
+
+      expect(service.labels).toEqual({ 'my-app': 'my-app' });
+    });
+
+    it('should replace every placeholder spelling side by side', () => {
+      const service = serviceBuilder
+        .setName('name')
+        .setImage('image')
+        .setLabels({ test: '{{CI_HUB_APP_ID}}-{{RUNTIPI_APP_ID}}-{{RUNCIHUB_APP_ID}}' })
+        .interpolateVariables('my-app')
+        .build();
+
+      expect(service.labels).toEqual({ test: 'my-app-my-app-my-app' });
+    });
   });
 
   describe('Volume Mount Propagation', () => {
