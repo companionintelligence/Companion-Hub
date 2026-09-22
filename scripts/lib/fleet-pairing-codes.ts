@@ -19,6 +19,18 @@
  * failed at register with "Pairing failed". So a re-register is recorded here too — the kept code
  * for the device is replaced with the new one, and every re-register is logged so an install that
  * still finds an older code says why it cannot use it instead of trying.
+ *
+ * A third way a kept code dies: Portal itself says so. On 2026-09-22, three independently-minted
+ * codes for beta-max were all rejected `410 PAIRING_CODE_INVALID` — one within seconds of being
+ * minted — with no `fleet devices re-register` involved at all, so `findInvalidatingReRegistration`
+ * never fires and this file has no record that anything is wrong. Without a fix, every retry reuses
+ * the same dead code and fails identically forever: `reusing the code minted 2026-09-22T06:34 for
+ * beta-1` survived a device release and two more `fleet install` attempts unchanged. `register`'s own
+ * failure is the only signal available, so a step whose output names this specific Portal error
+ * clears the kept code — see `isDeadPairingCodeFailure` — while every other failure (a slow DNS/tunnel
+ * provisioning step timing out per #1580, a transient network blip) still keeps it, exactly as
+ * before: those may yet succeed with the same code, and re-minting on every failure is what caused
+ * the 2026-09-18 orphan-device incident this file exists to prevent.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -257,4 +269,20 @@ export function describeDeviceNameConflict(name: string, reRegistered?: ReRegist
     'Either an earlier attempt minted it and failed before registering — delete it in Portal and rerun —',
     'or this node is registered under another org, whose owner must release it there first.',
   ].join(' ');
+}
+
+/**
+ * Whether a `hub up + register` step's failure detail is Portal itself declaring the pairing code
+ * dead, rather than a step that might still succeed with the same code on retry (a slow tunnel
+ * provisioning timeout, a transient SSH/network failure). Matched against `describeStepFailure`'s
+ * output, which keeps the tail of `cihub register`'s own stdout — Portal's literal response body is
+ * `{"error":"That pairing code is no longer valid. Ask for a new one.","code":"PAIRING_CODE_INVALID",...}`
+ * and the CLI prints its `error` field verbatim under a "Pairing failed" heading.
+ *
+ * A true result here is the caller's cue to `clearPendingPairingCode` so the next attempt mints a
+ * fresh code instead of resending one Portal has already refused — see the module doc for why every
+ * other failure must NOT clear the kept code.
+ */
+export function isDeadPairingCodeFailure(detail: string): boolean {
+  return /pairing code is no longer valid/i.test(detail) || /PAIRING_CODE_INVALID/.test(detail);
 }

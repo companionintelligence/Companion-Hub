@@ -12,6 +12,7 @@ import {
   describeInvalidatedPairingCode,
   findInvalidatingReRegistration,
   findReRegistration,
+  isDeadPairingCodeFailure,
   type PendingPairingCode,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
@@ -169,5 +170,24 @@ describe('the store file', () => {
     clearPendingPairingCode('10.0.0.1', file);
     expect(store().codes).toEqual({});
     expect(findReRegistration('core-1', 'org-1', file)).toBeDefined();
+  });
+});
+
+describe('isDeadPairingCodeFailure', () => {
+  it("recognises Portal's literal 410 response text, box-drawing and all", () => {
+    expect(isDeadPairingCodeFailure('That pairing code is no longer valid. Ask for a new one.')).toBe(true);
+    expect(isDeadPairingCodeFailure('Pairing failed | That pairing code is no longer valid. Ask for a new one.')).toBe(true);
+  });
+
+  it('recognises the error code alone, case-sensitively as Portal sends it', () => {
+    expect(isDeadPairingCodeFailure('status=410 body={"code":"PAIRING_CODE_INVALID"}')).toBe(true);
+  });
+
+  it('does not flag a failure that may still succeed if the same code is resent', () => {
+    expect(isDeadPairingCodeFailure('hub-up-failed')).toBe(false);
+    expect(isDeadPairingCodeFailure('CI Portal did not respond in time. It may have partly completed.')).toBe(false);
+    expect(isDeadPairingCodeFailure('ssh: connect to host 10.0.0.7 port 22: Operation timed out')).toBe(false);
+    // The DNS provider error from #1582 Update 2 — a slow downstream step, not Portal refusing the code.
+    expect(isDeadPairingCodeFailure('DNS provider error while creating record. Please retry.')).toBe(false);
   });
 });
