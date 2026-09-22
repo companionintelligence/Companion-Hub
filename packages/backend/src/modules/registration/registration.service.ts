@@ -74,6 +74,29 @@ const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 
 /**
+ * How long to wait for `POST /api/devices/pair`.
+ *
+ * This is not a read. The Portal provisions inside this window: it claims the
+ * pairing code, writes the device and registration rows, then lists/adopts or
+ * CREATES a Cloudflare tunnel, resolves the provisioning domain and writes a DNS
+ * record. Tunnel creation is the expensive step and happens only on a first
+ * pair — exactly when the operator has the least context for a failure.
+ *
+ * Measured against staging on 2026-09-22, Portal-side wall time:
+ *   - tunnel created from scratch ... Cloudflare had the tunnel at 13.8s
+ *   - tunnel adopted ................ 9.2s
+ *   - tunnel reused (succeeded) ..... 11.0s
+ *
+ * The old 15s left ~1s of headroom on the one request a new Hub cannot skip,
+ * and overshooting it is not a clean no-op: the Portal has already spent the
+ * pairing code and minted a device key this Hub never receives
+ * (companionintelligence/CI-Portal#748). Waiting longer is cheaper than that
+ * split state, so this is deliberately generous rather than tuned to the
+ * measurements above.
+ */
+const PORTAL_PAIR_TIMEOUT_MS = 60 * 1000;
+
+/**
  * How long Portal must go on rejecting the device key before the Hub reports `portal_rejected`.
  *
  * One rejection is not a verdict. CI-Portal's `deviceAuthMiddleware` answers the same
@@ -2091,7 +2114,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         {
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
           validateStatus: () => true,
-          timeout: 15_000,
+          timeout: PORTAL_PAIR_TIMEOUT_MS,
         },
       );
 
