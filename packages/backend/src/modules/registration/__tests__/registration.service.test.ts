@@ -1134,6 +1134,32 @@ describe('RegistrationService', () => {
       expect(result.message).toContain('Unable to reach CI Portal');
     });
 
+    it('tells a Portal timeout apart from a Portal it could not reach', async () => {
+      // What our own 15s deadline actually throws: axios leaves
+      // `transitional.clarifyTimeoutError` off, so a timeout is ECONNABORTED and,
+      // like every transport failure, carries no `response`. The Portal WAS
+      // reached here and may still be provisioning, so the network copy is wrong.
+      mockedAxios.post.mockRejectedValue(Object.assign(new Error('timeout of 15000ms exceeded'), { isAxiosError: true, code: 'ECONNABORTED' }));
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('did not respond in time');
+      expect(result.message).toContain('new pairing code');
+      expect(result.message).not.toContain('network connection');
+    });
+
+    it('treats a clarified ETIMEDOUT as a timeout as well', async () => {
+      // Guards the case where axios's `clarifyTimeoutError` default flips.
+      mockedAxios.post.mockRejectedValue(Object.assign(new Error('timeout of 15000ms exceeded'), { isAxiosError: true, code: 'ETIMEDOUT' }));
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('did not respond in time');
+      expect(result.message).not.toContain('network connection');
+    });
+
     it('returns error when CI Cloud URL is not configured', async () => {
       configService.getConfig.mockReturnValue({
         ciCloudUrl: '',

@@ -111,13 +111,48 @@ function describeRegistrationError(error: unknown): string {
  * `validateStatus: () => true`, so a thrown axios error means DNS, TCP, TLS or
  * the timeout failed rather than the Portal answering.
  */
-function isPortalUnreachableError(error: unknown): boolean {
+function isPortalTransportError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) {
     return false;
   }
 
   const candidate = error as { isAxiosError?: boolean; response?: unknown };
   return candidate.isAxiosError === true && !candidate.response;
+}
+
+/**
+ * Axios codes for "our own deadline expired". A timeout is `ECONNABORTED`
+ * unless `transitional.clarifyTimeoutError` is on, which we never set — see the
+ * same note in `inference/backends/ollama-host-bridge.ts`. `ETIMEDOUT` is
+ * accepted too so this keeps working if that default ever flips.
+ */
+const PORTAL_TIMEOUT_CODES = new Set(['ECONNABORTED', 'ETIMEDOUT']);
+
+/**
+ * True when the Portal was reached and simply did not answer inside our own
+ * deadline. It is NOT interchangeable with {@link isPortalUnreachableError}:
+ * pairing provisions a Cloudflare tunnel and a DNS record Portal-side, so a
+ * timeout here routinely means the Portal is still working — and, because the
+ * Portal claims the pairing code before that work starts, that the code is
+ * already spent (companionintelligence/CI-Portal#748). Telling the operator to
+ * check their network sends them to the one place the fault is not.
+ */
+function isPortalTimeoutError(error: unknown): boolean {
+  if (!isPortalTransportError(error)) {
+    return false;
+  }
+
+  const candidate = error as { code?: unknown };
+  return typeof candidate.code === 'string' && PORTAL_TIMEOUT_CODES.has(candidate.code);
+}
+
+/**
+ * True for a transport failure that is NOT a timeout: DNS, TCP or TLS never got
+ * us to the Portal at all. Deliberately excludes timeouts rather than relying on
+ * call-site ordering, so both predicates stay correct on their own.
+ */
+function isPortalUnreachableError(error: unknown): boolean {
+  return isPortalTransportError(error) && !isPortalTimeoutError(error);
 }
 
 function describePortalPairingResponse(data: unknown): string {
@@ -2160,6 +2195,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       });
     } catch (error) {
       this.logger.error(`Pairing request failed before local registration completed: ${describeRegistrationError(error)}`);
+      if (isPortalTimeoutError(error)) {
+        return {
+          success: false,
+          message: 'CI Portal did not respond in time. It may have partly completed — get a new pairing code before trying again.',
+        };
+      }
+
       if (isPortalUnreachableError(error)) {
         return { success: false, message: 'Unable to reach CI Portal. Please check your network connection.' };
       }
