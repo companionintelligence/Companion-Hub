@@ -716,12 +716,15 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
-      // No `ciHubApiKey` in this config: a first pair sends no device key.
+      // No `ciHubApiKey` in this config: a first pair sends no device key. The deadline rides on
+      // the test that also proves the pair succeeded, so trimming it cannot leave a green
+      // assertion over a broken pairing path.
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://cloud.api/api/devices/pair',
         { pairing_code: 'ABC123', device_id: 'test-device' },
         expect.objectContaining({
           headers: { 'Content-Type': 'application/json' },
+          timeout: 60_000,
         }),
       );
       expect(configService.setUserSettings).toHaveBeenCalledWith({ ciHubApiKey: 'key-pair' });
@@ -1121,37 +1124,6 @@ describe('RegistrationService', () => {
         message: 'Device is already registered.',
       });
       expect(mockedAxios.post).not.toHaveBeenCalled();
-    });
-
-    it('gives the Portal long enough to provision a first pair', async () => {
-      // Pairing is not a read: the Portal creates a Cloudflare tunnel and a DNS
-      // record inside this window. Measured Portal-side on staging, a first pair
-      // had the tunnel at 13.8s and a successful pair took 11.0s, so the old 15s
-      // left about a second of headroom on the one request a new Hub cannot skip.
-      mockedAxios.post.mockResolvedValue({
-        status: 200,
-        data: {
-          device_id: 'test-device',
-          organization_id: 'org-pair',
-          organization_name: 'Paired Org',
-          slug: 'paired-org',
-          subdomain: 'hub-paired-org',
-          tunnel_id: 'tunnel-pair',
-          tunnel_token: 'token-pair',
-          api_key: 'key-pair',
-          domain: 'companionintelligence.com',
-        },
-      } as any);
-      vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
-      configService.setDomain.mockResolvedValue(undefined);
-
-      await service.pairDevice('ABC123');
-
-      expect(mockedAxios.post).toHaveBeenCalledWith(
-        'http://cloud.api/api/devices/pair',
-        expect.anything(),
-        expect.objectContaining({ timeout: 60_000 }),
-      );
     });
 
     it('returns error when Portal is unreachable', async () => {

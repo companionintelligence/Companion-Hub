@@ -126,6 +126,11 @@ test.describe('Cross-Domain Device Registration', () => {
   });
 
   test('Hub: pair device with Portal using pairing code', async ({ page }) => {
+    // The Hub gives Portal 60s on this call (`PORTAL_PAIR_TIMEOUT_MS`), so the whole test needs
+    // more than the suite's 90s default: expire first and the report says only that a heading
+    // never appeared, hiding the Hub's own refusal.
+    test.setTimeout(150_000);
+
     // Navigate to device registration page
     await page.goto(`${HUB_FRONTEND_URL}/device-registration`);
     await expect(page.getByRole('heading', { name: /Device Registration Required/i })).toBeVisible({ timeout: 15000 });
@@ -145,8 +150,9 @@ test.describe('Cross-Domain Device Registration', () => {
 
     // Wait for success — the Hub calls Portal's /api/devices/pair endpoint
     // Portal processes with CloudflareNoopService, returns noop tunnel credentials
-    // Hub stores everything and shows success
-    await expect(page.getByRole('heading', { name: 'Device Registered Successfully' })).toBeVisible({ timeout: 30000 });
+    // Hub stores everything and shows success. Stay above the Hub's own 60s Portal budget so a
+    // slow Portal surfaces as the Hub's refusal rather than a bare locator timeout.
+    await expect(page.getByRole('heading', { name: 'Device Registered Successfully' })).toBeVisible({ timeout: 75_000 });
   });
 
   test('Hub: reports registered status after pairing', async ({ request }) => {

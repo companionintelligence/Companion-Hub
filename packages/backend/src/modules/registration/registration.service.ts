@@ -76,29 +76,22 @@ const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 /**
  * How long to wait for `POST /api/devices/pair`.
  *
- * This is not a read. The Portal provisions inside this window: it claims the
- * pairing code, writes the device and registration rows, then lists/adopts or
- * CREATES a Cloudflare tunnel, resolves the provisioning domain and writes a DNS
- * record. Tunnel creation is the expensive step and happens only on a first
- * pair — exactly when the operator has the least context for a failure.
+ * This is not a read: the Portal claims the pairing code, writes the device rows, then
+ * lists/adopts or CREATES a Cloudflare tunnel and writes a DNS record. Overshooting is not a
+ * clean no-op — by then it has spent the code and minted a device key this Hub never receives
+ * (companionintelligence/CI-Portal#748) — so 60s is deliberately generous rather than tuned to
+ * the staging run behind it, where a from-scratch tunnel reached Cloudflare at 13.8s and the
+ * rest of the request still followed.
  *
- * Measured against staging on 2026-09-22, Portal-side wall time:
- *   - tunnel created from scratch ... Cloudflare had the tunnel at 13.8s
- *   - tunnel adopted ................ 9.2s
- *   - tunnel reused (succeeded) ..... 11.0s
+ * Every caller's own deadline must stay above this one, or it reports a failure for a pair the
+ * Hub goes on to complete: see `submitPairingCode` in `scripts/lib/register-hub.ts` and the
+ * cross-domain registration e2e. The Hub's own `httpServer.requestTimeout` is not such a
+ * deadline — `hub-pool-proxy-timeout.test.ts` pins that it does not cut a slow response — and
+ * Traefik responds up to 300s.
  *
- * The old 15s left ~1s of headroom on the one request a new Hub cannot skip,
- * and overshooting it is not a clean no-op: the Portal has already spent the
- * pairing code and minted a device key this Hub never receives
- * (companionintelligence/CI-Portal#748). Waiting longer is cheaper than that
- * split state, so this is deliberately generous rather than tuned to the
- * measurements above.
- *
- * Nothing in front of us cuts it short. `main.ts` sets
- * `httpServer.requestTimeout = 30_000`, but that bounds how long the CLIENT may
- * take to SEND a request, not how long a handler may take to answer one — a
- * handler outliving it still responds normally. Traefik's responding timeouts
- * are 300s, and the frontend's generated fetch client sets none.
+ * Caveat: this bounds time to response HEADERS, not the whole exchange. axios hands the value to
+ * follow-redirects, which clears its wall-clock timer on `response` and leaves only a socket
+ * idle timeout after that.
  */
 const PORTAL_PAIR_TIMEOUT_MS = 60 * 1000;
 
