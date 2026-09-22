@@ -13,6 +13,7 @@ import {
   describeInvalidatedPairingCode,
   findInvalidatingReRegistration,
   findReRegistration,
+  isDeadPairingCodeFailure,
   type PendingPairingCode,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
@@ -209,5 +210,31 @@ describe('classifyPairingFailure', () => {
   it('reads across the line breaks a captured step has already mangled', () => {
     const boxed = ['┌─ Pairing failed ─┐', '│  That pairing code is no', '│  longer valid. Ask for a new one.', '└──┘'].join('\n');
     expect(classifyPairingFailure(boxed.replace(/[│┌┐└┘─]/g, ' '))).toMatchObject({ kind: 'refused' });
+  });
+});
+
+/**
+ * The narrower question, kept from #1584 and now answered by the same classifier: "dead" is a
+ * refusal alone, and a code Portal claimed is not dead by this name — it is spent, which
+ * `classifyPairingFailure` says and the caller must act on just as firmly.
+ */
+describe('isDeadPairingCodeFailure', () => {
+  it("recognises Portal's literal 410 response text, box-drawing and all", () => {
+    expect(isDeadPairingCodeFailure('That pairing code is no longer valid. Ask for a new one.')).toBe(true);
+    expect(isDeadPairingCodeFailure('Pairing failed | That pairing code is no longer valid. Ask for a new one.')).toBe(true);
+  });
+
+  it('recognises the error code alone, case-sensitively as Portal sends it', () => {
+    expect(isDeadPairingCodeFailure('status=410 body={"code":"PAIRING_CODE_INVALID"}')).toBe(true);
+  });
+
+  it('does not flag a failure that may still succeed if the same code is resent', () => {
+    expect(isDeadPairingCodeFailure('hub-up-failed')).toBe(false);
+    expect(isDeadPairingCodeFailure('CI Portal did not respond in time. It may have partly completed.')).toBe(false);
+    expect(isDeadPairingCodeFailure('ssh: connect to host 10.0.0.7 port 22: Operation timed out')).toBe(false);
+    // The DNS provider error from #1582 Update 2 is not Portal refusing the code — Portal had taken
+    // it. Not dead, then, but not keepable either: the retry that followed it got the 410. That is
+    // the distinction `classifyPairingFailure` draws and this narrower question cannot.
+    expect(isDeadPairingCodeFailure('DNS provider error while creating record. Please retry.')).toBe(false);
   });
 });

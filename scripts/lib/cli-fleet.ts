@@ -91,6 +91,7 @@ import {
   describeInvalidatedPairingCode,
   findInvalidatingReRegistration,
   findReRegistration,
+  classifyPairingFailure,
   type PairingCodeOutcome,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
@@ -1845,6 +1846,14 @@ async function runInstall(args: FleetArgs): Promise<void> {
       },
       args.user,
     );
+    // Portal declaring the code dead or spent is not one of the retry-safe failures this store is
+    // built to survive (a dropped SSH session, a node that never came up) — those may still succeed
+    // if resent, but a code Portal has refused or claimed never will, and resending it is the whole
+    // bug this closes. `replacePairingCode` above already drops the code it was asked about; this is
+    // the net under it, and it reads every register step, including a retry's, by the step detail
+    // alone — so a run whose replacement is refused in turn leaves nothing kept either.
+    const refused = report.steps.some((st) => !st.ok && st.name.startsWith('hub up + register') && classifyPairingFailure(st.detail));
+    if (refused) clearPendingPairingCode(node.ip);
     for (const st of report.steps) {
       const icon = st.skipped ? colorize('·', 'dim') : st.ok ? colorize('✓', 'green') : colorize('✗', 'red');
       const took = st.ms ? colorize(` (${Math.round(st.ms / 1000)}s)`, 'dim') : '';

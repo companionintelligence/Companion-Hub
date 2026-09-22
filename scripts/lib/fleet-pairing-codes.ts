@@ -19,6 +19,24 @@
  * failed at register with "Pairing failed". So a re-register is recorded here too — the kept code
  * for the device is replaced with the new one, and every re-register is logged so an install that
  * still finds an older code says why it cannot use it instead of trying.
+ *
+ * A third way a kept code dies: Portal itself says so. On 2026-09-22, three independently-minted
+ * codes for beta-max were all rejected `410 PAIRING_CODE_INVALID` — one within seconds of being
+ * minted — with no `fleet devices re-register` involved at all, so `findInvalidatingReRegistration`
+ * never fires and this file has no record that anything is wrong. Without a fix, every retry reuses
+ * the same dead code and fails identically forever: `reusing the code minted 2026-09-22T06:34 for
+ * beta-1` survived a device release and two more `fleet install` attempts unchanged. `register`'s own
+ * failure is the only signal available, so a step whose output names a Portal answer about the code
+ * clears the kept code — see `classifyPairingFailure` — while every other failure (a dropped SSH
+ * session, a node that never came up, a Portal the machine could not reach at all) still keeps it,
+ * exactly as before: those may yet succeed with the same code, and re-minting on every failure is
+ * what caused the 2026-09-18 orphan-device incident this file exists to prevent.
+ *
+ * A slow tunnel/DNS provisioning step is NOT one of the keep-it failures, though it reads like one.
+ * Portal claims the code when it validates it and provisions afterwards, so `#1580`'s timeout copy
+ * says "Get a new pairing code before trying again" and the DNS error from #1582 was followed by a
+ * `410` on the very same code. Those answers spend the code without registering the Hub; keeping it
+ * would buy the next run a twenty-minute `hub up` ending in the 410 it was trying to avoid.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -298,4 +316,17 @@ export function classifyPairingFailure(output: string): PairingCodeOutcome | und
   if (/DEVICE_PROOF_REQUIRED/i.test(text))
     return { kind: 'refused', why: 'Portal wants proof this machine owns the device row, which only a re-register gives' };
   return undefined;
+}
+
+/**
+ * Whether a register step's failure detail is Portal declaring the code dead — the narrower question
+ * `#1584` asked, kept as its own name because that is what reads at a call site that only wants to
+ * stop keeping the code. It is `classifyPairingFailure` and not a second pair of patterns: two
+ * regexes for one Portal answer drift, and the first thing to drift would be the one nobody notices.
+ *
+ * A code Portal *claimed* and then failed on is not "dead" by this name and still must not be kept —
+ * `classifyPairingFailure` is the one to ask when that distinction matters.
+ */
+export function isDeadPairingCodeFailure(detail: string): boolean {
+  return classifyPairingFailure(detail)?.kind === 'refused';
 }
