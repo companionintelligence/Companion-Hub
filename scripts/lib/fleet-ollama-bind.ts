@@ -399,9 +399,10 @@ export function environmentKeysOf(content: string): string[] {
 /**
  * Content of the canonical drop-in.
  *
- * `extraEnv` carries the installer's other managed settings (today: `OLLAMA_LLM_LIBRARY=vulkan` on
- * gfx1151) so the installer writes ONE file rather than a bind file and a settings file. Every line
- * is a plain `Environment="K=V"`; nothing here should ever need quoting rules.
+ * `extraEnv` carries the installer's other managed settings (today: `OLLAMA_LLM_LIBRARY=vulkan` and
+ * `OLLAMA_IGPU_ENABLE=1` on gfx1151 — see `ollamaManagedEnvironment`) so the installer writes ONE
+ * file rather than a bind file and a settings file. Every line is a plain `Environment="K=V"`;
+ * nothing here should ever need quoting rules.
  */
 export function canonicalBindDropinContent(address: OllamaAddress, extraEnv: readonly string[] = []): string {
   const lines = [
@@ -551,10 +552,14 @@ export function planBindConsolidation(files: readonly DropinFile[], target: Olla
   for (const d of disable) summary.push(`move ${d.name} → ${d.to}`);
   for (const s of shadowed) summary.push(`leave ${s.name} (${s.why})`);
   for (const u of unfixable) summary.push(`CANNOT FIX ${u.name}: ${u.why}`);
+  // The managed environment is named in the write line: a bind file that gains a key (the iGPU
+  // default on gfx1151 arrived after the first fleet-wide write) is otherwise a restart the plan
+  // announces as "write OLLAMA_HOST=<the value it already has>".
+  const managed = extraEnv.length ? ` ${extraEnv.join(' ')}` : '';
   summary.push(
     unchanged
-      ? `${CANONICAL_BIND_DROPIN} already sets OLLAMA_HOST=${target.address}`
-      : `write ${CANONICAL_BIND_DROPIN} with OLLAMA_HOST=${target.address}`,
+      ? `${CANONICAL_BIND_DROPIN} already sets OLLAMA_HOST=${target.address}${managed}`
+      : `write ${CANONICAL_BIND_DROPIN} with OLLAMA_HOST=${target.address}${managed}`,
   );
   // In shell order: the guard goes up (or comes down) after the file is written and before the restart.
   summary.push(

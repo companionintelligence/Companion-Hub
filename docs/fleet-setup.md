@@ -354,6 +354,34 @@ When a drop-in seems to have no effect: `systemctl cat ollama` shows the merge o
 a Hub container on the same node reaches the host Ollama over the Docker bridge, which a
 tailnet-only bind does not listen on.
 
+## Strix Halo nodes: Vulkan needs the iGPU key
+
+On gfx1151 the managed bind file sets two keys beside `OLLAMA_HOST`, and **both are required**:
+`OLLAMA_LLM_LIBRARY=vulkan`, because ROCm there runs NO_VMM and fails to allocate anything above
+the ~2 GB VRAM carve-out (six nodes 500'd on every real model until it was forced), and
+`OLLAMA_IGPU_ENABLE=1`, because Ollama 0.34 drops an integrated GPU without it and loads the model
+on the CPU instead — at HTTP 200. Measured 2026-09-21 on six nodes: qwen3-coder:30b at
+`size_vram 0`, 37.5 tok/s decode, 109 tok/s prefill; with the key, 75–79 tok/s and ~530 prefill.
+The iGPU key used to depend on `--ollama-igpu on` and the runtime file, which a later runtime run
+without the flag rendered away; it now lives in the bind file, derived from the hardware, where no
+flag removes it. `--ollama-igpu off` in the runtime file is the explicit override and wins by
+filename order (`zzzzz-cihub-bind.conf` < `zzzzz-cihub-runtime.conf`).
+
+Bringing a node up to it is one dry run and one `--execute`:
+
+```bash
+cihub fleet backends --backends ollama                      # plan: 'write zzzzz-cihub-bind.conf with … OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1' on each gfx1151 node
+cihub fleet backends --backends ollama --execute            # one restart per node whose file gains the key
+cihub fleet status                                          # RESIDENT column: model names, '⚠ CPU' on any that sits in system memory
+```
+
+**How you would know.** `cihub fleet status` reads each daemon's `/api/ps` and prints what is
+resident and where — `qwen3-coder:30b ⚠ CPU` on a GPU node whose model has less than half its
+bytes in VRAM, with the reason under the table; `cihub fleet backends` prints the same as a
+`resident:` line under each plan. Every other signal — version at pin, bind managed, engine
+answering, Hub healthy — was green on the six nodes for a day. Detail in
+[`CLI.md`](CLI.md#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file).
+
 ## Fleet-wide settings worth knowing
 
 Pool settings are **per node**. There is no fleet-wide configuration plane: setting `poolLocalAffinity`

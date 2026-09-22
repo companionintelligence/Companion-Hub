@@ -1156,6 +1156,19 @@ binds and **which drop-in decided it** (`100.64.0.9:11434 ← zzzzz-cihub-bind.c
 `CONFLICT` flag when more than one file sets `OLLAMA_HOST` and the winner is not the canonical one.
 Neither touches a node beyond the probe.
 
+The **RESIDENT** column is what each Ollama has loaded right now, from `/api/ps`, and **where**: a
+model whose `size_vram` is less than half its size on a node that has a GPU is marked
+`qwen3-coder:30b ⚠ CPU`, and a footer names the reason and the fix. It exists because on
+2026-09-21 six Strix Halo nodes served qwen3-coder:30b from the CPU — 37.5 tok/s against 75–79 on
+the GPU — with every other column green: version at pin, bind managed, engine answering. `size_vram:
+0` was the only tell, and nothing printed it. `—` is a daemon with nothing loaded; `?` is a node
+whose `/api/ps` could not be read (the reason is in `--json` under `residency.reason`). A CPU-only
+box running a model on its CPU is not marked. The reading and the GPU evidence come from the node
+itself over SSH; a node without SSH is read from here on `:11434`, which lists its models but,
+knowing nothing about its GPU or environment, never flags one. See
+[Vulkan and the iGPU key](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file) for the case the
+marker was built around.
+
 ### `cihub fleet preflight`
 
 Per node, in one SSH round trip: `sudo -n true`, `dpkg --audit`, `apt-get check`, a listing of
@@ -1254,6 +1267,58 @@ canonical file) without changing anything.
 > marks a `0.0.0.0` bind whose guard is not active as **EXPOSED**. Use `--bind tailnet` only on a
 > node that runs no Hub container.
 
+#### Strix Halo: Vulkan and the iGPU key, in the bind file
+
+On gfx1151 (Strix Halo) the bind file carries two more lines beside `OLLAMA_HOST`, both derived
+from the hardware and both **required**:
+
+```
+Environment="OLLAMA_LLM_LIBRARY=vulkan"
+Environment="OLLAMA_IGPU_ENABLE=1"
+```
+
+`OLLAMA_LLM_LIBRARY=vulkan` because ROCm on gfx1151 runs NO_VMM and cannot back a large contiguous
+allocation with GTT: the driver advertises the whole ~60 GB pool as free and then fails to allocate
+21 GB, so every model above the ~2 GB VRAM carve-out fails to load. Six nodes returned HTTP 500 on
+every real model until it was forced. `OLLAMA_IGPU_ENABLE=1` because Vulkan alone is not enough:
+Ollama 0.34's runner **drops an integrated GPU** unless that key is set (`dropping integrated GPU;
+to enable, set OLLAMA_IGPU_ENABLE=1` in the journal), and then loads the model on the CPU and
+serves it at HTTP 200. Measured 2026-09-21 on ci, core-4, core-6, core-14, core-17 and fzzy:
+qwen3-coder:30b at `size_vram 0`, 37.5 tok/s decode and 109 tok/s prefill; with the key, 75–79 tok/s
+and ~530 tok/s prefill on the same nodes.
+
+The iGPU key used to live only in the runtime file, written when `--ollama-igpu on` was passed —
+and that file is rendered whole from the flags on every run, so a later run with `--ollama-parallel`
+alone rendered it away. That is how the six nodes lost it. A key the hardware requires now lives
+with the other key the hardware requires, in the file that is rendered from the hardware; no runtime
+flag can remove it. A gfx1151 node whose bind file predates this is not a no-op: the plan says
+`write zzzzz-cihub-bind.conf with OLLAMA_HOST=0.0.0.0:11434 OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1`
+and `--execute` restarts the daemon once to make it so.
+
+**Precedence.** systemd applies drop-ins in byte order of filename, last assignment winning, and
+`zzzzz-cihub-bind.conf` sorts before `zzzzz-cihub-runtime.conf` (`b` < `r`). So the bind file's
+`OLLAMA_IGPU_ENABLE=1` is the hardware default, and `--ollama-igpu on|off` in the runtime file is
+the operator override that wins when given — `off` writes `0`, which outranks the `1`. `--ollama-igpu
+unset` (or no flag) leaves the key out of the runtime file and the bind file's default in force. A
+test pins that ordering; if either file is ever renamed, it is the test that says the override
+stopped working. The two files assign no other key in common.
+
+**The check.** Every `fleet backends` run — dry or `--execute`, flags or no flags — reads `/api/ps`
+on each Ollama it can reach and prints one `resident:` line under the plan: `resident: none`,
+`resident: qwen3-coder:30b (18.6 GiB, GPU)`, or, on a node with a GPU, a warning:
+
+```
+! qwen3-coder:30b resident on CPU — size_vram 0 of 18.6 GiB: OLLAMA_LLM_LIBRARY=vulkan with OLLAMA_IGPU_ENABLE unset — Ollama drops an integrated GPU unless OLLAMA_IGPU_ENABLE=1, so the model loaded on the CPU; run 'cihub fleet backends --backends ollama --execute' — the managed bind file now carries OLLAMA_IGPU_ENABLE=1 beside OLLAMA_LLM_LIBRARY=vulkan on gfx1151
+```
+
+The reason is named only when every part of it is in evidence — Vulkan forced, the key not `1`,
+an integrated AMD part — from the merged environment the daemon resolved, never from a file. Any
+other model with less than half its bytes in VRAM on a GPU node is flagged as measured but not
+explained, pointing at `journalctl -u ollama`. On `--execute` the read happens after the daemon is
+up; a run that restarted it reads `none`, since a restart unloads everything. `--json` carries the
+reading under `residency`, findings under `residency.cpuResident` with `cause` set to
+`vulkan-without-igpu` or `unknown`. `fleet status` shows the same reading as its RESIDENT column.
+
 #### Ollama's runtime environment: a second file, restarted only on change
 
 Measured on 2026-09-20: no node on the fleet set `OLLAMA_NUM_PARALLEL`, so every Ollama served one
@@ -1268,7 +1333,7 @@ can never touch it:
 | `--ollama-parallel N` | `OLLAMA_NUM_PARALLEL` | 1–64 |
 | `--ollama-keep-alive D` | `OLLAMA_KEEP_ALIVE` | a duration: `24h`, `30m`, `1h30m`, `-1` (forever) |
 | `--ollama-context N` | `OLLAMA_CONTEXT_LENGTH` | 512–1048576 |
-| `--ollama-igpu on\|off` | `OLLAMA_IGPU_ENABLE` | `1` or `0` |
+| `--ollama-igpu on\|off` | `OLLAMA_IGPU_ENABLE` | `1` or `0` — the operator override; on gfx1151 the bind file already sets `1`, see [above](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file) |
 | `--ollama-max-loaded N` | `OLLAMA_MAX_LOADED_MODELS` | 1–16 (`0` is refused: Ollama reads it as 3 × GPUs, not a cap — use `unset`) |
 
 Every flag also accepts **`unset`**, which leaves that key out of the file. The file is rendered
