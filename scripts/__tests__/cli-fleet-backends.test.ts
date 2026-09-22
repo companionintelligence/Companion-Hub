@@ -111,9 +111,26 @@ const UFW_FULL = [UFW_PARTIAL, '8080/tcp                   ALLOW       172.16.0.
 const firewallProbe = (status: string) =>
   ['firewall_probe=1', 'root=yes', 'ufw_bin=yes', 'ufw_conf=yes', 'ufw-status-begin', status, 'ufw-status-end'].join('\n');
 
+/**
+ * The residency probe on a node with nothing loaded. `gpu` and `env` shape the GPU evidence and the
+ * merged environment the script prints beside `/api/ps`; `ps` is the body itself.
+ */
+function psProbe(node: { ps?: string; amdGfxRaw?: string; nvidia?: string; env?: string } = {}) {
+  return [
+    'ollama-ps-probe=1',
+    'ollama-ps-host=127.0.0.1:11434',
+    `ollama-ps-env=OLLAMA_HOST=0.0.0.0:11434${node.env ? ` ${node.env}` : ''}`,
+    `ollama-ps-nvidia=${node.nvidia ?? ''}`,
+    `ollama-ps-amd-gfx=${node.amdGfxRaw ?? ''}`,
+    `ollama-ps-body=${node.ps ?? '{"models":[]}'}`,
+  ].join('\n');
+}
+
 interface NodeFixture {
   bind: string;
   ufw: string;
+  /** The residency probe's output; a node without one answers "nothing loaded". */
+  ps?: string;
 }
 let hosts: Record<string, NodeFixture> = {};
 let output: string[] = [];
@@ -188,6 +205,7 @@ beforeEach(() => {
     if (!h) return { ok: false, out: '', err: 'no route', code: 255, ms: 5 };
     if (command.includes('bind_probe=1')) return ok(h.bind);
     if (command.includes('firewall_probe=1')) return ok(h.ufw);
+    if (command.includes('ollama-ps-probe=1')) return ok(h.ps ?? psProbe());
     if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
     if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
     if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
@@ -216,7 +234,7 @@ describe('fleet backends (dry run)', () => {
     expect(text).toContain('Dry run');
     expect(sudoCalls()).toHaveLength(0);
     // Every SSH call was a read-only probe.
-    for (const [, command] of mocks.sshCapture.mock.calls) expect(String(command)).toMatch(/bind_probe=1|firewall_probe=1/);
+    for (const [, command] of mocks.sshCapture.mock.calls) expect(String(command)).toMatch(/bind_probe=1|firewall_probe=1|ollama-ps-probe=1/);
 
     // core-1: no runtime file yet → would write and restart; two probe ports still dropped.
     // The `now` line lists all five managed keys, set or not, so two nodes' lines line up.
@@ -286,6 +304,106 @@ describe('fleet backends (dry run)', () => {
     expect(printed()).toContain('only apply to `fleet backends`');
     exit.mockRestore();
   });
+
+  describe('a model resident on the CPU', () => {
+    // 2026-09-21, six Strix Halo nodes: the bind file forced OLLAMA_LLM_LIBRARY=vulkan, nothing set
+    // OLLAMA_IGPU_ENABLE, Ollama dropped the integrated GPU, and qwen3-coder:30b served from the CPU
+    // at 37.5 tok/s with every probe green. /api/ps said `size_vram: 0`; nothing read it.
+    const strixHalo = { vendor: 'amd' as const, gfx: 'gfx1151', reportedVramMib: 2048, gttMib: 62061, driverWorking: true };
+    const qwenOnCpu = JSON.stringify({
+      models: [{ name: 'qwen3-coder:30b', model: 'qwen3-coder:30b', size: 19975044096, size_vram: 0, context_length: 65536 }],
+    });
+    const qwenOnGpu = JSON.stringify({ models: [{ name: 'qwen3-coder:30b', model: 'qwen3-coder:30b', size: 19975044096, size_vram: 19975044096 }] });
+
+    beforeEach(() => {
+      // core-1 is the CPU-only control: the same /api/ps, no GPU in its facts. core-2 is the node.
+      mocks.readHostFacts.mockImplementation(async (t: SshTarget) => ({ facts: t.host === '10.0.0.2' ? facts({ gpus: [strixHalo] }) : facts() }));
+      hosts['10.0.0.1'] = { ...(hosts['10.0.0.1'] as NodeFixture), ps: psProbe({ ps: qwenOnCpu }) };
+      hosts['10.0.0.2'] = {
+        bind: bindProbe({ env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+        ufw: firewallProbe(UFW_FULL),
+        ps: psProbe({ ps: qwenOnCpu, amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+      };
+    });
+
+    it('is a warning line under the plan, with the reason and the fix, on a node with a GPU — and not on one without', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-1,core-2', '--json']);
+      const text = printed();
+      const lines = text.split('\n');
+      expect(lines).toContainEqual(expect.stringContaining('resident: qwen3-coder:30b (18.6 GiB, CPU)'));
+      expect(text).toContain(
+        '! qwen3-coder:30b resident on CPU — size_vram 0 of 18.6 GiB: OLLAMA_LLM_LIBRARY=vulkan with OLLAMA_IGPU_ENABLE unset — Ollama drops an integrated GPU unless OLLAMA_IGPU_ENABLE=1, so the model loaded on the CPU',
+      );
+      expect(text).toContain("run 'cihub fleet backends --backends ollama --execute' — the managed bind file now carries OLLAMA_IGPU_ENABLE=1");
+      // Exactly one warning: core-1 runs the same model on its CPU because that is all it has.
+      expect(text.match(/resident on CPU/g)).toHaveLength(1);
+      // And the plan for core-2's bind file says it would gain both keys — that IS the fix.
+      expect(text).toContain(`bind:   write ${CANONICAL_BIND_DROPIN} with OLLAMA_HOST=0.0.0.0:11434 OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1`);
+      expect(sudoCalls()).toHaveLength(0);
+      // --json carries the finding as data, cause named, so a fleet-wide run can list every such node.
+      const json = JSON.parse(output.find((l) => l.trimStart().startsWith('[')) ?? '[]') as Array<{
+        node: string;
+        residency?: { cpuResident: Array<{ cause: string; model: string }> };
+      }>;
+      const byNode = (n: string) => json.find((r) => r.node === n && r.residency)?.residency?.cpuResident ?? [];
+      expect(byNode('core-2')).toEqual([expect.objectContaining({ cause: 'vulkan-without-igpu', model: 'qwen3-coder:30b' })]);
+      expect(byNode('core-1')).toEqual([]);
+    });
+
+    it('is not a warning once the model is in VRAM, and the inventory line says so', async () => {
+      hosts['10.0.0.2'] = {
+        ...(hosts['10.0.0.2'] as NodeFixture),
+        ps: psProbe({ ps: qwenOnGpu, amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1' }),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-2']);
+      expect(printed()).toContain('resident: qwen3-coder:30b (18.6 GiB, GPU)');
+      expect(printed()).not.toContain('resident on CPU');
+    });
+
+    it("does not blame the system unit's environment on a node a user-scope unit serves", async () => {
+      // beta-1: the daemon is `ollama-local.service` under ci's systemd --user, with its own
+      // environment. The probe reads the SYSTEM unit's — vulkan, no iGPU key — which explains
+      // nothing about what that daemon runs, so the model is flagged as measured, not as the trap.
+      mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ gpus: [strixHalo] }) }));
+      hosts['10.0.0.3'] = {
+        bind: bindProbe({ userScope: true, env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+        ufw: firewallProbe(UFW_FULL),
+        ps: psProbe({ ps: qwenOnCpu, amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'beta-1', '--json']);
+      const text = printed();
+      expect(text).toContain('resident on CPU — size_vram 0 of 18.6 GiB on a node with a GPU (amd/gfx1151)');
+      expect(text).not.toContain('OLLAMA_IGPU_ENABLE unset');
+      const json = JSON.parse(output.find((l) => l.trimStart().startsWith('[')) ?? '[]') as Array<{
+        residency?: { cpuResident: Array<{ cause: string }> };
+      }>;
+      expect(json.find((r) => r.residency)?.residency?.cpuResident[0]?.cause).toBe('unknown');
+    });
+
+    it('is read again after --execute, once the daemon is up', async () => {
+      mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+        const h = hosts[t.host] as NodeFixture;
+        if (command.includes('bind_probe=1')) return ok(h.bind);
+        if (command.includes('firewall_probe=1')) return ok(h.ufw);
+        // Before the bind step the model is on the CPU; the restart unloads it.
+        if (command.includes('ollama-ps-probe=1')) return ok(psProbe({ amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1' }));
+        if (command.includes('CIHUB_OLLAMA_BIND_EOF')) {
+          return ok(['ollama-bind-effective: OLLAMA_HOST=0.0.0.0:11434 listening=0.0.0.0:11434', 'ollama-bind-complete'].join('\n'));
+        }
+        if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+        throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+      });
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-2', '--execute']);
+      const text = printed();
+      // The bind step wrote both keys, under sudo, and the read afterwards found nothing resident.
+      const bind = sudoCalls().find((c) => c.command.includes('CIHUB_OLLAMA_BIND_EOF'));
+      expect(bind?.command).toContain('Environment="OLLAMA_LLM_LIBRARY=vulkan"');
+      expect(bind?.command).toContain('Environment="OLLAMA_IGPU_ENABLE=1"');
+      expect(text).toContain('resident: none');
+      expect(text).not.toContain('resident on CPU');
+      expect(process.exitCode).toBeUndefined();
+    });
+  });
 });
 
 // ─── Execute ───────────────────────────────────────────────────────────────────────────────────────
@@ -317,6 +435,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -352,6 +471,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF'))
         return ok(
@@ -506,6 +626,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
         return ok(
@@ -542,6 +663,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
         return ok(
@@ -578,6 +700,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
         return ok(
@@ -626,6 +749,7 @@ describe('fleet backends --ollama-parallel', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -659,6 +783,7 @@ describe('fleet backends --ollama-parallel', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -700,6 +825,7 @@ describe('fleet backends --ollama-parallel', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -743,6 +869,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -763,6 +890,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -796,6 +924,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied(''));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -826,6 +955,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -841,6 +971,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -868,6 +999,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF'))
         return ok(
