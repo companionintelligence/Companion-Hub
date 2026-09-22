@@ -7,7 +7,8 @@
  * qwen3-coder:30b). Raising it is the only lever that lifts that ceiling, and the same file is where
  * `OLLAMA_KEEP_ALIVE` (so a spill lands on a warm peer instead of a 60-108 s reload),
  * `OLLAMA_CONTEXT_LENGTH` (a node whose default context is too large for its GTT spills to CPU with
- * HTTP 200s) and `OLLAMA_IGPU_ENABLE` (3-5x single-stream on the B2-flagged Strix Halo boxes) belong.
+ * HTTP 200s) and the `OLLAMA_IGPU_ENABLE` override (3-5x single-stream on the B2-flagged Strix Halo
+ * boxes; the hardware default for that key lives in the bind file since 2026-09-21) belong.
  *
  * `OLLAMA_MAX_LOADED_MODELS` joined them on 2026-09-21: a 24h keep-alive with no cap on resident
  * models let three 27-30B models pile up on batch-tier Strix Halo nodes next to vLLM, Lucebox and
@@ -50,7 +51,12 @@ import {
 /**
  * Five `z`s for the same reason the bind file has them: systemd sorts drop-ins with `strcmp`, and
  * `zzzz-bind-all.conf` — seen on this fleet — would outrank a `zz-` name. Sorts after the bind file
- * too (`b` < `r`), which does not matter: the two never assign the same key.
+ * too (`b` < `r`), and since 2026-09-21 that ordering is load-bearing for exactly one key: the bind
+ * file carries `OLLAMA_IGPU_ENABLE=1` as the hardware default on an integrated AMD part where it
+ * forces Vulkan (see `ollamaManagedEnvironment`), and this file — applied after it — carries the
+ * operator's `--ollama-igpu on|off` override, which therefore wins when given. `--ollama-igpu unset`
+ * leaves the key out of this file and the bind file's default in force. No other key is assigned
+ * by both files, and a test pins the order.
  */
 export const RUNTIME_DROPIN = 'zzzzz-cihub-runtime.conf';
 
@@ -67,7 +73,9 @@ export type OllamaRuntimeKey = (typeof OLLAMA_RUNTIME_KEYS)[number];
  * What the operator asked for. `undefined` on a field means "leave the key out of the file".
  *
  * `igpu` is a boolean because `OLLAMA_IGPU_ENABLE` is: `on` writes `1`, `off` writes `0` — an
- * explicit `0` is a real setting on a node where something else turned it on.
+ * explicit `0` is a real setting on a node where something else turned it on. On a gfx1151 node
+ * that "something else" is the managed bind file, which sets `1` beside `OLLAMA_LLM_LIBRARY=vulkan`
+ * because Vulkan without it is a CPU-resident model; `off` here is the override that outranks it.
  */
 export interface OllamaRuntimeSettings {
   parallel?: number;
