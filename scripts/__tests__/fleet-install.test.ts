@@ -12,6 +12,8 @@ import {
   claimHubScript,
   describeStepFailure,
   joinPoolScript,
+  nodePortalUrlScript,
+  portalOriginMismatch,
   pullModelScript,
   shouldAdoptExistingCihub,
   updateHubScript,
@@ -111,6 +113,57 @@ describe('bringUpScript', () => {
     const script = bringUpScript("pass'word12", "AB'123");
     expect(script).toContain("'pass'\\''word12'");
     expect(script).toContain("'AB'\\''123'");
+  });
+});
+
+describe('portalOriginMismatch', () => {
+  it('passes when the node talks to the Portal the code is minted on, whatever the trailing slash', () => {
+    expect(portalOriginMismatch('https://hub.ci.computer/', 'https://hub.ci.computer')).toBeNull();
+    expect(portalOriginMismatch('https://hub.ci.computer', 'https://hub.ci.computer/')).toBeNull();
+  });
+
+  it('names both Portals and the fix when they differ — the default dev CLI against a production Hub', () => {
+    // 2026-09-23: every core/beta Hub had CI_CLOUD_URL=https://hub.ci.computer while cihub minted
+    // on its default, the dev tier. Three clean attempts, three 410s, three registration resets.
+    const why = portalOriginMismatch('https://hub.ci.computer', 'https://hub.companionintelligence.com');
+    expect(why).toContain('https://hub.ci.computer');
+    expect(why).toContain('https://hub.companionintelligence.com');
+    expect(why).toContain('410');
+    expect(why).toContain('CI_CLOUD_URL=https://hub.ci.computer cihub login');
+  });
+
+  it('does not call an unknown or unreadable node URL a mismatch', () => {
+    expect(portalOriginMismatch(undefined, 'https://hub.ci.computer')).toBeNull();
+    expect(portalOriginMismatch('', 'https://hub.ci.computer')).toBeNull();
+    expect(portalOriginMismatch('not a url', 'https://hub.ci.computer')).toBeNull();
+  });
+});
+
+describe('nodePortalUrlScript', () => {
+  it('reads CI_CLOUD_URL from the same env file bringUpScript uses', () => {
+    const script = nodePortalUrlScript();
+    expect(script).toContain('.env.dev');
+    expect(script).toContain('^CI_CLOUD_URL=');
+    expect(script).toContain('ci-cloud-url=');
+  });
+});
+
+describe('bringUpScript portal check', () => {
+  it("checks the Hub's Portal after `cihub up` writes it and before `register` resets anything", () => {
+    const script = bringUpScript('pw12345678', 'ABC123', 'https://hub.ci.computer/');
+    const up = script.indexOf('cihub up --detached');
+    const check = script.indexOf('portal-mismatch');
+    const register = script.indexOf('cihub register');
+    expect(up).toBeGreaterThanOrEqual(0);
+    expect(check).toBeGreaterThan(up);
+    expect(register).toBeGreaterThan(check);
+    // Compared as an origin, so the node's trailing slash does not fail an identical Portal.
+    expect(script).toContain("!= 'https://hub.ci.computer'");
+    expect(script).toMatch(/hub-up-failed: portal-mismatch[^\n]*exit 1/);
+  });
+
+  it('adds no check when the caller does not know where the code was minted', () => {
+    expect(bringUpScript('pw12345678', 'ABC123')).not.toContain('portal-mismatch');
   });
 });
 
