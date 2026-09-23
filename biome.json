@@ -23,7 +23,8 @@
       "!**/videos",
       "!**/e2e/generated",
       "!**/src-tauri/gen",
-      "!**/*.generated.ts"
+      "!**/*.generated.ts",
+      "!**/packages/frontend/index.html"
     ]
   },
   "formatter": {
