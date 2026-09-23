@@ -355,6 +355,52 @@ describe('HubPoolSection', () => {
     expect(screen.getAllByTestId('hub-pool-model').map((row) => row.getAttribute('data-nodes'))).toEqual(['HUB_POOL_LOCAL_NODE_LABEL']);
   });
 
+  it('shows a distinct "needs re-pair" badge and the backend\'s exact remedy for an identity-changed peer, never the self-heals hint', async () => {
+    fixtures.status = baseStatus({
+      peers: [
+        connectedPeer({
+          status: 'unreachable',
+          consecutiveFailures: 5,
+          inFlightRequests: 0,
+          probeFailure: {
+            kind: 'identity_changed',
+            action:
+              'hub-b.example-tailnet.ts.net is now a different Hub Pool identity than the one paired here, so its Hub database was probably recreated. This Hub will not trust the new key by itself. Re-pair: (1) here: cihub pool unpair hub-b.example-tailnet.ts.net; ...',
+          },
+        }),
+      ],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1 },
+      reason: 'no_peers',
+      routingActive: false,
+    });
+
+    renderSection();
+
+    expect(await screen.findByTestId('hub-pool-peer-needs-repair-badge')).toBeTruthy();
+    expect(screen.getByText('HUB_POOL_STATUS_NEEDS_REPAIR')).toBeTruthy();
+    // Never the generic "Unreachable" label, and never the misleading self-heals copy: this pairing
+    // will not rejoin on its own, however many more probes run.
+    expect(screen.queryByText('HUB_POOL_STATUS_UNREACHABLE')).toBeNull();
+    expect(screen.queryByTestId('hub-pool-unreachable-hint')).toBeNull();
+    const hint = await screen.findByTestId('hub-pool-peer-needs-repair-hint');
+    expect(hint.textContent).toContain('cihub pool unpair hub-b.example-tailnet.ts.net');
+  });
+
+  it('still uses the generic self-heals hint for a plain unreachable peer with no probeFailure (older cached payload)', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer({ status: 'unreachable', consecutiveFailures: 2, inFlightRequests: 0, probeFailure: null })],
+      peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1 },
+      reason: 'no_peers',
+      routingActive: false,
+    });
+
+    renderSection();
+
+    expect(await screen.findByTestId('hub-pool-unreachable-hint')).toBeTruthy();
+    expect(screen.queryByTestId('hub-pool-peer-needs-repair-badge')).toBeNull();
+    expect(screen.queryByTestId('hub-pool-peer-needs-repair-hint')).toBeNull();
+  });
+
   it('merges the model inventory across the pool and names every node holding each model', async () => {
     fixtures.status = baseStatus({
       peers: [connectedPeer()],

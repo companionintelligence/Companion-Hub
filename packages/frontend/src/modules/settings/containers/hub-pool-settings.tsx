@@ -50,6 +50,17 @@ interface PoolBackendCapability {
   modelsLoaded: string[];
 }
 
+/**
+ * Why a peer's health probes are failing, and what to do about it, mirrored from the backend's
+ * `PoolPeerProbeFailure` (`hub-pool-probe-failure.ts`). Only `kind` and `action` are read here —
+ * `action` is `null` exactly for `'unreachable'`, the one kind the backend expects to clear on its
+ * own, so "is action present" is what actually distinguishes "wait" from "go do something."
+ */
+interface PoolPeerProbeFailureSummary {
+  kind: 'unreachable' | 'unauthorized' | 'identity_changed';
+  action: string | null;
+}
+
 interface PoolPeerCapabilities {
   hardwareTier: string;
   backends: PoolBackendCapability[];
@@ -71,6 +82,8 @@ interface PoolPeer {
   /** Per-peer kill switch. Not a lifecycle state: a disabled peer can be `connected` and healthy. */
   enabled: boolean;
   consecutiveFailures: number;
+  /** Why this peer's probes are failing, or `null`/absent while they succeed. Process-local on the backend. */
+  probeFailure?: PoolPeerProbeFailureSummary | null;
   lastSeenAt: string | null;
   lastCapabilities: PoolPeerCapabilities | null;
   inFlightRequests: number;
@@ -208,7 +221,18 @@ const peerLabel = (peer: { displayName: string | null; nodeFqdn: string }) => pe
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-const PeerStatusBadge = ({ status, enabled, t }: { status: PoolPeerStatus; enabled: boolean; t: Translate }) => {
+const PeerStatusBadge = ({
+  status,
+  enabled,
+  probeFailureKind,
+  t,
+}: {
+  status: PoolPeerStatus;
+  enabled: boolean;
+  /** `'identity_changed'` gets its own badge: the one failure kind with a single, certain remedy — see {@link PoolPeerProbeFailureSummary}. */
+  probeFailureKind?: PoolPeerProbeFailureSummary['kind'] | null;
+  t: Translate;
+}) => {
   // Shown instead of, not beside, the lifecycle badge: a peer the operator switched off must not
   // read as "connected" at a glance, whatever the health poll says about it.
   if (!enabled) {
@@ -226,6 +250,20 @@ const PeerStatusBadge = ({ status, enabled, t }: { status: PoolPeerStatus; enabl
     return <StatusBadge connected label={t('HUB_POOL_STATUS_CONNECTED')} />;
   }
   if (status === 'unreachable') {
+    // Distinct from plain "Unreachable": this one will never clear on its own, unlike every other
+    // reason a probe fails (see HUB_POOL_UNREACHABLE_HINT) — an operator needs to see that at a glance,
+    // not only after reading the hint text underneath.
+    if (probeFailureKind === 'identity_changed') {
+      return (
+        <span
+          data-testid="hub-pool-peer-needs-repair-badge"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-destructive/40 bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
+          {t('HUB_POOL_STATUS_NEEDS_REPAIR')}
+        </span>
+      );
+    }
     return (
       <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning">
         <span className="h-1.5 w-1.5 rounded-full bg-warning" />
@@ -915,7 +953,7 @@ export const HubPoolSection = () => {
                     <div className="flex flex-col gap-0.5">
                       <span className="flex flex-wrap items-center gap-1.5">
                         <span className="break-all font-medium sm:truncate">{peerLabel(peer)}</span>
-                        <PeerStatusBadge status={peer.status} enabled={peer.enabled} t={t} />
+                        <PeerStatusBadge status={peer.status} enabled={peer.enabled} probeFailureKind={peer.probeFailure?.kind} t={t} />
                         {peer.enabled && peer.lastCapabilities?.acceptingWork === false ? (
                           <span
                             data-testid="hub-pool-peer-not-accepting"
@@ -939,7 +977,17 @@ export const HubPoolSection = () => {
                       <span className="break-all font-mono text-[10px] text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
                         {peer.nodeFqdn}
                       </span>
-                      {peer.status === 'unreachable' ? (
+                      {peer.status === 'unreachable' && peer.probeFailure?.action ? (
+                        // The backend only sets `action` when "wait, it clears on its own" is false
+                        // (see PoolPeerProbeFailureSummary) — this is the operator's actual next step,
+                        // already worded with the exact cihub commands, not a generic hint.
+                        <span
+                          data-testid="hub-pool-peer-needs-repair-hint"
+                          className={cn('text-[10px]', peer.probeFailure.kind === 'identity_changed' ? 'text-destructive' : 'text-muted-foreground')}
+                        >
+                          {peer.probeFailure.action}
+                        </span>
+                      ) : peer.status === 'unreachable' ? (
                         <span data-testid="hub-pool-unreachable-hint" className="text-[10px] text-muted-foreground">
                           {t('HUB_POOL_UNREACHABLE_HINT', { failures: peer.consecutiveFailures })}
                         </span>
