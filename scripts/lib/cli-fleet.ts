@@ -17,7 +17,15 @@
  * library (see `docs/CLI.md`).
  */
 
-import { DEVICE_MANAGE_SCOPE, DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readStoredLogin } from './catalog-submit.js';
+import {
+  DEVICE_MANAGE_SCOPE,
+  DEVICE_PAIR_SCOPE,
+  loginScope,
+  mintPairingCode,
+  type PortalLogin,
+  portalLoginFromEnv,
+  readStoredLogin,
+} from './catalog-submit.js';
 import {
   loadFleetRoster,
   mergeFleetRoster,
@@ -1687,7 +1695,13 @@ async function runInstall(args: FleetArgs): Promise<void> {
   // A stored `device:pair` login mints a code per node, which is the only way a
   // multi-node install is unattended: one `--code` is one device, so passing it
   // for a fleet would enroll the first node and fail the rest on a used code.
-  const storedLogin = readStoredLogin();
+  let storedLogin: PortalLogin | null;
+  try {
+    storedLogin = portalLoginFromEnv() ?? readStoredLogin();
+  } catch (error) {
+    console.error(colorize(error instanceof Error ? error.message : String(error), 'red'));
+    process.exit(2);
+  }
   const storedScope = loginScope(storedLogin);
   const canMint = storedScope === DEVICE_PAIR_SCOPE || storedScope === DEVICE_MANAGE_SCOPE;
 
@@ -1834,6 +1848,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
         postgresPassword: args.postgresPassword,
         pairingCode: strategy.kind === 'given' ? args.code : undefined,
         mintPairingCode: mint,
+        portalOrigin: canMint ? storedLogin?.portalOrigin : undefined,
         replacePairingCode,
         onRegistered: () => clearPendingPairingCode(node.ip),
         cihubBinary: binarySource,
@@ -2603,10 +2618,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
  * its key. Neither dials a node.
  */
 async function runDevices(args: FleetArgs): Promise<void> {
-  const login = readStoredLogin();
   let resolved: PortalLogin;
   try {
-    resolved = requireManageLogin(login);
+    resolved = requireManageLogin(portalLoginFromEnv() ?? readStoredLogin());
   } catch (error) {
     console.error(colorize(error instanceof Error ? error.message : String(error), 'red'));
     process.exit(2);
