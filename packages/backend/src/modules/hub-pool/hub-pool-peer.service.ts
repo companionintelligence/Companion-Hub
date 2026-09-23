@@ -50,6 +50,7 @@ import {
   MIN_PAIR_BY_ADDRESS_PROTOCOL,
   POOL_PEER_HEADER,
   POOL_REFUSAL_HEADER,
+  POOL_SIGNATURE_HEADER,
   publicKeyFingerprint,
 } from './hub-pool-peer-auth';
 import { classifyProbeFailure, PoolProbeHttpError, type PoolPeerProbeFailure, probeBackoffMs, probeFailureAction } from './hub-pool-probe-failure';
@@ -338,7 +339,13 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    *
    * `poolRequireSignedPeers` removes the bearer branch entirely, on this side as well as the guard's.
    */
-  async peerAuthHeaders(peer: HubPoolPeer, method: string, path: string, body?: unknown): Promise<Record<string, string>> {
+  async peerAuthHeaders(
+    peer: HubPoolPeer,
+    method: string,
+    path: string,
+    body?: unknown,
+    options: { preferSigned?: boolean } = {},
+  ): Promise<Record<string, string>> {
     const selfStatus = await this.tailscaleService.getStatusCached();
     const self = await this.identity.get();
     const requireSigned = this.configuration.getHubPoolPreferences().poolRequireSignedPeers;
@@ -351,7 +358,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     // signed peers was refused this way (fleet, 2026-09-23), though the peer had learned our key
     // from the PIN response and would have verified it. The callback is never retried, so the
     // joining node's row stayed `pending` for good.
-    const holdForGrace = graceLive && Boolean(peer.presentTokenEncrypted) && !requireSigned;
+    const holdForGrace = graceLive && Boolean(peer.presentTokenEncrypted) && !requireSigned && !options.preferSigned;
 
     if (self && privateKey && recipientNodeUuid && peer.peerPublicKey && !holdForGrace) {
       return buildSignedPoolHeaders(privateKey, {
@@ -1075,12 +1082,26 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       const selfStatus = await this.tailscaleService.getStatusCached();
       const body = { fromNodeFqdn: selfStatus.nodeFqdn, token: rawToken, ...(await this.ownIdentityClaimForRequest()) };
       const path = '/api/inference/pool/pair/confirm';
-      const response = await fetch(`https://${row.nodeFqdn}${path}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await this.peerAuthHeaders(updated, 'POST', path, body)) },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
-      });
+      const send = async (headers: Record<string, string>) =>
+        fetch(`https://${row.nodeFqdn}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...headers },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+        });
+      // Signed first. After a PIN request the joining node has already pinned this node's key from
+      // our response, so a signature verifies — and a joiner that requires signed peers refuses the
+      // bearer the grace window would otherwise send, which left it `pending` for good (this
+      // callback is never retried). Only a refused signature falls back to the bearer, and only
+      // when this node still allows one: the joiner that never received our key.
+      const signedFirst = await this.peerAuthHeaders(updated, 'POST', path, body, { preferSigned: true });
+      let response = await send(signedFirst);
+      if ((response.status === 401 || response.status === 403) && signedFirst[POOL_SIGNATURE_HEADER] && updated.presentTokenEncrypted) {
+        const fallback = await this.peerAuthHeaders(updated, 'POST', path, body).catch(() => null);
+        if (fallback && !fallback[POOL_SIGNATURE_HEADER]) {
+          response = await send(fallback);
+        }
+      }
       if (!response.ok) {
         throw new Error(`confirm callback returned ${response.status}`);
       }

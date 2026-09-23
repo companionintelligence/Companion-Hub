@@ -1828,6 +1828,61 @@ describe('HubPoolPeerService', () => {
       expect(headers['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
     });
 
+    describe('the pairing confirm callback', () => {
+      /** An inbound PIN request just pinned WITH grace — the state `approvePairing` confirms from. */
+      const pinnedPending = () =>
+        mockPeer({
+          id: 'approve-me',
+          direction: 'inbound',
+          status: 'pending',
+          presentTokenEncrypted: 'ENC:their-token',
+          peerNodeUuid: PEER_UUID,
+          peerPublicKey: keys.publicKey,
+          bearerGraceUntil: new Date(Date.now() + 600_000).toISOString(),
+        });
+      const headersOf = (call: number) => (vi.mocked(global.fetch).mock.calls[call]?.[1] as RequestInit).headers as Record<string, string>;
+
+      beforeEach(() => {
+        giveSelfAnIdentity();
+        repo.findById.mockResolvedValue(pinnedPending());
+        repo.update.mockResolvedValue({ ...pinnedPending(), status: 'connected' });
+      });
+
+      it('signs first, even inside the grace window — the joiner pinned our key from the PIN response', async () => {
+        // A joiner requiring signed peers refuses the bearer the grace window would send, and this
+        // callback is never retried: core-3 stayed `pending` on both hubs until this changed.
+        vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200 }));
+
+        await service.approvePairing('approve-me');
+
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(headersOf(0)['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
+        expect(headersOf(0).Authorization).toBeUndefined();
+      });
+
+      it('falls back to the bearer once when the joiner refuses the signature and this node allows one', async () => {
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(new Response('unknown key', { status: 401 }))
+          .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+
+        await service.approvePairing('approve-me');
+
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(headersOf(1).Authorization).toBe('Bearer their-token');
+        expect(headersOf(1)['X-Hub-Pool-Signature']).toBeUndefined();
+      });
+
+      it('never falls back to a bearer when this node requires signed peers', async () => {
+        setPoolPreferences({ poolRequireSignedPeers: true });
+        vi.mocked(global.fetch).mockResolvedValue(new Response('unknown key', { status: 401 }));
+
+        await expect(service.approvePairing('approve-me')).resolves.toMatchObject({ status: 'connected' });
+
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(headersOf(0).Authorization).toBeUndefined();
+      });
+    });
+
     it('signs inside the grace window when this node requires signed peers, rather than refusing', async () => {
       // A PIN pairing's approve pins the peer WITH grace, then immediately sends the confirm
       // callback. Holding the signature back for a bearer that is forbidden anyway made every such
