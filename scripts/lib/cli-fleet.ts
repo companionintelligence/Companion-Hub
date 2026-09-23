@@ -91,7 +91,8 @@ import {
   describeInvalidatedPairingCode,
   findInvalidatingReRegistration,
   findReRegistration,
-  isDeadPairingCodeFailure,
+  classifyPairingFailure,
+  type PairingCodeOutcome,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
   savePendingPairingCode,
@@ -1702,6 +1703,17 @@ async function runInstall(args: FleetArgs): Promise<void> {
     if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
     if (canMint) {
       console.log(colorize(`  would mint a pairing code per node as ${storedLogin?.orgSlug ?? storedLogin?.orgId}`, 'dim'));
+      // The scope split cost a live run two 401s to discover: `device:pair` mints, but everything
+      // that touches a device Portal already knows — listing, releasing, re-registering — is
+      // `device:manage`, and so is the replacement a refused code needs.
+      console.log(
+        colorize(
+          storedScope === DEVICE_MANAGE_SCOPE
+            ? `  this login is ${DEVICE_MANAGE_SCOPE}, so a code Portal refuses is replaced by a re-register and sent once more`
+            : `  this login is ${storedScope}: a code Portal refuses is dropped, not replaced — 'cihub login --scope ${DEVICE_MANAGE_SCOPE}' (also what 'fleet devices' needs) lets the run re-register and retry`,
+          'dim',
+        ),
+      );
     } else if (args.code) {
       console.log(colorize('  would use the one --code given, which enrolls a single node', 'dim'));
     } else {
@@ -1779,12 +1791,50 @@ async function runInstall(args: FleetArgs): Promise<void> {
             }
           };
 
+    // What happens when `register` comes back saying the code itself was the problem. The code just
+    // sent is gone either way, so the first thing this does is stop keeping it — three `fleet
+    // install` runs on 2026-09-22 each re-sent the same refused code to fifteen nodes, and a full
+    // `fleet devices release` of all fifteen in between changed nothing, because the code lives
+    // here and nothing ever dropped it (CI-Hub#1582). A refusal then earns one replacement, which
+    // only `re-register` can mint: the device row still exists, so a second `POST /api/devices`
+    // would answer 409. A code Portal already claimed earns none — see `classifyPairingFailure`.
+    const replacePairingCode =
+      strategy.kind === 'given'
+        ? undefined
+        : async (outcome: PairingCodeOutcome) => {
+            const spent = readPendingPairingCode(node.ip, orgId);
+            clearPendingPairingCode(node.ip);
+            if (outcome.kind === 'claimed') {
+              throw new Error(
+                `${outcome.why}. The code is spent and no longer kept, and a replacement would meet the same failure — fix that failure, not the code.`,
+              );
+            }
+            if (!spent) throw new Error(`${outcome.why}, and no code was kept for this node to replace — rerun to mint a fresh one.`);
+            if (storedScope !== DEVICE_MANAGE_SCOPE) {
+              throw new Error(
+                `${outcome.why}. The dead code is no longer kept, but minting a replacement needs 'cihub login --scope ${DEVICE_MANAGE_SCOPE}' (this run holds ${storedScope ?? 'none'}); rerun after that, or pass --code.`,
+              );
+            }
+            const fresh = await reRegisterPortalDevice({ login: storedLogin as PortalLogin, deviceId: spent.deviceId });
+            // Kept, not just sent: if the retry fails for some other reason, the next run reuses this
+            // one rather than minting a third, and `onRegistered` forgets it once it is spent.
+            recordReRegisteredPairingCode({
+              device: { id: spent.deviceId, name: spent.name, slug: spent.slug },
+              deviceId: fresh.deviceId,
+              pairingCode: fresh.pairingCode,
+              orgId,
+              roster: roster.nodes,
+            });
+            return { code: fresh.pairingCode, detail: `re-registered ${spent.slug} for a fresh code` };
+          };
+
     const report = await installNode(
       node,
       {
         postgresPassword: args.postgresPassword,
         pairingCode: strategy.kind === 'given' ? args.code : undefined,
         mintPairingCode: mint,
+        replacePairingCode,
         onRegistered: () => clearPendingPairingCode(node.ip),
         cihubBinary: binarySource,
         binaryCache,
@@ -1796,13 +1846,14 @@ async function runInstall(args: FleetArgs): Promise<void> {
       },
       args.user,
     );
-    // Portal declaring the code dead is not one of the retry-safe failures this store is built to
-    // survive (a slow tunnel-provisioning timeout, a dropped SSH session) — those may still succeed
-    // if resent, but a confirmed-dead code never will, and resending it is the whole bug this closes.
-    const registerStep = report.steps.find((st) => st.name === 'hub up + register');
-    if (registerStep && !registerStep.ok && isDeadPairingCodeFailure(registerStep.detail)) {
-      clearPendingPairingCode(node.ip);
-    }
+    // Portal declaring the code dead or spent is not one of the retry-safe failures this store is
+    // built to survive (a dropped SSH session, a node that never came up) — those may still succeed
+    // if resent, but a code Portal has refused or claimed never will, and resending it is the whole
+    // bug this closes. `replacePairingCode` above already drops the code it was asked about; this is
+    // the net under it, and it reads every register step, including a retry's, by the step detail
+    // alone — so a run whose replacement is refused in turn leaves nothing kept either.
+    const refused = report.steps.some((st) => !st.ok && st.name.startsWith('hub up + register') && classifyPairingFailure(st.detail));
+    if (refused) clearPendingPairingCode(node.ip);
     for (const st of report.steps) {
       const icon = st.skipped ? colorize('·', 'dim') : st.ok ? colorize('✓', 'green') : colorize('✗', 'red');
       const took = st.ms ? colorize(` (${Math.round(st.ms / 1000)}s)`, 'dim') : '';

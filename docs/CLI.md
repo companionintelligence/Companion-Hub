@@ -1519,6 +1519,26 @@ things it can mean — an orphan from an earlier attempt, or a node registered u
 because only a person in Portal can tell which; when this machine re-registered the device, the
 `409` says that instead, and to pass the code with `--code`.
 
+A code Portal *refuses* is a different failure, and until 2026-09-22 it was the one with no way out:
+fifteen nodes failed with `410 PAIRING_CODE_INVALID`, and the two retries that followed re-sent every
+one of those dead codes — same code, same mint timestamp on the line — because the kept code was
+never dropped, not even after all fifteen devices were released in Portal. Now `register`'s answer is
+read. A refusal (`no longer valid`, `PAIRING_CODE_WRONG_DEVICE`, `DEVICE_PROOF_REQUIRED`) drops the
+kept code, and where the stored login is `device:manage` the run re-registers the device for a live
+code and sends that one, once — a re-register rather than a second mint, because the device row
+already exists and `POST /api/devices` would answer `409`. With a `device:pair` login there is
+nothing to re-register with, so the node's line says so and names the scope; the dead code is dropped
+either way, so the next run mints instead of re-sending it. The dry run says which of the two the
+stored login is before anything is dialled.
+
+A failure *after* Portal accepted the code is not retried at all. Portal claims a pairing code at
+validation and provisions the Cloudflare tunnel and DNS record afterwards, so a `DNS provider error
+while creating record` — despite its own "Please retry" — arrives with the code already spent, and a
+replacement meets the same wall: one node burned three freshly minted codes on three identical DNS
+errors. Those failures drop the kept code and stop the node, saying the code was spent and that the
+failure under it is what needs fixing. A failure that never reached Portal at all (`hub up` died
+first, the Portal was unreachable) leaves the kept code alone, to be reused on the next run.
+
 The **claim** step is the one this list used to be missing. Registering a node does not give it an
 operator, and a Hub with no operator answers `409 AUTH_ERROR_HUB_NOT_CLAIMED` to its own device key —
 the state twelve of sixteen Hub Pool nodes were in while it was being read as a key failure. Pass
