@@ -1713,6 +1713,36 @@
         ]
       }
     },
+    "/api/auth/portal/desktop-handoff-status": {
+      "get": {
+        "operationId": "portalDesktopHandoffStatus",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopHandoffStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/username": {
       "patch": {
         "operationId": "changeUsername",
@@ -8080,6 +8110,10 @@
           "redirectPath"
         ],
         "additionalProperties": false
+      },
+      "PortalDesktopHandoffStatusDto": {
+        "type": "object",
+        "properties": {}
       },
       "ChangeUsernameBody": {
         "type": "object",
