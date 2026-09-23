@@ -96,6 +96,15 @@ const portalDesktopExchangeResponseSchema = z.object({
   redirectPath: z.string(),
 });
 
+/*
+ * One bit for the browser tab the desktop handoff left behind: has the app
+ * taken this login, is it still waiting, or did the token die unspent. Nothing
+ * about the account — the answer is about a token the caller already holds.
+ */
+const portalDesktopHandoffStatusResponseSchema = z.object({
+  state: z.enum(['pending', 'claimed', 'expired']),
+});
+
 const portalSessionHintResponseSchema = z.object({
   email: z.string().nullable(),
   portalBaseUrl: z.string().nullable(),
@@ -162,6 +171,7 @@ export class LoginBody extends createZodDto(credentialsSchema) {}
 export class VerifyTotpBody extends createZodDto(verifyTotpSchema) {}
 export class LoginDto extends createZodDto(loginResponseSchema) {}
 export class PortalDesktopExchangeDto extends createZodDto(portalDesktopExchangeResponseSchema) {}
+export class PortalDesktopHandoffStatusDto extends createZodDto(portalDesktopHandoffStatusResponseSchema) {}
 export class PortalSessionHintDto extends createZodDto(portalSessionHintResponseSchema) {}
 export class SessionRefreshDto extends createZodDto(sessionRefreshResponseSchema) {}
 export class BrowserHandoffMintBody extends createZodDto(browserHandoffMintSchema) {}
