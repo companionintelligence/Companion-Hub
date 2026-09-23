@@ -77,6 +77,57 @@ export function isLoopbackHubOrigin(hubOrigin: string): boolean {
   }
 }
 
+/**
+ * How long the desktop handoff token stays spendable.
+ *
+ * Short on purpose — it is a bearer credential sitting in a URL the OS hands
+ * between processes. The handoff page counts on this number to know when to
+ * stop waiting, so the two must not drift apart.
+ */
+export const PORTAL_DESKTOP_HANDOFF_TTL_SECONDS = 60;
+
+/**
+ * How long the "the app took it" marker outlives the token it replaces.
+ *
+ * Longer than the token, because it exists to answer a question after the fact:
+ * a browser tab left open on the handoff page must still be able to learn that
+ * the sign-in completed, minutes later, without the answer decaying into
+ * "expired" and telling the user the opposite of what happened.
+ */
+export const PORTAL_DESKTOP_CLAIMED_TTL_SECONDS = 15 * 60;
+
+/** Cache key holding an unspent one-time desktop handoff token. */
+export function portalDesktopPendingKey(token: string): string {
+  return `portal_sso_desktop:${token}`;
+}
+
+/** Cache key marking a handoff token the desktop app has spent. */
+export function portalDesktopClaimedKey(token: string): string {
+  return `portal_sso_desktop_done:${token}`;
+}
+
+/**
+ * What the browser tab left behind should say.
+ *
+ * `'pending'` the app has not taken the login yet · `'claimed'` it has ·
+ * `'expired'` the token died unspent.
+ *
+ * ⚠ CLAIMED IS CHECKED FIRST, and the exchange writes the marker BEFORE it
+ * deletes the token. Deleting first would open a window — however short — in
+ * which neither key exists, and a poll landing inside it would report `expired`
+ * for a sign-in that had just succeeded. Order here and order there are one
+ * decision; changing either alone reintroduces the race.
+ */
+export type PortalDesktopHandoffState = 'pending' | 'claimed' | 'expired';
+
+export function resolvePortalDesktopHandoffState(input: { claimed: boolean; pending: boolean }): PortalDesktopHandoffState {
+  if (input.claimed) {
+    return 'claimed';
+  }
+
+  return input.pending ? 'pending' : 'expired';
+}
+
 export const PORTAL_DESKTOP_PRESENCE_CACHE_KEY = 'portal_sso_desktop_present';
 export const PORTAL_DESKTOP_PRESENCE_TTL_SECONDS = 10 * 60;
 
@@ -258,17 +309,48 @@ export function resolvePortalRootBounce(query: { code?: unknown; state?: unknown
  *
  * Still ONE automatic navigation. A meta refresh alongside `location.replace`
  * fires twice and hands the app the one-time token twice (first succeeds, second
- * 400s), so the manual link stays the only other route.
+ * 400s), so the manual link stays the only other route. For the same reason the
+ * poll below only ever rewrites text — it must never navigate.
+ *
+ * ⚠ THE POLL IS ARMED BEFORE THE NAVIGATION, not after. Handing the URL to the
+ * OS ends the script's run, so anything scheduled after `location.replace` never
+ * gets scheduled at all; a `setTimeout` registered before it survives, because
+ * an external-scheme navigation leaves the document loaded.
+ *
+ * `continueHref` is why this page is no longer a dead end. The session cookie is
+ * already on this browser before this HTML is written — see the callback — so
+ * carrying on here is a plain same-origin link, not a second sign-in, and it
+ * costs the desktop app nothing: the one-time token is a separate value only the
+ * app can spend.
+ *
+ * There is deliberately NO auto-close. A tab the OS opened cannot close itself
+ * ("Scripts may close only the windows that were opened by them"), with or
+ * without extra history entries, so a countdown promising to would simply lie.
+ * The page says the tab can be closed and leaves that to the person.
  *
  * Self-contained by necessity: this is served by the API before any session
  * exists, and on a Hub with no frontend bundle mounted there is nothing at
  * `/assets` to link to. No external CSS, fonts or images.
  */
-export function buildPortalDesktopHandoffHtml(deepLink: string): string {
-  const safeHref = deepLink.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  // `<` cannot end the inline script early. The link is server-generated, so this
+export function buildPortalDesktopHandoffHtml(input: {
+  deepLink: string;
+  /** Same-origin path to carry on in this browser — `toDesktopRedirectPath`. */
+  continueHref: string;
+  /** Same-origin path this page polls to learn whether the app took the login. */
+  statusHref: string;
+}): string {
+  const escapeAttr = (value: string) => value.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+  const safeHref = escapeAttr(input.deepLink);
+  const safeContinue = escapeAttr(input.continueHref);
+  // `<` cannot end the inline script early. These are server-generated, so this
   // is belt-and-braces rather than a live hole.
-  const scriptLiteral = JSON.stringify(deepLink).replace(/</g, '\\u003c');
+  const scriptLiteral = JSON.stringify(input.deepLink).replace(/</g, '\\u003c');
+  const statusLiteral = JSON.stringify(input.statusHref).replace(/</g, '\\u003c');
+  // Past the token's own lifetime, so the server gets to say `expired` itself
+  // before the client gives up guessing. Only a backstop for a poll that cannot
+  // reach the Hub at all.
+  const giveUpAfterMs = (PORTAL_DESKTOP_HANDOFF_TTL_SECONDS + 15) * 1000;
 
   // Palette matches @companionintelligence/tokens (phthalo-mist), so the tab the
   // browser opens looks like the app it is handing back to.
@@ -302,6 +384,8 @@ export function buildPortalDesktopHandoffHtml(deepLink: string): string {
   }
 }
 * { box-sizing: border-box; }
+/* .btn sets display:block, which would beat the hidden attribute's UA rule. */
+[hidden] { display: none !important; }
 body {
   margin: 0;
   min-height: 100vh;
@@ -331,6 +415,13 @@ body {
   border-radius: 50%;
   animation: spin 900ms linear infinite;
 }
+.tick {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 20px;
+  color: var(--accent);
+}
+.tick svg { width: 100%; height: 100%; display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; }
@@ -345,18 +436,72 @@ p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
   font-weight: 600;
   text-decoration: none;
 }
+.btn.secondary {
+  margin-top: 10px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
 .hint { margin: 16px 0 0; font-size: 12px; }
 </style>
 </head>
 <body>
 <main class="card">
-<div class="spinner" aria-hidden="true"></div>
-<h1>Opening Companion Hub</h1>
-<p>You are signed in. Handing you back to the app…</p>
-<a class="btn" href="${safeHref}">Open Companion Hub</a>
-<p class="hint">If nothing happens, your browser may have blocked the app link — use the button above. You can close this tab once the Hub is open.</p>
+<div class="spinner" id="handoff-spinner" aria-hidden="true"></div>
+<div class="tick" id="handoff-tick" hidden aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+<div aria-live="polite">
+<h1 id="handoff-title">Opening Companion Hub</h1>
+<p id="handoff-lede">You are signed in. Handing you back to the app…</p>
+</div>
+<a class="btn" id="handoff-open" href="${safeHref}">Open Companion Hub</a>
+<a class="btn secondary" id="handoff-continue" href="${safeContinue}">Continue in this browser</a>
+<p class="hint" id="handoff-hint">If nothing happens, your browser may have blocked the app link — use the button above. You can close this tab once the Hub is open.</p>
 </main>
-<script>location.replace(${scriptLiteral})</script>
+<script>
+(function () {
+  var statusHref = ${statusLiteral};
+  var deadline = Date.now() + ${giveUpAfterMs};
+
+  function el(id) { return document.getElementById(id); }
+
+  function settle(state) {
+    var claimed = state === 'claimed';
+    var spinner = el('handoff-spinner');
+    var tick = el('handoff-tick');
+    var open = el('handoff-open');
+    var hint = el('handoff-hint');
+
+    if (spinner) { spinner.hidden = true; }
+    if (tick) { tick.hidden = !claimed; }
+    // The token is spent or dead either way, so the app link can only fail now.
+    if (open) { open.hidden = true; }
+    if (hint) { hint.hidden = true; }
+
+    el('handoff-title').textContent = claimed
+      ? 'Companion Hub is signed in'
+      : "Companion Hub didn't open";
+    el('handoff-lede').textContent = claimed
+      ? 'You can close this tab.'
+      : 'The app link went unused. You are still signed in here.';
+  }
+
+  function poll() {
+    if (Date.now() > deadline) { settle('expired'); return; }
+
+    fetch(statusHref, { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (body) {
+        var state = body && body.state;
+        if (state === 'claimed' || state === 'expired') { settle(state); return; }
+        setTimeout(poll, 1500);
+      })
+      .catch(function () { setTimeout(poll, 1500); });
+  }
+
+  setTimeout(poll, 1500);
+  location.replace(${scriptLiteral});
+})();
+</script>
 </body>
 </html>`;
 }
