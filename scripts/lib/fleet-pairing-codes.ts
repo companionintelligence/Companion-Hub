@@ -26,11 +26,17 @@
  * never fires and this file has no record that anything is wrong. Without a fix, every retry reuses
  * the same dead code and fails identically forever: `reusing the code minted 2026-09-22T06:34 for
  * beta-1` survived a device release and two more `fleet install` attempts unchanged. `register`'s own
- * failure is the only signal available, so a step whose output names this specific Portal error
- * clears the kept code — see `isDeadPairingCodeFailure` — while every other failure (a slow DNS/tunnel
- * provisioning step timing out per #1580, a transient network blip) still keeps it, exactly as
- * before: those may yet succeed with the same code, and re-minting on every failure is what caused
- * the 2026-09-18 orphan-device incident this file exists to prevent.
+ * failure is the only signal available, so a step whose output names a Portal answer about the code
+ * clears the kept code — see `classifyPairingFailure` — while every other failure (a dropped SSH
+ * session, a node that never came up, a Portal the machine could not reach at all) still keeps it,
+ * exactly as before: those may yet succeed with the same code, and re-minting on every failure is
+ * what caused the 2026-09-18 orphan-device incident this file exists to prevent.
+ *
+ * A slow tunnel/DNS provisioning step is NOT one of the keep-it failures, though it reads like one.
+ * Portal claims the code when it validates it and provisions afterwards, so `#1580`'s timeout copy
+ * says "Get a new pairing code before trying again" and the DNS error from #1582 was followed by a
+ * `410` on the very same code. Those answers spend the code without registering the Hub; keeping it
+ * would buy the next run a twenty-minute `hub up` ending in the 410 it was trying to avoid.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -272,17 +278,55 @@ export function describeDeviceNameConflict(name: string, reRegistered?: ReRegist
 }
 
 /**
- * Whether a `hub up + register` step's failure detail is Portal itself declaring the pairing code
- * dead, rather than a step that might still succeed with the same code on retry (a slow tunnel
- * provisioning timeout, a transient SSH/network failure). Matched against `describeStepFailure`'s
- * output, which keeps the tail of `cihub register`'s own stdout — Portal's literal response body is
- * `{"error":"That pairing code is no longer valid. Ask for a new one.","code":"PAIRING_CODE_INVALID",...}`
- * and the CLI prints its `error` field verbatim under a "Pairing failed" heading.
+ * What a failed `hub up + register` proves about the code it sent.
  *
- * A true result here is the caller's cue to `clearPendingPairingCode` so the next attempt mints a
- * fresh code instead of resending one Portal has already refused — see the module doc for why every
- * other failure must NOT clear the kept code.
+ * `refused` — Portal never accepted it. The code is dead and nothing this file keeps can revive it,
+ * but the device row it belongs to is still there, so a re-register mints a replacement worth
+ * sending. On 2026-09-22 fifteen nodes failed this way and `fleet install` handed the same dead code
+ * back on every retry, including after the devices were released, because nothing here ever read the
+ * refusal (CI-Hub#1582).
+ *
+ * `claimed` — Portal took the code and then failed: the DNS/tunnel provisioning that follows pairing,
+ * or an answer that never arrived. The code is spent either way — Portal claims it before it
+ * provisions — so keeping it is wrong, and so is minting a replacement, which meets the same wall.
+ * That is the loop beta-max was in: every attempt burned a fresh code on a failure that was never
+ * about the code.
+ *
+ * Anything else — `hub up` died before `register`, the Portal was unreachable, docker refused —
+ * leaves the code unspent and is not this function's business: it returns undefined and the kept
+ * code stays kept.
+ */
+export type PairingCodeOutcome = { kind: 'refused' | 'claimed'; why: string };
+
+export function classifyPairingFailure(output: string): PairingCodeOutcome | undefined {
+  const text = output.replace(/\s+/g, ' ');
+  // Checked first: `cihub register` prints this box only after Portal has answered the pair, so
+  // whatever went wrong below it went wrong with the code already spent.
+  if (/Pairing accepted/i.test(text)) return { kind: 'claimed', why: 'Portal accepted the code and the registration failed after it' };
+  if (/DNS provider error/i.test(text)) return { kind: 'claimed', why: 'Portal accepted the code and then failed to create the DNS record' };
+  if (/did not answer in time/i.test(text)) return { kind: 'claimed', why: 'Portal took the code and never answered, so it may be provisioning' };
+  if (/incomplete registration data/i.test(text))
+    return { kind: 'claimed', why: 'Portal accepted the code and answered with incomplete registration data' };
+  if (/no longer valid|PAIRING_CODE_INVALID|Ask for a new one/i.test(text))
+    return { kind: 'refused', why: 'Portal refused the code as no longer valid' };
+  if (/PAIRING_CODE_WRONG_DEVICE|code is for another device/i.test(text))
+    return { kind: 'refused', why: 'Portal says that code belongs to another device' };
+  // The wipe destroyed the key that proves this machine owns the device row, and a keyless re-pair
+  // is refused. An owner-led re-register is exactly the fix, and it arrives with a new code.
+  if (/DEVICE_PROOF_REQUIRED/i.test(text))
+    return { kind: 'refused', why: 'Portal wants proof this machine owns the device row, which only a re-register gives' };
+  return undefined;
+}
+
+/**
+ * Whether a register step's failure detail is Portal declaring the code dead — the narrower question
+ * `#1584` asked, kept as its own name because that is what reads at a call site that only wants to
+ * stop keeping the code. It is `classifyPairingFailure` and not a second pair of patterns: two
+ * regexes for one Portal answer drift, and the first thing to drift would be the one nobody notices.
+ *
+ * A code Portal *claimed* and then failed on is not "dead" by this name and still must not be kept —
+ * `classifyPairingFailure` is the one to ask when that distinction matters.
  */
 export function isDeadPairingCodeFailure(detail: string): boolean {
-  return /pairing code is no longer valid/i.test(detail) || /PAIRING_CODE_INVALID/.test(detail);
+  return classifyPairingFailure(detail)?.kind === 'refused';
 }
