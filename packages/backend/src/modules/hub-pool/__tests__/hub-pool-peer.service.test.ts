@@ -1828,6 +1828,25 @@ describe('HubPoolPeerService', () => {
       expect(headers['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
     });
 
+    it('signs inside the grace window when this node requires signed peers, rather than refusing', async () => {
+      // A PIN pairing's approve pins the peer WITH grace, then immediately sends the confirm
+      // callback. Holding the signature back for a bearer that is forbidden anyway made every such
+      // callback throw — and it is never retried — so the joining node stayed `pending` for good.
+      setPoolPreferences({ poolRequireSignedPeers: true });
+      giveSelfAnIdentity();
+      const peer = mockPeer({
+        status: 'connected',
+        peerNodeUuid: PEER_UUID,
+        peerPublicKey: keys.publicKey,
+        bearerGraceUntil: new Date(Date.now() + 600_000).toISOString(),
+      });
+
+      const headers = await service.peerAuthHeaders(peer, 'POST', '/api/inference/pool/pair/confirm', { token: 'x' });
+
+      expect(headers['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
+      expect(headers.Authorization).toBeUndefined();
+    });
+
     it('refuses to emit a bearer token at all when this node requires signed peers', async () => {
       setPoolPreferences({ poolRequireSignedPeers: true });
 

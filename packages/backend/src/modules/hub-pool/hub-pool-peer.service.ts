@@ -345,8 +345,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const privateKey = self?.privateKey ?? null;
     const recipientNodeUuid = peer.peerNodeUuid;
     const graceLive = peer.bearerGraceUntil !== null && Date.parse(peer.bearerGraceUntil) > Date.now();
+    // The grace window exists to fall back to the bearer while the peer may not hold our key yet.
+    // With the bearer forbidden there is nothing to fall back to, and holding the signature back
+    // only guarantees the request fails: every PIN pairing's confirm callback from a node requiring
+    // signed peers was refused this way (fleet, 2026-09-23), though the peer had learned our key
+    // from the PIN response and would have verified it. The callback is never retried, so the
+    // joining node's row stayed `pending` for good.
+    const holdForGrace = graceLive && Boolean(peer.presentTokenEncrypted) && !requireSigned;
 
-    if (self && privateKey && recipientNodeUuid && peer.peerPublicKey && !(graceLive && peer.presentTokenEncrypted)) {
+    if (self && privateKey && recipientNodeUuid && peer.peerPublicKey && !holdForGrace) {
       return buildSignedPoolHeaders(privateKey, {
         method,
         path,
