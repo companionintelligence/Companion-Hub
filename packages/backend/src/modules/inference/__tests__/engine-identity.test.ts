@@ -34,6 +34,20 @@ describe('engine-identity', () => {
       expect(foreignEngineHealth('vllm', models('vllm'), 'http://host.docker.internal:8000')).toBeNull();
       expect(foreignEngineHealth('lucebox', models('dflash'), 'http://host.docker.internal:8216')).toBeNull();
       expect(foreignEngineHealth('mtplx', models('mtplx'), 'http://host.docker.internal:8000')).toBeNull();
+      // llama-server, as verified on a live one: `owned_by: "llamacpp"`.
+      expect(foreignEngineHealth('llamacpp', models('llamacpp'), 'http://host.docker.internal:8081')).toBeNull();
+    });
+
+    it('tells a llama-server apart from the engines that share its ports, in both directions', () => {
+      // LLAMACPP_URL pointed at a vLLM: the llamacpp backend stands down and names its own variable.
+      const notOurs = foreignEngineHealth('llamacpp', models('vllm'), 'http://host.docker.internal:8000');
+      expect(notOurs).toMatchObject({ running: true, healthy: false, modelsLoaded: [] });
+      expect(notOurs?.error).toContain("the vllm backend's server, not llamacpp's");
+      expect(notOurs?.error).toContain('set LLAMACPP_URL');
+      // VLLM_URL pointed at the fleet's llama-server on :8081: vllm stands down.
+      expect(foreignEngineHealth('vllm', models('llamacpp'), 'http://host.docker.internal:8081')?.error).toContain(
+        "the llamacpp backend's server, not vllm's",
+      );
     });
 
     it('reports a shared-port backend unhealthy when the server names another engine, and says which env var points it at its own', () => {
