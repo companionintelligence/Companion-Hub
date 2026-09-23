@@ -228,8 +228,9 @@ the KV cache is `OLLAMA_NUM_PARALLEL` times that window. A 30B at 4 × 64k is th
 
 ## Slot-aware placement
 
-A per-node statement of how many requests the node's Ollama runs at once, and a pool knob that
-reads it. The statement is `cihub pool slots 4` on a node (`clear` withdraws it), or across the
+A per-node statement of how many requests the node's engine runs at once, and a pool knob that
+reads it. The statement describes Ollama (`OLLAMA_NUM_PARALLEL`); a fleet-run llama-server states
+its own — see [llama-server](#llama-server-slots-the-engine-states-them) below. The statement is `cihub pool slots 4` on a node (`clear` withdraws it), or across the
 fleet `cihub fleet backends --ollama-parallel 4 --ollama-context 32768 --ollama-keep-alive 24h
 --execute`, which writes the daemon's `OLLAMA_NUM_PARALLEL` and every node's statement in one run —
 passed with the node's other runtime flags, never alone, because the runtime drop-in is rendered
@@ -257,7 +258,8 @@ or over its slots is **demoted** behind every candidate that still has a free sl
 the prompt ceiling's and the throughput placement's, because the risk is the same:
 
 - **Unstated is neither full nor free.** A node that states no slot count — an older build, or an
-  operator who never set one — and a candidate on any engine but Ollama keep their place.
+  operator who never set one — and a candidate on any engine whose concurrency is not a slot count
+  (everything but Ollama and llama-server) keep their place.
 - **Demoted, never removed.** Failover still reaches a full node when every free one fails, and the
   routing log then says the demotion was overridden rather than claiming the node was skipped.
 - **All full means nothing moves.** When every candidate's slots are full the ranker's order stands.
@@ -332,6 +334,26 @@ candidate stated a count, otherwise the demoted nodes with their queue depth and
 `↳ moved <node> (2 in flight, 2 slots) behind nodes with a free slot` line on the rows a full engine
 was moved on, and `↳ placed anyway with every slot full on …` when the request landed on one
 regardless; a row where every candidate had a free slot gets no line.
+
+### llama-server slots: the engine states them
+
+`llama-server` runs `-np` slots and, unlike Ollama, says so: `GET /props` answers `total_slots`
+and `default_generation_settings.n_ctx`, the window **each slot** gets (`-c` divided by the slot
+count — 32768 on a server started `-np 4 -c 131072`, not 131072). The `llamacpp` backend reads
+`/props` on every healthy probe and keeps the answer, so the pool can rank against it without a
+request of its own; a server that stops answering forgets it, and a server without the route (an
+older build) states nothing rather than something invented.
+
+For **this node's own** llama-server the pool believes that statement over the node's
+`inferenceOllamaSlots` and `inferenceMaxNumCtx`: the statement describes Ollama, and a window the
+engine itself runs is exactly what the cap exists to keep a request inside. A **peer's** llama-server
+is judged through the peer's statement, because the statement is all a peer advertises — which is
+why `cihub fleet backends --backends llamacpp --ollama-parallel N --ollama-context C --execute`
+writes both to the node's Hub after the server reads back that shape on `/props`, and refuses to
+when it does not (see [`cihub fleet backends`](./CLI.md#llama-server-the-same-gguf-ollama-holds-on-8081)).
+A fleet-run llama-server serves the same GGUF the node's Ollama holds under the same tag, so
+`qwen3-coder:30b` on such a node is two candidates — `local/ollama` and `local/llamacpp` — each
+placed by its own slots.
 
 ## Throughput-aware placement
 
@@ -572,7 +594,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
   | Header | Value |
   |---|---|
   | `X-Hub-Pool-Served-By` | `local` when this node's own engine served the request, otherwise the peer's tailnet FQDN (for example `core-14.tailxyz.ts.net`) |
-  | `X-Hub-Pool-Backend` | The engine type on the serving node: `ollama`, `vllm`, `lemonade`, `mtplx`, `dspark`, or `lucebox` |
+  | `X-Hub-Pool-Backend` | The engine type on the serving node: `ollama`, `vllm`, `lemonade`, `mtplx`, `dspark`, `lucebox`, `llamacpp`, or `lmstudio` |
   | `X-Hub-Pool-Model` | The model the request was routed for |
   | `X-Hub-Pool-Request-Id` | The `id` of this request's row in the routing log. Also sent to the serving peer on the `/local/*` forward, so the peer's inbound row carries the same `id` |
   | `X-Hub-Pool-Affinity` | `hit`, `miss` or `skipped` — what [prefix affinity](#prefix-affinity) did, on the chat/completion/generate routes when it is on. Absent otherwise. An app names its session for it with the `X-Hub-Pool-Session` request header |
@@ -1035,7 +1057,7 @@ Only routing reads this. `modelsLoaded` keeps its meaning as the on-disk invento
 
 ## When a node runs the model and the Hub cannot see the engine
 
-The other way a listed model earns a 502 is that the Hub never saw it listed. The Hub probes its engines **from inside its container**, at `VLLM_URL`, `LEMONADE_URL`, `SPECULATIVE_INFERENCE_URL`, `MTPLX_URL`, `DSPARK_URL` (defaults: `http://host.docker.internal:<port>`), and an engine the operator started on the host is only a candidate if that probe answers. On the September 2026 fleet it did not, on six of fifteen nodes, for two reasons that look identical from the outside:
+The other way a listed model earns a 502 is that the Hub never saw it listed. The Hub probes its engines **from inside its container**, at `VLLM_URL`, `LEMONADE_URL`, `SPECULATIVE_INFERENCE_URL`, `MTPLX_URL`, `DSPARK_URL`, `LMSTUDIO_URL` (defaults: `http://host.docker.internal:<port>`) and `LLAMACPP_URL` (no default: llama-server's own 8080 is dspark's, so it is probed only when set — `cihub fleet backends --backends llamacpp` sets it to `:8081` after an install), and an engine the operator started on the host is only a candidate if that probe answers. On the September 2026 fleet it did not, on six of fifteen nodes, for two reasons that look identical from the outside:
 
 - **A firewall that only knows Ollama.** ufw allowed the Docker bridge to reach `:11434` and nothing else, so vLLM on `:8000` timed out from the container and worked from everywhere else.
 - **An engine published on the tailnet address only.** Lemonade and Lucebox containers published on `100.x.y.z:13305` and `:8216` refuse `host.docker.internal`; the fix is to point the env var at the tailnet address, which the Hub container can reach.
@@ -1067,3 +1089,5 @@ The snapshot changes **when** an engine's answer is read, never what an answered
 `vllm`, `mtplx` and `lucebox` all default to host port 8000, and every OpenAI-compatible server answers `GET /v1/models`, so a health check built on that route cannot tell whose server it reached. A node serving vLLM there reported all three backends healthy with vLLM's model: three local candidates for one process (each failover hop re-hit the same engine), the model advertised three times to peers, and a status page claiming two engines the node has never run.
 
 Each of the three names itself in `data[0].owned_by` of its own `/v1/models` body — `vllm`, `mtplx`, and `dflash` for Lucebox — so the backends now honour that claim: a server that names another engine is reported `running: true, healthy: false` with an error that says which env var points the backend at a server of its own. A server that does not name itself is left alone; absent evidence is not evidence of a foreign engine.
+
+`llamacpp` is the fourth: llama-server answers `owned_by: llamacpp` (verified against build b11065 and Ollama's bundled build), its own default port 8080 is dspark's, and the fleet's managed one sits on 8081 where a hand-started one may be too. `LLAMACPP_URL` pointed at a vLLM stands the `llamacpp` backend down and names the variable; `VLLM_URL` pointed at the fleet's llama-server stands `vllm` down the same way. Once the server is its own, the backend also reads `/props` — the model path, `total_slots`, and the per-slot `n_ctx` — which is where [slot-aware placement](#llama-server-slots-the-engine-states-them) gets a local llama-server's figures.
