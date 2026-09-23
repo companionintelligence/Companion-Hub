@@ -17,6 +17,15 @@ export interface HardwareProfile {
     /** Host /dev/kfd is available for ROCm container apps (ComfyUI, etc.). Optional on older profiles. */
     hostRocmKfdAvailable?: boolean;
     /**
+     * The HOST's NVIDIA driver answers `nvidia-smi`: init-gpu-runtime's `nvidia.json` probe named
+     * the card and was written during the current host boot, or the host GPU-process timer wrote
+     * a fresh `gpu_processes.json` for the nvidia vendor. The inference engine on the host uses
+     * the card either way, so the tier follows this even while `runtimeAvailable` is false — that
+     * flag stays the container's own view (no nvidia runtime means no CUDA for container apps).
+     * NVIDIA only; optional on older profiles.
+     */
+    hostNvidiaAvailable?: boolean;
+    /**
      * Which Docker backend the daemon is (from `docker info` OS/kernel). Drives GPU
      * setup guidance: Docker Desktop manages the container GPU runtime itself, a
      * native engine inside WSL2 needs nvidia-container-toolkit installed in the
@@ -149,7 +158,7 @@ export interface ModelMemoryUsage {
  * `getStatus().backends`, the discovered-model list, `hub_list_inference_backends`, and pool
  * candidate selection with no compile error anywhere.
  */
-export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as const;
+export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'] as const;
 
 export type InferenceBackendType = (typeof INFERENCE_BACKEND_TYPES)[number];
 

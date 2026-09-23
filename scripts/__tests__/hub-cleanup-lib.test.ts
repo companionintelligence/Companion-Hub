@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  HUB_STACK_PROJECT_NAMES,
   getDesktopTunnelDir,
   getHubStateDirs,
   isCloudflaredTunnelToken,
@@ -33,8 +34,27 @@ describe('hub-cleanup-lib', () => {
     expect(isRelatedVolume('ci_os_hub-prod_db_data')).toBe(true);
     expect(isRelatedVolume('runcihub_media_data')).toBe(true);
     expect(isRelatedVolume('runcihub_media')).toBe(true);
+    // `runtipi_*` is the prefix appliances actually created. #1143 (c88a83580) renamed the
+    // matcher to `runcihub_` by substring, so uninstall stopped seeing real volumes and
+    // silently left them behind. A volume name is fixed at create time — match both.
+    expect(isRelatedVolume('runtipi_media_data')).toBe(true);
+    expect(isRelatedVolume('runtipi_media')).toBe(true);
     expect(isRelatedVolume('postgres_data')).toBe(false);
     expect(isRelatedVolume('anotherstack_prod_data')).toBe(false);
+  });
+
+  it('treats runtipi and runcihub as Hub stack projects, not marketplace apps', () => {
+    const lines = [
+      'ci-os-hub.managed=true,com.docker.compose.project=runtipi',
+      'ci-os-hub.managed=true,com.docker.compose.project=runcihub',
+      'ci-os-hub.managed=true,com.docker.compose.project=ci-memory_ci-marketplace',
+    ];
+
+    expect(managedAppProjectsFromLabelLines(lines)).toEqual(['ci-memory_ci-marketplace']);
+  });
+
+  it('cleans up every compose project name the Hub stack has ever used', () => {
+    expect([...HUB_STACK_PROJECT_NAMES]).toEqual(['ci-os-hub', 'ci-hub', 'runtipi', 'runcihub']);
   });
 
   it('parses newline-delimited names', () => {

@@ -149,6 +149,10 @@ services:
       LOG_LEVEL: debug
       OLLAMA_URL: http://host.docker.internal:11434
       SPECULATIVE_INFERENCE_URL: ${SPECULATIVE_INFERENCE_URL:-http://host.docker.internal:8000}
+      # No default on purpose: llama-server and mlx-dspark both default to 8080, so probing it
+      # unasked would report one engine as two. Set it to opt in.
+      LLAMACPP_URL: ${LLAMACPP_URL:-}
+      LMSTUDIO_URL: ${LMSTUDIO_URL:-http://host.docker.internal:1234}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # See docker-compose.prod.yml: retry Docker embedded-DNS lookups instead of failing

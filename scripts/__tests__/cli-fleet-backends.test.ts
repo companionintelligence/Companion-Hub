@@ -34,6 +34,7 @@ vi.mock('../lib/fleet-hardware.js', async (importOriginal) => ({
 import { runFleetCommand } from '../lib/cli-fleet.js';
 import type { HostFacts } from '../lib/fleet-hardware.js';
 import { CANONICAL_BIND_DROPIN, canonicalBindDropinContent, normalizeOllamaHost } from '../lib/fleet-ollama-bind.js';
+import { HUB_AUTO_MODEL_MARKERS, HUB_LLAMACPP_URL, HUB_LLAMACPP_URL_MARKERS, LLAMACPP_MARKERS, LLAMACPP_UNIT } from '../lib/fleet-llamacpp.js';
 import { HUB_CONTEXT_CAP_MARKERS, ollamaRuntimeDropinContent, RUNTIME_DROPIN } from '../lib/fleet-ollama-runtime.js';
 import type { SshTarget } from '../lib/fleet-ssh.js';
 
@@ -54,24 +55,35 @@ const facts = (over: Partial<HostFacts> = {}): HostFacts => ({
 
 const ok = (out: string) => ({ ok: true, out, err: '', code: 0, ms: 5 });
 
-/** The bind probe for a node already managed for `--bind all` (guard up), with or without the runtime file. */
-function bindProbe(node: { runtime?: string; env?: string; userScope?: boolean }) {
+/**
+ * The bind probe for a node already managed for `--bind all` (guard up), with or without the runtime
+ * file. `userScope` is beta-1 (a user unit serves the port, the system unit is dead). `tunnel` is
+ * core-2 as the unprivileged probe really sees it (2026-09-21): the system unit serves :11434 as
+ * uid 997, so `ss` withholds the pid and there is no `owner=` line — only the socket's cgroup — and
+ * a user-scope `ollama-tunnel.service` (an ssh forward) is active beside it.
+ */
+function bindProbe(node: { runtime?: string; env?: string; userScope?: boolean; tunnel?: boolean }) {
   const bindFile = canonicalBindDropinContent(normalizeOllamaHost('0.0.0.0'));
   const lines = [
     'bind_probe=1',
     'unit_file=/etc/systemd/system/ollama.service',
     `show:ActiveState=${node.userScope ? 'inactive' : 'active'}`,
     `show:UnitFileState=${node.userScope ? 'disabled' : 'enabled'}`,
+    ...(node.tunnel ? ['show:MainPID=3522669', 'show:UID=997'] : []),
     'show:NeedDaemonReload=no',
     `show:Environment=OLLAMA_HOST=0.0.0.0:11434 OLLAMA_KEEP_ALIVE=5m${node.env ? ` ${node.env}` : ''}`,
     'tailscale_ip=100.100.1.1',
     'guard_unit=active',
     node.userScope
       ? 'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=2417,fd=3))'
-      : 'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=901,fd=3))',
-    node.userScope
-      ? 'owner=2417 ci /user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service'
-      : 'owner=901 ollama /system.slice/ollama.service',
+      : node.tunnel
+        ? 'ss=LISTEN 0 4096 *:11434 *:* uid:997 ino:81099226 sk:8006 cgroup:/system.slice/ollama.service v6only:0 <->'
+        : 'ss=LISTEN 0 4096 0.0.0.0:11434 0.0.0.0:* users:(("ollama",pid=901,fd=3))',
+    ...(node.userScope
+      ? ['owner=2417 ci /user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service']
+      : node.tunnel
+        ? ['user_uid=ci 1001', 'user_unit=ci ollama-tunnel.service loaded active running SSH tunnel: core-2 localhost:11435 -> beta-1 Ollama :11434']
+        : ['owner=901 ollama /system.slice/ollama.service']),
     `dir_entry=${CANONICAL_BIND_DROPIN}`,
     `===DROPIN /etc/systemd/system/ollama.service.d/${CANONICAL_BIND_DROPIN}===`,
     bindFile,
@@ -93,16 +105,36 @@ const UFW_PARTIAL = [
   '8000/tcp                   ALLOW       172.16.0.0/12',
   '13305/tcp                  ALLOW       172.16.0.0/12',
 ].join('\n');
-const UFW_FULL = [UFW_PARTIAL, '8080/tcp                   ALLOW       172.16.0.0/12', '8216/tcp                   ALLOW       172.16.0.0/12'].join(
-  '\n',
-);
+const UFW_FULL = [
+  UFW_PARTIAL,
+  '8080/tcp                   ALLOW       172.16.0.0/12',
+  '8081/tcp                   ALLOW       172.16.0.0/12',
+  '8216/tcp                   ALLOW       172.16.0.0/12',
+].join('\n');
 
 const firewallProbe = (status: string) =>
   ['firewall_probe=1', 'root=yes', 'ufw_bin=yes', 'ufw_conf=yes', 'ufw-status-begin', status, 'ufw-status-end'].join('\n');
 
+/**
+ * The residency probe on a node with nothing loaded. `gpu` and `env` shape the GPU evidence and the
+ * merged environment the script prints beside `/api/ps`; `ps` is the body itself.
+ */
+function psProbe(node: { ps?: string; amdGfxRaw?: string; nvidia?: string; env?: string } = {}) {
+  return [
+    'ollama-ps-probe=1',
+    'ollama-ps-host=127.0.0.1:11434',
+    `ollama-ps-env=OLLAMA_HOST=0.0.0.0:11434${node.env ? ` ${node.env}` : ''}`,
+    `ollama-ps-nvidia=${node.nvidia ?? ''}`,
+    `ollama-ps-amd-gfx=${node.amdGfxRaw ?? ''}`,
+    `ollama-ps-body=${node.ps ?? '{"models":[]}'}`,
+  ].join('\n');
+}
+
 interface NodeFixture {
   bind: string;
   ufw: string;
+  /** The residency probe's output; a node without one answers "nothing loaded". */
+  ps?: string;
 }
 let hosts: Record<string, NodeFixture> = {};
 let output: string[] = [];
@@ -177,6 +209,7 @@ beforeEach(() => {
     if (!h) return { ok: false, out: '', err: 'no route', code: 255, ms: 5 };
     if (command.includes('bind_probe=1')) return ok(h.bind);
     if (command.includes('firewall_probe=1')) return ok(h.ufw);
+    if (command.includes('ollama-ps-probe=1')) return ok(h.ps ?? psProbe());
     if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
     if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
     if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '16384'));
@@ -205,10 +238,13 @@ describe('fleet backends (dry run)', () => {
     expect(text).toContain('Dry run');
     expect(sudoCalls()).toHaveLength(0);
     // Every SSH call was a read-only probe.
-    for (const [, command] of mocks.sshCapture.mock.calls) expect(String(command)).toMatch(/bind_probe=1|firewall_probe=1/);
+    for (const [, command] of mocks.sshCapture.mock.calls) expect(String(command)).toMatch(/bind_probe=1|firewall_probe=1|ollama-ps-probe=1/);
 
     // core-1: no runtime file yet → would write and restart; two probe ports still dropped.
-    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL <unset>');
+    // The `now` line lists all five managed keys, set or not, so two nodes' lines line up.
+    expect(text).toContain(
+      'runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
+    );
     expect(text).toContain(`runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4, then daemon-reload and restart ollama`);
     expect(text).toContain('firewall: ufw active and dropping the bridge on :8080, :8216 (:8000, :13305 already allowed)');
     expect(text).toContain(
@@ -223,9 +259,21 @@ describe('fleet backends (dry run)', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('plans nothing about the runtime when no runtime flag was given, exactly as before', async () => {
+  it("reports every node's runtime environment with no runtime flag at all, and plans nothing", async () => {
+    // The whole point of the read-only line: `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536 across
+    // this fleet with one node unset, and a run that had just read the merged environment said
+    // nothing about it. An inventory pass must not need a flag that would also rewrite the file.
     await runFleetCommand(['backends', '--backends', 'ollama']);
-    expect(printed()).not.toContain('runtime:');
+    const text = printed();
+    expect(text).toContain(
+      'runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>',
+    );
+    // core-2's daemon already runs a parallelism; it is reported, not planned.
+    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset>');
+    // Read-only: nothing would be written, and a node this run may not touch still reports its env.
+    expect(text).not.toContain('would write');
+    expect(text).not.toContain('already carries');
+    expect(text.match(/runtime: now /g)).toHaveLength(3);
     expect(sudoCalls()).toHaveLength(0);
   });
 
@@ -241,11 +289,13 @@ describe('fleet backends (dry run)', () => {
     await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--ollama-max-loaded', '2', '--nodes', 'core-1,core-2']);
     const text = printed();
     expect(sudoCalls()).toHaveLength(0);
-    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL <unset>, OLLAMA_MAX_LOADED_MODELS <unset>');
+    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset>');
     expect(text).toContain(
       `runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2, then daemon-reload and restart ollama`,
     );
-    expect(text).toContain('runtime: now OLLAMA_NUM_PARALLEL 4, OLLAMA_MAX_LOADED_MODELS 2');
+    expect(text).toContain(
+      'runtime: now OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=5m OLLAMA_CONTEXT_LENGTH=<unset> OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2',
+    );
     expect(text).toContain(`runtime: ${RUNTIME_DROPIN} already carries OLLAMA_NUM_PARALLEL, OLLAMA_MAX_LOADED_MODELS; ollama not restarted`);
     expect(process.exitCode).toBeUndefined();
   });
@@ -257,6 +307,106 @@ describe('fleet backends (dry run)', () => {
     await expect(runFleetCommand(['update', '--ollama-parallel', '4'])).rejects.toThrow('exit');
     expect(printed()).toContain('only apply to `fleet backends`');
     exit.mockRestore();
+  });
+
+  describe('a model resident on the CPU', () => {
+    // 2026-09-21, six Strix Halo nodes: the bind file forced OLLAMA_LLM_LIBRARY=vulkan, nothing set
+    // OLLAMA_IGPU_ENABLE, Ollama dropped the integrated GPU, and qwen3-coder:30b served from the CPU
+    // at 37.5 tok/s with every probe green. /api/ps said `size_vram: 0`; nothing read it.
+    const strixHalo = { vendor: 'amd' as const, gfx: 'gfx1151', reportedVramMib: 2048, gttMib: 62061, driverWorking: true };
+    const qwenOnCpu = JSON.stringify({
+      models: [{ name: 'qwen3-coder:30b', model: 'qwen3-coder:30b', size: 19975044096, size_vram: 0, context_length: 65536 }],
+    });
+    const qwenOnGpu = JSON.stringify({ models: [{ name: 'qwen3-coder:30b', model: 'qwen3-coder:30b', size: 19975044096, size_vram: 19975044096 }] });
+
+    beforeEach(() => {
+      // core-1 is the CPU-only control: the same /api/ps, no GPU in its facts. core-2 is the node.
+      mocks.readHostFacts.mockImplementation(async (t: SshTarget) => ({ facts: t.host === '10.0.0.2' ? facts({ gpus: [strixHalo] }) : facts() }));
+      hosts['10.0.0.1'] = { ...(hosts['10.0.0.1'] as NodeFixture), ps: psProbe({ ps: qwenOnCpu }) };
+      hosts['10.0.0.2'] = {
+        bind: bindProbe({ env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+        ufw: firewallProbe(UFW_FULL),
+        ps: psProbe({ ps: qwenOnCpu, amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+      };
+    });
+
+    it('is a warning line under the plan, with the reason and the fix, on a node with a GPU — and not on one without', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-1,core-2', '--json']);
+      const text = printed();
+      const lines = text.split('\n');
+      expect(lines).toContainEqual(expect.stringContaining('resident: qwen3-coder:30b (18.6 GiB, CPU)'));
+      expect(text).toContain(
+        '! qwen3-coder:30b resident on CPU — size_vram 0 of 18.6 GiB: OLLAMA_LLM_LIBRARY=vulkan with OLLAMA_IGPU_ENABLE unset — Ollama drops an integrated GPU unless OLLAMA_IGPU_ENABLE=1, so the model loaded on the CPU',
+      );
+      expect(text).toContain("run 'cihub fleet backends --backends ollama --execute' — the managed bind file now carries OLLAMA_IGPU_ENABLE=1");
+      // Exactly one warning: core-1 runs the same model on its CPU because that is all it has.
+      expect(text.match(/resident on CPU/g)).toHaveLength(1);
+      // And the plan for core-2's bind file says it would gain both keys — that IS the fix.
+      expect(text).toContain(`bind:   write ${CANONICAL_BIND_DROPIN} with OLLAMA_HOST=0.0.0.0:11434 OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1`);
+      expect(sudoCalls()).toHaveLength(0);
+      // --json carries the finding as data, cause named, so a fleet-wide run can list every such node.
+      const json = JSON.parse(output.find((l) => l.trimStart().startsWith('[')) ?? '[]') as Array<{
+        node: string;
+        residency?: { cpuResident: Array<{ cause: string; model: string }> };
+      }>;
+      const byNode = (n: string) => json.find((r) => r.node === n && r.residency)?.residency?.cpuResident ?? [];
+      expect(byNode('core-2')).toEqual([expect.objectContaining({ cause: 'vulkan-without-igpu', model: 'qwen3-coder:30b' })]);
+      expect(byNode('core-1')).toEqual([]);
+    });
+
+    it('is not a warning once the model is in VRAM, and the inventory line says so', async () => {
+      hosts['10.0.0.2'] = {
+        ...(hosts['10.0.0.2'] as NodeFixture),
+        ps: psProbe({ ps: qwenOnGpu, amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1' }),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-2']);
+      expect(printed()).toContain('resident: qwen3-coder:30b (18.6 GiB, GPU)');
+      expect(printed()).not.toContain('resident on CPU');
+    });
+
+    it("does not blame the system unit's environment on a node a user-scope unit serves", async () => {
+      // beta-1: the daemon is `ollama-local.service` under ci's systemd --user, with its own
+      // environment. The probe reads the SYSTEM unit's — vulkan, no iGPU key — which explains
+      // nothing about what that daemon runs, so the model is flagged as measured, not as the trap.
+      mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ gpus: [strixHalo] }) }));
+      hosts['10.0.0.3'] = {
+        bind: bindProbe({ userScope: true, env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+        ufw: firewallProbe(UFW_FULL),
+        ps: psProbe({ ps: qwenOnCpu, amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'beta-1', '--json']);
+      const text = printed();
+      expect(text).toContain('resident on CPU — size_vram 0 of 18.6 GiB on a node with a GPU (amd/gfx1151)');
+      expect(text).not.toContain('OLLAMA_IGPU_ENABLE unset');
+      const json = JSON.parse(output.find((l) => l.trimStart().startsWith('[')) ?? '[]') as Array<{
+        residency?: { cpuResident: Array<{ cause: string }> };
+      }>;
+      expect(json.find((r) => r.residency)?.residency?.cpuResident[0]?.cause).toBe('unknown');
+    });
+
+    it('is read again after --execute, once the daemon is up', async () => {
+      mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+        const h = hosts[t.host] as NodeFixture;
+        if (command.includes('bind_probe=1')) return ok(h.bind);
+        if (command.includes('firewall_probe=1')) return ok(h.ufw);
+        // Before the bind step the model is on the CPU; the restart unloads it.
+        if (command.includes('ollama-ps-probe=1')) return ok(psProbe({ amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1' }));
+        if (command.includes('CIHUB_OLLAMA_BIND_EOF')) {
+          return ok(['ollama-bind-effective: OLLAMA_HOST=0.0.0.0:11434 listening=0.0.0.0:11434', 'ollama-bind-complete'].join('\n'));
+        }
+        if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
+        throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+      });
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-2', '--execute']);
+      const text = printed();
+      // The bind step wrote both keys, under sudo, and the read afterwards found nothing resident.
+      const bind = sudoCalls().find((c) => c.command.includes('CIHUB_OLLAMA_BIND_EOF'));
+      expect(bind?.command).toContain('Environment="OLLAMA_LLM_LIBRARY=vulkan"');
+      expect(bind?.command).toContain('Environment="OLLAMA_IGPU_ENABLE=1"');
+      expect(text).toContain('resident: none');
+      expect(text).not.toContain('resident on CPU');
+      expect(process.exitCode).toBeUndefined();
+    });
   });
 });
 
@@ -289,6 +439,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_MAX_LOADED_MODELS=2'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -324,6 +475,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF'))
         return ok(
@@ -361,6 +513,89 @@ describe('fleet backends --execute', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  // core-2, 2026-09-21: `fleet backends` printed "ollama skipped — ollama-tunnel.service is running
+  // under ci's systemd --user; the system ollama.service path would start a second daemon and
+  // collide on :11434" and managed nothing — but the SYSTEM ollama.service is what listens there,
+  // and the user unit is an ssh forward whose name merely matches. The listener decides.
+  describe('a user-scope `ollama*` unit that is not the listener (core-2)', () => {
+    beforeEach(() => {
+      // No runtime file yet, so the runtime step has work to do — the work that used to be skipped.
+      hosts['10.0.0.2'] = { bind: bindProbe({ tunnel: true }), ufw: firewallProbe(UFW_FULL) };
+    });
+
+    const NOTE =
+      "ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (uid 997) is what serves :11434 — that unit is not the daemon; managing the system unit";
+
+    it('is managed on --execute, and the line says which unit was seen and why it did not stop the run', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'core-2']);
+      const text = printed();
+      expect(text).not.toMatch(/ollama\s+skipped/);
+      expect(text).not.toContain('would start a second daemon');
+      expect(text).toMatch(/ollama\s+adopted.*bind already 0\.0\.0\.0:11434/);
+      expect(text).toContain(NOTE);
+      expect(text).toContain(`${RUNTIME_DROPIN} now carries OLLAMA_NUM_PARALLEL=4; ollama restarted`);
+      // The runtime step ran on the system unit — the thing that was previously "managed nothing".
+      expect(runtimeCalls().map((c) => c.host)).toEqual(['10.0.0.2']);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('the dry run plans the runtime for it and prints the same note under the bind', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--nodes', 'core-2']);
+      const text = printed();
+      expect(text).toContain(`bind: ${NOTE}`);
+      expect(text).not.toContain('would refuse');
+      expect(text).toContain(`runtime: would write ${RUNTIME_DROPIN} with OLLAMA_NUM_PARALLEL=4, then daemon-reload and restart ollama`);
+      expect(sudoCalls()).toHaveLength(0);
+    });
+
+    it('the report carries the note as data, so a fleet-wide JSON run can list every such node', async () => {
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-2', '--json']);
+      const json = output.find((l) => l.trimStart().startsWith('['));
+      expect(json).toBeDefined();
+      const rows = JSON.parse(json ?? '[]') as Array<{ backend?: string; bind?: { note?: string; refused?: string } }>;
+      const ollama = rows.find((r) => r.backend === 'ollama');
+      expect(ollama?.bind?.note).toBe(NOTE);
+      expect(ollama?.bind?.refused).toBeUndefined();
+    });
+
+    it('a user-scope unit that IS the listener still skips, by the socket cgroup alone', async () => {
+      // beta-1 through the same unprivileged `ss -e`: no owner= line, the cgroup on the ss line.
+      hosts['10.0.0.3'] = {
+        bind: bindProbe({ userScope: true })
+          .replace(
+            /^ss=.*$/m,
+            'ss=LISTEN 0 4096 *:11434 *:* uid:1000 ino:133057448 sk:9003 cgroup:/user.slice/user-1000.slice/user@1000.service/app.slice/ollama-local.service v6only:0 <->',
+          )
+          .replace(/^owner=.*\n/m, 'user_uid=ci 1000\nuser_unit=ci ollama-local.service loaded active running Ollama local model server\n'),
+        ufw: firewallProbe(UFW_FULL),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'beta-1']);
+      expect(printed()).toMatch(/ollama\s+skipped.*ollama-local\.service under ci's systemd --user \(socket uid 1000\) already owns :11434/);
+      expect(runtimeCalls()).toHaveLength(0);
+    });
+
+    it('the same unit with nothing on :11434 is still a skip — a free port is what a daemon mid-restart looks like', async () => {
+      // beta-1 between `systemctl --user restart ollama-local` stopping the daemon and the new one
+      // binding: the unit is active, no socket, no owner line. The relaxation is for a SERVING
+      // system unit only; here the name refuses as it did before the listener rule.
+      hosts['10.0.0.3'] = {
+        bind: bindProbe({ userScope: true })
+          .replace(/^ss=.*\n/m, '')
+          .replace(/^owner=.*\n/m, 'user_uid=ci 1000\nuser_unit=ci ollama-local.service loaded active running Ollama local model server\n'),
+        ufw: firewallProbe(UFW_FULL),
+      };
+      await runFleetCommand(['backends', '--backends', 'ollama', '--ollama-parallel', '4', '--execute', '--nodes', 'beta-1']);
+      const text = printed();
+      expect(text).toMatch(
+        /ollama\s+skipped.*ollama-local\.service is running under ci's systemd --user; the system ollama\.service path would start a second daemon/,
+      );
+      expect(text).not.toContain('nothing listens');
+      expect(text).not.toContain('managing the system unit');
+      expect(runtimeCalls()).toHaveLength(0);
+      expect(process.exitCode).toBeUndefined();
+    });
+  });
+
   it('adds only the missing firewall rules, verifies them, and leaves a complete table alone', async () => {
     await runFleetCommand(['backends', '--backends', 'ollama', '--execute', '--nodes', 'core-1,core-2']);
     const text = printed();
@@ -395,6 +630,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
         return ok(
@@ -431,6 +667,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
         return ok(
@@ -467,6 +704,7 @@ describe('fleet backends --execute', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF'))
         return ok(
@@ -515,6 +753,7 @@ describe('fleet backends --ollama-parallel', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -548,6 +787,7 @@ describe('fleet backends --ollama-parallel', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -589,6 +829,7 @@ describe('fleet backends --ollama-parallel', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -632,6 +873,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -652,6 +894,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -685,6 +928,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied(''));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -715,6 +959,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -730,6 +975,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF')) return ok(runtimeApplied('OLLAMA_CONTEXT_LENGTH=16384'));
       if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8216]));
@@ -757,6 +1003,7 @@ describe('fleet backends --ollama-context', () => {
     mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
       const h = hosts[t.host] as NodeFixture;
       if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('ollama-ps-probe=1')) return ok(psProbe());
       if (command.includes('firewall_probe=1')) return ok(h.ufw);
       if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF'))
         return ok(
@@ -774,5 +1021,324 @@ describe('fleet backends --ollama-context', () => {
     expect(printed()).toMatch(/ollama\s+failed/);
     expect(capCalls()).toHaveLength(0);
     expect(process.exitCode).toBe(1);
+  });
+});
+
+// ─── llama-server ──────────────────────────────────────────────────────────────────────────────────
+
+describe('fleet backends --backends llamacpp', () => {
+  const strixHalo = { vendor: 'amd' as const, gfx: 'gfx1151', reportedVramMib: 2048, gttMib: 62061, driverWorking: true };
+  const DIGEST = 'b'.repeat(64);
+  /** What the node's Hub answers: `auto` pinned to the catalog id the fleet uses, mapped by its onboarding profile. */
+  const autoModel = (preferredModel: string | null = 'qwen3-coder-30b') => {
+    const m = HUB_AUTO_MODEL_MARKERS;
+    return [
+      `${m.key} present`,
+      `${m.prefsHttp} 200`,
+      m.prefsBegin,
+      JSON.stringify({ preferredBackend: 'ollama', preferredModel }),
+      m.prefsEnd,
+      `${m.profileHttp} 200`,
+      m.profileBegin,
+      JSON.stringify({
+        recommendedModels: [{ id: 'qwen3-coder-30b', backend: 'ollama', backendModelId: 'qwen3-coder:30b', modality: 'llm' }],
+        availableModels: [],
+        installedCatalogIds: ['qwen3-coder-30b'],
+      }),
+      m.profileEnd,
+      m.complete,
+    ].join('\n');
+  };
+  const probe = (unit: 'absent' | 'unchanged' | 'differs', state = 'inactive', model = 'qwen3-coder:30b') =>
+    [
+      'llamacpp-models-dir: /mnt/cache/ollama',
+      `llamacpp-model: ${model} sha256-${DIGEST}`,
+      'llamacpp-publish: tailnet=100.64.0.6 gateway=172.17.0.1',
+      `llamacpp-unit: ${unit}`,
+      `llamacpp-unit-state: ${state}`,
+      LLAMACPP_MARKERS.unitBegin,
+      `ExecStart=/usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080 ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 --model /models/blobs/sha256-${DIGEST} --alias ${model}`,
+      LLAMACPP_MARKERS.unitEnd,
+      ...(state === 'active' ? [`llamacpp-models: id=${model} owned_by=llamacpp`, 'llamacpp-props: n_ctx=32768 total_slots=4'] : []),
+      LLAMACPP_MARKERS.complete,
+    ].join('\n');
+  const applied = (restart: string, model = 'qwen3-coder:30b', shape = 'n_ctx=32768 total_slots=4') =>
+    [
+      'llamacpp-models-dir: /mnt/cache/ollama',
+      `llamacpp-model: ${model} sha256-${DIGEST}`,
+      'llamacpp-image: present',
+      `llamacpp-restart: ${restart}`,
+      'llamacpp-health: ok 40s',
+      `llamacpp-models: id=${model} owned_by=llamacpp`,
+      `llamacpp-props: ${shape}`,
+      LLAMACPP_MARKERS.complete,
+    ].join('\n');
+  const hubUrl = (write: 'written' | 'skipped', container: 'recreated' | 'current') => {
+    const m = HUB_LLAMACPP_URL_MARKERS;
+    return [
+      `${m.file} /home/ci/.local/share/companion-hub/.env.dev`,
+      `${m.now} ${write === 'written' ? 'none' : HUB_LLAMACPP_URL}`,
+      `${m.write} ${write}`,
+      `${m.container} ${container}`,
+      ...(container === 'recreated' ? [`${m.health} ok 9s`] : []),
+      m.complete,
+    ].join('\n');
+  };
+  const llamacppCalls = () => sudoCalls().filter((c) => c.command.includes('CIHUB_LLAMACPP_EOF'));
+  const autoModelCalls = () => mocks.sshCapture.mock.calls.filter(([, command]) => String(command).includes('CIHUB_HUB_AUTO_MODEL_EOF'));
+  const hubUrlCalls = () => mocks.sshCapture.mock.calls.filter(([, command]) => String(command).includes('CIHUB_HUB_LLAMACPP_URL_EOF'));
+
+  let node: { auto: string; probe: string; apply: string; hubUrl: string };
+
+  beforeEach(() => {
+    node = { auto: autoModel(), probe: probe('absent'), apply: applied('restarted (unit written)'), hubUrl: hubUrl('written', 'recreated') };
+    mocks.nodes = [{ name: 'core-6', ip: '10.0.0.6' }];
+    hosts['10.0.0.6'] = { bind: bindProbe({}), ufw: firewallProbe(UFW_FULL) };
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ gpus: [strixHalo] }) }));
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host];
+      if (!h) return { ok: false, out: '', err: 'no route', code: 255, ms: 5 };
+      if (command.includes('bind_probe=1')) return ok(h.bind);
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('ollama-ps-probe=1')) return ok(h.ps ?? psProbe());
+      if (command.includes('CIHUB_HUB_AUTO_MODEL_EOF')) return ok(node.auto);
+      if (command.includes('CIHUB_LLAMACPP_PROBE_EOF')) return ok(node.probe);
+      if (command.includes('CIHUB_LLAMACPP_EOF')) return ok(node.apply);
+      if (command.includes('CIHUB_HUB_LLAMACPP_URL_EOF')) return ok(node.hubUrl);
+      if (command.includes('CIHUB_OLLAMA_RUNTIME_EOF'))
+        return ok(runtimeApplied('OLLAMA_NUM_PARALLEL=4 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=32768'));
+      if (command.includes('CIHUB_HUB_CONTEXT_CAP_EOF')) return ok(capApplied('none', '200', '32768'));
+      if (command.includes('CIHUB_HUB_OLLAMA_SLOTS_EOF')) return ok(capApplied('none', '200', '4'));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+  });
+
+  it("dry run: asks the node's Hub for its auto model, resolves the blob, prints the unit and the Hub line, runs nothing under sudo", async () => {
+    await runFleetCommand(['backends', '--backends', 'llamacpp']);
+    const text = printed();
+    expect(sudoCalls()).toHaveLength(0);
+    expect(autoModelCalls()).toHaveLength(1);
+    expect(text).toContain('llamacpp  would install — AMD gfx1151 — ROCm image (measured on gfx1151) — installing cihub-llamacpp.service:');
+    expect(text).toContain(
+      "serving Ollama's qwen3-coder:30b (this node's Hub pins qwen3-coder-30b for auto) as 4 × 32768 (-np 4 -c 131072) on :8081",
+    );
+    expect(text).toContain(`llamacpp: model sha256-${DIGEST} under /mnt/cache/ollama, mounted read-only`);
+    expect(text).toContain(
+      'llamacpp: /usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080',
+    );
+    expect(text).toContain(
+      "llamacpp: published on 127.0.0.1, 100.64.0.6 (tailnet), 172.17.0.1 (docker0 — host.docker.internal inside ci-hub); never on 0.0.0.0 — Docker's DNAT would bypass ufw and the port guard",
+    );
+    expect(text).toContain(`llamacpp: would write ${LLAMACPP_UNIT}, then daemon-reload and restart it (the model reloads)`);
+    expect(text).toContain(`hub: would set LLAMACPP_URL=${HUB_LLAMACPP_URL} in the env file compose reads and recreate ci-hub`);
+    // No runtime flag: the Hub halves are not planned, on the same terms as for Ollama.
+    expect(text).not.toContain('inferenceOllamaSlots');
+    // Ollama was not named, so nothing about it is planned — and neither is the model in the report.
+    expect(text).not.toContain('ollama    ');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('dry run: --llamacpp-model skips the Hub round trip, and a node whose unit already carries the spec plans no restart', async () => {
+    node.probe = probe('unchanged', 'active', 'gemma4:e4b');
+    await runFleetCommand([
+      'backends',
+      '--backends',
+      'llamacpp',
+      '--llamacpp-model',
+      'gemma4:e4b',
+      '--ollama-parallel',
+      '4',
+      '--ollama-context',
+      '32768',
+    ]);
+    const text = printed();
+    expect(autoModelCalls()).toHaveLength(0);
+    expect(text).toContain("serving Ollama's gemma4:e4b (--llamacpp-model) as 4 × 32768");
+    expect(text).toContain(`llamacpp: ${LLAMACPP_UNIT} already carries this; not restarted`);
+    expect(text).toContain('llamacpp: now serving gemma4:e4b (owned_by llamacpp) as 4 × 32768');
+    // The two Hub halves follow llama-server when Ollama is not in the run.
+    expect(text).toContain('hub: would set inferenceMaxNumCtx=32768');
+    expect(text).toContain('hub: would set inferenceOllamaSlots=4');
+    expect(sudoCalls()).toHaveLength(0);
+  });
+
+  it('dry run: a tag Ollama has not pulled is a skip that names it, and a Hub that pins nothing installed is one that names the flag', async () => {
+    node.probe = [
+      'llamacpp-models-dir: /mnt/cache/ollama',
+      'llamacpp-model: missing qwen3-coder:30b — no manifest at /mnt/cache/ollama/x (ollama pull qwen3-coder:30b on this node first)',
+      LLAMACPP_MARKERS.complete,
+    ].join('\n');
+    await runFleetCommand(['backends', '--backends', 'llamacpp']);
+    expect(printed()).toContain(
+      'llamacpp: would skip — qwen3-coder:30b — no manifest at /mnt/cache/ollama/x (ollama pull qwen3-coder:30b on this node first)',
+    );
+
+    output = [];
+    node.auto = autoModel(null).replace('"installedCatalogIds":["qwen3-coder-30b"]', '"installedCatalogIds":[]');
+    await runFleetCommand(['backends', '--backends', 'llamacpp']);
+    expect(printed()).toContain(
+      "llamacpp  skip — no --llamacpp-model, and this node's Hub pins no model for auto and recommends no installed Ollama LLM — name the tag with --llamacpp-model",
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('--execute: installs under sudo, then writes LLAMACPP_URL and recreates ci-hub, then the two Hub halves once the server read back their shape', async () => {
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--ollama-parallel', '4', '--ollama-context', '32768', '--execute']);
+    const text = printed();
+    expect(llamacppCalls()).toHaveLength(1);
+    expect(llamacppCalls()[0]?.command).toContain('server-rocm-b11065');
+    expect(llamacppCalls()[0]?.command).toContain('-np 4 -ub 2048 -b 2048 --cache-reuse 256 --jinja --metrics -c 131072');
+    expect(text).toMatch(/llamacpp\s+installed.*cihub-llamacpp\.service unit written, model loaded in 40 s; serving qwen3-coder:30b as 4 × 32768/);
+    expect(hubUrlCalls()).toHaveLength(1);
+    expect(text).toMatch(
+      /hub\s+applied.*LLAMACPP_URL=http:\/\/host\.docker\.internal:8081 written to \/home\/ci\/\.local\/share\/companion-hub\/\.env\.dev; ci-hub recreated, live again after 9 s/,
+    );
+    // Cap first, then slots, like the Ollama path — and both, because llama-server read back 4 × 32768.
+    const capIndex = mocks.sshCapture.mock.calls.findIndex(([, c]) => String(c).includes('CIHUB_HUB_CONTEXT_CAP_EOF'));
+    const slotIndex = mocks.sshCapture.mock.calls.findIndex(([, c]) => String(c).includes('CIHUB_HUB_OLLAMA_SLOTS_EOF'));
+    expect(capIndex).toBeGreaterThan(-1);
+    expect(slotIndex).toBeGreaterThan(capIndex);
+    expect(text).toMatch(/hub\s+applied.*context cap none → 32768/);
+    expect(text).toMatch(/hub\s+applied.*slot count none → 4/);
+    // Ollama was not in the run: no bind, no runtime file.
+    expect(runtimeCalls()).toHaveLength(0);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('--execute: a node whose unit already carries the spec is adopted with nothing restarted, and a Hub already pointed at it is left alone', async () => {
+    node.apply = applied('not-needed');
+    node.hubUrl = hubUrl('skipped', 'current');
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--execute']);
+    const text = printed();
+    expect(text).toMatch(/llamacpp\s+adopted.*cihub-llamacpp\.service unchanged, not restarted; serving qwen3-coder:30b as 4 × 32768/);
+    expect(text).toMatch(/hub\s+unchanged.*already in \/home\/ci\/\.local\/share\/companion-hub\/\.env\.dev and in the running ci-hub/);
+    // No runtime flag: no Hub halves, even though the server read back its shape.
+    expect(capCalls()).toHaveLength(0);
+    expect(slotCalls()).toHaveLength(0);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('--execute: a server that came up with the wrong shape fails the node, and neither Hub step runs after it', async () => {
+    node.apply = applied('restarted (unit written)', 'qwen3-coder:30b', 'n_ctx=16384 total_slots=8');
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--ollama-parallel', '4', '--ollama-context', '32768', '--execute']);
+    expect(printed()).toMatch(/llamacpp\s+failed.*reads back 8 slots × 16384 context on \/props, not the 4 × 32768 requested/);
+    expect(hubUrlCalls()).toHaveLength(0);
+    expect(capCalls()).toHaveLength(0);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('--execute: a Hub that could not be recreated fails the node with the fix, after the server itself installed', async () => {
+    node.hubUrl = [
+      `${HUB_LLAMACPP_URL_MARKERS.file} /home/ci/.local/share/companion-hub/.env.dev`,
+      `${HUB_LLAMACPP_URL_MARKERS.now} none`,
+      `${HUB_LLAMACPP_URL_MARKERS.write} written`,
+      `${HUB_LLAMACPP_URL_MARKERS.container} no-compose-identity`,
+      HUB_LLAMACPP_URL_MARKERS.complete,
+    ].join('\n');
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--execute']);
+    expect(printed()).toMatch(/llamacpp\s+installed/);
+    expect(printed()).toMatch(/hub\s+failed.*run `cihub up` on the node/);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('with both ollama and llamacpp named, the Hub halves follow the Ollama runtime step and are not written twice', async () => {
+    // No GPU here so the fixture's bind file (no Vulkan override) reads as already managed and the
+    // Ollama plan reaches its runtime step; llama-server gets the CPU image, which is beside the point.
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts() }));
+    hosts['10.0.0.6'] = { bind: bindProbe({}), ufw: firewallProbe(UFW_FULL) };
+    await runFleetCommand([
+      'backends',
+      '--backends',
+      'ollama,llamacpp',
+      '--ollama-parallel',
+      '4',
+      '--ollama-keep-alive',
+      '24h',
+      '--ollama-context',
+      '32768',
+      '--execute',
+    ]);
+    expect(capCalls()).toHaveLength(1);
+    expect(slotCalls()).toHaveLength(1);
+    expect(hubUrlCalls()).toHaveLength(1);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('a run that did not name llamacpp reports a llama-server on :8081 and leaves the Hub alone: no LLAMACPP_URL, no recreate, no auto-model round trip', async () => {
+    // Before the gate, `cihub fleet backends` on a node with a hand-run llama-server (or any listener
+    // on :8081 that named no engine) planned "adopt" and went on to rewrite the node's env file and
+    // recreate ci-hub — a run nobody asked to touch the Hub.
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ enginesListening: [11434, 8081], engineOwners: { 8081: 'llamacpp' } }) }));
+    await runFleetCommand(['backends', '--nodes', 'core-6']);
+    let text = printed();
+    expect(text).toContain('llamacpp  adopt — already answering on :8081 (owned_by llamacpp) — adopted, nothing installed');
+    expect(text).not.toContain('LLAMACPP_URL');
+    expect(autoModelCalls()).toHaveLength(0);
+    expect(sudoCalls()).toHaveLength(0);
+
+    output = [];
+    await runFleetCommand(['backends', '--nodes', 'core-6', '--execute']);
+    text = printed();
+    expect(text).toMatch(/llamacpp\s+adopted/);
+    expect(hubUrlCalls()).toHaveLength(0);
+    expect(autoModelCalls()).toHaveLength(0);
+    expect(capCalls()).toHaveLength(0);
+    expect(slotCalls()).toHaveLength(0);
+    expect(process.exitCode).toBeUndefined();
+
+    // A listener that names nothing is not adopted at all — and, named or not, never a reason to touch the Hub.
+    output = [];
+    mocks.sshCapture.mock.calls.length = 0;
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ enginesListening: [11434, 8081] }) }));
+    await runFleetCommand(['backends', '--nodes', 'core-6', '--execute']);
+    text = printed();
+    expect(text).toMatch(/llamacpp\s+skipped.*something answers on :8081 but does not name itself llamacpp on \/v1\/models — not adopted/);
+    expect(hubUrlCalls()).toHaveLength(0);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('opens :8081 on the firewall only where llamacpp was named or its unit already runs, never fleet-wide', async () => {
+    // Ollama-only run on a node that has never seen llama-server: the four fixed probe ports, no :8081.
+    hosts['10.0.0.6'] = { bind: bindProbe({}), ufw: firewallProbe(UFW_PARTIAL) };
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts() }));
+    await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-6']);
+    expect(printed()).toContain('firewall: ufw active and dropping the bridge on :8080, :8216 (:8000, :13305 already allowed)');
+    expect(printed()).not.toContain('port 8081');
+
+    // Named in the run: :8081 joins the list on this node.
+    output = [];
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ gpus: [strixHalo] }) }));
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--nodes', 'core-6']);
+    expect(printed()).toContain('firewall: ufw active and dropping the bridge on :8080, :8081, :8216 (:8000, :13305 already allowed)');
+    expect(printed()).toContain("would run ufw allow from 172.16.0.0/12 to any port 8081 proto tcp comment 'ci-hub container -> host engine :8081'");
+
+    // Not named, but this CLI's unit already runs there (an earlier run set LLAMACPP_URL): still this node's rule.
+    output = [];
+    mocks.readHostFacts.mockImplementation(async () => ({
+      facts: facts({ enginesListening: [11434, 8081], engineOwners: { 8081: 'llamacpp' }, managedUnits: { [LLAMACPP_UNIT]: 'active' } }),
+    }));
+    await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'core-6']);
+    expect(printed()).toContain('firewall: ufw active and dropping the bridge on :8080, :8081, :8216 (:8000, :13305 already allowed)');
+
+    // --execute on the named run adds exactly the missing three, :8081 among them, and the report says which list was used.
+    output = [];
+    mocks.readHostFacts.mockImplementation(async () => ({ facts: facts({ gpus: [strixHalo] }) }));
+    mocks.sshCapture.mockImplementation(async (t: SshTarget, command: string) => {
+      const h = hosts[t.host];
+      if (!h) return { ok: false, out: '', err: 'no route', code: 255, ms: 5 };
+      if (command.includes('firewall_probe=1')) return ok(h.ufw);
+      if (command.includes('CIHUB_HUB_AUTO_MODEL_EOF')) return ok(node.auto);
+      if (command.includes('CIHUB_LLAMACPP_EOF')) return ok(node.apply);
+      if (command.includes('CIHUB_HUB_LLAMACPP_URL_EOF')) return ok(node.hubUrl);
+      if (command.includes('CIHUB_PROBE_FIREWALL_EOF')) return ok(firewallApplied([8080, 8081, 8216]));
+      throw new Error(`unexpected ssh command: ${command.slice(0, 80)}`);
+    });
+    await runFleetCommand(['backends', '--backends', 'llamacpp', '--nodes', 'core-6', '--execute', '--json']);
+    const script = firewallCalls()[0]?.command ?? '';
+    expect(script).toContain('to any port 8081 proto tcp');
+    expect(printed()).toMatch(/firewall\s+applied.*allowed 172\.16\.0\.0\/12 → :8080, :8081, :8216/);
+    const report = JSON.parse(printed().slice(printed().indexOf('[')));
+    expect(report.find((r: { firewall?: { ports?: number[] } }) => r.firewall)?.firewall.ports).toEqual([8000, 8080, 8081, 13305, 8216]);
+    expect(process.exitCode).toBeUndefined();
   });
 });

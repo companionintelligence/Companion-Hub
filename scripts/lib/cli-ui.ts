@@ -75,7 +75,20 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
       { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
       { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
-      { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires CI Hub)' },
+      {
+        command: `${BASE_COMMAND} update [--check]`,
+        description: 'Report CLI vs stack versions, then install the desktop + stack update (requires CI Hub)',
+      },
+      {
+        command: `${BASE_COMMAND} self-update [--to <version>] [--check]`,
+        description: 'Replace a standalone cihub binary with the release this Hub stack runs (needs GH_TOKEN)',
+      },
+      {
+        command: `${BASE_COMMAND} version [--short]`,
+        description:
+          "This CLI's version, then the running Hub's build read from GET /api/hub/build (release/channel, commit, image ref and digest). " +
+          'They update through separate channels and routinely differ. --short prints only this CLI and never probes the Hub',
+      },
     ],
   },
   {
@@ -114,9 +127,9 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Is each node safe to hand a package transaction? sudo, dpkg, grub, boot recovery, apt lock. Reads only',
       },
       {
-        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--ollama-context N] [--ollama-max-loaded N] [--execute]`,
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--ollama-parallel N] [--ollama-keep-alive 24h] [--ollama-context N] [--ollama-max-loaded N] [--llamacpp-model tag] [--execute]`,
         description:
-          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env (--ollama-context also sets each Hub's context cap; --ollama-max-loaded caps resident models); ufw rules for the Hub's engine probes. Prints the plan unless --execute",
+          "What inference backends a node can run, from its hardware; Ollama's bind and runtime env (--ollama-context also sets each Hub's context cap; --ollama-max-loaded caps resident models); llama-server on :8081 serving Ollama's own GGUF (--backends llamacpp, --llamacpp-model); ufw rules for the Hub's engine probes. Prints the plan unless --execute",
       },
       {
         command: `${BASE_COMMAND} fleet devices list | release <device> [--yes] | re-register <device>`,
@@ -396,7 +409,7 @@ export function renderHelp() {
     box('Help & docs', [
       `${pad(colorize(`${BASE_COMMAND} man`, 'green'), 20)}  Manual-style command reference`,
       `${pad(colorize(`${BASE_COMMAND} --help`, 'green'), 20)}  This help output`,
-      `${pad(colorize(`${BASE_COMMAND} version`, 'green'), 20)}  Show version`,
+      `${pad(colorize(`${BASE_COMMAND} version`, 'green'), 20)}  This CLI's version and the running Hub's build`,
     ]),
     box('Environments', [allowedEnvs.join('  |  ')], 'yellow'),
   ].join('\n\n');
@@ -416,8 +429,8 @@ export function renderManPage() {
       'doctor, clean, reset, and the mcp, public-web and pool subcommands.',
       '',
       'Every other command takes none. fleet refuses one outright (cihub fleet scan prod is an error);',
-      'app, models and api-key read it as a subcommand name and fail; connect, update, uninstall and',
-      'the catalog commands ignore it. None of them is a way to retarget an environment.',
+      'app, models and api-key read it as a subcommand name and fail; connect, update, self-update,',
+      'uninstall and the catalog commands ignore it. None of them is a way to retarget an environment.',
       '',
       'Use local for source-based development and dev/staging/prod for appliance-style compose environments.',
       '',

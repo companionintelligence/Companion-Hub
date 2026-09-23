@@ -4,7 +4,7 @@ Companion Hub answers the OpenAI chat-completions API at `/api/inference/v1`, so
 
 ## Before you begin
 
-Mint the key on the Hub host. `cihub api-key create` writes the row over `docker exec` into the Hub's own database, so it cannot run from your laptop: `ssh` to the Hub, or open a terminal on it.
+Mint the key in **Settings → Security** — create a key and choose the **Inference** scope — or on the Hub host with the CLI. `cihub api-key create` writes the row over `docker exec` into the Hub's own database, so it cannot run from your laptop: `ssh` to the Hub, or open a terminal on it.
 
 ```bash
 cihub api-key create --name "laptop-zed" --scope inference
@@ -125,7 +125,23 @@ The same key opens this base, and the same origin rule applies. A client that ca
 - It opens exactly the inference routes: `/api/inference/v1/*` and the app-facing `/api/inference/pool/*` (both the `/v1/*` and Ollama-native `/api/*` paths). Every other route refuses it.
 - On the LAN or tailnet the Hub admits your editor by network origin and never looks the key up, so a placeholder there costs nothing and proves nothing. From the public hostname the key is checked on every request.
 - It never opens MCP, the Hub dashboard, the operator API, or Portal. It carries no operator authority, which is why it may sit in an editor config that syncs to a cloud: a leaked key spends GPU time and nothing else.
-- Revoke it in **Settings → Security**, where it lists with the **Inference** badge. The CLI has `create` and `list` only.
+- Create and revoke it in **Settings → Security**, where it lists with the **Inference** badge. The CLI has `create` and `list` only.
+
+## Bringing your own engine
+
+The reverse direction works too: if you already run a model server, the Hub can serve from it rather
+than asking you to switch. Point it at one and the pool places work on it like any other backend.
+
+| Engine | Variable | Notes |
+|---|---|---|
+| llama.cpp (`llama-server`) | `LLAMACPP_URL` | Required. Without it the Hub does not probe — `llama-server` and mlx-dspark both default to port 8080, and probing it unasked would report one engine as two. |
+| LM Studio | `LMSTUDIO_URL` | Optional; the Hub finds a local LM Studio on its default port 1234. Turn on **Developer → Start Server**, and **Serve on Local Network** if the Hub is not on that machine. |
+| vLLM | `VLLM_URL` | Also settable in **Settings → AI**. |
+| MTPLX, mlx-dspark, Lucebox | `MTPLX_URL`, `DSPARK_URL`, `SPECULATIVE_INFERENCE_URL` | See [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md). |
+
+The Hub cannot download a model for llama.cpp or LM Studio — whatever the server reports on
+`/v1/models` is what it can serve. Both appear in **Settings → AI** with their reachability, and
+their models show up in this Hub's `GET /v1/models` alongside everything else.
 
 ## Limits
 

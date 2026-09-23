@@ -1713,6 +1713,36 @@
         ]
       }
     },
+    "/api/auth/portal/desktop-handoff-status": {
+      "get": {
+        "operationId": "portalDesktopHandoffStatus",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopHandoffStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/username": {
       "patch": {
         "operationId": "changeUsername",
@@ -2972,7 +3002,9 @@
                 "lemonade",
                 "mtplx",
                 "dspark",
-                "lucebox"
+                "lucebox",
+                "llamacpp",
+                "lmstudio"
               ]
             }
           }
@@ -3289,7 +3321,9 @@
                 "lemonade",
                 "mtplx",
                 "dspark",
-                "lucebox"
+                "lucebox",
+                "llamacpp",
+                "lmstudio"
               ]
             }
           },
@@ -3439,6 +3473,34 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/llamacpp/status": {
+      "get": {
+        "operationId": "getLlamacppStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/lmstudio/status": {
+      "get": {
+        "operationId": "getLmStudioStatus",
+        "parameters": [],
         "responses": {
           "200": {
             "description": ""
@@ -5690,6 +5752,22 @@
         ]
       }
     },
+    "/api/hub/build": {
+      "get": {
+        "description": "The release, commit, image reference and build time stamped into this image at build time, plus the running image digest when Docker can be reached. `declaredVersion` is the install env file's CI_HUB_VERSION, reported for comparison only — it is not evidence of which build is running.",
+        "operationId": "build",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Build identity. `source: \"unstamped\"` means this image carries no build stamp."
+          }
+        },
+        "summary": "Build identity of the running Hub",
+        "tags": [
+          "HubBuildInfo"
+        ]
+      }
+    },
     "/api/public-web/diagnostics": {
       "get": {
         "operationId": "getDiagnostics",
@@ -6888,7 +6966,9 @@
                   "lemonade",
                   "mtplx",
                   "dspark",
-                  "lucebox"
+                  "lucebox",
+                  "llamacpp",
+                  "lmstudio"
                 ]
               },
               "inferenceModel": {
@@ -7421,7 +7501,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "inferenceModel": {
@@ -8028,6 +8110,10 @@
           "redirectPath"
         ],
         "additionalProperties": false
+      },
+      "PortalDesktopHandoffStatusDto": {
+        "type": "object",
+        "properties": {}
       },
       "ChangeUsernameBody": {
         "type": "object",
@@ -12872,7 +12958,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "model": {
@@ -12966,11 +13054,20 @@
               "write",
               "full"
             ]
+          },
+          "scope": {
+            "default": "mcp",
+            "type": "string",
+            "enum": [
+              "mcp",
+              "inference"
+            ]
           }
         },
         "required": [
           "name",
-          "capability"
+          "capability",
+          "scope"
         ],
         "additionalProperties": false
       },
@@ -16292,7 +16389,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "vllmUrl": {
@@ -16321,7 +16420,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           }
         },

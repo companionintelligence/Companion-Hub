@@ -225,8 +225,13 @@ export class FilesystemService {
     return (await fs.promises.lstat(this.getSafeFilePath(dirPath))).isDirectory();
   }
 
+  /**
+   * `prefix` is a caller-chosen label (e.g. an app URN), not a path — `fs.mkdtemp`
+   * resolves a non-absolute prefix against `process.cwd()`, which is unwritable in the
+   * Hub's container, so this always roots it under the OS temp dir first.
+   */
   async createTempDirectory(prefix: string): Promise<string | null> {
-    return fs.promises.mkdtemp(prefix);
+    return fs.promises.mkdtemp(path.join(os.tmpdir(), prefix));
   }
 
   async getStats(filePath: string) {

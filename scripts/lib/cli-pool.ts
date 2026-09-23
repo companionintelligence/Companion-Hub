@@ -4,7 +4,8 @@
  * Argument parsing and rendering live here; the HTTP calls stay in `hub-pool-cli.ts` so the
  * two can be tested apart from each other.
  */
-import { parseEnvFile } from '../env-file.js';
+import { existsSync } from 'node:fs';
+import { parseEnvFile, upsertEnvVar } from '../env-file.js';
 import { discoverComposeIdentity } from './compose-discovery.js';
 import {
   approvePoolPeer,
@@ -40,6 +41,8 @@ import {
   type PoolEnableAxis,
 } from '../hub-pool-cli.js';
 import { readRunningImageIdentity, runPoolDoctorSection } from '../pool-diagnostics-cli.js';
+import { cliUpdateInstructions, gatherSkew } from './cli-version-skew.js';
+import { decideImagePinWrite, HUB_IMAGE_VAR, readDeclaredHubImage, resolveComposeEnvFile, shortImageRef } from './cli-image-pin.js';
 import { readHubApiKeySource, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
@@ -49,6 +52,7 @@ import {
   composeFilesForPoolUpdate,
   decideGitUpdate,
   describeImageChange,
+  describeImageSource,
   gatherGitUpdateFacts,
   resolvePoolUpdateImage,
 } from './cli-pool-update.js';
@@ -419,7 +423,7 @@ export async function runPoolCommand(args: string[]) {
   // Also before the device-key gate: the node most likely to need `pool update` — never started,
   // or stuck on an old image — has no key yet either, and pulling/redeploying needs none.
   if (parsed.subcommand === 'update') {
-    await runPoolUpdateCommand(ctx);
+    await runPoolUpdateCommand(ctx, parsed.env);
     return;
   }
 
@@ -537,8 +541,21 @@ export async function runPoolCommand(args: string[]) {
  * cli-pool-update.ts for why this is a separate, narrow command instead of teaching `cihub up`
  * to skip `--build`.
  */
-async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
+async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Promise<void> {
   const lines: string[] = [];
+
+  // `resolveHubContext` forces `prod` on an appliance install whatever argument was typed, so
+  // `cihub pool update dev` runs as `[prod]` and nothing said so — the banner simply disagreed with
+  // the command. It still operates on the one stack this machine has (there is no other), but the
+  // discarded argument is named, because it is what an operator thinks selected the channel.
+  if (requestedEnv !== ctx.env) {
+    lines.push(
+      cliWarn(
+        `ignoring '${requestedEnv}': this is an appliance install with a single ${ctx.env} stack. ` +
+          `The env argument does not select a channel here — CI_HUB_IMAGE in ${ctx.envFile} does.`,
+      ),
+    );
+  }
 
   const gitFacts = gatherGitUpdateFacts(ctx.cwd);
   const gitDecision = decideGitUpdate(gitFacts);
@@ -557,16 +574,27 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   const imageBefore = readRunningImageIdentity();
 
   const { files, overlayApplied } = composeFilesForPoolUpdate(ctx.cwd, ctx.composeFiles);
-  const image = resolvePoolUpdateImage(ctx.env, process.env.CI_HUB_IMAGE);
-  if (overlayApplied) {
-    lines.push(cliOk(`will pull ${image} (set CI_HUB_IMAGE to override)`));
-  } else {
-    lines.push(cliWarn(`no pull-image overlay in ${ctx.cwd} — pulling ${image} directly, since the seeded compose caches a mutable tag`));
-  }
 
   // Read the running stack before assuming this checkout's shape. Costs one `docker inspect` and is
   // the difference between updating the Hub that exists and failing on a project-name mismatch.
+  // It has to happen BEFORE the image is resolved: the env file it names is where the node's own
+  // pin lives, and that pin is the second source `resolvePoolUpdateImage` consults.
   const identity = discoverComposeIdentity();
+  const pinTarget = resolveComposeEnvFile(identity, ctx.envFile);
+  const declaredImage = readDeclaredHubImage(pinTarget.path);
+  const { image, source } = resolvePoolUpdateImage({ env: ctx.env, processValue: process.env.CI_HUB_IMAGE, envFileValue: declaredImage });
+  lines.push(cliOk(`will pull ${shortImageRef(image)} — ${describeImageSource(source, pinTarget.path)}`));
+  if (!overlayApplied) {
+    lines.push(cliWarn(`no pull-image overlay in ${ctx.cwd} — pulling directly, since the seeded compose caches a mutable tag`));
+  }
+  if (source === 'channel-default' && ctx.appliance) {
+    // The appliance path forces `prod` whatever env was typed (see resolveHubContext), so this tag
+    // is a guess about a channel nobody selected. Say so rather than deploying it quietly.
+    lines.push(
+      cliWarn(`${ctx.envFile} pins nothing, so this falls back to the '${ctx.env}' tag — set CI_HUB_IMAGE if that is not the channel you want`),
+    );
+  }
+
   if (identity && (identity.project !== 'ci-hub' || identity.configFiles.length)) {
     console.log(
       colorize(
@@ -607,6 +635,9 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   }
   if (!healthy) {
     lines.push('', cliFail(`${base}/api/health did not answer after redeploy — check: ${BASE_COMMAND} logs ${ctx.env}`));
+    // Deliberately no pin write here: see decideImagePinWrite. A pin naming a build that did not
+    // come up would make the next restart fail the same way.
+    lines.push(cliWarn(`left ${resolveComposeEnvFile(identity, ctx.envFile).path} alone — the pin still names the build that was serving`));
     printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, 'red');
     return;
   }
@@ -629,7 +660,49 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   } catch {
     // identify is a bonus signal on top of health, not a requirement for a successful update.
   }
-  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, moved.warn ? 'yellow' : 'green');
+
+  // Record what was deployed, in the env file compose actually reads.
+  //
+  // Without this the image lives only in this command's environment. On 2026-09-21 fifteen fleet
+  // appliances were rolled onto a new `:dev` digest while their env files went on naming an older
+  // one, untouched since the previous day — so every one of those nodes was one restart away from
+  // silently reverting to the build it had just been moved off.
+  const pinDecision = decideImagePinWrite({
+    envFile: pinTarget.path,
+    envFileExists: existsSync(pinTarget.path),
+    declaredImage,
+    deployedImage: image,
+    healthy,
+  });
+  if (pinDecision.action === 'write') {
+    try {
+      upsertEnvVar(pinDecision.envFile, HUB_IMAGE_VAR, pinDecision.image);
+      lines.push(cliOk(`recorded ${HUB_IMAGE_VAR}=${shortImageRef(pinDecision.image)} in ${pinDecision.envFile} — ${pinDecision.reason}`));
+    } catch (error) {
+      lines.push(cliWarn(`could not record ${HUB_IMAGE_VAR} in ${pinDecision.envFile}: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  } else {
+    lines.push(colorize(`  ${pinDecision.reason}`, 'dim'));
+  }
+
+  // The stack just moved. THIS CLI did not: it ships on the desktop/release-asset channel, and a
+  // `pool update` has never touched it. So this is the exact moment a skew is created, and the one
+  // place an operator is certain to be looking when it happens. Reported, never acted on — replacing
+  // the binary mid-command is `cihub self-update`, explicitly.
+  const skew = gatherSkew();
+  const skewLine =
+    skew.report.severity === 'fail'
+      ? cliFail(skew.report.headline)
+      : skew.report.severity === 'warn'
+        ? cliWarn(skew.report.headline)
+        : cliOk(skew.report.headline);
+  lines.push('', skewLine);
+  if (skew.report.severity !== 'ok') {
+    lines.push(colorize(`  fix: ${cliUpdateInstructions(skew.channel, skew.stack?.version ?? undefined)[0]}`, 'dim'));
+  }
+
+  const boxColor = skew.report.severity === 'fail' ? 'red' : moved.warn || skew.report.severity === 'warn' ? 'yellow' : 'green';
+  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, boxColor);
 }
 
 /** What each axis is called, which env var overrides it, and how `/status` reports its state. */

@@ -339,12 +339,48 @@ Two nodes are deliberately not touched by this path. **beta-1** runs Ollama as a
 (`ollama-local.service` under `ci`'s `systemd --user`) with the system unit disabled; enabling the
 system unit there would start a second daemon on the same port, so the installer refuses with the
 reason — before running ollama.com's installer, which would do exactly that. And a node with no
-tailnet address fails the tailnet bind rather than falling back to something else.
+tailnet address fails the tailnet bind rather than falling back to something else. The beta-1
+refusal is decided by the socket, not the unit's name: **core-2** runs an `ollama-tunnel.service`
+under `ci`'s `systemd --user` too — an ssh forward to beta-1 — while its system `ollama.service` is
+what serves `:11434`, and it is managed like any other node, with a note naming the tunnel unit
+(see [the listener rule in `CLI.md`](CLI.md#ollamas-bind-one-file-read-back)). That is the only
+case the name gives way to: a serving system unit. With **nothing** on `:11434` beside an active
+`ollama*` user unit the node is still skipped — beta-1 mid-restart looks exactly like that, and the
+probe has no way to tell a tunnel from a daemon that has not bound yet — and so is a listener the
+probe cannot classify, unless its uid belongs to no login user.
 
 When a drop-in seems to have no effect: `systemctl cat ollama` shows the merge order, and
 `cihub fleet status` names the winner. Note the seam in [`CLI.md`](CLI.md#ollamas-bind-one-file-read-back):
 a Hub container on the same node reaches the host Ollama over the Docker bridge, which a
 tailnet-only bind does not listen on.
+
+## Strix Halo nodes: Vulkan needs the iGPU key
+
+On gfx1151 the managed bind file sets two keys beside `OLLAMA_HOST`, and **both are required**:
+`OLLAMA_LLM_LIBRARY=vulkan`, because ROCm there runs NO_VMM and fails to allocate anything above
+the ~2 GB VRAM carve-out (six nodes 500'd on every real model until it was forced), and
+`OLLAMA_IGPU_ENABLE=1`, because Ollama 0.34 drops an integrated GPU without it and loads the model
+on the CPU instead — at HTTP 200. Measured 2026-09-21 on six nodes: qwen3-coder:30b at
+`size_vram 0`, 37.5 tok/s decode, 109 tok/s prefill; with the key, 75–79 tok/s and ~530 prefill.
+The iGPU key used to depend on `--ollama-igpu on` and the runtime file, which a later runtime run
+without the flag rendered away; it now lives in the bind file, derived from the hardware, where no
+flag removes it. `--ollama-igpu off` in the runtime file is the explicit override and wins by
+filename order (`zzzzz-cihub-bind.conf` < `zzzzz-cihub-runtime.conf`).
+
+Bringing a node up to it is one dry run and one `--execute`:
+
+```bash
+cihub fleet backends --backends ollama                      # plan: 'write zzzzz-cihub-bind.conf with … OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1' on each gfx1151 node
+cihub fleet backends --backends ollama --execute            # one restart per node whose file gains the key
+cihub fleet status                                          # RESIDENT column: model names, '⚠ CPU' on any that sits in system memory
+```
+
+**How you would know.** `cihub fleet status` reads each daemon's `/api/ps` and prints what is
+resident and where — `qwen3-coder:30b ⚠ CPU` on a GPU node whose model has less than half its
+bytes in VRAM, with the reason under the table; `cihub fleet backends` prints the same as a
+`resident:` line under each plan. Every other signal — version at pin, bind managed, engine
+answering, Hub healthy — was green on the six nodes for a day. Detail in
+[`CLI.md`](CLI.md#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file).
 
 ## Fleet-wide settings worth knowing
 
@@ -513,6 +549,22 @@ this node could measure and every workload's `gpuVramMb` is `null` for want of a
 for want of a workload. The resource dashboard's GPU trend tile and coverage tile print `absent` in
 words, with this install step beside it, instead of drawing an empty chart that reads as "nothing
 holds VRAM". A fresh file listing no processes is `host-file` with no rows: measured, and idle.
+
+The same file is the Hub's second proof that the host drives an NVIDIA card. The hardware tier
+(`GET /api/inference/hardware` → `tier`, which sizes the models every app is handed) used to need
+the `nvidia` Docker runtime in `docker info` before it would tier an NVIDIA card by its VRAM, so a
+node with the driver but without nvidia-container-toolkit — beta-nas, RTX A1000 8 GB, 2026-09-21 —
+sat on `cpu-only` while the host's Ollama and vLLM held the card. Now the tier follows the host:
+init-gpu-runtime's `nvidia.json` (name + VRAM, written by `cihub up`) or a fresh `gpu_processes.json`
+with `"vendor":"nvidia"` sets `gpu.hostNvidiaAvailable`, and the tier is read from the VRAM. Each
+proof holds only as long as its writer vouches: the process file for a minute past its last sample,
+`nvidia.json` for the host boot it was written in — after a reboot that Docker's restart policy
+brought the Hub back from, without a `cihub up`, only the timer file proves the card, so a node
+whose driver did not come back is not tiered from last boot's probe. The profile keeps
+`gpu.runtimeAvailable: false` on such a node: that is still the container's own view, and it still
+means container apps get no CUDA until the toolkit is installed. The VRAM is read at the exact tier
+lines: a probe that reports the driver's reservation subtracted (`nvidia.json` says 8188 MB for
+beta-nas's 8 GB A1000) lands one tier down when it is the only VRAM source.
 
 ## Before touching a node: preflight
 

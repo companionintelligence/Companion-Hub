@@ -7,7 +7,8 @@
  * qwen3-coder:30b). Raising it is the only lever that lifts that ceiling, and the same file is where
  * `OLLAMA_KEEP_ALIVE` (so a spill lands on a warm peer instead of a 60-108 s reload),
  * `OLLAMA_CONTEXT_LENGTH` (a node whose default context is too large for its GTT spills to CPU with
- * HTTP 200s) and `OLLAMA_IGPU_ENABLE` (3-5x single-stream on the B2-flagged Strix Halo boxes) belong.
+ * HTTP 200s) and the `OLLAMA_IGPU_ENABLE` override (3-5x single-stream on the B2-flagged Strix Halo
+ * boxes; the hardware default for that key lives in the bind file since 2026-09-21) belong.
  *
  * `OLLAMA_MAX_LOADED_MODELS` joined them on 2026-09-21: a 24h keep-alive with no cap on resident
  * models let three 27-30B models pile up on batch-tier Strix Halo nodes next to vLLM, Lucebox and
@@ -50,7 +51,12 @@ import {
 /**
  * Five `z`s for the same reason the bind file has them: systemd sorts drop-ins with `strcmp`, and
  * `zzzz-bind-all.conf` — seen on this fleet — would outrank a `zz-` name. Sorts after the bind file
- * too (`b` < `r`), which does not matter: the two never assign the same key.
+ * too (`b` < `r`), and since 2026-09-21 that ordering is load-bearing for exactly one key: the bind
+ * file carries `OLLAMA_IGPU_ENABLE=1` as the hardware default on an integrated AMD part where it
+ * forces Vulkan (see `ollamaManagedEnvironment`), and this file — applied after it — carries the
+ * operator's `--ollama-igpu on|off` override, which therefore wins when given. `--ollama-igpu unset`
+ * leaves the key out of this file and the bind file's default in force. No other key is assigned
+ * by both files, and a test pins the order.
  */
 export const RUNTIME_DROPIN = 'zzzzz-cihub-runtime.conf';
 
@@ -67,7 +73,9 @@ export type OllamaRuntimeKey = (typeof OLLAMA_RUNTIME_KEYS)[number];
  * What the operator asked for. `undefined` on a field means "leave the key out of the file".
  *
  * `igpu` is a boolean because `OLLAMA_IGPU_ENABLE` is: `on` writes `1`, `off` writes `0` — an
- * explicit `0` is a real setting on a node where something else turned it on.
+ * explicit `0` is a real setting on a node where something else turned it on. On a gfx1151 node
+ * that "something else" is the managed bind file, which sets `1` beside `OLLAMA_LLM_LIBRARY=vulkan`
+ * because Vulkan without it is a CPU-resident model; `off` here is the override that outranks it.
  */
 export interface OllamaRuntimeSettings {
   parallel?: number;
@@ -191,6 +199,30 @@ export function describeRuntimeTransition(
   return cells.join(', ') || 'no runtime keys managed';
 }
 
+/**
+ * Every managed key as the daemon currently resolves it, `<unset>` included.
+ *
+ * {@link describeRuntimeTransition} deliberately prints only the keys a run manages or changes, so a
+ * read-only run — `cihub fleet backends` with no runtime flag — said nothing at all about the
+ * environment its probe had just read. That is how `OLLAMA_CONTEXT_LENGTH` came to run from 8192 to
+ * 65536 across seventeen nodes, and the only way to find out was to ssh to each box and grep its
+ * drop-ins — which is itself the wrong answer, see below.
+ *
+ * Every key is listed, in the fixed key order, so two nodes' lines line up and a missing key is a
+ * word rather than an absence. Reads nothing and changes nothing: the caller already has the
+ * merged environment from the bind probe.
+ *
+ * MERGED, and that word is load-bearing. The input is `systemctl show ollama -p Environment`, i.e.
+ * what the daemon actually resolved. A node may carry several drop-ins assigning the same key —
+ * core-14 has a `10-ci-tuning.conf` at 8192 under `zzzzz-cihub-runtime.conf` at 32768 — and systemd
+ * merges them in lexical filename order with the last assignment winning. Reading the files instead
+ * and taking the first match misreported seven of sixteen nodes the one time it was tried. Never
+ * report a key from a drop-in's contents; report it from here.
+ */
+export function describeRuntimeEnvironment(env: Partial<Record<OllamaRuntimeKey, string>>): string {
+  return OLLAMA_RUNTIME_KEYS.map((key) => `${key}=${env[key] ?? '<unset>'}`).join(' ');
+}
+
 export interface OllamaRuntimePlan {
   file: { name: string; path: string; content: string; action: 'write' | 'unchanged' };
   /** The daemon is restarted only when the file changes (or, found by the apply shell, when systemd never loaded it). */
@@ -279,7 +311,9 @@ export const RUNTIME_MARKERS = {
  * Apply the runtime settings on a node. Runs as root. Idempotent.
  *
  * In order: refuse if something other than the system unit owns the port (same guard as the bind —
- * a drop-in under `ollama.service.d/` configures nothing on beta-1 or core-2); read the merged
+ * a drop-in under `ollama.service.d/` configures nothing on beta-1, whose daemon is a user unit;
+ * core-2's `ollama-tunnel.service` only LOOKS like that case, and the guard goes by the listener);
+ * read the merged
  * environment; render the file to a temp path and compare bytes with what is on disk; if identical
  * and systemd has loaded it, touch nothing and say so; if identical but systemd reports
  * `NeedDaemonReload=yes` and a managed key is not in effect — a previous run stopped between
@@ -495,7 +529,7 @@ export function hubContextCapShell(
           'else',
           // The stored preference, or Ollama — the Hub-managed default an absent preference already resolves to.
           `  cihub_cap_backend="$(sed -n 's/.*"preferredBackend"[[:space:]]*:[[:space:]]*"\\([a-z]*\\)".*/\\1/p' "$cihub_cap_body" | head -1)"`,
-          '  case "$cihub_cap_backend" in ollama|vllm|lemonade|mtplx|dspark|lucebox) ;; *) cihub_cap_backend=ollama ;; esac',
+          '  case "$cihub_cap_backend" in ollama|vllm|lemonade|mtplx|dspark|lucebox|llamacpp|lmstudio) ;; *) cihub_cap_backend=ollama ;; esac',
           `  echo "${m.backend} $cihub_cap_backend"`,
           `  cihub_cap_code="$(cihub_cap_curl -X PATCH -d "{\\"backend\\":\\"$cihub_cap_backend\\",\\"${preferenceKey}\\":null}" "$cihub_cap_url/inference/preferences")"`,
           '  [ -n "$cihub_cap_code" ] || cihub_cap_code=000',

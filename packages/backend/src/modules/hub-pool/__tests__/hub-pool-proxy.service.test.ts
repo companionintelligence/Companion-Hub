@@ -1,3 +1,4 @@
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -12,6 +13,8 @@ import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
@@ -165,6 +168,8 @@ describe('PoolProxyService', () => {
   let mtplx: MockProxy<MtplxBackend>;
   let dspark: MockProxy<DsparkBackend>;
   let lucebox: MockProxy<LuceboxBackend>;
+  let llamacpp: MockProxy<LlamacppBackend>;
+  let lmstudio: MockProxy<LmStudioBackend>;
   let peerService: MockProxy<HubPoolPeerService>;
   let tailscaleService: MockProxy<TailscaleService>;
   let configuration: MockProxy<ConfigurationService>;
@@ -202,12 +207,14 @@ describe('PoolProxyService', () => {
     mtplx = mock<MtplxBackend>();
     dspark = mock<DsparkBackend>();
     lucebox = mock<LuceboxBackend>();
+    llamacpp = mock<LlamacppBackend>();
+    lmstudio = mock<LmStudioBackend>();
     peerService = mock<HubPoolPeerService>();
     tailscaleService = mock<TailscaleService>();
     configuration = mock<ConfigurationService>();
     setPoolPreferences({});
 
-    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox]) {
+    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio]) {
       backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     }
     ollama.getBaseUrl.mockReturnValue('http://local-ollama:11434');
@@ -241,7 +248,7 @@ describe('PoolProxyService', () => {
     return new PoolProxyService(
       // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
       // return undefined and quietly drop every local candidate.
-      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
       peerService,
       tailscaleService,
       loadService,
@@ -858,7 +865,7 @@ describe('PoolProxyService', () => {
       expect(res.status).toHaveBeenCalledWith(502);
       const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string; localBackends: unknown[] };
       expect(body.error).toContain('local mtplx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
-      expect(body.error).toContain('local vllm, lemonade, dspark, lucebox not reachable from inside the Hub container');
+      expect(body.error).toContain('local vllm, lemonade, dspark, lucebox, llamacpp, lmstudio not reachable from inside the Hub container');
       expect(body.localBackends).toEqual(
         expect.arrayContaining([
           {
@@ -890,7 +897,9 @@ describe('PoolProxyService', () => {
           },
         ]),
       );
-      expect(body.localBackends).toHaveLength(6);
+      // One row per declared backend — derived from the tuple so adding one does not quietly
+      // assert the old count.
+      expect(body.localBackends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
     });
 
     it('fails over to a connected peer when the local candidate 5xxs', async () => {
@@ -3097,7 +3106,7 @@ describe('PoolProxyService', () => {
         ollamaSlots?: unknown;
         maxPromptTokens?: number;
         hardwareTier?: string;
-        backend?: 'ollama' | 'vllm';
+        backend?: 'ollama' | 'vllm' | 'llamacpp';
       } = {},
     ): HubPoolPeer {
       return mockPeer({
@@ -3111,7 +3120,7 @@ describe('PoolProxyService', () => {
             ...('ollamaSlots' in options ? { ollamaSlots: options.ollamaSlots as number } : {}),
             ...(options.maxPromptTokens === undefined ? {} : { maxPromptTokens: options.maxPromptTokens }),
           }),
-          ...(options.backend === 'vllm' ? { backends: [{ type: 'vllm', healthy: true, modelsLoaded: [MODEL] }] } : {}),
+          ...(options.backend && options.backend !== 'ollama' ? { backends: [{ type: options.backend, healthy: true, modelsLoaded: [MODEL] }] } : {}),
         } as unknown as Record<string, unknown>,
       });
     }
@@ -3207,13 +3216,48 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
       });
 
-      it('judges Ollama only: a vLLM candidate on a node that states slots keeps its place', async () => {
+      it('judges Ollama and llama-server only: a vLLM candidate on a node that states slots keeps its place', async () => {
         peerService.listConnectedPeers.mockResolvedValue([
           node('vllm-node', { inFlightRequests: 2, ollamaSlots: 2, backend: 'vllm' }),
           node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
         ]);
 
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['vllm-node', 'core-2']);
+      });
+
+      it("judges a peer's llama-server by the node's stated slots — the fleet writes them from the same -np", async () => {
+        // core-6 after `cihub fleet backends --backends llamacpp --ollama-parallel 2`: a 2-slot
+        // llama-server, both slots busy, ranked ahead of a 4-slot node with one free.
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('core-6', { inFlightRequests: 2, ollamaSlots: 2, backend: 'llamacpp' }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'core-6']);
+      });
+
+      it("judges THIS node's llama-server by its own /props, ahead of the operator's statement", async () => {
+        // The statement says 4 (Ollama's), the engine says 2 (its own -np); two in flight fill it.
+        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        llamacpp.engineCapabilities.mockReturnValue({ slots: 2, contextLength: 32768 });
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 4 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        const candidates = await service.buildCandidateList(MODEL);
+        expect(candidates.map((candidate) => `${candidate.peerId ?? 'local'}/${candidate.backend}`)).toEqual(['core-2/ollama', 'local/llamacpp']);
+      });
+
+      it("falls back to the node's statement for a local llama-server whose /props was not read", async () => {
+        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        llamacpp.engineCapabilities.mockReturnValue(null);
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId ?? 'local')).toEqual(['core-2', 'local']);
       });
 
       it('counts the requests this node forwarded a peer since its snapshot, so a burst fills its slots here before the peer reports it', async () => {
@@ -4100,8 +4144,9 @@ describe('PoolProxyService', () => {
 
     // Ollama's native /api/tags answers `{"models": [...]}` — a different shape from the
     // OpenAI-compatible /v1/models list (`{"object": "list", "data": [...]}`) served by the sibling
-    // route. Confirms the pool proxy never conflates the two.
-    it('passes Ollama’s native /api/tags shape through unmodified, distinct from the /v1/models shape', async () => {
+    // route. Confirms the pool proxy never conflates the two. The listing paths are built as a
+    // body rather than streamed (see `serveMergedListing`), so the answer is read off `res.json`.
+    it('keeps Ollama’s native /api/tags shape, distinct from the /v1/models shape', async () => {
       const nativeTags = { models: [{ name: 'llama3.2:3b', model: 'llama3.2:3b', size: 2019393189 }] };
       vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(nativeTags), { status: 200 }));
 
@@ -4110,7 +4155,7 @@ describe('PoolProxyService', () => {
 
       const [url] = vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit];
       expect(url).toBe('http://local-ollama:11434/api/tags');
-      const body = JSON.parse(Buffer.concat(res.chunks).toString());
+      const body = vi.mocked(res.json).mock.calls[0]?.[0];
       expect(body).toEqual(nativeTags);
       expect(body).not.toHaveProperty('object');
       expect(body).not.toHaveProperty('data');
@@ -4127,7 +4172,101 @@ describe('PoolProxyService', () => {
       await service.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(JSON.parse(Buffer.concat(res.chunks).toString())).toEqual(nativeTags);
+      expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual(nativeTags);
+    });
+
+    /*
+     * The listing used to answer for this node while every generation path already answered for the
+     * pool, so a client was told one set of models and then found another one served. These pin the
+     * merge: peer-held models appear, local metadata is untouched, and a duplicate never does.
+     */
+    describe('merging what peers hold into the listing', () => {
+      it('adds a peer-only model to /v1/models, marked as the pool’s', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'qwen3.6:27b')]);
+        const localModels = { object: 'list', data: [{ id: 'llama3.2:3b', object: 'model', created: 1, owned_by: 'library' }] };
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(localModels), { status: 200 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual({
+          object: 'list',
+          data: [
+            { id: 'llama3.2:3b', object: 'model', created: 1, owned_by: 'library' },
+            { id: 'qwen3.6:27b', object: 'model', created: 0, owned_by: 'hub-pool' },
+          ],
+        });
+      });
+
+      it('adds a peer-only model to /api/tags in Ollama’s shape', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'qwen3.6:27b')]);
+        vi.mocked(global.fetch).mockResolvedValue(
+          new Response(JSON.stringify({ models: [{ name: 'llama3.2:3b', model: 'llama3.2:3b' }] }), { status: 200 }),
+        );
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
+
+        const body = vi.mocked(res.json).mock.calls[0]?.[0] as { models: Array<Record<string, unknown>> };
+        expect(body.models).toHaveLength(2);
+        expect(body.models[1]).toMatchObject({ name: 'qwen3.6:27b', model: 'qwen3.6:27b', size: 0 });
+      });
+
+      /* A model both nodes hold must appear once, with the local row's real metadata. */
+      it('never lists a model twice when a peer holds it too', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'llama3.2:3b')]);
+        const localModels = { object: 'list', data: [{ id: 'llama3.2:3b', object: 'model', created: 1, owned_by: 'library' }] };
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(localModels), { status: 200 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual(localModels);
+      });
+
+      /*
+       * A Hub with no local engine is a legitimate pool member — it exists to send work out. It
+       * used to answer 502 here while its peers held a dozen models.
+       */
+      it('answers from peers alone when no local backend can', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'qwen3.6:27b')]);
+        vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual({
+          object: 'list',
+          data: [{ id: 'qwen3.6:27b', object: 'model', created: 0, owned_by: 'hub-pool' }],
+        });
+      });
+
+      it('still answers 502 when neither this node nor any peer has anything', async () => {
+        vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(res.status).toHaveBeenCalledWith(502);
+      });
+
+      /* A peer that has switched inbound off is not offering anything, and must not be listed. */
+      it('leaves out a peer that is not accepting work', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          mockPeer({
+            lastCapabilities: capabilitiesWithModel('qwen3.6:27b', { acceptingWork: false }) as unknown as Record<string, unknown>,
+          }),
+        ]);
+        const localModels = { object: 'list', data: [{ id: 'llama3.2:3b', object: 'model' }] };
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(localModels), { status: 200 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual(localModels);
+      });
     });
 
     it.each([
@@ -4266,7 +4405,7 @@ describe('PoolProxyService', () => {
     // scores, and a mocked catalog would only prove the test's own fixture.
     function serviceWithCatalog(): PoolProxyService {
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         peerService,
         tailscaleService,
         loadService,
@@ -4764,6 +4903,95 @@ describe('PoolProxyService', () => {
       expect(loadService.get('peer-a')).toBe(0);
     });
 
+    /**
+     * The field report this came from: beta-max's `cihub pool log` showed four rows reading
+     * `qwen3-coder:30b  -  1/14  30031  x failed`, which an operator reads as "placement returned
+     * no candidate and then timed out" — nothing in the NODE column, and a duration suspiciously
+     * close to a 30 s deadline. Placement had in fact succeeded: fourteen candidates were ranked,
+     * the first was being tried, and the *caller* gave up 30 s later. Settling the row with a null
+     * node threw away the one fact that distinguishes the two, and it is the same null the
+     * dashboard buckets as `Unplaced`. Nothing else in the log tells them apart: `attempt` is 1 on
+     * a hang-up and `candidates.length` when every candidate really did fail, which is far too
+     * subtle to hang a diagnosis on.
+     */
+    it('keeps the node it was waiting on, so a hang-up cannot be read as "placement found nothing"', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 0 }), peerServing('peer-b', MODEL, { inFlightRequests: 0 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      res.destroy();
+      await inFlight;
+
+      // Local is first at the default affinity with nothing in flight, so this is the node that was
+      // holding the request: named on the row, with the engine that had it.
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        status: null,
+        node: LOCAL_CANDIDATE_KEY,
+        peerId: null,
+        backend: 'ollama',
+        attempt: 1,
+        candidates: 3,
+        clientClosed: true,
+      });
+    });
+
+    it('names the peer, not nothing, when the hang-up happened while a peer forward was in flight', async () => {
+      // Local busier than the affinity margin, so the peer ranks first and is the node being tried.
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 0 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      res.destroy();
+      await inFlight;
+
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        node: 'peer-a.tailxyz.ts.net',
+        peerId: 'peer-a',
+        backend: 'ollama',
+        attempt: 1,
+        clientClosed: true,
+      });
+    });
+
+    /**
+     * The counterpart, and the reason `clientClosed` is a field rather than a reading of `node`: a
+     * request that genuinely exhausted every candidate settles with no node too, and that one IS a
+     * routing failure. The flag is what separates the two on a row an operator is scanning.
+     */
+    it('still settles with no node, and without the flag, when every candidate really did fail', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await service.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: MODEL, stream: true },
+        model: MODEL,
+        res: createMockResponse(),
+      });
+
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', node: null, clientClosed: false, attempt: 1, candidates: 1 });
+    });
+
     it('sends the upstream an already-aborted request when the client left while candidates were still being ranked', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
       vllm.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
@@ -4791,7 +5019,7 @@ describe('PoolProxyService', () => {
       router = mock<InferenceRouterService>();
       router.prepareTrackedModel.mockResolvedValue(null);
       withRouter = new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         peerService,
         tailscaleService,
         loadService,

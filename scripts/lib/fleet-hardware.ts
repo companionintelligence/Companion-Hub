@@ -58,9 +58,25 @@ export interface HostFacts {
   gpus: GpuInfo[];
   /** Present-and-answering engines, by port. */
   enginesListening: number[];
+  /**
+   * Who answers on the ports the probe fingerprints, by port: `data[0].owned_by` of `/v1/models`
+   * (`llamacpp`, `vllm`, `dflash`…). Today only llamacpp's 8081 is asked, because it is the one port
+   * whose listener the planner both adopts and converges. Absent when nothing answered there or the
+   * server did not name itself.
+   */
+  engineOwners?: Record<number, string>;
+  /**
+   * `systemctl is-active` of the units this CLI itself installs (`cihub-llamacpp.service`), by unit
+   * name: `active`, `activating`, `inactive` (which is also what systemd prints for a unit it has
+   * never heard of), `failed`. Absent on a node where the probe could not ask.
+   */
+  managedUnits?: Record<string, string>;
   /** Raw probe output, for a report that needs to show its working. */
   notes: string[];
 }
+
+/** The unit names the probe reports on. Kept here, with the probe, so the list and the parser agree. */
+export const MANAGED_UNITS = ['cihub-llamacpp.service'] as const;
 
 /**
  * One shell script, one round trip.
@@ -101,7 +117,11 @@ const PROBE_SCRIPT = [
   // default) answers nothing on 127.0.0.1, and a loopback-only probe would have the planner
   // re-install a healthy engine on every such node.
   'ts_ip="$(tailscale ip -4 2>/dev/null | head -1)"',
-  'for p in 11434 13305 8080 8000 8216 8020; do for a in 127.0.0.1 $ts_ip; do (echo > /dev/tcp/$a/$p) >/dev/null 2>&1 && { echo "listening=$p"; break; }; done; done',
+  'for p in 11434 13305 8080 8081 8000 8216 8020; do for a in 127.0.0.1 $ts_ip; do (echo > /dev/tcp/$a/$p) >/dev/null 2>&1 && { echo "listening=$p"; break; }; done; done',
+  // Who is on llamacpp's port. Port evidence adopts an Ollama; here it must not, because a unit this
+  // CLI wrote may be the listener (then it is converged, not adopted) and a stranger may be too.
+  'owner="$(curl -s --max-time 3 http://127.0.0.1:8081/v1/models 2>/dev/null | grep -o \'"owned_by":"[^"]*"\' | head -1 | cut -d\'"\' -f4)"; [ -n "$owner" ] && echo "owner_8081=$owner"',
+  `for u in ${MANAGED_UNITS.join(' ')}; do st="$(systemctl is-active "$u" 2>/dev/null)"; [ -n "$st" ] && echo "unit_$u=$st"; done`,
   // The probe's exit status is meaningless — it is a sequence of independent best-effort reads, and
   // the last one is a port test that fails whenever that port is idle. Without this the whole script
   // exits non-zero on a perfectly healthy machine and its output gets thrown away as a failure.
@@ -130,11 +150,43 @@ const num = (value: string | undefined): number | undefined => {
 };
 
 /**
+ * AMD parts whose "VRAM" is a carve-out of system memory — APUs, where the GPU shares the pool with
+ * the CPU. Ollama's runner treats these as *integrated* and, since 0.34, DROPS them unless
+ * `OLLAMA_IGPU_ENABLE=1` ("dropping integrated GPU; to enable, set OLLAMA_IGPU_ENABLE=1"), so a
+ * daemon forced onto Vulkan there loads every model on the CPU and answers HTTP 200 at half speed.
+ * gfx1151 (Strix Halo) is the one measured on this fleet; the rest are the same silicon family and
+ * are listed so the vulkan/iGPU pairing and the residency reason apply to them by target, not by
+ * a name string that varies with the driver.
+ */
+const AMD_INTEGRATED_GFX_TARGETS: ReadonlySet<string> = new Set([
+  'gfx1151', // Strix Halo — measured 2026-09-21
+  'gfx1150', // Strix Point
+  'gfx1152', // Krackan Point
+  'gfx1103', // Phoenix / Hawk Point
+  'gfx1035', // Rembrandt
+  'gfx1036', // Raphael / Granite Ridge
+  'gfx1037', // Mendocino
+  'gfx90c', // Renoir / Cezanne / Lucienne
+]);
+
+/**
+ * Is this AMD GPU an integrated, unified-memory part?
+ *
+ * Decided by the amdgpu target alone. A memory-ratio heuristic (GTT several times the VRAM
+ * carve-out) was considered and rejected: a discrete 4 GB card on a 64 GB box shows the same ratio,
+ * and a wrong `true` here would put a managed environment key on a card that does not need it.
+ * Unknown target, other vendor: `false`.
+ */
+export function isIntegratedAmdGpu(gpu: Pick<GpuInfo, 'vendor' | 'gfx'>): boolean {
+  return gpu.vendor === 'amd' && gpu.gfx !== undefined && AMD_INTEGRATED_GFX_TARGETS.has(gpu.gfx);
+}
+
+/**
  * `gfx_target_version` is a packed integer — 110501 means gfx1105... except the encoding is
  * major/minor/step in pairs, so 110501 is gfx1151 written as 11,05,01 reversed in the middle.
  * Decoding it explicitly beats guessing from a card name, which varies by driver version.
  */
-function decodeGfx(raw: string | undefined): string | undefined {
+export function decodeGfx(raw: string | undefined): string | undefined {
   if (!raw || raw === 'none') return undefined;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return undefined;
@@ -209,6 +261,20 @@ export function parseHostFacts(raw: string): HostFacts {
   const reboot = first(map, 'reboot_required');
   if (reboot && reboot !== 'no') notes.push(`a reboot is pending for: ${reboot.replace(/,$/, '')}`);
 
+  const engineOwners: Record<number, string> = {};
+  const managedUnits: Record<string, string> = {};
+  for (const [key, values] of map) {
+    const ownerPort = /^owner_(\d+)$/.exec(key)?.[1];
+    const owner = values[0]?.trim().toLowerCase();
+    if (ownerPort && owner) engineOwners[Number(ownerPort)] = owner;
+    const unit = /^unit_(.+)$/.exec(key)?.[1];
+    const state = values[0]?.trim();
+    // `systemctl is-active` prints `inactive` for a unit it has never heard of, which is also what a
+    // stopped unit of ours prints — kept, and the planner treats both as not ours. `unknown` is what
+    // it prints for a name it cannot parse, and is not a state.
+    if (unit && state && state !== 'unknown') managedUnits[unit] = state;
+  }
+
   return {
     os,
     arch,
@@ -220,6 +286,8 @@ export function parseHostFacts(raw: string): HostFacts {
     docker: { present: dockerPresent, usable: dockerUsable, version: dockerPresent ? dockerVersion : undefined },
     gpus,
     enginesListening: (map.get('listening') ?? []).map(Number).filter((n) => Number.isFinite(n)),
+    ...(Object.keys(engineOwners).length ? { engineOwners } : {}),
+    ...(Object.keys(managedUnits).length ? { managedUnits } : {}),
     notes,
   };
 }

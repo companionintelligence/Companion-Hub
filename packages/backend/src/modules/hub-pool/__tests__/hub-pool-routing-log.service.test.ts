@@ -104,7 +104,32 @@ describe('HubPoolRoutingLogService', () => {
 
       service.settle(row, { node: null, outcome: 'failed', durationMs: 900_000 });
 
-      expect(service.summary()).toMatchObject({ served: 0, failed: 1, pending: 0 });
+      expect(service.summary()).toMatchObject({ served: 0, failed: 1, pending: 0, clientClosed: 0 });
+    });
+
+    /**
+     * A caller that leaves is not a routing failure, and the summary is where an operator forms
+     * their first impression of the pool: `22 served · 4 failed` on beta-max (2026-09-21) was read
+     * as the pool being unable to place a quarter of its work, when all four were callers that had
+     * given up on a turn a node was still prefilling. Kept INSIDE `failed` — the request really did
+     * go unanswered — and reported beside it, so the two readings are both available.
+     */
+    it('counts a row the caller abandoned inside failed, and separately', () => {
+      const row = service.open((({ outcome: _o, status: _s, durationMs: _d, ...rest }) => rest)(record()));
+
+      service.settle(row, { outcome: 'failed', status: null, clientClosed: true, durationMs: 30_031 });
+
+      expect(service.summary()).toMatchObject({ served: 0, failed: 1, clientClosed: 1, pending: 0 });
+      // The node placement wrote is exactly what `settle` must not have dropped: it is the whole
+      // difference between this row and the one above, both in the CLI and on the dashboard.
+      expect(service.list()[0]).toMatchObject({ node: 'local', backend: 'ollama', clientClosed: true });
+    });
+
+    it('defaults the flag to false, so a row nothing set it on never reads as an abandoned request', () => {
+      service.record(record());
+
+      expect(service.list()[0]?.clientClosed).toBe(false);
+      expect(service.summary().clientClosed).toBe(0);
     });
 
     it('opens with no usage, and settling at headers time does not invent one', () => {

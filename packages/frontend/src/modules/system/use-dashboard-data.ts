@@ -203,6 +203,13 @@ export interface RoutingLogEntry {
   attempt?: number;
   candidates?: number;
   failedOverFrom?: string[];
+  /**
+   * `true` when the app closed its connection before any candidate answered. Such a row still names
+   * the node it was waiting on, which is what keeps it out of {@link routingByNode}'s unplaced
+   * bucket and out of the `bad` "unplaced" fault in `triage.ts` — a caller that left is not a
+   * routing or capacity problem. Absent on a Hub predating the flag.
+   */
+  clientClosed?: boolean;
   pin?: unknown;
   /**
    * Token counts, attached once the backend's response finished — `null`/absent while pending,

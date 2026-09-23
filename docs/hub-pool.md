@@ -10,9 +10,22 @@ This complements, and does not replace, the existing single-node model recommend
 - **Pairing**: a two-way handshake — the requesting Hub sends a token to the candidate; the candidate's operator approves or rejects in **Settings → Network → Hub Pool**; on approval, the candidate issues its own token back. Each side ends up trusting the other with one bearer token per direction (see `hub_pool_peer` in `schema.ts` for the exact model). Rejecting, or never approving, leaves nothing paired. Rejecting and unpairing both send a best-effort *authenticated* notification — the caller presents the token the other side issued it — so the other Hub drops its half immediately instead of forwarding work to a node that will now reject it.
 - **Routing**: once at least one peer is `connected`, every app using `hub_integration.inference` is routed through this Hub's own pool proxy (`/api/inference/pool/*`) instead of a directly-resolved backend URL — this is a global switch, not a per-app setting. With zero connected peers, nothing changes: a single-node Hub behaves exactly as it did before this feature existed. A routed app is also handed its chat model from what the *pool* serves — this node's healthy backends plus every usable peer's inventory — filtered by the app's requirements (tool calling, minimum context), and AI apps whose env would change are regenerated and restarted when pool membership changes. See [App inference handout](system/backend.md#app-inference-handout).
 - **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle. With `poolPrefixAffinityMaxInFlight` above zero, the node and engine that last served a session are moved to the front of that list while their queue is under the limit — a session being what the app names with `X-Hub-Pool-Session`, else what a digest of its system prompt and first turn, in full, names — see [Prefix affinity](#prefix-affinity). With `poolSlotAwareness` on, an Ollama candidate whose queue already fills the slots its node stated is placed behind every candidate that still has one free — see [Slot-aware placement](#slot-aware-placement).
+
+  Queue depth counts only requests the proxy placed. Every figure above — this Hub's own in-flight count, the `inFlightRequests` a peer publishes, what this Hub has forwarded — is incremented when a pool proxy hands a request to an engine and decremented when the response finishes; nothing reads the engine's own queue. Traffic that reaches an engine directly — a benchmark's direct `:11434` arm, an app configured with the engine's own URL instead of `hub_integration.inference`, a `curl` from a shell — is invisible to placement, so a node can rank as idle while its engine is full, and the pooled requests sent there queue behind work the ranker never saw. This is not hypothetical: the fleet-qa B5 cell (2026-09-21) measured 5–11 s to the first token on 2-slot nodes from exactly this, the direct arm of the same run holding the slots the pooled arm was placed into. Route every app through the proxy, so that everything an engine serves is something the ranker counted; a direct URL is fine for a one-off probe and wrong for anything that runs alongside pooled traffic. An engine-reported queue depth would close the gap — Ollama exposes none (`/api/ps` says what is loaded, not what is waiting), vLLM's `/metrics` has `vllm:num_requests_waiting` and nothing reads it yet — and until placement reads one, the proxy's own count is the only one it has.
+
 - **The `auto` alias**: an app may ask for model `auto` on any pooled route, exactly as it always could on the peerless `/api/inference/v1` path. The pool resolves it against every node that could take the request — this Hub and each usable peer, by the same rules candidate ranking applies — and picks, in order: the model named in **Settings → Inference** on the Hub that received the request, wherever in the pool it is served; otherwise the best chat model the pool holds, ranked tool-capable first (known, then unknown, then known tool-less), then 7 B parameters or more, then the catalog's intelligence index, parameter count, how many nodes serve it, and whether this Hub does. Embedding and rerank models are never picked, and the ranking never picks an Ollama Cloud (`:cloud`) tag, which would send the prompt off the appliance — only a Settings → Inference choice can name one. The resolved engine id replaces `auto` in the body before candidates are ranked, so a peer holding the model is as eligible as the local engine. `POST /api/show` resolves `auto` the same way, so the model an app is told about is the model its chat runs on; when no local engine holds that model, a peer that does describes it. A pool with no chat model anywhere answers 502 saying so. See `pool-auto-model.ts` for the fleet evidence behind the order: resolving on the entry node alone handed agents `gemma3:1b` and `deepseek-r1:8b` — the latter with `qwen3.6:27b` on the same disk — and a Hub with no local LLM answered 502 while its peers held a dozen. Every Hub in a pool resolves `auto` to the same model unless its Settings say otherwise, so the nodes holding that model carry the pool's `auto` traffic.
 - **Failover**: the proxy tries candidates in the ranked order above. It fails over on a connection error, a timeout waiting for response headers (on a streamed request the first byte comes only after model load *and* prompt evaluation, so the budget grows with the prompt: `max(HUB_POOL_FIRST_BYTE_TIMEOUT_MS, bytes/4 ÷ HUB_POOL_MIN_PREFILL_TOKENS_PER_SEC)` — defaults 300 s and 50 tok/s, so a 160 KB agent turn gets 800 s. Ollama's log on beta-max showed a 47k-token turn 98 % evaluated at 296.8 s when a fixed 300 s budget cancelled it and moved the work, cold, to a peer), a 5xx, or a 408/429 — never on an ordinary 4xx, since retrying a malformed request on a different machine wouldn't help. A peer additionally gets failed over on 401/403/404: those come from the peer's *own* pairing checks (it stopped trusting our token, or was unpaired from its side) and say nothing about the app's request, so the request moves to the next node and that peer's cached capabilities are dropped until its next successful health poll. Failover stops as soon as a response is committed — once status and headers have gone to the app, a stream that then dies is left to die rather than restarted on another node.
-- **Client hang-ups**: if the app closes its connection before the response finishes, the proxy aborts the upstream request, so the engine stops instead of prefilling a turn nobody will read (a 47k-token agent turn is about 300 s of prefill on a GPU node). This holds on both ends of a pool hop: the peer that served the work sees the sending Hub's aborted forward close and aborts its own engine request. A hang-up before response headers is never failed over — the turn is not placed on another candidate — and the routing log records it as `failed` with no status.
+- **Client hang-ups**: if the app closes its connection before the response finishes, the proxy aborts the upstream request, so the engine stops instead of prefilling a turn nobody will read (a 47k-token agent turn is about 300 s of prefill on a GPU node). This holds on both ends of a pool hop: the peer that served the work sees the sending Hub's aborted forward close and aborts its own engine request. A hang-up before response headers is never failed over — the turn is not placed on another candidate — and the routing log records it as `failed` with no status, **`clientClosed: true`, and the node it was waiting on**.
+
+  That last part is not cosmetic. Until it was fixed the row was settled with no node at all, which made it identical to the row a request that every candidate rejected produces. On beta-max (2026-09-21) four rows reading
+
+  ```
+  2026-09-21 20:09:06Z out  qwen3-coder:30b      -        1/14  30031   ✗ failed
+  ```
+
+  were reported as a release blocker — "placement returns no candidate and times out at 30 s" — when placement had ranked **fourteen** candidates, `local` was prefilling the first, and the app had given up after 30 s. The only surviving hint was `attempt`, which is `1` on a hang-up and `candidates.length` when every candidate really failed, and no operator is going to read a routing failure out of that. The same null also put the row in the dashboard's `Unplaced` bucket, which `triage.ts` raises as a red "nothing was even tried at a node" fault.
+
+  So: `cihub pool log` prints `↳ the app closed its connection after 30031 ms; local had not answered yet — not a routing failure` under such a row, and both `cihub pool log` and `cihub pool status` break the count out as `4 failed (4 abandoned by the caller)`. The count stays inside `failed` — the request genuinely went unanswered — but an operator can now tell the two apart at a glance. **The Hub's own `httpServer.requestTimeout = 30_000` in `main.ts` is not the cause, and raising it is not the fix.** It is the first thing an investigator finds when every cut lands at ~30 s, but Node clears that timer once the request has been *received*, so a response that takes minutes is untouched by it — pinned against a real socket in `hub-pool-proxy-timeout.test.ts`. What it does cut is a client that promises a body and never sends it, which is what it is there for. Look upstream instead: the calling app's read timeout, or a reverse proxy between it and the Hub. **A cluster of these is a statement about caller patience against this fleet's time to first byte, not about placement**: a 47k-token turn is ~300 s of prefill on a GPU node here, so any client with a 30 s or 60 s read timeout will produce them whenever a second turn queues behind a first.
 - **Recovery**: a peer that fails three consecutive health polls is marked `unreachable` and stops being offered as a candidate, but it keeps being polled — the first successful probe puts it straight back to `connected`. No operator action is needed, and unpairing is never the way to fix a node that was merely offline.
 
 ## Required configuration
@@ -178,8 +191,29 @@ engine's context (`cihub fleet backends --ollama-context N --execute` writes the
 handout is bound by the largest of them. A peer on an older build routes and serves as before.
 
 **Seeing it.** `GET /api/inference/pool/status` reports `localNode.maxNumCtx` and
-`peers[].maxNumCtx` (`null` for none, through the same clamp a handout reads); `cihub pool status`
-shows this node's under **This node**. Each routing-log entry carries `contextCap`: `null` when no
+`peers[].maxNumCtx`, and `GET /api/inference/pool/peers` carries `maxNumCtx` on each row too (`null`
+for none, through the same clamp a handout reads, on both routes — never the raw jsonb, which the
+peer writes).
+
+`cihub pool status` shows this node's cap under **This node**, every peer's in the peer table's
+`CONTEXT` column, and — once any node is capped — a **Context caps** block putting this node and
+every connected peer side by side. `cihub pool peers` carries the same column. Three readings, and
+they never share a cell: a **number** is the cap routing applies, **`none`** is a peer that answered
+and named no cap, and **`?`** is a cap nobody here knows (a peer never probed, or a Hub predating the
+field). An absent cap is never drawn as a number, and `none` is never drawn as `?` — the difference
+is the whole finding, because `none` means "takes any window" to the two rules above while `?` means
+nothing at all.
+
+The block warns on two states, and they are different faults. **Caps that disagree** are reported
+rather than failed: a batch-tier node capped low is deliberate and placement is built for it, but the
+consequence — that it stops taking the fleet's agent traffic while passing every health check — is
+invisible otherwise. **A node with no cap among capped ones** is the harder finding: it reads as
+"takes any window" in both rules, so it collects exactly the windows its own `OLLAMA_CONTEXT_LENGTH`
+may not run. `cihub pool doctor` decides the same question as check **F2**, and
+`cihub fleet backends --backends ollama` (no flags, nothing written) prints every node's actual
+`OLLAMA_CONTEXT_LENGTH` in one read-only pass.
+
+Each routing-log entry carries `contextCap`: `null` when no
 candidate had a cap, otherwise `{ numCtx, source, excluded: [{ node, maxNumCtx }], overridden }` —
 `source` is `request` when the body carried `options.num_ctx` and `estimated` when the prompt estimate
 stood in — so "its cap skipped that node" can be told apart from "the ranker preferred another".
@@ -194,8 +228,9 @@ the KV cache is `OLLAMA_NUM_PARALLEL` times that window. A 30B at 4 × 64k is th
 
 ## Slot-aware placement
 
-A per-node statement of how many requests the node's Ollama runs at once, and a pool knob that
-reads it. The statement is `cihub pool slots 4` on a node (`clear` withdraws it), or across the
+A per-node statement of how many requests the node's engine runs at once, and a pool knob that
+reads it. The statement describes Ollama (`OLLAMA_NUM_PARALLEL`); a fleet-run llama-server states
+its own — see [llama-server](#llama-server-slots-the-engine-states-them) below. The statement is `cihub pool slots 4` on a node (`clear` withdraws it), or across the
 fleet `cihub fleet backends --ollama-parallel 4 --ollama-context 32768 --ollama-keep-alive 24h
 --execute`, which writes the daemon's `OLLAMA_NUM_PARALLEL` and every node's statement in one run —
 passed with the node's other runtime flags, never alone, because the runtime drop-in is rendered
@@ -223,7 +258,8 @@ or over its slots is **demoted** behind every candidate that still has a free sl
 the prompt ceiling's and the throughput placement's, because the risk is the same:
 
 - **Unstated is neither full nor free.** A node that states no slot count — an older build, or an
-  operator who never set one — and a candidate on any engine but Ollama keep their place.
+  operator who never set one — and a candidate on any engine whose concurrency is not a slot count
+  (everything but Ollama and llama-server) keep their place.
 - **Demoted, never removed.** Failover still reaches a full node when every free one fails, and the
   routing log then says the demotion was overridden rather than claiming the node was skipped.
 - **All full means nothing moves.** When every candidate's slots are full the ranker's order stands.
@@ -298,6 +334,26 @@ candidate stated a count, otherwise the demoted nodes with their queue depth and
 `↳ moved <node> (2 in flight, 2 slots) behind nodes with a free slot` line on the rows a full engine
 was moved on, and `↳ placed anyway with every slot full on …` when the request landed on one
 regardless; a row where every candidate had a free slot gets no line.
+
+### llama-server slots: the engine states them
+
+`llama-server` runs `-np` slots and, unlike Ollama, says so: `GET /props` answers `total_slots`
+and `default_generation_settings.n_ctx`, the window **each slot** gets (`-c` divided by the slot
+count — 32768 on a server started `-np 4 -c 131072`, not 131072). The `llamacpp` backend reads
+`/props` on every healthy probe and keeps the answer, so the pool can rank against it without a
+request of its own; a server that stops answering forgets it, and a server without the route (an
+older build) states nothing rather than something invented.
+
+For **this node's own** llama-server the pool believes that statement over the node's
+`inferenceOllamaSlots` and `inferenceMaxNumCtx`: the statement describes Ollama, and a window the
+engine itself runs is exactly what the cap exists to keep a request inside. A **peer's** llama-server
+is judged through the peer's statement, because the statement is all a peer advertises — which is
+why `cihub fleet backends --backends llamacpp --ollama-parallel N --ollama-context C --execute`
+writes both to the node's Hub after the server reads back that shape on `/props`, and refuses to
+when it does not (see [`cihub fleet backends`](./CLI.md#llama-server-the-same-gguf-ollama-holds-on-8081)).
+A fleet-run llama-server serves the same GGUF the node's Ollama holds under the same tag, so
+`qwen3-coder:30b` on such a node is two candidates — `local/ollama` and `local/llamacpp` — each
+placed by its own slots.
 
 ## Throughput-aware placement
 
@@ -540,13 +596,13 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
   | Header | Value |
   |---|---|
   | `X-Hub-Pool-Served-By` | `local` when this node's own engine served the request, otherwise the peer's tailnet FQDN (for example `core-14.tailxyz.ts.net`) |
-  | `X-Hub-Pool-Backend` | The engine type on the serving node: `ollama`, `vllm`, `lemonade`, `mtplx`, `dspark`, or `lucebox` |
+  | `X-Hub-Pool-Backend` | The engine type on the serving node: `ollama`, `vllm`, `lemonade`, `mtplx`, `dspark`, `lucebox`, `llamacpp`, or `lmstudio` |
   | `X-Hub-Pool-Model` | The model the request was routed for |
   | `X-Hub-Pool-Request-Id` | The `id` of this request's row in the routing log. Also sent to the serving peer on the `/local/*` forward, so the peer's inbound row carries the same `id` |
   | `X-Hub-Pool-Affinity` | `hit`, `miss` or `skipped` — what [prefix affinity](#prefix-affinity) did, on the chat/completion/generate routes when it is on. Absent otherwise. An app names its session for it with the `X-Hub-Pool-Session` request header |
 
   A request that failed over names the node that *answered*, not the one tried first. On a 502 only `X-Hub-Pool-Request-Id` (and `X-Hub-Pool-Affinity`, when affinity applied) is set: a failed call is the one most worth looking up, and there is no serving node to name. `local` is deliberately not this node's own MagicDNS name: the proxy admits any caller inside the appliance without a credential, and `/identify` stopped disclosing the name to unauthenticated callers for the same reason — see [What `/identify` no longer says](#what-identify-no-longer-says-and-where-the-name-went-instead). Nothing else about the peer appears: never its node UUID, and never a container name. Any `x-hub-pool-*` header the upstream engine or peer returns is dropped, so the attribution is always this Hub's own statement. To check by hand: `curl -i` and read the headers, or `curl -sD - -o /dev/null` for headers only.
-- **`GET /api/inference/pool/routing-log?limit=&since=`** (session auth, or see below) returns recent routing decisions, newest first: `id`, timestamp, `updatedAt`, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, and `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed) — `promptCeiling`, what [prompt ceilings](#prompt-ceilings) did to the decision, or `null` (inbound too, and for the same reason), `throughput`, what [measured throughput](#throughput-aware-placement) did to it, or `null`, and `affinity`, what [prefix affinity](#prefix-affinity) did to it, or `null` when it is off or the route is not one it judges. `stream`, `bodyBytes` and `budgetMs` describe the request: whether it streamed, the UTF-8 size of the body as forwarded, and the header deadline it was given, from the same function the forward's timer uses — a row that failed at exactly `budgetMs` failed on the deadline. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated, under the `id` the sender minted. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
+- **`GET /api/inference/pool/routing-log?limit=&since=`** (session auth, or see below) returns recent routing decisions, newest first: `id`, timestamp, `updatedAt`, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, and `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed) — `promptCeiling`, what [prompt ceilings](#prompt-ceilings) did to the decision, or `null` (inbound too, and for the same reason), `throughput`, what [measured throughput](#throughput-aware-placement) did to it, or `null`, and `affinity`, what [prefix affinity](#prefix-affinity) did to it, or `null` when it is off or the route is not one it judges. `clientClosed` says the row ended because the caller hung up rather than because routing failed — see the **Client hang-ups** bullet under [How it fits together](#how-it-fits-together), and note that the row still names the node it was waiting on. `stream`, `bodyBytes` and `budgetMs` describe the request: whether it streamed, the UTF-8 size of the body as forwarded, and the header deadline it was given, from the same function the forward's timer uses — a row that failed at exactly `budgetMs` failed on the deadline. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated, under the `id` the sender minted. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
 
   - **Joining both nodes' rows for one call.** Take `X-Hub-Pool-Request-Id` from the response, or the `id` of the entry Hub's outbound row, and find the row with the same `id` in the serving peer's routing log. Two concurrent calls for the same model get different ids, which a time window cannot separate.
   - **Polling without losing rows.** Pass the previous response's `nextSince` as `since`. You get the rows placed **or changed** at or after it — including a row you last saw `pending` that has since settled — and the row carrying `nextSince` comes back once more, because `since` is inclusive: keep the newest copy of each `id`. `matched` greater than the number of `entries` means `limit` cut the page; a cut cursor page keeps the *oldest* changes, so following `nextSince` reaches the rest without losing any. A full page whose `nextSince` equals the `since` you sent means more than `limit` rows changed in one millisecond: ask again with a larger `limit`. Without `since` you get the newest placements and a `nextSince` to tail from. `since` must be ISO 8601 with a zone (`Z` or an offset); send an offset's `+` as `%2B`, because a query string reads a bare `+` as a space.
@@ -958,9 +1014,29 @@ Apps using `hub_integration.inference` get `CI_LLM_BASE_URL`, `OLLAMA_HOST` and 
 
 `POST /api/pull` and the other model-management natives are deliberately absent — pulling a model is a node-local administrative action, not something the pool should silently perform on whichever machine answered.
 
+## What the listing endpoints answer for
+
+`GET /v1/models` and `GET /api/tags` answer for the **pool**, not for this node: what this node's own
+backends list, plus every model a connected peer reports in its cached capabilities. A model the
+listing names is a model the ranker can place, because both read the same snapshot — the one the
+health poll refreshes every `poolHealthPollSeconds`. Merging costs no extra network call.
+
+A peer publishes model *names* and nothing else, so a model no local engine holds has no size,
+digest, or modified time to report. Those fields are emitted empty or zero rather than invented, and
+`owned_by` is `hub-pool` on the OpenAI side, so a client that reads the field can tell the two apart.
+
+A Hub whose own engines are down or absent now answers these two routes from its peers instead of
+`502`. The 502 remains for the case where neither this node nor any peer has anything.
+
+Ranking is not consulted here. The listing answers "what may I ask for", not "where would it run" —
+`X-Hub-Pool-Served-By` on the response to the actual request answers the second.
+
+`/api/ps`, `/api/version`, and `/api/show` are still local-only, and deliberately: the first two are
+questions about *this machine*, so another node's answer would not be an addition to them, and
+`/api/show` already falls back to a peer wholesale rather than blending.
+
 ## Known limitations (v1)
 
-- `GET /v1/models` and `GET /api/tags` through the pool proxy list only this node's own local backends — they do not yet merge in what connected peers report. Chat/completion/embedding requests do use the full pool, including peers; only the *listing* endpoints are local-only for now.
 - Peer health is polled on an interval (`poolHealthPollSeconds`, 30s by default) rather than pushed, so a peer that just went down may still be offered as a candidate until the next poll — the per-request failover is what actually protects a live request in that gap.
 - The routing log holds the last 200 decisions (up to 10,000 with `HUB_POOL_ROUTING_LOG_SIZE`) in memory and is gone on restart; `summary.bootId` says when that happened. Per-request attribution no longer depends on it — the [`X-Hub-Pool-Served-By` response header](#operator-status-and-routing-log) names the serving node to the caller — but there is still no persisted history of *anything* else: no pairing lifecycle (rejected and expired rows are hard-deleted), no per-peer request totals, and no record of why a peer became unreachable beyond the current strike count.
 - Time-to-headers is the only latency figure recorded. Token counts and tokens-per-second are not available: the response body is piped through untouched, and counting tokens would mean parsing the stream the proxy deliberately never reads.
@@ -983,7 +1059,7 @@ Only routing reads this. `modelsLoaded` keeps its meaning as the on-disk invento
 
 ## When a node runs the model and the Hub cannot see the engine
 
-The other way a listed model earns a 502 is that the Hub never saw it listed. The Hub probes its engines **from inside its container**, at `VLLM_URL`, `LEMONADE_URL`, `SPECULATIVE_INFERENCE_URL`, `MTPLX_URL`, `DSPARK_URL` (defaults: `http://host.docker.internal:<port>`), and an engine the operator started on the host is only a candidate if that probe answers. On the September 2026 fleet it did not, on six of fifteen nodes, for two reasons that look identical from the outside:
+The other way a listed model earns a 502 is that the Hub never saw it listed. The Hub probes its engines **from inside its container**, at `VLLM_URL`, `LEMONADE_URL`, `SPECULATIVE_INFERENCE_URL`, `MTPLX_URL`, `DSPARK_URL`, `LMSTUDIO_URL` (defaults: `http://host.docker.internal:<port>`) and `LLAMACPP_URL` (no default: llama-server's own 8080 is dspark's, so it is probed only when set — `cihub fleet backends --backends llamacpp` sets it to `:8081` after an install), and an engine the operator started on the host is only a candidate if that probe answers. On the September 2026 fleet it did not, on six of fifteen nodes, for two reasons that look identical from the outside:
 
 - **A firewall that only knows Ollama.** ufw allowed the Docker bridge to reach `:11434` and nothing else, so vLLM on `:8000` timed out from the container and worked from everywhere else.
 - **An engine published on the tailnet address only.** Lemonade and Lucebox containers published on `100.x.y.z:13305` and `:8216` refuse `host.docker.internal`; the fix is to point the env var at the tailnet address, which the Hub container can reach.
@@ -1015,3 +1091,5 @@ The snapshot changes **when** an engine's answer is read, never what an answered
 `vllm`, `mtplx` and `lucebox` all default to host port 8000, and every OpenAI-compatible server answers `GET /v1/models`, so a health check built on that route cannot tell whose server it reached. A node serving vLLM there reported all three backends healthy with vLLM's model: three local candidates for one process (each failover hop re-hit the same engine), the model advertised three times to peers, and a status page claiming two engines the node has never run.
 
 Each of the three names itself in `data[0].owned_by` of its own `/v1/models` body — `vllm`, `mtplx`, and `dflash` for Lucebox — so the backends now honour that claim: a server that names another engine is reported `running: true, healthy: false` with an error that says which env var points the backend at a server of its own. A server that does not name itself is left alone; absent evidence is not evidence of a foreign engine.
+
+`llamacpp` is the fourth: llama-server answers `owned_by: llamacpp` (verified against build b11065 and Ollama's bundled build), its own default port 8080 is dspark's, and the fleet's managed one sits on 8081 where a hand-started one may be too. `LLAMACPP_URL` pointed at a vLLM stands the `llamacpp` backend down and names the variable; `VLLM_URL` pointed at the fleet's llama-server stands `vllm` down the same way. Once the server is its own, the backend also reads `/props` — the model path, `total_slots`, and the per-slot `n_ctx` — which is where [slot-aware placement](#llama-server-slots-the-engine-states-them) gets a local llama-server's figures.

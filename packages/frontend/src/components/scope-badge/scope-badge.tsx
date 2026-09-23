@@ -7,8 +7,9 @@ import { useTranslation } from 'react-i18next';
 const SCOPE_BADGE_KEYS: Record<string, string> = {
   mcp: 'API_KEYS_SCOPE_MCP',
   app: 'API_KEYS_SCOPE_APP',
-  // Minted by the CLI only (`cihub api-key create --scope inference`); the list must still name it.
   inference: 'API_KEYS_SCOPE_INFERENCE',
+  // Minted by the CLI only (`cihub api-key create --scope qa:read`); the list must still name it.
+  'qa:read': 'API_KEYS_SCOPE_QA_READ',
 };
 
 /** A small pill labelling one scope a key carries (e.g. "MCP", "App"). */

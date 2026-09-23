@@ -1149,6 +1149,17 @@ describe('DockerService', () => {
       expect(filesystemService.copyDirectory).not.toHaveBeenCalled();
     });
 
+    it('also snapshots the installed app files dir, so a rollback can restore the previous compose/version too', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.createDirectory.mockResolvedValue(true);
+      filesystemService.copyDirectory.mockResolvedValue(true);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.appFilesSnapshotPath).toContain('snapshots');
+      expect(filesystemService.copyDirectory).toHaveBeenCalledWith('/data/apps/test-store/test-app', expect.stringContaining('snapshots'));
+    });
+
     it('handles container listing errors without throwing', async () => {
       filesystemService.pathExists.mockResolvedValue(false);
       dockerode.listContainers.mockRejectedValue(new Error('Docker daemon unavailable'));
@@ -1292,6 +1303,68 @@ describe('DockerService', () => {
       expect(result.ok).toBe(false);
       expect(result.healthy).toBe(false);
       expect(result.message).toContain('No containers found');
+    });
+
+    it('treats a one-shot init container that exited cleanly (code 0) as healthy, not crashed', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        {
+          Id: 'migrate',
+          Names: ['/ci-memory_ci-marketplace-migrate-database-1'],
+          State: 'exited',
+          Status: 'Exited (0) 9 minutes ago',
+        } as any,
+        {
+          Id: 'api',
+          Names: ['/ci-memory_ci-marketplace-api-1'],
+          State: 'running',
+          Status: 'Up 9 minutes',
+        } as any,
+      ]);
+
+      dockerode.getContainer.mockImplementation(
+        (id: string) =>
+          ({
+            inspect: vi
+              .fn()
+              .mockResolvedValue(
+                id === 'migrate' ? { State: { Status: 'exited', Running: false, ExitCode: 0 } } : { State: { Status: 'running', Running: true } },
+              ),
+          }) as any,
+      );
+
+      const result = await service.verifyContainerHealthProbe(testUrn);
+
+      expect(result.ok).toBe(true);
+      expect(result.healthy).toBe(true);
+      expect(result.containers.find((c) => c.id === 'migrate')?.exitCode).toBe(0);
+    });
+
+    it('still flags a container that exited with a nonzero code as unhealthy', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        {
+          Id: 'c4',
+          Names: ['/test-app-crashed'],
+          State: 'exited',
+          Status: 'Exited (1) 5 seconds ago',
+        } as any,
+      ]);
+
+      const mockContainer = {
+        inspect: vi.fn().mockResolvedValue({
+          State: {
+            Status: 'exited',
+            Running: false,
+            ExitCode: 1,
+          },
+        }),
+      };
+      dockerode.getContainer.mockReturnValue(mockContainer as any);
+
+      const result = await service.verifyContainerHealthProbe(testUrn);
+
+      expect(result.ok).toBe(false);
+      expect(result.healthy).toBe(false);
+      expect(result.message).toContain('Health probe failed');
     });
   });
 });

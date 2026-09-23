@@ -14,6 +14,7 @@ import { APP_DIR } from './common/constants';
 import { MainExceptionFilter } from './common/error/exception.filter';
 import { FilesystemModule } from './core/filesystem/filesystem.module';
 import { HealthModule } from './core/health/health.module';
+import { HubBuildInfoModule } from './core/build-info/hub-build-info.module';
 import { LoggerModule } from './core/logger/logger.module';
 import { LoggerService } from './core/logger/logger.service';
 import { SSEModule } from './core/sse/sse.module';
@@ -73,6 +74,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   LinksModule,
   BackupsModule,
   HealthModule,
+  HubBuildInfoModule,
   MarketplaceModule,
   SSEModule,
   NetworkModule,

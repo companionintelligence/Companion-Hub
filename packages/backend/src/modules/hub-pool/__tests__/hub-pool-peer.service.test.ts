@@ -1245,6 +1245,32 @@ describe('HubPoolPeerService', () => {
           ['garbled', null],
         ]);
       });
+
+      /**
+       * `/pool/peers` lists the fleet; `/pool/status` draws the card. A cap decides which nodes a
+       * large window may be placed on, so the two must not disagree about it — and neither may be
+       * left to read the raw jsonb, which the peer writes.
+       */
+      it('reports the same clamped cap to the status card and to the peers list, for every reading', async () => {
+        const rows = [
+          peerWith('core-17', { ...baseCapabilities, maxNumCtx: 16_384 }),
+          peerWith('old-build', baseCapabilities),
+          peerWith('garbled', { ...baseCapabilities, maxNumCtx: 'sixteen k' }),
+          peerWith('never-probed', null as unknown as Record<string, unknown>),
+        ];
+        repo.listAll.mockResolvedValue(rows);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers.map((peer) => [peer.id, peer.maxNumCtx])).toEqual([
+          ['core-17', 16_384],
+          ['old-build', null],
+          ['garbled', null],
+          ['never-probed', null],
+        ]);
+        // The helper `/pool/peers` calls, on the same rows, with the same answers.
+        expect(rows.map((peer) => service.peerContextCap(peer))).toEqual([16_384, null, null, null]);
+      });
     });
   });
 
@@ -1800,6 +1826,80 @@ describe('HubPoolPeerService', () => {
       const headers = await service.peerAuthHeaders(peer, 'GET', '/api/inference/pool/capabilities');
 
       expect(headers['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
+    });
+
+    describe('the pairing confirm callback', () => {
+      /** An inbound PIN request just pinned WITH grace — the state `approvePairing` confirms from. */
+      const pinnedPending = () =>
+        mockPeer({
+          id: 'approve-me',
+          direction: 'inbound',
+          status: 'pending',
+          presentTokenEncrypted: 'ENC:their-token',
+          peerNodeUuid: PEER_UUID,
+          peerPublicKey: keys.publicKey,
+          bearerGraceUntil: new Date(Date.now() + 600_000).toISOString(),
+        });
+      const headersOf = (call: number) => (vi.mocked(global.fetch).mock.calls[call]?.[1] as RequestInit).headers as Record<string, string>;
+
+      beforeEach(() => {
+        giveSelfAnIdentity();
+        repo.findById.mockResolvedValue(pinnedPending());
+        repo.update.mockResolvedValue({ ...pinnedPending(), status: 'connected' });
+      });
+
+      it('signs first, even inside the grace window — the joiner pinned our key from the PIN response', async () => {
+        // A joiner requiring signed peers refuses the bearer the grace window would send, and this
+        // callback is never retried: core-3 stayed `pending` on both hubs until this changed.
+        vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200 }));
+
+        await service.approvePairing('approve-me');
+
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(headersOf(0)['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
+        expect(headersOf(0).Authorization).toBeUndefined();
+      });
+
+      it('falls back to the bearer once when the joiner refuses the signature and this node allows one', async () => {
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(new Response('unknown key', { status: 401 }))
+          .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+
+        await service.approvePairing('approve-me');
+
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(headersOf(1).Authorization).toBe('Bearer their-token');
+        expect(headersOf(1)['X-Hub-Pool-Signature']).toBeUndefined();
+      });
+
+      it('never falls back to a bearer when this node requires signed peers', async () => {
+        setPoolPreferences({ poolRequireSignedPeers: true });
+        vi.mocked(global.fetch).mockResolvedValue(new Response('unknown key', { status: 401 }));
+
+        await expect(service.approvePairing('approve-me')).resolves.toMatchObject({ status: 'connected' });
+
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(headersOf(0).Authorization).toBeUndefined();
+      });
+    });
+
+    it('signs inside the grace window when this node requires signed peers, rather than refusing', async () => {
+      // A PIN pairing's approve pins the peer WITH grace, then immediately sends the confirm
+      // callback. Holding the signature back for a bearer that is forbidden anyway made every such
+      // callback throw — and it is never retried — so the joining node stayed `pending` for good.
+      setPoolPreferences({ poolRequireSignedPeers: true });
+      giveSelfAnIdentity();
+      const peer = mockPeer({
+        status: 'connected',
+        peerNodeUuid: PEER_UUID,
+        peerPublicKey: keys.publicKey,
+        bearerGraceUntil: new Date(Date.now() + 600_000).toISOString(),
+      });
+
+      const headers = await service.peerAuthHeaders(peer, 'POST', '/api/inference/pool/pair/confirm', { token: 'x' });
+
+      expect(headers['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
+      expect(headers.Authorization).toBeUndefined();
     });
 
     it('refuses to emit a bearer token at all when this node requires signed peers', async () => {

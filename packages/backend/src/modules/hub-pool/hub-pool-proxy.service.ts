@@ -6,6 +6,7 @@ import type { Response } from 'express';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -58,6 +59,7 @@ import {
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
+import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -744,18 +746,28 @@ export interface SlotOccupancy {
 }
 
 /**
- * Judge each Ollama candidate's known queue depth against the slot count its node advertised
- * (`inferenceOllamaSlots`, the operator's statement of `OLLAMA_NUM_PARALLEL`). `demoted` is the set
- * of candidates whose queue already fills their slots, to be moved behind every candidate that still
- * has one free — because past that point Ollama queues the request behind the engine rather than
- * serving it (measured 2026-09-21: 5–10 s to the first token on a full 2-slot node while 4-slot nodes
- * sat idle).
+ * The engines whose concurrency IS a slot count the pool can place against: Ollama, by its
+ * operator's statement (`inferenceOllamaSlots`), and llama-server, which runs `-np` slots and says
+ * so on `/props` (`total_slots`) — a local one is read from its own statement, a peer's through the
+ * node's `ollamaSlots`, which `cihub fleet backends --backends llamacpp` writes from the same
+ * number. Every other engine keeps its place, as before slots existed.
+ */
+export const SLOT_STATED_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama', 'llamacpp']);
+
+/**
+ * Judge each Ollama or llama-server candidate's known queue depth against the slot count its node
+ * advertised (`inferenceOllamaSlots`, the operator's statement of `OLLAMA_NUM_PARALLEL`; for a local
+ * llama-server its own `total_slots`). `demoted` is the set of candidates whose queue already fills
+ * their slots, to be moved behind every candidate that still has one free — because past that point
+ * the engine queues the request behind itself rather than serving it (measured 2026-09-21: 5–10 s
+ * to the first token on a full 2-slot node while 4-slot nodes sat idle).
  *
  * The rules are the prompt ceiling's and the throughput placement's, because the risk is the same —
  * a preference must never become a refusal:
  *
  * 1. **Unstated is neither full nor free.** A candidate whose node advertises no slot count, or whose
- *    engine is not Ollama, is never demoted and keeps its place relative to the ones that are not.
+ *    engine is not one of {@link SLOT_STATED_BACKENDS}, is never demoted and keeps its place relative
+ *    to the ones that are not.
  * 2. **Demoted, never removed**, so failover still reaches a full node when every free one fails.
  * 3. **All full means nothing moves.** When every candidate is at or over its slots, `demoted` is
  *    empty, the ranker's order stands, and `overridden: true` says so.
@@ -1455,7 +1467,13 @@ export class PoolProxyService {
     const peerCaps = new Map<string, number | null>(
       peers.map((peer) => [peer.id, clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx)]),
     );
-    const capOf = (candidate: PoolCandidate) => (candidate.peerId === null ? localCap : (peerCaps.get(candidate.peerId) ?? null));
+    // A local engine that states its own per-slot window (llama-server's `/props`) is believed over
+    // the node-wide statement: the statement describes Ollama, and a window the engine itself runs
+    // is exactly what the cap exists to keep a request inside.
+    const capOf = (candidate: PoolCandidate) =>
+      candidate.peerId === null
+        ? (clampContextCap(this.localEngineStatement(candidate.backend)?.contextLength) ?? localCap)
+        : (peerCaps.get(candidate.peerId) ?? null);
     if (!ordered.some((candidate) => capOf(candidate) !== null)) {
       return { preferred: ordered, overCap: [], decision: null };
     }
@@ -1502,10 +1520,14 @@ export class PoolProxyService {
     const result = applySlotPlacement(
       ranked.map((entry) => entry.candidate),
       (candidate) => {
-        if (candidate.backend !== 'ollama') {
+        if (!SLOT_STATED_BACKENDS.has(candidate.backend)) {
           return null;
         }
-        const slots = candidate.peerId === null ? localSlots : (peerSlots.get(candidate.peerId) ?? null);
+        // Same precedence as the cap: a local engine's own slot count first, the node's statement after.
+        const slots =
+          candidate.peerId === null
+            ? (clampOllamaSlots(this.localEngineStatement(candidate.backend)?.slots) ?? localSlots)
+            : (peerSlots.get(candidate.peerId) ?? null);
         const inFlight = inFlightOf.get(candidate);
         return slots === null || inFlight === undefined ? null : { inFlight, slots };
       },
@@ -1520,6 +1542,16 @@ export class PoolProxyService {
       );
     }
     return result;
+  }
+
+  /**
+   * What a local engine says about its own slots and per-slot context, from its last health probe
+   * (`InferenceBackend.engineCapabilities`) — never a request of its own, since this runs while
+   * ranking every request. `null` for every engine that does not state them, which is all but
+   * llama-server today.
+   */
+  private localEngineStatement(backend: InferenceBackendType): EngineCapabilities | null {
+    return this.backends.tryGet(backend)?.engineCapabilities?.() ?? null;
   }
 
   /**
@@ -1848,6 +1880,14 @@ export class PoolProxyService {
    * settled as failed with no status — nothing was served — and it is logged, because a client giving
    * up on a turn that had not started answering is the one symptom of a queue too slow for its callers.
    * After headers the row already says served, which it was, and a stopped generation is routine.
+   *
+   * The row KEEPS the node, peer and engine it was waiting on, and says `clientClosed`. Nulling them
+   * — which this did until beta-max, 2026-09-21 — left a row identical to the one a request that
+   * exhausted every candidate settles as, and the log's NODE column is where an operator looks first:
+   * four rows reading `qwen3-coder:30b  -  1/14  30031  x failed` were reported as "placement returns
+   * no candidate and times out" when placement had ranked fourteen candidates and the caller had
+   * given up on the first after 30 s. A request that ends because nobody is waiting for it is not a
+   * routing failure, and the log has to be able to say which of the two it is looking at.
    */
   private noteClientClosed(
     row: ReturnType<HubPoolRoutingLogService['open']>,
@@ -1862,11 +1902,11 @@ export class PoolProxyService {
     }
     const waitedMs = Date.now() - startedAt;
     this.routingLog.settle(row, {
-      node: null,
-      peerId: null,
-      backend: null,
+      // `node`, `peerId` and `backend` are deliberately absent: `settle` keeps what placement wrote,
+      // and what placement wrote is the candidate that was still holding this request.
       attempt: index + 1,
       outcome: 'failed',
+      clientClosed: true,
       status: null,
       durationMs: waitedMs,
     });
@@ -2164,10 +2204,19 @@ export class PoolProxyService {
    * Best-effort passthrough for the endpoints that carry no `model` field and so can't be routed
    * across the pool — `GET /v1/models`, `GET /api/tags`, `GET /api/ps`, `GET /api/version`,
    * `POST /api/show`. Tries this node's own backends in order and serves the first that answers.
-   * Cross-node merging of the listing endpoints is a known gap; see docs/hub-pool.md.
+   *
+   * The two *listing* paths are the exception: they are served by {@link serveMergedListing}, which
+   * adds what connected peers hold to what this node answered. Everything else is still a local
+   * passthrough, because there is nothing coherent to merge — `/api/ps` is about this machine's
+   * memory, `/api/version` about this machine's engine, and `/api/show` is a lookup that falls back
+   * to a peer wholesale rather than blending.
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
     const clientClosed = abortWhenClientCloses(res);
+    if (MERGED_LISTING_PATHS.has(path)) {
+      await this.serveMergedListing(path, method, res, clientClosed);
+      return;
+    }
     // Ollama's `/api/show` names the model in `name` (older clients) or `model`, and an app whose
     // chat model is the `auto` alias asks about `auto` here before its first chat — OpenClaw's
     // provider does exactly that, and read the engine's 404 as "model not found" without ever
@@ -2217,6 +2266,84 @@ export class PoolProxyService {
       );
     }
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
+  }
+
+  /**
+   * `GET /v1/models` / `GET /api/tags`, answered for the POOL rather than for this node.
+   *
+   * Three things it fixes, all of which were visible on the fleet:
+   * - A client was told this node's models and then found a model it had never been offered served
+   *   fine, because a peer held it. The listing was the only surface still answering for one node.
+   * - A Hub whose own engines are down or absent answered 502 while its peers held a dozen models.
+   *   The local half is now allowed to fail without failing the request.
+   * - `auto` resolves pool-wide, so the model a listing did not mention is routinely the one that
+   *   runs.
+   *
+   * The peer half costs no network I/O — it reads `hub_pool_peer.last_capabilities`, the snapshot
+   * the health poll already refreshes and the ranker already reads, so the listing and the next
+   * completion cannot disagree. Ranking is not consulted: this answers "what may I ask for", not
+   * "where would it run".
+   *
+   * Buffered rather than streamed, unlike every other path here. A merged body has to be built
+   * before any of it can be written, and a model list is small — the streaming path exists for
+   * generations, which this is not.
+   */
+  private async serveMergedListing(path: string, method: string, res: Response, clientClosed: AbortSignal): Promise<void> {
+    const local = await this.firstLocalListing(path, method, clientClosed);
+    if (clientClosed.aborted) {
+      res.destroy();
+      return;
+    }
+
+    const peers = await this.usablePeers().catch((error: unknown) => {
+      // A peer read that fails must not take down a listing this node answered on its own. It
+      // degrades to exactly the pre-pool behaviour, which is what an operator with no peers gets.
+      this.logger.debug(`[PoolProxy] ${path} could not read peer inventories: ${error instanceof Error ? error.message : String(error)}`);
+      return [] as HubPoolPeer[];
+    });
+    const peerModels = peers.flatMap((peer) => this.peerServableInventory(peer).backends.flatMap((backend) => backend.models));
+    const extra = peerOnlyModels(listedModelIds(path, local), peerModels);
+
+    if (local === null && extra.length === 0) {
+      // Nothing anywhere. Keep the old 502 and the old warn: a caller probing this route to decide
+      // whether the Hub speaks Ollama natively reads the failure, not the body.
+      if (NATIVE_CAPABILITY_PROBE_PATHS.has(path)) {
+        this.logger.warn(
+          `[PoolProxy] no local backend could serve ${path}; a caller probing this route to decide native-vs-OpenAI-compatible ` +
+            'routing (e.g. ci-hermes) will silently fall back to /v1 and lose per-request context-length control.',
+        );
+      }
+      this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
+      return;
+    }
+
+    if (extra.length > 0) {
+      this.logger.debug(`[PoolProxy] ${path} merged ${extra.length} peer-only model(s) from ${peers.length} peer(s)`);
+    }
+    this.respondUncommitted(res, 200, mergeModelListing(path, local, extra));
+  }
+
+  /**
+   * The first local backend's parsed listing body, or `null` when none answered with usable JSON.
+   *
+   * `null` is not an error here. A Hub with no local engine is a legitimate pool member — it exists
+   * to send work to peers — and its listing should describe what the pool can do, not fail.
+   */
+  private async firstLocalListing(path: string, method: string, clientClosed: AbortSignal): Promise<unknown> {
+    for (const type of INFERENCE_BACKEND_TYPES) {
+      if (clientClosed.aborted) return null;
+      try {
+        const upstream = await this.callBackend(type, path, method, undefined, undefined, clientClosed);
+        if (!upstream.ok) {
+          this.logger.debug(`[PoolProxy] ${path} via local ${type} answered ${upstream.status}; trying the next backend`);
+          continue;
+        }
+        return await upstream.json();
+      } catch (error) {
+        this.logger.debug(`[PoolProxy] ${path} via local ${type} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return null;
   }
 
   /**

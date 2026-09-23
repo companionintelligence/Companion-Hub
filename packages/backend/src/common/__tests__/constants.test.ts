@@ -76,6 +76,14 @@ describe('resolveDataDir', () => {
 
     expect(resolveDataDir({ CI_HUB_DATA_DIR: '/tmp/ci-hub-e2e', ROOT_FOLDER_HOST: '/repo/.internal' }, inContainer)).toBe('/tmp/ci-hub-e2e');
     expect(resolveDataDir({ CIHUB_DATA_DIR: '/legacy/data' }, inContainer)).toBe('/legacy/data');
+    // TIPI_DATA_DIR is the legacy name appliances actually set; #1143 renamed it to the
+    // never-shipped CIHUB_DATA_DIR by substring, so this fell through to ROOT_FOLDER_HOST.
+    expect(resolveDataDir({ TIPI_DATA_DIR: '/legacy/tipi-data' }, inContainer)).toBe('/legacy/tipi-data');
+    expect(resolveDataDir({ TIPI_DATA_DIR: '/legacy/tipi-data', ROOT_FOLDER_HOST: '/repo/.internal' }, inContainer)).toBe('/legacy/tipi-data');
+    // The current name still wins over both legacy spellings.
+    expect(resolveDataDir({ CI_HUB_DATA_DIR: '/current', TIPI_DATA_DIR: '/legacy/tipi-data', CIHUB_DATA_DIR: '/legacy/data' }, inContainer)).toBe(
+      '/current',
+    );
   });
 
   it('uses the container mount even though ROOT_FOLDER_HOST is set in the container', async () => {
