@@ -86,6 +86,32 @@ describe('fleet install and the pairing code', () => {
     expect(existsSync(storePath())).toBe(false);
   });
 
+  it('takes the Portal login from the environment, and hands installNode the Portal it mints on', async () => {
+    // What makes a run unattended: a device:manage token in the environment, no `cihub login`.
+    const env = {
+      CI_PORTAL_TOKEN: 'cio_env',
+      CI_PORTAL_ORG: 'org-env',
+      CI_PORTAL_SCOPE: 'device:manage',
+      CI_PORTAL_ORIGIN: 'https://hub.ci.computer',
+    };
+    Object.assign(process.env, env);
+    try {
+      mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
+        await opts.mintPairingCode?.();
+        return { node: node.name, ok: false, steps: [{ name: 'hub up + register', ok: false, detail: 'hub-up-failed' }] };
+      });
+      await runFleetCommand(['install', '--execute']);
+      expect(mocks.mintPairingCode.mock.calls[0]?.[0]?.login).toMatchObject({
+        token: 'cio_env',
+        orgId: 'org-env',
+        portalOrigin: 'https://hub.ci.computer',
+      });
+      expect((mocks.installNode.mock.calls[0]?.[1] as InstallOpts).portalOrigin).toBe('https://hub.ci.computer');
+    } finally {
+      for (const name of Object.keys(env)) delete process.env[name];
+    }
+  });
+
   it('keeps a minted code when the install fails after minting, and reuses it on the retry', async () => {
     // Attempt 1: mint, then fail at hub up.
     mocks.installNode.mockImplementationOnce(async (node: { name: string }, opts: InstallOpts) => {
