@@ -3031,7 +3031,7 @@ describe('PoolProxyService', () => {
         ollamaSlots?: unknown;
         maxPromptTokens?: number;
         hardwareTier?: string;
-        backend?: 'ollama' | 'vllm';
+        backend?: 'ollama' | 'vllm' | 'llamacpp';
       } = {},
     ): HubPoolPeer {
       return mockPeer({
@@ -3045,7 +3045,7 @@ describe('PoolProxyService', () => {
             ...('ollamaSlots' in options ? { ollamaSlots: options.ollamaSlots as number } : {}),
             ...(options.maxPromptTokens === undefined ? {} : { maxPromptTokens: options.maxPromptTokens }),
           }),
-          ...(options.backend === 'vllm' ? { backends: [{ type: 'vllm', healthy: true, modelsLoaded: [MODEL] }] } : {}),
+          ...(options.backend && options.backend !== 'ollama' ? { backends: [{ type: options.backend, healthy: true, modelsLoaded: [MODEL] }] } : {}),
         } as unknown as Record<string, unknown>,
       });
     }
@@ -3141,13 +3141,48 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
       });
 
-      it('judges Ollama only: a vLLM candidate on a node that states slots keeps its place', async () => {
+      it('judges Ollama and llama-server only: a vLLM candidate on a node that states slots keeps its place', async () => {
         peerService.listConnectedPeers.mockResolvedValue([
           node('vllm-node', { inFlightRequests: 2, ollamaSlots: 2, backend: 'vllm' }),
           node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
         ]);
 
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['vllm-node', 'core-2']);
+      });
+
+      it("judges a peer's llama-server by the node's stated slots — the fleet writes them from the same -np", async () => {
+        // core-6 after `cihub fleet backends --backends llamacpp --ollama-parallel 2`: a 2-slot
+        // llama-server, both slots busy, ranked ahead of a 4-slot node with one free.
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('core-6', { inFlightRequests: 2, ollamaSlots: 2, backend: 'llamacpp' }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'core-6']);
+      });
+
+      it("judges THIS node's llama-server by its own /props, ahead of the operator's statement", async () => {
+        // The statement says 4 (Ollama's), the engine says 2 (its own -np); two in flight fill it.
+        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        llamacpp.engineCapabilities.mockReturnValue({ slots: 2, contextLength: 32768 });
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 4 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        const candidates = await service.buildCandidateList(MODEL);
+        expect(candidates.map((candidate) => `${candidate.peerId ?? 'local'}/${candidate.backend}`)).toEqual(['core-2/ollama', 'local/llamacpp']);
+      });
+
+      it("falls back to the node's statement for a local llama-server whose /props was not read", async () => {
+        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        llamacpp.engineCapabilities.mockReturnValue(null);
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId ?? 'local')).toEqual(['core-2', 'local']);
       });
 
       it('counts the requests this node forwarded a peer since its snapshot, so a burst fills its slots here before the peer reports it', async () => {

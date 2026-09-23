@@ -6,6 +6,7 @@ import type { Response } from 'express';
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import type { EngineCapabilities } from '@/modules/inference/backends/backend.interface';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -745,18 +746,28 @@ export interface SlotOccupancy {
 }
 
 /**
- * Judge each Ollama candidate's known queue depth against the slot count its node advertised
- * (`inferenceOllamaSlots`, the operator's statement of `OLLAMA_NUM_PARALLEL`). `demoted` is the set
- * of candidates whose queue already fills their slots, to be moved behind every candidate that still
- * has one free — because past that point Ollama queues the request behind the engine rather than
- * serving it (measured 2026-09-21: 5–10 s to the first token on a full 2-slot node while 4-slot nodes
- * sat idle).
+ * The engines whose concurrency IS a slot count the pool can place against: Ollama, by its
+ * operator's statement (`inferenceOllamaSlots`), and llama-server, which runs `-np` slots and says
+ * so on `/props` (`total_slots`) — a local one is read from its own statement, a peer's through the
+ * node's `ollamaSlots`, which `cihub fleet backends --backends llamacpp` writes from the same
+ * number. Every other engine keeps its place, as before slots existed.
+ */
+export const SLOT_STATED_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama', 'llamacpp']);
+
+/**
+ * Judge each Ollama or llama-server candidate's known queue depth against the slot count its node
+ * advertised (`inferenceOllamaSlots`, the operator's statement of `OLLAMA_NUM_PARALLEL`; for a local
+ * llama-server its own `total_slots`). `demoted` is the set of candidates whose queue already fills
+ * their slots, to be moved behind every candidate that still has one free — because past that point
+ * the engine queues the request behind itself rather than serving it (measured 2026-09-21: 5–10 s
+ * to the first token on a full 2-slot node while 4-slot nodes sat idle).
  *
  * The rules are the prompt ceiling's and the throughput placement's, because the risk is the same —
  * a preference must never become a refusal:
  *
  * 1. **Unstated is neither full nor free.** A candidate whose node advertises no slot count, or whose
- *    engine is not Ollama, is never demoted and keeps its place relative to the ones that are not.
+ *    engine is not one of {@link SLOT_STATED_BACKENDS}, is never demoted and keeps its place relative
+ *    to the ones that are not.
  * 2. **Demoted, never removed**, so failover still reaches a full node when every free one fails.
  * 3. **All full means nothing moves.** When every candidate is at or over its slots, `demoted` is
  *    empty, the ranker's order stands, and `overridden: true` says so.
@@ -1456,7 +1467,13 @@ export class PoolProxyService {
     const peerCaps = new Map<string, number | null>(
       peers.map((peer) => [peer.id, clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx)]),
     );
-    const capOf = (candidate: PoolCandidate) => (candidate.peerId === null ? localCap : (peerCaps.get(candidate.peerId) ?? null));
+    // A local engine that states its own per-slot window (llama-server's `/props`) is believed over
+    // the node-wide statement: the statement describes Ollama, and a window the engine itself runs
+    // is exactly what the cap exists to keep a request inside.
+    const capOf = (candidate: PoolCandidate) =>
+      candidate.peerId === null
+        ? (clampContextCap(this.localEngineStatement(candidate.backend)?.contextLength) ?? localCap)
+        : (peerCaps.get(candidate.peerId) ?? null);
     if (!ordered.some((candidate) => capOf(candidate) !== null)) {
       return { preferred: ordered, overCap: [], decision: null };
     }
@@ -1503,10 +1520,14 @@ export class PoolProxyService {
     const result = applySlotPlacement(
       ranked.map((entry) => entry.candidate),
       (candidate) => {
-        if (candidate.backend !== 'ollama') {
+        if (!SLOT_STATED_BACKENDS.has(candidate.backend)) {
           return null;
         }
-        const slots = candidate.peerId === null ? localSlots : (peerSlots.get(candidate.peerId) ?? null);
+        // Same precedence as the cap: a local engine's own slot count first, the node's statement after.
+        const slots =
+          candidate.peerId === null
+            ? (clampOllamaSlots(this.localEngineStatement(candidate.backend)?.slots) ?? localSlots)
+            : (peerSlots.get(candidate.peerId) ?? null);
         const inFlight = inFlightOf.get(candidate);
         return slots === null || inFlight === undefined ? null : { inFlight, slots };
       },
@@ -1521,6 +1542,16 @@ export class PoolProxyService {
       );
     }
     return result;
+  }
+
+  /**
+   * What a local engine says about its own slots and per-slot context, from its last health probe
+   * (`InferenceBackend.engineCapabilities`) — never a request of its own, since this runs while
+   * ranking every request. `null` for every engine that does not state them, which is all but
+   * llama-server today.
+   */
+  private localEngineStatement(backend: InferenceBackendType): EngineCapabilities | null {
+    return this.backends.tryGet(backend)?.engineCapabilities?.() ?? null;
   }
 
   /**

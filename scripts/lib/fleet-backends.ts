@@ -43,9 +43,25 @@ import {
   ollamaRuntimeApplyShell,
   RUNTIME_DROPIN,
 } from './fleet-ollama-runtime.js';
-import { classifyProbeFirewallOutput, probeFirewallApplyShell } from './fleet-probe-firewall.js';
+import {
+  classifyHubLlamacppUrlOutput,
+  classifyLlamacppApplyOutput,
+  HUB_LLAMACPP_URL,
+  hubLlamacppUrlShell,
+  LLAMACPP_DEFAULT_CONTEXT,
+  LLAMACPP_DEFAULT_PARALLEL,
+  LLAMACPP_FLEET_PORT,
+  LLAMACPP_UNIT,
+  llamacppApplyShell,
+  llamacppFlavour,
+  llamacppImage,
+  type LlamacppServerIdentity,
+  type LlamacppSpec,
+  isSafeOllamaTag,
+} from './fleet-llamacpp.js';
+import { classifyProbeFirewallOutput, HUB_PROBE_PORTS, probeFirewallApplyShell } from './fleet-probe-firewall.js';
 
-export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade'] as const;
+export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade', 'llamacpp'] as const;
 export type InstallableBackend = (typeof INSTALLABLE_BACKENDS)[number];
 
 export interface BackendPlan {
@@ -65,6 +81,8 @@ export interface BackendPlan {
    * not reported done until `/api/version` on the node answers with this number.
    */
   pinnedVersion?: string;
+  /** The llama-server the script brings up, for the apply classifier and the Hub half that follow it. */
+  llamacpp?: LlamacppSpec;
 }
 
 /** Per-run choices that change what a plan installs, as opposed to whether it can. */
@@ -77,6 +95,26 @@ export interface BackendPlanOptions {
   ollamaBind?: OllamaBindMode;
   /** Overrides {@link OLLAMA_PINNED_VERSION} for this run. Validated by `resolveOllamaVersion`. */
   ollamaVersion?: string;
+  /**
+   * What `llamacpp` should serve, decided per node before planning (the default model is the node's
+   * own Hub's answer, which takes a round trip). Absent when the backend was not named: llama-server
+   * holds a whole model in memory beside Ollama's, so it is never installed by a run that did not ask.
+   */
+  llamacpp?: LlamacppPlanOptions;
+}
+
+/** The per-node inputs a llamacpp plan is rendered from. */
+export interface LlamacppPlanOptions {
+  /** `--llamacpp-model`, or the node's own auto model. Absent with `modelError` set when neither could be had. */
+  model?: string;
+  /** Why no model: the plan becomes a skip that quotes it. */
+  modelError?: string;
+  /** Where the model came from, for the plan line. */
+  modelWhy?: string;
+  /** `-np`, from `--ollama-parallel`; the measured default otherwise. */
+  parallel?: number;
+  /** Per-slot window, from `--ollama-context`; the measured default otherwise. `-c` is the product. */
+  contextLength?: number;
 }
 
 export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'all';
@@ -90,8 +128,15 @@ export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'all';
  * a visibly wrong plan on the first live run: every node running lucebox on :8000 was reported as
  * "adopt mtplx", a backend not installed anywhere on this fleet.
  */
-const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['ollama', 'lemonade', 'dspark']);
+const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['ollama', 'lemonade', 'dspark', 'llamacpp']);
 
+/**
+ * llamacpp's :8081 is unambiguous too — nothing else defaults there, which is why the fleet chose
+ * it over llama-server's own 8080 (dspark's, and Traefik's dashboard on every appliance). Its
+ * listener is still fingerprinted, because the host probe can: a server there that names another
+ * engine on `/v1/models` is refused rather than adopted, and one whose unit is this CLI's own is
+ * converged rather than adopted, so a changed model or flag reaches it. See {@link planLlamacpp}.
+ */
 const PORTS: Record<InstallableBackend, number> = {
   ollama: 11434,
   lemonade: 13305,
@@ -99,6 +144,7 @@ const PORTS: Record<InstallableBackend, number> = {
   mtplx: 8000,
   vllm: 8002,
   lucebox: 8000,
+  llamacpp: LLAMACPP_FLEET_PORT,
 };
 
 /**
@@ -279,6 +325,10 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
   const port = PORTS[backend];
   const bind = opts.ollamaBind ?? DEFAULT_OLLAMA_BIND;
 
+  // Its listener is fingerprinted and its own unit converged, neither of which the port-only
+  // adoption below can express.
+  if (backend === 'llamacpp') return planLlamacpp(facts, opts.llamacpp);
+
   // Adoption first, where the evidence actually supports it. Cheap, and makes re-running safe.
   if (facts.enginesListening.includes(port)) {
     if (UNAMBIGUOUS_PORT_BACKENDS.has(backend)) {
@@ -386,6 +436,121 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
   }
 }
 
+/** The spec a llamacpp plan renders from, once the node's facts and the run's flags are known. */
+export function llamacppSpecFor(facts: HostFacts, opts: LlamacppPlanOptions & { model: string }): LlamacppSpec {
+  return {
+    flavour: llamacppFlavour(facts).flavour,
+    model: opts.model,
+    parallel: opts.parallel ?? LLAMACPP_DEFAULT_PARALLEL,
+    contextLength: opts.contextLength ?? LLAMACPP_DEFAULT_CONTEXT,
+  };
+}
+
+/**
+ * llama-server as a systemd-managed container on `:8081`, serving the GGUF Ollama already holds —
+ * see `fleet-llamacpp.ts` for the measurements and the four decisions.
+ *
+ * Only when named. Unlike every other backend here, this one holds a whole model in memory beside
+ * Ollama's copy, so a run that did not say `--backends llamacpp` reports what is there and installs
+ * nothing — and adopts only a server that NAMED itself `llamacpp` on `/v1/models`, because a plan
+ * line that reads "adopted" is read by the caller as "there is a llama-server here". An unnamed
+ * listener on the port is reported as exactly that. (The Hub half — `LLAMACPP_URL` and a `ci-hub`
+ * recreate — is gated in `cli-fleet.ts` on the backend being named in the run, whatever this
+ * returns.) The gates are lucebox's (Linux, a usable Docker) plus the model: a tag Ollama has not
+ * pulled, or a Hub that cannot name its auto model, is a skip that says which. The listener on the
+ * port is read three ways — this CLI's own unit (converge: the apply shell rewrites the unit only if
+ * its bytes differ, and restarts only then), a server that names itself `llamacpp` (adopt, nothing
+ * installed), anything else that names itself (refuse: it is not ours to fight for the port).
+ */
+function planLlamacpp(facts: HostFacts, opts: LlamacppPlanOptions | undefined): BackendPlan {
+  const backend = 'llamacpp' as const;
+  const port = LLAMACPP_FLEET_PORT;
+  const listening = facts.enginesListening.includes(port);
+  const owner = facts.engineOwners?.[port];
+  const unit = facts.managedUnits?.[LLAMACPP_UNIT];
+  const ours = unit === 'active' || unit === 'activating';
+
+  if (listening && owner && owner !== 'llamacpp') {
+    return {
+      backend,
+      action: 'skip',
+      why: `:${port} is in use by a server naming itself "${owner}" on /v1/models — not llama-server; free the port or run it elsewhere`,
+      port,
+    };
+  }
+  if (!opts) {
+    // Not named in this run: report, never install, and adopt only on the server's own word.
+    const converge = 'name it with --backends llamacpp to converge its model and flags';
+    if (listening && owner === 'llamacpp') {
+      return {
+        backend,
+        action: 'adopt',
+        why: ours
+          ? `${LLAMACPP_UNIT} is ${unit} and answers on :${port} (owned_by llamacpp) — left as it is; ${converge}`
+          : `already answering on :${port} (owned_by llamacpp) — adopted, nothing installed`,
+        port,
+      };
+    }
+    if (listening) {
+      return {
+        backend,
+        action: 'skip',
+        why: `something answers on :${port} but does not name itself llamacpp on /v1/models — not adopted${ours ? ` (${LLAMACPP_UNIT} is ${unit}; a llama-server still loading names nothing yet)` : ''}`,
+        port,
+      };
+    }
+    if (ours)
+      return { backend, action: 'skip', why: `${LLAMACPP_UNIT} is ${unit} but nothing answers on :${port} yet — not adopted; ${converge}`, port };
+    return { backend, action: 'skip', why: 'installed only when named: pass --backends llamacpp — it holds a model in memory beside Ollama', port };
+  }
+  if (facts.os !== 'linux') {
+    return { backend, action: 'skip', why: `the container path is Linux-only; on ${facts.os} run llama-server yourself and set LLAMACPP_URL`, port };
+  }
+  if (!facts.docker.usable) {
+    return {
+      backend,
+      action: 'skip',
+      why: facts.docker.present
+        ? 'docker is installed but `docker info` failed — daemon down, or this account lacks access'
+        : 'requires a working Docker engine; none present',
+      port,
+    };
+  }
+  if (listening && !ours) {
+    // Somebody else's llama-server (or one still loading, which names nothing yet). A managed unit
+    // would fight it for the port; adopting it is what the fleet does with a hand-started Ollama.
+    return {
+      backend,
+      action: 'adopt',
+      why: `already answering on :${port}${owner ? ' (owned_by llamacpp)' : ` (a llama-server not run by ${LLAMACPP_UNIT})`} — adopted, nothing installed`,
+      port,
+    };
+  }
+  if (!opts.model) {
+    return {
+      backend,
+      action: 'skip',
+      why: opts.modelError ?? 'no model named and none could be resolved — pass --llamacpp-model <ollama-tag>',
+      port,
+    };
+  }
+  if (!isSafeOllamaTag(opts.model)) {
+    return { backend, action: 'skip', why: `'${opts.model}' is not an Ollama tag this CLI will put in a unit file`, port };
+  }
+  const spec = llamacppSpecFor(facts, { ...opts, model: opts.model });
+  const gpu = llamacppFlavour(facts);
+  const verb = ours ? `converging ${LLAMACPP_UNIT} (restart only if its unit changes)` : `installing ${LLAMACPP_UNIT}`;
+  return {
+    backend,
+    action: 'install',
+    why: `${gpu.why} — ${verb}: ${llamacppImage(spec.flavour)} serving Ollama's ${spec.model}${opts.modelWhy ? ` (${opts.modelWhy})` : ''} as ${spec.parallel} × ${spec.contextLength} (-np ${spec.parallel} -c ${spec.parallel * spec.contextLength}) on :${port}`,
+    script: llamacppApplyShell(spec),
+    port,
+    needsSudo: true,
+    llamacpp: spec,
+  };
+}
+
 /** Plan every backend for one machine, in a stable order. */
 export function planAllBackends(
   facts: HostFacts,
@@ -420,6 +585,8 @@ export interface BackendInstallResult {
   /** Trailing output, bounded. Enough to diagnose, short enough to print for fourteen nodes. */
   detail?: string;
   ms?: number;
+  /** What the llama-server read back after a llamacpp install: the alias, and the slots × context on `/props`. */
+  llamacpp?: LlamacppServerIdentity;
 }
 
 /**
@@ -495,7 +662,17 @@ export async function executeBackendPlan(target: SshTarget, plan: BackendPlan, t
       };
     }
   }
-  if (result.ok && result.out.includes(`${plan.backend}-install-complete`)) {
+  if (plan.backend === 'llamacpp' && plan.llamacpp) {
+    // Markers, like Ollama's bind: "unchanged" is an outcome of its own (nothing restarted, reported
+    // as adopted), and "complete" alone is never success — the server has to answer, name itself and
+    // read back the requested shape before the line says installed.
+    const applied = classifyLlamacppApplyOutput(result.out, result.err, plan.llamacpp);
+    if (applied.outcome === 'applied') return { backend: plan.backend, outcome: 'installed', why: applied.why, ms, llamacpp: applied.server };
+    if (applied.outcome === 'unchanged') return { backend: plan.backend, outcome: 'adopted', why: applied.why, ms, llamacpp: applied.server };
+    if (applied.outcome === 'failed')
+      return { backend: plan.backend, outcome: 'failed', why: applied.why, detail: applied.detail ?? tail(result.err || result.out), ms };
+    // Incomplete: fall through to the sudo and exit-code diagnoses below.
+  } else if (result.ok && result.out.includes(`${plan.backend}-install-complete`)) {
     return { backend: plan.backend, outcome: 'installed', why: plan.why, detail: tail(result.out), ms };
   }
   // `sudo -n` refusing is the single most likely failure on a fresh node, and its message is
@@ -677,6 +854,26 @@ export async function applyHubContextCap(
 
 // ─── Firewall rules for the Hub's engine probes ─────────────────────────────
 
+/**
+ * The ports the firewall step admits the Docker bridges to on one node: the Hub's fixed probe
+ * list, plus llama-server's `:8081` only where the Hub will probe it. The Hub probes `LLAMACPP_URL`
+ * only when it is set, and this CLI sets it on a node where the backend was named in the run or its
+ * unit already runs — so on every other node an allow for `:8081` would be a rule nothing ever
+ * matches, and a fleet-wide "would add 1 rule" nobody asked for. Where it IS set the rule matters
+ * exactly when the server is down: a running unit's published port is DNATed before ufw sees it,
+ * but with nothing published the probe hits INPUT and a silent DROP costs 5 s per pooled request.
+ */
+export function hubProbePortsFor(facts: HostFacts, llamacppNamed: boolean): number[] {
+  const unit = facts.managedUnits?.[LLAMACPP_UNIT];
+  const installed = unit === 'active' || unit === 'activating';
+  const ports = [...HUB_PROBE_PORTS];
+  if (!llamacppNamed && !installed) return ports;
+  // In numeric place, so the plan line reads `:8080, :8081, :8216` beside the fixed list's own order.
+  const at = ports.findIndex((p) => p > LLAMACPP_FLEET_PORT);
+  ports.splice(at < 0 ? ports.length : at, 0, LLAMACPP_FLEET_PORT);
+  return ports;
+}
+
 export interface ProbeFirewallResult {
   outcome: 'applied' | 'present' | 'skipped' | 'failed';
   why: string;
@@ -727,4 +924,32 @@ export async function applyProbeFirewall(target: SshTarget, ports: readonly numb
         ms,
       };
   }
+}
+
+// ─── LLAMACPP_URL on the node's Hub ─────────────────────────────────────────
+
+export type HubLlamacppUrlResult = ReturnType<typeof classifyHubLlamacppUrlOutput> & { ms?: number };
+
+/**
+ * Point the node's Hub at the llama-server just installed or adopted: `LLAMACPP_URL` in the env
+ * file compose reads, and `ci-hub` recreated so it starts with it (see `hubLlamacppUrlShell` for
+ * why that is the way, and why the file is the one the container names). Unprivileged, like the
+ * cap step. Nothing is recreated on a Hub already running with the URL, so a re-run is a no-op.
+ */
+export async function applyHubLlamacppUrl(target: SshTarget, url: string = HUB_LLAMACPP_URL, timeoutMs = 4 * 60_000): Promise<HubLlamacppUrlResult> {
+  const command = `bash <<'CIHUB_HUB_LLAMACPP_URL_EOF'\n${hubLlamacppUrlShell(url)}\nCIHUB_HUB_LLAMACPP_URL_EOF`;
+  const started = Date.now();
+  const result = await sshCapture(target, command, timeoutMs);
+  const ms = Date.now() - started;
+  if (!result.ok && !result.out.includes('hub-llamacpp-url-')) {
+    return {
+      outcome: 'failed',
+      why:
+        result.code === null
+          ? `no answer from the node within ${Math.round(timeoutMs / 1000)} s`
+          : describeSshFailure(classifySshFailure(result), target.host),
+      ms,
+    };
+  }
+  return { ...classifyHubLlamacppUrlOutput(result.out, result.err, url), ms };
 }
