@@ -36,6 +36,7 @@ import {
 } from './fleet-cihub-binary.js';
 import { tailscaleCertStep } from './fleet-tailscale-cert.js';
 import { gatePreflight, preflightNode } from './fleet-preflight.js';
+import { classifyPairingFailure, type PairingCodeOutcome } from './fleet-pairing-codes.js';
 
 export interface InstallStep {
   name: string;
@@ -252,13 +253,30 @@ export function describeStepFailure(out: string, err: string, outcome?: { code: 
   return outcome.code === null ? 'killed before it printed anything' : `exited ${outcome.code} with nothing on stdout or stderr`;
 }
 
-async function step(name: string, target: SshTarget, script: string, marker: string, timeoutMs: number): Promise<InstallStep> {
+/**
+ * A step, plus what the node actually said. `describeStepFailure` keeps three lines of the output at
+ * most, and whether a pairing code was refused or spent is decided by lines it may well drop.
+ */
+async function stepWithOutput(
+  name: string,
+  target: SshTarget,
+  script: string,
+  marker: string,
+  timeoutMs: number,
+): Promise<{ step: InstallStep; out: string; err: string }> {
   const started = Date.now();
   const heredoc = `bash <<'CIHUB_STEP_EOF'\n${script}\nCIHUB_STEP_EOF`;
   const res = await sshCapture(target, heredoc, timeoutMs);
   const ms = Date.now() - started;
-  if (res.ok && res.out.includes(marker)) return { name, ok: true, detail: tail(res.out, 1), ms };
-  return { name, ok: false, detail: describeStepFailure(res.out, res.err, { code: res.code, marker }), ms };
+  const step: InstallStep =
+    res.ok && res.out.includes(marker)
+      ? { name, ok: true, detail: tail(res.out, 1), ms }
+      : { name, ok: false, detail: describeStepFailure(res.out, res.err, { code: res.code, marker }), ms };
+  return { step, out: res.out, err: res.err };
+}
+
+async function step(name: string, target: SshTarget, script: string, marker: string, timeoutMs: number): Promise<InstallStep> {
+  return (await stepWithOutput(name, target, script, marker, timeoutMs)).step;
 }
 
 export interface InstallOptions {
@@ -274,6 +292,14 @@ export interface InstallOptions {
   mintPairingCode?: () => Promise<{ code: string; detail: string }>;
   /** Called once `register` has verifiably succeeded, so a kept code can be forgotten. */
   onRegistered?: () => void;
+  /**
+   * `register` failed over the code itself. Return a replacement to try once more, or throw to say
+   * why there is none — either way the code just sent is gone, and the caller must stop keeping it.
+   *
+   * Called at most once per node, and only for a failure `classifyPairingFailure` recognises: a
+   * `hub up` that died before `register` leaves the code unspent and never reaches here.
+   */
+  replacePairingCode?: (outcome: PairingCodeOutcome) => Promise<{ code: string; detail: string } | undefined>;
   /** Where the `cihub` binary comes from when the node needs one. Absent: adopt or fail. */
   cihubBinary?: CihubBinarySource;
   /** Per-run cache of downloaded assets, keyed by asset name, shared across nodes. */
@@ -449,9 +475,41 @@ export async function installNode(
   }
 
   // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
-  const up = await step('hub up + register', target, bringUpScript(opts.postgresPassword, pairingCode), 'hub-up-complete', 20 * 60_000);
-  steps.push(up);
-  if (!up.ok) return { node: node.name, ok: false, steps };
+  let up = await stepWithOutput('hub up + register', target, bringUpScript(opts.postgresPassword, pairingCode), 'hub-up-complete', 20 * 60_000);
+
+  // A code Portal has refused is dead for good, and a run that keeps handing the same one back can
+  // never finish: on 2026-09-22 fifteen nodes failed on one 410 apiece, three runs in a row, because
+  // nothing read the refusal (CI-Hub#1582). One replacement, asked for only when the failure was
+  // about the code — a caller that cannot get one throws, and its reason becomes this node's line.
+  if (!up.step.ok && opts.replacePairingCode) {
+    const outcome = classifyPairingFailure(`${up.err}\n${up.out}\n${up.step.detail}`);
+    if (outcome) {
+      steps.push(up.step);
+      let replacement: { code: string; detail: string } | undefined;
+      let refused = '';
+      try {
+        replacement = await opts.replacePairingCode(outcome);
+      } catch (error) {
+        refused = error instanceof Error ? error.message : String(error);
+      }
+      if (!replacement) {
+        steps.push({ name: 'replacement code', ok: false, detail: refused || `${outcome.why}, and no replacement was available` });
+        return { node: node.name, ok: false, steps };
+      }
+      steps.push({ name: 'replacement code', ok: true, detail: `${outcome.why}; ${replacement.detail}` });
+      // The image and every infra container are on the node by now, so this is the register alone.
+      up = await stepWithOutput(
+        'hub up + register (retry)',
+        target,
+        bringUpScript(opts.postgresPassword, replacement.code),
+        'hub-up-complete',
+        20 * 60_000,
+      );
+    }
+  }
+
+  steps.push(up.step);
+  if (!up.step.ok) return { node: node.name, ok: false, steps };
   opts.onRegistered?.();
 
   // Registered is not claimed. Without this the node comes up paired, keyed, and answering 409
