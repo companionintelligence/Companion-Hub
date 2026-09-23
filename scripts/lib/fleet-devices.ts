@@ -25,7 +25,10 @@ export interface PortalDevice {
 }
 
 export function requireManageLogin(login: PortalLogin | null | undefined): PortalLogin {
-  if (!login) throw new Error(`no Portal login stored; run: cihub login --scope ${DEVICE_MANAGE_SCOPE}`);
+  if (!login)
+    throw new Error(
+      `no Portal login stored; run: cihub login --scope ${DEVICE_MANAGE_SCOPE} (or set CI_PORTAL_TOKEN, CI_PORTAL_ORG and CI_PORTAL_SCOPE=${DEVICE_MANAGE_SCOPE})`,
+    );
   if (loginScope(login) !== DEVICE_MANAGE_SCOPE) {
     throw new Error(`the stored Portal login has scope ${loginScope(login)}; managing devices needs: cihub login --scope ${DEVICE_MANAGE_SCOPE}`);
   }

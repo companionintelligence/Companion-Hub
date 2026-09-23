@@ -22,7 +22,9 @@ import {
   loginScope,
   mintPairingCode,
   CATALOG_WRITE_SCOPE,
+  DEVICE_MANAGE_SCOPE,
   DEVICE_PAIR_SCOPE,
+  portalLoginFromEnv,
   type PortalLogin,
 } from '../lib/catalog-submit';
 import { renderHelp, stripAnsi } from '../cihub-cli';
@@ -212,6 +214,49 @@ describe('stored login file', () => {
     });
 
     expect(readStoredLogin(filePath)).toBeNull();
+  });
+});
+
+describe('login from the environment', () => {
+  it('is absent without CI_PORTAL_TOKEN, so the stored login still applies', () => {
+    expect(portalLoginFromEnv({})).toBeNull();
+    expect(portalLoginFromEnv({ CI_PORTAL_ORG: 'org-1', CI_PORTAL_TOKEN: '   ' })).toBeNull();
+  });
+
+  it('builds a full login from the variables cihub submit already reads, plus the scope', () => {
+    expect(
+      portalLoginFromEnv({
+        CI_PORTAL_TOKEN: 'cio_abc',
+        CI_PORTAL_ORG: 'org-1',
+        CI_PORTAL_ORG_SLUG: 'demopool1',
+        CI_PORTAL_SCOPE: DEVICE_MANAGE_SCOPE,
+        CI_CLOUD_URL: 'https://hub.ci.computer/',
+      }),
+    ).toEqual({ token: 'cio_abc', orgId: 'org-1', orgSlug: 'demopool1', portalOrigin: 'https://hub.ci.computer', scope: DEVICE_MANAGE_SCOPE });
+  });
+
+  it('prefers CI_PORTAL_ORIGIN over CI_CLOUD_URL, like every other Portal call', () => {
+    const login = portalLoginFromEnv({
+      CI_PORTAL_TOKEN: 't',
+      CI_PORTAL_ORG: 'o',
+      CI_PORTAL_ORIGIN: 'https://a.test',
+      CI_CLOUD_URL: 'https://b.test',
+    });
+    expect(login?.portalOrigin).toBe('https://a.test');
+  });
+
+  it('reads an unstated scope as catalog:write, exactly as a stored login that predates scopes', () => {
+    const login = portalLoginFromEnv({ CI_PORTAL_TOKEN: 't', CI_PORTAL_ORG: 'o' });
+    expect(login?.scope).toBeUndefined();
+    expect(loginScope(login)).toBe(CATALOG_WRITE_SCOPE);
+  });
+
+  it('refuses a token with no organization rather than borrowing the stored one', () => {
+    expect(() => portalLoginFromEnv({ CI_PORTAL_TOKEN: 't' })).toThrow(/CI_PORTAL_ORG/);
+  });
+
+  it('refuses a scope Portal does not issue', () => {
+    expect(() => portalLoginFromEnv({ CI_PORTAL_TOKEN: 't', CI_PORTAL_ORG: 'o', CI_PORTAL_SCOPE: 'device:admin' })).toThrow(/CI_PORTAL_SCOPE/);
   });
 });
 

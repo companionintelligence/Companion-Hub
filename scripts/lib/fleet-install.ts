@@ -98,6 +98,51 @@ export function shouldAdoptExistingCihub(
   return { adopt: false, why: `${existing.version} is older than ${wantedVersion}; replacing it`, compared: true };
 }
 
+/** Where a node's Hub reads CI_CLOUD_URL, printed as `ci-cloud-url=<value>` (empty when unset). */
+export function nodePortalUrlScript(): string {
+  return [
+    'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    'url="$(grep -h \'^CI_CLOUD_URL=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2-)"',
+    'echo "ci-cloud-url=$url"',
+    'echo "ci-cloud-url-file=$env_file"',
+  ].join('\n');
+}
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url.trim()).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why a code minted on `mintOrigin` cannot pair a Hub that talks to `nodeUrl`, or `null` when it
+ * can — or when the node's URL is unknown, which is not evidence of a mismatch.
+ *
+ * `cihub`'s default Portal is the dev tier while a release Hub defaults to production, so the two
+ * disagree by default, and nothing downstream says so: Portal answers the redeeming call with the
+ * same 410 it gives a mistyped code. Every attempt also resets the node's registration first.
+ */
+export function portalOriginMismatch(nodeUrl: string | undefined, mintOrigin: string): string | null {
+  const node = nodeUrl ? originOf(nodeUrl) : null;
+  const mint = originOf(mintOrigin);
+  if (!node || !mint || node === mint) return null;
+  return (
+    `this Hub pairs against ${node} (its CI_CLOUD_URL), but the code would be minted on ${mint} — ` +
+    `a code from one Portal is not in the other's database, so it would be refused 410 every time. ` +
+    `Mint on ${node}: CI_CLOUD_URL=${node} cihub login --scope device:manage, or set CI_PORTAL_ORIGIN=${node} with CI_PORTAL_TOKEN`
+  );
+}
+
+function portalOriginCheckLines(expectedPortalOrigin: string): string[] {
+  const expected = (originOf(expectedPortalOrigin) ?? expectedPortalOrigin).replace(/'/g, "'\\''");
+  return [
+    'hub_portal="$(grep -h \'^CI_CLOUD_URL=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- | sed \'s:/*$::\')"',
+    `if [ -n "$hub_portal" ] && [ "$hub_portal" != '${expected}' ]; then echo "hub-up-failed: portal-mismatch: this Hub pairs against $hub_portal, the code was minted on ${expected}" >&2; exit 1; fi`,
+  ];
+}
+
 /**
  * Bring the Hub stack up and register it with Portal.
  *
@@ -105,12 +150,18 @@ export function shouldAdoptExistingCihub(
  * otherwise, and there is no terminal here to answer. `cihub register --code` is non-interactive;
  * without `--code` it drops into a readline loop that would hang until the SSH budget expires.
  */
-export function bringUpScript(postgresPassword: string, pairingCode: string): string {
+export function bringUpScript(postgresPassword: string, pairingCode: string, expectedPortalOrigin?: string): string {
   return [
     'set -e',
     // Single-quoted heredoc-free assignment; the password never reaches argv, only the environment.
     `export CIHUB_POSTGRES_PASSWORD='${postgresPassword.replace(/'/g, "'\\''")}'`,
     'cihub up --detached',
+    'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    // A fresh node's `cihub up` seeds CI_CLOUD_URL from its own build, which need not be the Portal the
+    // code was minted on — and a code minted on one Portal is not in the other's database, so every
+    // `register` answers 410 PAIRING_CODE_INVALID after first resetting the node's registration.
+    // Checked here, after `up` wrote the file and before `register` touches anything.
+    ...(expectedPortalOrigin ? portalOriginCheckLines(expectedPortalOrigin) : []),
     // `register` now exits non-zero on failure, but the state check is what actually proves it —
     // an exit code says what the command believed, not what the Hub is.
     `cihub register --code '${pairingCode.replace(/'/g, "'\\''")}'`,
@@ -118,7 +169,6 @@ export function bringUpScript(postgresPassword: string, pairingCode: string): st
     // to 5003 once left this probe silent while the step reported success. An empty answer is a
     // failure now, and so is an answer that does not say registered — `registration/phase` is the
     // route that reports without sending a check-in.
-    'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
     'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
     'phase="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/api/registration/phase" || true)"',
     '[ -n "$phase" ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase after cihub up" >&2; exit 1; }',
@@ -290,6 +340,11 @@ export interface InstallOptions {
    * the code was never kept. Whatever this returns is what `register` sends.
    */
   mintPairingCode?: () => Promise<{ code: string; detail: string }>;
+  /**
+   * The Portal `mintPairingCode` mints on. Set, each node's own CI_CLOUD_URL is checked against it
+   * before anything is minted, and again after `cihub up` — see `portalOriginMismatch`.
+   */
+  portalOrigin?: string;
   /** Called once `register` has verifiably succeeded, so a kept code can be forgotten. */
   onRegistered?: () => void;
   /**
@@ -459,6 +514,18 @@ export async function installNode(
   // device's credential and Portal refuses a second device by the same name, so nothing above may
   // burn it, and nothing above did.
   let pairingCode = opts.pairingCode;
+  if (opts.mintPairingCode && opts.portalOrigin) {
+    // Before the mint, so a node that could never redeem the code does not leave a device in Portal.
+    // A node with no env file yet (never brought up) cannot answer; the check in `bringUpScript`
+    // catches that one once `cihub up` has written it.
+    const url = await sshCapture(target, nodePortalUrlScript(), 20_000);
+    const nodeUrl = url.out.match(/^ci-cloud-url=(.*)$/m)?.[1]?.trim();
+    const mismatch = portalOriginMismatch(nodeUrl, opts.portalOrigin);
+    if (mismatch) {
+      steps.push({ name: 'portal origin', ok: false, detail: mismatch });
+      return { node: node.name, ok: false, steps };
+    }
+  }
   if (opts.mintPairingCode) {
     try {
       const minted = await opts.mintPairingCode();
@@ -475,7 +542,13 @@ export async function installNode(
   }
 
   // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
-  let up = await stepWithOutput('hub up + register', target, bringUpScript(opts.postgresPassword, pairingCode), 'hub-up-complete', 20 * 60_000);
+  let up = await stepWithOutput(
+    'hub up + register',
+    target,
+    bringUpScript(opts.postgresPassword, pairingCode, opts.mintPairingCode ? opts.portalOrigin : undefined),
+    'hub-up-complete',
+    20 * 60_000,
+  );
 
   // A code Portal has refused is dead for good, and a run that keeps handing the same one back can
   // never finish: on 2026-09-22 fifteen nodes failed on one 410 apiece, three runs in a row, because
@@ -501,7 +574,7 @@ export async function installNode(
       up = await stepWithOutput(
         'hub up + register (retry)',
         target,
-        bringUpScript(opts.postgresPassword, replacement.code),
+        bringUpScript(opts.postgresPassword, replacement.code, opts.mintPairingCode ? opts.portalOrigin : undefined),
         'hub-up-complete',
         20 * 60_000,
       );
