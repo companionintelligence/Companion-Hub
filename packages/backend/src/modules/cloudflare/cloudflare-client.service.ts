@@ -27,6 +27,21 @@ export interface AppInfo {
   hostname?: string;
   originServerName?: string; // HTTP Host header sent to Traefik, such as `n8n-bdc.ci.lan`.
   /**
+   * This app has a custom domain bound and is STILL ANSWERING ON ITS PLATFORM
+   * HOSTNAME — the customer's domain is dark until the container is recreated.
+   *
+   * Reported so Companion Portal can stop badging such a domain `Live`, which is
+   * the state that made this failure invisible: DNS, certificate and tunnel all
+   * check out, and the app sends the visitor away anyway.
+   *
+   * ⚠ NARROWER THAN `pendingRestart`, deliberately. Every settings save raises
+   * that flag, and a Portal badge driven by it would claim a customer's domain
+   * was down each time an unrelated setting changed. Only this state justifies
+   * the claim. Absent on Hubs that predate the field, which is not `false` —
+   * the Portal must keep its previous reading rather than infer one.
+   */
+  customDomainPendingApply?: boolean;
+  /**
    * Distinguishes infrastructure entries that Companion Portal must preserve
    * across regular app synchronization.
    *

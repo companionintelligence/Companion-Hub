@@ -770,6 +770,7 @@ export class ExposureSyncService {
             orgSlug: orgInfo.slug,
             localDomain,
           }),
+          customDomainPendingApply: this.customDomainPendingApply(app),
         };
       });
 
@@ -1594,6 +1595,23 @@ export class ExposureSyncService {
    * @returns the apps whose revert this pass handed to `bindCustomDomainIntents`
    * because the Hub is still asking CI-Cloud for the hostname they just lost.
    */
+  /**
+   * Whether a bound custom domain is NOT being served yet.
+   *
+   * `pendingRestart` is the schema's own words for "this app's compose env is
+   * stale until it is restarted", and a bound domain only reaches the container
+   * through that env. So a bound domain plus a stale env is exactly the state
+   * where the customer's hostname is dark.
+   *
+   * Read from the row rather than from the diagnostics report on purpose: this
+   * runs inside the sync that BINDS the domain, and a report gathered before that
+   * write would still say the app has no custom domain at all — which is how an
+   * apply request arriving with its own delivery came to be ignored.
+   */
+  private customDomainPendingApply(app: { customDomain: string | null; pendingRestart: boolean }): boolean {
+    return normalizeStoredHostname(app.customDomain) !== null && app.pendingRestart;
+  }
+
   private async reconcileCustomDomains(params: {
     apps: Awaited<ReturnType<AppsRepository['getApps']>>;
     /** URNs of the apps included in this sync payload. See the skip rule below. */
@@ -1668,6 +1686,9 @@ export class ExposureSyncService {
       params.customDomains.flatMap((entry) => (entry.id ? [[normalizeHostname(entry.domain), entry.id] as const] : [])),
     );
 
+    /** Delivered bindings by the customer hostname, for reading `applyRequested`. */
+    const deliveredByDomain = new Map(params.customDomains.map((entry) => [normalizeHostname(entry.domain), entry] as const));
+
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
     const ambiguousDomains = collectAmbiguousCustomDomains(params.customDomains);
     /*
@@ -1684,6 +1705,8 @@ export class ExposureSyncService {
     const matchedTargets = new Set<string>();
     /** Reverts to dispatch, with the hostname each app lost. See the filter below. */
     const revertedApps: { appUrn: AppUrn; lostHostname: string }[] = [];
+    /** Apps an operator asked to start serving a domain they already hold. */
+    const applyRequestedAppUrns: AppUrn[] = [];
     /** Reverts the bind pass must decide on. See `stillPursuingCurrent` below. */
     const deferredRevertAppUrns: AppUrn[] = [];
 
@@ -1789,6 +1812,28 @@ export class ExposureSyncService {
       }
 
       if (next === current) {
+        /*
+         * Already bound. The only work left is to APPLY it — recreate the
+         * container so it answers on the customer's name — and that only happens
+         * when the operator asked for it in the connect flow.
+         *
+         * Gated on the Hub's own report rather than on `pendingRestart`: the raw
+         * flag is raised by any settings save, and acting on it here would
+         * restart an app whose domain is already serving, for a change that has
+         * nothing to do with the domain.
+         *
+         * `skipAutoRestartAppUrns` is honoured for the reason it exists — a save
+         * already owns this container's recreation, and doing it twice for one
+         * action is the hazard that flag was added to prevent.
+         */
+        const applyRequested = (current ? deliveredByDomain.get(current) : undefined)?.applyRequested === true;
+        const notServingYet = this.customDomainPendingApply(app);
+
+        if (applyRequested && notServingYet && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn)) {
+          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${current}; restarting it to apply that binding.`);
+          applyRequestedAppUrns.push(appUrn);
+        }
+
         continue;
       }
 
@@ -1896,6 +1941,24 @@ export class ExposureSyncService {
        * When the domain is genuinely gone the bind pass clears the intent and
        * performs this revert from there instead.
        */
+      /*
+       * A request can arrive on the SAME sync that first delivers the binding —
+       * in fact that is the ordinary case, because the operator answers in the
+       * connect flow and Companion Portal carries the answer as soon as the
+       * domain is ready. Handling it only on a later pass would leave the
+       * customer's domain dark for another poll interval for no reason.
+       *
+       * No "still not serving" check here: the binding is being written in this
+       * pass, so the environment necessarily still holds the old hostname.
+       */
+      if (next !== null && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn)) {
+        const requestedForNext = deliveredByDomain.get(normalizeHostname(next))?.applyRequested === true;
+        if (requestedForNext) {
+          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${next}; restarting it to apply that binding.`);
+          applyRequestedAppUrns.push(appUrn);
+        }
+      }
+
       const revertIsOurs = cloudDrivenChange && current !== null && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn);
       const stillPursuingCurrent = normalizeStoredHostname(app.customDomainIntent) === current;
       const restartingNow = revertIsOurs && !stillPursuingCurrent;
@@ -1984,6 +2047,17 @@ export class ExposureSyncService {
     const revertedAppUrns = revertedApps.filter((entry) => !domainsOnMovedTargets.has(entry.lostHostname)).map((entry) => entry.appUrn);
     if (revertedAppUrns.length > 0) {
       await this.restartRevertedApps(revertedAppUrns);
+    }
+
+    /*
+     * Apply requests go through the same dispatcher as reverts: one place decides
+     * that a container is recreated for a custom-domain reason, so the two
+     * directions cannot race each other over the same app. An app already
+     * restarting as a revert is filtered out rather than queued twice.
+     */
+    const toApply = applyRequestedAppUrns.filter((appUrn) => !revertedAppUrns.includes(appUrn));
+    if (toApply.length > 0) {
+      await this.restartRevertedApps(toApply);
     }
 
     // Re-attempt reverts whose dispatch failed earlier. Their rows are already
