@@ -7,12 +7,18 @@ import { useTranslation } from 'react-i18next';
 
 interface InstalledApp {
   info: Pick<AppInfo, 'urn' | 'name'>;
-  app: { id: number; status: AppStatus; config?: Record<string, unknown> };
+  app: { id: number; status: AppStatus; config?: Record<string, unknown>; pendingRestart?: boolean };
 }
 
 interface HorizontalAppListProps {
   apps: InstalledApp[];
   isLoading?: boolean;
+  /**
+   * URN to the custom domain that stays dark until that app restarts. Keyed rather
+   * than carried on the app row because it is the narrowed diagnostic, not the raw
+   * `pendingRestart` flag every settings change raises.
+   */
+  customDomainsAwaitingRestart?: Record<string, string>;
 }
 
 const SKELETON_KEYS = Array.from({ length: CATALOG_PAGE_SIZE }, (_, i) => `installed-skeleton-${i}`);
@@ -25,7 +31,7 @@ const APP_GRID_STYLE = {
   alignContent: 'start',
 } as const;
 
-export const HorizontalAppList = ({ apps, isLoading = false }: HorizontalAppListProps) => {
+export const HorizontalAppList = ({ apps, isLoading = false, customDomainsAwaitingRestart }: HorizontalAppListProps) => {
   const { t } = useTranslation();
 
   // A urn identifies an installed app exactly once, so it — not `app.id` — is the tile's identity.
@@ -92,6 +98,8 @@ export const HorizontalAppList = ({ apps, isLoading = false }: HorizontalAppList
                 status={app.status}
                 isInstalling={app.status === 'installing'}
                 installConfig={app.config}
+                pendingRestart={app.pendingRestart}
+                customDomainAwaitingRestart={customDomainsAwaitingRestart?.[info.urn]}
               />
             </Link>
           );

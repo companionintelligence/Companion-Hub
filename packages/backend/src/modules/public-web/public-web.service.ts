@@ -29,6 +29,16 @@ export interface PublicWebDiagnosticEntry {
    * an `envMismatch` here is a scheduled change rather than drift.
    */
   pendingRestart: boolean;
+  /**
+   * THE ONE STATE A CUSTOMER CAN SEE AND NOBODY IS TOLD ABOUT: a custom domain is
+   * bound, and this app is still answering on its platform hostname. Their domain
+   * is dark until someone restarts the app.
+   *
+   * Narrower than `pendingRestart`, which any settings change raises. A surface
+   * that promises "your domain will not serve" must key on this, or it makes that
+   * claim every time an unrelated setting is saved and stops being read.
+   */
+  awaitingCustomDomainRestart: boolean;
 }
 
 export interface PublicWebDiagnosticsResponse {
@@ -158,6 +168,7 @@ export class PublicWebService {
         action,
         customDomain,
         pendingRestart: app.pendingRestart,
+        awaitingCustomDomainRestart: awaitingScheduledRestart,
       });
     }
 
