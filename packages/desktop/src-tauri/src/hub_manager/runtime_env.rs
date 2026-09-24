@@ -338,6 +338,32 @@ fn read_host_device_id() -> Option<String> {
     read_host_device_id_impl()
 }
 
+/// Domains a Portal never provisions: the backend's unprovisioned placeholder and the local/E2E
+/// domain (`UNPROVISIONED_DOMAIN` and `LOCAL_DEV_DOMAIN` in `common/helpers/hub-origin.ts`).
+const NON_PORTAL_ZONES: [&str; 2] = ["example.com", "ci.localhost"];
+
+/// The zone a previous launch or a pairing wrote into the stack env, if it is one to keep.
+///
+/// Unquoted for the same reason [`resolve_runtime_hub_image`] unquotes its pin: `parse_env_file`
+/// only trims, so a hand-edited `DOMAIN="zone.example"` would otherwise be carried forward with
+/// the quote characters in it. The sentinels are rejected rather than preserved — pinning an
+/// install to one would leave it with no public origin and nothing able to clear it, where the
+/// unconditional render used to heal it on the next start.
+fn learned_public_domain(existing: &std::collections::HashMap<String, String>) -> Option<String> {
+    let zone = get_non_empty_env_value(existing, "DOMAIN")
+        .map(|value| unquote_env_value(&value).trim().to_string())?;
+
+    if zone.is_empty()
+        || NON_PORTAL_ZONES
+            .iter()
+            .any(|sentinel| zone.eq_ignore_ascii_case(sentinel))
+    {
+        return None;
+    }
+
+    Some(zone)
+}
+
 pub(crate) fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
@@ -385,30 +411,25 @@ pub(crate) fn render_runtime_env_content_for_portal(
         .map(|id| format!("DEVICE_ID={id}\n"))
         .unwrap_or_default();
 
-    /*
-     * ⚠ PRESERVE WHAT THE HUB LEARNED, exactly like JWT_SECRET above.
-     *
-     * The build-time value is a guess made before this machine had ever spoken to a
-     * Portal. The real answer arrives at pairing: `PairDevice` returns the zone it
-     * provisioned the device in, and `ConfigurationService.setDomain` writes it here.
-     *
-     * Rendering the build-time value unconditionally threw that answer away on the
-     * NEXT app start. The Hub then composed its own public origin — forward auth,
-     * tunnel health, memory-connect, and the origin baked into every app's
-     * environment — on a zone the Portal had never provisioned, producing a hostname
-     * that looks plausible and does not resolve. Nothing surfaced it, because app
-     * hostnames come from the per-app `public_domain` and stayed correct, so only
-     * sign-in broke.
-     *
-     * Both defaults are the same canonical domain by design (see the constants), so
-     * this is not specific to production: ANY Hub paired against a Portal whose zone
-     * differs from the build default lost it here.
-     */
-    let domain = get_non_empty_env_value(existing, "DOMAIN").unwrap_or_else(|| {
-        option_env!("CI_HUB_DOMAIN")
-            .unwrap_or(default_public_domain())
-            .to_string()
-    });
+    // Preserved, not derived: the zone is decided at pairing — `PairDevice` returns it and
+    // `ConfigurationService.setDomain` writes it into this same file — so a re-render must carry
+    // it forward, or the Hub rebuilds its own public origin on a zone the Portal never
+    // provisioned. The build-time value is only the guess made before this machine had ever
+    // spoken to a Portal.
+    let compiled_domain = compiled_public_domain();
+    let domain = learned_public_domain(existing).unwrap_or_else(|| compiled_domain.to_string());
+    // Say so when a stored zone wins, because it now wins on every later start too: without a
+    // line here, the difference between "this Hub is published in another zone" and "this build
+    // is wrong" is invisible in desktop.log.
+    if domain != compiled_domain {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "Keeping the zone this Hub learned from its Portal: DOMAIN={domain} (this build's default is {compiled_domain})."
+            ),
+        );
+    }
     log_portal_url_resolution(data_dir, portal);
     let cloud_url = portal.url.as_str();
     let hub_image = resolve_runtime_hub_image(existing);
@@ -462,15 +483,15 @@ pub(crate) fn render_runtime_env_content_for_portal(
     );
 
     format!(
-        "# Preserved (generated once, survive upgrades)\n\
+        "# Preserved (kept once set, survive upgrades)\n\
          ROOT_FOLDER_HOST={root_folder_host}\n\
          JWT_SECRET={jwt_secret}\n\
          POSTGRES_PASSWORD={postgres_password}\n\
          RABBITMQ_PASSWORD={rabbitmq_password}\n\
+         DOMAIN={domain}\n\
          \n\
          # Derived (recomputed every launch from the current binary)\n\
          INTERNAL_IP=0.0.0.0\n\
-         DOMAIN={domain}\n\
          CI_CLOUD_URL={cloud_url}\n\
          CI_HUB_VERSION={hub_version}\n\
          CI_HUB_IMAGE={hub_image}\n\
