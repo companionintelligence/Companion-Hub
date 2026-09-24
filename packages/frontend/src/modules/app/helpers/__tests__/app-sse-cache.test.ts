@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
+import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { handleAppSseEvent } from '../app-sse-cache';
 import { installQueueQueryKey } from '../install-queue';
 import { updateInstallationProgress } from '../use-installation-progress';
@@ -196,6 +197,19 @@ describe('handleAppSseEvent', () => {
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getApp', 'comfyui:ci-marketplace'] });
+  });
+
+  it('refetches the Public Web report under the key every surface reads it by', () => {
+    // A bare call count cannot see this: any fifth key satisfies it. The dashboard
+    // banner, the app page banner and the tile badge all mount
+    // `PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY`, so a hand-written literal here would leave
+    // all three asking for a restart that has already happened.
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'custom_domain_changed',
+      appUrn: 'comfyui:ci-marketplace',
+    });
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
   });
 
   it('leaves the custom-domain listing alone on other lifecycle events', () => {

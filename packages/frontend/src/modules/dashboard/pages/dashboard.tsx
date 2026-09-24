@@ -1,8 +1,8 @@
 import { systemLoadOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
 import {
   customDomainAwaitingRestart,
-  fetchPublicWebDiagnostics,
   PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY,
+  queryPublicWebDiagnostics,
   type PublicWebDiagnosticsApp,
 } from '@/lib/cloudflare-api';
 import { CustomDomainRestartBanner } from '@/modules/app/components/custom-domain-restart-banner';
@@ -82,7 +82,7 @@ export default () => {
    */
   const { data: publicWebDiagnostics } = useQuery({
     queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY,
-    queryFn: fetchPublicWebDiagnostics,
+    queryFn: queryPublicWebDiagnostics,
     staleTime: 30_000,
   });
 
