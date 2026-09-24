@@ -249,7 +249,9 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      expect(result.customDomains).toEqual([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-hub-acme.example.com' }]);
+      expect(result.customDomains).toEqual([
+        { id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-hub-acme.example.com', applyRequested: false },
+      ]);
     });
 
     it('should leave customDomains undefined when CI-Cloud predates the field', async () => {
@@ -289,7 +291,9 @@ describe('CloudflareClientService', () => {
       const result = await service.syncState('org-id', [], 'tun-id');
 
       expect(result.ok).toBe(true);
-      expect(result.customDomains).toEqual([{ id: 'cd_2', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com' }]);
+      expect(result.customDomains).toEqual([
+        { id: 'cd_2', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com', applyRequested: false },
+      ]);
       expect(warn.mock.calls.map(([line]) => String(line)).join('\n')).toContain('Dropped 2 malformed custom-domain');
     });
 
