@@ -29,6 +29,16 @@ export interface PublicWebDiagnosticEntry {
    * an `envMismatch` here is a scheduled change rather than drift.
    */
   pendingRestart: boolean;
+  /**
+   * THE ONE STATE A CUSTOMER CAN SEE AND NOBODY IS TOLD ABOUT: a custom domain is
+   * bound, and this app is still answering on its platform hostname. Their domain
+   * is dark until someone restarts the app.
+   *
+   * Narrower than `pendingRestart`, which any settings change raises. A surface
+   * that promises "your domain will not serve" must key on this, or it makes that
+   * claim every time an unrelated setting is saved and stops being read.
+   */
+  awaitingCustomDomainRestart: boolean;
 }
 
 export interface PublicWebDiagnosticsResponse {
@@ -66,8 +76,9 @@ export class PublicWebService {
   ) {}
 
   public async getDiagnostics(): Promise<PublicWebDiagnosticsResponse> {
-    const org = await this.registrationService.getDeviceRegistrationInfo();
-    const apps = await this.appsRepository.getApps();
+    // Independent reads, and this report is now on the dashboard rather than only
+    // behind a CLI call — so the two round trips are user-visible latency.
+    const [org, apps] = await Promise.all([this.registrationService.getDeviceRegistrationInfo(), this.appsRepository.getApps()]);
     const entries: PublicWebDiagnosticEntry[] = [];
 
     for (const app of apps) {
@@ -145,6 +156,20 @@ export class PublicWebService {
       const awaitingScheduledRestart = envMismatch && app.pendingRestart && customDomain !== null && envHostname === identity.hostname;
       const action: PublicWebDiagnosticEntry['action'] = envMismatch && !awaitingScheduledRestart ? 'repair' : 'ok';
 
+      /*
+       * SEPARATE FROM THE VERDICT ABOVE, on purpose. `awaitingScheduledRestart` is
+       * narrow because it SUPPRESSES `action`, and suppressing too much hides real
+       * drift from `mismatchCount` and from an untargeted `repair()`.
+       *
+       * "Is the customer's domain dark?" is a wider question, and tying it to the
+       * suppression made it miss the case that matters most: an app RE-POINTED from
+       * one bound domain to another. The env then holds the OLD custom domain, not
+       * the platform hostname, so `envHostname === identity.hostname` is false — and
+       * every surface went quiet about a domain that does not serve. The answer is
+       * just: a domain is bound, the env is not on it, and a restart is owed.
+       */
+      const awaitingCustomDomainRestart = envMismatch && app.pendingRestart && customDomain !== null;
+
       entries.push({
         appUrn,
         appName: app.appName,
@@ -158,6 +183,7 @@ export class PublicWebService {
         action,
         customDomain,
         pendingRestart: app.pendingRestart,
+        awaitingCustomDomainRestart,
       });
     }
 
