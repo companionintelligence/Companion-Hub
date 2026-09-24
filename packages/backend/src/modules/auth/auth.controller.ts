@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
-import { buildHubPublicOrigin, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
+import { buildHubPublicOrigin, resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
@@ -232,7 +232,8 @@ export class AuthController {
 
   /**
    * Match exposure-sync precedence so authentication redirects use the domain the tunnel published.
-   * An operator override remains authoritative until environment regeneration folds it into `DOMAIN`.
+   * An operator override outranks `DOMAIN` for the life of the process; see the helper for why it
+   * does not survive a restart.
    */
   private publicDomainRoot(): string {
     return resolveHubPublicDomainRoot(this.config.getConfig());
@@ -240,8 +241,7 @@ export class AuthController {
 
   /** The local root the appliance's LAN hostnames are built with — same precedence as above. */
   private localDomainRoot(): string {
-    const cfg = this.config.getConfig();
-    return cfg.userSettings?.localDomain || cfg.localDomain;
+    return resolveHubLocalDomainRoot(this.config.getConfig());
   }
 
   /**
