@@ -385,7 +385,30 @@ pub(crate) fn render_runtime_env_content_for_portal(
         .map(|id| format!("DEVICE_ID={id}\n"))
         .unwrap_or_default();
 
-    let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
+    /*
+     * ⚠ PRESERVE WHAT THE HUB LEARNED, exactly like JWT_SECRET above.
+     *
+     * The build-time value is a guess made before this machine had ever spoken to a
+     * Portal. The real answer arrives at pairing: `PairDevice` returns the zone it
+     * provisioned the device in, and `ConfigurationService.setDomain` writes it here.
+     *
+     * Rendering the build-time value unconditionally threw that answer away on the
+     * NEXT app start. The Hub then composed its own public origin — forward auth,
+     * tunnel health, memory-connect, and the origin baked into every app's
+     * environment — on a zone the Portal had never provisioned, producing a hostname
+     * that looks plausible and does not resolve. Nothing surfaced it, because app
+     * hostnames come from the per-app `public_domain` and stayed correct, so only
+     * sign-in broke.
+     *
+     * Both defaults are the same canonical domain by design (see the constants), so
+     * this is not specific to production: ANY Hub paired against a Portal whose zone
+     * differs from the build default lost it here.
+     */
+    let domain = get_non_empty_env_value(existing, "DOMAIN").unwrap_or_else(|| {
+        option_env!("CI_HUB_DOMAIN")
+            .unwrap_or(default_public_domain())
+            .to_string()
+    });
     log_portal_url_resolution(data_dir, portal);
     let cloud_url = portal.url.as_str();
     let hub_image = resolve_runtime_hub_image(existing);

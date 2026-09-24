@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
@@ -84,7 +85,7 @@ export class ForwardAuthSecretResolver {
     // Match app-lifecycle precedence so operator settings override defaults.
     const cfg = this.config.getConfig();
     const localDomain = cfg.userSettings?.localDomain || cfg.localDomain;
-    const domain = cfg.userSettings?.domain || cfg.domain;
+    const domain = resolveHubPublicDomainRoot(cfg);
 
     for (const app of apps) {
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
