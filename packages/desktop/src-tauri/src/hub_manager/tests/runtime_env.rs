@@ -518,3 +518,83 @@ fn the_tray_opens_the_cloud_url_the_stack_was_started_with() {
         "only http(s) URLs reach the system opener"
     );
 }
+
+/// Render with the compiled Portal, never the override file on the developer's own machine.
+fn render_with_domain(data_dir: &std::path::Path, domain: Option<&str>) -> String {
+    let mut existing = portal_test_env_map();
+    if let Some(domain) = domain {
+        existing.insert("DOMAIN".into(), domain.into());
+    }
+    render_runtime_env_content_for_portal(data_dir, &existing, &resolve_portal_url_at(None))
+}
+
+#[test]
+fn runtime_env_keeps_the_domain_the_hub_learned_from_its_portal() {
+    // The zone a Hub belongs to is decided by the Portal it paired with, not by this
+    // build: `PairDevice` returns it and `setDomain` writes it into this same file.
+    // Re-rendering must carry it forward, or the next app start silently moves the
+    // Hub's own public origin back to a zone its Portal never provisioned.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+
+    // Deliberately unlike every compiled default, so a pass cannot come from the build's own zone.
+    let env = render_with_domain(&data_dir, Some("zone.example.test"));
+
+    assert!(
+        env.lines().any(|line| line == "DOMAIN=zone.example.test"),
+        "expected the learned zone to survive a re-render: {env}"
+    );
+    assert!(
+        read_desktop_log(&data_dir).contains("DOMAIN=zone.example.test"),
+        "a stored zone winning over the build default must be visible in desktop.log"
+    );
+}
+
+#[test]
+fn runtime_env_strips_quotes_from_a_learned_domain() {
+    // `parse_env_file` only trims, so a hand-edited or third-party-written entry can arrive
+    // quoted. Carrying the quotes forward would bake them into every hostname the Hub composes.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+
+    let env = render_with_domain(&data_dir, Some("\"zone.example.test\""));
+
+    assert!(
+        env.lines().any(|line| line == "DOMAIN=zone.example.test"),
+        "expected the quotes to be stripped: {env}"
+    );
+}
+
+#[test]
+fn runtime_env_falls_back_to_the_build_domain_before_the_hub_has_paired() {
+    // Before pairing there is nothing to preserve, so the build-time value is the right answer.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+
+    let fresh = render_with_domain(&data_dir, None);
+
+    assert!(
+        fresh
+            .lines()
+            .any(|line| line == format!("DOMAIN={}", compiled_public_domain())),
+        "expected the build default on a first render: {fresh}"
+    );
+    assert!(
+        read_desktop_log(&data_dir).is_empty(),
+        "rendering the build default is the unremarkable case and must not log"
+    );
+}
+
+#[test]
+fn runtime_env_refuses_to_carry_forward_a_value_that_is_not_a_zone() {
+    // A blank entry is "nothing"; `example.com` and `ci.localhost` are the backend's
+    // unprovisioned and local-dev sentinels. Preserving any of the three would pin the install
+    // to "no public origin" with nothing left able to clear it.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let expected = format!("DOMAIN={}", compiled_public_domain());
+
+    for value in ["   ", "example.com", "EXAMPLE.COM", "ci.localhost"] {
+        let env = render_with_domain(&data_dir, Some(value));
+        assert!(
+            env.lines().any(|line| line == expected),
+            "{value:?} must not be carried forward as a zone: {env}"
+        );
+    }
+}
