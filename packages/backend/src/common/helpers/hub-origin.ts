@@ -27,6 +27,26 @@ const PRIVATE_HOST_SUFFIXES = ['.local', '.lan', '.internal', '.home', '.localdo
 const TAILNET_HOST_SUFFIX = '.ts.net';
 
 /**
+ * The zone this Hub is published in: the `DOMAIN` its Portal paired it into, with an operator
+ * `userSettings` override on top. Shared so that sign-in, edge SSO and forward auth cannot
+ * disagree about the Hub's own hostname.
+ *
+ * Two limits worth knowing before reaching for it. The override rung is process-lifetime only —
+ * `configure()` seeds `userSettings.domain` from `DOMAIN` and `generateSystemEnvFile` resolves
+ * `DOMAIN` with no settings rung, unlike `LOCAL_DOMAIN` beside it. And tunnel health,
+ * memory-connect and the `CI_HUB_ORIGINS` written into app environments still read
+ * `config.domain` alone on purpose: they must stay byte-identical to each other.
+ */
+export function resolveHubPublicDomainRoot(config: { domain?: string | null; userSettings?: { domain?: string | null } | null }): string {
+  return config.userSettings?.domain?.trim() || config.domain?.trim() || '';
+}
+
+/** The local root the appliance's LAN hostnames are built with, on the same precedence. */
+export function resolveHubLocalDomainRoot(config: { localDomain?: string | null; userSettings?: { localDomain?: string | null } | null }): string {
+  return config.userSettings?.localDomain?.trim() || config.localDomain?.trim() || '';
+}
+
+/**
  * Builds the Hub's public origin, or returns null before organization registration.
  * Null prevents connect surfaces from offering an unusable public launcher.
  */

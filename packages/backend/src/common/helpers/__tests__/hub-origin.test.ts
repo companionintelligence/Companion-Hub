@@ -7,6 +7,8 @@ import {
   isLocalDevDomain,
   isPrivateHostname,
   isTailnetHostname,
+  resolveHubLocalDomainRoot,
+  resolveHubPublicDomainRoot,
 } from '../hub-origin';
 
 /**
@@ -184,5 +186,47 @@ describe('isLocalDevDomain', () => {
   it('does not match a real domain', () => {
     expect(isLocalDevDomain('companionintelligence.com')).toBe(false);
     expect(isLocalDevDomain(undefined)).toBe(false);
+  });
+});
+
+/**
+ * Every caller that composes a Hub hostname shares these, so the precedence is the contract:
+ * flipping the rungs or dropping a trim would move the Hub's identity at every one of them at
+ * once, which is the failure the extraction exists to prevent.
+ */
+describe('resolveHubPublicDomainRoot', () => {
+  it('prefers the operator override over the zone the Portal paired the Hub into', () => {
+    expect(resolveHubPublicDomainRoot({ domain: 'companionintelligence.com', userSettings: { domain: 'ops.example' } })).toBe('ops.example');
+  });
+
+  it('falls back to the paired zone when no override is set', () => {
+    expect(resolveHubPublicDomainRoot({ domain: 'companionintelligence.com', userSettings: {} })).toBe('companionintelligence.com');
+    expect(resolveHubPublicDomainRoot({ domain: 'companionintelligence.com', userSettings: null })).toBe('companionintelligence.com');
+    expect(resolveHubPublicDomainRoot({ domain: 'companionintelligence.com' })).toBe('companionintelligence.com');
+  });
+
+  it('treats a blank or whitespace-only override as no override at all', () => {
+    expect(resolveHubPublicDomainRoot({ domain: 'companionintelligence.com', userSettings: { domain: '   ' } })).toBe('companionintelligence.com');
+    expect(resolveHubPublicDomainRoot({ domain: 'companionintelligence.com', userSettings: { domain: '' } })).toBe('companionintelligence.com');
+  });
+
+  it('trims both rungs, because a padded root builds a hostname nothing resolves', () => {
+    expect(resolveHubPublicDomainRoot({ domain: ' companionintelligence.com ' })).toBe('companionintelligence.com');
+    expect(resolveHubPublicDomainRoot({ domain: 'companionintelligence.com', userSettings: { domain: ' ops.example ' } })).toBe('ops.example');
+  });
+
+  it('returns an empty string rather than undefined when nothing is configured', () => {
+    // buildHubPublicOrigin and isSafeHandoffNext both test falsiness, so '' is the safe floor.
+    expect(resolveHubPublicDomainRoot({})).toBe('');
+    expect(resolveHubPublicDomainRoot({ domain: null, userSettings: { domain: null } })).toBe('');
+  });
+});
+
+describe('resolveHubLocalDomainRoot', () => {
+  it('applies the same precedence as the public root', () => {
+    expect(resolveHubLocalDomainRoot({ localDomain: 'ci.lan', userSettings: { localDomain: 'ops.lan' } })).toBe('ops.lan');
+    expect(resolveHubLocalDomainRoot({ localDomain: 'ci.lan', userSettings: {} })).toBe('ci.lan');
+    expect(resolveHubLocalDomainRoot({ localDomain: ' ci.lan ', userSettings: { localDomain: '   ' } })).toBe('ci.lan');
+    expect(resolveHubLocalDomainRoot({})).toBe('');
   });
 });
