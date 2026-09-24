@@ -518,3 +518,47 @@ fn the_tray_opens_the_cloud_url_the_stack_was_started_with() {
         "only http(s) URLs reach the system opener"
     );
 }
+
+#[test]
+fn runtime_env_keeps_the_domain_the_hub_learned_from_its_portal() {
+    // The zone a Hub belongs to is decided by the Portal it paired with, not by this
+    // build: `PairDevice` returns it and `setDomain` writes it into this same file.
+    // Re-rendering must carry it forward, or the next app start silently moves the
+    // Hub's own public origin back to a zone its Portal never provisioned.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let mut existing = portal_test_env_map();
+    existing.insert("DOMAIN".into(), "companionintel.com".into());
+
+    let env = render_runtime_env_content(&data_dir, &existing);
+
+    assert!(
+        env.contains("DOMAIN=companionintel.com\n"),
+        "expected the learned zone to survive a re-render: {env}"
+    );
+    assert!(
+        !env.contains(&format!("DOMAIN={}\n", default_public_domain())),
+        "the build-time default must not overwrite a learned zone: {env}"
+    );
+}
+
+#[test]
+fn runtime_env_falls_back_to_the_build_domain_before_the_hub_has_paired() {
+    // Before pairing there is nothing to preserve, so the build-time value is still
+    // the right answer — and a blank or whitespace-only entry is "nothing", not a zone.
+    let (_tempdir, data_dir) = portal_test_data_dir();
+    let mut existing = portal_test_env_map();
+    existing.remove("DOMAIN");
+
+    let fresh = render_runtime_env_content(&data_dir, &existing);
+    assert!(
+        fresh.contains(&format!("DOMAIN={}\n", default_public_domain())),
+        "expected the build default on a first render: {fresh}"
+    );
+
+    existing.insert("DOMAIN".into(), "   ".into());
+    let blank = render_runtime_env_content(&data_dir, &existing);
+    assert!(
+        blank.contains(&format!("DOMAIN={}\n", default_public_domain())),
+        "a blank entry must not be carried forward as a zone: {blank}"
+    );
+}

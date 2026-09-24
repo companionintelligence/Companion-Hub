@@ -27,6 +27,29 @@ const PRIVATE_HOST_SUFFIXES = ['.local', '.lan', '.internal', '.home', '.localdo
 const TAILNET_HOST_SUFFIX = '.ts.net';
 
 /**
+ * THE ONE ANSWER TO "WHICH ZONE IS THIS HUB PUBLISHED IN".
+ *
+ * The zone is decided by the Portal this Hub paired with — `PairDevice` returns it
+ * and `ConfigurationService.setDomain` persists it — while an operator override in
+ * `userSettings` outranks it, which is what the setting is for.
+ *
+ * It lives here because four call sites had drifted into three spellings of the same
+ * expression, and every one of them feeds a browser-reachable hostname: forward auth
+ * and edge SSO, tunnel health, memory-connect, and the origin written into every
+ * app's environment. Composing the Hub's identity two different ways is the shape of
+ * bug this helper exists to make impossible, not a style preference.
+ *
+ * ⚠ NOT THE SAME QUESTION `compose-preparation` ASKS. That reads `DOMAIN` from the
+ * app's OWN env file first, deliberately: it is interpolating Traefik labels and must
+ * use the value the app was generated with, or the labels and the environment
+ * disagree about the app's hostname. "What zone is this Hub in" and "what was this
+ * app built with" are allowed to differ, and only the first belongs here.
+ */
+export function resolveHubPublicDomainRoot(config: { domain?: string | null; userSettings?: { domain?: string | null } | null }): string {
+  return config.userSettings?.domain?.trim() || config.domain?.trim() || '';
+}
+
+/**
  * Builds the Hub's public origin, or returns null before organization registration.
  * Null prevents connect surfaces from offering an unusable public launcher.
  */
