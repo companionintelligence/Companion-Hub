@@ -732,7 +732,6 @@
   "MY_APPS_PENDING_RESTART_CUSTOM_DOMAIN": "{{domain}} will not serve this app until it is restarted.",
   "MY_APPS_PENDING_RESTART_BADGE_LABEL": "Restart needed",
   "MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE": "{{domain}} is connected but not serving yet. Restart {{name}} to finish.",
-  "MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_COUNT_one": "{{count}} app has a connected domain that is not serving yet. Restart it to finish.",
   "MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_COUNT_other": "{{count}} apps have a connected domain that is not serving yet. Restart them to finish.",
   "MY_APPS_CUSTOM_DOMAIN_RESTART_ACTION": "Restart now",
   "MY_APPS_STORE_UNAVAILABLE": "Store unavailable",

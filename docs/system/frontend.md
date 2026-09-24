@@ -166,21 +166,25 @@ where the row names the custom domain and the running container does not. `publi
 reports that window as `action: 'ok'` with `envMismatch: true` — **key UI off `action`, not
 `envMismatch`**, or a healthy app awaiting its restart is shown as broken.
 
-That window is also the one state a customer can see and nobody is told about, so the report names it:
-`awaitingCustomDomainRestart`. It is narrower than `pendingRestart`, which every settings save raises —
-a surface promising "your domain will not serve" must key on the narrow flag or it makes that claim
-constantly and stops being read. Three surfaces read it, all through one predicate,
-`customDomainAwaitingRestart` in `lib/cloudflare-api.ts`:
+A bound custom domain that is not serving yet is the one state a customer can see and nobody is told
+about, so the report names it: `awaitingCustomDomainRestart`. It is narrower than `pendingRestart`,
+which every settings save raises — a surface promising "your domain will not serve" must key on the
+narrow flag or it makes that claim constantly and stops being read. It is *wider* than the
+`action: 'ok'` bind window, though: an app re-pointed from one bound domain to another is dark too,
+and its env is on neither the platform hostname nor the new domain.
 
-- `CustomDomainRestartBanner` on the dashboard and on an app's own page, with a **Restart now** action.
-- The dashboard tile badge (`SimpleAppTile`), which names the dark domain instead of the generic
-  "configuration has changed".
+`customDomainAwaitingRestart` in `lib/cloudflare-api.ts` is the one predicate over it, and
+`CustomDomainRestartBanner` — on the dashboard and on an app's own page — is the surface built on it,
+with a **Restart now** action per waiting app. The dashboard tile badge (`SimpleAppTile`) is
+deliberately *not* gated on it: it fires on the raw `pendingRestart`, because every stale env is worth
+a dot. The narrow flag only chooses the badge's tooltip, so a dark domain is named there instead of
+the generic "configuration has changed".
 
-Both gate on `restartCanApply(status)` — **only a running app is asked to restart**. `repair()` rewrites
-the env and returns `success: true` *without* starting a container when the app is not running, so
-offering the action anywhere else clears the warning and leaves the domain exactly as dark. Nothing is
-owed for a stopped app either (`start-app-command` regenerates the env on the way up), nor while a
-start, restart, update, reset or restore is already in flight.
+All of them gate on `restartCanApply(status)` — **only a running app is asked to restart**. `repair()`
+rewrites the env and returns `success: true` *without* starting a container when the app is not
+running, so offering the action anywhere else clears the warning and leaves the domain exactly as
+dark. Nothing is owed for a stopped app either (`start-app-command` regenerates the env on the way
+up), nor while a start, restart, update, reset or restore is already in flight.
 
 Every surface reads the report under `PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY`, and `invalidateAppQueries`
 refreshes it. A hand-written key literal is invisible to that helper, and the banner then keeps asking
