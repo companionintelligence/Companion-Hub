@@ -106,6 +106,32 @@ describe('CustomDomainRestartBanner', () => {
     expect(toastError).not.toHaveBeenCalled();
   });
 
+  it('offers a restart for every waiting app, not just when there is one', async () => {
+    // The count sentence on its own reads "Restart them to finish" and gives the
+    // operator nothing to click and no way to tell which apps it means.
+    const second = { ...waitingEntry, appUrn: 'n8n:store', customDomain: 'n8n.example.com', appName: 'n8n' };
+    render(<CustomDomainRestartBanner apps={[waitingEntry, second]} namesByUrn={{ 'wordpress:store': 'WordPress' }} />);
+
+    const banner = screen.getByTestId('custom-domain-restart-banner');
+    expect(banner).toHaveTextContent('wp.example.com');
+    expect(banner).toHaveTextContent('n8n.example.com');
+    // Named from the report when the installed-apps list has not landed, never a URN.
+    expect(banner).not.toHaveTextContent('n8n:store');
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+  });
+
+  it('restarts the app whose row was clicked', async () => {
+    const second = { ...waitingEntry, appUrn: 'n8n:store', customDomain: 'n8n.example.com', appName: 'n8n' };
+    fetchPublicWebDiagnostics.mockResolvedValue({ apps: [waitingEntry, second] });
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    render(<CustomDomainRestartBanner apps={[waitingEntry, second]} namesByUrn={{}} />);
+
+    const [, n8nButton] = screen.getAllByRole('button');
+    await userEvent.click(n8nButton as HTMLElement);
+
+    await waitFor(() => expect(repairPublicWebRouting).toHaveBeenCalledWith('n8n:store'));
+  });
+
   it('does not restart an app the report no longer lists as waiting', async () => {
     fetchPublicWebDiagnostics.mockResolvedValue({ apps: [{ ...waitingEntry, awaitingCustomDomainRestart: false }] });
     renderBanner([waitingEntry]);

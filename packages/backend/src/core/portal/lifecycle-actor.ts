@@ -60,6 +60,7 @@ export type SystemLifecycleReason =
   | 'bootstrap-restart' // a Hub starting on a new version restarts the apps that were running
   | 'inference-env-refresh' // inference settings or the Hub version changed; AI apps pick up the new env
   | 'custom-domain-revert' // an app still forwarding a removed custom domain is restarted off it
+  | 'custom-domain-apply' // the operator asked for a bound custom domain to start serving, so the app is recreated onto it
   | 'memory-connect' // a Companion Memory connection change reaches the app holding it
   | 'device-key-refresh' // pairing issued a new Portal device key; the app that calls Portal as this device picks it up
   // The debug routes:
