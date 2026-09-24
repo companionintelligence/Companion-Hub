@@ -27,6 +27,8 @@ export type PublicWebDiagnosticsApp = {
   appUrn: string;
   envMismatch: boolean;
   computedPublicUrl: string;
+  /** The app's lifecycle status, as the Hub's report saw it. */
+  status?: string;
   /**
    * The backend's verdict. `envMismatch` alone is NOT one: a freshly bound custom
    * domain deliberately leaves the env behind until the user takes the restart it
@@ -35,7 +37,48 @@ export type PublicWebDiagnosticsApp = {
    */
   action?: 'ok' | 'repair';
   pendingRestart?: boolean;
+  /** The custom hostname Companion Portal has wired for this app, when it has one. */
+  customDomain?: string | null;
+  /**
+   * A bound custom domain is dark because this app still answers on its platform
+   * hostname. Narrower than `pendingRestart`, which any settings change raises —
+   * only this one justifies telling a customer their domain does not work.
+   */
+  awaitingCustomDomainRestart?: boolean;
 };
+
+/**
+ * The one key every surface reads this report under, so a lifecycle event can
+ * refresh all of them at once. A hand-written literal in each component would be
+ * invisible to `invalidateAppQueries`, and the banner would keep asserting a dark
+ * domain after the restart that cleared it.
+ */
+export const PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY = ['public-web-diagnostics'] as const;
+
+/**
+ * A restart is only work worth asking for while the app is RUNNING.
+ *
+ * - Stopped or missing: `repair()` rewrites the env and returns success without
+ *   starting anything (it gates the restart on the app's status), so a "Restart now"
+ *   there dismisses the warning while the customer's domain stays dark. Nothing is
+ *   owed anyway — `start-app-command` regenerates the env on the way up.
+ * - Starting, restarting, updating, resetting, restoring: the remedy is already in
+ *   flight and will clear the flag itself.
+ * - Installing or uninstalling: the env is mid-flight, or the app is being deleted.
+ */
+export function restartCanApply(status: string | undefined): boolean {
+  return status === 'running';
+}
+
+/**
+ * The domain this app is keeping dark until it restarts, or `null` when there is
+ * nothing to say. Defined once so the banner, its click guard and the tile badge
+ * cannot drift into acting on three different sets of apps.
+ */
+export function customDomainAwaitingRestart(entry: PublicWebDiagnosticsApp | undefined): string | null {
+  if (!entry?.awaitingCustomDomainRestart || !entry.customDomain) return null;
+  return restartCanApply(entry.status) ? entry.customDomain : null;
+}
 
 export async function fetchPublicWebDiagnostics(): Promise<{ apps: PublicWebDiagnosticsApp[] } | null> {
   const result = await sdkResult(getDiagnostics2());

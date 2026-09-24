@@ -1,5 +1,6 @@
 import type { GetAppDto } from '@/api-client';
 import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey, getCustomDomainsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
@@ -109,6 +110,13 @@ export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
   void queryClient.invalidateQueries({ queryKey: getInstalledAppUrnsQueryKey() });
   void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: appUrn } }) });
   void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
+  /*
+   * The Public Web report is the only thing that knows a bound custom domain is
+   * dark, and a restart is exactly what clears that. Leaving it out is what let the
+   * banner keep asking for a restart that had already happened — and, on the way in,
+   * kept it silent for 30s after `custom_domain_changed` raised the flag.
+   */
+  void queryClient.invalidateQueries({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
 }
 
 function setCachedAppStatus(

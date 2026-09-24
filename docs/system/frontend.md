@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-17 (dashboard scroll: new pages open at the top, back/forward restore)
+> **Last updated:** 2026-09-24 (custom domains: the dark-domain restart banner and tile badge)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -166,7 +166,27 @@ where the row names the custom domain and the running container does not. `publi
 reports that window as `action: 'ok'` with `envMismatch: true` — **key UI off `action`, not
 `envMismatch`**, or a healthy app awaiting its restart is shown as broken.
 
-Genuine drift raises a banner in the app config dialog carrying its own **Repair routing** action
+That window is also the one state a customer can see and nobody is told about, so the report names it:
+`awaitingCustomDomainRestart`. It is narrower than `pendingRestart`, which every settings save raises —
+a surface promising "your domain will not serve" must key on the narrow flag or it makes that claim
+constantly and stops being read. Three surfaces read it, all through one predicate,
+`customDomainAwaitingRestart` in `lib/cloudflare-api.ts`:
+
+- `CustomDomainRestartBanner` on the dashboard and on an app's own page, with a **Restart now** action.
+- The dashboard tile badge (`SimpleAppTile`), which names the dark domain instead of the generic
+  "configuration has changed".
+
+Both gate on `restartCanApply(status)` — **only a running app is asked to restart**. `repair()` rewrites
+the env and returns `success: true` *without* starting a container when the app is not running, so
+offering the action anywhere else clears the warning and leaves the domain exactly as dark. Nothing is
+owed for a stopped app either (`start-app-command` regenerates the env on the way up), nor while a
+start, restart, update, reset or restore is already in flight.
+
+Every surface reads the report under `PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY`, and `invalidateAppQueries`
+refreshes it. A hand-written key literal is invisible to that helper, and the banner then keeps asking
+for a restart that already happened.
+
+Genuine drift (`action: 'repair'`) raises a banner in the app config dialog carrying its own **Repair routing** action
 (`repairPublicWebRouting` in `lib/cloudflare-api.ts` → `POST /api/public-web/repair`). It has to be a
 separate action: routing drift leaves the form clean, so the dialog's Update button — gated on
 `isDirty` — cannot be the remedy. Two things that path depends on:
