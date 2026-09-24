@@ -100,36 +100,77 @@ export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRest
     }
   };
 
+  const nameFor = (app: PublicWebDiagnosticsApp) => namesByUrn[app.appUrn] ?? app.appName ?? app.appUrn;
+
+  /*
+   * `restarting !== null`, not `restarting === app.appUrn`: a repair blocks on the
+   * container for tens of seconds, and the report can refetch underneath it. Keying
+   * the spinner to one row would re-enable every other button mid-flight the moment
+   * the list reorders, and a second click would fire a concurrent repair.
+   */
+  const restartButton = (app: PublicWebDiagnosticsApp) => (
+    <Button size="sm" variant="outline" loading={restarting !== null} onClick={() => void handleRestart(app.appUrn)}>
+      {t('MY_APPS_CUSTOM_DOMAIN_RESTART_ACTION')}
+    </Button>
+  );
+
+  /*
+   * Styled here rather than through `Alert variant="warning"`: that variant only
+   * emits the class names `alert`/`alert-warning`, and this design system defines
+   * no rule for either — the banner would render as ordinary body text inside the
+   * dashboard card, which for the one warning worth interrupting someone over is
+   * the same as not showing it. `border-warning/30 bg-warning/10 text-warning` is
+   * what every other warning surface in this frontend uses.
+   */
+  const frame = 'mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-warning';
+
   const only = waiting.length === 1 ? waiting[0] : undefined;
 
+  if (only) {
+    return (
+      <Alert variant="warning" className={`${frame} flex flex-wrap items-center gap-3`} data-testid="custom-domain-restart-banner">
+        <AlertIcon>
+          <RotateCw className="w-4 h-4 shrink-0" />
+        </AlertIcon>
+        <AlertDescription className="min-w-0 flex-1 text-sm">
+          {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: only.customDomain, name: nameFor(only) })}
+        </AlertDescription>
+        {restartButton(only)}
+      </Alert>
+    );
+  }
+
+  /*
+   * Every waiting app gets its own row and its own button. The count sentence on
+   * its own says "Restart them to finish" and offers nothing to click and no way
+   * to tell which apps it means — the operator's only remedy would be to guess at
+   * tiles and open each app's page.
+   */
   return (
-    <Alert variant="warning" className="mb-3 flex flex-wrap items-center gap-3" data-testid="custom-domain-restart-banner">
-      <AlertIcon>
-        <RotateCw className="w-4 h-4 shrink-0" />
-      </AlertIcon>
-      <AlertDescription className="min-w-0 flex-1 text-sm">
-        {only
-          ? t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', {
-              domain: only.customDomain,
-              name: namesByUrn[only.appUrn] ?? only.appUrn,
-            })
-          : // `_COUNT` with i18next's own `_one`/`_other` suffixes, not a hand-rolled `_MANY`:
-            // en.json is pushed to 30 locales, several of which have three to six plural
-            // categories, and a single flat string leaves a translator no slot for them.
-            t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_COUNT', { count: waiting.length })}
-      </AlertDescription>
-      {only && (
-        /*
-         * `restarting !== null`, not `restarting === only.appUrn`: a repair blocks on
-         * the container for tens of seconds, and the report can refetch underneath it.
-         * Keying the spinner to whichever app is currently first would re-enable the
-         * button mid-flight the moment the list reorders, and a second click would
-         * fire a concurrent repair.
-         */
-        <Button size="sm" variant="outline" loading={restarting !== null} onClick={() => void handleRestart(only.appUrn)}>
-          {t('MY_APPS_CUSTOM_DOMAIN_RESTART_ACTION')}
-        </Button>
-      )}
+    <Alert variant="warning" className={`${frame} space-y-2`} data-testid="custom-domain-restart-banner">
+      <div className="flex items-center gap-3">
+        <AlertIcon>
+          <RotateCw className="w-4 h-4 shrink-0" />
+        </AlertIcon>
+        <AlertDescription className="min-w-0 flex-1 text-sm">
+          {/*
+           * `_COUNT` with i18next's own `_one`/`_other` suffixes, not a hand-rolled
+           * `_MANY`: en.json is pushed to 30 locales, several of which have three to
+           * six plural categories, and a single flat string leaves no slot for them.
+           */}
+          {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_COUNT', { count: waiting.length })}
+        </AlertDescription>
+      </div>
+      <ul className="space-y-1.5">
+        {waiting.map((app) => (
+          <li key={app.appUrn} className="flex flex-wrap items-center gap-3 pl-7">
+            <span className="min-w-0 flex-1 truncate text-sm">
+              {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: app.customDomain, name: nameFor(app) })}
+            </span>
+            {restartButton(app)}
+          </li>
+        ))}
+      </ul>
     </Alert>
   );
 };

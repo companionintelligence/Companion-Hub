@@ -36,9 +36,16 @@ export interface AppInfo {
    *
    * ⚠ NARROWER THAN `pendingRestart`, deliberately. Every settings save raises
    * that flag, and a Portal badge driven by it would claim a customer's domain
-   * was down each time an unrelated setting changed. Only this state justifies
-   * the claim. Absent on Hubs that predate the field, which is not `false` —
-   * the Portal must keep its previous reading rather than infer one.
+   * was down each time an unrelated setting changed. So the Hub reads the app's
+   * compose env rather than the flag: a domain is dark only when the env is still
+   * on some other hostname. Absent on Hubs that predate the field, which is not
+   * `false` — the Portal must keep its previous reading rather than infer one.
+   *
+   * ⚠ ONE SYNC BEHIND A FIRST BIND. This payload is built from rows read before
+   * `reconcileCustomDomains` writes the binding it is announcing, so the sync that
+   * creates the dark window still reports `false`. The following sync — the poll,
+   * or the one a queued apply restart triggers on its way out — carries the truth.
+   * Reported only for apps in the payload, i.e. `running`/`starting`/`restarting`.
    */
   customDomainPendingApply?: boolean;
   /**
