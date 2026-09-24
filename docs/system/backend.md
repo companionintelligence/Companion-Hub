@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-21 (llama.cpp and LM Studio backends; pooled model listing merges peer inventories)
+> **Last updated:** 2026-09-24 (diagnostics name the dark custom domain; repair only restarts a running app)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -235,7 +235,12 @@ only CI-Cloud knows whether a hostname really routes here.
 - Diagnostics report `action: 'ok'` **only** for the bind window itself (a custom domain bound, the
   env still on the platform hostname). `pendingRestart` alone must not suppress a verdict: it is
   raised by any settings change, and suppressing on it hides real drift from `mismatchCount` and
-  from an untargeted `repair()`.
+  from an untargeted `repair()`. That same window is published as `awaitingCustomDomainRestart`, so a
+  surface can say *which* domain is dark instead of the generic "configuration has changed" — it is
+  the negated half of the `action` ternary, and the UI must key on it rather than on `pendingRestart`.
+- `repair()` restarts the app **only** when its status is `running`, `starting` or `restarting`;
+  otherwise it rewrites the env and still reports `success: true`. Any UI offering a restart has to
+  gate on the status too, or the click reports success without starting anything.
 
 ⚠ `SSEService.emit('app', data, appUrn)` publishes to topic `app:<urn>`, which **nothing
 subscribes to** — the frontend opens `/api/sse/app` only. Always omit the third argument.
