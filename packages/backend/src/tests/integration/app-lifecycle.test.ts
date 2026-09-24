@@ -874,13 +874,50 @@ describe('App lifecycle', () => {
       await runToQuiescence(appInfo.urn, () => syncReporting(delivered));
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://settled.acme.com');
 
-      await syncReporting(delivered);
+      await runToQuiescence(appInfo.urn, () => syncReporting(delivered));
 
       // Still serving, and still settled: a second recreation would have raised
       // `pendingRestart` again on its way through, so a clean row here is the
-      // evidence that the standing request did not bounce a working app.
+      // evidence that the standing request did not bounce a working app. Waited to
+      // quiescence like the sibling case — a bare `await` returns before a queued
+      // restart has touched the container, so it would pass either way.
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://settled.acme.com');
       expect(await appsRepository.getAppByUrn(appInfo.urn).then((row) => row?.pendingRestart)).toBe(false);
+    });
+
+    it('does not let a standing request turn an unrelated settings save into a restart', async () => {
+      /*
+       * The request stays on Companion Portal's row, so it arrives on every sync
+       * for as long as it is set. `pendingRestart` is raised by ANY settings save
+       * (`updateAppConfig`), so a gate built on the raw flag would recreate a
+       * container whose customer domain has been serving all along — for a change
+       * that has nothing to do with the domain. The gate reads the env instead.
+       */
+      const appInfo = await installExposed('cdunrelated');
+      const platformHostname = 'cdunrelated-test-core2-acme.ci.test';
+      const domain = { id: 'cd_1', domain: 'unrelated.acme.com', targetHostname: platformHostname };
+
+      /*
+       * Applied BY HAND, not through a request. An automatic apply would spend the
+       * shared restart cooldown, and the assertion below would then hold because the
+       * cooldown refused the second restart rather than because the gate did — which
+       * is how the sibling case came to pass with the gate removed.
+       */
+      await runToQuiescence(appInfo.urn, () => syncReporting([domain]));
+      await restartExposed(appInfo.urn);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://unrelated.acme.com');
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((r) => r?.pendingRestart)).toBe(false);
+
+      // What an unrelated save leaves behind: the env is already on the domain, and
+      // the flag says only "this app owes a restart for something".
+      const row = await appsRepository.getAppByUrn(appInfo.urn);
+      await appsRepository.updateAppById(row?.id as number, { pendingRestart: true });
+
+      await runToQuiescence(appInfo.urn, () => syncReporting([{ ...domain, applyRequested: true }]));
+
+      // Untouched: a recreation would have cleared `pendingRestart` on its way out.
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((r) => r?.pendingRestart)).toBe(true);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://unrelated.acme.com');
     });
 
     it('carries an install-time choice through to a bind, and only then to the env', async () => {
