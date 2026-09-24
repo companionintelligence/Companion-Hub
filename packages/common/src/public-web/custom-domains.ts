@@ -26,6 +26,21 @@ export interface TunnelCustomDomain {
    * what makes it a direct join key against an app's own public hostname.
    */
   targetHostname: string;
+  /**
+   * The operator asked for this binding to be APPLIED — that is, for the app to
+   * be restarted so it starts answering on this name.
+   *
+   * ⚠ ABSENT IS NOT `false`. A Portal that predates the field sends nothing, and
+   * reading that as "the operator declined" is indistinguishable from an operator
+   * who actually declined. Only an explicit `true` may move a container, so an
+   * older Portal keeps today's behaviour exactly: bind, raise the flag, wait to be
+   * asked.
+   *
+   * Consent is recorded while the operator is in the connect flow and acted on
+   * later, because verification takes minutes and the dialog tells them they may
+   * close it — there is no moment at the end when they are reliably present.
+   */
+  applyRequested?: boolean;
 }
 
 export interface ParsedTunnelCustomDomains {
@@ -175,7 +190,14 @@ export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDoma
       continue;
     }
 
-    entries.push({ id, domain: normalizedDomain, targetHostname: normalizedTarget });
+    /*
+     * Only a literal `true` counts. A string, a 1, or a missing key are all "this
+     * Portal did not say", and the one thing this flag can do is take a running
+     * container down — so it fails closed on anything ambiguous.
+     */
+    const applyRequested = source.applyRequested === true;
+
+    entries.push({ id, domain: normalizedDomain, targetHostname: normalizedTarget, applyRequested });
   }
 
   /*

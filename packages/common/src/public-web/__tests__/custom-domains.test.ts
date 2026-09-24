@@ -10,6 +10,23 @@ import {
 } from '../custom-domains';
 
 describe('parseTunnelCustomDomains', () => {
+  it('reads applyRequested only from a literal true', () => {
+    /*
+     * This flag is the one thing in the payload that can take a running container
+     * down, so anything short of an explicit yes has to mean "not asked". A Portal
+     * that predates the field sends nothing, and reading that as a refusal is
+     * indistinguishable from an operator who actually refused.
+     */
+    const parsed = parseTunnelCustomDomains([
+      { domain: 'asked.example.com', targetHostname: 'app-hub-org.example.com', applyRequested: true },
+      { domain: 'silent.example.com', targetHostname: 'other-hub-org.example.com' },
+      { domain: 'stringy.example.com', targetHostname: 'third-hub-org.example.com', applyRequested: 'true' },
+      { domain: 'numeric.example.com', targetHostname: 'fourth-hub-org.example.com', applyRequested: 1 },
+    ]);
+
+    expect(parsed?.entries?.map((entry) => entry.applyRequested)).toEqual([true, false, false, false]);
+  });
+
   it('keeps "absent" and "empty" apart', () => {
     // The whole unbind path hangs on this: `undefined` is a CI-Cloud that does
     // not report custom domains at all, `[]` is one saying this device has none.
@@ -24,7 +41,7 @@ describe('parseTunnelCustomDomains', () => {
     ]);
 
     expect(parsed).toEqual({
-      entries: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-hub-core2-acme.companionintelligence.com' }],
+      entries: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-hub-core2-acme.companionintelligence.com', applyRequested: false }],
       dropped: 0,
     });
   });
@@ -41,8 +58,8 @@ describe('parseTunnelCustomDomains', () => {
     ]);
 
     expect(parsed?.entries).toEqual([
-      { id: undefined, domain: 'kept-despite-blank-id.acme.com', targetHostname: 'other-hub-acme.example.com' },
-      { id: 'cd_4', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com' },
+      { id: undefined, domain: 'kept-despite-blank-id.acme.com', targetHostname: 'other-hub-acme.example.com', applyRequested: false },
+      { id: 'cd_4', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com', applyRequested: false },
     ]);
     // `{ id: '' }` survives: the id is informational and must never gate a live
     // domain, so only the missing domain/target rows and the junk are dropped.
@@ -64,7 +81,7 @@ describe('parseTunnelCustomDomains', () => {
       { id: 'h', domain: 'ok.acme.com', targetHostname: 'app-hub-acme.example.com' },
     ]);
 
-    expect(parsed?.entries).toEqual([{ id: 'h', domain: 'ok.acme.com', targetHostname: 'app-hub-acme.example.com' }]);
+    expect(parsed?.entries).toEqual([{ id: 'h', domain: 'ok.acme.com', targetHostname: 'app-hub-acme.example.com', applyRequested: false }]);
     expect(parsed?.dropped).toBe(7);
   });
 
