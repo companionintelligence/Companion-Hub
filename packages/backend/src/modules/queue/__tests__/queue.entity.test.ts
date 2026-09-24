@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { appEventResultSchema } from '../entities/app-events';
 import { EventPublisher } from '../event.publisher';
 import { QUEUE_UNAVAILABLE_CODE } from '../queue.constants';
+import { deriveQueueSigningKey, signQueueMessage } from '../message-signing';
 import { Queue } from '../queue.entity';
 
 describe('Queue', () => {
@@ -302,5 +303,107 @@ describe('Queue', () => {
 
     expect(rabbit.createConsumer).toHaveBeenCalled();
     expect(consumer.on).toHaveBeenCalledWith('error', expect.any(Function));
+  });
+});
+
+describe('Queue — per-message authentication', () => {
+  const KEY = deriveQueueSigningKey('hub-jwt-secret');
+  const schema = z.object({ requestId: z.string(), command: z.string().optional() });
+  const result = z.object({ success: z.boolean(), message: z.string() });
+
+  function signedQueue() {
+    const logger = mock<LoggerService>();
+    const consumer = { on: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+    const rabbit = mock<Connection>();
+    let handler: ((req: { body: unknown }, reply: (r: unknown) => Promise<void>) => Promise<void>) | undefined;
+    rabbit.createConsumer.mockImplementation(((_opts: unknown, cb: typeof handler) => {
+      handler = cb;
+      return consumer;
+    }) as never);
+    const rpcClient = mock<RPCClient>();
+    const publisher = mock<EventPublisher>();
+    publisher.publish.mockResolvedValue(undefined);
+    const queue = new Queue(rabbit, rpcClient, publisher, 'app-events-queue', 1, schema, result, logger, () => true, undefined, KEY);
+    const callback = vi.fn().mockResolvedValue(undefined);
+    queue.onEvent(callback);
+    if (!handler) throw new Error('consumer handler was not registered');
+    return { queue, rpcClient, publisher, logger, callback, deliver: handler };
+  }
+
+  it('signs what it publishes, and the signed body still carries the validated payload', async () => {
+    const { queue, rpcClient } = signedQueue();
+    rpcClient.send.mockResolvedValue({ body: { success: true, message: 'ok' } } as never);
+
+    await queue.publish({ requestId: 'req-1', command: 'restart' });
+
+    const [, body] = rpcClient.send.mock.calls[0] as [string, Record<string, unknown>];
+    expect(body).toMatchObject({ requestId: 'req-1', command: 'restart' });
+    expect(body.__hub).toMatchObject({ v: 1, sig: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  });
+
+  it('dispatches a validly signed message with the envelope stripped', async () => {
+    const { deliver, callback } = signedQueue();
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const wire = signQueueMessage(KEY, 'app-events-queue', { requestId: 'req-2', command: 'restart' });
+
+    await deliver({ body: wire }, reply);
+
+    expect(callback).toHaveBeenCalledWith({ requestId: 'req-2', command: 'restart' }, reply);
+  });
+
+  it('SECURITY: refuses an unsigned command — the shape anyone holding the broker password can send', async () => {
+    const { deliver, callback, publisher, logger } = signedQueue();
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await deliver({ body: { requestId: 'req-3', command: 'uninstall' } }, reply);
+
+    expect(callback).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledWith({ success: false, message: expect.stringMatching(/unauthenticated.*missing_envelope/) });
+    expect(publisher.publish).toHaveBeenCalledWith(
+      'rpc.rejected.app-events-queue',
+      expect.objectContaining({ reason: 'missing_envelope', requestId: 'req-3' }),
+    );
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('SECURITY: refuses a tampered or replayed command', async () => {
+    const { deliver, callback } = signedQueue();
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const wire = signQueueMessage(KEY, 'app-events-queue', { requestId: 'req-4', command: 'restart' });
+
+    await deliver({ body: { ...wire, command: 'uninstall' } }, reply);
+    expect(callback).not.toHaveBeenCalled();
+
+    await deliver({ body: wire }, reply);
+    expect(callback).toHaveBeenCalledTimes(1);
+
+    await deliver({ body: wire }, reply);
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(reply).toHaveBeenLastCalledWith({ success: false, message: expect.stringMatching(/replayed/) });
+  });
+
+  it('signs cron-scheduled publishes at fire time', async () => {
+    vi.useFakeTimers();
+    try {
+      const { queue, rpcClient } = signedQueue();
+      rpcClient.send.mockResolvedValue({ body: { success: true, message: 'ok' } } as never);
+
+      queue.publishRepeatable({ requestId: 'cron-1' }, '* * * * *');
+      await vi.advanceTimersByTimeAsync(61_000);
+
+      const [, body] = rpcClient.send.mock.calls[0] as [string, Record<string, unknown>];
+      expect(body).toMatchObject({ requestId: 'cron-1' });
+      expect(body.__hub).toMatchObject({ v: 1 });
+      queue.stopAllCronTasks();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says so, loudly, when constructed without a key (test-only mode)', () => {
+    const logger = mock<LoggerService>();
+    new Queue(mock<Connection>(), mock<RPCClient>(), mock<EventPublisher>(), 'app-events-queue', 1, schema, result, logger);
+
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/no message signing key/));
   });
 });

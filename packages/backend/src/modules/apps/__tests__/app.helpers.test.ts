@@ -162,6 +162,74 @@ describe('AppHelpers', () => {
       expect(written.get('DOMAIN')).toBe('example.com');
     });
 
+    it('SECURITY: inherits ONLY the allowlisted Hub .env keys — the broker password and anything else in that file stay put', async () => {
+      // The Hub's .env is the seed for every app.env, and it holds every Hub
+      // secret. A denylist covered four of them; the RabbitMQ password was not
+      // on it, so every installed app could publish lifecycle commands to the
+      // Hub's own queue. Nor is the leak limited to what we can name today:
+      // whatever an installer or operator adds to that file must not flow.
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['RABBITMQ_HOST', 'ci-hub-queue'],
+          ['RABBITMQ_USERNAME', 'companion'],
+          ['RABBITMQ_PASSWORD', 'broker-password'],
+          ['POSTGRES_PASSWORD', 'db-password'],
+          ['POSTGRES_HOST', 'ci-hub-db'],
+          ['HUB_API_KEY', 'portal-device-key'],
+          ['NODE_AUTH_TOKEN', 'registry-token'],
+          ['SOME_FUTURE_HUB_SECRET', 'whatever-lands-here-next'],
+          // …and the documented, non-secret identity an app may rely on.
+          ['DOMAIN', 'example.com'],
+          ['LOCAL_DOMAIN', 'hub.local'],
+          ['ROOT_FOLDER_HOST', '/opt/hub'],
+          ['TZ', 'Europe/Berlin'],
+          ['CI_HUB_VERSION', '0.2.99'],
+        ]),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+
+      for (const withheld of [
+        'RABBITMQ_HOST',
+        'RABBITMQ_USERNAME',
+        'RABBITMQ_PASSWORD',
+        'POSTGRES_PASSWORD',
+        'POSTGRES_HOST',
+        'HUB_API_KEY',
+        'NODE_AUTH_TOKEN',
+        'SOME_FUTURE_HUB_SECRET',
+      ]) {
+        expect(written.has(withheld), `${withheld} must not reach app.env`).toBe(false);
+      }
+      expect(written.get('DOMAIN')).toBe('example.com');
+      expect(written.get('LOCAL_DOMAIN')).toBe('hub.local');
+      expect(written.get('TZ')).toBe('Europe/Berlin');
+      expect(written.get('CI_HUB_VERSION')).toBe('0.2.99');
+    });
+
+    it('still honours the documented operator pins from the Hub .env', async () => {
+      // These are the values `setUnlessOperatorSet` and the maps-key gate read
+      // back from the seed on purpose; the allowlist must not silently turn
+      // that operator override off.
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['CI_CLOUD_URL', 'https://portal.example'],
+          ['GOOGLE_MAPS_KEY', 'operator-maps-key'],
+          ['PORTAL_OIDC_ISSUER', 'https://portal.example'],
+        ]),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+
+      expect(written.get('CI_CLOUD_URL')).toBe('https://portal.example');
+      expect(written.get('GOOGLE_MAPS_KEY')).toBe('operator-maps-key');
+      expect(written.get('PORTAL_OIDC_ISSUER')).toBe('https://portal.example');
+    });
+
     describe('Companion Memory credential injection', () => {
       // A consumer app declaring the env vars it reads its memory URL + key from.
       const memoryConsumerApp: AppInfo = {
@@ -1439,9 +1507,14 @@ describe('AppHelpers', () => {
       });
 
       it("R-ENV/SEC-MCP-8: passes the app's existing HUB_MCP_API_KEY to provisionManagedKey (preserve path)", async () => {
-        // The same mocked map is the app's existing env; seed it with a prior key.
-        const envMap = new Map<string, string>([['HUB_MCP_API_KEY', 'old-key']]);
-        envUtils.envStringToMap.mockReturnValue(envMap);
+        // The prior key lives in the app's OWN app.env, not the Hub's .env — keep
+        // the two maps distinct, as generateEnvFile does: the Hub .env seed is
+        // allowlisted (a managed key is not inheritable), the app env is where
+        // preservation reads from.
+        const envMap = new Map<string, string>();
+        const existingAppEnv = new Map<string, string>([['HUB_MCP_API_KEY', 'old-key']]);
+        appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'EXISTING' });
+        envUtils.envStringToMap.mockImplementation((content?: string) => (content === 'EXISTING' ? existingAppEnv : envMap));
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
         apiKeys.provisionManagedKey.mockResolvedValue('old-key');
