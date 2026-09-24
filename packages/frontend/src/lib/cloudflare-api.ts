@@ -27,6 +27,12 @@ export type PublicWebDiagnosticsApp = {
   appUrn: string;
   envMismatch: boolean;
   computedPublicUrl: string;
+  /**
+   * The app's display name, as the Hub's report carries it. A surface that names
+   * the app should prefer the installed-apps list and fall back to this, so it
+   * never has to print a URN while that list is still loading.
+   */
+  appName?: string;
   /** The app's lifecycle status, as the Hub's report saw it. */
   status?: string;
   /**
@@ -84,6 +90,21 @@ export async function fetchPublicWebDiagnostics(): Promise<{ apps: PublicWebDiag
   const result = await sdkResult(getDiagnostics2());
   if (!result.ok) return null;
   return (result.data ?? { apps: [] }) as { apps: PublicWebDiagnosticsApp[] };
+}
+
+/**
+ * The report for a `useQuery`, where `null` must NOT be an answer.
+ *
+ * TanStack treats a resolved `null` as success, so a transient 401 or 500 would be
+ * cached as "nothing is wrong" for the whole `staleTime`, with `retry: false` set
+ * app-wide — a surface whose only job is to say a customer's domain is dark would
+ * go quiet on exactly the failure it should survive. Throwing keeps the query in
+ * error and leaves the last good `data` on screen.
+ */
+export async function queryPublicWebDiagnostics(): Promise<{ apps: PublicWebDiagnosticsApp[] }> {
+  const report = await fetchPublicWebDiagnostics();
+  if (!report) throw new Error('APP_PUBLIC_WEB_REPAIR_ERROR');
+  return report;
 }
 
 export type PublicWebRepairResult = {

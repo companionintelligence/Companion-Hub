@@ -21,6 +21,7 @@ import {
 import type { TunnelCustomDomain } from '@ci-hub/common/types';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
+import { EnvUtils } from '../env/env.utils';
 import {
   canServeOnCustomDomain,
   publishesCloudflarePublicRoute,
@@ -756,23 +757,26 @@ export class ExposureSyncService {
        */
       const syncedAppUrns = new Set(syncedDbApps.map((app: AppFromDb) => createAppUrn(app.appName, app.appStoreSlug)));
 
-      const exposedApps: AppInfo[] = syncedDbApps.map((app: AppFromDb) => {
-        const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-        return {
-          name: app.appName,
-          subdomain,
-          publicDomain: app.publicDomain || defaultPublicDomain,
-          localPort: 80,
-          protocol: 'http' as const,
-          hostname: 'traefik',
-          originServerName: buildOriginServerName({
-            appSubdomain: subdomain,
-            hubSubdomain: orgInfo.hubSubdomain,
-            orgSlug: orgInfo.slug,
-            localDomain,
-          }),
-        };
-      });
+      const exposedApps: AppInfo[] = await Promise.all(
+        syncedDbApps.map(async (app: AppFromDb) => {
+          const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+          return {
+            name: app.appName,
+            subdomain,
+            publicDomain: app.publicDomain || defaultPublicDomain,
+            localPort: 80,
+            protocol: 'http' as const,
+            hostname: 'traefik',
+            originServerName: buildOriginServerName({
+              appSubdomain: subdomain,
+              hubSubdomain: orgInfo.hubSubdomain,
+              orgSlug: orgInfo.slug,
+              localDomain,
+            }),
+            customDomainPendingApply: await this.customDomainPendingApply(createAppUrn(app.appName, app.appStoreSlug), app),
+          };
+        }),
+      );
 
       // Include the Hub in every sync so Companion Portal preserves its tunnel
       // route. `device_registration.hubSubdomain` is the canonical route identity.
@@ -1572,7 +1576,54 @@ export class ExposureSyncService {
     }
 
     if (strandedAppUrns.length > 0) {
-      await this.restartRevertedApps(strandedAppUrns);
+      await this.restartRevertedApps(strandedAppUrns, 'revert');
+    }
+  }
+
+  /**
+   * Whether a bound custom domain is NOT being served yet.
+   *
+   * ⚠ THE ENV READ IS THE POINT, not an optimisation. `pendingRestart` alone is
+   * raised by every settings save (`updateAppConfig`), so `customDomain !== null
+   * && pendingRestart` would claim a customer's domain was dark each time an
+   * unrelated setting changed — and, where this gates an automatic restart, would
+   * bounce a container for a change that has nothing to do with the domain. The
+   * only honest answer is the one `PublicWebService` gives: the domain is bound
+   * and the compose env is still on some other hostname.
+   *
+   * Read from the row plus the env rather than from the diagnostics report: this
+   * runs inside the sync that BINDS the domain, and a report gathered before that
+   * write would still say the app has no custom domain at all — which is how an
+   * apply request arriving with its own delivery came to be ignored.
+   *
+   * The two cheap terms are checked first, so the env is only ever read for an
+   * app that actually holds a binding and owes a restart.
+   */
+  private async customDomainPendingApply(appUrn: AppUrn, app: { customDomain: string | null; pendingRestart: boolean }): Promise<boolean> {
+    const customDomain = normalizeStoredHostname(app.customDomain);
+    if (customDomain === null || !app.pendingRestart) {
+      return false;
+    }
+
+    const envHostname = await this.readEnvPublicHostname(appUrn);
+    // An env that cannot be read is not evidence that the domain is serving. Say
+    // "not serving yet" so the Portal badge errs toward the truthful warning and
+    // the apply gate still needs its other three conditions to act.
+    return envHostname !== customDomain;
+  }
+
+  /** `APP_PUBLIC_HOSTNAME` as the app's compose env currently holds it, or `null`. */
+  private async readEnvPublicHostname(appUrn: AppUrn): Promise<string | null> {
+    try {
+      const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+      const appEnv = await appFilesManager.getAppEnv(appUrn);
+      // `EnvUtils`, not a local regex: `PublicWebService` reads the same key through
+      // it, and two parsers for one file is how the report and this gate would come
+      // to disagree about whether a domain is serving.
+      const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
+      return normalizeStoredHostname(envUtils.envStringToMap(appEnv.content || '').get('APP_PUBLIC_HOSTNAME'));
+    } catch {
+      return null;
     }
   }
 
@@ -1669,6 +1720,21 @@ export class ExposureSyncService {
       params.customDomains.flatMap((entry) => (entry.id ? [[normalizeHostname(entry.domain), entry.id] as const] : [])),
     );
 
+    /**
+     * Whether an apply was requested, by the customer hostname.
+     *
+     * OR-ed rather than last-write-wins. `collectAmbiguousCustomDomains` only
+     * catches a domain delivered against *different* targets; two rows for the
+     * same domain and the same target pass straight through, and `new Map(...)`
+     * would silently keep the last — dropping the operator's "yes, start serving
+     * it" whenever it arrived on the first of them.
+     */
+    const applyRequestedByDomain = new Map<string, boolean>();
+    for (const entry of params.customDomains) {
+      const domain = normalizeHostname(entry.domain);
+      applyRequestedByDomain.set(domain, (applyRequestedByDomain.get(domain) ?? false) || entry.applyRequested === true);
+    }
+
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
     const ambiguousDomains = collectAmbiguousCustomDomains(params.customDomains);
     /*
@@ -1685,8 +1751,10 @@ export class ExposureSyncService {
     const matchedTargets = new Set<string>();
     /** Reverts to dispatch, with the hostname each app lost. See the filter below. */
     const revertedApps: { appUrn: AppUrn; lostHostname: string }[] = [];
+    /** Apps an operator asked to start serving a domain they already hold. */
+    const applyRequestedAppUrns: AppUrn[] = [];
     /** Reverts the bind pass must decide on. See `stillPursuingCurrent` below. */
-    const deferredRevertAppUrns: AppUrn[] = [];
+    const deferredRevert = new Set<AppUrn>();
 
     for (const app of params.apps) {
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -1790,6 +1858,38 @@ export class ExposureSyncService {
       }
 
       if (next === current) {
+        /*
+         * Already bound. The only work left is to APPLY it — recreate the
+         * container so it answers on the customer's name — and that only happens
+         * when the operator asked for it in the connect flow.
+         *
+         * Gated on whether the env is still off the domain, NOT on `pendingRestart`:
+         * the raw flag is raised by any settings save, and acting on it here would
+         * restart an app whose domain is already serving, for a change that has
+         * nothing to do with the domain. `customDomainPendingApply` reads the env
+         * for exactly that reason.
+         *
+         * `skipAutoRestartAppUrns` is honoured for the reason it exists — a save
+         * already owns this container's recreation, and doing it twice for one
+         * action is the hazard that flag was added to prevent.
+         *
+         * `app.status` is only a first sieve here. Unlike the bind branch below,
+         * this path performs no `updateAppByIdIfStatus`, so nothing has re-read the
+         * row since the snapshot was taken before a Portal round trip that can take
+         * seconds. The dispatcher re-checks the status before it restarts anything.
+         */
+        const applyRequested = current !== null && applyRequestedByDomain.get(current) === true;
+
+        if (
+          applyRequested &&
+          app.status === 'running' &&
+          !params.skipAutoRestartAppUrns.has(appUrn) &&
+          (await this.customDomainPendingApply(appUrn, app))
+        ) {
+          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${current}; restarting it to apply that binding.`);
+          applyRequestedAppUrns.push(appUrn);
+        }
+
         continue;
       }
 
@@ -1905,12 +2005,42 @@ export class ExposureSyncService {
       } else if (revertIsOurs) {
         // Hand the revert to the bind pass, which is the only thing that can tell
         // "CI-Cloud will wire this back" from "the domain is gone for good".
-        deferredRevertAppUrns.push(appUrn);
+        deferredRevert.add(appUrn);
       }
+
+      /*
+       * A request can arrive on the SAME sync that first delivers the binding —
+       * in fact that is the ordinary case, because the operator answers in the
+       * connect flow and Companion Portal carries the answer as soon as the
+       * domain is ready. Handling it only on a later pass would leave the
+       * customer's domain dark for another poll interval for no reason.
+       *
+       * No "still not serving" check here: the binding is being written in this
+       * pass, so the environment necessarily still holds the old hostname.
+       *
+       * ⚠ DECIDED AFTER THE REVERT, and refused when the revert was deferred. A
+       * deferred revert means the Hub is about to ask CI-Cloud to wire `current`
+       * back, and recreating the container onto `next` now is exactly the bounce
+       * the deferral exists to prevent: the app would serve the wrong customer
+       * hostname until the re-wire lands, and then need a second recreation the
+       * shared cooldown would refuse. `restartingNow` needs no exclusion here —
+       * the dispatcher below drops an app that is already restarting as a revert.
+       */
+      if (next !== null && !deferredRevert.has(appUrn) && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn)) {
+        const requestedForNext = applyRequestedByDomain.get(normalizeHostname(next)) === true;
+        if (requestedForNext) {
+          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${next}; restarting it to apply that binding.`);
+          applyRequestedAppUrns.push(appUrn);
+        }
+      }
+
+      const applyingNow = applyRequestedAppUrns.includes(appUrn);
 
       let message: string;
       if (current === null) {
-        message = `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restart it to publish that hostname to the app.`;
+        message = applyingNow
+          ? `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restarting it to publish that hostname to the app.`
+          : `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restart it to publish that hostname to the app.`;
       } else {
         const destination = next ? `custom domain ${next}` : 'its platform hostname';
         message = restartingNow
@@ -1984,22 +2114,44 @@ export class ExposureSyncService {
      */
     const revertedAppUrns = revertedApps.filter((entry) => !domainsOnMovedTargets.has(entry.lostHostname)).map((entry) => entry.appUrn);
     if (revertedAppUrns.length > 0) {
-      await this.restartRevertedApps(revertedAppUrns);
+      await this.restartRevertedApps(revertedAppUrns, 'revert');
     }
 
-    // Re-attempt reverts whose dispatch failed earlier. Their rows are already
-    // settled, so this is the only thing that will ever look at them again.
-    const retries = [...this.failedCustomDomainReverts].filter((appUrn) => !revertedAppUrns.includes(appUrn));
+    /*
+     * Re-attempt reverts whose dispatch failed earlier. Their rows are already
+     * settled, so this is the only thing that will ever look at them again.
+     *
+     * Read BEFORE the applies dispatch: a failure recorded by that dispatch would
+     * otherwise be re-attempted in the same pass, a second dispatch the "retry on
+     * the next pass" comment below explicitly does not intend.
+     */
+    const dispatched = new Set(revertedAppUrns);
+    const retries = [...this.failedCustomDomainReverts].filter((appUrn) => !dispatched.has(appUrn));
+
+    /*
+     * Apply requests go through the same dispatcher as reverts: one place decides
+     * that a container is recreated for a custom-domain reason, so the two
+     * directions cannot race each other over the same app. An app already
+     * restarting as a revert is filtered out rather than queued twice — and so is
+     * one the identity-moved check above deliberately spared, since `revertedApps`
+     * holding it means this pass concluded its container must not be recreated.
+     */
+    const sparedByIdentityMove = new Set(identityMoved.map((entry) => entry.appUrn));
+    const toApply = applyRequestedAppUrns.filter((appUrn) => !dispatched.has(appUrn) && !sparedByIdentityMove.has(appUrn));
+    if (toApply.length > 0) {
+      await this.restartRevertedApps(toApply, 'apply');
+    }
+
     if (retries.length > 0) {
-      await this.restartRevertedApps(retries);
+      await this.restartRevertedApps(retries, 'revert');
     }
 
-    return deferredRevertAppUrns;
+    return [...deferredRevert];
   }
 
   /**
-   * Recreates apps whose custom domain was just removed so their public identity
-   * returns to the platform hostname.
+   * Recreates apps whose public identity changed under them — a custom domain
+   * removed (`revert`) or one the operator asked to start serving (`apply`).
    *
    * A restart is the whole repair: it regenerates `app.env`, rebuilds the Compose
    * file — and with it the Traefik `X-Forwarded-Host` middleware, which is
@@ -2012,13 +2164,17 @@ export class ExposureSyncService {
    * not hold the sync open, and the app event queue serializes the restart
    * against any lifecycle command that claims the app first.
    *
-   * A dispatch that fails is remembered and retried on the next pass. The row was
-   * already written before the restart was asked for, so every later reconcile
-   * computes `next === current` and returns early — nothing would ever notice the
-   * app again, and it would sit forwarding a hostname the Hub has stopped serving
-   * until a person ran `cihub public-web repair`.
+   * ⚠ ONLY A REVERT IS REMEMBERED ON FAILURE. Its row was settled before the
+   * dispatch, so every later reconcile computes `next === current` and returns
+   * early — without the retry list nothing would notice the app again, and it
+   * would sit forwarding a hostname the Hub has stopped serving. An apply is the
+   * opposite: the next pass re-derives it from `applyRequested`, the env and the
+   * app's status, so remembering it would re-dispatch a restart with none of
+   * those conditions re-checked — after the operator withdrew the request, or
+   * onto an app they have since stopped. A cooldown-skipped REVERT is remembered
+   * for the same reason a failed one is: nothing else will ever look at it.
    */
-  private async restartRevertedApps(appUrns: AppUrn[]): Promise<void> {
+  private async restartRevertedApps(appUrns: AppUrn[], direction: 'revert' | 'apply'): Promise<void> {
     /*
      * Imported dynamically. `AppLifecycleService` injects this service, so a
      * static import would close the cycle and leave this module's DI tokens
@@ -2033,20 +2189,28 @@ export class ExposureSyncService {
       lifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
     } catch (error) {
       this.logger.debug(
-        `[Cloudflare] Lifecycle service unavailable for custom-domain revert: ${error instanceof Error ? error.message : String(error)}`,
+        `[Cloudflare] Lifecycle service unavailable for custom-domain ${direction}: ${error instanceof Error ? error.message : String(error)}`,
       );
       lifecycleService = undefined;
     }
 
     if (!lifecycleService) {
-      for (const appUrn of appUrns) {
-        this.failedCustomDomainReverts.add(appUrn);
+      if (direction === 'revert') {
+        for (const appUrn of appUrns) {
+          this.failedCustomDomainReverts.add(appUrn);
+        }
+        this.logger.warn(
+          `[Cloudflare] Could not revert ${appUrns.join(', ')} to the platform hostname automatically. ` +
+            'Those apps are still forwarding a hostname that no longer resolves — the next sync will try again, ' +
+            'or run `cihub public-web repair` to apply it now.',
+        );
+      } else {
+        this.logger.warn(
+          `[Cloudflare] Could not apply the custom domain bound to ${appUrns.join(', ')} automatically. ` +
+            'Those apps are still answering on their platform hostname, so the customer domain stays dark — the next sync ' +
+            'will try again, or restart the app to apply it now.',
+        );
       }
-      this.logger.warn(
-        `[Cloudflare] Could not revert ${appUrns.join(', ')} to the platform hostname automatically. ` +
-          'Those apps are still forwarding a hostname that no longer resolves — the next sync will try again, ' +
-          'or run `cihub public-web repair` to apply it now.',
-      );
       return;
     }
 
@@ -2058,24 +2222,58 @@ export class ExposureSyncService {
           `[Cloudflare] ${appUrn} changed public hostname again within the restart cooldown — leaving it alone. ` +
             'Its restart badge is still raised, so it can be applied by hand.',
         );
+        // A revert has nothing else watching it, so a cooldown skip would strand
+        // the app forwarding a hostname that no longer resolves. Queue the retry.
+        if (direction === 'revert') {
+          this.failedCustomDomainReverts.add(appUrn);
+        }
         continue;
+      }
+
+      /*
+       * ⚠ APPLIES ONLY. The status an apply was decided on is a snapshot taken
+       * before a Portal round trip that can take seconds, and — unlike the bind
+       * branch — nothing on that path performs an `updateAppByIdIfStatus` that
+       * would fail if a command claimed the app meanwhile. `restartApp` has no
+       * status guard of its own and, as a `system` actor, skips the entitlement
+       * gate, so without this an app the operator stopped mid-sync is brought back
+       * up. A revert is not re-checked: its row was settled by a compare-and-set in
+       * the same iteration, and an app still injecting a dead `X-Forwarded-Host`
+       * has to be recreated whatever it is doing now.
+       */
+      if (direction === 'apply') {
+        const row = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
+        if (row && row.status !== 'running') {
+          this.logger.debug(`[Cloudflare] Not applying ${appUrn}'s custom domain: it is ${row.status}, not running.`);
+          continue;
+        }
       }
 
       try {
         // Skip the pull: nothing about the image changed, and a registry round
         // trip would extend the outage this restart exists to end.
-        await lifecycleService.restartApp({ appUrn, skipPull: true, actor: { kind: 'system', reason: 'custom-domain-revert' } });
+        await lifecycleService.restartApp({
+          appUrn,
+          skipPull: true,
+          actor: { kind: 'system', reason: direction === 'revert' ? 'custom-domain-revert' : 'custom-domain-apply' },
+        });
         // Recorded only once the command is queued. A dispatch that threw
         // restarted nothing, so it must not spend the cooldown.
         this.lastCustomDomainRestartAt.set(appUrn, now);
         this.failedCustomDomainReverts.delete(appUrn);
       } catch (error) {
-        // Retry on the next pass. The row was settled before this dispatch, so
-        // no later reconcile would ever look at this app again.
-        this.failedCustomDomainReverts.add(appUrn);
-        this.logger.error(
-          `[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${error instanceof Error ? error.message : String(error)}. Retrying on the next sync.`,
-        );
+        if (direction === 'revert') {
+          // Retry on the next pass. The row was settled before this dispatch, so
+          // no later reconcile would ever look at this app again.
+          this.failedCustomDomainReverts.add(appUrn);
+          this.logger.error(
+            `[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${error instanceof Error ? error.message : String(error)}. Retrying on the next sync.`,
+          );
+        } else {
+          this.logger.error(
+            `[Cloudflare] Failed to restart ${appUrn} to start serving its custom domain: ${error instanceof Error ? error.message : String(error)}. The next sync re-derives this and will try again.`,
+          );
+        }
       }
     }
 
