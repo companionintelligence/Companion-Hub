@@ -1,5 +1,10 @@
 import { systemLoadOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
-import { fetchPublicWebDiagnostics } from '@/lib/cloudflare-api';
+import {
+  customDomainAwaitingRestart,
+  fetchPublicWebDiagnostics,
+  PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY,
+  type PublicWebDiagnosticsApp,
+} from '@/lib/cloudflare-api';
 import { CustomDomainRestartBanner } from '@/modules/app/components/custom-domain-restart-banner';
 import { Cpu, Database, MemoryStick } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -16,6 +21,9 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 type DashboardLocationState = {
   showBackgroundInstallToast?: boolean;
 };
+
+/** Stable identity for "no report yet", so the memos below actually memoize. */
+const NO_DIAGNOSTICS: PublicWebDiagnosticsApp[] = [];
 
 export default () => {
   const { t } = useTranslation();
@@ -73,19 +81,21 @@ export default () => {
    * something nobody asked for.
    */
   const { data: publicWebDiagnostics } = useQuery({
-    queryKey: ['public-web-diagnostics'],
+    queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY,
     queryFn: fetchPublicWebDiagnostics,
     staleTime: 30_000,
   });
 
-  const diagnosticsApps = publicWebDiagnostics?.apps ?? [];
+  // A shared constant, not `?? []` inline: the literal would be a fresh array on
+  // every render while the report is absent — which is the whole pending window,
+  // and forever on a Hub whose endpoint errors — and the memo below would never hold.
+  const diagnosticsApps = publicWebDiagnostics?.apps ?? NO_DIAGNOSTICS;
 
   const customDomainsAwaitingRestart = useMemo(() => {
     const byUrn: Record<string, string> = {};
     for (const entry of diagnosticsApps) {
-      if (entry.awaitingCustomDomainRestart && entry.customDomain) {
-        byUrn[entry.appUrn] = entry.customDomain;
-      }
+      const domain = customDomainAwaitingRestart(entry);
+      if (domain) byUrn[entry.appUrn] = domain;
     }
     return byUrn;
   }, [diagnosticsApps]);
