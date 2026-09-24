@@ -808,6 +808,118 @@ describe('App lifecycle', () => {
       expect(revertedEnv.get('APP_BASE_URL')).toBe(`https://${platformHostname}`);
     });
 
+    it('leaves a running app alone when the delivery carries no request', async () => {
+      /*
+       * The behaviour every Portal that predates the request field depends on,
+       * and the reason the flag may not default to "yes": a bind flags the app
+       * and leaves the container running. Waited to quiescence deliberately —
+       * asserting immediately would pass even if a restart had been queued,
+       * because the container work happens after the sync resolves.
+       */
+      const appInfo = await installExposed('cdnoask');
+      const platformHostname = 'cdnoask-test-core2-acme.ci.test';
+
+      await runToQuiescence(appInfo.urn, () => syncReporting([{ id: 'cd_1', domain: 'noask.acme.com', targetHostname: platformHostname }]));
+
+      const row = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(row?.customDomain).toBe('noask.acme.com');
+      expect(row?.pendingRestart).toBe(true);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+    });
+
+    it('applies a binding the operator asked for, instead of waiting to be restarted by hand', async () => {
+      /*
+       * The whole point of the apply request: a first bind deliberately leaves a
+       * running container alone, so the customer's domain stays dark until someone
+       * restarts the app — and nothing tells them to. When the operator answered
+       * "yes, start serving it" in the connect flow, Companion Portal carries that
+       * answer here and the Hub finishes the job itself.
+       */
+      const appInfo = await installExposed('cdapply');
+      const platformHostname = 'cdapply-test-core2-acme.ci.test';
+
+      // A delivery with no request behaves exactly as it always has: bound, flagged,
+      // container untouched. This is also the shape an older Portal sends.
+      await syncReporting([{ id: 'cd_1', domain: 'apply.acme.com', targetHostname: platformHostname }]);
+
+      const bound = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(bound?.customDomain).toBe('apply.acme.com');
+      expect(bound?.pendingRestart).toBe(true);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+
+      // Now the operator's answer arrives with the same binding.
+      await runToQuiescence(appInfo.urn, () =>
+        syncReporting([{ id: 'cd_1', domain: 'apply.acme.com', targetHostname: platformHostname, applyRequested: true }]),
+      );
+
+      // Applied without anyone touching the app: the env, and with it the public
+      // identity every redirect is built from, is now the customer's hostname.
+      const appliedEnv = await readEnv(appInfo.urn);
+      expect(appliedEnv.get('APP_PUBLIC_URL')).toBe('https://apply.acme.com');
+      expect(appliedEnv.get('APP_PUBLIC_HOSTNAME')).toBe('apply.acme.com');
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((row) => row?.pendingRestart)).toBe(false);
+    });
+
+    it('does not restart again once the domain is already being served', async () => {
+      /*
+       * The request stays on Companion Portal's row until it clears, so it arrives
+       * on every sync for as long as it is set. Acting on it each time would bounce
+       * a working app every few minutes — the reason the trigger is the Hub's own
+       * "not serving it yet" verdict rather than the request on its own.
+       */
+      const appInfo = await installExposed('cdsettled');
+      const platformHostname = 'cdsettled-test-core2-acme.ci.test';
+      const delivered = [{ id: 'cd_1', domain: 'settled.acme.com', targetHostname: platformHostname, applyRequested: true }];
+
+      await runToQuiescence(appInfo.urn, () => syncReporting(delivered));
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://settled.acme.com');
+
+      await runToQuiescence(appInfo.urn, () => syncReporting(delivered));
+
+      // Still serving, and still settled: a second recreation would have raised
+      // `pendingRestart` again on its way through, so a clean row here is the
+      // evidence that the standing request did not bounce a working app. Waited to
+      // quiescence like the sibling case — a bare `await` returns before a queued
+      // restart has touched the container, so it would pass either way.
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://settled.acme.com');
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((row) => row?.pendingRestart)).toBe(false);
+    });
+
+    it('does not let a standing request turn an unrelated settings save into a restart', async () => {
+      /*
+       * The request stays on Companion Portal's row, so it arrives on every sync
+       * for as long as it is set. `pendingRestart` is raised by ANY settings save
+       * (`updateAppConfig`), so a gate built on the raw flag would recreate a
+       * container whose customer domain has been serving all along — for a change
+       * that has nothing to do with the domain. The gate reads the env instead.
+       */
+      const appInfo = await installExposed('cdunrelated');
+      const platformHostname = 'cdunrelated-test-core2-acme.ci.test';
+      const domain = { id: 'cd_1', domain: 'unrelated.acme.com', targetHostname: platformHostname };
+
+      /*
+       * Applied BY HAND, not through a request. An automatic apply would spend the
+       * shared restart cooldown, and the assertion below would then hold because the
+       * cooldown refused the second restart rather than because the gate did — which
+       * is how the sibling case came to pass with the gate removed.
+       */
+      await runToQuiescence(appInfo.urn, () => syncReporting([domain]));
+      await restartExposed(appInfo.urn);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://unrelated.acme.com');
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((r) => r?.pendingRestart)).toBe(false);
+
+      // What an unrelated save leaves behind: the env is already on the domain, and
+      // the flag says only "this app owes a restart for something".
+      const row = await appsRepository.getAppByUrn(appInfo.urn);
+      await appsRepository.updateAppById(row?.id as number, { pendingRestart: true });
+
+      await runToQuiescence(appInfo.urn, () => syncReporting([{ ...domain, applyRequested: true }]));
+
+      // Untouched: a recreation would have cleared `pendingRestart` on its way out.
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((r) => r?.pendingRestart)).toBe(true);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://unrelated.acme.com');
+    });
+
     it('carries an install-time choice through to a bind, and only then to the env', async () => {
       /*
        * The whole install-time path, seam by seam — and the only test that proves

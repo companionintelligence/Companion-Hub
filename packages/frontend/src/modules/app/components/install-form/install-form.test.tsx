@@ -32,7 +32,11 @@ const { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting 
   repairPublicWebRouting: vi.fn(),
 }));
 
-vi.mock('@/lib/cloudflare-api', () => ({
+vi.mock('@/lib/cloudflare-api', async (importOriginal) => ({
+  // Spread the original so a constant the form imports (the shared diagnostics query
+  // key) does not have to be restated here — a bare factory makes any new named
+  // export a runtime "No export is defined on the mock" the moment it is used.
+  ...(await importOriginal<typeof import('@/lib/cloudflare-api')>()),
   fetchDnsAvailability,
   fetchPublicWebDiagnostics,
   repairPublicWebRouting,
@@ -101,6 +105,9 @@ vi.mock('@tanstack/react-query', () => ({
     if (options?.queryKey?.[0] === 'getPortalConfig') return { data: MOCK_PORTAL_CONFIG, isLoading: false };
     return MOCK_USE_QUERY_RESULT;
   },
+  // The form reaches for a client to refresh the Public Web report after a routing
+  // repair. Nothing here repairs anything, so the mock only has to satisfy the hook.
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   queryOptions: (options: unknown) => options,
 }));
 

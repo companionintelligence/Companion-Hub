@@ -1,4 +1,4 @@
-import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
+import { fetchDnsAvailability, fetchPublicWebDiagnostics, PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY, repairPublicWebRouting } from '@/lib/cloudflare-api';
 import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
 import { formatApiError } from '@/lib/format-api-error';
 import { portalConfigQueryOptions } from '@/lib/portal-config';
@@ -18,7 +18,7 @@ import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Download, History, Upload } from 'lucide-react';
 import type React from 'react';
@@ -259,6 +259,7 @@ export const InstallForm: React.FC<IProps> = ({
   const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [isRepairingPublicWeb, setIsRepairingPublicWeb] = useState(false);
+  const queryClient = useQueryClient();
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
@@ -385,6 +386,7 @@ export const InstallForm: React.FC<IProps> = ({
       const stillDrifted = publicWebDriftUrl(current.apps.find((app) => app.appUrn === info.urn));
       if (!stillDrifted) {
         setPublicWebExpectedUrl(null);
+        void queryClient.invalidateQueries({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
         toast.success(t('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
         return;
       }
@@ -402,6 +404,11 @@ export const InstallForm: React.FC<IProps> = ({
       // not a repair either, though, so it does not get to claim one: nothing was
       // rewritten and nothing restarted.
       setPublicWebExpectedUrl(null);
+      // The Public Web report is shared with the dashboard banner and the tile badge
+      // under `PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY`. Without this they keep asking for a
+      // restart this click already performed, for as long as the dashboard stays open.
+      // Only that key: the app's own queries are refreshed by the restart's SSE event.
+      void queryClient.invalidateQueries({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
       toast.success(t(outcome ? 'APP_PUBLIC_WEB_REPAIR_SUCCESS' : 'APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
     } catch (error) {
       // `formatApiError`, not a fixed string: a repair the operator has no grant for
