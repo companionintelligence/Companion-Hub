@@ -1,4 +1,5 @@
 import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
+import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -99,7 +100,7 @@ export class AppController {
 
       // Ensure required fields have defaults (prefer resolved config over hardcoded fallbacks)
       const localDomain = userSettings?.localDomain?.trim() || configuredLocalDomain;
-      const domain = userSettings?.domain?.trim() || configuredDomain;
+      const domain = resolveHubPublicDomainRoot({ domain: configuredDomain, userSettings });
       const sslPort = userSettings?.sslPort ?? defaults.sslPort;
 
       // Version latest is refreshed in the background — never block bootstrap on Companion Portal.
