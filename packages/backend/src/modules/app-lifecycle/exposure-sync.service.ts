@@ -33,6 +33,7 @@ import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
 import { isServePermissionDenied, servePermissionRemedy, TailscaleService, type TailscaleServeEntry } from '../tailscale/tailscale.service';
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
 import { hasPairingAppCheck, hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 import { customDomainAuditLine } from './custom-domain-audit';
@@ -728,9 +729,9 @@ export class ExposureSyncService {
       }
 
       const apps = await this.appRepository.getApps();
-      const userSettings = this.config.getConfig().userSettings;
-      const defaultPublicDomain = userSettings.domain || this.config.getConfig().domain;
-      const localDomain = userSettings.localDomain || this.config.getConfig().localDomain;
+      const cfg = this.config.getConfig();
+      const defaultPublicDomain = resolveHubPublicDomainRoot(cfg);
+      const localDomain = resolveHubLocalDomainRoot(cfg);
 
       type AppFromDb = Awaited<ReturnType<AppsRepository['getApps']>>[number];
       const exclude = new Set(options?.excludeAppUrns ?? []);

@@ -37,6 +37,17 @@ pub(crate) fn default_public_domain() -> &'static str {
     }
 }
 
+/// Public zone compiled into this binary: the guess a launch renders before pairing.
+///
+/// Mirrors [`compiled_ci_cloud_url`](crate::portal_url::compiled_ci_cloud_url), including the
+/// blank filter — `option_env!` yields `Some("")` when the release workflow sets the variable
+/// from an empty expression, and rendering `DOMAIN=` leaves the stack with no zone at all.
+pub(crate) fn compiled_public_domain() -> &'static str {
+    option_env!("CI_HUB_DOMAIN")
+        .filter(|domain| !domain.trim().is_empty())
+        .unwrap_or(default_public_domain())
+}
+
 pub(crate) fn default_ci_cloud_url() -> &'static str {
     match option_env!("CI_HUB_ENVIRONMENT") {
         Some("production") => DEFAULT_PROD_CI_CLOUD_URL,

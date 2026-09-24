@@ -13,8 +13,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::windows::process::CommandExt;
 
 use crate::hub_env::{
-    default_hub_image, default_public_domain, resolve_runtime_hub_image,
-    runtime_hub_version_for_image,
+    compiled_public_domain, default_hub_image, resolve_runtime_hub_image,
+    runtime_hub_version_for_image, unquote_env_value,
 };
 use crate::hub_names::*;
 use crate::portal_url::{compiled_ci_cloud_url, launch_portal_url, PortalUrlResolution};

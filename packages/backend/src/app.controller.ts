@@ -1,5 +1,5 @@
 import { resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
-import { resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
+import { resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { UserRepository } from '@/modules/user/user.repository';
@@ -99,7 +99,7 @@ export class AppController {
       const { guestDashboard, disablePasswordReset, allowAutoThemes, themeColor, themeBase, allowErrorMonitoring } = userSettings || {};
 
       // Ensure required fields have defaults (prefer resolved config over hardcoded fallbacks)
-      const localDomain = userSettings?.localDomain?.trim() || configuredLocalDomain;
+      const localDomain = resolveHubLocalDomainRoot({ localDomain: configuredLocalDomain, userSettings });
       const domain = resolveHubPublicDomainRoot({ domain: configuredDomain, userSettings });
       const sslPort = userSettings?.sslPort ?? defaults.sslPort;
 
@@ -177,8 +177,8 @@ export class AppController {
           body: '',
           releases: [],
         },
-        localDomain: defaultSettings?.localDomain?.trim() || configuredLocalDomain,
-        domain: defaultSettings?.domain?.trim() || configuredDomain,
+        localDomain: resolveHubLocalDomainRoot({ localDomain: configuredLocalDomain, userSettings: defaultSettings }),
+        domain: resolveHubPublicDomainRoot({ domain: configuredDomain, userSettings: defaultSettings }),
         sslPort: defaultSettings?.sslPort ?? defaults.sslPort,
         ...this.getSessionMetadata(req),
       };
