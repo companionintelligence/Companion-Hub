@@ -35,6 +35,14 @@ export type PublicWebDiagnosticsApp = {
    */
   action?: 'ok' | 'repair';
   pendingRestart?: boolean;
+  /** The custom hostname Companion Portal has wired for this app, when it has one. */
+  customDomain?: string | null;
+  /**
+   * A bound custom domain is dark because this app still answers on its platform
+   * hostname. Narrower than `pendingRestart`, which any settings change raises —
+   * only this one justifies telling a customer their domain does not work.
+   */
+  awaitingCustomDomainRestart?: boolean;
 };
 
 export async function fetchPublicWebDiagnostics(): Promise<{ apps: PublicWebDiagnosticsApp[] } | null> {
