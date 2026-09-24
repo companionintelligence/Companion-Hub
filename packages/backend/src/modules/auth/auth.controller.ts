@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
-import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
+import { buildHubPublicOrigin, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
@@ -235,8 +235,7 @@ export class AuthController {
    * An operator override remains authoritative until environment regeneration folds it into `DOMAIN`.
    */
   private publicDomainRoot(): string {
-    const cfg = this.config.getConfig();
-    return cfg.userSettings?.domain || cfg.domain;
+    return resolveHubPublicDomainRoot(this.config.getConfig());
   }
 
   /** The local root the appliance's LAN hostnames are built with — same precedence as above. */
