@@ -216,6 +216,78 @@ describe('PublicWebService', () => {
     // The drift is still reported — it is what the badge is about — only the
     // verdict waits for the restart the user was already asked for.
     expect(result.apps[0]).toMatchObject({ envMismatch: true, pendingRestart: true, action: 'ok' });
+    // ...and it is named, so a surface can say "cloud.acme.com is dark" instead of
+    // the generic "configuration has changed" that any saved setting produces.
+    expect(result.apps[0]).toMatchObject({ awaitingCustomDomainRestart: true, customDomain: 'cloud.acme.com' });
+  });
+
+  it('does not call an ordinary settings change a dark custom domain', async () => {
+    // `pendingRestart` is raised by every config save. A surface that promises a
+    // customer's domain is down must not fire on those, or it makes that claim
+    // constantly and stops being read.
+    //
+    // The env is DRIFTED here on purpose. Assert this against an app whose env
+    // already matches and the whole predicate short-circuits on `envMismatch`,
+    // so the test passes for a reason that has nothing to do with the flag.
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: null,
+        pendingRestart: true,
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=nextcloud-stale.example.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-stale.example.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.apps[0]).toMatchObject({ envMismatch: true, pendingRestart: true, awaitingCustomDomainRestart: false, action: 'repair' });
+  });
+
+  it('names a re-pointed domain as dark while still calling the drift repairable', async () => {
+    // The app was moved from one bound domain to another without a restart, so the
+    // env holds the OLD custom domain — neither the new one nor the platform
+    // hostname. The customer's new domain does not serve, so the flag MUST fire.
+    //
+    // `action` stays 'repair' all the same: the two answer different questions, and
+    // suppressing the verdict here would drop the app out of `mismatchCount` and out
+    // of an untargeted `repair()`, leaving the CLI reporting a fault it won't fix.
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: 'new.acme.com',
+        pendingRestart: true,
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=old.acme.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'old.acme.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(1);
+    expect(result.apps[0]).toMatchObject({
+      envMismatch: true,
+      pendingRestart: true,
+      awaitingCustomDomainRestart: true,
+      customDomain: 'new.acme.com',
+      action: 'repair',
+    });
   });
 
   it('repairs mismatched apps and triggers cloudflare sync', async () => {
