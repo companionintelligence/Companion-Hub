@@ -20,7 +20,7 @@ import { AppAccessPoints } from '../components/app-access-points/app-access-poin
 import { AppReadinessBadge, AppReadinessChecksCard } from '../components/app-readiness/app-readiness';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
 import { CustomDomainRestartBanner } from '../components/custom-domain-restart-banner';
-import { fetchPublicWebDiagnostics } from '@/lib/cloudflare-api';
+import { fetchPublicWebDiagnostics, PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
@@ -133,7 +133,7 @@ export default () => {
    * the two, and only the second is worth putting a banner on this page for.
    */
   const { data: publicWebDiagnostics } = useQuery({
-    queryKey: ['public-web-diagnostics'],
+    queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY,
     queryFn: fetchPublicWebDiagnostics,
     staleTime: 30_000,
     enabled: runtimeHealthEnabled,

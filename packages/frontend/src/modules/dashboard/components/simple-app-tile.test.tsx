@@ -60,4 +60,22 @@ describe('SimpleAppTile', () => {
 
     expect(screen.queryByTestId('app-pending-restart-badge')).not.toBeInTheDocument();
   });
+
+  // The remedy is already under way (or the app is being deleted). Asking for a
+  // restart mid-restart is the same "pointless work" the stopped case avoids, and
+  // listing only the statuses to EXCLUDE is what let these eight through.
+  it.each([
+    'restarting',
+    'starting',
+    'stopping',
+    'uninstalling',
+    'updating',
+    'resetting',
+    'backing_up',
+    'restoring',
+  ] as const)('does not ask an app that is %s to restart', (status) => {
+    render(<SimpleAppTile name="Demo" urn="demo:ci-marketplace" status={status} pendingRestart customDomainAwaitingRestart="wp.example.com" />);
+
+    expect(screen.queryByTestId('app-pending-restart-badge')).not.toBeInTheDocument();
+  });
 });

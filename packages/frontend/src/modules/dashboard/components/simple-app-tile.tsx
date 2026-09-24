@@ -1,4 +1,5 @@
 import { AppLogo } from '@/components/app-logo/app-logo';
+import { restartCanApply } from '@/lib/cloudflare-api';
 import { InstallRetryButton } from '@/modules/app/components/install-retry-button/install-retry-button';
 import { Loader2, PowerOff, RotateCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -16,7 +17,7 @@ interface SimpleAppTileProps {
   /** The app's compose env is stale until it is restarted. */
   pendingRestart?: boolean;
   /** The stale env is keeping a bound custom domain dark, which is worth naming. */
-  customDomainAwaitingRestart?: string | null;
+  customDomainAwaitingRestart?: string;
 }
 
 export const SimpleAppTile = ({
@@ -34,19 +35,22 @@ export const SimpleAppTile = ({
   const hasOverlay = isInstalling || isInstallFailed;
   const [slug] = urn.split(':');
   /*
-   * A STOPPED APP NEEDS NO RESTART, so it gets no badge. `start-app-command`
-   * regenerates the env on the way up, which is the very thing the badge would be
-   * asking for. Badging it would send an operator to perform a fix that is already
-   * scheduled — and a badge that asks for pointless work is how the last one came
-   * to be ignored.
+   * ONLY A RUNNING APP IS ASKED TO RESTART — `restartCanApply` is the same rule the
+   * banner and its click guard use, so the two surfaces cannot disagree about the
+   * same app on the same screen.
    *
-   * Nothing is claimed during an install either: the env is mid-flight and the
-   * tile is already saying so.
+   * Listing the statuses that DON'T qualify was the trap: a stopped app needs no
+   * restart (`start-app-command` regenerates the env on the way up), but neither
+   * does one already starting, restarting, updating, resetting or restoring, and
+   * badging an app mid-uninstall asks the operator to fix something being deleted.
+   * A badge that asks for pointless work is how the last one came to be ignored.
    */
-  const showPendingRestart = Boolean(pendingRestart) && !isStopped && !hasOverlay;
-  const pendingRestartLabel = customDomainAwaitingRestart
-    ? t('MY_APPS_PENDING_RESTART_CUSTOM_DOMAIN', { domain: customDomainAwaitingRestart })
-    : t('MY_APPS_PENDING_RESTART');
+  const showPendingRestart = Boolean(pendingRestart) && restartCanApply(status);
+  const pendingRestartLabel = showPendingRestart
+    ? customDomainAwaitingRestart
+      ? t('MY_APPS_PENDING_RESTART_CUSTOM_DOMAIN', { domain: customDomainAwaitingRestart })
+      : t('MY_APPS_PENDING_RESTART')
+    : '';
 
   return (
     <div className="flex items-center gap-3 p-2 cursor-pointer hover:opacity-80 transition-opacity w-full rounded-md hover:bg-muted/40">
@@ -75,7 +79,14 @@ export const SimpleAppTile = ({
             title={pendingRestartLabel}
           >
             <RotateCw className="w-3 h-3 text-warning-foreground" strokeWidth={2.5} aria-hidden />
-            <span className="sr-only">{pendingRestartLabel}</span>
+            {/*
+             * A short token, not the whole sentence. The tile is wrapped in a `<Link>`,
+             * so anything here joins that link's accessible name — spelling out
+             * "wp.example.com will not serve this app until it is restarted" would bury
+             * the app's own name, the one thing that tells two tiles apart. The full
+             * sentence stays on `title` for a sighted hover, as the Stopped badge does.
+             */}
+            <span className="sr-only">{t('MY_APPS_PENDING_RESTART_BADGE_LABEL')}</span>
           </div>
         )}
       </div>
