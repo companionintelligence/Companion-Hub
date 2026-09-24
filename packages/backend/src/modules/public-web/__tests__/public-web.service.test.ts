@@ -216,6 +216,36 @@ describe('PublicWebService', () => {
     // The drift is still reported — it is what the badge is about — only the
     // verdict waits for the restart the user was already asked for.
     expect(result.apps[0]).toMatchObject({ envMismatch: true, pendingRestart: true, action: 'ok' });
+    // ...and it is named, so a surface can say "cloud.acme.com is dark" instead of
+    // the generic "configuration has changed" that any saved setting produces.
+    expect(result.apps[0]).toMatchObject({ awaitingCustomDomainRestart: true, customDomain: 'cloud.acme.com' });
+  });
+
+  it('does not call an ordinary settings change a dark custom domain', async () => {
+    // `pendingRestart` is raised by every config save. A surface that promises a
+    // customer's domain is down must not fire on those, or it makes that claim
+    // constantly and stops being read.
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: null,
+        pendingRestart: true,
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.apps[0]).toMatchObject({ pendingRestart: true, awaitingCustomDomainRestart: false });
   });
 
   it('repairs mismatched apps and triggers cloudflare sync', async () => {

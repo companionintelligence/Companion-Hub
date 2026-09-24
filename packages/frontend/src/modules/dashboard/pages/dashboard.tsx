@@ -1,7 +1,9 @@
 import { systemLoadOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { fetchPublicWebDiagnostics } from '@/lib/cloudflare-api';
+import { CustomDomainRestartBanner } from '@/modules/app/components/custom-domain-restart-banner';
 import { Cpu, Database, MemoryStick } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
@@ -60,6 +62,42 @@ export default () => {
 
   const { data: installQueue, isLoading: installQueueLoading } = useInstallQueue();
 
+  /*
+   * The installed-apps payload carries `pendingRestart`, which is enough for the
+   * per-app badge. It cannot say WHY, and only one reason is worth interrupting an
+   * operator over — a bound custom domain that is dark. That verdict is the Hub's
+   * to make, so it is read from the diagnostics report rather than guessed at here.
+   *
+   * A failure is not surfaced: this decorates the page, and an unreachable report
+   * should leave the dashboard exactly as it was rather than raise an error over
+   * something nobody asked for.
+   */
+  const { data: publicWebDiagnostics } = useQuery({
+    queryKey: ['public-web-diagnostics'],
+    queryFn: fetchPublicWebDiagnostics,
+    staleTime: 30_000,
+  });
+
+  const diagnosticsApps = publicWebDiagnostics?.apps ?? [];
+
+  const customDomainsAwaitingRestart = useMemo(() => {
+    const byUrn: Record<string, string> = {};
+    for (const entry of diagnosticsApps) {
+      if (entry.awaitingCustomDomainRestart && entry.customDomain) {
+        byUrn[entry.appUrn] = entry.customDomain;
+      }
+    }
+    return byUrn;
+  }, [diagnosticsApps]);
+
+  const appNamesByUrn = useMemo(() => {
+    const byUrn: Record<string, string> = {};
+    for (const installed of appsData?.installed ?? []) {
+      if (installed.info?.urn) byUrn[installed.info.urn] = installed.info.name ?? installed.info.urn;
+    }
+    return byUrn;
+  }, [appsData]);
+
   const isLoading = !systemData;
   const memoryUsed = systemData?.memoryUsed ?? (systemData ? Math.round((systemData.memoryTotal * systemData.percentUsedMemory) / 100) : 0);
 
@@ -105,7 +143,8 @@ export default () => {
         {/* Apps section */}
         <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
           <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading} />
-          <HorizontalAppList apps={appsData?.installed ?? []} isLoading={!appsData} />
+          <CustomDomainRestartBanner apps={diagnosticsApps} namesByUrn={appNamesByUrn} />
+          <HorizontalAppList apps={appsData?.installed ?? []} isLoading={!appsData} customDomainsAwaitingRestart={customDomainsAwaitingRestart} />
         </div>
       </div>
     </div>
