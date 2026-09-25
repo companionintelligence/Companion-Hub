@@ -18,9 +18,9 @@ declare global {
        * refuses it with 403, and only `ObservabilityReadGuard` admits it, on GET routes marked
        * `@ObservabilityRead()`.
        */
-      hubPrincipal?: 'session' | 'portal-device' | 'cli' | 'qa-read';
+      hubPrincipal?: 'session' | 'portal-device' | 'cli' | 'host-local' | 'qa-read';
       /**
-       * A host-local credential (device key or CLI JWT) authenticated, but this Hub has no
+       * A host-local credential (the host-local key or the CLI JWT) authenticated, but this Hub has no
        * operator row for it to speak as — it was registered with Portal and never claimed.
        *
        * Set INSTEAD of `user`, never alongside it: the middleware used to assign the missing

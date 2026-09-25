@@ -55,8 +55,12 @@ export function readHubApiKeySource(envFileName: string): { key?: string; found?
       continue;
     }
     try {
-      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { ciHubApiKey?: string };
-      if (settings.ciHubApiKey) return { key: settings.ciHubApiKey, found: settingsPath, checked };
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { hubLocalKey?: string; ciHubApiKey?: string };
+      // The host-local key is what the Hub accepts from the box (AuthMiddleware `host-local`). The
+      // Portal device key is the fallback for a Hub that has not booted on a build that mints one
+      // yet; once Portal confirms the push key, the Hub stops accepting it and only the local key does.
+      const key = settings.hubLocalKey || settings.ciHubApiKey;
+      if (key) return { key, found: settingsPath, checked };
     } catch {
       // Unreadable or malformed: it decided nothing, so keep looking and report it as checked.
     }

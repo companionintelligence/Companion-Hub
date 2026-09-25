@@ -639,3 +639,103 @@ describe('AuthMiddleware and qa:read API keys', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 });
+
+describe("AuthMiddleware and Companion Portal's push key", () => {
+  const PUSH_KEY = 'abcdef01' + 'c'.repeat(56);
+  const OTHER_KEY = 'abcdef01' + 'd'.repeat(56); // same fingerprint, not the key
+  const LOCAL_KEY = 'e'.repeat(64);
+  const DEVICE_KEY = 'portal-issued-device-key';
+  const sessionManager = { resolveSessionUserId: vi.fn(), getSessionExpiresAt: vi.fn(), touchSession: vi.fn(), destroyAllSessionsByUserId: vi.fn() };
+  const settings: Record<string, string | undefined> = {};
+  const config = { get: vi.fn((key: string) => settings[key]) };
+  const userRepository = { getUserDtoById: vi.fn(), getFirstOperator: vi.fn() };
+  const sessionUserCache = { get: vi.fn(), beginRead: vi.fn(), set: vi.fn(), invalidate: vi.fn() };
+  const sha256 = (raw: string) => createHash('sha256').update(raw).digest('hex');
+  const rows = new Map([
+    [
+      sha256(PUSH_KEY),
+      { id: 7, name: 'Companion Portal (push)', scopes: ['portal'], capability: 'write', managed: false, ownerAppUrn: null, expiresAt: null },
+    ],
+  ]);
+  const repo = { findByHash: vi.fn(), touchLastUsed: vi.fn() };
+  let middleware: AuthMiddleware;
+  const bearer = (token: string, method = 'POST', originalUrl = '/api/app-lifecycle/x:ci-marketplace/install') =>
+    ({
+      cookies: {},
+      headers: { authorization: `Bearer ${token}` },
+      query: {},
+      get: () => undefined,
+      method,
+      originalUrl,
+      url: originalUrl,
+    }) as unknown as Request;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const key of Object.keys(settings)) delete settings[key];
+    settings.jwtSecret = 'jwt-secret';
+    settings.ciHubApiKey = DEVICE_KEY;
+    settings.hubLocalKey = LOCAL_KEY;
+    settings.portalPushKeyPrefix = 'abcdef01';
+    sessionManager.resolveSessionUserId.mockReturnValue(null);
+    sessionManager.getSessionExpiresAt.mockReturnValue(null);
+    userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'op' });
+    repo.findByHash.mockImplementation(async (hash: string) => rows.get(hash));
+    repo.touchLastUsed.mockResolvedValue(undefined);
+    const apiKeys = new ApiKeyService(repo as never, { warn: vi.fn(), info: vi.fn() } as never);
+    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never, apiKeys);
+  });
+
+  it('admits the push key as portal-device, on a write, from the hashed row', async () => {
+    const req = bearer(PUSH_KEY);
+    await middleware.use(req, {} as never, vi.fn());
+    expect(req.hubPrincipal).toBe('portal-device');
+    expect(req.user).toEqual({ id: 1, username: 'op' });
+    expect(repo.findByHash).toHaveBeenCalledTimes(1);
+  });
+
+  it('costs no key-store lookup for a 64-hex bearer that does not carry the fingerprint', async () => {
+    const req = bearer('f'.repeat(64));
+    await middleware.use(req, {} as never, vi.fn());
+    expect(repo.findByHash).not.toHaveBeenCalled();
+    expect(req.hubPrincipal).toBeUndefined();
+  });
+
+  it('refuses a token with the right fingerprint and the wrong secret', async () => {
+    const req = bearer(OTHER_KEY);
+    await middleware.use(req, {} as never, vi.fn());
+    expect(req.hubPrincipal).toBeUndefined();
+  });
+
+  it('admits the host-local key as host-local, never as portal-device', async () => {
+    const req = bearer(LOCAL_KEY, 'GET', '/api/auth/hub/claim');
+    await middleware.use(req, {} as never, vi.fn());
+    expect(req.hubPrincipal).toBe('host-local');
+    expect(req.user).toEqual({ id: 1, username: 'op' });
+  });
+
+  it('still admits the Portal device key as portal-device while Portal has not confirmed the push key', async () => {
+    // The transitional contract: a Portal that predates the exchange keeps pushing with the device key.
+    const req = bearer(DEVICE_KEY);
+    await middleware.use(req, {} as never, vi.fn());
+    expect(req.hubPrincipal).toBe('portal-device');
+  });
+
+  it('SECURITY: refuses the Portal device key once Portal holds the push key', async () => {
+    // The device key is also in first-party Memory\'s container; from here it is not a Hub credential.
+    settings.portalPushKeyDeliveredAt = '2026-09-25T12:00:00.000Z';
+    const req = bearer(DEVICE_KEY);
+    await middleware.use(req, {} as never, vi.fn());
+    expect(req.hubPrincipal).toBeUndefined();
+    expect(req.user).toBeUndefined();
+  });
+
+  it('leaves the request unauthenticated, not failed, when the key store cannot answer the push key', async () => {
+    repo.findByHash.mockRejectedValue(Object.assign(new Error('db down'), { code: 'ECONNREFUSED' }));
+    const req = bearer(PUSH_KEY);
+    const next = vi.fn();
+    await middleware.use(req, {} as never, next);
+    expect(req.hubPrincipal).toBeUndefined();
+    expect(next).toHaveBeenCalledOnce();
+  });
+});

@@ -257,6 +257,21 @@ const fileOnlySettingsSchema = z.object({
   // Opt-out: absent means on. Owned by POST /api/system/update/auto-updates and the
   // `hub_set_auto_updates` MCP tool, both through SystemUpdateService.
   autoUpdates: z.boolean().optional(),
+  /**
+   * The host-local credential: minted at boot, read by `cihub` on the box (claim, doctor, pool),
+   * accepted by AuthMiddleware as the `host-local` principal. Presenting it proves the caller can
+   * read this file. Never handed to an app or to Portal — that is the difference from the Portal
+   * DEVICE key, which first-party Memory holds and which used to be accepted the same way.
+   */
+  hubLocalKey: z.string().trim().optional(),
+  /**
+   * The key Portal presents for its pushes to this Hub, as `PortalPushKeyService` tracks it: the
+   * fingerprint of the hashed row in the key store; the raw key, kept only until Portal has
+   * confirmed holding it; and when that confirmation arrived. Delivered over the check-in.
+   */
+  portalPushKeyPrefix: z.string().trim().optional(),
+  portalPushKeyPending: z.string().trim().optional(),
+  portalPushKeyDeliveredAt: z.string().trim().optional(),
 });
 
 export type FileOnlySettings = z.infer<typeof fileOnlySettingsSchema>;
