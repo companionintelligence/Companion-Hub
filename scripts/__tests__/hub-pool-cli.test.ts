@@ -662,10 +662,13 @@ describe('hub-pool-cli prompt ceiling', () => {
       routingEntry(),
     ]);
 
-    expect(text).toContain(`followed its prompt prefix to ${PEER_A} (1 in flight, limit 2)`);
-    expect(text).toContain(`${PEER_A} holds this prompt's prefix but had 2 in flight (limit 2); ranked as usual`);
+    // Each line says whether the app named the session or the proxy digested it from the prompt: a
+    // `hit` on a session's first turn (core-2, 2026-09-21) is a key naming too many sessions, and
+    // which kind of key it was is the first question.
+    expect(text).toContain(`followed its prompt prefix to ${PEER_A} (1 in flight, limit 2; session from prompt digest)`);
+    expect(text).toContain(`${PEER_A} holds this prompt's prefix but had 2 in flight (limit 2); ranked as usual (session from X-Hub-Pool-Session)`);
     expect(text).toContain(
-      `${PEER_A} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
+      `${PEER_A} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first (session from X-Hub-Pool-Session)`,
     );
     // A miss, an off row, and a row from a Hub predating affinity add nothing.
     expect(text.match(/prefix/g)).toHaveLength(3);
