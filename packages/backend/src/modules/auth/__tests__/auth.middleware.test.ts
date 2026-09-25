@@ -489,6 +489,7 @@ describe('AuthMiddleware and app sessions', () => {
 describe('AuthMiddleware and qa:read API keys', () => {
   const QA_KEY = 'a'.repeat(64);
   const MCP_KEY = 'b'.repeat(64);
+  const INFERENCE_KEY = 'c'.repeat(64);
 
   const sessionManager = {
     resolveSessionUserId: vi.fn(),
@@ -504,6 +505,10 @@ describe('AuthMiddleware and qa:read API keys', () => {
   const rows = new Map([
     [sha256(QA_KEY), { id: 1, name: 'fleet-qa', scopes: ['qa:read'], capability: 'read', managed: false, ownerAppUrn: null, expiresAt: null }],
     [sha256(MCP_KEY), { id: 2, name: 'laptop', scopes: ['mcp'], capability: 'write', managed: false, ownerAppUrn: null, expiresAt: null }],
+    [
+      sha256(INFERENCE_KEY),
+      { id: 3, name: 'laptop-zed', scopes: ['inference'], capability: 'read', managed: false, ownerAppUrn: null, expiresAt: null },
+    ],
   ]);
   const repo = { findByHash: vi.fn(), touchLastUsed: vi.fn() };
 
@@ -545,6 +550,21 @@ describe('AuthMiddleware and qa:read API keys', () => {
 
   it('leaves an mcp key unauthenticated on the REST surface, exactly as before', async () => {
     const req = bearer(MCP_KEY);
+
+    await middleware.use(req, {} as never, vi.fn());
+
+    expect(req.hubPrincipal).toBeUndefined();
+    expect(req.user).toBeUndefined();
+  });
+
+  /**
+   * An inference key is stored as `read`, the same capability a qa:read key carries, and it reaches
+   * this arm on every GET an editor makes from outside the appliance (`InferenceAccessGuard` runs
+   * after the middleware). Scope, not capability, is what keeps it from becoming the `qa-read`
+   * principal: a leaked editor credential must open GPU time and nothing else.
+   */
+  it('leaves an inference key unauthenticated on the REST surface — read-only is not the same as qa-read', async () => {
+    const req = bearer(INFERENCE_KEY);
 
     await middleware.use(req, {} as never, vi.fn());
 

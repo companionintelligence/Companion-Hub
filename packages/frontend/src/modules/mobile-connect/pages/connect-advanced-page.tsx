@@ -5,7 +5,7 @@ import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { rememberPortalAccountEmail } from '@/lib/portal-session-hint';
 import { type FormEvent, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useNavigate } from 'react-router';
 import { DEFAULT_PORTAL_URL, persistPortalUrl, readPersistedPortalUrl, signInToPortal, writePortalAuth } from '../portal-client';
 import { clientLoader } from './connect-page';

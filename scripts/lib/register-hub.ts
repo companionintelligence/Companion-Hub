@@ -1,5 +1,15 @@
 import { HubUnreachableError, resolveHubApiBase } from '../public-web-cli.js';
 
+/**
+ * How long the CLI waits for `POST /api/registration/pair`.
+ *
+ * Keep this above the Hub's own Portal budget, `PORTAL_PAIR_TIMEOUT_MS` in
+ * `registration.service.ts` (60s). Give up first and the CLI reports a failure for a pair the
+ * Hub goes on to complete: the abort rejects `fetch`, nothing on this path catches it, and the
+ * operator retries a code the Portal has already spent.
+ */
+const PAIR_REQUEST_TIMEOUT_MS = 90_000;
+
 export type RegistrationPhase = 'unregistered' | 'paired' | 'provisioning' | 'locally_ready' | 'publicly_ready' | 'degraded';
 
 export type RegistrationStatusResponse = {
@@ -56,6 +66,10 @@ export type DeviceIdResponse = {
 export type PairResponse = {
   success?: boolean;
   message?: string;
+  /** The Portal's refusal code, such as `DEVICE_MOVE_CONFIRMATION_REQUIRED`. */
+  code?: string;
+  /** With `DEVICE_MOVE_CONFIRMATION_REQUIRED`, the organization pairing would move this Hub into. */
+  organizationName?: string;
   domain?: string;
   subdomain?: string;
 };
@@ -173,12 +187,17 @@ export async function prepareFreshSetup(apiBase: string): Promise<PrepareFreshRe
  * rejects, a lost tunnel token) only for an authenticated caller, and this is how `cihub register`
  * on the Hub itself is one.
  */
-export async function submitPairingCode(apiBase: string, pairingCode: string, deviceKey?: string): Promise<PairResponse> {
+export async function submitPairingCode(
+  apiBase: string,
+  pairingCode: string,
+  deviceKey?: string,
+  { confirmMove = false }: { confirmMove?: boolean } = {},
+): Promise<PairResponse> {
   const res = await fetch(`${apiBase}/api/registration/pair`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(deviceKey ? { Authorization: `Bearer ${deviceKey}` } : {}) },
-    body: JSON.stringify({ pairing_code: normalizePairingCode(pairingCode) }),
-    signal: AbortSignal.timeout(30_000),
+    body: JSON.stringify({ pairing_code: normalizePairingCode(pairingCode), ...(confirmMove ? { confirm_move: true } : {}) }),
+    signal: AbortSignal.timeout(PAIR_REQUEST_TIMEOUT_MS),
   });
   const data = (await res.json()) as PairResponse;
   if (!res.ok && !data.message) {

@@ -5,75 +5,75 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <script type="module">
       // ios:dev loads the page through `tauri://localhost`. That custom scheme
-                  // is a black WKWebView on iOS 26. Hop onto Vite over HTTP (dead-code
-                  // eliminated in production builds).
-                  if (
-                    import.meta.env.DEV &&
-                    (location.protocol === 'tauri:' || location.protocol === 'cihub:')
-                  ) {
-                    location.replace('http://localhost:5005/connect');
-                  }
+      // is a black WKWebView on iOS 26. Hop onto Vite over HTTP (dead-code
+      // eliminated in production builds).
+      if (
+        import.meta.env.DEV &&
+        (location.protocol === 'tauri:' || location.protocol === 'cihub:')
+      ) {
+        location.replace('http://localhost:5005/connect');
+      }
     </script>
     <script>
       (() => {
-                    var storageKey = 'vite-ui-theme';
-                    var defaultTheme = 'system';
-                    var storedTheme;
-                    var ua = navigator.userAgent || '';
-                    var mobile =
-                      /iphone|ipad|ipod|android/i.test(ua) ||
-                      (typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1) ||
-                      Math.min(screen.width, screen.height) <= 500 ||
-                      location.port === '5005';
+        var storageKey = 'vite-ui-theme';
+        var defaultTheme = 'system';
+        var storedTheme;
+        var ua = navigator.userAgent || '';
+        var mobile =
+          /iphone|ipad|ipod|android/i.test(ua) ||
+          (typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1) ||
+          Math.min(screen.width, screen.height) <= 500 ||
+          location.port === '5005';
 
-                    try {
-                      storedTheme = localStorage.getItem(storageKey) || defaultTheme;
-                    } catch {
-                      storedTheme = defaultTheme;
-                    }
+        try {
+          storedTheme = localStorage.getItem(storageKey) || defaultTheme;
+        } catch {
+          storedTheme = defaultTheme;
+        }
 
-                    // Phone / ios:dev: never start on the near-black #041620 canvas. That is
-                    // indistinguishable from a crashed WKWebView while React is still booting.
-                    var theme = mobile
-                      ? 'light'
-                      : storedTheme === 'system'
-                        ? window.matchMedia('(prefers-color-scheme: dark)').matches
-                          ? 'dark'
-                          : 'light'
-                        : storedTheme;
+        // Phone / ios:dev: never start on the near-black #041620 canvas. That is
+        // indistinguishable from a crashed WKWebView while React is still booting.
+        var theme = mobile
+          ? 'light'
+          : storedTheme === 'system'
+            ? window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+            : storedTheme;
 
-                    document.documentElement.classList.add(theme);
-                    if (mobile) document.documentElement.classList.add('ci-mobile');
-                    document.documentElement.dataset.ciBoot = location.href;
-                  })();
+        document.documentElement.classList.add(theme);
+        if (mobile) document.documentElement.classList.add('ci-mobile');
+        document.documentElement.dataset.ciBoot = location.href;
+      })();
     </script>
     <style>
       html,
-                  body {
-                    background-color: #041620;
-                  }
+      body {
+        background-color: #041620;
+      }
 
-                  html.light,
-                  html.light body {
-                    background-color: #f3f3f3;
-                  }
+      html.light,
+      html.light body {
+        background-color: #f3f3f3;
+      }
 
-                  html.dark,
-                  html.dark body {
-                    background-color: #041620;
-                  }
+      html.dark,
+      html.dark body {
+        background-color: #041620;
+      }
 
-                  #ci-hub-boot {
-                    position: fixed;
-                    left: 0;
-                    right: 0;
-                    bottom: 0;
-                    z-index: 2147483647;
-                    padding: 10px 12px;
-                    background: #fff;
-                    color: #111;
-                    font: 13px/1.4 -apple-system, sans-serif;
-                  }
+      #ci-hub-boot {
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 2147483647;
+        padding: 10px 12px;
+        background: #fff;
+        color: #111;
+        font: 13px/1.4 -apple-system, sans-serif;
+      }
     </style>
   </head>
 
@@ -82,30 +82,30 @@
     <div id="root"></div>
     <script>
       (() => {
-                    var el = document.getElementById('ci-hub-boot');
-                    if (el) el.textContent = `Loading… ${location.href}`;
-                    // If React never paints, this strip used to sit forever. After 5s offer a way out.
-                    setTimeout(() => {
-                      var boot = document.getElementById('ci-hub-boot');
-                      if (!boot?.parentNode) return;
-                      boot.textContent = '';
-                      var msg = document.createElement('div');
-                      msg.textContent = 'Still loading. Reload, or connect to a Hub again.';
-                      var reload = document.createElement('button');
-                      reload.type = 'button';
-                      reload.textContent = 'Reload';
-                      reload.style.cssText = 'margin:8px 8px 0 0;min-height:44px;padding:0 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:16px/1.2 -apple-system,sans-serif';
-                      reload.onclick = () => { location.reload(); };
-                      var connect = document.createElement('button');
-                      connect.type = 'button';
-                      connect.textContent = 'Connect to Hub';
-                      connect.style.cssText = 'margin-top:8px;min-height:44px;padding:0 14px;border:0;border-radius:8px;background:#18181b;color:#fff;font:16px/1.2 -apple-system,sans-serif';
-                      connect.onclick = () => { location.assign('/connect'); };
-                      boot.appendChild(msg);
-                      boot.appendChild(reload);
-                      boot.appendChild(connect);
-                    }, 5000);
-                  })();
+        var el = document.getElementById('ci-hub-boot');
+        if (el) el.textContent = `Loading… ${location.href}`;
+        // If React never paints, this strip used to sit forever. After 5s offer a way out.
+        setTimeout(() => {
+          var boot = document.getElementById('ci-hub-boot');
+          if (!boot?.parentNode) return;
+          boot.textContent = '';
+          var msg = document.createElement('div');
+          msg.textContent = 'Still loading. Reload, or connect to a Hub again.';
+          var reload = document.createElement('button');
+          reload.type = 'button';
+          reload.textContent = 'Reload';
+          reload.style.cssText = 'margin:8px 8px 0 0;min-height:44px;padding:0 14px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:16px/1.2 -apple-system,sans-serif';
+          reload.onclick = () => { location.reload(); };
+          var connect = document.createElement('button');
+          connect.type = 'button';
+          connect.textContent = 'Connect to Hub';
+          connect.style.cssText = 'margin-top:8px;min-height:44px;padding:0 14px;border:0;border-radius:8px;background:#18181b;color:#fff;font:16px/1.2 -apple-system,sans-serif';
+          connect.onclick = () => { location.assign('/connect'); };
+          boot.appendChild(msg);
+          boot.appendChild(reload);
+          boot.appendChild(connect);
+        }, 5000);
+      })();
     </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>

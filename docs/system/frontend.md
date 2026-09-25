@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-17 (dashboard scroll: new pages open at the top, back/forward restore)
+> **Last updated:** 2026-09-24 (custom domains: the dark-domain restart banner and tile badge)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -17,7 +17,7 @@ packages/frontend/
   src/modules/          Page-level features (dashboard, app-store, settings, …)
   src/components/       Shared UI (hub-status, layouts, providers)
   src/lib/              API fetch, tauri probes, session, theme
-  src/api-client/       Generated OpenAPI client + TanStack Query hooks
+  src/api-client/       Generated OpenAPI client + TanStack Query hooks (generator-owned)
   routes/               React Router route definitions
 ```
 
@@ -69,6 +69,7 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 ## API client
 
 - Generated from backend OpenAPI: `pnpm run gen:api-client`
+- `packages/frontend/src/api-client/` is **generator-owned**: `gen:api-client` wipes the directory and rewrites it from `packages/backend/src/swagger.json` (see `openapi-ts.config.ts`). Never hand-write a file there. A committed one survives only until the next regeneration, then shows up as an unexplained deletion in someone's diff, and restoring it by reflex re-arms the trap. Hand-written wrappers over the generated SDK belong in `src/lib/api-routes/` — for example `named-status-routes.ts`, which names the generator's numbered `getStatusN` operations.
 - Tauri release builds probe local ports via `packages/frontend/src/lib/tauri-hub-probe.ts`
 - Session refresh: `packages/frontend/src/lib/hub-session-refresh.ts`
 - Local Vite (`:5005`) must probe same-origin `/api/health/live` (the Vite proxy) before a leftover Docker Hub on `:5002`. Do **not** bind the API client to `:5004` or `:5002` — `/api` stays same-origin on `:5005` so the session cookie survives. Binding it was a 401 → full `/login` reload → "Connecting to local API...". HubStatus on `:5005` must ignore Docker compose status (that is the appliance stack). Featured (`GET /api/store/featured-bundle`) is served through that Vite proxy.
@@ -167,7 +168,31 @@ where the row names the custom domain and the running container does not. `publi
 reports that window as `action: 'ok'` with `envMismatch: true` — **key UI off `action`, not
 `envMismatch`**, or a healthy app awaiting its restart is shown as broken.
 
-Genuine drift raises a banner in the app config dialog carrying its own **Repair routing** action
+A bound custom domain that is not serving yet is the one state a customer can see and nobody is told
+about, so the report names it: `awaitingCustomDomainRestart`. It is narrower than `pendingRestart`,
+which every settings save raises — a surface promising "your domain will not serve" must key on the
+narrow flag or it makes that claim constantly and stops being read. It is *wider* than the
+`action: 'ok'` bind window, though: an app re-pointed from one bound domain to another is dark too,
+and its env is on neither the platform hostname nor the new domain.
+
+`customDomainAwaitingRestart` in `lib/cloudflare-api.ts` is the one predicate over it, and
+`CustomDomainRestartBanner` — on the dashboard and on an app's own page — is the surface built on it,
+with a **Restart now** action per waiting app. The dashboard tile badge (`SimpleAppTile`) is
+deliberately *not* gated on it: it fires on the raw `pendingRestart`, because every stale env is worth
+a dot. The narrow flag only chooses the badge's tooltip, so a dark domain is named there instead of
+the generic "configuration has changed".
+
+All of them gate on `restartCanApply(status)` — **only a running app is asked to restart**. `repair()`
+rewrites the env and returns `success: true` *without* starting a container when the app is not
+running, so offering the action anywhere else clears the warning and leaves the domain exactly as
+dark. Nothing is owed for a stopped app either (`start-app-command` regenerates the env on the way
+up), nor while a start, restart, update, reset or restore is already in flight.
+
+Every surface reads the report under `PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY`, and `invalidateAppQueries`
+refreshes it. A hand-written key literal is invisible to that helper, and the banner then keeps asking
+for a restart that already happened.
+
+Genuine drift (`action: 'repair'`) raises a banner in the app config dialog carrying its own **Repair routing** action
 (`repairPublicWebRouting` in `lib/cloudflare-api.ts` → `POST /api/public-web/repair`). It has to be a
 separate action: routing drift leaves the form clean, so the dialog's Update button — gated on
 `isDirty` — cannot be the remedy. Two things that path depends on:

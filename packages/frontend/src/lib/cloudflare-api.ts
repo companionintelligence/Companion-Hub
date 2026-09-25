@@ -28,6 +28,14 @@ export type PublicWebDiagnosticsApp = {
   envMismatch: boolean;
   computedPublicUrl: string;
   /**
+   * The app's display name, as the Hub's report carries it. A surface that names
+   * the app should prefer the installed-apps list and fall back to this, so it
+   * never has to print a URN while that list is still loading.
+   */
+  appName?: string;
+  /** The app's lifecycle status, as the Hub's report saw it. */
+  status?: string;
+  /**
    * The backend's verdict. `envMismatch` alone is NOT one: a freshly bound custom
    * domain deliberately leaves the env behind until the user takes the restart it
    * was asked for, and reporting that window as damage tells the operator a
@@ -35,12 +43,70 @@ export type PublicWebDiagnosticsApp = {
    */
   action?: 'ok' | 'repair';
   pendingRestart?: boolean;
+  /** The custom hostname Companion Portal has wired for this app, when it has one. */
+  customDomain?: string | null;
+  /**
+   * A bound custom domain is dark because this app still answers on its platform
+   * hostname. Narrower than `pendingRestart`, which any settings change raises —
+   * only this one justifies telling a customer their domain does not work.
+   */
+  awaitingCustomDomainRestart?: boolean;
+  /** The app restarts on its own when a domain is connected, so nobody needs to be asked. */
+  autoRestartOnDomainChange?: boolean;
 };
+
+/**
+ * The one key every surface reads this report under, so a lifecycle event can
+ * refresh all of them at once. A hand-written literal in each component would be
+ * invisible to `invalidateAppQueries`, and the banner would keep asserting a dark
+ * domain after the restart that cleared it.
+ */
+export const PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY = ['public-web-diagnostics'] as const;
+
+/**
+ * A restart is only work worth asking for while the app is RUNNING.
+ *
+ * - Stopped or missing: `repair()` rewrites the env and returns success without
+ *   starting anything (it gates the restart on the app's status), so a "Restart now"
+ *   there dismisses the warning while the customer's domain stays dark. Nothing is
+ *   owed anyway — `start-app-command` regenerates the env on the way up.
+ * - Starting, restarting, updating, resetting, restoring: the remedy is already in
+ *   flight and will clear the flag itself.
+ * - Installing or uninstalling: the env is mid-flight, or the app is being deleted.
+ */
+export function restartCanApply(status: string | undefined): boolean {
+  return status === 'running';
+}
+
+/**
+ * The domain this app is keeping dark until it restarts, or `null` when there is
+ * nothing to say. Defined once so the banner, its click guard and the tile badge
+ * cannot drift into acting on three different sets of apps.
+ */
+export function customDomainAwaitingRestart(entry: PublicWebDiagnosticsApp | undefined): string | null {
+  if (!entry?.awaitingCustomDomainRestart || !entry.customDomain) return null;
+  return restartCanApply(entry.status) ? entry.customDomain : null;
+}
 
 export async function fetchPublicWebDiagnostics(): Promise<{ apps: PublicWebDiagnosticsApp[] } | null> {
   const result = await sdkResult(getDiagnostics2());
   if (!result.ok) return null;
   return (result.data ?? { apps: [] }) as { apps: PublicWebDiagnosticsApp[] };
+}
+
+/**
+ * The report for a `useQuery`, where `null` must NOT be an answer.
+ *
+ * TanStack treats a resolved `null` as success, so a transient 401 or 500 would be
+ * cached as "nothing is wrong" for the whole `staleTime`, with `retry: false` set
+ * app-wide — a surface whose only job is to say a customer's domain is dark would
+ * go quiet on exactly the failure it should survive. Throwing keeps the query in
+ * error and leaves the last good `data` on screen.
+ */
+export async function queryPublicWebDiagnostics(): Promise<{ apps: PublicWebDiagnosticsApp[] }> {
+  const report = await fetchPublicWebDiagnostics();
+  if (!report) throw new Error('APP_PUBLIC_WEB_REPAIR_ERROR');
+  return report;
 }
 
 export type PublicWebRepairResult = {

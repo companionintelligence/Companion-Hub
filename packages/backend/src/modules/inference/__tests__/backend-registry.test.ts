@@ -6,6 +6,8 @@ import type { InferenceBackend } from '../backends/backend.interface';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { LlamacppBackend } from '../backends/llamacpp.backend';
+import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
@@ -33,6 +35,8 @@ const makeBackends = (make: (name: InferenceBackendType) => InferenceBackend = s
   mtplx: make('mtplx'),
   dspark: make('dspark'),
   lucebox: make('lucebox'),
+  llamacpp: make('llamacpp'),
+  lmstudio: make('lmstudio'),
 });
 
 /**
@@ -50,6 +54,8 @@ const buildRegistry = (backends: BackendsByType, Registry = InferenceBackendRegi
     backends.mtplx as MtplxBackend,
     backends.dspark as DsparkBackend,
     backends.lucebox as LuceboxBackend,
+    backends.llamacpp as LlamacppBackend,
+    backends.lmstudio as LmStudioBackend,
   );
 
 describe('InferenceBackendRegistry', () => {
@@ -83,12 +89,16 @@ describe('InferenceBackendRegistry', () => {
       // The old comment's point still stands, and is why this is a throw rather than a
       // `?? this.lemonadeBackend` cushion: silently routing a retired backend name to Lemonade
       // would pull the wrong model. Absent wiring still reads as absent — it just says so on time.
-      const staleCatalogValue: string = 'llamacpp';
+      // Deliberately a name no engine in this repo has. It used to be 'llamacpp', which stopped
+      // being a lie the day that backend was added — a fixture that quietly becomes valid turns
+      // three "this must throw" assertions into three that pass for the wrong reason. Keep this
+      // string fictional; if a `tensorrt-llm` backend is ever added, change it again.
+      const staleCatalogValue: string = 'tensorrt-llm';
 
       expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(UnknownInferenceBackendError);
       // Both halves of the message are load-bearing: the frame that catches this is never the frame
       // that produced the string, so the error has to carry the rejected value *and* the valid set.
-      expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(/'llamacpp'/);
+      expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(/'tensorrt-llm'/);
       expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(new RegExp(INFERENCE_BACKEND_TYPES.join(', ')));
     });
 
@@ -102,7 +112,7 @@ describe('InferenceBackendRegistry', () => {
       // artifact left holding the bad value. Sentry groups that by `name`: without `this.name` the
       // class collapses into generic `Error` and the group is unreadable, and without the `readonly`
       // on the constructor parameter the only way back to the rejected string is re-parsing English.
-      const staleCatalogValue: string = 'llamacpp';
+      const staleCatalogValue: string = 'tensorrt-llm';
 
       let caught: unknown;
       try {
@@ -134,7 +144,7 @@ describe('InferenceBackendRegistry', () => {
       // out of settings.json (app-credentials, inference-env-resolver). A stale value there must
       // degrade to Ollama with a warning rather than break credential/env resolution for every
       // installed app, and catching an exception to steer normal control flow reads worse.
-      const staleSettingsValue: string = 'llamacpp';
+      const staleSettingsValue: string = 'tensorrt-llm';
 
       expect(registry.tryGet(staleSettingsValue as InferenceBackendType)).toBeUndefined();
     });
@@ -248,13 +258,16 @@ describe('InferenceBackendRegistry', () => {
           { provide: MtplxBackend, useValue: backends.mtplx },
           { provide: DsparkBackend, useValue: backends.dspark },
           { provide: LuceboxBackend, useValue: backends.lucebox },
+          { provide: LlamacppBackend, useValue: backends.llamacpp },
+          { provide: LmStudioBackend, useValue: backends.lmstudio },
         ],
       }).compile();
 
       // The only test that constructs the registry the way production does. `@Injectable()` and the
-      // *value* imports of the six classes are jointly what emit `design:paramtypes`; drop either —
-      // the decorator, or a slip to `import type` — and Nest hands the constructor six undefineds,
-      // so every lookup in every caller goes dark while the direct-construction tests stay green.
+      // *value* imports of the backend classes are jointly what emit `design:paramtypes`; drop
+      // either — the decorator, or a slip to `import type` — and Nest hands the constructor a row
+      // of undefineds, so every lookup in every caller goes dark while the direct-construction
+      // tests stay green.
       const registry = module.get(InferenceBackendRegistry);
 
       const expected = INFERENCE_BACKEND_TYPES.map((type) => [type, backends[type]] as const);

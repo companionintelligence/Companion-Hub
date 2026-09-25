@@ -54,7 +54,7 @@ import {
   isCheckInForCurrentRegistration,
   isDeviceNotActiveResponse,
 } from './check-in-response';
-import { resolveDeviceId } from './device-id.resolver';
+import { resolveDeviceId, clearRegisteredDeviceId, persistRegisteredDeviceId } from './device-id.resolver';
 import { ALLOW_FOREIGN_DEVICE_ID_ENV, checkDeviceIdHostBinding, type DeviceIdHostBinding } from './device-id-host-check';
 import {
   hasTunnelLeftoverMarker,
@@ -72,6 +72,34 @@ const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
+
+/**
+ * How long to wait for `POST /api/devices/pair`.
+ *
+ * This is not a read: the Portal claims the pairing code first, then lists/adopts or CREATES a
+ * Cloudflare tunnel and writes a DNS record. Overshooting costs the code — it is claimed before
+ * any of that work and is not given back — so 60s is deliberately generous rather than tuned to
+ * the staging run behind it, where a from-scratch tunnel reached Cloudflare at 13.8s and the
+ * rest of the request still followed.
+ *
+ * What a bigger budget does NOT buy: the Portal writes the device's new api_key only in its
+ * final update, after the tunnel and DNS work, so a response lost after that point strands a key
+ * this Hub never receives however long we wait. Only that last window is unrecoverable; widen
+ * this value to avoid spending codes, not to avoid that.
+ *
+ * Keep every caller's own deadline above this one, or it reports a failure for a pair the Hub
+ * goes on to complete: see `submitPairingCode` in `scripts/lib/register-hub.ts` and the
+ * cross-domain registration e2e. That ordering is a margin, not a guarantee — see the caveat
+ * below. The Hub's own `httpServer.requestTimeout` is not such a deadline
+ * (`hub-pool-proxy-timeout.test.ts` pins that it does not cut a slow response), and Traefik
+ * responds up to 300s.
+ *
+ * Caveat: this bounds a response that STALLS, not one that trickles. axios hands the value to
+ * follow-redirects, which clears its wall-clock timer once headers arrive and leaves a socket
+ * idle timeout; a body arriving in chunks keeps resetting it. Verified against the resolved
+ * axios, and unchanged from the previous 15s — a property of the transport, not of this number.
+ */
+const PORTAL_PAIR_TIMEOUT_MS = 60 * 1000;
 
 /**
  * How long Portal must go on rejecting the device key before the Hub reports `portal_rejected`.
@@ -107,18 +135,69 @@ function describeRegistrationError(error: unknown): string {
 }
 
 /**
- * True for a request that never got an HTTP response. Portal calls set
- * `validateStatus: () => true`, so a thrown axios error means DNS, TCP, TLS or
- * the timeout failed rather than the Portal answering.
+ * The syscalls that fail before any byte of the request is on the wire. Node
+ * names the failing syscall on the underlying error and axios 1.18 keeps it on
+ * `cause` rather than copying it up, so this is the only positive proof we get
+ * that the Portal never saw the request.
  */
-function isPortalUnreachableError(error: unknown): boolean {
+const PORTAL_CONNECT_SYSCALLS = new Set(['getaddrinfo', 'connect']);
+
+/**
+ * Errno codes only a failed connection attempt produces, for the case where a
+ * wrapper stripped `cause`. `ETIMEDOUT` is deliberately absent: it is both the
+ * OS connect timeout and what axios reports for its own expired deadline when
+ * `transitional.clarifyTimeoutError` is on, so with no `connect` syscall to go
+ * by it proves nothing either way.
+ */
+const PORTAL_CONNECT_FAILURE_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH']);
+
+/**
+ * How far a thrown Portal call got. Portal calls set `validateStatus: () => true`,
+ * so a refusal is an answer rather than a throw: anything thrown failed below HTTP.
+ *
+ * - `never_reached` — the connection attempt itself failed, so nothing was sent
+ *   and the pairing code is untouched. The fault is on this side.
+ * - `no_answer` — everything else, including our own expired deadline. The
+ *   request may be sitting at the Portal: pairing provisions a Cloudflare tunnel
+ *   and a DNS record there, and the Portal claims the pairing code before that
+ *   work starts (companionintelligence/CI-Portal#748).
+ *
+ * The two are NOT separable by errno, which is why `no_answer` names both
+ * possibilities to the operator instead of asserting one. Measured against axios
+ * 1.18: a deadline that expires while the SYN goes unanswered and one that
+ * expires while the Portal provisions are byte-identical — both `AxiosError`,
+ * `code: 'ECONNABORTED'`, `message: 'timeout of Nms exceeded'`, no `cause`, and
+ * both with a non-zero `socket.bytesWritten`. Claiming a bare `ECONNABORTED`
+ * means the Portal was reached sends firewalled operators away from the one
+ * thing at fault.
+ */
+function classifyPortalTransportFailure(error: unknown): 'never_reached' | 'no_answer' | null {
   if (typeof error !== 'object' || error === null) {
-    return false;
+    return null;
   }
 
-  const candidate = error as { isAxiosError?: boolean; response?: unknown };
-  return candidate.isAxiosError === true && !candidate.response;
+  const candidate = error as { isAxiosError?: boolean; code?: unknown; cause?: { syscall?: unknown } };
+  if (candidate.isAxiosError !== true) {
+    return null;
+  }
+
+  const syscall = candidate.cause?.syscall;
+  if (typeof syscall === 'string') {
+    return PORTAL_CONNECT_SYSCALLS.has(syscall) ? 'never_reached' : 'no_answer';
+  }
+
+  return typeof candidate.code === 'string' && PORTAL_CONNECT_FAILURE_CODES.has(candidate.code) ? 'never_reached' : 'no_answer';
 }
+
+/**
+ * What a `no_answer` pairing failure tells the operator. It names both
+ * possibilities on purpose: the errno cannot separate "the Portal has the
+ * request and is still provisioning" from "nothing this machine sent ever
+ * arrived", and asserting either one sends half the operators who see it to the
+ * wrong place.
+ */
+const PORTAL_NO_ANSWER_PAIRING_MESSAGE =
+  'CI Portal did not answer in time. It may still be provisioning this Hub, or this machine may not be reaching it. Get a new pairing code before trying again.';
 
 function describePortalPairingResponse(data: unknown): string {
   if (!data || typeof data !== 'object') {
@@ -161,13 +240,22 @@ export type PairDeviceResult = {
    * Portals and from anything in front of the Portal.
    */
   code?: string;
+  /**
+   * The organization a refused pairing would have joined, when the Portal names
+   * it: with `DEVICE_MOVE_CONFIRMATION_REQUIRED`, the one the page asks the
+   * person to move this Hub into.
+   */
+  organizationName?: string;
   domain?: string;
   subdomain?: string;
 };
 
-function portalRefusalCode(data: unknown): { code?: string } {
-  const code = data && typeof data === 'object' ? (data as { code?: unknown }).code : undefined;
-  return typeof code === 'string' && code ? { code } : {};
+function portalRefusalCode(data: unknown): { code?: string; organizationName?: string } {
+  const body = data && typeof data === 'object' ? (data as { code?: unknown; organization_name?: unknown }) : {};
+  return {
+    ...(typeof body.code === 'string' && body.code ? { code: body.code } : {}),
+    ...(typeof body.organization_name === 'string' && body.organization_name ? { organizationName: body.organization_name } : {}),
+  };
 }
 
 @Injectable()
@@ -1294,6 +1382,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         staleAppEnvDeviceIds: [],
         hasStaleTunnelToken: false,
         hasOrphanedDbRegistration: false,
+        hasMoveKey: Boolean(this.config.getConfig().ciHubMoveKey),
       });
     }
 
@@ -1320,6 +1409,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       staleAppEnvDeviceIds,
       hasStaleTunnelToken,
       hasOrphanedDbRegistration,
+      hasMoveKey: Boolean(this.config.getConfig().ciHubMoveKey),
     });
   }
 
@@ -1455,6 +1545,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     await this.resetRegistration();
     const clearedAppEnvFiles = await clearRegistrationKeysFromAppData(APP_DATA_DIR);
     await clearRegistrationRecoveryArtifacts();
+    // A fresh setup pairs as a new device; the identity it registered under before goes with the
+    // registration, and the resolver derives one from the host again.
+    clearRegisteredDeviceId(DATA_DIR);
+    this.deviceIdPromise = undefined;
     try {
       await removeTunnelLeftoverMarker();
     } catch (error) {
@@ -1987,8 +2081,19 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * Send the code and device ID to Companion Portal, persist the returned state,
    * and mark the device as registered.
    */
-  public async pairDevice(pairingCode: string, options: { callerAuthenticated?: boolean } = {}): Promise<PairDeviceResult> {
-    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
+  public async pairDevice(
+    pairingCode: string,
+    options: {
+      callerAuthenticated?: boolean;
+      /**
+       * The person's yes to `DEVICE_MOVE_CONFIRMATION_REQUIRED`: this Hub is in another organization,
+       * and pairing here moves it, taking it from that organization. The Portal only acts on it with
+       * the device key and move key this request already sends as proof.
+       */
+      confirmMove?: boolean;
+    } = {},
+  ): Promise<PairDeviceResult> {
+    const { ciCloudUrl, ciHubApiKey, ciHubMoveKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
       return { success: false, message: 'CI Cloud URL not configured.' };
@@ -2053,11 +2158,19 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
        */
       const response = await axios.post(
         pairUrl,
-        { pairing_code: pairingCode, device_id: deviceId, ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}) },
+        {
+          pairing_code: pairingCode,
+          device_id: deviceId,
+          ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}),
+          // With the device key, what lets this Hub move itself out of another organization. The
+          // Portal reads it only for that; a Hub paired before move keys has none.
+          ...(ciHubMoveKey ? { move_key: ciHubMoveKey } : {}),
+          ...(options.confirmMove ? { confirm_move: true } : {}),
+        },
         {
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
           validateStatus: () => true,
-          timeout: 15_000,
+          timeout: PORTAL_PAIR_TIMEOUT_MS,
         },
       );
 
@@ -2086,6 +2199,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnel_id: string;
         tunnel_token: string;
         api_key: string;
+        /** Absent from a Portal older than move keys. */
+        move_key?: string;
         domain: string;
       };
 
@@ -2119,11 +2234,28 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         tunnelId: data.tunnel_id,
         tunnelToken: data.tunnel_token,
         apiKey: data.api_key,
+        moveKey: data.move_key,
         domain: data.domain,
       });
     } catch (error) {
+      const transportFailure = classifyPortalTransportFailure(error);
       this.logger.error(`Pairing request failed before local registration completed: ${describeRegistrationError(error)}`);
-      if (isPortalUnreachableError(error)) {
+
+      if (transportFailure === 'no_answer') {
+        // CI-Hub#1578: the log is half the complaint, so the durable artifact has to
+        // carry the diagnosis and not just the toast the operator already dismissed.
+        this.logger.error(
+          'The pairing request may have reached CI Portal, which claims the pairing code before it provisions the tunnel and DNS record. ' +
+            'Check the Portal for a device row for this Hub before retrying; a device row it left active refuses a keyless re-pair with DEVICE_PROOF_REQUIRED.',
+        );
+        return {
+          success: false,
+          message: PORTAL_NO_ANSWER_PAIRING_MESSAGE,
+        };
+      }
+
+      if (transportFailure === 'never_reached') {
+        this.logger.error('The connection to CI Portal never completed, so it never saw the request and the pairing code is still unclaimed.');
         return { success: false, message: 'Unable to reach CI Portal. Please check your network connection.' };
       }
       return {
@@ -2292,6 +2424,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     tunnelId: string;
     tunnelToken: string;
     apiKey?: string;
+    /** Only `/pair` returns one; the redirected callback never carries it. */
+    moveKey?: string;
     domain?: string;
   }): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     try {
@@ -2311,6 +2445,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       if (data.apiKey) {
         this.logger.info('Saving CI Hub API Key from registration callback');
         await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
+      }
+
+      /*
+       * Kept in settings.json with the device key, and nowhere else: `AppHelpers` hands first-party
+       * Memory the device key, never this, so a key leaked from an app cannot move this Hub.
+       */
+      if (data.moveKey) {
+        await this.config.setUserSettings({ ciHubMoveKey: data.moveKey });
       }
 
       // Persist the organization ID for future Portal disambiguation.
@@ -2357,6 +2499,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }).catch((err) => {
         this.logger.error('Background infrastructure setup failed:', err);
       });
+
+      // What this Hub registered as is now its identity, whatever a later image can read from the
+      // host: the next image may run as a different user and derive a different hardware ID, and
+      // Portal answers that with 403 on every check-in.
+      persistRegisteredDeviceId(DATA_DIR, await this.getDeviceId(), this.logger);
 
       this.logger.info(`Device registration completed via callback: organization=${data.organizationId}, subdomain=${data.subdomain}`);
 

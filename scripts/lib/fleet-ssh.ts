@@ -21,6 +21,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createReadStream } from 'node:fs';
 
 /** Default connect budget. Deliberately short: an unreachable host should fail fast, not hang a sweep. */
 export const SSH_CONNECT_TIMEOUT_S = 8;
@@ -197,6 +198,85 @@ export function sshCapture(target: SshTarget, command: string, timeoutMs: number
       err += chunk.toString();
     });
     // A missing `ssh` binary arrives here, not as a non-zero exit.
+    proc.on('error', (error) => {
+      err += `\n${String(error)}`;
+      finish(null);
+    });
+    proc.on('close', (code) => finish(code));
+  });
+}
+
+/**
+ * The remote command for a script that must read the SSH session's stdin — what `sshStreamFile` needs.
+ *
+ * Not a heredoc, which is how every other remote step carries its script: a heredoc IS that bash's
+ * stdin, so a `cat` inside it reads the rest of its own script and the bytes ssh is feeding never
+ * reach anything. That is the exit 0, silent, marker-less `install cihub` a node reported on
+ * 2026-09-20. The script goes in argv instead, and stdin stays what ssh made it.
+ */
+export function stdinScriptCommand(script: string): string {
+  return `bash -c '${script.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Run one command on one node with a local file on its stdin.
+ *
+ * The one thing `sshCapture` cannot do, by design (`-n`). This exists for exactly one caller: putting
+ * the `cihub` binary on a node. The release lives in a private GitHub repository, so a node cannot
+ * `curl` it; the operator's machine can, and already has it. Streaming the bytes down the SSH
+ * session the install already holds needs no token on the node and no second transport.
+ *
+ * `command` must leave stdin to the script — build it with `stdinScriptCommand`, not a heredoc.
+ *
+ * Same contract as `sshCapture`: never throws for a remote failure, `code: null` on timeout.
+ */
+export function sshStreamFile(target: SshTarget, command: string, localPath: string, timeoutMs: number = SSH_COMMAND_TIMEOUT_MS): Promise<SshResult> {
+  const dest = sshDestination(target);
+  const args = [...SSH_FLAGS, dest, `${REMOTE_TOOL_INIT}; ${command}`];
+  const startedAt = Date.now();
+
+  return new Promise<SshResult>((resolve) => {
+    let out = '';
+    let err = '';
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ ok: code === 0, out: out.trim(), err: err.trim(), code, ms: Date.now() - startedAt });
+    };
+
+    let source: ReturnType<typeof createReadStream>;
+    try {
+      source = createReadStream(localPath);
+    } catch (error) {
+      resolve({ ok: false, out: '', err: String(error), code: null, ms: 0 });
+      return;
+    }
+
+    const proc = spawn('ssh', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => {
+      err += `\nTimed out after ${timeoutMs}ms`;
+      proc.kill('SIGTERM');
+      finish(null);
+    }, timeoutMs);
+
+    source.on('error', (error) => {
+      err += `\n${String(error)}`;
+      proc.kill('SIGTERM');
+      finish(null);
+    });
+    // EPIPE when the remote side exits early (a refused `install`, say): the failure is already in
+    // stderr and the exit code; the pipe error itself is noise.
+    proc.stdin?.on('error', () => undefined);
+    source.pipe(proc.stdin as NodeJS.WritableStream);
+
+    proc.stdout?.on('data', (chunk: Buffer) => {
+      out += chunk.toString();
+    });
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      err += chunk.toString();
+    });
     proc.on('error', (error) => {
       err += `\n${String(error)}`;
       finish(null);

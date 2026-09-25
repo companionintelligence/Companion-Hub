@@ -6,12 +6,19 @@ import {
   type PoolRoutingLogResponse,
   type PoolStatusResponse,
   cancelPairingPin,
+  fetchInferencePreferences,
+  formatContextCapResultLines,
+  formatLocalContextCapLines,
+  formatLocalOllamaSlotsLines,
+  formatOllamaSlotsResultLines,
   formatPairingPinCancelledLines,
   formatPairingPinLines,
   formatPairingPinStateLines,
   formatPeerAuthModeLines,
+  formatPeerContextCapLines,
   formatPeerRefusalLines,
   formatPoolDiscoverLines,
+  formatPoolContextCapLines,
   formatPoolPeerTable,
   formatPoolPeersLines,
   formatPoolProbeLines,
@@ -26,8 +33,12 @@ import {
   mintPairingPin,
   resolvePoolPeerTarget,
   runPoolDiscover,
+  setInferenceContextCap,
+  setInferenceOllamaSlots,
+  peerContextCap,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
+  summariseContextCaps,
   unpairPoolPeer,
 } from '../hub-pool-cli';
 
@@ -211,6 +222,52 @@ describe('hub-pool-cli formatters', () => {
     // Column widths must not eat the timestamp or the peer name — both identify the decision.
     expect(text).toContain('2026-09-05 10:00:01Z');
     expect(text).toContain(PEER_A);
+  });
+
+  /**
+   * The row this whole change exists for. Reproduced from beta-max, 2026-09-21: four rows reading
+   * `qwen3-coder:30b  -  1/14  30031  x failed` were reported as "placement returns no candidate and
+   * times out", when placement had ranked fourteen and the app had hung up on the first after 30 s.
+   * The NODE column and the summary are where that misreading happened, so both are asserted here.
+   */
+  it('says the caller left, and names the node it left waiting, instead of an anonymous failure', () => {
+    const text = formatPoolRoutingLogLines({
+      entries: [
+        {
+          at: '2026-09-21T20:09:06.000Z',
+          direction: 'outbound',
+          path: '/v1/chat/completions',
+          model: 'qwen3-coder:30b',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 14,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'failed',
+          status: null,
+          durationMs: 30031,
+          clientClosed: true,
+        },
+      ],
+      summary: { recorded: 26, capacity: 200, served: 22, failed: 4, clientClosed: 4, failovers: 0, lastAt: '2026-09-21T20:09:06.000Z' },
+    }).join('\n');
+
+    expect(text).toContain('4 failed (4 abandoned by the caller)');
+    expect(text).toContain('↳ the app closed its connection after 30031 ms; local had not answered yet');
+    expect(text).toContain('not a routing failure');
+    // The node the request was placed on, where an operator looks first — not the `-` that says
+    // nothing was selected.
+    expect(text).not.toMatch(/qwen3-coder:30b\s+-\s/);
+  });
+
+  it('leaves the counts line alone on a Hub that reports no hang-ups, and on one too old to report them', () => {
+    const entries: PoolRoutingLogResponse['entries'] = [];
+    const base = { recorded: 3, capacity: 200, served: 3, failed: 0, failovers: 0, lastAt: null };
+
+    expect(formatPoolRoutingLogLines({ entries, summary: { ...base, clientClosed: 0 } }).join('\n')).toContain('0 failed ·');
+    // Absent, not zero: an older Hub must not be made to claim none of its failures were hang-ups.
+    expect(formatPoolRoutingLogLines({ entries, summary: base }).join('\n')).toContain('0 failed ·');
   });
 
   it('explains an empty routing log rather than showing an empty table', () => {
@@ -595,6 +652,28 @@ describe('hub-pool-cli prompt ceiling', () => {
     expect(text).toContain(`~46031-token prompt skipped ${FZZY} (ceiling 16000)`);
   });
 
+  it('marks a routing-log row that followed its prompt prefix, and one whose remembered node was too busy', () => {
+    const text = logOf([
+      routingEntry({ affinity: { key: 'hashed', outcome: 'hit', remembered: PEER_A, inFlight: 1, maxInFlight: 2 } }),
+      routingEntry({ node: 'local', peerId: null, affinity: { key: 'header', outcome: 'skipped', remembered: PEER_A, inFlight: 2, maxInFlight: 2 } }),
+      routingEntry({ node: 'local', peerId: null, affinity: { key: 'header', outcome: 'skipped', remembered: PEER_A, inFlight: 0, maxInFlight: 2 } }),
+      routingEntry({ affinity: { key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 } }),
+      routingEntry({ affinity: null }),
+      routingEntry(),
+    ]);
+
+    // Each line says whether the app named the session or the proxy digested it from the prompt: a
+    // `hit` on a session's first turn (core-2, 2026-09-21) is a key naming too many sessions, and
+    // which kind of key it was is the first question.
+    expect(text).toContain(`followed its prompt prefix to ${PEER_A} (1 in flight, limit 2; session from prompt digest)`);
+    expect(text).toContain(`${PEER_A} holds this prompt's prefix but had 2 in flight (limit 2); ranked as usual (session from X-Hub-Pool-Session)`);
+    expect(text).toContain(
+      `${PEER_A} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first (session from X-Hub-Pool-Session)`,
+    );
+    // A miss, an off row, and a row from a Hub predating affinity add nothing.
+    expect(text.match(/prefix/g)).toHaveLength(3);
+  });
+
   it('says so when a long prompt was placed over a ceiling after all, rather than hiding the override', () => {
     const text = logOf([
       routingEntry({
@@ -616,6 +695,26 @@ describe('hub-pool-cli prompt ceiling', () => {
     ]);
 
     expect(text).not.toContain('prompt');
+  });
+
+  it('marks a routing-log row a context cap changed, naming the node it skipped, its cap, and the window asked for', () => {
+    const text = logOf([
+      routingEntry({ contextCap: { numCtx: 65_536, source: 'request', excluded: [{ node: FZZY, maxNumCtx: 16_384 }], overridden: false } }),
+      routingEntry({ contextCap: { numCtx: 46_031, source: 'estimated', excluded: [{ node: FZZY, maxNumCtx: 16_384 }], overridden: false } }),
+      routingEntry({
+        node: FZZY,
+        contextCap: { numCtx: 65_536, source: 'request', excluded: [{ node: FZZY, maxNumCtx: 16_384 }], overridden: true },
+      }),
+      routingEntry({ contextCap: { numCtx: 4096, source: 'request', excluded: [], overridden: false } }),
+      routingEntry({ contextCap: null }),
+      routingEntry(),
+    ]);
+
+    expect(text).toContain(`num_ctx 65536 skipped ${FZZY} (cap 16384)`);
+    expect(text).toContain(`~46031-token prompt with no num_ctx skipped ${FZZY} (cap 16384)`);
+    expect(text).toContain(`num_ctx 65536 placed anyway over the context cap of ${FZZY} (cap 16384)`);
+    // A row every node could take, an uncapped fleet, and a Hub predating cap placement add nothing.
+    expect(text.match(/cap 16384/g)).toHaveLength(3);
   });
 
   describe('formatPromptCeilingResultLines', () => {
@@ -653,6 +752,351 @@ describe('hub-pool-cli prompt ceiling', () => {
 
       expect(result.tone).toBe('red');
       expect(result.lines.join('\n')).toContain('predates prompt ceilings');
+    });
+  });
+});
+
+describe('hub-pool-cli context cap', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('reads the preferences, and PATCHes the cap with the backend it was given — null to clear', async () => {
+    hubApiFetch.mockResolvedValue({ preferredBackend: 'ollama', maxNumCtx: null });
+
+    await fetchInferencePreferences('.env.local');
+    await setInferenceContextCap('.env.local', 'ollama', 16_384);
+    await setInferenceContextCap('.env.local', 'vllm', null);
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/preferences');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBeUndefined();
+    // The preferences route, not /api/user-settings: it is the one that can remove the key, and it
+    // requires `backend`, so the stored one is sent back.
+    expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/preferences');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"backend":"ollama","maxNumCtx":16384}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    // Omitting the field would leave the old cap in place: null is the "clear".
+    expect((hubApiFetch.mock.calls[2]?.[2] as RequestInit).body).toBe('{"backend":"vllm","maxNumCtx":null}');
+  });
+
+  describe('per-peer caps: the column, the comparison, and the three readings', () => {
+    const capped = (id: string, node: string, maxNumCtx: number | null | undefined, rest: Partial<PoolPeerRow> = {}) =>
+      peer({ id, nodeFqdn: node, ...(maxNumCtx === undefined ? {} : { maxNumCtx }), ...rest });
+
+    it('renders a number, `none` and `?` as three different cells, never as a default', () => {
+      // `none` is a peer that answered and named no cap — routing reads it as "takes any window".
+      // `?` is a peer nothing is known about, or a Hub whose rows predate the field. A cap column
+      // that showed either as a number is how an operator concludes a fleet is uniform when it is not.
+      expect(peerContextCap(capped('a', PEER_A, 65_536))).toBe(65_536);
+      expect(peerContextCap(capped('b', PEER_B, null))).toBeNull();
+      expect(peerContextCap(capped('c', PEER_B, null, { lastCapabilities: null }))).toBeUndefined();
+      expect(peerContextCap(capped('d', PEER_B, undefined))).toBeUndefined();
+
+      const table = formatPoolPeerTable([
+        capped('a', PEER_A, 65_536),
+        capped('b', PEER_B, null),
+        capped('c', 'hub-d.example-tailnet.ts.net', null, { lastCapabilities: null }),
+      ]).join('\n');
+
+      expect(table).toContain('CONTEXT');
+      expect(table).toMatch(/65536\s+ollama/);
+      expect(table).toMatch(/none\s+ollama/);
+      expect(table).toMatch(/\?\s+-/);
+    });
+
+    it('summarises a spread, a mix and a uniform pool, and counts only what is known', () => {
+      const spread = summariseContextCaps([
+        { node: 'core-14', cap: 8_192 },
+        { node: 'core-2', cap: 65_536 },
+        { node: 'beta-nas', cap: null },
+        { node: 'unpolled', cap: undefined },
+      ]);
+
+      expect(spread).toMatchObject({ smallest: 8_192, largest: 65_536, disagrees: true, mixed: true });
+      expect(spread.uncapped).toEqual(['beta-nas']);
+      expect(spread.unknown).toEqual(['unpolled']);
+      // One cap repeated is agreement, and an all-uncapped pool is neither a spread nor a mix.
+      expect(
+        summariseContextCaps([
+          { node: 'a', cap: 65_536 },
+          { node: 'b', cap: 65_536 },
+        ]),
+      ).toMatchObject({ disagrees: false, mixed: false });
+      expect(
+        summariseContextCaps([
+          { node: 'a', cap: null },
+          { node: 'b', cap: null },
+        ]),
+      ).toMatchObject({ disagrees: false, mixed: false });
+    });
+
+    it('names the nodes a disagreement places behind, and the uncapped node that collects the large windows', () => {
+      const text = formatPoolContextCapLines(
+        status({
+          localNode: { ...status().localNode, maxNumCtx: 65_536 },
+          peers: [capped('a', PEER_A, 16_384), capped('b', PEER_B, null)],
+        }),
+      ).join('\n');
+
+      expect(text).toContain('Context caps');
+      expect(text).toContain('caps disagree across this pool (16384 … 65536)');
+      expect(text).toContain(`${PEER_A} at 16384 is placed behind`);
+      expect(text).toContain(`no cap on ${PEER_B}`);
+      expect(text).toContain('cihub fleet backends --backends ollama --ollama-context <N> --execute');
+    });
+
+    it('says nothing when every node agrees, and nothing at all when the whole pool is uncapped', () => {
+      const agreed = formatPoolContextCapLines(
+        status({ localNode: { ...status().localNode, maxNumCtx: 65_536 }, peers: [capped('a', PEER_A, 65_536)] }),
+      ).join('\n');
+
+      expect(agreed).toContain('Context caps');
+      expect(agreed).not.toContain('disagree');
+      expect(agreed).not.toContain('no cap on');
+      // A pool where nothing is capped behaves exactly as the build before caps did. Say nothing.
+      expect(formatPoolContextCapLines(status({ peers: [capped('a', PEER_A, null)] }))).toEqual([]);
+    });
+
+    it('ignores peers that cannot be routed to, so a disabled or unreachable node raises no warning', () => {
+      const lines = formatPoolContextCapLines(
+        status({
+          localNode: { ...status().localNode, maxNumCtx: 65_536 },
+          peers: [capped('a', PEER_A, 16_384, { enabled: false }), capped('b', PEER_B, 8_192, { status: 'unreachable' })],
+        }),
+      ).join('\n');
+
+      expect(lines).not.toContain('disagree');
+      expect(lines).not.toContain(PEER_A);
+    });
+
+    it("marks an unknown cap as unknown rather than folding it into 'uncapped'", () => {
+      const lines = formatPoolContextCapLines(
+        status({ localNode: { ...status().localNode, maxNumCtx: 65_536 }, peers: [capped('a', PEER_A, undefined)] }),
+      ).join('\n');
+
+      expect(lines).toContain(`no cap known for ${PEER_A}`);
+      expect(lines).not.toContain('no cap on');
+    });
+
+    it('adds one comparison line to `pool peers`, and nothing when the peers agree', () => {
+      const disagreeing = formatPeerContextCapLines([capped('a', PEER_A, 16_384), capped('b', PEER_B, 65_536)]).join('\n');
+      expect(disagreeing).toContain('peer context caps disagree (16384 … 65536)');
+
+      expect(formatPeerContextCapLines([capped('a', PEER_A, 65_536), capped('b', PEER_B, 65_536)])).toEqual([]);
+      // And it reaches the real `pool peers` output, under the table that carries the numbers.
+      expect(formatPoolPeersLines([capped('a', PEER_A, 16_384), capped('b', PEER_B, null)]).join('\n')).toContain(
+        'advertises no context cap while others are capped',
+      );
+    });
+  });
+
+  it('shows this node’s cap in status, and nothing on a node without one or a Hub predating caps', () => {
+    const base = status();
+    const capped = formatPoolStatusLines({ ...base, localNode: { ...base.localNode, maxNumCtx: 16_384 } }).join('\n');
+    expect(capped).toContain('Context    apps are handed a num_ctx of at most 16384 tokens');
+    expect(capped).toContain('cihub pool context-cap clear');
+    expect(formatLocalContextCapLines({ ...base.localNode, maxNumCtx: null })).toEqual([]);
+    expect(formatLocalContextCapLines(base.localNode)).toEqual([]);
+    expect(formatPoolStatusLines(base).join('\n')).not.toContain('Context    ');
+  });
+
+  describe('formatContextCapResultLines', () => {
+    const prefs = (maxNumCtx: number | null) => ({ preferredBackend: 'ollama', maxNumCtx });
+
+    it('confirms a cap that read back as requested, and names the engine setting it must match', () => {
+      const result = formatContextCapResultLines(16_384, prefs(null), prefs(16_384), true);
+      expect(result.tone).toBe('green');
+      expect(result.title).toBe('Context cap set');
+      expect(result.lines.join('\n')).toContain('at most 16384 tokens');
+      expect(result.lines.join('\n')).toContain('OLLAMA_CONTEXT_LENGTH on this node should be 16384');
+    });
+
+    it('confirms a clear, saying what the sizing goes back to', () => {
+      const result = formatContextCapResultLines(null, prefs(65_536), prefs(null), true);
+      expect(result).toMatchObject({ title: 'Context cap cleared', tone: 'yellow' });
+      expect(result.lines.join('\n')).toContain('model window');
+    });
+
+    it('says nothing was written when the cap already read as requested', () => {
+      expect(formatContextCapResultLines(16_384, prefs(16_384), null, false)).toMatchObject({ title: 'Context cap unchanged' });
+      expect(formatContextCapResultLines(null, prefs(null), null, false).lines.join('\n')).toContain('nothing to clear');
+    });
+
+    it('does not report success when the read-back disagrees with the request', () => {
+      const result = formatContextCapResultLines(16_384, prefs(null), prefs(null), true);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('reads back no cap');
+    });
+
+    it('says an older Hub stored nothing', () => {
+      const result = formatContextCapResultLines(16_384, { preferredBackend: 'ollama' }, null, false);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('predates the context cap');
+    });
+  });
+});
+
+describe('hub-pool-cli Ollama slots', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('PATCHes the slot count through the preferences route with the backend it was given — null to clear', async () => {
+    hubApiFetch.mockResolvedValue({ preferredBackend: 'ollama', ollamaSlots: null });
+
+    await setInferenceOllamaSlots('.env.local', 'ollama', 4);
+    await setInferenceOllamaSlots('.env.local', 'vllm', null);
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/preferences');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('PATCH');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toBe('{"backend":"ollama","ollamaSlots":4}');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).body).toBe('{"backend":"vllm","ollamaSlots":null}');
+  });
+
+  it('shows this node’s slot count in status with the knob’s state, and nothing when none is stated or the Hub predates slots', () => {
+    const base = status();
+    const stated = formatPoolStatusLines({ ...base, localNode: { ...base.localNode, ollamaSlots: 4 } }).join('\n');
+    expect(stated).toContain('Slots      Ollama runs 4 requests at once; slot-aware placement off (poolSlotAwareness=0)');
+    expect(stated).toContain('cihub pool slots clear');
+    const on = formatLocalOllamaSlotsLines({ ...base.localNode, ollamaSlots: 1 }, { ...base.settings, poolSlotAwareness: 1 }).join('\n');
+    expect(on).toContain('Ollama runs 1 request at once; slot-aware placement on');
+    expect(formatLocalOllamaSlotsLines({ ...base.localNode, ollamaSlots: null }, base.settings)).toEqual([]);
+    expect(formatLocalOllamaSlotsLines(base.localNode, base.settings)).toEqual([]);
+    expect(formatPoolStatusLines(base).join('\n')).not.toContain('Slots      ');
+  });
+
+  describe('formatOllamaSlotsResultLines', () => {
+    const prefs = (ollamaSlots: number | null) => ({ preferredBackend: 'ollama', ollamaSlots });
+
+    it('confirms a count that read back as requested, and names the daemon setting it must match', () => {
+      const result = formatOllamaSlotsResultLines(4, prefs(null), prefs(4), true);
+      expect(result.tone).toBe('green');
+      expect(result.title).toBe('Slot count set');
+      expect(result.lines.join('\n')).toContain('runs 4 requests at once');
+      expect(result.lines.join('\n')).toContain('OLLAMA_NUM_PARALLEL on this node should be 4');
+      expect(result.lines.join('\n')).toContain('cihub fleet backends --ollama-parallel 4');
+    });
+
+    it('recommends the fleet command with the node’s other runtime flags, and says what the bare flag would drop', () => {
+      // The runtime drop-in is rendered whole from the flags on the line: `--ollama-parallel 4 --execute`
+      // alone would rewrite every node's file without OLLAMA_KEEP_ALIVE / OLLAMA_CONTEXT_LENGTH and
+      // restart the daemon to make it so. The box must never hand the operator that command bare.
+      const text = formatOllamaSlotsResultLines(4, prefs(null), prefs(4), true).lines.join('\n');
+      expect(text).toContain('--ollama-parallel 4 --ollama-context <n> --ollama-keep-alive <d> --execute');
+      expect(text).toContain('rendered whole from the flags');
+      expect(text).toContain('--ollama-parallel 4 alone would drop OLLAMA_KEEP_ALIVE and OLLAMA_CONTEXT_LENGTH');
+      expect(text).not.toMatch(/--ollama-parallel 4 --execute/);
+    });
+
+    it('confirms a clear, saying what ranking goes back to', () => {
+      const result = formatOllamaSlotsResultLines(null, prefs(2), prefs(null), true);
+      expect(result).toMatchObject({ title: 'Slot count cleared', tone: 'yellow' });
+      expect(result.lines.join('\n')).toContain('queue depth alone');
+    });
+
+    it('says nothing was written when the count already read as requested', () => {
+      expect(formatOllamaSlotsResultLines(4, prefs(4), null, false)).toMatchObject({ title: 'Slot count unchanged' });
+      expect(formatOllamaSlotsResultLines(null, prefs(null), null, false).lines.join('\n')).toContain('nothing to clear');
+    });
+
+    it('does not report success when the read-back disagrees with the request', () => {
+      const result = formatOllamaSlotsResultLines(4, prefs(null), prefs(2), true);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('reads back 2');
+    });
+
+    it('says an older Hub stored nothing', () => {
+      const result = formatOllamaSlotsResultLines(4, { preferredBackend: 'ollama' }, null, false);
+      expect(result.tone).toBe('red');
+      expect(result.lines.join('\n')).toContain('predates the slot count');
+    });
+  });
+
+  describe('pool log', () => {
+    const BETA_MAX = 'hub-c.example-tailnet.ts.net';
+
+    function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
+      return {
+        at: '2026-09-21T10:00:01.000Z',
+        direction: 'outbound',
+        path: '/v1/chat/completions',
+        model: 'qwen3-coder:30b',
+        node: PEER_A,
+        peerId: 'peer-1',
+        backend: 'ollama',
+        candidates: 3,
+        attempt: 1,
+        failedOverFrom: [],
+        outcome: 'served',
+        status: 200,
+        durationMs: 470,
+        ...overrides,
+      };
+    }
+
+    function logOf(entries: PoolRoutingLogResponse['entries']): string {
+      const summary = {
+        recorded: entries.length,
+        capacity: 200,
+        served: entries.length,
+        failed: 0,
+        failovers: 0,
+        lastAt: '2026-09-21T10:00:01.000Z',
+      };
+      return formatPoolRoutingLogLines({ summary, entries }).join('\n');
+    }
+
+    it('marks a row a full engine was moved on, with its queue depth and slots', () => {
+      const text = logOf([
+        routingEntry({
+          slots: { demoted: [{ node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 }], overridden: false },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ moved ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
+    });
+
+    it('names this node as local, lists every demoted node in ranked order, and says "slot" for one', () => {
+      const text = logOf([
+        routingEntry({
+          slots: {
+            demoted: [
+              { node: 'local', backend: 'ollama', inFlight: 3, slots: 1 },
+              { node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 },
+            ],
+            overridden: false,
+          },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ moved local (3 in flight, 1 slot), ${BETA_MAX} (2 in flight, 2 slots) behind nodes with a free slot`);
+    });
+
+    it('says so when the request was placed on a full engine anyway', () => {
+      // Every candidate full, every free one failed first, or a ceiling put the free ones behind it:
+      // the log must read "placed anyway", never claim the node was skipped.
+      const text = logOf([
+        routingEntry({
+          node: BETA_MAX,
+          slots: { demoted: [{ node: BETA_MAX, backend: 'ollama', inFlight: 2, slots: 2 }], overridden: true },
+        }),
+      ]);
+
+      expect(text).toContain(`↳ placed anyway with every slot full on ${BETA_MAX} (2 in flight, 2 slots): no node with a free slot was ahead of it`);
+      expect(text).not.toContain('moved');
+    });
+
+    it('adds nothing to a row the slots did not change, with the knob off, or from a Hub predating slots', () => {
+      const text = logOf([
+        // Some candidate stated a count, but every one had a free slot: the record is present and empty.
+        routingEntry({ slots: { demoted: [], overridden: false } }),
+        routingEntry({ slots: null }),
+        routingEntry(),
+      ]);
+
+      expect(text).not.toContain('slot');
+      expect(text).not.toContain('↳');
     });
   });
 });

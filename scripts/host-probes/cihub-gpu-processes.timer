@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample per-process GPU VRAM for the Companion Hub every 15 s
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

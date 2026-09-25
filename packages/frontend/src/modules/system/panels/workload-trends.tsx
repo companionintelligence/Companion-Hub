@@ -1,6 +1,6 @@
 import { DASH, humanBytes, Panel, PanelBody, StepAreaChart } from '@/components/ui/dense/dense';
-import type { AppRuntimeHealth, AppRuntimeHistorySample } from '@/lib/app-runtime-monitor';
-import { computeCpuChartScale, computeMemoryChartScale } from '@/modules/system/resource-monitor-chart';
+import type { AppRuntimeHealth, AppRuntimeHistorySample, GpuVramSource } from '@/lib/app-runtime-monitor';
+import { computeCpuChartScale, computeMemoryChartScale, computeVramChartScale } from '@/modules/system/resource-monitor-chart';
 import type { LoadState } from '@/modules/system/use-dashboard-data';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -17,6 +17,16 @@ import { useTranslation } from 'react-i18next';
  * workload are not in this payload, not anywhere behind it, and are not drawn ANYWHERE — the
  * proxy has no concept of which app a request came from at all, only which model and node served
  * it (see `pool-activity.tsx`'s per-model token breakdown, the nearest real signal there is).
+ *
+ * ── GPU VRAM is real WHERE IT IS READ, and the tile says where that is ───────────────────────
+ *
+ * The sampler has two sources: a file the host's probe timer writes (the only one that answers on
+ * a Docker-deployed Hub, whose container has neither `nvidia-smi` nor `rocm-smi`), and the tool
+ * itself for a Hub running outside Docker. The snapshot's `gpuVramSource` says which answered this
+ * tick, or `absent` when neither could. On `absent` every `gpuVramMb` is `null` for want of a
+ * measurement, and the GPU tile prints that in words below its rows. Without the line, five rows
+ * of dashes over empty traces read as "nothing holds VRAM" — a measurement nobody took, which is
+ * the same error as drawing an unmeasured value at zero.
  *
  * ── Why five small charts and not one five-series overlay ────────────────────────────────────
  *
@@ -57,6 +67,17 @@ const CHART_SLOTS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--char
 
 const ROW_HEIGHT = 38;
 
+/*
+ * `gpuVramMb` is MEGABYTES; `memoryUsageBytes` is bytes, and so is everything this tile draws,
+ * scales and formats. The conversion happens ONCE, in `valueForApp`, so the series, each row's
+ * current and peak, the axis ceiling and `humanBytes` all see the same unit. It used to happen at
+ * render instead, which is how the axis label read "scale to 256 TB" above a 10 GB card: the
+ * ceiling was computed from raw megabytes by a byte-denominated scale, whose 256 MiB floor is
+ * 268,435,456, and that number was then multiplied by 1024² a second time as if it were megabytes.
+ * Every Hub whose workloads held no VRAM hit the floor, so every node printed it.
+ */
+const MIB = 1024 ** 2;
+
 type Metric = 'cpu' | 'memory' | 'gpu';
 
 /**
@@ -77,7 +98,7 @@ function valueForApp(sample: AppRuntimeHistorySample, appUrn: string, metric: Me
   if (!point) return null;
 
   if (metric === 'cpu') return point.cpuPercent;
-  if (metric === 'gpu') return point.gpuVramMb;
+  if (metric === 'gpu') return point.gpuVramMb === null ? null : point.gpuVramMb * MIB;
   return point.memoryUsageBytes;
 }
 
@@ -92,22 +113,32 @@ export function WorkloadTrend({
   history,
   apps,
   state,
+  gpuVramSource,
   className,
 }: {
   metric: Metric;
   history: AppRuntimeHistorySample[];
   apps: AppRuntimeHealth[];
   state: LoadState;
+  /**
+   * Only read for `metric="gpu"`. `undefined` (the snapshot has not answered) and `null` (the
+   * backend's empty snapshot) both say nothing about this node and print nothing; only `absent`
+   * — a collection that ran and found no source — earns the line.
+   */
+  gpuVramSource?: GpuVramSource | null;
   className?: string;
 }) {
   const { t } = useTranslation();
+  const gpuAbsent = metric === 'gpu' && gpuVramSource === 'absent';
   const title =
     metric === 'cpu' ? t('DASHBOARD_TRENDS_CPU_TITLE') : metric === 'gpu' ? t('DASHBOARD_TRENDS_GPU_TITLE') : t('DASHBOARD_TRENDS_MEM_TITLE');
-  // gpuVramMb is megabytes, not bytes — `humanBytes` expects bytes, same as memoryUsageBytes.
-  const format = (value: number) => (metric === 'cpu' ? `${value.toFixed(1)}%` : humanBytes(metric === 'gpu' ? value * 1024 * 1024 : value));
+  // Both byte-denominated metrics arrive here already in bytes — see `MIB` above. No unit
+  // arithmetic at render, on purpose: it is the one place a value and its axis could be converted
+  // a different number of times.
+  const format = (value: number) => (metric === 'cpu' ? `${value.toFixed(1)}%` : humanBytes(value));
   // The axis ceiling is a round number by construction, so it is printed as one. `100.0%` reads
   // as a measurement that happened to land on the ceiling rather than as the ceiling itself.
-  const formatAxis = (value: number) => (metric === 'cpu' ? `${Math.round(value)}%` : humanBytes(metric === 'gpu' ? value * 1024 * 1024 : value));
+  const formatAxis = (value: number) => (metric === 'cpu' ? `${Math.round(value)}%` : humanBytes(value));
 
   const rows = useMemo(() => {
     const labels = new Map(apps.map((app) => [app.appUrn, app.appName]));
@@ -164,7 +195,9 @@ export function WorkloadTrend({
   const axisMax = useMemo(() => {
     const values = rows.flatMap((row) => row.series.filter((value): value is number => value !== null && Number.isFinite(value)));
 
-    return metric === 'cpu' ? computeCpuChartScale(values).max : computeMemoryChartScale(values).max;
+    if (metric === 'cpu') return computeCpuChartScale(values).max;
+    // Bytes in both cases; the VRAM scale differs only in where it floors an empty tile.
+    return metric === 'gpu' ? computeVramChartScale(values).max : computeMemoryChartScale(values).max;
   }, [metric, rows]);
 
   return (
@@ -217,6 +250,13 @@ export function WorkloadTrend({
             </ul>
           </div>
         )}
+        {gpuAbsent ? (
+          // Outside the three-way branch on purpose: the reading is absent whether there are rows,
+          // one sample, or no workloads at all, and the fix is the same in every case.
+          <p data-testid="workload-trend-gpu-absent" className="mt-2 border-t border-border pt-2 text-[11px] leading-snug text-muted-foreground">
+            {t('DASHBOARD_TRENDS_GPU_ABSENT')}
+          </p>
+        ) : null}
       </PanelBody>
     </Panel>
   );

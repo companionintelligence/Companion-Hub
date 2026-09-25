@@ -19,7 +19,20 @@ export const CATALOG_WRITE_SCOPE = 'catalog:write';
 /** Registering devices into the org, so a fleet install needs no browser per box. */
 export const DEVICE_PAIR_SCOPE = 'device:pair';
 
-export const CLI_LOGIN_SCOPES = [CATALOG_WRITE_SCOPE, DEVICE_PAIR_SCOPE] as const;
+/**
+ * Everything `device:pair` grants, and the rest of a device's life: listing an org's devices,
+ * minting a replacement pairing code for one, deleting one. Its own scope so a fleet install that
+ * only needs to enrol machines never holds a token that can destroy their records.
+ */
+export const DEVICE_MANAGE_SCOPE = 'device:manage';
+
+export const CLI_LOGIN_SCOPES = [CATALOG_WRITE_SCOPE, DEVICE_PAIR_SCOPE, DEVICE_MANAGE_SCOPE] as const;
+
+/** Whether a stored login may mint devices — `device:pair`, or the `device:manage` that includes it. */
+export function loginCanPairDevices(login: Pick<PortalLogin, 'scope'> | null | undefined): boolean {
+  const scope = loginScope(login);
+  return scope === DEVICE_PAIR_SCOPE || scope === DEVICE_MANAGE_SCOPE;
+}
 
 export type CliLoginScope = (typeof CLI_LOGIN_SCOPES)[number];
 
@@ -179,6 +192,42 @@ export function deleteStoredLogin(filePath = loginFilePath()): void {
   }
 }
 
+/**
+ * A Portal login taken from the environment, for runs nobody is sitting at — a test harness, CI, a
+ * fleet script. `null` when `CI_PORTAL_TOKEN` is unset, so callers fall back to the file `cihub login`
+ * writes; set, it wins, because an unattended run must never reach the browser `cihub login` opens.
+ *
+ * The variables are the ones `cihub submit` already reads, plus `CI_PORTAL_SCOPE`: Portal knows a
+ * token's scope but nothing on the wire tells the CLI, which gates on it before calling. Absent means
+ * catalog:write, exactly as for a stored login that predates scopes. `CI_PORTAL_ORG` is required
+ * rather than borrowed from the stored login — a token is minted for one organization, and pairing
+ * under another's id is the kind of mismatch Portal answers with a bare 409.
+ *
+ * Portal developer tokens do not expire (they are revoked), so one approval in the browser is the
+ * last one: mint a `device:manage` token once, put it here, and every later run is headless.
+ */
+export function portalLoginFromEnv(env: NodeJS.ProcessEnv = process.env): PortalLogin | null {
+  const token = env.CI_PORTAL_TOKEN?.trim();
+  if (!token) {
+    return null;
+  }
+  const orgId = env.CI_PORTAL_ORG?.trim();
+  if (!orgId) {
+    throw new Error('CI_PORTAL_TOKEN is set but CI_PORTAL_ORG is not: set it to the id of the organization the token was minted for');
+  }
+  const scope = env.CI_PORTAL_SCOPE?.trim();
+  if (scope && !(CLI_LOGIN_SCOPES as readonly string[]).includes(scope)) {
+    throw new Error(`CI_PORTAL_SCOPE must be one of ${CLI_LOGIN_SCOPES.join(', ')}; got '${scope}'`);
+  }
+  return {
+    token,
+    orgId,
+    orgSlug: env.CI_PORTAL_ORG_SLUG?.trim() || null,
+    portalOrigin: portalOriginFromEnv(env),
+    ...(scope ? { scope: scope as CliLoginScope } : {}),
+  };
+}
+
 export function resolveSubmitCredentials(args: {
   token?: string;
   orgId?: string;
@@ -210,10 +259,8 @@ export type MintedPairingCode = { deviceId: string; pairingCode: string; name: s
  * the authorization.
  */
 export async function mintPairingCode(params: { name: string; login: PortalLogin; fetchImpl?: typeof fetch }): Promise<MintedPairingCode> {
-  const scope = loginScope(params.login);
-
-  if (scope !== DEVICE_PAIR_SCOPE) {
-    throw new Error(`the stored Portal login has scope ${scope ?? 'none'}; run: cihub login --scope ${DEVICE_PAIR_SCOPE}`);
+  if (!loginCanPairDevices(params.login)) {
+    throw new Error(`the stored Portal login has scope ${loginScope(params.login) ?? 'none'}; run: cihub login --scope ${DEVICE_PAIR_SCOPE}`);
   }
 
   const fetchImpl = params.fetchImpl ?? fetch;

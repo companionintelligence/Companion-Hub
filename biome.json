@@ -9,7 +9,7 @@
   "files": {
     "includes": [
       "**",
-      "!**/.claude/worktrees",
+      "!.claude/worktrees",
       "!**/dist/*",
       "!**/public/*",
       "!**/legacy/*",
@@ -22,7 +22,9 @@
       "!**/packages/frontend/src/styles/globals.css",
       "!**/videos",
       "!**/e2e/generated",
-      "!**/src-tauri/gen"
+      "!**/src-tauri/gen",
+      "!**/*.generated.ts",
+      "!**/packages/frontend/index.html"
     ]
   },
   "formatter": {

@@ -143,7 +143,7 @@ beforeEach(() => {
   mocks.executeBackendPlan.mockReset();
   mocks.planAllBackends.mockReset().mockReturnValue([{ backend: 'ollama', action: 'install', why: 'no engine answering' }]);
   mocks.checkAppOnNode.mockReset();
-  mocks.probeNode.mockReset().mockResolvedValue({ ssh: true, sshFailure: 'ok', hub: true, hubDetail: 'tier a', engines: [] });
+  mocks.probeNode.mockReset().mockResolvedValue({ ssh: true, sshFailure: 'ok', hub: true, hubProbe: 'ok', hubDetail: 'tier a', engines: [] });
   mocks.ensureTailscaleCert.mockReset();
   mocks.probeTailscaleCert.mockReset();
   mocks.preflightNode
@@ -406,11 +406,14 @@ describe('fleet backends', () => {
       ms: 1,
     });
     await runFleetCommand(['backends', '--backends', 'ollama']);
-    // One probe per node, nothing else: no sudo, no apply script.
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    // Three probes per node (the bind, the resident models, then the firewall), nothing else: no
+    // apply script under sudo. The firewall probe elevates to read `ufw status`, which is root-only,
+    // and reads nothing else.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(6);
     for (const call of mocks.sshCapture.mock.calls) {
-      expect(String(call[1])).not.toContain('sudo');
+      expect(String(call[1])).not.toContain('sudo -n bash');
       expect(String(call[1])).not.toContain('systemctl restart');
+      expect(String(call[1])).not.toContain('ufw allow');
     }
     const printed = vi
       .mocked(console.log)
@@ -436,8 +439,9 @@ describe('fleet backends', () => {
       await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'beta-max']);
       expect(mocks.readHostFacts).toHaveBeenCalledTimes(1);
       expect(mocks.readHostFacts.mock.calls[0]?.[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
-      expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
-      expect(mocks.sshCapture.mock.calls[0]?.[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
+      // The bind probe, the residency probe and the firewall probe, all as that account.
+      expect(mocks.sshCapture).toHaveBeenCalledTimes(3);
+      for (const call of mocks.sshCapture.mock.calls) expect(call[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
       expect(process.exitCode).toBeUndefined();
     });
 
@@ -511,8 +515,9 @@ describe('fleet backends --execute on an adopted ollama', () => {
       ms: 1,
     });
     await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
-    // The probe, and nothing under sudo.
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    // The three probes (bind, resident models, firewall), and nothing under sudo.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(3);
+    for (const call of mocks.sshCapture.mock.calls) expect(String(call[1])).not.toContain('sudo -n bash');
     const printed = vi
       .mocked(console.log)
       .mock.calls.map((c) => String(c[0]))
@@ -531,7 +536,8 @@ describe('fleet backends --execute on an adopted ollama', () => {
       ms: 1,
     });
     await runFleetCommand(['backends', '--backends', 'ollama', '--bind', 'tailnet', '--execute']);
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(3);
+    for (const call of mocks.sshCapture.mock.calls) expect(String(call[1])).not.toContain('sudo -n bash');
     const printed = vi
       .mocked(console.log)
       .mock.calls.map((c) => String(c[0]))
@@ -557,7 +563,8 @@ describe('fleet backends --execute on an adopted ollama', () => {
         ms: 1,
       });
     await runFleetCommand(['backends', '--backends', 'ollama', '--execute']);
-    expect(mocks.sshCapture).toHaveBeenCalledTimes(2);
+    // Bind probe, the apply under sudo, then the firewall probe.
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(3);
     expect(String(mocks.sshCapture.mock.calls[1]?.[1])).toContain('sudo -n bash');
     const printed = vi
       .mocked(console.log)
@@ -943,13 +950,121 @@ describe('fleet status image column', () => {
   it('marks a node SSH could not reach as unknown with that reason, without dialling it again', async () => {
     mocks.probeNode.mockImplementation(async (node: { ip: string }) =>
       node.ip === '10.0.0.2'
-        ? { ssh: false, sshFailure: 'acl-denied', hub: true, hubDetail: 'tier a', engines: ['ollama:11434'] }
-        : { ssh: true, sshFailure: 'ok', hub: true, hubDetail: 'tier a', engines: [] },
+        ? { ssh: false, sshFailure: 'acl-denied', hub: true, hubProbe: 'ok', hubDetail: 'tier a', engines: ['ollama:11434'] }
+        : { ssh: true, sshFailure: 'ok', hub: true, hubProbe: 'ok', hubDetail: 'tier a', engines: [] },
     );
     routeSsh({ before: { '10.0.0.1': probeOutput('d5ff45d90203') } });
     await runFleetCommand(['status']);
     expect(probeCalls().map((call) => (call[0] as { host: string }).host)).toEqual(['10.0.0.1']);
     expect(logged()).toContain('hub image d5ff45d9 on 1/2; unknown: core-2 (acl-denied)');
+  });
+
+  // 2026-09-20: four Hubs under inference load printed `—` under HUB and PORTAL, the same glyphs a
+  // node with no Hub prints. The phase route had answered; only the backend summary had not.
+  const underLoad = () =>
+    mocks.probeNode.mockImplementation(async (node: { ip: string }) =>
+      node.ip === '10.0.0.2'
+        ? {
+            ssh: true,
+            sshFailure: 'ok',
+            hub: true,
+            hubProbe: 'slow',
+            portal: { phase: 'locally_ready', registered: true, checkIn: 200 },
+            engines: ['ollama:11434'],
+          }
+        : { ssh: true, sshFailure: 'ok', hub: false, hubProbe: 'timeout', engines: [] },
+    );
+
+  it('shows a Hub whose summary timed out as slow with its Portal standing, and a silent port as timeout', async () => {
+    underLoad();
+    routeSsh({ before: { '10.0.0.1': probeOutput('d5ff45d90203'), '10.0.0.2': probeOutput('d5ff45d90203') } });
+    await runFleetCommand(['status', '--timeout', '250']);
+    const row = (name: string) =>
+      logged()
+        .split('\n')
+        .find((line) => line.startsWith(name)) ?? '';
+    expect(row('core-2')).toMatch(/^core-2\s+yes\s+yes, slow\s+ok 200\s+d5ff45d9/);
+    expect(row('core-1')).toMatch(/^core-1\s+yes\s+timeout\s+—\s+d5ff45d9/);
+    expect(logged()).toContain('1 Hub(s) answered their phase route but not their backend summary within 10000 ms');
+    expect(logged()).toContain('1 node(s) answered nothing on the Hub port within 250 ms');
+    expect(logged()).toContain('Re-run with a longer --timeout (phase route: 250 ms, summary: 10000 ms)');
+  });
+
+  it('carries the Hub probe outcome in --json', async () => {
+    underLoad();
+    routeSsh({ before: { '10.0.0.1': probeOutput('d5ff45d90203'), '10.0.0.2': probeOutput('d5ff45d90203') } });
+    await runFleetCommand(['status', '--json', '--timeout', '250']);
+    const doc = JSON.parse(logged()) as { nodes: { name: string; probe: { hubProbe: string } }[] };
+    expect(doc.nodes.map((n) => [n.name, n.probe.hubProbe])).toEqual([
+      ['core-1', 'timeout'],
+      ['core-2', 'slow'],
+    ]);
+  });
+
+  // 2026-09-21: six Strix Halo nodes served qwen3-coder:30b from the CPU — Vulkan forced, the iGPU
+  // key unset, the GPU dropped — and this table was green on every column. `/api/ps` said
+  // `size_vram: 0`; the RESIDENT column is where that now shows.
+  const residencyRoutes = (ps: Record<string, string>) =>
+    mocks.sshCapture.mockImplementation(async (target: { host: string }, command: string) => {
+      if (command.includes('image-probe')) return okResult(probeOutput('d5ff45d90203'));
+      if (command.includes('CIHUB_OLLAMA_VERSION_EOF')) return okResult('ollama-host=0.0.0.0:11434\nollama-version=0.34.0');
+      if (command.includes('ollama-ps-probe=1')) return okResult(ps[target.host] ?? '');
+      return okResult('');
+    });
+  const psProbe = (body: string, over: { amdGfxRaw?: string; env?: string } = {}) =>
+    [
+      'ollama-ps-probe=1',
+      'ollama-ps-host=0.0.0.0:11434',
+      `ollama-ps-env=OLLAMA_HOST=0.0.0.0:11434${over.env ? ` ${over.env}` : ''}`,
+      'ollama-ps-nvidia=',
+      `ollama-ps-amd-gfx=${over.amdGfxRaw ?? ''}`,
+      `ollama-ps-body=${body}`,
+    ].join('\n');
+  const qwen = (sizeVram: number) => JSON.stringify({ models: [{ name: 'qwen3-coder:30b', size: 19975044096, size_vram: sizeVram }] });
+
+  it('marks a model resident on the CPU in the RESIDENT column and names the reason under the table', async () => {
+    residencyRoutes({
+      '10.0.0.1': psProbe(qwen(19975044096), { amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1' }),
+      '10.0.0.2': psProbe(qwen(0), { amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+    });
+    await runFleetCommand(['status']);
+    const out = logged();
+    const row = (name: string) => out.split('\n').find((line) => line.startsWith(name)) ?? '';
+    expect(out).toContain('RESIDENT');
+    expect(row('core-1')).toMatch(/qwen3-coder:30b$/);
+    expect(row('core-1')).not.toContain('CPU');
+    expect(row('core-2')).toMatch(/qwen3-coder:30b ⚠ CPU$/);
+    expect(out).toContain('1 node(s) have a model resident on the CPU while the node has a GPU — HTTP 200 at half speed:');
+    expect(out).toContain(
+      '  core-2: qwen3-coder:30b resident on CPU — size_vram 0 of 18.6 GiB: OLLAMA_LLM_LIBRARY=vulkan with OLLAMA_IGPU_ENABLE unset — Ollama drops an integrated GPU unless OLLAMA_IGPU_ENABLE=1, so the model loaded on the CPU',
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('shows a dash for nothing resident, ? for a node it could not read, and no footer for a CPU-only box', async () => {
+    // core-1: empty daemon. core-2: the same model on the CPU, but no GPU on the box — not a finding.
+    residencyRoutes({ '10.0.0.1': psProbe('{"models":[]}'), '10.0.0.2': psProbe(qwen(0)) });
+    mocks.nodes.push({ name: 'core-3', ip: '10.0.0.3' });
+    await runFleetCommand(['status']);
+    const out = logged();
+    const row = (name: string) => out.split('\n').find((line) => line.startsWith(name)) ?? '';
+    expect(row('core-1')).toMatch(/—$/);
+    expect(row('core-2')).toMatch(/qwen3-coder:30b$/);
+    expect(row('core-3')).toMatch(/\?$/);
+    expect(out).not.toContain('resident on the CPU');
+  });
+
+  it('carries the residency reading and its findings in --json', async () => {
+    residencyRoutes({
+      '10.0.0.1': psProbe('{"models":[]}'),
+      '10.0.0.2': psProbe(qwen(0), { amdGfxRaw: '110501', env: 'OLLAMA_LLM_LIBRARY=vulkan' }),
+    });
+    await runFleetCommand(['status', '--json']);
+    const doc = JSON.parse(logged()) as { nodes: Array<{ name: string; residency: { models?: unknown[]; cpuResident: Array<{ cause: string }> } }> };
+    expect(doc.nodes.find((n) => n.name === 'core-1')?.residency).toMatchObject({ models: [], cpuResident: [], source: 'node' });
+    expect(doc.nodes.find((n) => n.name === 'core-2')?.residency.cpuResident).toEqual([
+      expect.objectContaining({ cause: 'vulkan-without-igpu', model: 'qwen3-coder:30b' }),
+    ]);
   });
 
   it('carries the image and the fleet summary in --json', async () => {

@@ -27,7 +27,11 @@ export function detectContainerDataRoot(): boolean {
  * mounts), so the container probe has to win before we consider it.
  */
 export function resolveDataDir(env: NodeJS.ProcessEnv = process.env, hasContainerDataRoot: () => boolean = detectContainerDataRoot): string {
-  const explicit = env.CI_HUB_DATA_DIR || env.CIHUB_DATA_DIR;
+  // `TIPI_DATA_DIR` is the legacy name appliances actually set. #1143 (c88a83580) renamed it
+  // to `CIHUB_DATA_DIR` by substring — a name nothing has ever set — so an upgraded appliance's
+  // explicit data directory was silently ignored and DATA_DIR fell through to ROOT_FOLDER_HOST
+  // or ~/.ci-hub. Both spellings are accepted; see scripts/LEGACY_MIGRATION.md.
+  const explicit = env.CI_HUB_DATA_DIR || env.TIPI_DATA_DIR || env.CIHUB_DATA_DIR;
   if (explicit) return explicit;
   if (hasContainerDataRoot()) return '/data';
   return env.ROOT_FOLDER_HOST || path.join(os.homedir(), '.ci-hub');

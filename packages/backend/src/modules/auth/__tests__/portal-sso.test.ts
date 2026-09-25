@@ -9,6 +9,7 @@ import {
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
   buildPortalDesktopHandoffHtml,
+  resolvePortalDesktopHandoffState,
   shouldHandoffPortalLoginToDesktop,
   resolvePortalCallbackUrl,
   resolvePortalRootBounce,
@@ -32,6 +33,15 @@ vi.mock('axios', () => ({
     get: vi.fn(),
   },
 }));
+
+/** The page needs three links now; only the deep link varies across these tests. */
+function handoffHtml(deepLink: string, overrides: { continueHref?: string; statusHref?: string } = {}) {
+  return buildPortalDesktopHandoffHtml({
+    deepLink,
+    continueHref: overrides.continueHref ?? '/home',
+    statusHref: overrides.statusHref ?? '/api/auth/portal/desktop-handoff-status?token=tok',
+  });
+}
 
 describe('portal-sso helpers', () => {
   beforeEach(() => {
@@ -115,7 +125,7 @@ describe('portal-sso helpers', () => {
   });
 
   it('builds an HTML handoff that opens the desktop deep link', () => {
-    const html = buildPortalDesktopHandoffHtml('cihub-dev://auth?token=tok-1');
+    const html = handoffHtml('cihub-dev://auth?token=tok-1');
     expect(html).toContain('cihub-dev://auth?token=tok-1');
     expect(html).toContain('Open Companion Hub');
   });
@@ -124,7 +134,7 @@ describe('portal-sso helpers', () => {
     // The script used to come first. An external-scheme navigation aborts the
     // parse, so the text and the fallback link never rendered and the user was
     // left on a blank white tab with no way forward.
-    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=tok-2');
+    const html = handoffHtml('cihub://auth?token=tok-2');
 
     const linkAt = html.indexOf('Open Companion Hub</a>');
     const scriptAt = html.indexOf('location.replace(');
@@ -134,7 +144,7 @@ describe('portal-sso helpers', () => {
   });
 
   it('navigates exactly once, so the one-time token is not spent twice', () => {
-    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=tok-3');
+    const html = handoffHtml('cihub://auth?token=tok-3');
 
     expect(html.match(/location\.replace\(/g)).toHaveLength(1);
     expect(html).not.toContain('http-equiv="refresh"');
@@ -144,7 +154,7 @@ describe('portal-sso helpers', () => {
   it('is a self-contained page: a title, and no external assets to 404', () => {
     // Served by the API before any session exists, and on a Hub with no frontend
     // bundle there is nothing under /assets to reference.
-    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=tok-4');
+    const html = handoffHtml('cihub://auth?token=tok-4');
 
     expect(html).toContain('<title>Signing you in — Companion Hub</title>');
     expect(html).not.toMatch(/<link[^>]+href=/i);
@@ -152,13 +162,84 @@ describe('portal-sso helpers', () => {
   });
 
   it('escapes the deep link in both the href and the inline script', () => {
-    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=a&b=<c>"d"');
+    const html = handoffHtml('cihub://auth?token=a&b=<c>"d"');
 
     expect(html).toContain('href="cihub://auth?token=a&amp;b=&lt;c>&quot;d&quot;"');
     // No raw `<` inside the script literal, which could close the tag early.
     const script = html.slice(html.indexOf('<script>'), html.indexOf('</script>'));
     expect(script).not.toContain('<c>');
     expect(script).toContain('\\u003c');
+  });
+
+  it('offers a way out of the browser tab, not just the app link', () => {
+    // Cancel the OS prompt and the old page was a dead end: the only control on
+    // it reopened the same prompt. The session cookie is already on this
+    // browser, so carrying on here costs nothing.
+    const html = handoffHtml('cihub://auth?token=tok-5', { continueHref: '/home?welcome=1' });
+
+    expect(html).toContain('href="/home?welcome=1"');
+    expect(html).toContain('Continue in this browser');
+  });
+
+  it('arms the status poll BEFORE handing the URL to the OS', () => {
+    // Handing off to an external scheme ends the script's run. A setTimeout
+    // registered after location.replace is never registered at all, so the page
+    // would spin forever even once the app had signed in.
+    const html = handoffHtml('cihub://auth?token=tok-6');
+
+    // lastIndexOf, not indexOf: poll() schedules its own retries, and those
+    // calls sit above the navigation whatever happens to the arming one. Only
+    // the last occurrence says where the poll is actually started.
+    const armedAt = html.lastIndexOf('setTimeout(poll,');
+    const replaceAt = html.indexOf('location.replace(');
+    expect(armedAt).toBeGreaterThan(-1);
+    expect(armedAt).toBeLessThan(replaceAt);
+  });
+
+  it('polls a link it was given rather than rebuilding one', () => {
+    const html = handoffHtml('cihub://auth?token=tok-7', {
+      statusHref: '/api/auth/portal/desktop-handoff-status?token=abc%26def',
+    });
+
+    expect(html).toContain('"/api/auth/portal/desktop-handoff-status?token=abc%26def"');
+  });
+
+  it('never navigates from the poll — the token is single-use', () => {
+    // Two navigations spend the token twice: the first exchange succeeds and the
+    // second 400s. Only the deep link may navigate, and only once.
+    const html = handoffHtml('cihub://auth?token=tok-8');
+    const script = html.slice(html.indexOf('<script>'), html.indexOf('</script>'));
+
+    expect(script.match(/location\.replace\(/g)).toHaveLength(1);
+    expect(script).not.toMatch(/location\.(href|assign)\s*=/);
+    expect(script).not.toContain('window.open');
+  });
+
+  it('promises no auto-close, because a tab the OS opened cannot close itself', () => {
+    // Chromium refuses with "Scripts may close only the windows that were opened
+    // by them", with or without extra history entries. A countdown would lie.
+    const html = handoffHtml('cihub://auth?token=tok-9');
+
+    expect(html).not.toContain('window.close');
+    expect(html).toContain('You can close this tab.');
+  });
+
+  it('can actually hide the elements it hides', () => {
+    // .btn sets display:block, which beats the hidden attribute's UA rule, so
+    // `open.hidden = true` would leave the spent app link on screen.
+    const html = handoffHtml('cihub://auth?token=tok-10');
+
+    expect(html).toContain('[hidden] { display: none !important; }');
+  });
+
+  it('claimed beats pending, so a sign-in is never reported as expired', () => {
+    // The exchange writes the marker before it deletes the token, and this reads
+    // them in the same order. Both halves are needed: either alone leaves a
+    // window where a successful sign-in reads as expired.
+    expect(resolvePortalDesktopHandoffState({ claimed: true, pending: true })).toBe('claimed');
+    expect(resolvePortalDesktopHandoffState({ claimed: true, pending: false })).toBe('claimed');
+    expect(resolvePortalDesktopHandoffState({ claimed: false, pending: true })).toBe('pending');
+    expect(resolvePortalDesktopHandoffState({ claimed: false, pending: false })).toBe('expired');
   });
 
   it('hands loopback SSO to a running Tauri app even without desktop=1', () => {

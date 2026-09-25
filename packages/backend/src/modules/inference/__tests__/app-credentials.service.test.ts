@@ -14,6 +14,8 @@ import { MtplxBackend } from '../backends/mtplx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { LlamacppBackend } from '../backends/llamacpp.backend';
+import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -176,7 +178,8 @@ describe('AppCredentialsService', () => {
       preferredModel: null,
       preferredEmbeddingModel: null,
       preferredVisionModel: null,
-    });
+      maxNumCtx: null,
+    } as never);
     modelPuller.evaluatePull.mockResolvedValue({
       catalogId: 'hermes4-70b',
       alreadyInstalled: false,
@@ -219,6 +222,8 @@ describe('AppCredentialsService', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
+        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
         InferenceBackendRegistry,
         { provide: ConfigurationService, useValue: configurationService },
         { provide: HubPoolPeerService, useValue: hubPoolPeerService },
@@ -297,6 +302,41 @@ describe('AppCredentialsService', () => {
 
       const openclaw = await service.getCredentials('openclaw');
       expect(openclaw.env.CI_LLM_NUM_CTX).toBe('32768');
+    });
+
+    it('caps the handed-out context at the engine-runtime cap on both apps, and warns where it undercuts a floor (core-2, 2026-09-20)', async () => {
+      // core-2: 24 GB budget sizes the window to 65536 while its Ollama runs OLLAMA_CONTEXT_LENGTH=16384.
+      // The uncapped handout reloaded the 30B at 4 x 64k; the cap hands out what the engine runs.
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: null,
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        maxNumCtx: 16_384,
+      } as never);
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
+
+      const openclaw = await service.getCredentials('openclaw');
+      expect(openclaw.env.CI_LLM_NUM_CTX).toBe('16384');
+
+      const hermes = await service.getCredentials('hermes-agent');
+      expect(hermes.env.HERMES_NUM_CTX).toBe('16384');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('hermes-agent: the context cap (16384) is below its 64000-token floor'));
+    });
+
+    it('warns when Ollama holds the model at a window other than the handout, since the first request reloads it', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      ollamaBackend.residentContextLength.mockResolvedValue(16_384);
+      service.invalidateCache();
+
+      const openclaw = await service.getCredentials('openclaw');
+
+      expect(openclaw.env.CI_LLM_NUM_CTX).toBe('65536');
+      expect(ollamaBackend.residentContextLength).toHaveBeenCalledWith('hermes4:70b');
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('openclaw: ollama holds hermes4:70b at a 16384-token window and the handout is 65536'),
+      );
     });
 
     it('hands hermes-agent no model rather than one below its 64K minimum, and says why in CI_INFERENCE_ERROR', async () => {
@@ -407,7 +447,7 @@ describe('AppCredentialsService', () => {
       // installed app fetches its credentials through here, so a stale settings.json must not take
       // credential resolution down Hub-wide.
       configurationService.getInferencePreferences.mockReturnValue({
-        preferredBackend: 'llamacpp' as InferenceBackendType,
+        preferredBackend: 'tensorrt-llm' as InferenceBackendType,
         preferredModel: null,
         preferredEmbeddingModel: null,
         preferredVisionModel: null,
@@ -418,14 +458,14 @@ describe('AppCredentialsService', () => {
       const config = await service.getCredentials('hermes-agent');
 
       // The fallback moves the backend *type*, not just the instance: `provider` is reported to the
-      // app, and the same value indexes BACKEND_API_KEY, so leaving 'llamacpp' in place would ship
+      // app, and the same value indexes BACKEND_API_KEY, so leaving 'tensorrt-llm' in place would ship
       // an undefined HERMES_OPENAI_API_KEY.
       expect(config.provider).toBe('ollama');
       expect(config.endpointUrl).toBe(OLLAMA_OPENAI_URL);
       expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
       expect(config.chatModelId).toBe('hermes4:70b');
       // The operator only finds the typo if the log names it.
-      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'llamacpp'"));
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'tensorrt-llm'"));
     });
   });
 
@@ -693,6 +733,87 @@ describe('AppCredentialsService', () => {
       // core-4's 6 GB budget would have produced 16384; the model runs on core-6.
       expect(openclaw.env.CI_LLM_NUM_CTX).toBe('32768');
       expect(hermes.env.HERMES_NUM_CTX).toBe('64000');
+    });
+
+    it('caps num_ctx at the cap the serving peer advertises, not at this node cap, since the request runs there', async () => {
+      // core-6 runs OLLAMA_CONTEXT_LENGTH=16384 and says so; core-4's own cap is looser and does not
+      // apply to a model only core-6 serves.
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: 'qwen3-coder-30b',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        maxNumCtx: 65_536,
+      } as never);
+      hubPoolPeerService.listConnectedPeers.mockResolvedValue([makePeer('core-6', ['qwen3-coder:30b'], {}, { maxNumCtx: 16_384 })]);
+      service.invalidateCache();
+
+      const openclaw = await service.getCredentials('openclaw');
+
+      expect(openclaw.chatModelServedBy).toEqual(['core-6']);
+      expect(openclaw.env.CI_LLM_NUM_CTX).toBe('16384');
+      // Only the local engine can be asked what it holds; core-6's residency is not measurable from here.
+      expect(ollamaBackend.residentContextLength).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The bill-co fleet, 2026-09-21: ci-hermes on core-2 (an uncapped agent-tier node serving
+     * qwen3-coder:30b at 65536) was handed `HERMES_NUM_CTX=16384` — core-17's cap, the pool-wide
+     * minimum — and refused tool use ("Hermes needs at least 64,000"). Set to 65536 by hand the task
+     * succeeded in 54 s, served entirely on core-2.
+     */
+    describe('one small node no longer caps the whole fleet (core-2 and core-17, 2026-09-21)', () => {
+      const core2Serves = () => {
+        ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['qwen3-coder:30b'] });
+        hardwareInspector.getProfile.mockResolvedValue({ ...baseProfile, effectiveInferenceMemoryMb: 65_536, tier: 'high' });
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([
+          makePeer('core-17', ['qwen3-coder:30b'], {}, { maxNumCtx: 16_384 }),
+          makePeer('beta-max', ['qwen3-coder:30b'], {}, { maxNumCtx: 32_768 }),
+        ]);
+        service.invalidateCache();
+      };
+
+      it('hands hermes-agent on an uncapped node its full window, not the smallest peer cap', async () => {
+        core2Serves();
+
+        const hermes = await service.getCredentials('hermes-agent');
+
+        expect(hermes.chatModelServedBy).toEqual(['this Hub', 'core-17', 'beta-max']);
+        expect(hermes.env.HERMES_NUM_CTX).toBe('65536');
+        expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('context cap'));
+      });
+
+      it('binds to the largest cap when every serving node has one', async () => {
+        core2Serves();
+        configurationService.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'ollama',
+          preferredModel: 'qwen3-coder-30b',
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+          maxNumCtx: 65_536,
+        } as never);
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([
+          makePeer('core-17', ['qwen3-coder:30b'], {}, { maxNumCtx: 16_384 }),
+          makePeer('beta-max', ['qwen3-coder:30b'], {}, { maxNumCtx: 32_768 }),
+        ]);
+        service.invalidateCache();
+
+        const hermes = await service.getCredentials('hermes-agent');
+        expect(hermes.env.HERMES_NUM_CTX).toBe('65536');
+
+        // With core-2 itself at 32768 the largest window anywhere is 32768, and Hermes is told so.
+        configurationService.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'ollama',
+          preferredModel: 'qwen3-coder-30b',
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+          maxNumCtx: 32_768,
+        } as never);
+        service.invalidateCache();
+        const capped = await service.getCredentials('hermes-agent');
+        expect(capped.env.HERMES_NUM_CTX).toBe('32768');
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('hermes-agent: the context cap (32768) is below its 64000-token floor'));
+      });
     });
 
     it('does not queue a pull of a model the pool already serves when a credentials GET arrives', async () => {

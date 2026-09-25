@@ -59,3 +59,22 @@ export function computeMemoryChartScale(byteValues: number[]): { max: number; ti
 
   return { max, ticks: [0, max / 4, max / 2, (max * 3) / 4, max] };
 }
+
+/**
+ * Y-axis scale for per-workload GPU VRAM, in BYTES — the same bytes the caller hands `humanBytes`
+ * at render, so the axis ceiling and its label cannot disagree about the unit. The backend's
+ * `gpuVramMb` is megabytes; the caller converts before it gets here, not after. Computing the
+ * ceiling from raw megabytes with {@link computeMemoryChartScale} and THEN converting printed
+ * its 256 MiB floor (268,435,456) as if it were megabytes: "scale to 256 TB" above a 10 GB card,
+ * on every Hub whose workloads hold no VRAM at all.
+ *
+ * Same rounding as memory, with a floor of 1 GiB instead of 256 MiB. Nothing measured is the
+ * COMMON case for this axis — a Hub whose workloads are all CPU-bound draws it every minute —
+ * and the box drawn around nothing should be sized to what a workload that does hold VRAM holds,
+ * which is a model, i.e. gigabytes, not to the container-memory floor.
+ */
+export function computeVramChartScale(byteValues: number[]): { max: number; ticks: number[] } {
+  const scale = computeMemoryChartScale(byteValues);
+
+  return scale.max >= GIB ? scale : { max: GIB, ticks: [0, GIB / 4, GIB / 2, (GIB * 3) / 4, GIB] };
+}

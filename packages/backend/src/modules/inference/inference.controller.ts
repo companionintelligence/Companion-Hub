@@ -3,6 +3,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
 import { ApiHeader, ApiTags } from '@nestjs/swagger';
 import { PoolProxyService } from '@/modules/hub-pool/hub-pool-proxy.service';
+import { POOL_SESSION_HEADER } from '@/modules/hub-pool/hub-pool-prefix-affinity';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
@@ -19,7 +20,8 @@ import { AppCredentialsService } from './app-credentials.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
-import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
+import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
+import { InternalOriginGuard } from '@/modules/auth/internal-origin.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import {
@@ -38,12 +40,15 @@ import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
+import { LlamacppBackend } from './backends/llamacpp.backend';
+import { LmStudioBackend } from './backends/lmstudio.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management,
- * and OpenAI-compatible `/v1` proxy routes for Hub-managed apps.
+ * and OpenAI-compatible `/v1` proxy routes for Hub-managed apps and, with an
+ * `inference` API key, for editors and SDKs (see `InferenceAccessGuard`).
  *
  * When the Hub has connected pool peers, `/v1` routes delegate to
  * `PoolProxyService.proxyRequest()` for cross-node pooled inference.
@@ -71,6 +76,8 @@ export class InferenceController {
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
     private readonly luceboxBackend: LuceboxBackend,
+    private readonly llamacppBackend: LlamacppBackend,
+    private readonly lmstudioBackend: LmStudioBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
     private readonly backends: InferenceBackendRegistry,
@@ -143,17 +150,26 @@ export class InferenceController {
   }
 
   // ─── OpenAI-compatible v1 proxy ─────────────────────────────────────
-  // Apps set HUB_INFERENCE_URL to http://<hub>:<port>/api/inference/v1.
-  // When pool peers are connected, requests auto-upgrade to cross-node
-  // pooled routing via PoolProxyService. Otherwise, the local
-  // InferenceRouterService handles them directly.
+  // Two audiences, one guard. Apps set HUB_INFERENCE_URL to
+  // http://<hub>:<port>/api/inference/v1 and reach it container-to-container,
+  // which InferenceAccessGuard admits by origin with no credential read. An
+  // editor or SDK (Continue, Zed, Aider, the OpenAI Python client) points its
+  // base URL here from anywhere — LAN, tailnet, or the public hostname — and
+  // is admitted by origin where it can be placed inside, and by an `inference`
+  // API key everywhere else. When pool peers are connected, requests
+  // auto-upgrade to cross-node pooled routing via PoolProxyService. Otherwise,
+  // the local InferenceRouterService handles them directly. Refusals are
+  // OpenAI-shaped (`{ error: { message, type, code } }`) like every error these
+  // handlers emit themselves, so a client shows the reason, not a Nest envelope.
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/chat/completions')
-  async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
+  async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     const model = (body.model as string) || 'auto';
     if (await this.poolPeers.hasConnectedPeers()) {
-      return this.poolProxy.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model, res });
+      // The session header rides through so an app on this route gets prefix affinity too — see
+      // `hub-pool-prefix-affinity.ts`. The peerless path below serves locally and needs no hint.
+      return this.poolProxy.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model, res, sessionHeader: session });
     }
     try {
       const result = await this.router.routeChatCompletion(body);
@@ -176,7 +192,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/completions')
   v1Completions(@Res() res: Response) {
     res.status(400).json({
@@ -184,7 +200,7 @@ export class InferenceController {
     });
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/embeddings')
   async v1Embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     const model = (body.model as string) || '';
@@ -200,7 +216,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Get('v1/models')
   async v1Models(@Res() res: Response) {
     try {
@@ -212,7 +228,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/audio/speech')
   async v1AudioSpeech(@Body() body: Record<string, unknown>, @Res() res: Response) {
     try {
@@ -225,7 +241,7 @@ export class InferenceController {
     }
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InferenceAccessGuard)
   @Post('v1/audio/transcriptions')
   async v1AudioTranscriptions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     try {
@@ -272,6 +288,8 @@ export class InferenceController {
       body.vllmUrl,
       body.mtplxUrl,
       body.dsparkUrl,
+      body.maxNumCtx,
+      body.ollamaSlots,
     );
 
     this.scheduleAiAppRestart('inference preferences changed');
@@ -397,7 +415,7 @@ export class InferenceController {
   @Get('memory')
   async getMemory() {
     const profile = await this.hardwareInspector.getProfile();
-    return this.memoryManager.calculateBudget(profile);
+    return await this.memoryManager.calculateBudget(profile);
   }
 
   @UseGuards(AuthGuard)
@@ -474,7 +492,7 @@ export class InferenceController {
     const profile = await this.hardwareInspector.getProfile();
     const curated = this.modelRegistry.getCuratedModel(body.modelId);
     const footprint = curated?.runtime.memoryFootprintMb || 0;
-    const canPin = this.memoryManager.canPinModel(profile, footprint);
+    const canPin = await this.memoryManager.canPinModel(profile, footprint);
 
     if (!canPin.canPin) {
       return { success: false, message: canPin.reason };
@@ -538,7 +556,7 @@ export class InferenceController {
     // Automatic recommendations remain local-platform-aware; this exception only preserves remote
     // endpoint configuration and lets the live probe decide what that server actually serves.
     const availableModels = this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true });
-    const budget = this.memoryManager.calculateBudget(profile);
+    const budget = await this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();
 
     const totalMemoryMb = recommendedModels.reduce((sum, m) => sum + m.runtime.memoryFootprintMb, 0);
@@ -763,6 +781,59 @@ export class InferenceController {
     };
   }
 
+  /**
+   * Both of these are servers the operator started, so the whole of the status is "can the Hub
+   * reach it". There is no install to offer and no lifecycle to report — the hint names the
+   * environment variable instead, which is the only thing an operator can change here.
+   */
+  @UseGuards(AuthGuard)
+  @Get('llamacpp/status')
+  async getLlamacppStatus() {
+    const endpointUrl = this.llamacppBackend.getBaseUrl();
+    const health = await this.llamacppBackend.healthCheck().catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
+      error: ready ? undefined : health.error,
+      hint: ready
+        ? undefined
+        : `Start llama-server with a model (llama-server -m <model.gguf> --port 8080), then re-check. Hub probes ${endpointUrl}; set LLAMACPP_URL if it listens elsewhere.`,
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('lmstudio/status')
+  async getLmStudioStatus() {
+    const endpointUrl = this.lmstudioBackend.getBaseUrl();
+    const health = await this.lmstudioBackend.healthCheck().catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
+      error: ready ? undefined : health.error,
+      // Naming the network switch matters more here than the server switch: LM Studio binds to
+      // localhost by default, so a Hub in a container reaches nothing even with the server running.
+      hint: ready
+        ? undefined
+        : `Start LM Studio's local server (Developer → Start Server), and turn on "Serve on Local Network" if the Hub is not on that machine. Hub probes ${endpointUrl}; set LMSTUDIO_URL if it listens elsewhere.`,
+    };
+  }
+
   @UseGuards(AuthGuard)
   @Get('lucebox/status')
   async getLuceboxStatus() {
@@ -799,8 +870,14 @@ export class InferenceController {
   // same override the generated app.env carries (both go through
   // InferenceEndpointService). Apps can also use the v1 proxy routes above
   // (mounted at /api/inference/v1), which pool the same way.
+  //
+  // App-only, no credential accepted. Apps fetch these container-to-container,
+  // which traverses no proxy, so InternalOriginGuard refuses anything carrying
+  // tunnel or forwarded-hop provenance: InternalNetworkGuard alone answered
+  // them from the public internet through a registered Hub's tunnel, and the
+  // body can carry a configured cloud provider's API key.
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalOriginGuard)
   @Get('apps/:slug/credentials')
   async getAppCredentials(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);
@@ -813,7 +890,7 @@ export class InferenceController {
 
   // `bootstrap.env` is an alias of `credentials.env`: the CI-OpenClaw / CI-Hermes bootstrap-from-hub.sh
   // scripts fetch `/api/inference/apps/:slug/bootstrap.env`, so both paths must serve the dotenv body.
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalOriginGuard)
   @Get(['apps/:slug/credentials.env', 'apps/:slug/bootstrap.env'])
   async getAppCredentialsEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);

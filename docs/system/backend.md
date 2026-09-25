@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-09 (family Hub auth: org members become Hub people; Memory connect keys are per Hub user)
+> **Last updated:** 2026-09-24 (diagnostics name the dark custom domain; the Hub applies a requested binding)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -26,13 +26,13 @@ packages/backend/
 |--------|----------------|
 | `apps` / `app-lifecycle` | Install, start, stop, uninstall marketplace apps |
 | `docker` | Dockerode + compose orchestration |
-| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. |
+| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. Also the route guards that are not operator auth: `InternalNetworkGuard` (source address only; passes proxy traffic unless `HUB_TRUST_PROXY` is set), `ObservabilityReadGuard` (`qa:read` keys on marked GETs), `InferenceAccessGuard` (see [Inference access](#inference-access)), and `InternalOriginGuard` (the origin leg alone, no key — the app credentials handout). |
 | `health` | Liveness/readiness (`/api/health/live`) |
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
-| `inference` | Backend registry, model resolution, routing to a local engine |
-| `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy |
+| `inference` | Backend registry, model resolution, routing to a local engine. The OpenAI-compatible `/api/inference/v1/*` routes carry `InferenceAccessGuard`; `apps/:slug/credentials*` carries `InternalOriginGuard` (origin only, no key — see [App inference handout](#app-inference-handout)). |
+| `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy. The app-facing `v1/*` and `api/*` proxy routes (and the root-level `/api/version`, `/api/tags`) carry `InferenceAccessGuard`; `local/*` carries `PoolPeerGuard`. |
 | `registration` | Portal pairing, device ID, and registration-state drift. `check-in-response.ts` maps Portal's check-in answers to Hub responses, and `GET /registration/phase` reports the phase and last check-in without sending one — see [`portal-check-in.md`](../portal-check-in.md). The hourly check-in also carries this Hub's own status (phase, degraded reasons, tunnel health, Tailscale connectivity, version) for Portal's org fleet report — see `check-in-payload.ts`; every field is optional and absent means "no report this time", never "the value is gone". |
 
 ## App volumes
@@ -127,6 +127,38 @@ are **hand-mirrored** from `hub-pool.types.ts`, because every pool route declare
 schema in `swagger.json` and the generated client types them as `unknown`. Adding a field to a pool
 status payload therefore does not reach the CLI on its own — update both.
 
+## Inference access
+
+`InferenceAccessGuard` (`modules/auth/inference-access.guard.ts`) admits the inference surface — the
+six `/api/inference/v1/*` routes, the app-facing pool proxy under `/api/inference/pool/*`, and the
+root-level `/api/version` and `/api/tags` — by origin OR by an API key with the `inference` scope.
+It replaced `InternalNetworkGuard` (and the pool's own app-origin guard) there because `request.ip`
+behind Traefik or the Cloudflare tunnel is the proxy's own private address unless `HUB_TRUST_PROXY`
+is set, so the source-address check alone passed public tunnel traffic with no credential.
+
+- **Leg 1, origin.** `internalOriginRefusal` in `common/helpers/request-origin.ts` places a request
+  inside the appliance when its resolved address is private, none of `TUNNEL_MARKER_HEADERS` is
+  present, and every hop of `x-forwarded-for` is private. An internal request is admitted before
+  `Authorization` is read, so an app sending `Bearer ollama` on every turn costs no key-store lookup.
+- **Leg 2, key.** Otherwise the request needs `Authorization: Bearer <key>` where the token is
+  64 lowercase hex (`HUB_API_KEY_SHAPE` in `api-key.service.ts` — the one definition `AuthMiddleware`
+  screens `qa:read` tokens with too) and resolves with the `inference` scope. The guard sets
+  `request.inferenceApiKey` and never `hubPrincipal` or `req.user`: the key is not an operator.
+  On a GET this leg is the second lookup of the same token — `AuthMiddleware`'s `qa:read` arm ran
+  first — accepted because the arm's own routes share the `/api/inference/pool/` prefix; it costs one
+  indexed SELECT on the catalog reads and nothing on completions.
+- **Refusals are OpenAI-shaped.** `{ error: { message, type: 'authentication_error', code } }` with
+  `code` `missing_api_key` or `invalid_api_key` and a `WWW-Authenticate` header; a key-store outage
+  answers 503 with `type: 'server_error'`. The guard writes the body and then throws, because
+  `MainExceptionFilter` returns early once `headersSent`.
+
+The `inference` scope is appended last in `API_KEY_SCOPES` so `normalizeScopes` keeps every stored
+row's order. It is minted by the CLI only (`cihub api-key create --scope inference`, alone on its key,
+stored as `read`); Settings → Security lists it under the "Inference" badge but does not mint it.
+`inference-access.guard.test.ts` pins the exact guard list of every handler on `InferenceController`,
+`HubPoolController` and `HubPoolOllamaCompatController`, so a new `/v1` route without a guard fails
+there. Operator-facing walkthrough: [`docs/editor-inference.md`](../editor-inference.md).
+
 ## Database
 
 - PostgreSQL via Drizzle ORM
@@ -203,7 +235,22 @@ only CI-Cloud knows whether a hostname really routes here.
 - Diagnostics report `action: 'ok'` **only** for the bind window itself (a custom domain bound, the
   env still on the platform hostname). `pendingRestart` alone must not suppress a verdict: it is
   raised by any settings change, and suppressing on it hides real drift from `mismatchCount` and
-  from an untargeted `repair()`.
+  from an untargeted `repair()`. The question "is the customer's domain dark?" is published
+  separately as `awaitingCustomDomainRestart`, so a surface can say *which* domain is dark instead of
+  the generic "configuration has changed". It is **wider** than the `action` suppression, not its
+  negation: it drops the `envHostname === identity.hostname` clause, so an app re-pointed from one
+  bound domain to another is named as dark *and* still reported `action: 'repair'`. The UI must key
+  on it rather than on `pendingRestart`.
+- `repair()` restarts the app **only** when its status is `running`, `starting` or `restarting`;
+  otherwise it rewrites the env and still reports `success: true`. Any UI offering a restart has to
+  gate on the status too, or the click reports success without starting anything.
+- The Hub applies a binding itself when CI-Cloud delivers `applyRequested: true` — see
+  `ExposureSyncService.reconcileCustomDomains`. The gate is *not* `pendingRestart`: that flag is
+  raised by any settings save, so `customDomainPendingApply` reads the app's compose env and acts
+  only when it is still on some other hostname. Apply and revert share one dispatcher
+  (`restartRevertedApps`) and one restart cooldown, but only a **revert** is remembered on failure:
+  an apply is re-derived every pass from the request, the env and the app's status, so retrying it
+  blind would restart an app after the operator withdrew the request or stopped it.
 
 ⚠ `SSEService.emit('app', data, appUrn)` publishes to topic `app:<urn>`, which **nothing
 subscribes to** — the frontend opens `/api/sse/app` only. Always omit the third argument.
@@ -247,6 +294,48 @@ and every MTPLX request, and both `InferenceEnvResolver` and `AppCredentialsServ
 credential to direct app clients. mlx-dspark `/health` remains unauthenticated by upstream design so
 an empty `--no-model` server is still a valid readiness target. Never log or return these key files.
 
+## Operator-run engines: llama.cpp and LM Studio
+
+Two backends exist only to reach a server the operator already started — `llama-server` from
+llama.cpp, and LM Studio's local server. The Hub holds a URL for each and nothing else: it cannot
+pull a model, start a container, or change what either is serving.
+
+| | llama.cpp | LM Studio |
+|---|---|---|
+| URL | `LLAMACPP_URL` — **required**, see below | `LMSTUDIO_URL`, default host port 1234 |
+| API key | `LLAMACPP_API_KEY` (`llama-server --api-key`) | `LMSTUDIO_API_KEY`, ignored by LM Studio itself |
+| Health | `/health` **and** `/v1/models` — `/health` answers 503 while the model is still loading | `/v1/models` only; LM Studio publishes no health path |
+| Residency | `implicit` — it serves the one model it was started with | `measured` from `/api/v0/models`, which reports each model's `state` |
+| Deploy | `getDockerImage`/`getComposeConfig` throw | same |
+
+Both accept a URL written with a `/v1` suffix or a trailing slash and store the bare origin, and
+both rewrite an operator's `localhost` to `host.docker.internal` when the Hub is containerized —
+`host-url.util.ts`, shared with the vLLM and mlx-dspark host paths.
+
+llama.cpp is **opt-in** and LM Studio is not, which is a deliberate asymmetry. `llama-server`
+defaults to port 8080 and so does mlx-dspark (`DSPARK_URL` in every compose file here). Probing 8080
+unasked would find dspark's server on an Apple Silicon host, get a perfectly good OpenAI-compatible
+answer from it, and report **one engine as two healthy backends** — double-counting that machine in
+pool ranking and showing an engine the operator never started. So without `LLAMACPP_URL` the backend
+makes no request at all and says so in its health error. LM Studio's 1234 collides with nothing, so
+a running LM Studio on the Hub's own machine is found with no configuration. (An explicit
+`baseUrlOverride` still probes either, so Settings can test an address before it is saved.)
+
+Why no Settings field for either URL: adding one means another positional parameter on
+`ConfigurationService.setInferencePreferences`, which already takes eight. Lucebox is environment-only
+for the same reason. Rework that signature before adding a ninth.
+
+Two things worth knowing about LM Studio specifically. Its `/v1/models` lists every model the
+operator has **downloaded**, not what is in memory — which is the right reading for
+`BackendHealthStatus.modelsLoaded` (an inventory despite its name), and the wrong one for residency,
+so `listResident` uses the native `/api/v0` listing and reports `unsupported` rather than falling
+back when that beta API is absent. And LM Studio binds to localhost by default: a Hub in a container
+reaches nothing until "Serve on Local Network" is turned on, which is what the status route's hint
+says.
+
+Neither engine has catalog rows, because the Hub cannot pull for either. Whatever the server reports
+on `/v1/models` is what the pool can place work on.
+
 ## Inference cloud providers
 
 Settings → AI saves OpenAI / Anthropic / Google / GitHub Copilot keys to `settings.json`
@@ -278,6 +367,16 @@ Installed apps get inference config two ways, and both choose the model through 
 `AppCredentialsService` serves it over `GET /api/inference/apps/:slug/credentials.env` (alias
 `bootstrap.env`), which CI-OpenClaw and CI-Hermes fetch at container start.
 
+- **App-only, by origin.** The handout routes (`credentials`, `credentials.env`, `bootstrap.env`)
+  carry `InternalOriginGuard` and accept no API key. Apps fetch them container-to-container, which
+  traverses no proxy, so the guard admits a request only when its resolved address is private AND
+  it carries no Cloudflare tunnel marker (`cf-ray` and friends) AND every `X-Forwarded-For` hop is
+  private. `InternalNetworkGuard` alone checked the address, which behind the tunnel is the proxy's
+  own private one unless `HUB_TRUST_PROXY` is set, so a registered Hub answered these routes — and
+  the cloud provider API key the body can carry — from the public internet through its
+  `hub-public` router. A refusal is a 403 with a warn line naming the path and the reason
+  (`tunnel-marker`, `forwarded-hop`, or `public-address`); an app that sees one is reaching the Hub
+  through its public hostname instead of the Docker network.
 - **Requirements.** `app-inference-requirements.ts` is the per-app table: Hermes needs tool calling
   and a 64000-token window, and OpenClaw needs tool calling. Each is keyed under its bootstrap slug
   (`hermes-agent`, `openclaw`) and its first-party app name (`ci-hermes`, `ci-openclaw`), because
@@ -292,11 +391,20 @@ Installed apps get inference config two ways, and both choose the model through 
   from `selectPoolChatModel` over the pool inventory (`InferenceEndpointService.poolInventory`). The
   order is the operator's preferred model when a node serves it and it qualifies, then the best served
   catalog model that qualifies (the recommender's ranking), then a model a host-served engine (vLLM,
-  Lemonade, MTPLX, mlx-dspark, Lucebox) lists that the catalog has no row for. An uncatalogued Ollama
+  Lemonade, MTPLX, mlx-dspark, Lucebox, llama.cpp, LM Studio) lists that the catalog has no row for. An uncatalogued Ollama
   tag is never handed out unless the operator named it, because an Ollama inventory holds every tag
   ever pulled. A model only a peer serves gets `num_ctx` 32768 (raised to the app's floor) rather than
   a value sized from this node's memory. The peer filter mirrors `PoolProxyService.usablePeers`;
   change both together.
+- **Context cap.** `CI_LLM_NUM_CTX` (`HERMES_NUM_CTX`) is `min(model window, memory-sized
+  recommendation, cap)`, where the cap is the node's `inferenceMaxNumCtx` setting — the operator's
+  statement of the engine's own context (`OLLAMA_CONTEXT_LENGTH`) — and, for an app routed through
+  the pool, the smallest cap among the nodes serving the chosen model (`poolContextCap`). Absent is
+  no cap. Without it apps asked Ollama for a 65536 window on a node running four slots at 16384, and
+  every request at a different size reloaded a 30B model (core-2, 2026-09-20). The cap wins over an
+  app's floor, with a warning; a handout that differs from the window the local Ollama holds the
+  model at (`/api/ps` `context_length`) is also logged, since it is a reload. See
+  [Context caps](../hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs).
 - **Pre-pull.** `decideModelPrePull` returns a logged decision for every handout. A credentials GET
   never pulls a model a pool node already serves, nor one the app's requirements rule out. When the
   pool already serves the app a suitable model, it pulls only the operator's preferred model, never
@@ -317,6 +425,28 @@ Installed apps get inference config two ways, and both choose the model through 
   sweep restarts only stale apps. An automatic sweep also skips an app whose regeneration would
   remove its endpoint or its chat model, and restarts an app at most once per 10 minutes, checking
   again when that window ends. The Hub-upgrade sync still restarts every AI app unconditionally.
+
+## App readiness endpoint
+
+App status (`running`, `stopped`) is what Docker says, from `app-status-sync.service.ts`, and
+readiness never changes it. An app that wants the Hub to see inside its process declares
+`hub_integration.readiness` (`{ service, port, path = "/health", bearer_env? }`, CI-Hub#1556).
+`AppRuntimeMonitorService` then dials `http://<service>:<port><path>` on the shared network, the
+way `agent-notify` dials a wake hook, on its existing cadence and only while the app is `running`,
+with a 2 s timeout and `Authorization: Bearer <value of bearer_env from the app's app.env>` when
+the manifest names one. The bearer is never logged. The probe only ever dials a service declared in
+the app's own installed docker-compose.json — the schema refuses hostnames, and the monitor refuses
+(with `unknown` and one warning) a name the compose does not declare — so `bearer_env` can only
+reach the app's own containers, never another app, the host, or the internet.
+
+`app-readiness.helpers.ts` normalises the body into `AppRuntimeHealthDto.readiness`:
+`status` (`ok` | `degraded` | `unknown`), `checks[name].{status, detail?}`, `busy`, `drainable`,
+`sampledAt`. It reads Hermes's `/health/detailed` layout (`readiness.checks`, `gateway_busy`,
+`gateway_drainable`); a body with no `readiness` block is `ok` only from a top-level
+`status: "ok"`. A probe that times out, answers non-2xx, or returns an unreadable body is `unknown`,
+never `degraded`. `readiness` is `null` when the app declares no endpoint or is not running. The
+app detail page shows a pill beside the Memory badge and, when checks fail, lists them by name
+with the app's `detail` (`app-readiness.tsx`).
 
 ## Family Hub auth and Memory connect
 

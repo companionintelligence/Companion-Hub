@@ -112,6 +112,15 @@ describe('QueueFactory', () => {
       username: 'guest',
       port: 5672,
     } as never);
+    config.get.calledWith('jwtSecret').mockReturnValue('test-jwt-secret' as never);
+  });
+
+  it('refuses to create a queue when JWT_SECRET is absent, rather than an unsigned one', async () => {
+    config.get.calledWith('jwtSecret').mockReturnValue('' as never);
+    const factory = new QueueFactory(logger, config);
+    await connectionInstances[0]?.emit('connection');
+
+    await expect(factory.createQueue({ queueName: 'q', eventSchema: z.object({ requestId: z.string() }) })).rejects.toThrow(/JWT_SECRET/);
   });
 
   it('tracks queue readiness after a successful connection event', async () => {

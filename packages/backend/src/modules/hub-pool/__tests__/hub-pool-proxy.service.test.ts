@@ -1,3 +1,4 @@
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { Writable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -12,18 +13,24 @@ import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
   MIN_POOL_MAX_PROMPT_TOKENS,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
+import { PLACEMENT_PROBE_BUDGET_MS } from '../hub-pool-local-health.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { HubPoolThroughputService, THROUGHPUT_FORGET_AFTER_MS, THROUGHPUT_HALF_LIFE_MS, THROUGHPUT_HOLD_MS } from '../hub-pool-throughput.service';
 import {
@@ -35,19 +42,31 @@ import {
   POOL_SERVED_LOCALLY,
   PoolForwardDeadlineError,
   PoolProxyService,
+  applyContextCap,
   applyPromptCeiling,
+  applySlotPlacement,
   applyThroughputPlacement,
   describeUnresolvableAuto,
+  requestedNumCtx,
   firstByteBudgetMs,
   forwardBudgetMs,
   normalizePoolRequestId,
   servedByHeaders,
   splitDemoted,
 } from '../hub-pool-proxy.service';
+import {
+  POOL_AFFINITY_HEADER,
+  PREFIX_AFFINITY_TTL_MS,
+  PrefixAffinityStore,
+  applyPrefixAffinity,
+  derivePrefixKey,
+  normalizePoolSessionKey,
+  promptHead,
+} from '../hub-pool-prefix-affinity';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { ModelRegistryService } from '@/modules/inference/model-registry.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import type { PoolPeerCapabilities, PoolThroughputEstimate } from '../hub-pool.types';
+import type { PoolCandidate, PoolPeerCapabilities, PoolThroughputEstimate } from '../hub-pool.types';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
   return {
@@ -86,7 +105,14 @@ function capabilitiesWithModel(model: string, overrides: Partial<PoolPeerCapabil
 function peerServing(
   id: string,
   model: string,
-  options: { inFlightRequests?: number; hardwareTier?: string; lastSeenAt?: string; gpuPressure?: unknown; maxPromptTokens?: number } = {},
+  options: {
+    inFlightRequests?: number;
+    hardwareTier?: string;
+    lastSeenAt?: string;
+    gpuPressure?: unknown;
+    maxPromptTokens?: number;
+    ollamaSlots?: number;
+  } = {},
 ): HubPoolPeer {
   return mockPeer({
     id,
@@ -96,6 +122,7 @@ function peerServing(
       inFlightRequests: options.inFlightRequests,
       ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
       ...('maxPromptTokens' in options ? { maxPromptTokens: options.maxPromptTokens } : {}),
+      ...('ollamaSlots' in options ? { ollamaSlots: options.ollamaSlots } : {}),
       // `unknown`, not `number`: the whole point of the peerPressure clamp is that this arrives as
       // free-form jsonb a paired peer controls, so the hostile cases have to be expressible here.
       ...('gpuPressure' in options ? { gpuPressure: options.gpuPressure as number } : {}),
@@ -141,6 +168,8 @@ describe('PoolProxyService', () => {
   let mtplx: MockProxy<MtplxBackend>;
   let dspark: MockProxy<DsparkBackend>;
   let lucebox: MockProxy<LuceboxBackend>;
+  let llamacpp: MockProxy<LlamacppBackend>;
+  let lmstudio: MockProxy<LmStudioBackend>;
   let peerService: MockProxy<HubPoolPeerService>;
   let tailscaleService: MockProxy<TailscaleService>;
   let configuration: MockProxy<ConfigurationService>;
@@ -164,6 +193,9 @@ describe('PoolProxyService', () => {
       poolPins: [],
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       poolMaxPromptTokens: null,
+      poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+      poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+      poolSlotAwareness: DEFAULT_POOL_SLOT_AWARENESS,
       ...overrides,
     });
   }
@@ -175,12 +207,14 @@ describe('PoolProxyService', () => {
     mtplx = mock<MtplxBackend>();
     dspark = mock<DsparkBackend>();
     lucebox = mock<LuceboxBackend>();
+    llamacpp = mock<LlamacppBackend>();
+    lmstudio = mock<LmStudioBackend>();
     peerService = mock<HubPoolPeerService>();
     tailscaleService = mock<TailscaleService>();
     configuration = mock<ConfigurationService>();
     setPoolPreferences({});
 
-    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox]) {
+    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio]) {
       backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     }
     ollama.getBaseUrl.mockReturnValue('http://local-ollama:11434');
@@ -214,7 +248,7 @@ describe('PoolProxyService', () => {
     return new PoolProxyService(
       // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
       // return undefined and quietly drop every local candidate.
-      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
       peerService,
       tailscaleService,
       loadService,
@@ -807,6 +841,65 @@ describe('PoolProxyService', () => {
       await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'missing' }, model: 'missing', res });
 
       expect(res.status).toHaveBeenCalledWith(502);
+    });
+
+    it("reports every local backend's probe on the 502, from the container's point of view", async () => {
+      // The node runs the model on vLLM; the Hub container cannot reach it (a firewall rule that
+      // only allowed Ollama's port). The old body said "no pool node has it", and it was wrong
+      // about where to look.
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
+      vllm.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      vllm.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [], error: 'timeout of 5000ms exceeded' });
+      mtplx.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      mtplx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
+      const res = createMockResponse();
+
+      await service.proxyRequest({
+        path: '/v1/chat/completions',
+        method: 'POST',
+        body: { model: 'Qwen/Qwen2.5-3B-Instruct-AWQ' },
+        model: 'Qwen/Qwen2.5-3B-Instruct-AWQ',
+        res,
+      });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string; localBackends: unknown[] };
+      expect(body.error).toContain('local mtplx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
+      expect(body.error).toContain('local vllm, lemonade, dspark, lucebox, llamacpp, lmstudio not reachable from inside the Hub container');
+      expect(body.localBackends).toEqual(
+        expect.arrayContaining([
+          {
+            type: 'ollama',
+            url: 'http://local-ollama:11434',
+            running: true,
+            healthy: true,
+            listsModel: false,
+            error: undefined,
+            probedMsAgo: expect.any(Number),
+          },
+          {
+            type: 'vllm',
+            url: 'http://host.docker.internal:8000',
+            running: false,
+            healthy: false,
+            listsModel: false,
+            error: 'timeout of 5000ms exceeded',
+            probedMsAgo: expect.any(Number),
+          },
+          {
+            type: 'mtplx',
+            url: 'http://host.docker.internal:8000',
+            running: true,
+            healthy: false,
+            listsModel: false,
+            error: 'The server names itself "vllm"',
+            probedMsAgo: expect.any(Number),
+          },
+        ]),
+      );
+      // One row per declared backend — derived from the tuple so adding one does not quietly
+      // assert the old count.
+      expect(body.localBackends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
     });
 
     it('fails over to a connected peer when the local candidate 5xxs', async () => {
@@ -1728,6 +1821,9 @@ describe('PoolProxyService', () => {
     });
 
     it('applies a model pin over the default pin, and only to that model', async () => {
+      // Both models on disk from the start: the local inventory is read from a snapshot, so a
+      // second `healthCheck` mock between the two rankings below would not be seen inside the TTL.
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, 'other:1b'] });
       peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
       setPoolPreferences({
         poolPins: [
@@ -1741,7 +1837,6 @@ describe('PoolProxyService', () => {
       expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, 'peer-a']);
 
       // ...and the default pin still governs a model it does not name.
-      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
       peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'other:1b', { inFlightRequests: 0 })]);
       expect((await service.buildCandidateList('other:1b')).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
     });
@@ -1850,6 +1945,494 @@ describe('PoolProxyService', () => {
    * does everything else — short prompts, older peers, failover, a fleet with nowhere else to go —
    * still reach the nodes it reached before.
    */
+  /**
+   * Prefix affinity: the node and engine that last served a prompt prefix are preferred for its next
+   * call while their queue is under `poolPrefixAffinityMaxInFlight`. Measured on core-2, 2026-09-20:
+   * a 44k-token OpenClaw turn spent 67 s of its 100 s in prefill, and the same session's next call
+   * re-prefilled 28,672 tokens because the pool did not know which node held the prefix.
+   */
+  describe('prefix affinity', () => {
+    const MODEL = 'llama3.2:3b';
+    const PEER = 'peer-idle';
+    const PEER_FQDN = `${PEER}.tailxyz.ts.net`;
+    const SYSTEM = { role: 'system', content: 'You are an agent with these tools: …' };
+    /** Two calls of one session: the second has grown by a turn, and its head is unchanged. */
+    const turn1 = { model: MODEL, stream: false, messages: [SYSTEM, { role: 'user', content: 'read the repo' }] };
+    const turn2 = {
+      model: MODEL,
+      stream: false,
+      messages: [...turn1.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now fix it' }],
+    };
+
+    /** A peer holding the model, reachable for a forward, reporting `inFlightRequests`. */
+    function peerReporting(inFlightRequests: number): HubPoolPeer {
+      const peer = peerServing(PEER, MODEL, { inFlightRequests });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+      return peer;
+    }
+
+    /** Route one call; returns the mock response so headers can be read. */
+    async function route(body: Record<string, unknown>, options: { path?: string; sessionHeader?: string | string[] } = {}): Promise<Response> {
+      const res = createMockResponse();
+      await service.proxyRequest({
+        path: options.path ?? '/v1/chat/completions',
+        method: 'POST',
+        body,
+        model: MODEL,
+        res,
+        sessionHeader: options.sessionHeader,
+      });
+      return res;
+    }
+
+    /** Which upstream each forward went to, in order: `'local'` or the peer's FQDN. */
+    function forwardedTo(): string[] {
+      return vi
+        .mocked(global.fetch)
+        .mock.calls.map(([url]) => (String(url).includes('local-ollama') ? LOCAL_CANDIDATE_KEY : new URL(String(url)).hostname));
+    }
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      vi.mocked(global.fetch).mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    });
+
+    /** Local busy enough that the ranker sends the first call to the idle peer; then idle again, so the ranker alone would bring the next call home. */
+    async function firstCallLandsOnPeer(body: Record<string, unknown> = turn1, options: { sessionHeader?: string } = {}): Promise<void> {
+      peerReporting(0);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      await route(body, options);
+      expect(forwardedTo()).toEqual([PEER_FQDN]);
+      loadService.release(LOCAL_CANDIDATE_KEY);
+      loadService.release(LOCAL_CANDIDATE_KEY);
+    }
+
+    describe('at the default (poolPrefixAffinityMaxInFlight = 0) nothing changes', () => {
+      it('routes the next call by the ranker alone, stamps no header, and logs affinity as null', async () => {
+        await firstCallLandsOnPeer();
+
+        const res = await route(turn2);
+
+        // Local is idle again and takes the exact tie on the affinity margin, exactly as before.
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)).not.toHaveProperty(POOL_AFFINITY_HEADER.toLowerCase());
+        expect(routingLog.list().map((row) => row.affinity)).toEqual([null, null]);
+      });
+
+      it('remembers nothing while off, so switching it on later starts from a miss rather than a stale placement', async () => {
+        await firstCallLandsOnPeer();
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+      });
+    });
+
+    describe('with the limit set', () => {
+      beforeEach(() => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+      });
+
+      it('keeps the next call of a session on the node that served the last one, though the ranker would have brought it home', async () => {
+        await firstCallLandsOnPeer();
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        expect(headersSetOn(res)['x-hub-pool-served-by']).toBe(PEER_FQDN);
+        const [second, first] = routingLog.list();
+        expect(first?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+        expect(second?.affinity).toEqual({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
+      });
+
+      /**
+       * The herding bug, measured on core-2, 2026-09-21: six concurrent sessions behind one 25k-token
+       * system prefix, differing only in their first user message, all keyed together — every
+       * session's first turn was a `hit` on a node that had never served it, and when one session
+       * moved they all followed, cold. Two sessions of one agent stand in for the six.
+       */
+      it('keeps two concurrent sessions of one agent apart, however long the system prompt they share', async () => {
+        const sharedSystem = { role: 'system', content: `You are an agent with these tools: ${'…'.repeat(8_192)}` };
+        const sessionA = { model: MODEL, stream: false, messages: [sharedSystem, { role: 'user', content: 'read the repo' }] };
+        const sessionB = { model: MODEL, stream: false, messages: [sharedSystem, { role: 'user', content: 'write the tests' }] };
+        // A's first turn goes to the peer because local is busy. Local is idle again for everything after.
+        await firstCallLandsOnPeer(sessionA);
+
+        // B's first turn: nothing has been served for THIS session, so the ranker decides — local, not A's peer.
+        const bFirst = await route(sessionB);
+        // A's second turn follows A to the peer; B's follows B, which stayed home.
+        const aSecond = await route({
+          ...sessionA,
+          messages: [...sessionA.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now fix it' }],
+        });
+        const bSecond = await route({
+          ...sessionB,
+          messages: [...sessionB.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'run them' }],
+        });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY, PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(bFirst)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(headersSetOn(aSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        expect(headersSetOn(bSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        const [bSecondRow, aSecondRow, bFirstRow] = routingLog.list();
+        expect(bFirstRow?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+        expect(aSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN });
+        expect(bSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: LOCAL_CANDIDATE_KEY });
+      });
+
+      it('falls through to the ranker once the remembered node has the limit in flight, and says so', async () => {
+        await firstCallLandsOnPeer();
+        // Two already queued there: this request would be its third, and waiting costs more than re-prefilling.
+        peerReporting(2);
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('skipped');
+        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'skipped', remembered: PEER_FQDN, inFlight: 2, maxInFlight: 2 });
+      });
+
+      it('still follows the prefix with one other request in flight there: the limit counts the request being placed', async () => {
+        await firstCallLandsOnPeer();
+        peerReporting(1);
+
+        await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'hit', inFlight: 1 });
+      });
+
+      it('forgets a placement after the TTL, so a session that went quiet ranks fresh', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          await firstCallLandsOnPeer();
+          vi.setSystemTime(Date.now() + PREFIX_AFFINITY_TTL_MS + 1);
+
+          const res = await route(turn2);
+
+          expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+          expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+          expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'miss', remembered: null });
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('still remembers a placement just inside the TTL', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          await firstCallLandsOnPeer();
+          vi.setSystemTime(Date.now() + PREFIX_AFFINITY_TTL_MS - 1);
+
+          await route(turn2);
+
+          expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      /**
+       * The header names the session; the hash only guesses at it. Two bodies with nothing in
+       * common follow each other under one header, and one body under two headers does not.
+       */
+      it('keys on X-Hub-Pool-Session when the app sends one, over anything in the body', async () => {
+        await firstCallLandsOnPeer(turn1, { sessionHeader: 'chat-42' });
+        const unrelated = { model: MODEL, stream: false, messages: [{ role: 'user', content: 'a different conversation entirely' }] };
+
+        const followed = await route(unrelated, { sessionHeader: 'chat-42' });
+        const other = await route(turn2, { sessionHeader: 'chat-43' });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(followed)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        expect(headersSetOn(other)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(routingLog.list().map((row) => row.affinity?.key)).toEqual(['header', 'header', 'header']);
+      });
+
+      it('falls back to the hashed key when the header is malformed, rather than keying every such app together', async () => {
+        await firstCallLandsOnPeer();
+
+        // Whitespace, a control character, and Express's array form with a bad first value: none is a session id.
+        const res = await route(turn2, { sessionHeader: 'not a session id' });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, PEER_FQDN]);
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit' });
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+      });
+
+      it('keys a session per model: the same session on another model is a miss, because the cache it warmed is per model', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, 'other:1b'] });
+        await firstCallLandsOnPeer(turn1, { sessionHeader: 'chat-42' });
+        const peer = peerServing(PEER, 'other:1b', { inFlightRequests: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        peerService.getPeerById.mockResolvedValue(peer);
+        const res = createMockResponse();
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { ...turn2, model: 'other:1b' },
+          model: 'other:1b',
+          res,
+          sessionHeader: 'chat-42',
+        });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+      });
+
+      it('remembers the candidate that actually took the work after a failover, not the one tried first', async () => {
+        peerReporting(0);
+        // Local first (idle, affinity margin); it 500s, the peer serves.
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(new Response('server error', { status: 500 }))
+          .mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+        await route(turn1);
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, PEER_FQDN]);
+
+        await route(turn2);
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, PEER_FQDN, PEER_FQDN]);
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'hit', remembered: PEER_FQDN });
+      });
+
+      it('forgets the prefix when every candidate failed, and says what it saw on the 502', async () => {
+        await firstCallLandsOnPeer();
+        vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNREFUSED'));
+        const failed = await route(turn2);
+        expect(failed.status).toHaveBeenCalledWith(502);
+        expect(headersSetOn(failed)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        vi.mocked(global.fetch).mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+        const next = await route(turn2);
+
+        // Nothing holds the prefix now, so the ranker decides: local, idle, on the affinity margin.
+        expect(forwardedTo().at(-1)).toBe(LOCAL_CANDIDATE_KEY);
+        expect(headersSetOn(next)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+      });
+
+      it('yields to an operator pin, and records that the remembered node was under the limit but not placed first', async () => {
+        await firstCallLandsOnPeer();
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2, poolPins: [{ scope: 'default', targetKind: 'local', mode: 'prefer' }] });
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('skipped');
+        // `inFlight < maxInFlight` on a `skipped` row is how an operator tells "a pin overrode it" from "its queue was full".
+        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'skipped', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
+      });
+
+      it('leaves the failover walk intact: the remembered node first, then every other candidate in ranked order', async () => {
+        await firstCallLandsOnPeer();
+        // Local idle; a second, busier peer behind it.
+        const other = peerServing('peer-busy', MODEL, { inFlightRequests: 5 });
+        const sticky = peerServing(PEER, MODEL, { inFlightRequests: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([other, sticky]);
+        peerService.getPeerById.mockImplementation(async (id) => (id === PEER ? sticky : other));
+
+        expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, PEER, 'peer-busy']);
+        vi.mocked(global.fetch).mockClear();
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(new Response('server error', { status: 500 }))
+          .mockImplementation(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+        await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(routingLog.list()[0]).toMatchObject({ node: LOCAL_CANDIDATE_KEY, failedOverFrom: [PEER_FQDN], affinity: { outcome: 'hit' } });
+      });
+
+      it('does not judge an embeddings batch: no key, no header, affinity null in the log', async () => {
+        peerReporting(0);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+        const res = await route({ model: MODEL, input: ['a', 'b'] }, { path: '/v1/embeddings', sessionHeader: 'chat-42' });
+
+        expect(headersSetOn(res)).not.toHaveProperty(POOL_AFFINITY_HEADER.toLowerCase());
+        expect(routingLog.list()[0]?.affinity).toBeNull();
+      });
+
+      it('matches on the engine as well as the node: the same node offering the model from another engine is a miss', async () => {
+        await firstCallLandsOnPeer();
+        const peer = mockPeer({
+          id: PEER,
+          nodeFqdn: PEER_FQDN,
+          lastCapabilities: capabilitiesWithModel(MODEL, {
+            inFlightRequests: 0,
+            backends: [{ type: 'vllm', healthy: true, modelsLoaded: [MODEL] }],
+          }) as unknown as Record<string, unknown>,
+        });
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        peerService.getPeerById.mockResolvedValue(peer);
+
+        const res = await route(turn2);
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'miss', remembered: PEER_FQDN, inFlight: null });
+      });
+    });
+
+    describe('the session key', () => {
+      it('prefers a well-formed header, takes the first of a repeated one, and drops one that is not an id', () => {
+        expect(normalizePoolSessionKey('chat-42')).toBe('chat-42');
+        expect(normalizePoolSessionKey(['run:7/step=3', 'other'])).toBe('run:7/step=3');
+        expect(normalizePoolSessionKey('has space')).toBeUndefined();
+        expect(normalizePoolSessionKey('-leading-punctuation')).toBeUndefined();
+        expect(normalizePoolSessionKey('x'.repeat(129))).toBeUndefined();
+        expect(normalizePoolSessionKey('')).toBeUndefined();
+        expect(normalizePoolSessionKey(undefined)).toBeUndefined();
+      });
+
+      it('hashes the head of the conversation, so a session keys the same as it grows and two sessions key apart', () => {
+        const grown = derivePrefixKey(MODEL, turn2, undefined);
+        expect(derivePrefixKey(MODEL, turn1, undefined)).toEqual(grown);
+        expect(grown?.source).toBe('hashed');
+        const other = derivePrefixKey(MODEL, { ...turn1, messages: [SYSTEM, { role: 'user', content: 'a different task' }] }, undefined);
+        expect(other).not.toEqual(grown);
+        // The model is part of the key: a cache is per loaded model.
+        expect(derivePrefixKey('other:1b', turn1, undefined)).not.toEqual(grown);
+      });
+
+      it('includes every leading system message and the first message after them, and nothing later', () => {
+        const twoSystem = [SYSTEM, { role: 'system', content: 'and also…' }, { role: 'user', content: 'go' }];
+        expect(promptHead({ messages: [...twoSystem, { role: 'assistant', content: 'later' }] })).toEqual(twoSystem);
+        expect(
+          promptHead({
+            messages: [
+              { role: 'user', content: 'go' },
+              { role: 'assistant', content: 'later' },
+            ],
+          }),
+        ).toEqual([{ role: 'user', content: 'go' }]);
+      });
+
+      it('keys a completion or generate body on its system and prompt fields, and nothing on a body with neither', () => {
+        expect(promptHead({ model: MODEL, prompt: 'Once upon' })).toEqual([null, 'Once upon']);
+        expect(promptHead({ model: MODEL, system: 'Be brief', prompt: 'Once upon' })).toEqual(['Be brief', 'Once upon']);
+        expect(promptHead({ model: MODEL, input: ['a'] })).toBeNull();
+        expect(promptHead({ model: MODEL, messages: [] })).toBeNull();
+        expect(derivePrefixKey(MODEL, { model: MODEL }, undefined)).toBeNull();
+        expect(derivePrefixKey(MODEL, 'not an object', undefined)).toBeNull();
+      });
+
+      /**
+       * The digest reads the whole head, never a window over it. An earlier 4 KB window keyed
+       * every session of an agent together once the system prompt alone filled it (core-2,
+       * 2026-09-21: six sessions behind one 25k-token prefix, one key), and the table then
+       * remembered the node that last served any of them.
+       */
+      it('keys two sessions apart that share a system prompt longer than any window, and one session together as it grows', () => {
+        // ~64 KB of system prompt, then a first user message that differs by a word.
+        const longSystem = { role: 'system', content: 'x'.repeat(65_536) };
+        const a1 = { messages: [longSystem, { role: 'user', content: 'task a' }] };
+        const b1 = { messages: [longSystem, { role: 'user', content: 'task b' }] };
+        const a = derivePrefixKey(MODEL, a1, undefined);
+        const b = derivePrefixKey(MODEL, b1, undefined);
+        expect(a).not.toBeNull();
+        expect(a).not.toEqual(b);
+
+        // Session A on its next turn: the head is unchanged, so is the key.
+        const a2 = { messages: [...a1.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now b' }] };
+        expect(derivePrefixKey(MODEL, a2, undefined)).toEqual(a);
+
+        // A difference deep in the system prompt — past where any window would read — keys apart too.
+        const edited = {
+          messages: [
+            { role: 'system', content: `${'x'.repeat(65_535)}y` },
+            { role: 'user', content: 'task a' },
+          ],
+        };
+        expect(derivePrefixKey(MODEL, edited, undefined)).not.toEqual(a);
+
+        // The header still overrides the digest: two bodies that key apart follow one header.
+        expect(derivePrefixKey(MODEL, a1, 'chat-42')).toEqual(derivePrefixKey(MODEL, b1, 'chat-42'));
+        expect(derivePrefixKey(MODEL, a1, 'chat-42')?.source).toBe('header');
+      });
+
+      it('digests a completion body as two framed parts, so the same text split differently between system and prompt keys apart', () => {
+        const a = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief.', prompt: ' Once upon' }, undefined);
+        const b = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief. ', prompt: 'Once upon' }, undefined);
+        expect(a).not.toBeNull();
+        expect(a).not.toEqual(b);
+        // And the whole prompt counts: a body that rebuilds the conversation into `prompt` keys each call apart.
+        const grown = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief.', prompt: ' Once upon a time' }, undefined);
+        expect(grown).not.toEqual(a);
+      });
+
+      it('never keys an embeddings body, however it is shaped', () => {
+        expect(derivePrefixKey(MODEL, { model: MODEL, input: 'x'.repeat(65_536) }, undefined)).toBeNull();
+        expect(derivePrefixKey(MODEL, { model: MODEL, input: ['a', 'b'] }, undefined)).toBeNull();
+      });
+    });
+
+    describe('the store', () => {
+      it('is bounded, dropping the least recently written prefix past capacity', () => {
+        const store = new PrefixAffinityStore(60_000, 2);
+        const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+        store.remember('a', local, 1_000);
+        store.remember('b', local, 1_001);
+        // Re-writing `a` makes it the most recent, so `b` is the one to go.
+        store.remember('a', local, 1_002);
+        store.remember('c', local, 1_003);
+
+        expect(store.size).toBe(2);
+        expect(store.get('a', 1_003)).toMatchObject({ nodeKey: LOCAL_CANDIDATE_KEY, node: LOCAL_CANDIDATE_KEY, backend: 'ollama' });
+        expect(store.get('b', 1_003)).toBeNull();
+        expect(store.get('c', 1_003)).not.toBeNull();
+      });
+
+      it('drops an expired entry on the read, and forget() drops one at once', () => {
+        const store = new PrefixAffinityStore(1_000, 10);
+        store.remember('a', { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'vllm' }, 5_000);
+
+        expect(store.get('a', 6_000)).toMatchObject({ nodeKey: 'peer-1', node: 'peer-1.tailxyz.ts.net', backend: 'vllm' });
+        expect(store.get('a', 6_001)).toBeNull();
+        expect(store.size).toBe(0);
+
+        store.remember('a', { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'vllm' }, 7_000);
+        store.forget('a');
+        expect(store.get('a', 7_000)).toBeNull();
+      });
+    });
+
+    describe('applyPrefixAffinity', () => {
+      const local = { candidate: { peerId: null, nodeFqdn: null, backend: 'ollama' } as PoolCandidate, inFlight: 0 };
+      const peer = { candidate: { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate, inFlight: 1 };
+      const ranked = [local, peer];
+
+      it('is the identity with nothing remembered', () => {
+        expect(applyPrefixAffinity(ranked, null, 2)).toEqual({ ordered: ranked, sticky: null });
+      });
+
+      it('moves the remembered candidate to the front while it is under the limit, and reports it', () => {
+        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
+        expect(applyPrefixAffinity(ranked, remembered, 2)).toEqual({ ordered: [peer, local], sticky: peer });
+      });
+
+      it('leaves the order alone at or over the limit, still reporting what it saw', () => {
+        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
+        expect(applyPrefixAffinity(ranked, remembered, 1)).toEqual({ ordered: ranked, sticky: peer });
+        // 0 is the switch: nothing is ever under it.
+        expect(applyPrefixAffinity(ranked, { nodeKey: LOCAL_CANDIDATE_KEY, backend: 'ollama' }, 0)).toEqual({ ordered: ranked, sticky: local });
+      });
+
+      it('matches node and engine together, and never re-admits a node that is not a candidate', () => {
+        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-1', backend: 'vllm' }, 2)).toEqual({ ordered: ranked, sticky: null });
+        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-gone', backend: 'ollama' }, 2)).toEqual({ ordered: ranked, sticky: null });
+      });
+    });
+  });
+
   describe('prompt ceiling', () => {
     const MODEL = 'qwen3-coder:30b';
     const LONG_PROMPT_BYTES = 184_000; // ~46k tokens
@@ -2155,6 +2738,705 @@ describe('PoolProxyService', () => {
           excluded: [{ node: LOCAL_CANDIDATE_KEY, maxPromptTokens: FZZY_CEILING }],
           overridden: false,
         });
+      });
+    });
+  });
+
+  /**
+   * Context caps at placement, with the fleet's own numbers (2026-09-21, `qwen3-coder:30b`): core-17
+   * is a 4×16384 batch node and advertises `maxNumCtx: 16384`; beta-max runs 4×32768; the agent tier
+   * (core-2/4/5/6) runs 4×65536 and advertises no cap. A Hermes turn carries `options.num_ctx: 65536`
+   * on the native Ollama dialect. Placing it on core-17 reloads core-17's model at 65536 (the core-2
+   * flip of 2026-09-20, on a smaller card), so the cap moves core-17 back the way a prompt ceiling
+   * does — and that is what lets the handout stop using core-17's number for the whole fleet.
+   */
+  describe('context cap', () => {
+    const MODEL = 'qwen3-coder:30b';
+    const SHORT_PROMPT_BYTES = 8_000; // ~2k tokens
+    const LONG_PROMPT_BYTES = 184_000; // ~46k tokens
+    const CORE17_CAP = 16_384;
+
+    /** A connected, idle peer holding MODEL, optionally advertising a context cap and a ceiling. */
+    function node(id: string, options: { maxNumCtx?: unknown; maxPromptTokens?: number; inFlightRequests?: number } = {}): HubPoolPeer {
+      return mockPeer({
+        id,
+        nodeFqdn: `${id}.tailxyz.ts.net`,
+        lastCapabilities: capabilitiesWithModel(MODEL, {
+          inFlightRequests: options.inFlightRequests ?? 0,
+          ...('maxNumCtx' in options ? { maxNumCtx: options.maxNumCtx as number } : {}),
+          ...('maxPromptTokens' in options ? { maxPromptTokens: options.maxPromptTokens } : {}),
+        }) as unknown as Record<string, unknown>,
+      });
+    }
+
+    /** core-17 idle and first by score; core-2 busier and uncapped, so without a cap the ranker picks core-17. */
+    function core17AndCore2(): HubPoolPeer[] {
+      return [node('core-17', { maxNumCtx: CORE17_CAP }), node('core-2', { inFlightRequests: 2 })];
+    }
+
+    const ids = (candidates: { peerId: string | null }[]) => candidates.map((candidate) => candidate.peerId);
+    const setLocalCap = (maxNumCtx: number | null) => configuration.getInferencePreferences.mockReturnValue({ maxNumCtx } as never);
+
+    it('puts a peer capped below the num_ctx a request carries behind the rest, even though the ranker put it first', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-17', 'core-2']);
+      // Last, not gone: a request still has somewhere to go if core-2 fails.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('leaves the ranked list untouched for a num_ctx every cap can take', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'core-2']);
+    });
+
+    it('keeps a candidate whose cap the request exactly meets — the cap is the window its engine runs', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, CORE17_CAP))).toEqual(['core-17', 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, CORE17_CAP + 1))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('puts THIS node behind a peer for a num_ctx above its own cap', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([node('core-2')]);
+      setLocalCap(CORE17_CAP);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual([null, 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', null]);
+    });
+
+    it('judges a request with no num_ctx by its prompt estimate: an engine runs it at the window the cap records', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      // ~2k tokens fits a 16384 window; ~46k does not, and core-17 would truncate it.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES))).toEqual(['core-17', 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('believes an explicit num_ctx over the estimate, in both directions', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+
+      // A long prompt that says it wants a small window is the app's business, not the proxy's...
+      expect(ids(await service.buildCandidateList(MODEL, LONG_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'core-2']);
+      // ...and a short one asking for 65536 still reloads core-17's model at 65536.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', 'core-17']);
+    });
+
+    it('keeps the whole list when every candidate is capped below the window — a reload beats a 502', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([
+        node('core-17', { maxNumCtx: CORE17_CAP }),
+        node('beta-max', { maxNumCtx: 32_768, inFlightRequests: 1 }),
+      ]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-17', 'beta-max']);
+    });
+
+    it('treats a peer with no cap — none set, or an older build — as taking any window', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([node('core-2-old-build'), node('core-6', { inFlightRequests: 2 })]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 262_144))).toEqual(['core-2-old-build', 'core-6']);
+    });
+
+    it.each([
+      ['a string', '16384'],
+      ['a value below the floor', 16],
+      ['a negative', -1],
+      ['a fraction', 16_384.5],
+    ])('lets a malformed advertised cap (%s) exclude nothing', async (_label, hostile) => {
+      peerService.listConnectedPeers.mockResolvedValue([node('core-17', { maxNumCtx: hostile }), node('core-2', { inFlightRequests: 2 })]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-17', 'core-2']);
+    });
+
+    it('judges nothing when the caller has no body to measure, so ranking-only callers see the old order', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+      setLocalCap(CORE17_CAP);
+
+      expect(ids(await service.buildCandidateList(MODEL))).toEqual([null, 'core-17', 'core-2']);
+    });
+
+    it('is the outer split over the prompt ceiling: a node over its cap goes behind one merely over its ceiling', async () => {
+      // core-17: under its 14000 ceiling for this prompt, but capped at 16384 — a 65536 request reloads it.
+      // fzzy: over its ceiling (slow), but uncapped — it can take the window without a reload.
+      peerService.listConnectedPeers.mockResolvedValue([
+        node('core-17', { maxNumCtx: CORE17_CAP, maxPromptTokens: 14_000 }),
+        node('fzzy', { maxPromptTokens: 1024, inFlightRequests: 1 }),
+      ]);
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['fzzy', 'core-17']);
+      // With a window core-17 can take, the ceiling decides as before.
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'fzzy']);
+    });
+
+    it('does not let a pin at an over-cap node put the request back at the front', async () => {
+      peerService.listConnectedPeers.mockResolvedValue(core17AndCore2());
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'core-17', mode: 'prefer' }] });
+
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 4096))).toEqual(['core-17', 'core-2']);
+      expect(ids(await service.buildCandidateList(MODEL, SHORT_PROMPT_BYTES, true, 65_536))).toEqual(['core-2', 'core-17']);
+    });
+
+    describe('in the routing log', () => {
+      const hermesTurn = {
+        model: MODEL,
+        stream: true,
+        messages: [{ role: 'user', content: 'x'.repeat(SHORT_PROMPT_BYTES) }],
+        options: { num_ctx: 65_536 },
+      };
+
+      function answerWith200(): void {
+        vi.mocked(global.fetch).mockImplementation(async () => new Response('{"done":true}\n', { status: 200 }));
+      }
+
+      function servePeers(peers: HubPoolPeer[]): void {
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+      }
+
+      it('says which node its cap moved back, at what cap, for what window — so a skip is not read as the ranker', async () => {
+        servePeers(core17AndCore2());
+        answerWith200();
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net', candidates: 2, attempt: 1, outcome: 'served', failedOverFrom: [] });
+        expect(entry?.contextCap).toEqual({
+          numCtx: 65_536,
+          source: 'request',
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: false,
+        });
+      });
+
+      it('records the estimate as the window for a /v1 request, which cannot carry num_ctx', async () => {
+        // core-2 carries a ceiling too, so the ceiling half of the record is present to compare against.
+        servePeers([node('core-17', { maxNumCtx: CORE17_CAP }), node('core-2', { inFlightRequests: 2, maxPromptTokens: 100_000 })]);
+        answerWith200();
+        const longTurn = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'x'.repeat(LONG_PROMPT_BYTES) }] };
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+        // bytes / 4 of what actually went out — after the proxy's own usage opt-in — written out rather
+        // than through `estimatePromptTokens`, so a change to the estimate cannot pass by agreeing with itself.
+        const sent = String(vi.mocked(global.fetch).mock.calls[0]?.[1]?.body);
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net' });
+        expect(entry?.contextCap).toEqual({
+          numCtx: Math.ceil(sent.length / 4),
+          source: 'estimated',
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: false,
+        });
+        // The same estimate the ceiling and the deadline use, so a request is never judged small for one and large for another.
+        expect(entry?.promptCeiling?.estimatedTokens).toBe(entry?.contextCap?.numCtx);
+      });
+
+      it('still fails over to the capped node when every node that can take the window fails — a cap must never turn a served request into a 502', async () => {
+        servePeers(core17AndCore2());
+        vi.mocked(global.fetch).mockImplementation(async (url) =>
+          String(url).includes('core-2') ? new Response('model not loaded', { status: 503 }) : new Response('{"done":true}\n', { status: 200 }),
+        );
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-17.tailxyz.ts.net', outcome: 'served', status: 200, failedOverFrom: ['core-2.tailxyz.ts.net'] });
+        // Placed over core-17's cap after all, and the record says so instead of reading as a skip.
+        expect(entry?.contextCap).toMatchObject({ excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }], overridden: true });
+      });
+
+      it('marks the decision overridden when every candidate was capped below the window, and still serves it', async () => {
+        const core17 = node('core-17', { maxNumCtx: CORE17_CAP });
+        servePeers([core17]);
+        answerWith200();
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-17.tailxyz.ts.net', outcome: 'served', status: 200 });
+        expect(entry?.contextCap).toMatchObject({
+          numCtx: 65_536,
+          excluded: [{ node: 'core-17.tailxyz.ts.net', maxNumCtx: CORE17_CAP }],
+          overridden: true,
+        });
+      });
+
+      it('records the window with nothing excluded when a cap was in play but every node could take it', async () => {
+        servePeers(core17AndCore2());
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/api/chat',
+          method: 'POST',
+          body: { ...hermesTurn, options: { num_ctx: 4096 } },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(routingLog.list()[0]).toMatchObject({ node: 'core-17.tailxyz.ts.net' });
+        expect(routingLog.list()[0]?.contextCap).toEqual({ numCtx: 4096, source: 'request', excluded: [], overridden: false });
+      });
+
+      it('stays null on a fleet where no node has a cap, and on an embeddings batch', async () => {
+        servePeers([node('core-2'), node('core-6', { inFlightRequests: 1 })]);
+        answerWith200();
+
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+        expect(routingLog.list()[0]?.contextCap).toBeNull();
+
+        servePeers(core17AndCore2());
+        await service.proxyRequest({
+          path: '/v1/embeddings',
+          method: 'POST',
+          body: { model: MODEL, input: ['x'] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        expect(routingLog.list()[0]?.contextCap).toBeNull();
+      });
+
+      it('logs one debug line for a request the cap changed, naming the window and the cap, and none for one it did not', async () => {
+        const debugSpy = vi.spyOn(Logger.prototype, 'debug').mockImplementation(() => undefined);
+        servePeers(core17AndCore2());
+        answerWith200();
+        try {
+          await service.proxyRequest({
+            path: '/api/chat',
+            method: 'POST',
+            body: { ...hermesTurn, options: { num_ctx: 4096 } },
+            model: MODEL,
+            res: createMockResponse(),
+          });
+          expect(debugSpy.mock.calls.filter(([line]) => String(line).includes('context cap') || String(line).includes('whose cap'))).toHaveLength(0);
+
+          await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesTurn, model: MODEL, res: createMockResponse() });
+          const lines = debugSpy.mock.calls.map(([line]) => String(line)).filter((line) => line.includes('whose cap'));
+          expect(lines).toHaveLength(1);
+          expect(lines[0]).toContain(
+            'num_ctx 65536 for "qwen3-coder:30b" put core-17.tailxyz.ts.net (cap 16384) behind every candidate whose cap can take it',
+          );
+          expect(lines[0]).not.toContain('xxxx');
+        } finally {
+          debugSpy.mockRestore();
+        }
+      });
+    });
+
+    describe('requestedNumCtx', () => {
+      it('reads a positive integer options.num_ctx and nothing else', () => {
+        expect(requestedNumCtx({ options: { num_ctx: 65_536 } })).toBe(65_536);
+        expect(requestedNumCtx({ options: { num_ctx: 0 } })).toBeNull();
+        expect(requestedNumCtx({ options: { num_ctx: -1 } })).toBeNull();
+        expect(requestedNumCtx({ options: { num_ctx: 16_384.5 } })).toBeNull();
+        expect(requestedNumCtx({ options: { num_ctx: '65536' } })).toBeNull();
+        expect(requestedNumCtx({ options: {} })).toBeNull();
+        expect(requestedNumCtx({ num_ctx: 65_536 })).toBeNull();
+        expect(requestedNumCtx({ options: null })).toBeNull();
+        expect(requestedNumCtx(null)).toBeNull();
+        expect(requestedNumCtx('options')).toBeNull();
+      });
+    });
+
+    describe('applyContextCap', () => {
+      const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+      const localVllm = { peerId: null, nodeFqdn: null, backend: 'vllm' } as const;
+      const core2 = { peerId: 'core-2', nodeFqdn: 'core-2.tailxyz.ts.net', backend: 'ollama' } as const;
+      const core17 = { peerId: 'core-17', nodeFqdn: 'core-17.tailxyz.ts.net', backend: 'ollama' } as const;
+      const request = { numCtx: 65_536, source: 'request' as const };
+
+      it('returns the ranked list, and no decision, when no candidate has a cap', () => {
+        expect(applyContextCap([local, core2], () => null, request)).toEqual({ preferred: [local, core2], overCap: [], decision: null });
+      });
+
+      it('keeps every over-cap candidate, in ranked order, for the failover tail', () => {
+        const result = applyContextCap([core17, local, core2], (candidate) => (candidate.peerId === 'core-2' ? null : CORE17_CAP), request);
+
+        expect(result.preferred).toEqual([core2]);
+        expect(result.overCap).toEqual([core17, local]);
+      });
+
+      it('moves nothing, and says it was overridden, when every candidate is capped below the window', () => {
+        const result = applyContextCap([local, core2], () => CORE17_CAP, request);
+
+        expect(result.preferred).toEqual([local, core2]);
+        expect(result.overCap).toEqual([]);
+        expect(result.decision?.overridden).toBe(true);
+      });
+
+      it('names this node once however many of its engines the cap moved back, and carries the source', () => {
+        const result = applyContextCap([local, localVllm, core2], (candidate) => (candidate.peerId === null ? CORE17_CAP : null), {
+          numCtx: 46_000,
+          source: 'estimated',
+        });
+
+        expect(result.preferred).toEqual([core2]);
+        expect(result.overCap).toEqual([local, localVllm]);
+        expect(result.decision).toEqual({
+          numCtx: 46_000,
+          source: 'estimated',
+          excluded: [{ node: LOCAL_CANDIDATE_KEY, maxNumCtx: CORE17_CAP }],
+          overridden: false,
+        });
+      });
+    });
+  });
+
+  /**
+   * Slot-aware placement, with the fleet's own numbers (2026-09-21, fleet-qa B5 cell, 4-way bursts):
+   * the batch-tier nodes moved to `OLLAMA_NUM_PARALLEL=2` queued requests behind Ollama for 5–10 s to
+   * the first token — beta-max 0.47 s → 9.0 s — while 4-slot nodes sat idle, and the fleet aggregate at
+   * c=4 fell 14–16 %. The ranker alone prefers the 2-slot node here when it has the shorter queue,
+   * which is exactly the placement that queued. Every test is one of three questions: does a request
+   * go first to a node with a free slot, does a fleet with the knob off — or with no slot count stated
+   * — route exactly as before, and can a full slot ever turn a request that would have been served
+   * into a 502.
+   */
+  describe('slot-aware placement', () => {
+    const MODEL = 'qwen3-coder:30b';
+
+    /** A connected peer holding MODEL on Ollama, with a queue depth and optionally a stated slot count. */
+    function node(
+      id: string,
+      options: {
+        inFlightRequests?: number;
+        ollamaSlots?: unknown;
+        maxPromptTokens?: number;
+        hardwareTier?: string;
+        backend?: 'ollama' | 'vllm' | 'llamacpp';
+      } = {},
+    ): HubPoolPeer {
+      return mockPeer({
+        id,
+        nodeFqdn: `${id}.tailxyz.ts.net`,
+        lastCapabilities: {
+          ...capabilitiesWithModel(MODEL, {
+            inFlightRequests: options.inFlightRequests ?? 0,
+            ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
+            // `unknown`, as for the ceiling: this arrives as jsonb the peer controls.
+            ...('ollamaSlots' in options ? { ollamaSlots: options.ollamaSlots as number } : {}),
+            ...(options.maxPromptTokens === undefined ? {} : { maxPromptTokens: options.maxPromptTokens }),
+          }),
+          ...(options.backend && options.backend !== 'ollama' ? { backends: [{ type: options.backend, healthy: true, modelsLoaded: [MODEL] }] } : {}),
+        } as unknown as Record<string, unknown>,
+      });
+    }
+
+    /** beta-max: 2 slots, both busy, so the ranker likes its queue of 2. core-2: 4 slots, 3 busy, so one is free. */
+    function betaMaxAndCore2(): HubPoolPeer[] {
+      return [node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }), node('core-2', { inFlightRequests: 3, ollamaSlots: 4 })];
+    }
+
+    const ids = (candidates: { peerId: string | null }[]) => candidates.map((candidate) => candidate.peerId);
+
+    describe('at the default (poolSlotAwareness = 0) nothing changes', () => {
+      it('ranks a full 2-slot node ahead of a 4-slot node with a free slot, on queue depth alone — the pre-slots order', async () => {
+        peerService.listConnectedPeers.mockResolvedValue(betaMaxAndCore2());
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('reads no slot count at all: this node stays first however full its own engine is', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual([null, 'core-2']);
+      });
+
+      it('records no slot decision, so the routing log reads as it did before', async () => {
+        const peers = betaMaxAndCore2();
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+        vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        expect(routingLog.list()[0]).toMatchObject({ node: 'beta-max.tailxyz.ts.net', slots: null });
+      });
+    });
+
+    describe('with the knob on', () => {
+      beforeEach(() => {
+        setPoolPreferences({ poolSlotAwareness: 1 });
+      });
+
+      it('puts a 2-slot peer with 2 in flight behind a 4-slot peer with 3 in flight, though the ranker scored it first', async () => {
+        peerService.listConnectedPeers.mockResolvedValue(betaMaxAndCore2());
+
+        // Behind, not gone: a burst that fills core-2 too still has beta-max to fail over to.
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'beta-max']);
+      });
+
+      it('leaves a node with a free slot where the ranker put it', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 1, ollamaSlots: 2 }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('leaves a peer that states no slot count untouched — an older build, or an operator who never set one', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('old-build', { inFlightRequests: 2 }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['old-build', 'core-2']);
+      });
+
+      it('puts THIS node behind a peer with a free slot when its own slots are full', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', null]);
+      });
+
+      it('keeps the whole list, in ranked order, when every candidate is full — a queued answer beats a 502', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }),
+          node('core-2', { inFlightRequests: 4, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('judges Ollama and llama-server only: a vLLM candidate on a node that states slots keeps its place', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('vllm-node', { inFlightRequests: 2, ollamaSlots: 2, backend: 'vllm' }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['vllm-node', 'core-2']);
+      });
+
+      it("judges a peer's llama-server by the node's stated slots — the fleet writes them from the same -np", async () => {
+        // core-6 after `cihub fleet backends --backends llamacpp --ollama-parallel 2`: a 2-slot
+        // llama-server, both slots busy, ranked ahead of a 4-slot node with one free.
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('core-6', { inFlightRequests: 2, ollamaSlots: 2, backend: 'llamacpp' }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'core-6']);
+      });
+
+      it("judges THIS node's llama-server by its own /props, ahead of the operator's statement", async () => {
+        // The statement says 4 (Ollama's), the engine says 2 (its own -np); two in flight fill it.
+        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        llamacpp.engineCapabilities.mockReturnValue({ slots: 2, contextLength: 32768 });
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 4 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        const candidates = await service.buildCandidateList(MODEL);
+        expect(candidates.map((candidate) => `${candidate.peerId ?? 'local'}/${candidate.backend}`)).toEqual(['core-2/ollama', 'local/llamacpp']);
+      });
+
+      it("falls back to the node's statement for a local llama-server whose /props was not read", async () => {
+        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        llamacpp.engineCapabilities.mockReturnValue(null);
+        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
+
+        expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId ?? 'local')).toEqual(['core-2', 'local']);
+      });
+
+      it('counts the requests this node forwarded a peer since its snapshot, so a burst fills its slots here before the peer reports it', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 0, ollamaSlots: 2 }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+        loadService.acquire('beta-max');
+        loadService.acquire('beta-max');
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'beta-max']);
+      });
+
+      it('treats a 1-slot peer whose snapshot is stale as full — an unmeasured node is never taken for an idle one', async () => {
+        const stale = new Date(Date.now() - DEFAULT_POOL_HEALTH_POLL_SECONDS * 1000 * 4).toISOString();
+        peerService.listConnectedPeers.mockResolvedValue([
+          mockPeer({ ...node('one-slot', { inFlightRequests: 0, ollamaSlots: 1 }), lastSeenAt: stale }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'one-slot']);
+      });
+
+      it.each([
+        ['a string', '2'],
+        ['zero', 0],
+        ['a negative', -1],
+        ['past the bound', 65],
+      ])('lets a malformed advertised slot count (%s) demote nothing', async (_label, hostile) => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 2, ollamaSlots: hostile }),
+          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
+        ]);
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
+      });
+
+      it('applies inside the ceiling: a full node under its ceiling still goes ahead of a free node over it', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }),
+          node('fzzy', { inFlightRequests: 0, ollamaSlots: 4, maxPromptTokens: MIN_POOL_MAX_PROMPT_TOKENS }),
+        ]);
+
+        // ~46k tokens: over fzzy's ceiling, so fzzy is the ceiling tail whatever its slots say.
+        expect(ids(await service.buildCandidateList(MODEL, 184_000))).toEqual(['beta-max', 'fzzy']);
+      });
+
+      it('applies before a pin, so a pin at a full node cannot put it back in front of a free one', async () => {
+        peerService.listConnectedPeers.mockResolvedValue(betaMaxAndCore2());
+        setPoolPreferences({
+          poolSlotAwareness: 1,
+          poolPins: [{ scope: 'model', model: MODEL, targetKind: 'peer', peerId: 'beta-max', mode: 'prefer' }],
+        });
+
+        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'beta-max']);
+      });
+
+      describe('in the routing log', () => {
+        const turn = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'hello' }] };
+
+        it('says which node its slots moved back, at what queue depth, against how many slots', async () => {
+          const peers = betaMaxAndCore2();
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn, model: MODEL, res: createMockResponse() });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net', candidates: 2, attempt: 1, outcome: 'served', failedOverFrom: [] });
+          expect(entry?.slots).toEqual({
+            demoted: [{ node: 'beta-max.tailxyz.ts.net', backend: 'ollama', inFlight: 2, slots: 2 }],
+            overridden: false,
+          });
+        });
+
+        it('records an empty decision when every stated node had a free slot, so the figures are visible for the requests that fit too', async () => {
+          const peers = [node('beta-max', { inFlightRequests: 1, ollamaSlots: 2 }), node('core-2', { inFlightRequests: 3, ollamaSlots: 4 })];
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn, model: MODEL, res: createMockResponse() });
+
+          expect(routingLog.list()[0]?.slots).toEqual({ demoted: [], overridden: false });
+        });
+
+        it('still fails over to the full node when every node with a free slot fails, and says the demotion was overridden', async () => {
+          const peers = betaMaxAndCore2();
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async (url) =>
+            String(url).includes('core-2') ? new Response('model not loaded', { status: 503 }) : new Response('data: [DONE]\n\n', { status: 200 }),
+          );
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: turn, model: MODEL, res: createMockResponse() });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'beta-max.tailxyz.ts.net', outcome: 'served', status: 200, failedOverFrom: ['core-2.tailxyz.ts.net'] });
+          expect(entry?.slots).toMatchObject({ demoted: [{ node: 'beta-max.tailxyz.ts.net', inFlight: 2, slots: 2 }], overridden: true });
+        });
+
+        it('says the demotion was overridden when a prompt ceiling put every free node behind the full one, so the placement is not read as a skip', async () => {
+          const peers = [
+            node('beta-max', { inFlightRequests: 2, ollamaSlots: 2 }),
+            node('fzzy', { inFlightRequests: 0, ollamaSlots: 4, maxPromptTokens: MIN_POOL_MAX_PROMPT_TOKENS }),
+          ];
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+          const longTurn = { model: MODEL, stream: true, messages: [{ role: 'user', content: 'x'.repeat(184_000) }] };
+
+          await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: longTurn, model: MODEL, res: createMockResponse() });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'beta-max.tailxyz.ts.net', attempt: 1, failedOverFrom: [] });
+          expect(entry?.promptCeiling).toMatchObject({ excluded: [{ node: 'fzzy.tailxyz.ts.net' }], overridden: false });
+          expect(entry?.slots).toMatchObject({ demoted: [{ node: 'beta-max.tailxyz.ts.net', inFlight: 2, slots: 2 }], overridden: true });
+        });
+
+        it('judges an embedding too: slots queue every request, not only the ones a ceiling judges', async () => {
+          const peers = betaMaxAndCore2();
+          peerService.listConnectedPeers.mockResolvedValue(peers);
+          peerService.getPeerById.mockImplementation(async (id: string) => peers.find((peer) => peer.id === id));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('{}', { status: 200 }));
+
+          await service.proxyRequest({
+            path: '/v1/embeddings',
+            method: 'POST',
+            body: { model: MODEL, input: 'x' },
+            model: MODEL,
+            res: createMockResponse(),
+          });
+
+          const entry = routingLog.list()[0];
+          expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net', promptCeiling: null });
+          expect(entry?.slots).toMatchObject({ demoted: [{ node: 'beta-max.tailxyz.ts.net' }], overridden: false });
+        });
+      });
+    });
+
+    describe('applySlotPlacement', () => {
+      const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
+      const betaMax = { peerId: 'beta-max', nodeFqdn: 'beta-max.tailxyz.ts.net', backend: 'ollama' } as const;
+      const core2 = { peerId: 'core-2', nodeFqdn: 'core-2.tailxyz.ts.net', backend: 'ollama' } as const;
+
+      it('demotes nothing, and records no decision, when no candidate states a slot count', () => {
+        expect(applySlotPlacement([local, betaMax, core2], () => null)).toEqual({ demoted: new Set(), decision: null });
+      });
+
+      it('demotes exactly the candidates whose queue has reached their slots, and names them in ranked order', () => {
+        const occupancy = { local: { inFlight: 4, slots: 4 }, 'beta-max': { inFlight: 2, slots: 2 }, 'core-2': { inFlight: 3, slots: 4 } } as const;
+
+        const result = applySlotPlacement([betaMax, local, core2], (candidate) => occupancy[candidate.peerId ?? 'local']);
+
+        expect([...result.demoted]).toEqual([betaMax, local]);
+        expect(result.decision).toEqual({
+          demoted: [
+            { node: 'beta-max.tailxyz.ts.net', backend: 'ollama', inFlight: 2, slots: 2 },
+            { node: LOCAL_CANDIDATE_KEY, backend: 'ollama', inFlight: 4, slots: 4 },
+          ],
+          overridden: false,
+        });
+        expect(splitDemoted([betaMax, local, core2], result.demoted)).toEqual([[core2], [betaMax, local]]);
+      });
+
+      it('demotes nothing, and says it was overridden, when every candidate is full', () => {
+        const result = applySlotPlacement([betaMax, core2], () => ({ inFlight: 2, slots: 2 }));
+
+        expect(result.demoted.size).toBe(0);
+        expect(result.decision).toMatchObject({ overridden: true });
+        expect(result.decision?.demoted).toHaveLength(2);
+      });
+
+      it('leaves an unstated candidate in place and still counts it as free, so a full node is demoted behind it', () => {
+        const result = applySlotPlacement([betaMax, core2], (candidate) => (candidate.peerId === 'beta-max' ? { inFlight: 2, slots: 2 } : null));
+
+        expect([...result.demoted]).toEqual([betaMax]);
+        expect(result.decision?.overridden).toBe(false);
       });
     });
   });
@@ -2862,8 +4144,9 @@ describe('PoolProxyService', () => {
 
     // Ollama's native /api/tags answers `{"models": [...]}` — a different shape from the
     // OpenAI-compatible /v1/models list (`{"object": "list", "data": [...]}`) served by the sibling
-    // route. Confirms the pool proxy never conflates the two.
-    it('passes Ollama’s native /api/tags shape through unmodified, distinct from the /v1/models shape', async () => {
+    // route. Confirms the pool proxy never conflates the two. The listing paths are built as a
+    // body rather than streamed (see `serveMergedListing`), so the answer is read off `res.json`.
+    it('keeps Ollama’s native /api/tags shape, distinct from the /v1/models shape', async () => {
       const nativeTags = { models: [{ name: 'llama3.2:3b', model: 'llama3.2:3b', size: 2019393189 }] };
       vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(nativeTags), { status: 200 }));
 
@@ -2872,7 +4155,7 @@ describe('PoolProxyService', () => {
 
       const [url] = vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit];
       expect(url).toBe('http://local-ollama:11434/api/tags');
-      const body = JSON.parse(Buffer.concat(res.chunks).toString());
+      const body = vi.mocked(res.json).mock.calls[0]?.[0];
       expect(body).toEqual(nativeTags);
       expect(body).not.toHaveProperty('object');
       expect(body).not.toHaveProperty('data');
@@ -2889,7 +4172,101 @@ describe('PoolProxyService', () => {
       await service.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
 
       expect(res.status).toHaveBeenCalledWith(200);
-      expect(JSON.parse(Buffer.concat(res.chunks).toString())).toEqual(nativeTags);
+      expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual(nativeTags);
+    });
+
+    /*
+     * The listing used to answer for this node while every generation path already answered for the
+     * pool, so a client was told one set of models and then found another one served. These pin the
+     * merge: peer-held models appear, local metadata is untouched, and a duplicate never does.
+     */
+    describe('merging what peers hold into the listing', () => {
+      it('adds a peer-only model to /v1/models, marked as the pool’s', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'qwen3.6:27b')]);
+        const localModels = { object: 'list', data: [{ id: 'llama3.2:3b', object: 'model', created: 1, owned_by: 'library' }] };
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(localModels), { status: 200 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual({
+          object: 'list',
+          data: [
+            { id: 'llama3.2:3b', object: 'model', created: 1, owned_by: 'library' },
+            { id: 'qwen3.6:27b', object: 'model', created: 0, owned_by: 'hub-pool' },
+          ],
+        });
+      });
+
+      it('adds a peer-only model to /api/tags in Ollama’s shape', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'qwen3.6:27b')]);
+        vi.mocked(global.fetch).mockResolvedValue(
+          new Response(JSON.stringify({ models: [{ name: 'llama3.2:3b', model: 'llama3.2:3b' }] }), { status: 200 }),
+        );
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
+
+        const body = vi.mocked(res.json).mock.calls[0]?.[0] as { models: Array<Record<string, unknown>> };
+        expect(body.models).toHaveLength(2);
+        expect(body.models[1]).toMatchObject({ name: 'qwen3.6:27b', model: 'qwen3.6:27b', size: 0 });
+      });
+
+      /* A model both nodes hold must appear once, with the local row's real metadata. */
+      it('never lists a model twice when a peer holds it too', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'llama3.2:3b')]);
+        const localModels = { object: 'list', data: [{ id: 'llama3.2:3b', object: 'model', created: 1, owned_by: 'library' }] };
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(localModels), { status: 200 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual(localModels);
+      });
+
+      /*
+       * A Hub with no local engine is a legitimate pool member — it exists to send work out. It
+       * used to answer 502 here while its peers held a dozen models.
+       */
+      it('answers from peers alone when no local backend can', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'qwen3.6:27b')]);
+        vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual({
+          object: 'list',
+          data: [{ id: 'qwen3.6:27b', object: 'model', created: 0, owned_by: 'hub-pool' }],
+        });
+      });
+
+      it('still answers 502 when neither this node nor any peer has anything', async () => {
+        vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(res.status).toHaveBeenCalledWith(502);
+      });
+
+      /* A peer that has switched inbound off is not offering anything, and must not be listed. */
+      it('leaves out a peer that is not accepting work', async () => {
+        peerService.listConnectedPeers.mockResolvedValue([
+          mockPeer({
+            lastCapabilities: capabilitiesWithModel('qwen3.6:27b', { acceptingWork: false }) as unknown as Record<string, unknown>,
+          }),
+        ]);
+        const localModels = { object: 'list', data: [{ id: 'llama3.2:3b', object: 'model' }] };
+        vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify(localModels), { status: 200 }));
+
+        const res = createMockResponse();
+        await service.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
+
+        expect(vi.mocked(res.json).mock.calls[0]?.[0]).toEqual(localModels);
+      });
     });
 
     it.each([
@@ -3028,7 +4405,7 @@ describe('PoolProxyService', () => {
     // scores, and a mocked catalog would only prove the test's own fixture.
     function serviceWithCatalog(): PoolProxyService {
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         peerService,
         tailscaleService,
         loadService,
@@ -3251,6 +4628,55 @@ describe('PoolProxyService', () => {
         expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('peer-spare'))).toHaveLength(0);
       });
 
+      // Slot-aware placement is the third decision this lookup is exempt from, for the same reason
+      // as the ceiling: a full node is demoted because a forwarded request would queue behind its
+      // engine, and `/api/show` joins no queue — the daemon answers it from metadata on disk whether
+      // or not a model is busy. `peer-full` has the shorter queue, so the ranker puts it first, and
+      // its 2 in flight fill its 2 slots, so the slot pass would move it behind `peer-spare` — which
+      // is what makes the exemption observable rather than a no-op. The embedding case stays judged
+      // ("judges an embedding too", under slot-aware placement): an embedding occupies a slot.
+      it('exempts the lookup from slot-aware placement, so a full node the ranker chose is still asked first', async () => {
+        setPoolPreferences({ poolSlotAwareness: 1 });
+        const withCatalog = serviceWithCatalog();
+        localHas('nomic-embed-text:latest');
+        peersAre(
+          peerServing('peer-full', 'qwen3.6:27b', { inFlightRequests: 2, ollamaSlots: 2 }),
+          peerServing('peer-spare', 'qwen3.6:27b', { inFlightRequests: 3, ollamaSlots: 4 }),
+        );
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async (url) =>
+          String(url).includes('tailxyz.ts.net')
+            ? new Response(JSON.stringify({ details: { parameter_size: '27B' } }), { status: 200 })
+            : new Response('model not found', { status: 404 }),
+        );
+        const res = createMockResponse();
+
+        await withCatalog.proxyLocalOnlyRequest('/api/show', 'POST', { model: AUTO_MODEL }, res);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(headersSetOn(res)[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe('peer-full.tailxyz.ts.net');
+        expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('peer-spare'))).toHaveLength(0);
+        // Still not a turn: no row, no queue depth.
+        expect(routingLog.list()).toHaveLength(0);
+        expect(loadService.get('peer-full')).toBe(0);
+
+        // The same fleet, and a request that does occupy a slot: the full node goes behind the spare.
+        const chat = createMockResponse();
+        fetchMock.mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+        await withCatalog.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: 'qwen3.6:27b', stream: true },
+          model: 'qwen3.6:27b',
+          res: chat,
+        });
+        expect(routingLog.list()[0]).toMatchObject({ node: 'peer-spare.tailxyz.ts.net', attempt: 1, failedOverFrom: [] });
+        expect(routingLog.list()[0]?.slots).toMatchObject({
+          demoted: [{ node: 'peer-full.tailxyz.ts.net', inFlight: 2, slots: 2 }],
+          overridden: false,
+        });
+      });
+
       it('gives the same 502 as before when every peer holding the model 404s, as a build without local/api/show does', async () => {
         const withCatalog = serviceWithCatalog();
         localHas('nomic-embed-text:latest');
@@ -3301,6 +4727,147 @@ describe('PoolProxyService', () => {
     });
   });
 
+  // The fleet measurement behind these: on four of fifteen nodes ufw DROPped the Hub container's
+  // SYN to an engine port, so every pooled request entering the node waited out a 5 s health probe
+  // for an engine that was never going to be a candidate — 5035–5200 ms pool TTFT against 22–100 ms
+  // once the port answered. The proxy now ranks from a per-backend snapshot; the request path pays
+  // at most PLACEMENT_PROBE_BUDGET_MS, and only on a cold read.
+  describe('local health snapshot', () => {
+    const MODEL = 'llama3.2:3b';
+    /** The TTL the canary runs at. The default is 0 — the live-probe path — and one test below pins that. */
+    const SNAPSHOT_TTL_MS = 10_000;
+
+    beforeEach(() => {
+      setPoolPreferences({ poolProbeSnapshotTtlMs: SNAPSHOT_TTL_MS });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A backend whose probe never answers — what a DROP rule looks like until axios's 5 s timeout. */
+    function hangs(backend: MockProxy<OllamaBackend> | MockProxy<VllmBackend>): void {
+      backend.healthCheck.mockImplementation(() => new Promise(() => {}));
+    }
+
+    it('ranks within the placement budget when a local probe hangs, instead of waiting out its 5 s timeout', async () => {
+      vi.useFakeTimers();
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      hangs(vllm);
+
+      const ranking = service.buildCandidateList(MODEL);
+      // Nothing settles before the budget: the hung probe holds the cold read...
+      let settled = false;
+      void ranking.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS - 1);
+      expect(settled).toBe(false);
+      // ...and the budget, not the 5 s transport timeout, is what releases it.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await ranking).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('does not make the next request wait for a probe the last one gave up on', async () => {
+      vi.useFakeTimers();
+      hangs(vllm);
+      const first = service.buildCandidateList(MODEL);
+      await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS);
+      await first;
+      vllm.healthCheck.mockClear();
+
+      // Settles without the clock moving: the hung engine is on record as not answering, and it is
+      // the background refresh that will ask again, not this request.
+      const second = service.buildCandidateList(MODEL);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await second).toEqual([]);
+      expect(vllm.healthCheck).not.toHaveBeenCalled();
+    });
+
+    it('reports how old each probe was on the no-candidate 502', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
+      // Warm the snapshot, then ask again 4 s later: the second body must say it is reading a
+      // 4 s-old answer, which is what tells an operator who just fixed a firewall rule that the
+      // `running: false` they are looking at predates the fix.
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+      vi.setSystemTime(Date.now() + 4_000);
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      const body = vi.mocked(res.json).mock.calls[0]?.[0] as { localBackends: Array<{ type: string; probedMsAgo: number }> };
+      expect(body.localBackends.find((probe) => probe.type === 'ollama')?.probedMsAgo).toBe(4_000);
+      expect(ollama.healthCheck).toHaveBeenCalledTimes(1);
+    });
+
+    it('offers a backend that came up once the snapshot has been refreshed, and not before', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+
+      // Inside the TTL the snapshot is served as is: the engine coming up is not yet visible.
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+
+      // Past it the stale answer is served once more while the refresh runs behind the caller...
+      vi.setSystemTime(Date.now() + SNAPSHOT_TTL_MS + 1);
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+      // ...and the request after that reads what the refresh found.
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('drops a model the node just failed on the very next request, not on the next TTL', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+
+      // The 500 is the strike that withholds the model; the backend says so, and its next
+      // healthCheck reports the quarantine.
+      ollama.noteServingFailure.mockReturnValue(true);
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL], unservableModels: [MODEL] });
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+    });
+
+    it('keeps the snapshot across a serving verdict that changed nothing', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      await service.buildCandidateList(MODEL);
+      // A first strike, or a success on a model that was never withheld: `unservableModels` is
+      // what it was, so re-probing would only spend the request on a health check for nothing.
+      ollama.noteServingFailure.mockReturnValue(false);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+      ollama.healthCheck.mockClear();
+
+      await service.buildCandidateList(MODEL);
+
+      expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+
+    it('probes live on every request at the default, which is 0 — the pre-snapshot build', async () => {
+      expect(DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS).toBe(0);
+      setPoolPreferences({ poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      await service.buildCandidateList(MODEL);
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([]);
+      expect(ollama.healthCheck).toHaveBeenCalledTimes(2);
+    });
+
+    it('resolves the auto alias from the same snapshot placement ranks on', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      await service.buildCandidateList(MODEL);
+      ollama.healthCheck.mockClear();
+
+      expect(await service.resolveModelAlias(AUTO_MODEL)).toBe(MODEL);
+      // Twelve probes per request used to be the cost of `auto`; the snapshot answers both reads.
+      expect(ollama.healthCheck).not.toHaveBeenCalled();
+    });
+  });
+
   // The socket-level half of these lives in hub-pool-proxy-client-abort.test.ts; these cover the
   // routing decisions around a hang-up, which a real socket cannot make deterministic.
   describe('a client that hangs up', () => {
@@ -3336,6 +4903,95 @@ describe('PoolProxyService', () => {
       expect(loadService.get('peer-a')).toBe(0);
     });
 
+    /**
+     * The field report this came from: beta-max's `cihub pool log` showed four rows reading
+     * `qwen3-coder:30b  -  1/14  30031  x failed`, which an operator reads as "placement returned
+     * no candidate and then timed out" — nothing in the NODE column, and a duration suspiciously
+     * close to a 30 s deadline. Placement had in fact succeeded: fourteen candidates were ranked,
+     * the first was being tried, and the *caller* gave up 30 s later. Settling the row with a null
+     * node threw away the one fact that distinguishes the two, and it is the same null the
+     * dashboard buckets as `Unplaced`. Nothing else in the log tells them apart: `attempt` is 1 on
+     * a hang-up and `candidates.length` when every candidate really did fail, which is far too
+     * subtle to hang a diagnosis on.
+     */
+    it('keeps the node it was waiting on, so a hang-up cannot be read as "placement found nothing"', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 0 }), peerServing('peer-b', MODEL, { inFlightRequests: 0 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      res.destroy();
+      await inFlight;
+
+      // Local is first at the default affinity with nothing in flight, so this is the node that was
+      // holding the request: named on the row, with the engine that had it.
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        status: null,
+        node: LOCAL_CANDIDATE_KEY,
+        peerId: null,
+        backend: 'ollama',
+        attempt: 1,
+        candidates: 3,
+        clientClosed: true,
+      });
+    });
+
+    it('names the peer, not nothing, when the hang-up happened while a peer forward was in flight', async () => {
+      // Local busier than the affinity margin, so the peer ranks first and is the node being tried.
+      const peers = [peerServing('peer-a', MODEL, { inFlightRequests: 0 })];
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      peerService.peerAuthHeaders.mockResolvedValue({ Authorization: 'Bearer raw-token' });
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      const signals: AbortSignal[] = [];
+      fetchThatWaitsForever(signals);
+      const res = createMockResponse();
+
+      const inFlight = service.proxyRequest({ path: '/api/chat', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      res.destroy();
+      await inFlight;
+
+      expect(routingLog.list()[0]).toMatchObject({
+        outcome: 'failed',
+        node: 'peer-a.tailxyz.ts.net',
+        peerId: 'peer-a',
+        backend: 'ollama',
+        attempt: 1,
+        clientClosed: true,
+      });
+    });
+
+    /**
+     * The counterpart, and the reason `clientClosed` is a field rather than a reading of `node`: a
+     * request that genuinely exhausted every candidate settles with no node too, and that one IS a
+     * routing failure. The flag is what separates the two on a row an operator is scanning.
+     */
+    it('still settles with no node, and without the flag, when every candidate really did fail', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await service.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: MODEL, stream: true },
+        model: MODEL,
+        res: createMockResponse(),
+      });
+
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', node: null, clientClosed: false, attempt: 1, candidates: 1 });
+    });
+
     it('sends the upstream an already-aborted request when the client left while candidates were still being ranked', async () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
       vllm.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
@@ -3363,16 +5019,18 @@ describe('PoolProxyService', () => {
       router = mock<InferenceRouterService>();
       router.prepareTrackedModel.mockResolvedValue(null);
       withRouter = new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         peerService,
         tailscaleService,
         loadService,
         configuration,
         routingLog,
         pressureService,
-        // Two `undefined`s: `router` is appended after `modelRegistry` and `throughput`, because
-        // #1483 dropped the old router slot that used to sit before them (see the note in
-        // `makeService`). Passing it positionally here would land it in the model-registry slot.
+        // Three `undefined`s: `router` is appended after `modelRegistry`, `throughput` and the
+        // local-health snapshot, because #1483 dropped the old router slot that used to sit before
+        // them (see the note in `makeService`). Passing it positionally here would land it in the
+        // model-registry slot.
+        undefined,
         undefined,
         undefined,
         router,

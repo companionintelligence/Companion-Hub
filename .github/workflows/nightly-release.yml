@@ -36,13 +36,27 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Stamp the build time
+        id: stamp
+        run: echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push images
         uses: docker/build-push-action@v7
         with:
           context: .
+          # Nightly carries the same CI_HUB_BUILD_* stamp as a release build. Without it every
+          # nightly image reports itself identically, and `nightly` is the one channel where two
+          # images a day share a tag — the commit and the build time are the only things that
+          # tell them apart. No comments inside the block scalar: each line is parsed as KEY=VALUE.
           build-args: |
             CI_HUB_VERSION=nightly
             CI_HUB_ENVIRONMENT=nightly
+            CI_HUB_BUILD_VERSION=nightly
+            CI_HUB_BUILD_CHANNEL=nightly
+            CI_HUB_BUILD_SHA=${{ github.sha }}
+            CI_HUB_BUILD_REF=${{ github.ref }}
+            CI_HUB_BUILD_TIME=${{ steps.stamp.outputs.built_at }}
+            CI_HUB_BUILD_IMAGE_REF=ghcr.io/companionintelligence/ci-hub:nightly
             SENTRY_DSN=${{ secrets.SENTRY_DSN }}
             SENTRY_RELEASE=ci-hub-backend@nightly
             SENTRY_ORG=${{ vars.SENTRY_ORG }}
@@ -59,6 +73,16 @@ jobs:
           # Publish alongside every other Hub stack image, in the public ci-hub package.
           # ci-os-hub is private and is no longer a publish target (#920).
           tags: ghcr.io/companionintelligence/ci-hub:nightly
+          # This job does not run docker/metadata-action, so nothing would stamp OCI labels at all.
+          # `revision` is what hub-deployment.ts falls back to for a build with no version, and
+          # `cihub pool update` reports "this build stamps no org.opencontainers.image.revision"
+          # when it is missing — which was true of every nightly image.
+          labels: |
+            org.opencontainers.image.version=nightly
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.stamp.outputs.built_at }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.title=CI-Hub
 
   update-manifest:
     needs: [build-images]

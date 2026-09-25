@@ -81,6 +81,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 "
 `;
 
@@ -110,6 +115,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 "
 `;
 
@@ -219,6 +229,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: home-assistant:ci-marketplace
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: home-assistant:ci-marketplace
 "
 `;
 
@@ -262,6 +277,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 "
 `;
 
@@ -294,6 +314,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 "
 `;
 
@@ -327,6 +352,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 "
 `;
 
@@ -357,6 +387,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 "
 `;
 
@@ -390,6 +425,11 @@ networks:
     ipam:
       config:
         - subnet: 10.128.1.0/24
+    labels:
+      ci-hub.managed: true
+      ci-hub.appurn: nginx:store-id
+      ci-os-hub.managed: true
+      ci-os-hub.appurn: nginx:store-id
 "
 `;
 

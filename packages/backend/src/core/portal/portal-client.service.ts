@@ -361,7 +361,7 @@ export class PortalClientService {
     return response.data;
   }
 
-  async postTunnelState(payload: { organizationId: string; tunnelId: string; apps: unknown[] }): Promise<{
+  async postTunnelState(payload: { organizationId: string; tunnelId: string; apps: unknown[]; customDomainApps?: unknown[] }): Promise<{
     success?: boolean;
     failed?: string[];
     /** Per-app failure detail; absent on Companion Portal versions that predate it. */

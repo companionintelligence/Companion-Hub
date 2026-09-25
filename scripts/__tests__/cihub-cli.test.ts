@@ -51,7 +51,7 @@ import {
   tailscaledStateLooksLoggedIn,
   TUNNEL_REGISTRATION_MARKER,
 } from '../lib/cli-compose-env';
-import { parsePromptCeilingArg } from '../lib/cli-pool';
+import { parseContextCapArg, parseOllamaSlotsArg, parsePromptCeilingArg } from '../lib/cli-pool';
 
 /**
  * Pool HTTP is stubbed at the `hub-pool-cli` boundary so these tests exercise the parts that live in
@@ -65,6 +65,9 @@ const poolApi = {
   setPoolPeerEnabled: vi.fn(),
   unpairPoolPeer: vi.fn(),
   setPoolMaxPromptTokens: vi.fn(),
+  fetchInferencePreferences: vi.fn(),
+  setInferenceContextCap: vi.fn(),
+  setInferenceOllamaSlots: vi.fn(),
 };
 let poolApiKey: string | undefined = 'device-key';
 
@@ -76,6 +79,9 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
   setPoolPeerEnabled: (...args: unknown[]) => poolApi.setPoolPeerEnabled(...args),
   unpairPoolPeer: (...args: unknown[]) => poolApi.unpairPoolPeer(...args),
   setPoolMaxPromptTokens: (...args: unknown[]) => poolApi.setPoolMaxPromptTokens(...args),
+  fetchInferencePreferences: (...args: unknown[]) => poolApi.fetchInferencePreferences(...args),
+  setInferenceContextCap: (...args: unknown[]) => poolApi.setInferenceContextCap(...args),
+  setInferenceOllamaSlots: (...args: unknown[]) => poolApi.setInferenceOllamaSlots(...args),
 }));
 
 vi.mock('../public-web-cli', async (importOriginal) => ({
@@ -385,6 +391,7 @@ describe('normalizeRegisterFlags', () => {
       env: 'dev',
       fresh: true,
       code: '8XNYEB',
+      move: false,
     });
   });
 
@@ -393,6 +400,7 @@ describe('normalizeRegisterFlags', () => {
       env: 'staging',
       fresh: true,
       code: 'ABC123',
+      move: false,
     });
   });
 
@@ -401,7 +409,12 @@ describe('normalizeRegisterFlags', () => {
       env: 'local',
       fresh: false,
       code: 'ABC123',
+      move: false,
     });
+  });
+
+  it('parses --move, the yes to moving this Hub from another organization', () => {
+    expect(normalizeRegisterFlags(['--code', 'ABC123', '--move'])).toMatchObject({ code: 'ABC123', move: true });
   });
 });
 
@@ -1061,8 +1074,15 @@ describe('api-key scope parsing', () => {
     expect(parseApiKeyScopes('qa:read')).toEqual({ scopes: ['qa:read'], invalid: [], managedOnly: [] });
   });
 
+  it('accepts inference as an operator scope rather than reporting it unknown', () => {
+    expect(parseApiKeyScopes('inference')).toEqual({ scopes: ['inference'], invalid: [], managedOnly: [] });
+  });
+
   it('dedupes and orders like ApiKeyService.normalizeScopes', () => {
     expect(parseApiKeyScopes('mcp,mcp').scopes).toEqual(['mcp']);
+    // The backend list is ['mcp', 'app', 'qa:read', 'inference']; the operator subset must sort the
+    // same way, or a row this command writes would differ from one the service wrote for the same grant.
+    expect(parseApiKeyScopes('inference,qa:read,mcp').scopes).toEqual(['mcp', 'qa:read', 'inference']);
   });
 
   it('returns no scopes for an empty value so the caller can reject it', () => {
@@ -1318,6 +1338,21 @@ describe('parsePoolArgs', () => {
     expect(parsePoolArgs(['ceiling', 'clear'])).toMatchObject({ subcommand: 'ceiling', target: 'clear', env: 'local' });
   });
 
+  it('takes the context cap the same way', () => {
+    expect(parsePoolArgs(['context-cap', '16384', 'dev', '--yes'])).toMatchObject({
+      subcommand: 'context-cap',
+      target: '16384',
+      env: 'dev',
+      yes: true,
+    });
+    expect(parsePoolArgs(['context-cap', 'clear'])).toMatchObject({ subcommand: 'context-cap', target: 'clear', env: 'local' });
+  });
+
+  it('takes the slot count the same way', () => {
+    expect(parsePoolArgs(['slots', '4', 'dev', '--yes'])).toMatchObject({ subcommand: 'slots', target: '4', env: 'dev', yes: true });
+    expect(parsePoolArgs(['slots', 'clear'])).toMatchObject({ subcommand: 'slots', target: 'clear', env: 'local' });
+  });
+
   it('accepts --limit in both forms', () => {
     expect(parsePoolArgs(['log', '--limit', '25']).limit).toBe(25);
     expect(parsePoolArgs(['log', '--limit=25']).limit).toBe(25);
@@ -1363,6 +1398,47 @@ describe('parsePromptCeilingArg', () => {
     [undefined],
   ])('refuses %s here, before it can become a 400 or a ceiling nobody meant', (raw) => {
     expect(parsePromptCeilingArg(raw)).toBeUndefined();
+  });
+});
+
+describe('parseContextCapArg', () => {
+  it('reads a whole number of tokens within the Hub’s bounds, and `clear` as no cap', () => {
+    expect(parseContextCapArg('16384')).toBe(16_384);
+    expect(parseContextCapArg(' 2048 ')).toBe(2048);
+    expect(parseContextCapArg('1048576')).toBe(1_048_576);
+    expect(parseContextCapArg('clear')).toBeNull();
+    expect(parseContextCapArg('CLEAR')).toBeNull();
+  });
+
+  // The Hub's floor is 2048, not the ceiling's 1024: below it no agent turn fits, and a dropped digit
+  // is the likelier explanation. `16k` is refused for the reason the ceiling refuses it.
+  it.each([
+    undefined,
+    '',
+    '16k',
+    '16384.0',
+    '-16384',
+    '1024',
+    '2047',
+    '1048577',
+    '0x4000',
+    'none',
+  ])('refuses %s here, before it can become a 400 or a cap nobody meant', (raw) => {
+    expect(parseContextCapArg(raw)).toBeUndefined();
+  });
+});
+
+describe('parseOllamaSlotsArg', () => {
+  it('reads a whole number within --ollama-parallel’s bounds, and `clear` as not stated', () => {
+    expect(parseOllamaSlotsArg('4')).toBe(4);
+    expect(parseOllamaSlotsArg(' 1 ')).toBe(1);
+    expect(parseOllamaSlotsArg('64')).toBe(64);
+    expect(parseOllamaSlotsArg('clear')).toBeNull();
+    expect(parseOllamaSlotsArg('CLEAR')).toBeNull();
+  });
+
+  it.each([undefined, '', '0', '65', '-4', '4.0', '2x', 'none'])('refuses %s here, before it can become a 400', (raw) => {
+    expect(parseOllamaSlotsArg(raw)).toBeUndefined();
   });
 });
 
@@ -1562,6 +1638,181 @@ describe('runPoolCommand', () => {
       await expect(runPoolCommand(['ceiling', '16000'])).rejects.toThrow('exit');
 
       expect(poolApi.setPoolMaxPromptTokens).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pool context-cap', () => {
+    const prefs = (maxNumCtx: number | null, preferredBackend: string | null = 'ollama') => ({ preferredBackend, preferredModel: null, maxNumCtx });
+
+    beforeEach(() => {
+      poolApi.fetchInferencePreferences.mockReset();
+      poolApi.setInferenceContextCap.mockReset();
+    });
+
+    it('reads the preferences, PATCHes the cap with the stored backend, and reports the cap read back afterwards', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValueOnce(prefs(null, 'vllm')).mockResolvedValueOnce(prefs(16_384, 'vllm'));
+      poolApi.setInferenceContextCap.mockResolvedValue(prefs(16_384, 'vllm'));
+
+      await runPoolCommand(['context-cap', '16384', '--yes']);
+
+      expect(poolApi.setInferenceContextCap).toHaveBeenCalledWith('.env.local', 'vllm', 16_384);
+      // Read before (for the backend and the current cap) and after (for the cap in force).
+      expect(poolApi.fetchInferencePreferences).toHaveBeenCalledTimes(2);
+      const text = boxText();
+      expect(text).toContain('Context cap set');
+      expect(text).toContain('at most 16384 tokens');
+      // The other half of the setting, or the cap is a lie in the other direction.
+      expect(text).toContain('cihub fleet backends --ollama-context 16384');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('sends Ollama as the backend when none is stored — what the Hub resolves an absent preference to anyway', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValueOnce(prefs(null, null)).mockResolvedValueOnce(prefs(16_384, 'ollama'));
+      poolApi.setInferenceContextCap.mockResolvedValue(prefs(16_384, 'ollama'));
+
+      await runPoolCommand(['context-cap', '16384', '--yes']);
+
+      expect(poolApi.setInferenceContextCap).toHaveBeenCalledWith('.env.local', 'ollama', 16_384);
+    });
+
+    it('clears it with `clear`, sending null rather than omitting the field', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValueOnce(prefs(65_536)).mockResolvedValueOnce(prefs(null));
+      poolApi.setInferenceContextCap.mockResolvedValue(prefs(null));
+
+      await runPoolCommand(['context-cap', 'clear', '--yes']);
+
+      expect(poolApi.setInferenceContextCap).toHaveBeenCalledWith('.env.local', 'ollama', null);
+      expect(boxText()).toContain('Context cap cleared');
+    });
+
+    it('writes nothing when the cap already reads as requested, because the write restarts apps', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValue(prefs(16_384));
+
+      await runPoolCommand(['context-cap', '16384', '--yes']);
+      expect(poolApi.setInferenceContextCap).not.toHaveBeenCalled();
+      expect(boxText()).toContain('already 16384 tokens');
+
+      poolApi.fetchInferencePreferences.mockResolvedValue(prefs(null));
+      await runPoolCommand(['context-cap', 'clear', '--yes']);
+      expect(poolApi.setInferenceContextCap).not.toHaveBeenCalled();
+      expect(boxText()).toContain('nothing to clear');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('says a Hub too old to store the cap changed nothing, and writes nothing to it', async () => {
+      // An older Hub's preferences have no maxNumCtx at all; its PATCH schema would strip the field and answer 200.
+      poolApi.fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: null });
+
+      await runPoolCommand(['context-cap', '16384', '--yes']);
+
+      expect(poolApi.setInferenceContextCap).not.toHaveBeenCalled();
+      expect(boxText()).toContain('predates the context cap');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('does not report success when the read-back disagrees with the write', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValueOnce(prefs(null)).mockResolvedValueOnce(prefs(null));
+      poolApi.setInferenceContextCap.mockResolvedValue(prefs(null));
+
+      await runPoolCommand(['context-cap', '16384', '--yes']);
+
+      const text = boxText();
+      expect(text).toContain('Context cap not in force');
+      expect(text).not.toContain('Context cap set');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('falls back to the PATCH answer when the read-back fails, rather than losing a write that happened', async () => {
+      poolApi.fetchInferencePreferences
+        .mockResolvedValueOnce(prefs(null))
+        .mockRejectedValueOnce(new Error('Hub API /inference/preferences failed (503)'));
+      poolApi.setInferenceContextCap.mockResolvedValue(prefs(16_384));
+
+      await runPoolCommand(['context-cap', '16384', '--yes']);
+
+      expect(boxText()).toContain('Context cap set');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('refuses a value the Hub would reject, before sending anything', async () => {
+      await expect(runPoolCommand(['context-cap', '16k', '--yes'])).rejects.toThrow('exit');
+      await expect(runPoolCommand(['context-cap', '1024', '--yes'])).rejects.toThrow('exit');
+
+      expect(poolApi.fetchInferencePreferences).not.toHaveBeenCalled();
+      expect(poolApi.setInferenceContextCap).not.toHaveBeenCalled();
+    });
+
+    it('refuses without --yes on a non-interactive terminal, like the ceiling', async () => {
+      await expect(runPoolCommand(['context-cap', '16384'])).rejects.toThrow('exit');
+
+      expect(poolApi.setInferenceContextCap).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pool slots', () => {
+    const prefs = (ollamaSlots: number | null, preferredBackend: string | null = 'ollama') => ({
+      preferredBackend,
+      preferredModel: null,
+      ollamaSlots,
+    });
+
+    beforeEach(() => {
+      poolApi.fetchInferencePreferences.mockReset();
+      poolApi.setInferenceOllamaSlots.mockReset();
+    });
+
+    it('reads the preferences, PATCHes the count with the stored backend, and reports the count read back afterwards', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValueOnce(prefs(null, 'vllm')).mockResolvedValueOnce(prefs(4, 'vllm'));
+      poolApi.setInferenceOllamaSlots.mockResolvedValue(prefs(4, 'vllm'));
+
+      await runPoolCommand(['slots', '4', '--yes']);
+
+      expect(poolApi.setInferenceOllamaSlots).toHaveBeenCalledWith('.env.local', 'vllm', 4);
+      expect(poolApi.fetchInferencePreferences).toHaveBeenCalledTimes(2);
+      const text = boxText();
+      expect(text).toContain('Slot count set');
+      expect(text).toContain('runs 4 requests at once');
+      // The other half of the setting, or the pool places against slots that are not there.
+      expect(text).toContain('cihub fleet backends --ollama-parallel 4');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('clears it with `clear`, sending null rather than omitting the field', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValueOnce(prefs(2)).mockResolvedValueOnce(prefs(null));
+      poolApi.setInferenceOllamaSlots.mockResolvedValue(prefs(null));
+
+      await runPoolCommand(['slots', 'clear', '--yes']);
+
+      expect(poolApi.setInferenceOllamaSlots).toHaveBeenCalledWith('.env.local', 'ollama', null);
+      expect(boxText()).toContain('Slot count cleared');
+    });
+
+    it('writes nothing when the count already reads as requested', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValue(prefs(4));
+
+      await runPoolCommand(['slots', '4', '--yes']);
+      expect(poolApi.setInferenceOllamaSlots).not.toHaveBeenCalled();
+      expect(boxText()).toContain('already 4');
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('says a Hub too old to store the count changed nothing, and writes nothing to it', async () => {
+      poolApi.fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', preferredModel: null, maxNumCtx: null });
+
+      await runPoolCommand(['slots', '4', '--yes']);
+
+      expect(poolApi.setInferenceOllamaSlots).not.toHaveBeenCalled();
+      expect(boxText()).toContain('predates the slot count');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses a value the Hub would reject, before sending anything, and refuses without --yes', async () => {
+      await expect(runPoolCommand(['slots', '0', '--yes'])).rejects.toThrow('exit');
+      await expect(runPoolCommand(['slots', '65', '--yes'])).rejects.toThrow('exit');
+      await expect(runPoolCommand(['slots', '4'])).rejects.toThrow('exit');
+
+      expect(poolApi.fetchInferencePreferences).not.toHaveBeenCalled();
+      expect(poolApi.setInferenceOllamaSlots).not.toHaveBeenCalled();
     });
   });
 

@@ -1,8 +1,20 @@
 import type { BackendHealthStatus, BackendModelInfo, BackendResidency, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
 
 /**
+ * What an engine says about its own concurrency, when it says anything: how many requests it runs
+ * at once and the context window each of them gets. The same two numbers a node's operator states
+ * for Ollama as `inferenceOllamaSlots` / `inferenceMaxNumCtx` (`OLLAMA_NUM_PARALLEL` and
+ * `OLLAMA_CONTEXT_LENGTH` are not readable from Ollama's API); an engine that exposes them reads
+ * them instead. `null` on a field the engine did not report.
+ */
+export interface EngineCapabilities {
+  slots: number | null;
+  contextLength: number | null;
+}
+
+/**
  * Common interface implemented by all inference backends (Ollama, vLLM, Lemonade, MTPLX,
- * mlx-dspark, and Lucebox speculative inference).
+ * mlx-dspark, Lucebox speculative inference, llama.cpp, LM Studio).
  */
 export interface InferenceBackend {
   readonly type: InferenceBackendType;
@@ -49,6 +61,15 @@ export interface InferenceBackend {
   listResident?(): Promise<BackendResidency>;
 
   /**
+   * The engine's own statement of slots and per-slot context, from the LAST health probe — never a
+   * request of its own, because the pool proxy reads it while ranking every request. Optional:
+   * only an engine that exposes the figures implements it (llama-server's `/props`); for the rest
+   * the operator's statement in the inference preferences is the only source. `null` when the last
+   * probe did not reach the engine.
+   */
+  engineCapabilities?(): EngineCapabilities | null;
+
+  /**
    * Tell the backend that a request it accepted for `modelId` failed in a way that suggests it
    * cannot serve that model — pass only server-side rejections, never connection errors (those are
    * the whole backend being down, which `healthCheck` already reports).
@@ -58,11 +79,19 @@ export interface InferenceBackend {
    * and one that does not simply keeps offering the model. The alternative — proving serveability
    * from the health check itself — means generating on every poll, which would load every listed
    * model into VRAM on the poll cadence.
+   *
+   * Returns true when this observation is the one that withheld the model — that is, when the
+   * next `healthCheck()` will report it in `unservableModels` and the last one did not — so a
+   * caller holding a cached health answer knows it is now wrong. The pool proxy ranks from such a
+   * cache.
    */
-  noteServingFailure?(modelId: string, reason: string): void;
+  noteServingFailure?(modelId: string, reason: string): boolean;
 
-  /** The counterpart: `modelId` was served, so clear whatever {@link noteServingFailure} accumulated. */
-  noteServingSuccess?(modelId: string): void;
+  /**
+   * The counterpart: `modelId` was served, so clear whatever {@link noteServingFailure}
+   * accumulated. Returns true when the model was withheld until now, for the same caller.
+   */
+  noteServingSuccess?(modelId: string): boolean;
 
   /**
    * Get the Docker image for this backend. Some implementations accept additional GPU-runtime

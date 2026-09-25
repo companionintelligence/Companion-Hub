@@ -18,7 +18,9 @@ services:
       - ci_hub_pgdata:/var/lib/postgresql/data
     command: -p 6543
     ports:
-      - "${POSTGRES_PORT:-6543}:6543"
+      # Loopback only: the Hub reaches Postgres over ci_hub_internal; the host
+      # port exists for local tooling and must not be offered to the LAN.
+      - "127.0.0.1:${POSTGRES_PORT:-6543}:6543"
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_USER: companion
@@ -29,8 +31,7 @@ services:
       timeout: 20s
       retries: 120
     networks:
-      - ci_hub_network
-      - ci_os_hub_network
+      - ci_hub_internal
 
   ci-hub-queue:
     container_name: ci-hub-queue
@@ -39,7 +40,9 @@ services:
     pull_policy: if_not_present
     restart: unless-stopped
     ports:
-      - "${RABBITMQ_PORT:-5001}:5672"
+      # Loopback only, as for Postgres above. Nothing outside the Hub container
+      # publishes to or consumes from this broker in a deployed Hub.
+      - "127.0.0.1:${RABBITMQ_PORT:-5001}:5672"
     environment:
       RABBITMQ_DEFAULT_USER: companion
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
@@ -52,10 +55,11 @@ services:
       retries: 20
       start_period: 180s
     networks:
-      ci_hub_network:
-        aliases:
-          - ci-os-hub-queue
-      ci_os_hub_network:
+      # Internal only. Every installed app's main container joins ci_hub_network,
+      # so a broker on it was one leaked password away from every app being able
+      # to install, reset or uninstall anything on the Hub. Only the Hub itself
+      # needs the broker; the legacy alias stays for pre-rename RABBITMQ_HOST values.
+      ci_hub_internal:
         aliases:
           - ci-os-hub-queue
 
@@ -214,6 +218,7 @@ services:
         aliases:
           - ci-os-hub
           - host.docker.internal
+      ci_hub_internal:
     environment:
       # Runtime marker: if absent, a new image detects the pre-rename compose
       # from its legacy queue host and keeps writing ci-os-hub DNS/network names.
@@ -225,6 +230,10 @@ services:
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
       SPECULATIVE_INFERENCE_URL: ${SPECULATIVE_INFERENCE_URL:-http://host.docker.internal:8000}
+      # No default on purpose: llama-server and mlx-dspark both default to 8080, so probing it
+      # unasked would report one engine as two. Set it to opt in.
+      LLAMACPP_URL: ${LLAMACPP_URL:-}
+      LMSTUDIO_URL: ${LMSTUDIO_URL:-http://host.docker.internal:1234}
       API_PORT: 5002
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}
@@ -372,8 +381,21 @@ services:
       - |
         if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
           export TS_AUTHKEY="$TAILSCALE_AUTHKEY"
+          exec /usr/local/bin/containerboot
         fi
-        exec /usr/local/bin/containerboot
+        # No auth key: run tailscaled alone. containerboot would run `tailscale up`
+        # itself, kill it after 60 s (nobody can finish an interactive login in
+        # here) and exit; `restart: unless-stopped` then respawns it every minute,
+        # and every respawn re-creates the container's veth on the host, which
+        # the host's browsers see as a network change (Chrome: ERR_NETWORK_CHANGED).
+        # Hub runs `tailscale up` over `docker exec` and shows the auth URL, so
+        # the sidecar only has to keep the daemon alive. A persisted login is
+        # resumed by tailscaled by itself; the tun node is what containerboot
+        # would have created. `$$` keeps compose from interpolating the shell vars.
+        if [ ! -c /dev/net/tun ]; then
+          mkdir -p /dev/net && mknod /dev/net/tun c 10 200
+        fi
+        exec tailscaled --socket="$$TS_SOCKET" --statedir="$$TS_STATE_DIR"
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
@@ -410,6 +432,13 @@ networks:
   ci_hub_network:
     driver: bridge
     name: ci-hub_network
+  # Hub-private plumbing: Postgres and RabbitMQ live here and only the Hub
+  # joins it. Apps never see this network — it is not offered to app containers
+  # by the compose builder — so the Hub's own infrastructure is unreachable from
+  # a marketplace container by design rather than by password.
+  ci_hub_internal:
+    driver: bridge
+    name: ci-hub_internal
   # Keep the retired network so already-installed apps stay attached and can
   # still resolve the Hub via the ci-os-hub alias on this network.
   ci_os_hub_network:

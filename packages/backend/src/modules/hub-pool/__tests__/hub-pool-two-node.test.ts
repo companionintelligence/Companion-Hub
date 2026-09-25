@@ -1,3 +1,4 @@
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { createHash, randomUUID } from 'node:crypto';
 import { Writable } from 'node:stream';
 import { HttpException } from '@nestjs/common';
@@ -14,6 +15,8 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
@@ -22,6 +25,9 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
   POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
   type PoolContainerRollup,
@@ -199,6 +205,10 @@ interface Node {
   setShareContainerStats(enabled: boolean): void;
   /** Set or clear this node's stored prompt ceiling, as a settings PATCH does. */
   setMaxPromptTokens(tokens: number | null): void;
+  /** Set or clear this node's handout context cap (`inferenceMaxNumCtx`), as a settings PATCH does. */
+  setMaxNumCtx(tokens: number | null): void;
+  /** Set or clear this node's Ollama slot count (`inferenceOllamaSlots`), as a settings PATCH does. */
+  setOllamaSlots(slots: number | null): void;
   /** What this node's proxy has timed, and what its `/capabilities` advertises from. */
   throughput: HubPoolThroughputService;
   /** Runs one health-poll tick, as the module's own timer would. */
@@ -221,6 +231,9 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolShareContainerStats: true,
     poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
     poolMaxPromptTokens: null,
+    poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+    poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+    poolSlotAwareness: DEFAULT_POOL_SLOT_AWARENESS,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
 
@@ -356,6 +369,12 @@ function buildNode(fqdn: string, models: string[]): Node {
     },
     setMaxPromptTokens(tokens: number | null) {
       preferences.poolMaxPromptTokens = tokens;
+    },
+    setMaxNumCtx(tokens: number | null) {
+      configuration.getInferencePreferences.mockReturnValue({ maxNumCtx: tokens } as never);
+    },
+    setOllamaSlots(slots: number | null) {
+      configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: slots } as never);
     },
     throughput,
     /** Make this node report a measured band, as its sampler would. */
@@ -1446,7 +1465,7 @@ describe('Hub Pool across two nodes', () => {
     /** Bodies beta's engine received, to prove the work really ran there. */
     let betaEngineCalls: string[];
 
-    /** Ollama present and serving `models` at `host`; the other five engines absent. */
+    /** Ollama present and serving `models` at `host`; every other engine absent. */
     function registryServing(host: string, models: string[]): InferenceBackendRegistry {
       const engine = (running: boolean) => {
         const backend = mock<OllamaBackend>();
@@ -1454,7 +1473,11 @@ describe('Hub Pool across two nodes', () => {
         backend.getBaseUrl.mockReturnValue(`http://${host}`);
         return backend as never;
       };
-      return new InferenceBackendRegistry(engine(true), engine(false), engine(false), engine(false), engine(false), engine(false));
+      // One stand-in per declared type, derived from the tuple: a hand-counted argument list left a
+      // newly added backend unwired, and `entries()` then threw UnknownInferenceBackendError from
+      // inside candidate selection rather than failing anywhere near this line.
+      const absent = INFERENCE_BACKEND_TYPES.slice(1).map(() => engine(false));
+      return new InferenceBackendRegistry(engine(true), ...(absent as [never, never, never, never, never, never, never]));
     }
 
     function realProxy(node: Node, registry: InferenceBackendRegistry, log: HubPoolRoutingLogService): PoolProxyService {
@@ -1622,11 +1645,27 @@ describe('Hub Pool across two nodes', () => {
     function proxyOn(node: Node): PoolProxyService {
       const ollama = mock<OllamaBackend>();
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [SHARED_MODEL] });
-      const others = [mock<VllmBackend>(), mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+      const others = [
+        mock<VllmBackend>(),
+        mock<LemonadeBackend>(),
+        mock<MtplxBackend>(),
+        mock<DsparkBackend>(),
+        mock<LuceboxBackend>(),
+        mock<LlamacppBackend>(),
+        mock<LmStudioBackend>(),
+      ];
       for (const backend of others) {
         backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       }
-      const [vllm, lemonade, mtplx, dspark, lucebox] = others as [VllmBackend, LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend];
+      const [vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio] = others as [
+        VllmBackend,
+        LemonadeBackend,
+        MtplxBackend,
+        DsparkBackend,
+        LuceboxBackend,
+        LlamacppBackend,
+        LmStudioBackend,
+      ];
       const pressure = mock<HubPoolPressureService>();
       pressure.band.mockReturnValue(null);
       const loadService = new HubPoolLoadService();
@@ -1634,7 +1673,7 @@ describe('Hub Pool across two nodes', () => {
       loadService.acquire('local');
       loadService.acquire('local');
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         node.service,
         mock<TailscaleService>(),
         loadService,
@@ -1653,6 +1692,46 @@ describe('Hub Pool across two nodes', () => {
       expect(cachedOn(beta).maxPromptTokens).toBe(16_000);
       expect((await beta.service.getPoolStatus()).peers[0]?.maxPromptTokens).toBe(16_000);
       expect((await core.service.getPoolStatus()).localNode).toMatchObject({ maxPromptTokens: 16_000, maxPromptTokensSetBy: 'setting' });
+    });
+
+    it('carries core’s context cap through /capabilities into beta’s cached snapshot and status card, and off the wire when cleared', async () => {
+      await pairNodes();
+      await beta.poll();
+      expect(cachedOn(beta)).not.toHaveProperty('maxNumCtx');
+
+      core.setMaxNumCtx(16_384);
+      await beta.poll();
+
+      expect(cachedOn(beta).maxNumCtx).toBe(16_384);
+      expect((await beta.service.getPoolStatus()).peers[0]?.maxNumCtx).toBe(16_384);
+      expect((await core.service.getPoolStatus()).localNode).toMatchObject({ maxNumCtx: 16_384 });
+
+      core.setMaxNumCtx(null);
+      await beta.poll();
+
+      expect(cachedOn(beta)).not.toHaveProperty('maxNumCtx');
+      expect((await beta.service.getPoolStatus()).peers[0]?.maxNumCtx).toBeNull();
+    });
+
+    it('carries core’s Ollama slot count through /capabilities into beta’s cached snapshot and status card, and off the wire when cleared', async () => {
+      await pairNodes();
+      await beta.poll();
+      expect(cachedOn(beta)).not.toHaveProperty('ollamaSlots');
+      expect((await beta.service.getPoolStatus()).peers[0]?.ollamaSlots).toBeNull();
+
+      core.setOllamaSlots(4);
+      await beta.poll();
+
+      expect(cachedOn(beta).ollamaSlots).toBe(4);
+      expect((await beta.service.getPoolStatus()).peers[0]?.ollamaSlots).toBe(4);
+      expect((await core.service.getPoolStatus()).localNode).toMatchObject({ ollamaSlots: 4 });
+
+      core.setOllamaSlots(null);
+      await beta.poll();
+
+      expect(cachedOn(beta)).not.toHaveProperty('ollamaSlots');
+      expect((await beta.service.getPoolStatus()).peers[0]?.ollamaSlots).toBeNull();
+      expect((await core.service.getPoolStatus()).localNode).toMatchObject({ ollamaSlots: null });
     });
 
     it('leaves the key off the wire when core has no ceiling, and takes it off again when one is cleared', async () => {
@@ -1691,11 +1770,27 @@ describe('Hub Pool across two nodes', () => {
     function proxyOn(node: Node): PoolProxyService {
       const ollama = mock<OllamaBackend>();
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [SHARED_MODEL] });
-      const others = [mock<VllmBackend>(), mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+      const others = [
+        mock<VllmBackend>(),
+        mock<LemonadeBackend>(),
+        mock<MtplxBackend>(),
+        mock<DsparkBackend>(),
+        mock<LuceboxBackend>(),
+        mock<LlamacppBackend>(),
+        mock<LmStudioBackend>(),
+      ];
       for (const backend of others) {
         backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       }
-      const [vllm, lemonade, mtplx, dspark, lucebox] = others as [VllmBackend, LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend];
+      const [vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio] = others as [
+        VllmBackend,
+        LemonadeBackend,
+        MtplxBackend,
+        DsparkBackend,
+        LuceboxBackend,
+        LlamacppBackend,
+        LmStudioBackend,
+      ];
       const pressure = mock<HubPoolPressureService>();
       pressure.band.mockReturnValue(null);
       const loadService = new HubPoolLoadService();
@@ -1703,14 +1798,16 @@ describe('Hub Pool across two nodes', () => {
       loadService.acquire('local');
       loadService.acquire('local');
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
         node.service,
         mock<TailscaleService>(),
         loadService,
         node.configuration,
         new HubPoolRoutingLogService(),
         pressure,
-        undefined,
+        // One `undefined` (the model registry) and then the throughput slot: the two `undefined`s
+        // this used to pass landed `node.throughput` on the router's slot instead, and the proxy
+        // quietly built a store of its own. The local-health slot after it is left to its default.
         undefined,
         node.throughput,
       );

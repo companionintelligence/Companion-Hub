@@ -20,8 +20,8 @@ vi.mock('./log-download', () => ({
   downloadResponseAsFile: (...args: unknown[]) => mockDownloadResponseAsFile(...args),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     error: (...args: unknown[]) => mockToastError(...args),
   },
 }));

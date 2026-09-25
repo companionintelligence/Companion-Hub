@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { QueryClient } from '@tanstack/react-query';
+import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY } from '@/lib/cloudflare-api';
 import { handleAppSseEvent } from '../app-sse-cache';
 import { installQueueQueryKey } from '../install-queue';
 import { updateInstallationProgress } from '../use-installation-progress';
@@ -15,6 +16,13 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   appContextQueryKey: () => ['appContext'],
   getCustomDomainsQueryKey: () => ['getCustomDomains'],
 }));
+
+/**
+ * Queries `invalidateAppQueries` refreshes for one app: installed apps, installed
+ * urns, the app row, app context, and the Public Web report that says whether a
+ * bound custom domain is still dark.
+ */
+const INVALIDATED_PER_APP_EVENT = 5;
 
 describe('handleAppSseEvent', () => {
   let queryClient: {
@@ -70,7 +78,7 @@ describe('handleAppSseEvent', () => {
 
     expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', null);
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(INVALIDATED_PER_APP_EVENT);
   });
 
   it('refreshes install queue when an app enters installing', () => {
@@ -90,7 +98,7 @@ describe('handleAppSseEvent', () => {
       appStatus: 'running',
     });
 
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(INVALIDATED_PER_APP_EVENT);
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'plane:ci-marketplace'], null);
   });
@@ -105,7 +113,7 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.cancelQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
     expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(INVALIDATED_PER_APP_EVENT);
   });
 
   it('clears caches and progress on install_cancelled (like uninstall)', () => {
@@ -120,7 +128,7 @@ describe('handleAppSseEvent', () => {
     // App record is cleared (set to { app: null }) just like an uninstall.
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(INVALIDATED_PER_APP_EVENT);
   });
 
   it('ignores transient stopped status_change while the app is restarting', () => {
@@ -189,6 +197,19 @@ describe('handleAppSseEvent', () => {
 
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getApp', 'comfyui:ci-marketplace'] });
+  });
+
+  it('refetches the Public Web report under the key every surface reads it by', () => {
+    // A bare call count cannot see this: any fifth key satisfies it. The dashboard
+    // banner, the app page banner and the tile badge all mount
+    // `PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY`, so a hand-written literal here would leave
+    // all three asking for a restart that has already happened.
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'custom_domain_changed',
+      appUrn: 'comfyui:ci-marketplace',
+    });
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
   });
 
   it('leaves the custom-domain listing alone on other lifecycle events', () => {

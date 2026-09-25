@@ -237,6 +237,8 @@ describe('AiAppInferenceRefreshService', () => {
         'hubPoolEnabled',
       ]);
       expect(changedInferenceEnvSettings({}, { themeColor: 'blue', hubPoolLocalAffinity: 1 })).toEqual([]);
+      // The context cap changes CI_LLM_NUM_CTX in every AI app's env, so a PATCH of it sweeps them too.
+      expect(changedInferenceEnvSettings({ inferenceMaxNumCtx: 65_536 }, { inferenceMaxNumCtx: 16_384 })).toEqual(['inferenceMaxNumCtx']);
     });
 
     it('ignores inference keys a write carries with the values they already had', () => {

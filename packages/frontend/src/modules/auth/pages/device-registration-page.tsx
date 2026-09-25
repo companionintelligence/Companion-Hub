@@ -16,7 +16,7 @@ import {
 import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration, requiresPortalRePairing } from '@/lib/registration-status';
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import {
   REGISTRATION_ACCOUNT_HINT,
@@ -27,13 +27,15 @@ import {
 } from '@/components/hub-status/hub-status-tooltips';
 import { forgetPendingPairingCode, normalizePairingCode, resolvePendingPairingCode, stashPendingPairingCode } from '@/lib/deep-link-pair';
 import { captureHubWarning, setHubSentryDeviceId } from '@/lib/sentry';
-import { getStoredDriftChoice, storeDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
+import { getStoredDriftChoice, storeDriftChoice, type RegistrationDriftChoice, type RegistrationStateDrift } from '@/lib/registration-state-drift';
 import {
   RegistrationFreshBanner,
+  RegistrationMoveBanner,
   RegistrationRestoreBanner,
   RegistrationStateDriftDialog,
 } from '@/modules/auth/components/registration-state-drift-dialog';
 import { useTranslation } from 'react-i18next';
+import { RegistrationMoveDialog } from '@/modules/auth/components/registration-move-dialog';
 
 const DEFAULT_PORTAL_URL = (
   (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim() ||
@@ -70,6 +72,9 @@ function sleep(ms: number) {
 /** The Portal already has a device for this computer, and the Hub sent no key that proves it is that device. */
 const DEVICE_PROOF_REQUIRED = 'DEVICE_PROOF_REQUIRED';
 
+/** This Hub proved itself with its key, but it is in another organization: pairing moves it, so ask first. */
+const DEVICE_MOVE_CONFIRMATION_REQUIRED = 'DEVICE_MOVE_CONFIRMATION_REQUIRED';
+
 /**
  * The message for a refused pairing.
  *
@@ -85,6 +90,8 @@ function pairingRefusalMessage(data: { code?: string; message?: string }, t: (ke
       return t('DEVICE_REGISTRATION_PAIRING_REGISTERED_ELSEWHERE');
     case 'PAIRING_CODE_WRONG_DEVICE':
       return t('DEVICE_REGISTRATION_PAIRING_CODE_WRONG_DEVICE');
+    case DEVICE_MOVE_CONFIRMATION_REQUIRED:
+      return t('DEVICE_REGISTRATION_PAIRING_MOVE_REQUIRED');
     default:
       return typeof data.message === 'string' && data.message ? data.message : t('DEVICE_REGISTRATION_FAILED');
   }
@@ -177,6 +184,8 @@ export default function DeviceRegistrationPage() {
   const [pairingCode, setPairingCode] = useState('');
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState<string | null>(null);
+  /** A pairing the Portal will only finish as a move, waiting for the person's yes. */
+  const [moveConfirmation, setMoveConfirmation] = useState<{ code: string; organizationName: string | null } | null>(null);
   const [redirectStatusKey, setRedirectStatusKey] = useState('DEVICE_REGISTRATION_SETTING_UP_HUB_ELLIPSIS');
 
   const pairingInputRef = useRef<HTMLInputElement>(null);
@@ -189,7 +198,7 @@ export default function DeviceRegistrationPage() {
   const [stateDrift, setStateDrift] = useState<RegistrationStateDrift | null>(null);
   const [driftDialogOpen, setDriftDialogOpen] = useState(false);
   const [portalHasDevice, setPortalHasDevice] = useState(false);
-  const [driftChoice, setDriftChoice] = useState<'fresh' | 'restore' | null>(() => getStoredDriftChoice());
+  const [driftChoice, setDriftChoice] = useState<RegistrationDriftChoice | null>(() => getStoredDriftChoice());
   const [isPreparingFresh, setIsPreparingFresh] = useState(false);
   const isTauri = '__TAURI_INTERNALS__' in window;
   const canAutoPairFromDeepLink = isTauri && !isLoading && (!registrationStatus || requiresDeviceRegistration(registrationStatus));
@@ -354,7 +363,7 @@ export default function DeviceRegistrationPage() {
 
       if (status.phase === 'degraded') {
         setRedirectStatusKey('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_REDIRECTING');
-        toast(t('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_TOAST'), { duration: 8000 });
+        toast.warning(t('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_TOAST'), { duration: 8000 });
         await sleep(2000);
         navigate('/login', { replace: true });
         return;
@@ -395,7 +404,7 @@ export default function DeviceRegistrationPage() {
         }
 
         setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_ROUTE_PROPAGATING_REDIRECTING_LOCAL');
-        toast(t('DEVICE_REGISTRATION_CLOUDFLARE_PROPAGATING_TOAST'), { duration: 8000 });
+        toast.info(t('DEVICE_REGISTRATION_CLOUDFLARE_PROPAGATING_TOAST'), { duration: 8000 });
         await sleep(2000);
         navigate('/login', { replace: true });
         return;
@@ -475,7 +484,7 @@ export default function DeviceRegistrationPage() {
   }, [deviceId, isLoading, registrationStatus]);
 
   const doPair = useCallback(
-    async (code: string) => {
+    async (code: string, confirmMove = false) => {
       pairingInProgressRef.current = true;
       setIsPairing(true);
       setPairingError(null);
@@ -484,16 +493,22 @@ export default function DeviceRegistrationPage() {
       completionStartedRef.current = false;
 
       try {
-        const { ok, data } = await pairWithCode(code);
+        const { ok, data } = await pairWithCode(code, { confirmMove });
 
         if (ok && data.success) {
+          setMoveConfirmation(null);
           pendingPairTargetRef.current = { domain: data.domain, subdomain: data.subdomain };
           setPairingCode('');
           setRegistrationStatus({ phase: 'paired', degradedReasons: [], registered: false });
           setRedirectStatusKey('DEVICE_REGISTRATION_PROVISIONING_STATUS');
           toast.success(t('DEVICE_REGISTRATION_PAIRING_ACCEPTED'));
           await refreshRegistrationStatus();
+        } else if (data.code === DEVICE_MOVE_CONFIRMATION_REQUIRED && !confirmMove) {
+          // Nothing changed on the Portal, and the code is still good: ask before taking this Hub
+          // from the organization that holds it.
+          setMoveConfirmation({ code, organizationName: data.organizationName ?? null });
         } else {
+          setMoveConfirmation(null);
           const errorMsg = pairingRefusalMessage(data, t);
           setPairingError(errorMsg);
           if (data.code === DEVICE_PROOF_REQUIRED) {
@@ -507,6 +522,7 @@ export default function DeviceRegistrationPage() {
         }
       } catch (error) {
         console.error(error);
+        setMoveConfirmation(null);
         setPairingError(t('DEVICE_REGISTRATION_FAILED_RETRY'));
       } finally {
         pairingInProgressRef.current = false;
@@ -619,6 +635,18 @@ export default function DeviceRegistrationPage() {
     setPairingError(null);
   };
 
+  /**
+   * Keeps this Hub's key, which is what lets a code from another organization move it, and restores no
+   * apps: the organization it moves to has none for it yet. The move itself is confirmed once the
+   * Portal names that organization.
+   */
+  const handleMoveToAnotherOrganization = () => {
+    storeDriftChoice('move');
+    setDriftChoice('move');
+    setDriftDialogOpen(false);
+    setPairingError(null);
+  };
+
   const handleRetryStatus = async () => {
     setStatusError(null);
     await refreshRegistrationStatus();
@@ -650,7 +678,7 @@ export default function DeviceRegistrationPage() {
   // Restoration uses an existing Companion Portal device, so link to Portal Home
   // where the user can retrieve or regenerate its pairing code. The device-scoped
   // registration URL starts Add Device and would create another device. Fresh
-  // setup uses that scoped URL intentionally.
+  // setup and a move to another organization use that scoped URL intentionally.
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
   const redirectStatus = t(redirectStatusKey);
@@ -755,6 +783,18 @@ export default function DeviceRegistrationPage() {
 
   return (
     <div className="space-y-6">
+      <RegistrationMoveDialog
+        open={moveConfirmation !== null}
+        organizationName={moveConfirmation?.organizationName ?? null}
+        isPairing={isPairing}
+        onMove={() => {
+          if (moveConfirmation) {
+            void doPair(moveConfirmation.code, true);
+          }
+        }}
+        onCancel={() => setMoveConfirmation(null)}
+      />
+
       <RegistrationStateDriftDialog
         open={driftDialogOpen}
         drift={stateDrift}
@@ -762,6 +802,7 @@ export default function DeviceRegistrationPage() {
         isPreparing={isPreparingFresh}
         onSetupNew={() => void handleSetupNewDevice()}
         onRestore={handleRestoreExistingDevice}
+        onMove={handleMoveToAnotherOrganization}
       />
 
       {registrationStatus && requiresPortalRePairing(registrationStatus) && (
@@ -776,6 +817,7 @@ export default function DeviceRegistrationPage() {
       )}
 
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
+      {driftChoice === 'move' ? <RegistrationMoveBanner /> : null}
       {driftChoice === 'fresh' && (portalHasDevice || stateDrift?.portalDeviceActive === true) ? <RegistrationFreshBanner /> : null}
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">

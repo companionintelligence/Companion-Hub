@@ -115,3 +115,46 @@ describe('claim is discoverable', () => {
     expect(cliDoc).toContain('| `cli-claim.ts` | `claim` |');
   });
 });
+
+/**
+ * The two distribution channels, and the command that reconciles them.
+ *
+ * `cihub self-update` exists because a headless appliance had no way to move its CLI at all, so an
+ * operator who cannot find it in `--help` or the docs is back where they started. The skew wording
+ * is pinned here too: `update` and `doctor` are where a mismatch is reported, and a doc that does
+ * not say so sends people to a command that will not tell them.
+ */
+describe('CLI vs stack is discoverable', () => {
+  it('lists self-update in --help and man', () => {
+    for (const rendered of [stripAnsi(renderHelp()), stripAnsi(renderManPage())]) {
+      expect(rendered).toContain('self-update');
+    }
+  });
+
+  it('documents both channels and where the skew is reported', () => {
+    expect(cliDoc).toContain('\n## Keeping the CLI and the stack together\n');
+    expect(cliDoc).toContain('### `cihub self-update`');
+    for (const entry of ['cihub doctor', 'cihub pool update', 'brew upgrade --cask companion-hub', 'scoop update companion-hub']) {
+      expect(cliDoc).toContain(entry);
+    }
+  });
+
+  it('says the CLI version is never read from CI_HUB_VERSION', () => {
+    // The env-file value no build stamps, wrong on 10 of 16 fleet Hubs. A doc that leaves it in
+    // sends the next person to the one source that was measured to be unreliable.
+    expect(cliDoc).toContain('never** from `CI_HUB_VERSION`');
+  });
+
+  it('lists cli-update.ts as owning self-update in the implementation map', () => {
+    expect(cliDoc).toContain('| `cli-update.ts` | `version`, `update`, `self-update`, `connect` |');
+  });
+
+  it('documents which image pool update deploys, and that it records it', () => {
+    // The measured downgrade: an operator's digest in the operative env file lost to a channel tag,
+    // and nothing wrote back what was deployed. Both halves have to be findable.
+    expect(cliDoc).toContain('#### Which image it deploys');
+    expect(cliDoc).toContain('#### It records what it deployed');
+    expect(cliDoc).toContain('com.docker.compose.project.environment_file');
+    expect(cliDoc).toContain('The env argument does not select a release channel');
+  });
+});

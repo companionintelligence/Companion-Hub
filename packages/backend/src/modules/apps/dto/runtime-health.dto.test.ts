@@ -31,6 +31,7 @@ const completedJobSnapshot = {
     },
   ],
   gpuVramMb: null,
+  readiness: null,
 };
 
 describe('runtime health DTOs', () => {
@@ -46,8 +47,30 @@ describe('runtime health DTOs', () => {
       apps: [completedJobSnapshot],
       history: [],
       unattributedGpu: null,
+      gpuVramSource: 'absent',
     });
 
     expect(parsed.apps[0]?.containers[0]?.exitCode).toBe(0);
+  });
+
+  it('carries a normalised readiness sample and refuses a status this build does not know', () => {
+    const readiness = {
+      status: 'degraded',
+      checks: { model: { status: 'degraded' }, config: { status: 'ok', detail: 'using defaults' } },
+      busy: false,
+      drainable: true,
+      sampledAt: completedJobSnapshot.sampledAt,
+    };
+    expect(AppRuntimeHealthDto.parse({ ...completedJobSnapshot, readiness }).readiness).toEqual(readiness);
+    expect(() => AppRuntimeHealthDto.parse({ ...completedJobSnapshot, readiness: { ...readiness, status: 'starting' } })).toThrow();
+  });
+
+  it('carries the GPU sample source as an enum, with absent distinct from the empty-snapshot null', () => {
+    const base = { sampledAt: completedJobSnapshot.sampledAt, apps: [], history: [], unattributedGpu: null };
+    for (const gpuVramSource of ['host-file', 'tool', 'absent', null] as const) {
+      expect(AppRuntimeMonitorDto.parse({ ...base, gpuVramSource }).gpuVramSource).toBe(gpuVramSource);
+    }
+    // A source this build does not know is refused rather than passed through as if it were one.
+    expect(() => AppRuntimeMonitorDto.parse({ ...base, gpuVramSource: 'guessed' })).toThrow();
   });
 });

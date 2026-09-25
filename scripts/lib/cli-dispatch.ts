@@ -30,7 +30,7 @@ import { runWriteStatusFile } from './status-file.js';
 import { cleanHub, downHub, recreateHub, resetHub, restartHub } from './cli-teardown.js';
 import { allowedEnvs, BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { printMessageBox, renderHelp, renderManPage } from './cli-ui.js';
-import { renderVersion, runConnectCommand, runHostUpdate } from './cli-update.js';
+import { renderVersion, runConnectCommand, runHostUpdate, runSelfUpdateCommand, runVersionCommand } from './cli-update.js';
 import { runWizard } from './cli-wizard.js';
 
 export async function runCli(rawArgs: string[]) {
@@ -58,7 +58,15 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'version' || first === '--version' || first === '-v') {
-    console.log(renderVersion());
+    // Two artifacts, two answers. Rolling the Hub image never updates this binary — they ship
+    // through separate channels — so the CLI's version and the running Hub's build routinely differ
+    // and both are printed. `--short` keeps the old one-line output for scripts that parse it, and
+    // skips the HTTP probe entirely.
+    if (args.includes('--short')) {
+      console.log(renderVersion());
+      return;
+    }
+    console.log(await runVersionCommand());
     return;
   }
 
@@ -237,7 +245,12 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'update') {
-    runHostUpdate(args.slice(1));
+    await runHostUpdate(args.slice(1));
+    return;
+  }
+
+  if (first === 'self-update') {
+    await runSelfUpdateCommand(args.slice(1));
     return;
   }
 

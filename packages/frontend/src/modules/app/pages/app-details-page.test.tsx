@@ -23,6 +23,10 @@ vi.mock('react-router', async () => {
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery,
+  // The page now renders CustomDomainRestartBanner, which reaches for a client to
+  // invalidate after a restart. This page test never restarts anything, so the
+  // narrow mock only has to satisfy the hook call.
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 
 // MemoryStatusBadge is a self-contained child with its own data dependencies

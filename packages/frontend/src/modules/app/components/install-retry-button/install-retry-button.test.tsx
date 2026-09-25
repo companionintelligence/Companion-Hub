@@ -36,8 +36,8 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   installAppMutation: () => ({}),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     error: vi.fn(),
   },
 }));

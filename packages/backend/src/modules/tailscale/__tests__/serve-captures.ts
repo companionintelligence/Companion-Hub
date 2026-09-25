@@ -75,6 +75,60 @@ export const CORE_17_SERVE_STATUS_BEFORE_REPAIR = `{
   }
 }`;
 
+/**
+ * `tailscale serve status --json` on fzzy (Tailscale 1.102.4) on 2026-09-19: the host-mode Hub
+ * alone. The tailnet suffix is replaced with `example.ts.net`, which the tip scrub policy in
+ * [`docs/README.md`](../../../../../../docs/README.md) requires of a real MagicDNS suffix.
+ */
+export const FZZY_SERVE_STATUS = `{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "fzzy.example.ts.net:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://localhost:5002"
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * Derived from {@link FZZY_SERVE_STATUS}: fzzy after `sudo tailscale serve --bg --https 3081
+ * http://127.0.0.1:3081` for a game container the Hub does not manage. The Hub's sync removed that
+ * listener 84 seconds later.
+ */
+export const FZZY_SERVE_STATUS_WITH_MANUAL_3081 = `{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "3081": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "fzzy.example.ts.net:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://localhost:5002"
+        }
+      }
+    },
+    "fzzy.example.ts.net:3081": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:3081"
+        }
+      }
+    }
+  }
+}`;
+
 /** The command the Hub runs to publish itself in host mode on those appliances. */
 export const HUB_SERVE_COMMAND = '/usr/bin/tailscale serve --bg --yes --https=443 http://localhost:5002';
 

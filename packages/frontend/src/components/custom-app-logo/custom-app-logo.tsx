@@ -5,7 +5,7 @@ import type React from 'react';
 import { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import './custom-app-logo.css';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 
 export const CustomAppLogo: React.FC<{
   urn?: string;

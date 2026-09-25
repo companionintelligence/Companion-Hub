@@ -1713,6 +1713,36 @@
         ]
       }
     },
+    "/api/auth/portal/desktop-handoff-status": {
+      "get": {
+        "operationId": "portalDesktopHandoffStatus",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopHandoffStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/username": {
       "patch": {
         "operationId": "changeUsername",
@@ -2972,7 +3002,9 @@
                 "lemonade",
                 "mtplx",
                 "dspark",
-                "lucebox"
+                "lucebox",
+                "llamacpp",
+                "lmstudio"
               ]
             }
           }
@@ -3289,7 +3321,9 @@
                 "lemonade",
                 "mtplx",
                 "dspark",
-                "lucebox"
+                "lucebox",
+                "llamacpp",
+                "lmstudio"
               ]
             }
           },
@@ -3449,6 +3483,34 @@
         ]
       }
     },
+    "/api/inference/llamacpp/status": {
+      "get": {
+        "operationId": "getLlamacppStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/lmstudio/status": {
+      "get": {
+        "operationId": "getLmStudioStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/lucebox/status": {
       "get": {
         "operationId": "getLuceboxStatus",
@@ -3543,6 +3605,110 @@
         },
         "tags": [
           "Inference"
+        ]
+      }
+    },
+    "/api/api-keys": {
+      "get": {
+        "operationId": "listKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/grantable": {
+      "get": {
+        "operationId": "grantableCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/{id}": {
+      "patch": {
+        "operationId": "updateKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "delete": {
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
         ]
       }
     },
@@ -4377,110 +4543,6 @@
         },
         "tags": [
           "Hub Pool"
-        ]
-      }
-    },
-    "/api/api-keys": {
-      "get": {
-        "operationId": "listKeys",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      },
-      "post": {
-        "operationId": "createKey",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateApiKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      }
-    },
-    "/api/api-keys/grantable": {
-      "get": {
-        "operationId": "grantableCapabilities",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      }
-    },
-    "/api/api-keys/{id}": {
-      "patch": {
-        "operationId": "updateKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateApiKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      },
-      "delete": {
-        "operationId": "revokeKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
         ]
       }
     },
@@ -5690,6 +5752,22 @@
         ]
       }
     },
+    "/api/hub/build": {
+      "get": {
+        "description": "The release, commit, image reference and build time stamped into this image at build time, plus the running image digest when Docker can be reached. `declaredVersion` is the install env file's CI_HUB_VERSION, reported for comparison only — it is not evidence of which build is running.",
+        "operationId": "build",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Build identity. `source: \"unstamped\"` means this image carries no build stamp."
+          }
+        },
+        "summary": "Build identity of the running Hub",
+        "tags": [
+          "HubBuildInfo"
+        ]
+      }
+    },
     "/api/public-web/diagnostics": {
       "get": {
         "operationId": "getDiagnostics",
@@ -6862,6 +6940,9 @@
               "ciHubApiKey": {
                 "type": "string"
               },
+              "ciHubMoveKey": {
+                "type": "string"
+              },
               "ciHubOrganizationId": {
                 "type": "string"
               },
@@ -6885,7 +6966,9 @@
                   "lemonade",
                   "mtplx",
                   "dspark",
-                  "lucebox"
+                  "lucebox",
+                  "llamacpp",
+                  "lmstudio"
                 ]
               },
               "inferenceModel": {
@@ -6908,6 +6991,16 @@
               },
               "inferenceDsparkUrl": {
                 "type": "string"
+              },
+              "inferenceMaxNumCtx": {
+                "type": "integer",
+                "minimum": 2048,
+                "maximum": 1048576
+              },
+              "inferenceOllamaSlots": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
               },
               "hubPoolEnabled": {
                 "type": "boolean"
@@ -6943,6 +7036,21 @@
                 "type": "integer",
                 "minimum": 1024,
                 "maximum": 1048576
+              },
+              "hubPoolProbeSnapshotTtlMs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 300000
+              },
+              "hubPoolPrefixAffinityMaxInFlight": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20
+              },
+              "hubPoolSlotAwareness": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1
               },
               "hubPoolRouteAppsAlways": {
                 "type": "boolean"
@@ -7367,6 +7475,9 @@
           "ciHubApiKey": {
             "type": "string"
           },
+          "ciHubMoveKey": {
+            "type": "string"
+          },
           "ciHubOrganizationId": {
             "type": "string"
           },
@@ -7390,7 +7501,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "inferenceModel": {
@@ -7413,6 +7526,16 @@
           },
           "inferenceDsparkUrl": {
             "type": "string"
+          },
+          "inferenceMaxNumCtx": {
+            "type": "integer",
+            "minimum": 2048,
+            "maximum": 1048576
+          },
+          "inferenceOllamaSlots": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
           },
           "hubPoolEnabled": {
             "type": "boolean"
@@ -7448,6 +7571,21 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 1048576
+          },
+          "hubPoolProbeSnapshotTtlMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300000
+          },
+          "hubPoolPrefixAffinityMaxInFlight": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "hubPoolSlotAwareness": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
           },
           "hubPoolRouteAppsAlways": {
             "type": "boolean"
@@ -7973,6 +8111,10 @@
         ],
         "additionalProperties": false
       },
+      "PortalDesktopHandoffStatusDto": {
+        "type": "object",
+        "properties": {}
+      },
       "ChangeUsernameBody": {
         "type": "object",
         "properties": {
@@ -8244,6 +8386,9 @@
                       "additionalProperties": {}
                     },
                     "enableAuth": {
+                      "type": "boolean"
+                    },
+                    "autoRestartOnDomainChange": {
                       "type": "boolean"
                     },
                     "localSubdomain": {
@@ -9266,6 +9411,36 @@
                           },
                           "additionalProperties": false
                         },
+                        "readiness": {
+                          "type": "object",
+                          "properties": {
+                            "service": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            },
+                            "port": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 65535
+                            },
+                            "path": {
+                              "default": "/health",
+                              "type": "string",
+                              "pattern": "^\\/\\S*$"
+                            },
+                            "bearer_env": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                            }
+                          },
+                          "required": [
+                            "service",
+                            "port",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
                         "edge_auth": {
                           "type": "object",
                           "properties": {
@@ -9495,6 +9670,9 @@
                       "additionalProperties": {}
                     },
                     "enableAuth": {
+                      "type": "boolean"
+                    },
+                    "autoRestartOnDomainChange": {
                       "type": "boolean"
                     },
                     "localSubdomain": {
@@ -10510,6 +10688,36 @@
                           },
                           "additionalProperties": false
                         },
+                        "readiness": {
+                          "type": "object",
+                          "properties": {
+                            "service": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                            },
+                            "port": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 65535
+                            },
+                            "path": {
+                              "default": "/health",
+                              "type": "string",
+                              "pattern": "^\\/\\S*$"
+                            },
+                            "bearer_env": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                            }
+                          },
+                          "required": [
+                            "service",
+                            "port",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
                         "edge_auth": {
                           "type": "object",
                           "properties": {
@@ -10724,6 +10932,57 @@
                 "gpuVramMb": {
                   "nullable": true,
                   "type": "number"
+                },
+                "readiness": {
+                  "nullable": true,
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "degraded",
+                        "unknown"
+                      ]
+                    },
+                    "checks": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          },
+                          "detail": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "status"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "busy": {
+                      "nullable": true,
+                      "type": "boolean"
+                    },
+                    "drainable": {
+                      "nullable": true,
+                      "type": "boolean"
+                    },
+                    "sampledAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "checks",
+                    "busy",
+                    "drainable",
+                    "sampledAt"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -10743,7 +11002,8 @@
                 "usesDefaultCpuLimit",
                 "sampledAt",
                 "containers",
-                "gpuVramMb"
+                "gpuVramMb",
+                "readiness"
               ],
               "additionalProperties": false
             }
@@ -10823,13 +11083,23 @@
               ],
               "additionalProperties": false
             }
+          },
+          "gpuVramSource": {
+            "nullable": true,
+            "type": "string",
+            "enum": [
+              "host-file",
+              "tool",
+              "absent"
+            ]
           }
         },
         "required": [
           "sampledAt",
           "apps",
           "history",
-          "unattributedGpu"
+          "unattributedGpu",
+          "gpuVramSource"
         ],
         "additionalProperties": false
       },
@@ -10895,6 +11165,9 @@
                 "additionalProperties": {}
               },
               "enableAuth": {
+                "type": "boolean"
+              },
+              "autoRestartOnDomainChange": {
                 "type": "boolean"
               },
               "localSubdomain": {
@@ -11917,6 +12190,36 @@
                     },
                     "additionalProperties": false
                   },
+                  "readiness": {
+                    "type": "object",
+                    "properties": {
+                      "service": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9][a-z0-9_-]*$"
+                      },
+                      "port": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 65535
+                      },
+                      "path": {
+                        "default": "/health",
+                        "type": "string",
+                        "pattern": "^\\/\\S*$"
+                      },
+                      "bearer_env": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+                      }
+                    },
+                    "required": [
+                      "service",
+                      "port",
+                      "path"
+                    ],
+                    "additionalProperties": false
+                  },
                   "edge_auth": {
                     "type": "object",
                     "properties": {
@@ -12330,6 +12633,57 @@
           "gpuVramMb": {
             "nullable": true,
             "type": "number"
+          },
+          "readiness": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "degraded",
+                  "unknown"
+                ]
+              },
+              "checks": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "busy": {
+                "nullable": true,
+                "type": "boolean"
+              },
+              "drainable": {
+                "nullable": true,
+                "type": "boolean"
+              },
+              "sampledAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "checks",
+              "busy",
+              "drainable",
+              "sampledAt"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -12349,7 +12703,8 @@
           "usesDefaultCpuLimit",
           "sampledAt",
           "containers",
-          "gpuVramMb"
+          "gpuVramMb",
+          "readiness"
         ],
         "additionalProperties": false
       },
@@ -12612,7 +12967,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "model": {
@@ -12648,6 +13005,18 @@
             "nullable": true,
             "type": "string",
             "format": "uri"
+          },
+          "maxNumCtx": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": 2048,
+            "maximum": 1048576
+          },
+          "ollamaSlots": {
+            "nullable": true,
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64
           }
         },
         "required": [
@@ -12675,6 +13044,56 @@
         },
         "required": [
           "phase"
+        ],
+        "additionalProperties": false
+      },
+      "CreateApiKeyBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "capability": {
+            "default": "write",
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "full"
+            ]
+          },
+          "scope": {
+            "default": "mcp",
+            "type": "string",
+            "enum": [
+              "mcp",
+              "inference"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "capability",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateApiKeyBody": {
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "capability"
         ],
         "additionalProperties": false
       },
@@ -12716,6 +13135,21 @@
             "type": "integer",
             "minimum": 1024,
             "maximum": 1048576
+          },
+          "poolProbeSnapshotTtlMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 300000
+          },
+          "poolPrefixAffinityMaxInFlight": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "poolSlotAwareness": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1
           },
           "poolRouteAppsAlways": {
             "type": "boolean"
@@ -12809,47 +13243,6 @@
         ],
         "additionalProperties": false
       },
-      "CreateApiKeyBody": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "capability": {
-            "default": "write",
-            "type": "string",
-            "enum": [
-              "read",
-              "write",
-              "full"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "capability"
-        ],
-        "additionalProperties": false
-      },
-      "UpdateApiKeyBody": {
-        "type": "object",
-        "properties": {
-          "capability": {
-            "type": "string",
-            "enum": [
-              "read",
-              "write",
-              "full"
-            ]
-          }
-        },
-        "required": [
-          "capability"
-        ],
-        "additionalProperties": false
-      },
       "AppFormBody": {
         "type": "object",
         "properties": {
@@ -12882,6 +13275,9 @@
             "type": "boolean"
           },
           "enableAuth": {
+            "type": "boolean"
+          },
+          "autoRestartOnDomainChange": {
             "type": "boolean"
           },
           "localSubdomain": {
@@ -16005,7 +16401,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           },
           "vllmUrl": {
@@ -16034,7 +16432,9 @@
               "lemonade",
               "mtplx",
               "dspark",
-              "lucebox"
+              "lucebox",
+              "llamacpp",
+              "lmstudio"
             ]
           }
         },

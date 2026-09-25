@@ -58,5 +58,21 @@ describe('registration-state-drift', () => {
 
     expect(result.detected).toBe(false);
     expect(result.signals).toEqual([]);
+    // Not said is not held: only a Hub that reports a move key is offered the move.
+    expect(result.hasMoveKey).toBe(false);
+  });
+
+  it('passes on that the Hub holds a move key, which is no drift by itself', () => {
+    const result = buildStateDriftResult({
+      hardwareDeviceId: 'hw-123',
+      localRegistered: false,
+      portalDeviceActive: null,
+      staleAppEnvDeviceIds: [],
+      hasStaleTunnelToken: false,
+      hasMoveKey: true,
+    });
+
+    expect(result.hasMoveKey).toBe(true);
+    expect(result.detected).toBe(false);
   });
 });

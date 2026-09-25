@@ -147,7 +147,11 @@ describe('AppHelpers trust material (#74)', () => {
   });
 
   it('passes the existing HUB_APP_KEY (falling back to legacy HUB_MCP_API_KEY) as the preserve candidate', async () => {
-    envMap.set('HUB_MCP_API_KEY', 'legacy-raw-key');
+    // The legacy key is in the app's own app.env (distinct from the Hub .env
+    // seed, which is allowlisted and never carries a managed key).
+    const existingAppEnv = new Map<string, string>([['HUB_MCP_API_KEY', 'legacy-raw-key']]);
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'EXISTING' });
+    envUtils.envStringToMap.mockImplementation((content?: string) => (content === 'EXISTING' ? existingAppEnv : envMap));
     await run(officialConsumerUrn, { mcp_client: true, wake_endpoint: '/hooks/wake', sse_events: false, ...memoryConsumer } as never);
     expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'legacy-raw-key' }));
   });

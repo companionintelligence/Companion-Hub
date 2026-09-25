@@ -60,6 +60,15 @@ export class SSEService implements OnApplicationShutdown {
   }
 
   /**
+   * Whether a client is listening on `topic` right now. An event sent only once
+   * reaches nobody while every client is disconnected, for example while they
+   * reconnect after the Hub restarts.
+   */
+  hasSubscribers(topic: Topic): boolean {
+    return this.topics.get(topic)?.observed ?? false;
+  }
+
+  /**
    * Gets an observable for the specified topic.
    * If the topic does not exist, it creates it.
    */

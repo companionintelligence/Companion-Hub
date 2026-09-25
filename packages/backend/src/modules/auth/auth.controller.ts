@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import net from 'node:net';
 import { APP_SESSION_COOKIE_NAME, SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
-import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
+import { buildHubPublicOrigin, resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/helpers/hub-origin';
 import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
@@ -57,6 +57,7 @@ import {
   PasswordResetRequestDto,
   PasswordResetVerifyResponseDto,
   PortalDesktopExchangeDto,
+  PortalDesktopHandoffStatusDto,
   PortalSessionHintDto,
   RegisterBody,
   RegisterDto,
@@ -71,8 +72,13 @@ import {
   buildPortalDesktopDeepLink,
   buildPortalDesktopHandoffHtml,
   buildPortalSsoErrorRedirectUrl,
+  PORTAL_DESKTOP_CLAIMED_TTL_SECONDS,
+  PORTAL_DESKTOP_HANDOFF_TTL_SECONDS,
   PORTAL_DESKTOP_PRESENCE_CACHE_KEY,
   PORTAL_DESKTOP_PRESENCE_TTL_SECONDS,
+  portalDesktopClaimedKey,
+  portalDesktopPendingKey,
+  resolvePortalDesktopHandoffState,
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
@@ -226,17 +232,16 @@ export class AuthController {
 
   /**
    * Match exposure-sync precedence so authentication redirects use the domain the tunnel published.
-   * An operator override remains authoritative until environment regeneration folds it into `DOMAIN`.
+   * An operator override outranks `DOMAIN` for the life of the process; see the helper for why it
+   * does not survive a restart.
    */
   private publicDomainRoot(): string {
-    const cfg = this.config.getConfig();
-    return cfg.userSettings?.domain || cfg.domain;
+    return resolveHubPublicDomainRoot(this.config.getConfig());
   }
 
   /** The local root the appliance's LAN hostnames are built with — same precedence as above. */
   private localDomainRoot(): string {
-    const cfg = this.config.getConfig();
-    return cfg.userSettings?.localDomain || cfg.localDomain;
+    return resolveHubLocalDomainRoot(this.config.getConfig());
   }
 
   /**
@@ -763,14 +768,25 @@ export class AuthController {
           redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
           userId: operator.id,
         };
-        this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
+        this.cache.set(portalDesktopPendingKey(desktopToken), JSON.stringify(exchangePayload), PORTAL_DESKTOP_HANDOFF_TTL_SECONDS);
         const deepLink = buildPortalDesktopDeepLink(desktopToken, desktopChannel);
         this.logger.info('Portal desktop handoff issued one-time token', { hubOrigin, redirectPath: exchangePayload.redirectPath });
         // Some browsers drop redirects to the desktop scheme, so serve a navigation page.
         // Do not return the Express response because passthrough would serialize it.
         res.status(200);
         res.setHeader('Content-Type', 'text/html; charset=utf-8');
-        res.send(buildPortalDesktopHandoffHtml(deepLink));
+        res.send(
+          buildPortalDesktopHandoffHtml({
+            deepLink,
+            /*
+             * The cookie went out with this same response, so this link is the
+             * whole of "carry on in the browser" — no token, no second sign-in.
+             * It is the same destination the app is being sent to.
+             */
+            continueHref: exchangePayload.redirectPath,
+            statusHref: `/api/auth/portal/desktop-handoff-status?token=${encodeURIComponent(desktopToken)}`,
+          }),
+        );
         return;
       }
 
@@ -878,7 +894,7 @@ export class AuthController {
       throw new BadRequestException('Missing desktop exchange token');
     }
 
-    const cacheKey = `portal_sso_desktop:${token}`;
+    const cacheKey = portalDesktopPendingKey(token);
     const cached = this.cache.get(cacheKey);
 
     if (!cached) {
@@ -902,10 +918,44 @@ export class AuthController {
       sessionId = await this.sessionManager.createSession(parsed.userId);
     }
 
+    /*
+     * ⚠ MARK BEFORE DELETING. The handoff page left open in the browser polls
+     * for this marker to stop spinning. Deleting the token first would leave a
+     * window in which neither key exists, and a poll landing in it would tell
+     * the user the sign-in expired at the exact moment it succeeded.
+     */
+    this.cache.set(portalDesktopClaimedKey(token), '1', PORTAL_DESKTOP_CLAIMED_TTL_SECONDS);
     this.cache.del(cacheKey);
     await this.setSessionCookie(res, sessionId, req);
     this.logger.info('Portal desktop exchange planted a session cookie', { redirectPath: parsed.redirectPath });
     return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: parsed.redirectPath }, { reportOnly: true });
+  }
+
+  /**
+   * Has the desktop app taken this login yet?
+   *
+   * Read-only, and the one thing it must never do is consume the token — the
+   * app has to be able to spend it after the page has asked about it.
+   *
+   * Unauthenticated on purpose. The caller is the handoff page, which is served
+   * before the frontend exists and on Hubs with no frontend bundle at all, and
+   * it already holds the token: presenting an unguessable value back to the
+   * issuer proves nothing it did not already know. The answer is one bit about
+   * a credential the asker has, never anything about the account behind it.
+   */
+  @Get('/portal/desktop-handoff-status')
+  @ApiResponse({ type: PortalDesktopHandoffStatusDto })
+  portalDesktopHandoffStatus(@Query('token') token?: string) {
+    if (!token) {
+      throw new BadRequestException('Missing desktop exchange token');
+    }
+
+    const state = resolvePortalDesktopHandoffState({
+      claimed: this.cache.get(portalDesktopClaimedKey(token)) !== undefined,
+      pending: this.cache.get(portalDesktopPendingKey(token)) !== undefined,
+    });
+
+    return PortalDesktopHandoffStatusDto.parse({ state }, { reportOnly: true });
   }
 
   @Patch('/username')

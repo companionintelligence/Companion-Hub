@@ -7,17 +7,24 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import si from 'systeminformation';
 
-const { execAsyncMock, archOverride } = vi.hoisted(() => ({
+const { execAsyncMock, archOverride, uptimeOverride } = vi.hoisted(() => ({
   execAsyncMock: vi.fn(),
   // null = use the real arch. Set to 'arm64'/'x64' to pin the host architecture for a test, so the
   // native-Apple-Silicon path is exercised on an Intel/Linux CI runner too.
   archOverride: { value: null as string | null },
+  // null = the runner's real uptime. Set (seconds) to place the host's boot for a test, so an
+  // nvidia.json can be put inside or before the current boot regardless of the runner.
+  uptimeOverride: { value: null as number | null },
 }));
 
 vi.mock('systeminformation');
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>();
-  const patched = { ...actual, arch: () => archOverride.value ?? actual.arch() };
+  const patched = {
+    ...actual,
+    arch: () => archOverride.value ?? actual.arch(),
+    uptime: () => uptimeOverride.value ?? actual.uptime(),
+  };
   return { ...patched, default: patched };
 });
 vi.mock('node:child_process', () => ({
@@ -60,6 +67,7 @@ describe('HardwareInspectorService', () => {
   afterEach(() => {
     process.env.CI_HUB_HOST_PLATFORM = originalHostPlatform;
     archOverride.value = null;
+    uptimeOverride.value = null;
     vi.clearAllMocks();
   });
 
@@ -417,6 +425,226 @@ describe('HardwareInspectorService', () => {
       expect(profile.gpu.driverVersion).toBe('595.71.05');
     });
 
+    // beta-nas, 2026-09-21: RTX A1000 on the host (driver 595, nvidia.json written by
+    // init-gpu-runtime), lspci visible inside the container, `docker info` without the nvidia
+    // runtime. The tier was cpu-only next to beta-red's medium.
+    describe('NVIDIA proven by the host, no container runtime', () => {
+      const betaNasContainerView = () => {
+        (si.graphics as any) = vi.fn().mockResolvedValue({
+          controllers: [
+            { vendor: 'NVIDIA Corporation', model: 'GA107GL [RTX A1000]', vram: 8192, driverVersion: '' },
+            { vendor: 'Advanced Micro Devices, Inc. [AMD/ATI]', model: 'Strix [Radeon 880M / 890M]', vram: 512, driverVersion: '' },
+          ],
+        });
+        (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 24, brand: 'AMD Ryzen AI 9 HX PRO 370 w/ Radeon 890M' });
+        vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: false, containerHostKind: 'native-linux' });
+        filesystemService.pathExists.mockResolvedValue(false);
+        filesystemService.listFiles.mockResolvedValue([]);
+      };
+      const meminfo = 'MemTotal: 65536000\nMemAvailable: 40000000';
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      // beta-nas as read 2026-09-21: host up since 2026-09-10T01:44Z (btime 1789004644, the same
+      // /proc/uptime inside the ci-hub container), nvidia.json written by `cihub up` on
+      // 2026-09-19T02:39Z — nine days into the boot, three days old. Within the boot: a proof.
+      const hostUpForDays = (days: number) => {
+        uptimeOverride.value = days * 24 * 60 * 60;
+      };
+      const noControllerInContainer = () => {
+        (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+        execAsyncMock.mockImplementation(async (command: string) => {
+          if (command.includes('nvidia-smi') || command.includes('/proc/driver/nvidia')) throw new Error('not in the container');
+          return { stdout: '{}' };
+        });
+      };
+      const nvidiaJsonOnly = (probe: Record<string, unknown>) => {
+        filesystemService.readTextFile.mockImplementation(async (filePath: string) =>
+          filePath === '/data/state/hardware/nvidia.json' ? JSON.stringify(probe) : meminfo,
+        );
+      };
+
+      it('SHALL tier a discrete NVIDIA card by its VRAM when only the HOST proves it (nvidia.json), keeping runtimeAvailable=false', async () => {
+        betaNasContainerView();
+        hostUpForDays(11);
+        nvidiaJsonOnly({
+          model: 'NVIDIA RTX A1000',
+          vramMb: 8188,
+          driverVersion: '595.91.07',
+          source: 'host-nvidia-smi',
+          updatedAt: new Date(Date.now() - 3 * DAY_MS).toISOString(),
+        });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.vendor).toBe('nvidia');
+        expect(profile.gpu.vramMb).toBe(8192);
+        expect(profile.gpu.runtimeAvailable).toBe(false);
+        expect(profile.gpu.hostNvidiaAvailable).toBe(true);
+        expect(profile.tier).toBe('medium');
+        expect(profile.effectiveInferenceMemoryMb).toBe(8192);
+      });
+
+      it('SHALL tier high from the host probe VRAM when the container sees no controller at all', async () => {
+        betaNasContainerView();
+        noControllerInContainer();
+        hostUpForDays(11);
+        nvidiaJsonOnly({
+          model: 'NVIDIA GeForce RTX 3090',
+          vramMb: 24576,
+          driverVersion: '595.91.07',
+          updatedAt: new Date(Date.now() - 3 * DAY_MS).toISOString(),
+        });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.available).toBe(true);
+        expect(profile.gpu.vendor).toBe('nvidia');
+        expect(profile.gpu.vramMb).toBe(24576);
+        expect(profile.gpu.runtimeAvailable).toBe(false);
+        expect(profile.gpu.hostNvidiaAvailable).toBe(true);
+        expect(profile.tier).toBe('high');
+      });
+
+      it('SHALL NOT take an nvidia.json from a previous boot as the host proof — it still names the card, it no longer vouches for the driver', async () => {
+        betaNasContainerView();
+        noControllerInContainer();
+        // Rebooted an hour ago (a kernel update, say); Docker's restart policy brought the Hub back
+        // without a `cihub up`, so the file is the one from three days before.
+        hostUpForDays(1 / 24);
+        nvidiaJsonOnly({
+          model: 'NVIDIA GeForce RTX 3090',
+          vramMb: 24576,
+          driverVersion: '595.91.07',
+          updatedAt: new Date(Date.now() - 3 * DAY_MS).toISOString(),
+        });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.available).toBe(true);
+        expect(profile.gpu.model).toBe('NVIDIA GeForce RTX 3090');
+        expect(profile.gpu.vramMb).toBe(24576);
+        expect(profile.gpu.hostNvidiaAvailable).toBe(false);
+        expect(profile.tier).toBe('cpu-only');
+      });
+
+      it('SHALL NOT take an nvidia.json without a parseable updatedAt as the host proof', async () => {
+        betaNasContainerView();
+        hostUpForDays(11);
+        nvidiaJsonOnly({ model: 'NVIDIA RTX A1000', vramMb: 8188, driverVersion: '595.91.07', updatedAt: 'yesterday-ish' });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.hostNvidiaAvailable).toBe(false);
+        expect(profile.tier).toBe('cpu-only');
+      });
+
+      it('SHALL NOT take an nvidia.json stamped well ahead of the Hub clock as the host proof (same symmetric rule as the process file)', async () => {
+        betaNasContainerView();
+        hostUpForDays(11);
+        nvidiaJsonOnly({
+          model: 'NVIDIA RTX A1000',
+          vramMb: 8188,
+          driverVersion: '595.91.07',
+          updatedAt: new Date(Date.now() + DAY_MS).toISOString(),
+        });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.hostNvidiaAvailable).toBe(false);
+        expect(profile.tier).toBe('cpu-only');
+      });
+
+      it('SHALL still take a fresh gpu_processes.json as the host proof when the nvidia.json is from a previous boot', async () => {
+        betaNasContainerView();
+        hostUpForDays(1 / 24);
+        nvidiaJsonOnly({
+          model: 'NVIDIA RTX A1000',
+          vramMb: 8188,
+          driverVersion: '595.91.07',
+          updatedAt: new Date(Date.now() - 3 * DAY_MS).toISOString(),
+        });
+        filesystemService.readJsonFile.mockImplementation(async (filePath: string) =>
+          filePath === '/data/state/hardware/gpu_processes.json'
+            ? { schemaVersion: 1, sampledAt: new Date().toISOString(), source: 'nvidia-smi', vendor: 'nvidia', processes: [] }
+            : null,
+        );
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.hostNvidiaAvailable).toBe(true);
+        expect(profile.tier).toBe('medium');
+      });
+
+      it('SHALL accept a fresh host gpu_processes.json for the nvidia vendor as the host proof when nvidia.json is absent', async () => {
+        betaNasContainerView();
+        filesystemService.readTextFile.mockImplementation(async () => meminfo);
+        filesystemService.readJsonFile.mockImplementation(async (filePath: string) =>
+          filePath === '/data/state/hardware/gpu_processes.json'
+            ? {
+                schemaVersion: 1,
+                sampledAt: new Date().toISOString(),
+                source: 'nvidia-smi',
+                vendor: 'nvidia',
+                processes: [{ pid: 1540319, processName: '/usr/local/lib/ollama/llama-server', vramMb: 1624 }],
+              }
+            : null,
+        );
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.runtimeAvailable).toBe(false);
+        expect(profile.gpu.hostNvidiaAvailable).toBe(true);
+        expect(profile.tier).toBe('medium');
+      });
+
+      it('SHALL ignore a stale gpu_processes.json: a dead writer proves nothing about the host', async () => {
+        betaNasContainerView();
+        filesystemService.readTextFile.mockImplementation(async () => meminfo);
+        filesystemService.readJsonFile.mockImplementation(async (filePath: string) =>
+          filePath === '/data/state/hardware/gpu_processes.json'
+            ? { schemaVersion: 1, sampledAt: new Date(Date.now() - 10 * 60_000).toISOString(), vendor: 'nvidia', processes: [] }
+            : null,
+        );
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.hostNvidiaAvailable).toBe(false);
+        expect(profile.tier).toBe('cpu-only');
+      });
+
+      it('SHALL keep an NVIDIA box on cpu-only when neither the container runtime nor any host probe answers', async () => {
+        betaNasContainerView();
+        filesystemService.readTextFile.mockImplementation(async () => meminfo);
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.vendor).toBe('nvidia');
+        expect(profile.gpu.runtimeAvailable).toBe(false);
+        expect(profile.gpu.hostNvidiaAvailable).toBe(false);
+        expect(profile.tier).toBe('cpu-only');
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('NVIDIA container runtime is unavailable'));
+      });
+
+      it('SHALL leave hostNvidiaAvailable off the profile of an AMD card', async () => {
+        (si.graphics as any) = vi.fn().mockResolvedValue({
+          controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
+        });
+        (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9' });
+        filesystemService.listFiles.mockResolvedValue([]);
+        filesystemService.pathExists.mockResolvedValue(false);
+        filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+          if (filePath === '/data/state/hardware/rocm.json') return '{"available":true,"source":"host-dev-kfd"}';
+          return meminfo;
+        });
+
+        const profile = await service.detect();
+
+        expect(profile.gpu.vendor).toBe('amd');
+        expect(profile.gpu.hostNvidiaAvailable).toBeUndefined();
+        expect(profile.gpu.hostRocmKfdAvailable).toBe(true);
+        expect(profile.tier).toBe('high');
+      });
+    });
+
     it('should detect AMD GPU vendor', async () => {
       (si.graphics as any) = vi.fn().mockResolvedValue({
         controllers: [{ vendor: 'Advanced Micro Devices', model: 'Radeon RX 7900 XTX', vram: 24576, driverVersion: '6.2.0' }],
@@ -710,7 +938,7 @@ describe('HardwareInspectorService', () => {
       expect(tier).toBe('cpu-only');
     });
 
-    it('S-HW-3.1: the host ROCm shortcut is AMD-only — an NVIDIA card still needs the container runtime', () => {
+    it('S-HW-3.1: the host ROCm shortcut is AMD-only — an NVIDIA card needs the container runtime or its own host proof', () => {
       const tier = service.computeTier(
         {
           available: true,
@@ -725,6 +953,112 @@ describe('HardwareInspectorService', () => {
         { totalMb: 63425, availableMb: 33734 },
       );
       expect(tier).toBe('cpu-only');
+    });
+
+    it('S-HW-3.1: medium tier for an 8 GB NVIDIA card proven by the host probe without the container runtime (beta-nas)', () => {
+      // 8192 is what beta-nas's profile carries: the container's own lspci reading, kept over
+      // nvidia.json's 8188 because it is plausible (>= 512 MB).
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'nvidia',
+          model: 'NVIDIA RTX A1000',
+          vramMb: 8192,
+          unifiedMemory: false,
+          driverVersion: '595.91.07',
+          runtimeAvailable: false,
+          hostNvidiaAvailable: true,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('medium');
+    });
+
+    it('S-HW-3.1: the tier lines are exact — nvidia-smi 8188 MB for an 8 GB card (the driver keeps 4 MB back) lands low when it is the only VRAM source', () => {
+      // Deliberately pinned: whether the lines should carry slack for the driver's reservation is
+      // its own change, not part of the host-proof fix.
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'nvidia',
+          model: 'NVIDIA RTX A1000',
+          vramMb: 8188,
+          unifiedMemory: false,
+          driverVersion: '595.91.07',
+          runtimeAvailable: false,
+          hostNvidiaAvailable: true,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('low');
+    });
+
+    it('S-HW-3.1: high tier for a 24 GB NVIDIA card proven by the host probe without the container runtime', () => {
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'nvidia',
+          model: 'RTX 3090',
+          vramMb: 24576,
+          unifiedMemory: false,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostNvidiaAvailable: true,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('high');
+    });
+
+    it('S-HW-3.1: cpu-only for an NVIDIA card with neither the container runtime nor a host probe', () => {
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'nvidia',
+          model: 'NVIDIA RTX A1000',
+          vramMb: 8188,
+          unifiedMemory: false,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostNvidiaAvailable: false,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('cpu-only');
+    });
+
+    it('S-HW-3.1: the host NVIDIA proof is NVIDIA-only — an AMD card still needs ROCm passthrough', () => {
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'amd',
+          model: 'Radeon RX 7900 XTX',
+          vramMb: 24560,
+          unifiedMemory: false,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostNvidiaAvailable: true,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('cpu-only');
+    });
+
+    it('S-HW-3.1: low tier when the host proves the NVIDIA card but no source has a plausible VRAM figure yet', () => {
+      const tier = service.computeTier(
+        {
+          available: true,
+          vendor: 'nvidia',
+          model: 'NVIDIA RTX A1000',
+          vramMb: 32,
+          unifiedMemory: false,
+          driverVersion: '',
+          runtimeAvailable: false,
+          hostNvidiaAvailable: true,
+        },
+        { totalMb: 63425, availableMb: 33734 },
+      );
+      expect(tier).toBe('low');
     });
 
     it('S-HW-3.1: insufficient tier for no GPU and <16 GB RAM', () => {
@@ -783,6 +1117,37 @@ describe('HardwareInspectorService', () => {
 
       expect(refreshed.gpu.vramMb).toBe(8192);
       expect(refreshed.tier).toBe('medium');
+    });
+
+    it('does NOT keep re-detecting a host-proven NVIDIA profile (no container runtime) whose VRAM is unknown — nothing in the container can fill it in', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      vi.spyOn(service as any, 'detectDockerInfo').mockResolvedValue({ nvidiaRuntime: false, containerHostKind: 'native-linux' });
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX A1000', vram: 0, driverVersion: '' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 24, brand: 'AMD Ryzen' });
+      filesystemService.readTextFile.mockResolvedValue('MemTotal: 67108864\nMemAvailable: 50331648');
+      // The timer file is the proof; it carries per-process VRAM, never the card's total.
+      filesystemService.readJsonFile.mockImplementation(async (filePath: string) =>
+        filePath === '/data/state/hardware/gpu_processes.json'
+          ? { schemaVersion: 1, sampledAt: new Date().toISOString(), vendor: 'nvidia', processes: [] }
+          : null,
+      );
+
+      const initial = await service.rescan();
+      expect(initial.gpu.hostNvidiaAvailable).toBe(true);
+      expect(initial.gpu.runtimeAvailable).toBe(false);
+      expect(initial.gpu.vramMb).toBe(0);
+      expect(initial.tier).toBe('low');
+      // Not marked incomplete: the cooldown clock is not even started for it.
+      expect((service as any).lastIncompleteDiscreteGpuRefreshAt).toBe(0);
+
+      const detectSpy = vi.spyOn(service, 'detect');
+      const again = await service.getProfile();
+
+      expect(detectSpy).not.toHaveBeenCalled();
+      expect(again.gpu.vramMb).toBe(0);
+      expect(again.tier).toBe('low');
     });
 
     it('re-detects cached discrete GPU profiles when SI reports PCIe framebuffer (32 MB) instead of real GDDR VRAM', async () => {
@@ -1488,6 +1853,208 @@ describe('HardwareInspectorService', () => {
       const profile = await service.detect();
 
       expect(profile.gpu.vendor).not.toBe('apple');
+    });
+  });
+
+  // ─── Live host RAM ─────────────────────────────────────────────────
+  //
+  // Measured on core-2 (Strix Halo, 128 GB unified) at :dev@61198ef62: GET /api/inference/hardware
+  // served ram {totalMb:128085, availableMb:124547} — the boot-time figure from init-host-probe —
+  // while `free -m` on the host said available 53052, with Ollama holding ~20 GB of qwen3.6:35b in
+  // GTT. The KPI rail read "3% / 3G of 125G in use", and effectiveInferenceMemoryMb was the same
+  // 124547, so the router budgeted model loads against RAM that was long gone.
+
+  describe('live host RAM', () => {
+    const KB = 1024;
+    const STRIX_HALO_TOTAL_MB = 128085;
+    const linuxProbe = (availableRamMb: number) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        platform: 'linux',
+        cpuArch: 'x86_64',
+        source: 'init-host-probe',
+        probedAt: '2026-09-18T00:00:00.000Z',
+        host: {
+          totalRamMb: STRIX_HALO_TOTAL_MB,
+          availableRamMb,
+          cpuCores: 32,
+          cpuModel: 'AMD RYZEN AI MAX+ 395 w/ Radeon 8060S',
+          diskTotalGb: 1863,
+          diskUsedGb: 412,
+          diskMount: '/',
+        },
+      });
+    const meminfo = (availableMb: number, totalMb = STRIX_HALO_TOTAL_MB) => `MemTotal: ${totalMb * KB} kB\nMemAvailable: ${availableMb * KB} kB`;
+
+    /** A meminfo the test can move between reads, beside a probe that never does. */
+    const mountHost = (probe: string | null, meminfoRef: { current: string | null }) => {
+      filesystemService.readTextFile.mockImplementation(async (filePath: string) => {
+        if (filePath === '/data/state/hardware/host_metrics.json') return probe;
+        if (filePath === '/host/proc/meminfo') return meminfoRef.current;
+        return null;
+      });
+    };
+    const meminfoReads = () => filesystemService.readTextFile.mock.calls.filter(([filePath]) => filePath === '/host/proc/meminfo').length;
+
+    beforeEach(() => {
+      process.env.CI_HUB_HOST_PLATFORM = 'linux';
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-20T12:00:00.000Z'));
+      (si.graphics as any) = vi.fn().mockResolvedValue({ controllers: [] });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 32, brand: 'AMD RYZEN AI MAX+ 395 w/ Radeon 8060S' });
+      filesystemService.pathExists.mockResolvedValue(false);
+      execAsyncMock.mockResolvedValue({ stdout: '{}' });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('unified node: a stale Linux probe loses to the meminfo bind mount, and the profile follows MemAvailable', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+
+      const detected = await service.getProfile();
+
+      expect(detected.gpu.unifiedMemory).toBe(true);
+      expect(detected.ram.totalMb).toBe(STRIX_HALO_TOTAL_MB);
+      // Not the probe's 124547: the host as it is now.
+      expect(detected.ram.availableMb).toBe(53052);
+      expect(detected.ram.usedMb).toBe(STRIX_HALO_TOTAL_MB - 53052);
+      expect(detected.ram.sampledAt).toBe('2026-09-20T12:00:00.000Z');
+      // The router's budget on a unified node IS the live figure.
+      expect(detected.effectiveInferenceMemoryMb).toBe(53052);
+
+      // Ollama unloads the 20 GB model; the cached profile must see it without a re-detect.
+      const detectSpy = vi.spyOn(service, 'detect');
+      live.current = meminfo(73500);
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+
+      expect(detectSpy).not.toHaveBeenCalled();
+      expect(later.ram.availableMb).toBe(73500);
+      expect(later.ram.usedMb).toBe(STRIX_HALO_TOTAL_MB - 73500);
+      expect(later.ram.sampledAt).toBe('2026-09-20T12:00:06.000Z');
+      expect(later.effectiveInferenceMemoryMb).toBe(73500);
+      // Everything that does not move between detections is served as cached.
+      expect(later.gpu).toEqual(detected.gpu);
+      expect(later.ram.totalMb).toBe(detected.ram.totalMb);
+      expect(later.tier).toBe(detected.tier);
+    });
+
+    it('samples MemAvailable at most every few seconds, not per request', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+
+      await service.getProfile();
+      const readsAfterDetect = meminfoReads();
+
+      // Twenty dashboard/route requests inside the sample window: no further reads.
+      live.current = meminfo(40000);
+      for (let i = 0; i < 20; i += 1) {
+        vi.setSystemTime(new Date(`2026-09-20T12:00:0${Math.min(4, i % 5)}.000Z`));
+        const profile = await service.getProfile();
+        expect(profile.ram.availableMb).toBe(53052);
+      }
+      expect(meminfoReads()).toBe(readsAfterDetect);
+
+      // Past the window: one read, and the figure moves.
+      vi.setSystemTime(new Date('2026-09-20T12:00:05.500Z'));
+      const profile = await service.getProfile();
+      expect(profile.ram.availableMb).toBe(40000);
+      expect(meminfoReads()).toBe(readsAfterDetect + 1);
+    });
+
+    it('discrete node: free RAM is live but the inference budget stays the card', async () => {
+      (si.graphics as any) = vi.fn().mockResolvedValue({
+        controllers: [{ vendor: 'NVIDIA', model: 'RTX 4090', vram: 24576, driverVersion: '535.129.03' }],
+      });
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 16, brand: 'AMD Ryzen 9 7950X' });
+      const live = { current: meminfo(49941, 65536) };
+      mountHost(null, live);
+
+      const detected = await service.getProfile();
+
+      expect(detected.gpu.unifiedMemory).toBe(false);
+      expect(detected.ram.availableMb).toBe(49941);
+      expect(detected.ram.usedMb).toBe(65536 - 49941);
+      expect(detected.effectiveInferenceMemoryMb).toBe(24576);
+
+      live.current = meminfo(20000, 65536);
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+
+      expect(later.ram.availableMb).toBe(20000);
+      expect(later.ram.usedMb).toBe(65536 - 20000);
+      // VRAM, as before: system RAM is not where a discrete card's models go.
+      expect(later.effectiveInferenceMemoryMb).toBe(24576);
+      expect(later.gpu.vramMb).toBe(24576);
+    });
+
+    it('macOS host probe: the Docker Desktop VM meminfo is not the host, so the probe snapshot stands', async () => {
+      process.env.CI_HUB_HOST_PLATFORM = 'darwin';
+      (si.cpu as any) = vi.fn().mockResolvedValue({ cores: 12, brand: 'VirtualApple @ 2.50GHz' });
+      const macProbe = JSON.stringify({
+        schemaVersion: 1,
+        platform: 'darwin',
+        cpuArch: 'arm64',
+        source: 'desktop-host-macos',
+        probedAt: '2026-09-20T11:00:00.000Z',
+        host: {
+          totalRamMb: 98304,
+          availableRamMb: 83558,
+          cpuCores: 24,
+          cpuModel: 'Apple M2 Ultra',
+          diskTotalGb: 494,
+          diskUsedGb: 477,
+          diskMount: '/',
+        },
+      });
+      // The VM: 7.5 GB, of which 6.5 GB free — nothing to do with the 96 GB Ollama runs in.
+      const vm = { current: meminfo(6656, 7712) };
+      mountHost(macProbe, vm);
+
+      const detected = await service.getProfile();
+      expect(detected.ram.totalMb).toBe(98304);
+      expect(detected.ram.availableMb).toBe(83558);
+      expect(detected.ram.sampledAt).toBeUndefined();
+      expect(detected.effectiveInferenceMemoryMb).toBe(83558);
+
+      vm.current = meminfo(1000, 7712);
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+      expect(later.ram.availableMb).toBe(83558);
+      expect(later.ram.sampledAt).toBeUndefined();
+      expect(later.effectiveInferenceMemoryMb).toBe(83558);
+    });
+
+    it('keeps the last sample when a read yields no MemAvailable', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+      const detected = await service.getProfile();
+      expect(detected.ram.availableMb).toBe(53052);
+
+      // A meminfo with no MemAvailable line parses to 0 — not a figure to serve or budget on.
+      live.current = `MemTotal: ${STRIX_HALO_TOTAL_MB * KB} kB\nMemFree: 4096000 kB`;
+      vi.setSystemTime(new Date('2026-09-20T12:00:06.000Z'));
+
+      const later = await service.getProfile();
+      expect(later.ram.availableMb).toBe(53052);
+      expect(later.ram.sampledAt).toBe('2026-09-20T12:00:00.000Z');
+    });
+
+    it('rescan() serves the live figure too', async () => {
+      const live = { current: meminfo(53052) };
+      mountHost(linuxProbe(124547), live);
+
+      const profile = await service.rescan();
+
+      expect(profile.ram.availableMb).toBe(53052);
+      expect(profile.ram.usedMb).toBe(STRIX_HALO_TOTAL_MB - 53052);
+      expect(profile.effectiveInferenceMemoryMb).toBe(53052);
     });
   });
 });

@@ -1,4 +1,4 @@
-import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
+import { fetchDnsAvailability, fetchPublicWebDiagnostics, PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY, repairPublicWebRouting } from '@/lib/cloudflare-api';
 import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
 import { formatApiError } from '@/lib/format-api-error';
 import { portalConfigQueryOptions } from '@/lib/portal-config';
@@ -18,13 +18,13 @@ import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import type { AppInfo, AppStatus, FormField } from '@/types/app.types';
 import type { TranslatableError } from '@/types/error.types';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { Download, History, Upload } from 'lucide-react';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
@@ -32,6 +32,7 @@ import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
+import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -75,7 +76,8 @@ interface IProps {
   formId: string;
   appStatus?: AppStatus;
   onValidityChange?: (isValid: boolean) => void;
-  onDirtyChange?: (isDirty: boolean) => void;
+  /** True while the operator has changed a field away from the value the form opened with. */
+  onDirtyChange?: (hasEdits: boolean) => void;
   editingAppUrn?: string;
 }
 
@@ -99,6 +101,7 @@ export type FormValues = {
    * serving it now. Set only by the picker, and only after it has asked.
    */
   customDomainTakeover?: boolean;
+  autoRestartOnDomainChange?: boolean;
   /**
    * What this app was being served on when the dialog was drawn — the
    * compare-and-swap half of `customDomain: ''` (R2-HUBDOMAINS-3).
@@ -128,6 +131,14 @@ function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null):
 
   return `${cleanNodeFqdn}:${port}`;
 }
+
+/** Compares a form value with its stored one, treating empty as equal and `9000` as `'9000'`. */
+const isSameFormValue = (a: unknown, b: unknown) => {
+  const isEmpty = (v: unknown) => v === undefined || v === null || v === '';
+  if (isEmpty(a) || isEmpty(b)) return isEmpty(a) && isEmpty(b);
+  if (typeof a === 'object' || typeof b === 'object') return JSON.stringify(a) === JSON.stringify(b);
+  return String(a) === String(b);
+};
 
 export const InstallForm: React.FC<IProps> = ({
   formFields = [],
@@ -259,6 +270,7 @@ export const InstallForm: React.FC<IProps> = ({
   const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
   const [isRepairingPublicWeb, setIsRepairingPublicWeb] = useState(false);
+  const queryClient = useQueryClient();
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
@@ -282,21 +294,26 @@ export const InstallForm: React.FC<IProps> = ({
     [setValue],
   );
 
-  const handleExportConfig = useCallback(() => {
+  const handleExportConfig = useCallback(async () => {
     const json = serializeInstallConfig(info.id, getValues(), formFields);
     const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
     try {
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = installConfigFilename(info.id);
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-    } finally {
-      URL.revokeObjectURL(url);
+      // Only the desktop app reports a path; a browser shows its own download UI.
+      const savedPath = await saveBlobAsFile(installConfigFilename(info.id), blob);
+      if (savedPath) {
+        const { folder, file } = splitSavedPath(savedPath);
+        // Sonner wraps a long path inside the card (overflow-wrap: anywhere), and the Toaster
+        // keeps the \n, so the file and its folder land on separate lines.
+        toast.success(t('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED', { file, folder, defaultValue: 'Saved {{file}}\nto {{folder}}' }));
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : t('APP_INSTALL_FORM_EXPORT_CONFIG_ERROR', { defaultValue: 'Could not save the install config.' }),
+      );
     }
-  }, [getValues, formFields, info.id]);
+  }, [getValues, formFields, info.id, t]);
 
   const handleImportButtonClick = useCallback(() => {
     importFileInputRef.current?.click();
@@ -385,6 +402,7 @@ export const InstallForm: React.FC<IProps> = ({
       const stillDrifted = publicWebDriftUrl(current.apps.find((app) => app.appUrn === info.urn));
       if (!stillDrifted) {
         setPublicWebExpectedUrl(null);
+        void queryClient.invalidateQueries({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
         toast.success(t('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
         return;
       }
@@ -402,6 +420,11 @@ export const InstallForm: React.FC<IProps> = ({
       // not a repair either, though, so it does not get to claim one: nothing was
       // rewritten and nothing restarted.
       setPublicWebExpectedUrl(null);
+      // The Public Web report is shared with the dashboard banner and the tile badge
+      // under `PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY`. Without this they keep asking for a
+      // restart this click already performed, for as long as the dashboard stays open.
+      // Only that key: the app's own queries are refreshed by the restart's SSE event.
+      void queryClient.invalidateQueries({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
       toast.success(t(outcome ? 'APP_PUBLIC_WEB_REPAIR_SUCCESS' : 'APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
     } catch (error) {
       // `formatApiError`, not a fixed string: a repair the operator has no grant for
@@ -449,9 +472,17 @@ export const InstallForm: React.FC<IProps> = ({
     onValidityChange(isInstallFormValid(formValues, formFields, { requirePortWhenExposedLocal: isProduction }));
   }, [onValidityChange, info.exposable, info.dynamic_config, info.port, watchExposureMode, watchPort, formFields, watchedFormValues, isProduction]);
 
+  // Only fields the operator changed, and only while they differ from what the form opened with.
+  // Not `isDirty`: the form has no defaultValues (the seeding effect fills it with setValue), so
+  // react-hook-form compares every loaded value against an empty baseline and reports an untouched
+  // settings dialog as edited — its "changes will apply" banner showed on open and Update was never
+  // disabled. Derived during render: `dirtyFields` is mutated in place, so an effect keyed on it
+  // alone never re-runs.
+  const hasEdits = Object.keys(dirtyFields).some((key) => !isSameFormValue(watchedFormValues[key], initialValues?.[key]));
+
   useEffect(() => {
-    onDirtyChange?.(isDirty);
-  }, [isDirty, onDirtyChange]);
+    onDirtyChange?.(hasEdits);
+  }, [hasEdits, onDirtyChange]);
 
   useEffect(() => {
     // Detect when the form is reused for a different app so we can force-reset
@@ -714,7 +745,7 @@ export const InstallForm: React.FC<IProps> = ({
                       data-tooltip-content={option.available ? undefined : option.tooltip}
                       onClick={() => option.available && onChange(option.key)}
                       className={clsx(
-                        'w-full rounded-md border px-3 py-2 text-sm font-medium transition-colors',
+                        'flex h-full w-full items-center justify-center rounded-md border px-3 py-2 text-sm font-medium transition-colors',
                         value === option.key
                           ? 'border-primary bg-primary text-primary-foreground'
                           : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
@@ -841,6 +872,34 @@ export const InstallForm: React.FC<IProps> = ({
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}
+          />
+        ) : null}
+        {/*
+         * Beside the picker because it answers the question the picker raises: when a
+         * domain is connected, who chooses the moment the app restarts to pick it up.
+         * OFF by default — the restart makes the app briefly unavailable, so a person
+         * confirms it. Only where a custom domain can be connected at all.
+         */}
+        {watchExposureMode === 'cloudflare' && customDomainsData?.supported === true ? (
+          <Controller
+            control={control}
+            name="autoRestartOnDomainChange"
+            defaultValue={false}
+            render={({ field: { onChange, value, ref, ...props } }) => (
+              <Switch
+                {...props}
+                className="mb-3"
+                ref={ref}
+                checked={value ?? false}
+                onCheckedChange={onChange}
+                label={
+                  <>
+                    {t('APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE')}
+                    <HintMarker anchorClass="auto-restart-domain-hint" hint={t('APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE_HINT')} />
+                  </>
+                }
+              />
+            )}
           />
         ) : null}
       </>

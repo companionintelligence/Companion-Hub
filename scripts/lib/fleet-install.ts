@@ -21,11 +21,22 @@
  *    claims to have produced.
  */
 
+import { classifyGpuProbeOutput, describeGpuProbeOutcome, installGpuProbeTimerScript } from './gpu-probe-timer.js';
 import { classifyStatusTimerOutput, describeStatusTimerOutcome, installStatusTimerScript } from './status-timer.js';
-import { sshCapture, type SshTarget } from './fleet-ssh.js';
+import { sshCapture, sshStreamFile, type SshTarget, stdinScriptCommand } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
+import {
+  assetNameForArch,
+  type CihubBinarySource,
+  compareCihubVersions,
+  downloadReleaseAsset,
+  installCihubFromStdinScript,
+  parseCihubVersionOutput,
+  sha256File,
+} from './fleet-cihub-binary.js';
 import { tailscaleCertStep } from './fleet-tailscale-cert.js';
 import { gatePreflight, preflightNode } from './fleet-preflight.js';
+import { classifyPairingFailure, type PairingCodeOutcome } from './fleet-pairing-codes.js';
 
 export interface InstallStep {
   name: string;
@@ -44,43 +55,92 @@ export interface NodeInstallReport {
 
 const tail = (text: string, lines = 3) => text.split('\n').filter(Boolean).slice(-lines).join(' | ').slice(0, 300);
 
-/** Is a usable `cihub` already on this machine? */
+/**
+ * Is a usable `cihub` already on this machine, and which one would a login shell run?
+ *
+ * Both questions, because on this fleet they had different answers: `/usr/local/bin/cihub` was
+ * current while `~/.local/bin/cihub` was an August build, and `REMOTE_TOOL_INIT` resolves the latter
+ * first. `cihub version` also prints a stray notice before the version on some builds, so the
+ * version is the line that names one, not the first line.
+ */
 export async function detectCihub(target: SshTarget): Promise<{ present: boolean; version?: string; path?: string }> {
-  const res = await sshCapture(target, 'command -v cihub && cihub version 2>/dev/null | head -1', 20_000);
-  if (!res.ok || !res.out) return { present: false };
-  const [path, ...rest] = res.out.split('\n');
-  return { present: true, path, version: rest.join(' ').trim() || undefined };
+  const res = await sshCapture(target, 'p="$(command -v cihub || true)"; echo "path=$p"; [ -n "$p" ] && "$p" version 2>/dev/null', 20_000);
+  if (!res.ok && !res.out) return { present: false };
+  const pathLine = res.out.split('\n').find((line) => line.startsWith('path='));
+  const found = pathLine?.slice('path='.length).trim();
+  if (!found) return { present: false };
+  return { present: true, path: found, version: parseCihubVersionOutput(res.out) };
 }
 
 /**
- * Put the `cihub` binary on a node.
+ * Whether an existing `cihub` is good enough to keep, given the one this run could install.
  *
- * Downloads the standalone release asset — the one the release workflow now actually publishes.
- * Deliberately not `curl | sh`: a POSIX pipeline reports only the last command's status, so a
- * truncated download would be executed and then reported as a successful install.
+ * Adopting is the default — the "engine already here, install nothing" behaviour — but only when
+ * what is here is not older than what would replace it. Without that gate a node keeps whatever
+ * happened to be on PATH: a 0.2.55 from August drove a fresh install on 2026-09-18 and ran a compose
+ * command against service names that no longer exist.
+ *
+ * `wantedVersion` must be a version. `latest` is what the flag says before the release is looked up,
+ * and treating it as comparable adopted a July 0.2.36 on 2026-09-20 with a current release in hand;
+ * it is unknown here, like `undefined`, and the answer says the two were not compared so the caller
+ * can put the reason on the node's line.
  */
-export function installCihubScript(version = 'latest'): string {
+export function shouldAdoptExistingCihub(
+  existing: { present: boolean; version?: string },
+  wantedVersion?: string,
+): { adopt: boolean; why: string; compared: boolean } {
+  if (!existing.present) return { adopt: false, why: 'no cihub on this node', compared: false };
+  if (!wantedVersion || wantedVersion === 'latest')
+    return { adopt: true, why: existing.version ? `already installed (${existing.version})` : 'already installed', compared: false };
+  if (!existing.version) return { adopt: false, why: 'a cihub is present but its version could not be read; replacing it', compared: false };
+  if (compareCihubVersions(existing.version, wantedVersion) >= 0)
+    return { adopt: true, why: `already installed (${existing.version}, not older than ${wantedVersion})`, compared: true };
+  return { adopt: false, why: `${existing.version} is older than ${wantedVersion}; replacing it`, compared: true };
+}
+
+/** Where a node's Hub reads CI_CLOUD_URL, printed as `ci-cloud-url=<value>` (empty when unset). */
+export function nodePortalUrlScript(): string {
   return [
-    'set -e',
-    'arch="$(uname -m)"',
-    'case "$arch" in',
-    '  x86_64|amd64) asset="cihub-linux-x64" ;;',
-    '  aarch64|arm64) asset="cihub-linux-arm64" ;;',
-    '  *) echo "unsupported architecture: $arch" >&2; exit 1 ;;',
-    'esac',
-    version === 'latest'
-      ? 'tag="$(curl -fsSL https://api.github.com/repos/companionintelligence/CI-Hub/releases/latest | grep \'"tag_name"\' | head -1 | cut -d\'"\' -f4)"'
-      : `tag="${version}"`,
-    '[ -n "$tag" ] || { echo "could not resolve a release tag" >&2; exit 1; }',
-    'url="https://github.com/companionintelligence/CI-Hub/releases/download/$tag/$asset"',
-    'tmp="$(mktemp)"',
-    'trap \'rm -f "$tmp"\' EXIT',
-    'curl -fsSL --connect-timeout 30 --max-time 600 "$url" -o "$tmp"',
-    // Refuse an HTML error page renamed to a binary — the failure this download had for its whole life.
-    '[ -s "$tmp" ] || { echo "downloaded an empty file from $url" >&2; exit 1; }',
-    'install -m 0755 "$tmp" /usr/local/bin/cihub',
-    'echo "cihub-installed $tag"',
+    'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    'url="$(grep -h \'^CI_CLOUD_URL=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2-)"',
+    'echo "ci-cloud-url=$url"',
+    'echo "ci-cloud-url-file=$env_file"',
   ].join('\n');
+}
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url.trim()).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Why a code minted on `mintOrigin` cannot pair a Hub that talks to `nodeUrl`, or `null` when it
+ * can — or when the node's URL is unknown, which is not evidence of a mismatch.
+ *
+ * `cihub`'s default Portal is the dev tier while a release Hub defaults to production, so the two
+ * disagree by default, and nothing downstream says so: Portal answers the redeeming call with the
+ * same 410 it gives a mistyped code. Every attempt also resets the node's registration first.
+ */
+export function portalOriginMismatch(nodeUrl: string | undefined, mintOrigin: string): string | null {
+  const node = nodeUrl ? originOf(nodeUrl) : null;
+  const mint = originOf(mintOrigin);
+  if (!node || !mint || node === mint) return null;
+  return (
+    `this Hub pairs against ${node} (its CI_CLOUD_URL), but the code would be minted on ${mint} — ` +
+    `a code from one Portal is not in the other's database, so it would be refused 410 every time. ` +
+    `Mint on ${node}: CI_CLOUD_URL=${node} cihub login --scope device:manage, or set CI_PORTAL_ORIGIN=${node} with CI_PORTAL_TOKEN`
+  );
+}
+
+function portalOriginCheckLines(expectedPortalOrigin: string): string[] {
+  const expected = (originOf(expectedPortalOrigin) ?? expectedPortalOrigin).replace(/'/g, "'\\''");
+  return [
+    'hub_portal="$(grep -h \'^CI_CLOUD_URL=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- | sed \'s:/*$::\')"',
+    `if [ -n "$hub_portal" ] && [ "$hub_portal" != '${expected}' ]; then echo "hub-up-failed: portal-mismatch: this Hub pairs against $hub_portal, the code was minted on ${expected}" >&2; exit 1; fi`,
+  ];
 }
 
 /**
@@ -90,16 +150,31 @@ export function installCihubScript(version = 'latest'): string {
  * otherwise, and there is no terminal here to answer. `cihub register --code` is non-interactive;
  * without `--code` it drops into a readline loop that would hang until the SSH budget expires.
  */
-export function bringUpScript(postgresPassword: string, pairingCode: string): string {
+export function bringUpScript(postgresPassword: string, pairingCode: string, expectedPortalOrigin?: string): string {
   return [
     'set -e',
     // Single-quoted heredoc-free assignment; the password never reaches argv, only the environment.
     `export CIHUB_POSTGRES_PASSWORD='${postgresPassword.replace(/'/g, "'\\''")}'`,
     'cihub up --detached',
+    'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    // A fresh node's `cihub up` seeds CI_CLOUD_URL from its own build, which need not be the Portal the
+    // code was minted on — and a code minted on one Portal is not in the other's database, so every
+    // `register` answers 410 PAIRING_CODE_INVALID after first resetting the node's registration.
+    // Checked here, after `up` wrote the file and before `register` touches anything.
+    ...(expectedPortalOrigin ? portalOriginCheckLines(expectedPortalOrigin) : []),
     // `register` now exits non-zero on failure, but the state check is what actually proves it —
     // an exit code says what the command believed, not what the Hub is.
     `cihub register --code '${pairingCode.replace(/'/g, "'\\''")}'`,
-    'curl -fsS --max-time 10 http://127.0.0.1:5002/api/registration/status || true',
+    // The port the Hub was actually given, not the one it usually gets: a heal that moved API_PORT
+    // to 5003 once left this probe silent while the step reported success. An empty answer is a
+    // failure now, and so is an answer that does not say registered — `registration/phase` is the
+    // route that reports without sending a check-in.
+    'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
+    'phase="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/api/registration/phase" || true)"',
+    '[ -n "$phase" ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase after cihub up" >&2; exit 1; }',
+    'echo "$phase"',
+    'echo "$phase" | grep -q \'"registered":true\' || { echo "hub-up-failed: the Hub is up but not registered: $phase" >&2; exit 1; }',
+    '[ "$port" = 5002 ] || echo "hub-up-note: the Hub listens on :$port, not :5002 — tailscale serve and pool peers expect 5002"',
     'echo "hub-up-complete"',
   ].join('\n');
 }
@@ -202,18 +277,88 @@ export function pullModelScript(model: string): string {
   ].join('\n');
 }
 
-async function step(name: string, target: SshTarget, script: string, marker: string, timeoutMs: number): Promise<InstallStep> {
+/**
+ * What a failed step should say. The last line of stdout is usually compose noise ("Container
+ * traefik Started") while the line that explains the failure — a Portal 403, a `cihub register`
+ * refusal, a `hub-up-failed:` marker — sits a few lines up or on stderr. Prefer those.
+ *
+ * Never empty when `outcome` is given. `✗ install cihub (0s) —` with nothing after the dash is what a
+ * script that exited 0 before its first `echo` produced on 2026-09-20; the exit code is always
+ * something to say, and an exit 0 that never printed its marker is its own diagnosis.
+ */
+export function describeStepFailure(out: string, err: string, outcome?: { code: number | null; marker: string }): string {
+  const lines = `${err}\n${out}`
+    .split('\n')
+    .map((line) => line.replace(/[│┌┐└┘─]+/g, ' ').trim())
+    .filter(Boolean);
+  const telling = lines.filter((line) =>
+    /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out/i.test(line),
+  );
+  const chosen = telling.length > 0 ? telling.slice(-3) : lines.slice(-3);
+  const quoted = chosen.join(' | ');
+  if (!outcome) return quoted.slice(0, 300);
+  const output = quoted || 'nothing on stdout or stderr';
+  if (outcome.code === 0) return `exited 0 without printing ${outcome.marker}: ${output}`.slice(0, 300);
+  if (quoted) return quoted.slice(0, 300);
+  return outcome.code === null ? 'killed before it printed anything' : `exited ${outcome.code} with nothing on stdout or stderr`;
+}
+
+/**
+ * A step, plus what the node actually said. `describeStepFailure` keeps three lines of the output at
+ * most, and whether a pairing code was refused or spent is decided by lines it may well drop.
+ */
+async function stepWithOutput(
+  name: string,
+  target: SshTarget,
+  script: string,
+  marker: string,
+  timeoutMs: number,
+): Promise<{ step: InstallStep; out: string; err: string }> {
   const started = Date.now();
   const heredoc = `bash <<'CIHUB_STEP_EOF'\n${script}\nCIHUB_STEP_EOF`;
   const res = await sshCapture(target, heredoc, timeoutMs);
   const ms = Date.now() - started;
-  if (res.ok && res.out.includes(marker)) return { name, ok: true, detail: tail(res.out, 1), ms };
-  return { name, ok: false, detail: tail(res.err || res.out), ms };
+  const step: InstallStep =
+    res.ok && res.out.includes(marker)
+      ? { name, ok: true, detail: tail(res.out, 1), ms }
+      : { name, ok: false, detail: describeStepFailure(res.out, res.err, { code: res.code, marker }), ms };
+  return { step, out: res.out, err: res.err };
+}
+
+async function step(name: string, target: SshTarget, script: string, marker: string, timeoutMs: number): Promise<InstallStep> {
+  return (await stepWithOutput(name, target, script, marker, timeoutMs)).step;
 }
 
 export interface InstallOptions {
   postgresPassword: string;
-  pairingCode: string;
+  /** A code already in hand (one node). Either this or `mintPairingCode`. */
+  pairingCode?: string;
+  /**
+   * Mint (or reuse) this node's Portal pairing code — called only once the node has passed every
+   * gate and has a `cihub`, immediately before `register`. Minting first was how a failed download
+   * left an orphan device per attempt in Portal and made a retry impossible: the name was taken and
+   * the code was never kept. Whatever this returns is what `register` sends.
+   */
+  mintPairingCode?: () => Promise<{ code: string; detail: string }>;
+  /**
+   * The Portal `mintPairingCode` mints on. Set, each node's own CI_CLOUD_URL is checked against it
+   * before anything is minted, and again after `cihub up` — see `portalOriginMismatch`.
+   */
+  portalOrigin?: string;
+  /** Called once `register` has verifiably succeeded, so a kept code can be forgotten. */
+  onRegistered?: () => void;
+  /**
+   * `register` failed over the code itself. Return a replacement to try once more, or throw to say
+   * why there is none — either way the code just sent is gone, and the caller must stop keeping it.
+   *
+   * Called at most once per node, and only for a failure `classifyPairingFailure` recognises: a
+   * `hub up` that died before `register` leaves the code unspent and never reaches here.
+   */
+  replacePairingCode?: (outcome: PairingCodeOutcome) => Promise<{ code: string; detail: string } | undefined>;
+  /** Where the `cihub` binary comes from when the node needs one. Absent: adopt or fail. */
+  cihubBinary?: CihubBinarySource;
+  /** Per-run cache of downloaded assets, keyed by asset name, shared across nodes. */
+  binaryCache?: Map<string, { path: string; sha256: string; label: string }>;
   /**
    * CI Account address to claim each Hub for, creating its first operator.
    *
@@ -238,6 +383,55 @@ export interface InstallOptions {
    * grub-customizer findings become blocking rather than advisory.
    */
   touchesBoot?: boolean;
+}
+
+export type ResolvedBinary = { path: string; sha256: string; label: string; version?: string } | { why: string; fix: string[] };
+
+/**
+ * The file to stream to this node, for its architecture. Downloads happen at most once per asset
+ * per run; a `--cihub-binary` is used for every node, whatever its architecture, because the
+ * operator named it.
+ */
+async function resolveBinaryForNode(opts: InstallOptions, arch: string): Promise<ResolvedBinary | undefined> {
+  const source = opts.cihubBinary;
+  if (!source) return undefined;
+  if (source.kind === 'unavailable') return { why: source.why, fix: source.fix };
+  if (source.kind === 'local') {
+    return { path: source.path, sha256: sha256File(source.path), label: source.version ?? 'local', version: source.version };
+  }
+  const assetName = assetNameForArch(arch);
+  if (!assetName) return { why: `unsupported architecture: ${arch}`, fix: ['cihub ships for linux x86_64 and aarch64 only.'] };
+  const cache = opts.binaryCache ?? new Map();
+  const cached = cache.get(assetName);
+  if (cached) return { ...cached, version: cached.label };
+  try {
+    const asset = await downloadReleaseAsset({ token: source.token, assetName, version: source.version });
+    const entry = { path: asset.path, sha256: asset.sha256, label: asset.tag };
+    cache.set(assetName, entry);
+    return { ...entry, version: asset.tag };
+  } catch (error) {
+    return {
+      why: error instanceof Error ? error.message : String(error),
+      fix: ['Check GH_TOKEN can read the private repository, or pass --cihub-binary.'],
+    };
+  }
+}
+
+/**
+ * The version this run can put on a node, or why it cannot name one.
+ *
+ * The version a download came back with is the release's own answer; a download that failed still
+ * has the tag the source was pinned to, so a node whose copy is older than that tag is not adopted
+ * but reported as needing the download that failed. `latest` is not a version — it means the source
+ * was never pinned — and a `--cihub-binary` that would not run here has no version to offer.
+ */
+export function offeredCihubVersion(source: CihubBinarySource | undefined, binary: ResolvedBinary | undefined): { version?: string; why: string } {
+  if (!source) return { why: 'no cihub binary source was given' };
+  if (source.kind === 'unavailable') return { why: source.why };
+  if (binary && !('why' in binary) && binary.version) return { version: binary.version, why: '' };
+  if (source.kind === 'local') return { why: `${source.path} would not run here, so its version could not be read` };
+  if (source.version !== 'latest') return { version: source.version, why: '' };
+  return { why: binary && 'why' in binary ? binary.why : "release 'latest' was not resolved to a tag" };
 }
 
 /**
@@ -284,24 +478,112 @@ export async function installNode(
   steps.push({ name: 'preflight', ok: gate.proceed, skipped: !gate.proceed, detail: gate.detail, ms: Date.now() - preflightStarted });
   if (!gate.proceed) return { node: node.name, ok: false, steps };
 
+  const binary = await resolveBinaryForNode(opts, facts.arch);
   const existing = await detectCihub(target);
-  if (existing.present) {
+  const offered = offeredCihubVersion(opts.cihubBinary, binary);
+  const adopt = shouldAdoptExistingCihub(existing, offered.version);
+  if (adopt.adopt) {
+    // Adopted without a compare is still adopted — there is nothing to replace it with — but the
+    // line says so, and why, rather than reading like a version check that passed.
+    const uncompared = adopt.compared ? '' : ` — version not compared: ${offered.why}`;
+    steps.push({ name: 'cihub', ok: true, skipped: true, detail: `${adopt.why} at ${existing.path}${uncompared}` });
+  } else if (!binary || 'why' in binary) {
+    const source = opts.cihubBinary;
+    const fix = binary ? binary.fix : source?.kind === 'unavailable' ? source.fix : [];
     steps.push({
-      name: 'cihub',
-      ok: true,
-      skipped: true,
-      detail: `already installed at ${existing.path}${existing.version ? ` (${existing.version})` : ''}`,
+      name: 'install cihub',
+      ok: false,
+      detail: `${binary ? binary.why : `${adopt.why}; ${offered.why}`}${fix.length ? ` — ${fix.join(' ')}` : ''}`,
     });
+    return { node: node.name, ok: false, steps };
   } else {
-    const s = await step('install cihub', target, installCihubScript(opts.version), 'cihub-installed', 10 * 60_000);
+    const started = Date.now();
+    const marker = 'cihub-installed';
+    // Not `step()`: its heredoc would be the script's stdin, and this script's stdin is the binary.
+    const res = await sshStreamFile(target, stdinScriptCommand(installCihubFromStdinScript(binary.sha256, binary.label)), binary.path, 10 * 60_000);
+    const ms = Date.now() - started;
+    const s: InstallStep =
+      res.ok && res.out.includes(marker)
+        ? { name: 'install cihub', ok: true, detail: `${existing.present ? `${adopt.why}; ` : ''}${tail(res.out, 2)}`, ms }
+        : { name: 'install cihub', ok: false, detail: describeStepFailure(res.out, res.err, { code: res.code, marker }), ms };
     steps.push(s);
     if (!s.ok) return { node: node.name, ok: false, steps };
   }
 
+  // The Portal device, last of all the things that can be checked without one. A code is one
+  // device's credential and Portal refuses a second device by the same name, so nothing above may
+  // burn it, and nothing above did.
+  let pairingCode = opts.pairingCode;
+  if (opts.mintPairingCode && opts.portalOrigin) {
+    // Before the mint, so a node that could never redeem the code does not leave a device in Portal.
+    // A node with no env file yet (never brought up) cannot answer; the check in `bringUpScript`
+    // catches that one once `cihub up` has written it.
+    const url = await sshCapture(target, nodePortalUrlScript(), 20_000);
+    const nodeUrl = url.out.match(/^ci-cloud-url=(.*)$/m)?.[1]?.trim();
+    const mismatch = portalOriginMismatch(nodeUrl, opts.portalOrigin);
+    if (mismatch) {
+      steps.push({ name: 'portal origin', ok: false, detail: mismatch });
+      return { node: node.name, ok: false, steps };
+    }
+  }
+  if (opts.mintPairingCode) {
+    try {
+      const minted = await opts.mintPairingCode();
+      pairingCode = minted.code;
+      steps.push({ name: 'portal device', ok: true, detail: minted.detail });
+    } catch (error) {
+      steps.push({ name: 'portal device', ok: false, detail: error instanceof Error ? error.message : String(error) });
+      return { node: node.name, ok: false, steps };
+    }
+  }
+  if (!pairingCode) {
+    steps.push({ name: 'portal device', ok: false, detail: 'no pairing code and no way to mint one' });
+    return { node: node.name, ok: false, steps };
+  }
+
   // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
-  const up = await step('hub up + register', target, bringUpScript(opts.postgresPassword, opts.pairingCode), 'hub-up-complete', 20 * 60_000);
-  steps.push(up);
-  if (!up.ok) return { node: node.name, ok: false, steps };
+  let up = await stepWithOutput(
+    'hub up + register',
+    target,
+    bringUpScript(opts.postgresPassword, pairingCode, opts.mintPairingCode ? opts.portalOrigin : undefined),
+    'hub-up-complete',
+    20 * 60_000,
+  );
+
+  // A code Portal has refused is dead for good, and a run that keeps handing the same one back can
+  // never finish: on 2026-09-22 fifteen nodes failed on one 410 apiece, three runs in a row, because
+  // nothing read the refusal (CI-Hub#1582). One replacement, asked for only when the failure was
+  // about the code — a caller that cannot get one throws, and its reason becomes this node's line.
+  if (!up.step.ok && opts.replacePairingCode) {
+    const outcome = classifyPairingFailure(`${up.err}\n${up.out}\n${up.step.detail}`);
+    if (outcome) {
+      steps.push(up.step);
+      let replacement: { code: string; detail: string } | undefined;
+      let refused = '';
+      try {
+        replacement = await opts.replacePairingCode(outcome);
+      } catch (error) {
+        refused = error instanceof Error ? error.message : String(error);
+      }
+      if (!replacement) {
+        steps.push({ name: 'replacement code', ok: false, detail: refused || `${outcome.why}, and no replacement was available` });
+        return { node: node.name, ok: false, steps };
+      }
+      steps.push({ name: 'replacement code', ok: true, detail: `${outcome.why}; ${replacement.detail}` });
+      // The image and every infra container are on the node by now, so this is the register alone.
+      up = await stepWithOutput(
+        'hub up + register (retry)',
+        target,
+        bringUpScript(opts.postgresPassword, replacement.code, opts.mintPairingCode ? opts.portalOrigin : undefined),
+        'hub-up-complete',
+        20 * 60_000,
+      );
+    }
+  }
+
+  steps.push(up.step);
+  if (!up.step.ok) return { node: node.name, ok: false, steps };
+  opts.onRegistered?.();
 
   // Registered is not claimed. Without this the node comes up paired, keyed, and answering 409
   // AUTH_ERROR_HUB_NOT_CLAIMED to its own operator API — the state twelve of this fleet's nodes
@@ -333,6 +615,11 @@ export async function installNode(
     ms: Date.now() - timerStarted,
   });
 
+  // Per-process GPU VRAM for the Hub container, which cannot run the vendor tool itself. Best-effort
+  // like the status timer, and skipped outright on a node with neither tool — that is an Apple or
+  // CPU-only node, not a failure. `cihub fleet update --gpu-probe` re-runs this same step alone.
+  steps.push(await gpuProbeTimerStep(target));
+
   // TLS for pooling. A peer is stored under its tailnet FQDN and reached at https://<fqdn>, so a
   // `tailscale cert` on this node is a prerequisite for every pool call — and nothing provisioned one
   // until now. Measured 2026-09-10: 14 of 18 nodes had a certificate because someone ran it by hand;
@@ -348,4 +635,24 @@ export async function installNode(
   }
 
   return { node: node.name, ok: steps.every((s) => s.ok || s.skipped), steps };
+}
+
+/**
+ * Install the GPU probe timer on one node and say what it got. Shared by `fleet install` and
+ * `fleet update --gpu-probe`, so the two cannot drift on what "installed" means.
+ *
+ * sshCapture rather than step(): the outcome is decided by markers that can appear on any line,
+ * and step() reports only the last one.
+ */
+export async function gpuProbeTimerStep(target: SshTarget): Promise<InstallStep> {
+  const started = Date.now();
+  const run = await sshCapture(target, `bash <<'CIHUB_STEP_EOF'\n${installGpuProbeTimerScript()}\nCIHUB_STEP_EOF`, 2 * 60_000);
+  const outcome = classifyGpuProbeOutput(run.out, run.ok);
+  return {
+    name: 'gpu probe timer',
+    ok: outcome !== 'failed',
+    skipped: outcome === 'no-tool' || outcome === 'no-user-session',
+    detail: outcome === 'failed' ? `${describeGpuProbeOutcome(outcome)}: ${tail(run.err || run.out, 2)}` : describeGpuProbeOutcome(outcome),
+    ms: Date.now() - started,
+  };
 }

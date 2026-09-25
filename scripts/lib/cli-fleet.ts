@@ -17,7 +17,15 @@
  * library (see `docs/CLI.md`).
  */
 
-import { DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readStoredLogin } from './catalog-submit.js';
+import {
+  DEVICE_MANAGE_SCOPE,
+  DEVICE_PAIR_SCOPE,
+  loginScope,
+  mintPairingCode,
+  type PortalLogin,
+  portalLoginFromEnv,
+  readStoredLogin,
+} from './catalog-submit.js';
 import {
   loadFleetRoster,
   mergeFleetRoster,
@@ -27,19 +35,66 @@ import {
   type FleetNode,
   type LoadedFleetRoster,
 } from './fleet-roster.js';
-import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
+import {
+  HUB_SUMMARY_TIMEOUT_FLOOR_MS,
+  portalStanding,
+  probeNode,
+  renderHubCell,
+  renderPortalCell,
+  resolveTailscaleCli,
+  scanLan,
+  summariseNode,
+  tailnetPeers,
+  type DiscoveredNode,
+} from './fleet-discover.js';
 import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
+  applyHubContextCap,
+  applyHubLlamacppUrl,
   applyOllamaBindPolicy,
+  applyOllamaRuntimeSettings,
+  applyProbeFirewall,
   DEFAULT_OLLAMA_BIND,
   describeBind,
   executeBackendPlan,
+  hubProbePortsFor,
   INSTALLABLE_BACKENDS,
+  type InstallableBackend,
+  type LlamacppPlanOptions,
+  llamacppSpecFor,
   ollamaManagedEnvironment,
   planAllBackends,
-  type InstallableBackend,
+  type ProbeFirewallResult,
 } from './fleet-backends.js';
+import {
+  classifyLlamacppProbeOutput,
+  describeHubLlamacppUrlPlan,
+  describeLlamacppPublish,
+  HUB_LLAMACPP_URL,
+  hubAutoModelShell,
+  isSafeOllamaTag,
+  LLAMACPP_UNIT,
+  llamacppProbeShell,
+  resolveHubAutoModel,
+} from './fleet-llamacpp.js';
+import {
+  describeHubContextCapPlan,
+  HUB_CONTEXT_CAP_SETTING,
+  HUB_OLLAMA_SLOTS_SETTING,
+  describeRuntimeEnvironment,
+  describeRuntimeTransition,
+  type HubContextCap,
+  type HubInferenceSetting,
+  OllamaRuntimeFlagError,
+  type OllamaRuntimePlan,
+  type OllamaRuntimeSettings,
+  parseOllamaRuntimeValue,
+  planOllamaRuntime,
+  readRuntimeEnvironment,
+  RUNTIME_DROPIN,
+} from './fleet-ollama-runtime.js';
+import { firewallProbeScript, parseFirewallProbe, planProbeFirewall, type ProbeFirewallPlan } from './fleet-probe-firewall.js';
 import {
   assessOllamaBind,
   bindAddressFor,
@@ -51,7 +106,30 @@ import {
   parseOllamaBindProbe,
   planBindConsolidation,
 } from './fleet-ollama-bind.js';
-import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { gpuProbeTimerStep, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
+import {
+  clearPendingPairingCode,
+  describeDeviceNameConflict,
+  describeInvalidatedPairingCode,
+  findInvalidatingReRegistration,
+  findReRegistration,
+  classifyPairingFailure,
+  type PairingCodeOutcome,
+  readPendingPairingCode,
+  recordReRegisteredPairingCode,
+  savePendingPairingCode,
+} from './fleet-pairing-codes.js';
+import {
+  deletePortalDevice,
+  findPortalDevice,
+  listPortalDevices,
+  type PortalDevice,
+  reRegisterPortalDevice,
+  requireManageLogin,
+} from './fleet-devices.js';
+import { confirmDestructiveAction } from './cli-prompt.js';
+import { execFileSync } from 'node:child_process';
 import { gatePreflight, PREFLIGHT_CHECKS, type PreflightFinding, type PreflightNodeReport, preflightNode } from './fleet-preflight.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
 import { applyBootParams, assessNode, decideGttTarget, readBootParamState, type NodeBootParamAssessment } from './fleet-boot-params.js';
@@ -98,7 +176,18 @@ import {
   summariseOllamaVersions,
   upgradeOllamaOnNode,
 } from './fleet-ollama-version.js';
-import { colorize } from './cli-ui.js';
+import {
+  type CpuResidentFinding,
+  describeCpuResident,
+  describeResidency,
+  judgeOllamaResidency,
+  type OllamaResidencyReading,
+  readOllamaResidencies,
+  readOllamaResidencyOnNode,
+  renderResidencyCell,
+  residencyGpuFromFacts,
+} from './fleet-ollama-residency.js';
+import { colorize, stripAnsi } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
 export const FLEET_SUBCOMMANDS = [
@@ -113,6 +202,7 @@ export const FLEET_SUBCOMMANDS = [
   'preflight',
   'cert',
   'rdp',
+  'devices',
 ] as const;
 
 import { describeBind as describeRdpBind, runRdpOnNode, type RdpNodeReport } from './fleet-rdp.js';
@@ -145,6 +235,20 @@ export interface FleetArgs {
   dataDir: string;
   /** Portal pairing code for `install`. Six characters. */
   code?: string;
+  /** `devices <action> [target]`: list, release (delete) or re-register a Portal device. */
+  devicesAction?: 'list' | 'release' | 're-register';
+  devicesTarget?: string;
+  /** Portal organization id to act in; default: the stored login's. */
+  org?: string;
+  /** Skip the confirmation on `devices release`. */
+  yes: boolean;
+  /** A cihub-linux-* release asset on this machine, streamed to every node that needs one. */
+  cihubBinary?: string;
+  /**
+   * Release tag to fetch with GH_TOKEN when no --cihub-binary is given (default: latest, resolved to
+   * its tag before any node is dialled); with --cihub-binary, what the file is when it will not run here.
+   */
+  cihubVersion?: string;
   /**
    * CI Account address each installed Hub is claimed for, creating its first operator.
    *
@@ -175,6 +279,12 @@ export interface FleetArgs {
   toMajority: boolean;
   /** Bring each node's Ollama to the pinned (or `--ollama-version`) release during `update`. */
   ollama: boolean;
+  /**
+   * `update` only: install (or refresh) the per-process GPU VRAM probe timer on each node — the
+   * same step `install` runs, alone, so it can be rolled onto a fleet that is otherwise untouched.
+   * See `gpu-probe-timer.ts` and docs/fleet-setup.md, "Per-process GPU VRAM".
+   */
+  gpuProbe: boolean;
   /**
    * Exact Ollama release for `backends` and `update --ollama`, already validated. Absent means the
    * pin in `fleet-ollama-version.ts`; there is deliberately no way to ask for "latest".
@@ -207,6 +317,49 @@ export interface FleetArgs {
    * result, the file that set it, and EXPOSED for a 0.0.0.0 whose guard is not active.
    */
   bind: OllamaBindMode;
+  /**
+   * `backends` only: Ollama's runtime environment, from `--ollama-parallel`, `--ollama-keep-alive`,
+   * `--ollama-context`, `--ollama-igpu` and `--ollama-max-loaded`. Absent when none of the five was
+   * given, and then the runtime drop-in is not touched at all; present (possibly with every field
+   * `unset`) as soon as one is, and then the whole file is rendered from these five values — see
+   * `fleet-ollama-runtime.ts`.
+   */
+  ollamaRuntime?: OllamaRuntimeSettings;
+  /**
+   * `backends` only: the Hub's half of `--ollama-context`. A number writes `inferenceMaxNumCtx` on
+   * each node's Hub after the runtime drop-in applies; `null` (`--ollama-context unset`) clears it.
+   * Absent when the flag was not given — then the Hub's cap is not touched, even though the runtime
+   * file is rendered without `OLLAMA_CONTEXT_LENGTH`, so pass the flag on every run that manages it.
+   */
+  hubContextCap?: HubContextCap;
+  /**
+   * `backends` only: the Hub's half of `--ollama-parallel`. A number writes `inferenceOllamaSlots` on
+   * each node's Hub after the runtime drop-in applies, so slot-aware placement knows how many
+   * requests the daemon runs at once; `null` (`--ollama-parallel unset`) clears it. Absent when the
+   * flag was not given, on the same terms as the cap above.
+   */
+  hubOllamaSlots?: HubContextCap;
+  /**
+   * `backends` only: the Ollama tag llama-server serves (`--llamacpp-model`). Absent means each
+   * node's own Hub is asked which model it hands out for `auto`, and that tag is used — so a fleet
+   * whose nodes pin different models gets each node's own. Ignored unless `--backends` names llamacpp.
+   */
+  llamacppModel?: string;
+}
+
+/** The two Hub halves a runtime flag carries, in the order they are planned and applied after the drop-in. */
+interface HubHalf {
+  /** The `FleetArgs` field, and the key the JSON report carries the outcome under. */
+  key: 'hubContextCap' | 'hubOllamaSlots';
+  value: HubContextCap;
+  setting: HubInferenceSetting;
+}
+
+function hubHalvesOf(args: FleetArgs): HubHalf[] {
+  const halves: HubHalf[] = [];
+  if (args.hubContextCap !== undefined) halves.push({ key: 'hubContextCap', value: args.hubContextCap, setting: HUB_CONTEXT_CAP_SETTING });
+  if (args.hubOllamaSlots !== undefined) halves.push({ key: 'hubOllamaSlots', value: args.hubOllamaSlots, setting: HUB_OLLAMA_SLOTS_SETTING });
+  return halves;
 }
 
 export class FleetArgError extends Error {}
@@ -232,6 +385,12 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     backends: [],
     dataDir: '/var/lib/companion-hub',
     code: undefined,
+    devicesAction: undefined,
+    devicesTarget: undefined,
+    org: undefined,
+    yes: false,
+    cihubBinary: process.env.CIHUB_BINARY || undefined,
+    cihubVersion: undefined,
     claimEmail: process.env.CIHUB_CLAIM_EMAIL || undefined,
     postgresPassword: process.env.CIHUB_POSTGRES_PASSWORD || undefined,
     joinPool: undefined,
@@ -242,6 +401,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     pinDigest: undefined,
     toMajority: false,
     ollama: false,
+    gpuProbe: false,
     ollamaVersion: undefined,
     apps: [],
     // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
@@ -251,6 +411,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     force: false,
     touchesBoot: false,
     bind: DEFAULT_OLLAMA_BIND,
+    ollamaRuntime: undefined,
+    hubContextCap: undefined,
+    hubOllamaSlots: undefined,
   };
 
   const rest = [...argv];
@@ -261,6 +424,21 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     }
     args.subcommand = first as FleetSubcommand;
     rest.shift();
+  }
+
+  // `devices` takes positionals — an action and, for release/re-register, the device — before
+  // its flags. Nothing else in `fleet` does, so it is read here and not in the flag chain.
+  if (args.subcommand === 'devices') {
+    const action = rest[0] && !rest[0].startsWith('-') ? rest.shift() : undefined;
+    if (action !== 'list' && action !== 'release' && action !== 're-register') {
+      throw new FleetArgError(`fleet devices needs an action: list, release <device>, or re-register <device>${action ? ` (got '${action}')` : ''}.`);
+    }
+    args.devicesAction = action;
+    if (action !== 'list') {
+      const target = rest[0] && !rest[0].startsWith('-') ? rest.shift() : undefined;
+      if (!target) throw new FleetArgError(`fleet devices ${action} needs a device: its name, slug or Portal id.`);
+      args.devicesTarget = target;
+    }
   }
 
   for (let i = 0; i < rest.length; i++) {
@@ -290,6 +468,10 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--user')) args.user = readValue('--user');
     else if (isFlag('--data-dir')) args.dataDir = readValue('--data-dir');
     else if (isFlag('--code')) args.code = readValue('--code');
+    else if (isFlag('--org')) args.org = readValue('--org');
+    else if (arg === '--yes') args.yes = true;
+    else if (isFlag('--cihub-binary')) args.cihubBinary = readValue('--cihub-binary');
+    else if (isFlag('--cihub-version')) args.cihubVersion = readValue('--cihub-version');
     else if (isFlag('--claim-email')) args.claimEmail = readValue('--claim-email');
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
@@ -303,6 +485,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
       args.pinDigest = pin.ref;
     } else if (arg === '--to-majority') args.toMajority = true;
     else if (arg === '--ollama') args.ollama = true;
+    else if (arg === '--gpu-probe') args.gpuProbe = true;
     else if (isFlag('--ollama-version')) {
       // Validated here so a typo fails before any machine is dialled, and so 'latest' is refused in
       // words rather than handed to the installer, which would honour it.
@@ -312,6 +495,41 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         if (error instanceof OllamaVersionError) throw new FleetArgError(error.message);
         throw error;
       }
+    } else if (
+      isFlag('--ollama-parallel') ||
+      isFlag('--ollama-keep-alive') ||
+      isFlag('--ollama-context') ||
+      isFlag('--ollama-igpu') ||
+      isFlag('--ollama-max-loaded')
+    ) {
+      // Validated here, like --ollama-version: a typo is refused before any machine is dialled. The
+      // first of the five to appear is what turns the runtime step on for this run.
+      const flag = arg.split('=')[0] as '--ollama-parallel' | '--ollama-keep-alive' | '--ollama-context' | '--ollama-igpu' | '--ollama-max-loaded';
+      const runtime = args.ollamaRuntime ?? {};
+      try {
+        if (flag === '--ollama-parallel') {
+          runtime.parallel = parseOllamaRuntimeValue(flag, readValue(flag));
+          // The same number goes to the node's Hub as `inferenceOllamaSlots`; `unset` clears it there too.
+          args.hubOllamaSlots = runtime.parallel ?? null;
+        } else if (flag === '--ollama-keep-alive') runtime.keepAlive = parseOllamaRuntimeValue(flag, readValue(flag));
+        else if (flag === '--ollama-context') {
+          runtime.contextLength = parseOllamaRuntimeValue(flag, readValue(flag));
+          // The same number goes to the node's Hub as `inferenceMaxNumCtx`; `unset` clears it there too.
+          args.hubContextCap = runtime.contextLength ?? null;
+        } else if (flag === '--ollama-max-loaded') runtime.maxLoaded = parseOllamaRuntimeValue(flag, readValue(flag));
+        else runtime.igpu = parseOllamaRuntimeValue(flag, readValue(flag));
+      } catch (error) {
+        if (error instanceof OllamaRuntimeFlagError) throw new FleetArgError(error.message);
+        throw error;
+      }
+      args.ollamaRuntime = runtime;
+    } else if (isFlag('--llamacpp-model')) {
+      // Validated here for the same reason the runtime flags are: the tag lands in a unit file's
+      // ExecStart and in a manifest path, so anything that could escape either is refused before a
+      // machine is dialled.
+      const tag = readValue('--llamacpp-model').trim();
+      if (!isSafeOllamaTag(tag)) throw new FleetArgError(`--llamacpp-model must be an Ollama tag such as qwen3-coder:30b (got '${tag}').`);
+      args.llamacppModel = tag;
     } else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
@@ -390,6 +608,14 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   if (args.pinDigest && args.toMajority) {
     throw new FleetArgError('--pin-digest names an image and --to-majority asks the fleet for one. Pass one or the other.');
   }
+  if (args.ollamaRuntime && args.subcommand !== 'backends') {
+    throw new FleetArgError(
+      '--ollama-parallel, --ollama-keep-alive, --ollama-context, --ollama-igpu and --ollama-max-loaded only apply to `fleet backends`.',
+    );
+  }
+  if (args.llamacppModel !== undefined && args.subcommand !== 'backends') {
+    throw new FleetArgError('--llamacpp-model only applies to `fleet backends`.');
+  }
 
   return args;
 }
@@ -461,15 +687,59 @@ function loadRosterForRun(args: FleetArgs): LoadedFleetRoster | null {
   return roster;
 }
 
-/** Fixed-width table, so a 20-node listing is scannable rather than a wall of prose. */
+/**
+ * Fixed-width table, so a 20-node listing is scannable rather than a wall of prose. Widths are
+ * measured on the visible text, so a coloured cell in a middle column does not shove the columns
+ * after it.
+ */
 function renderTable(rows: string[][], headers: string[]): string {
-  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
+  const visible = (c: string) => stripAnsi(c ?? '').length;
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => visible(r[i] ?? ''))));
   const line = (cells: string[]) =>
     cells
-      .map((c, i) => (c ?? '').padEnd(widths[i] ?? 0))
+      .map((c, i) => `${c ?? ''}${' '.repeat(Math.max((widths[i] ?? 0) - visible(c), 0))}`)
       .join('  ')
       .trimEnd();
   return [colorize(line(headers), 'dim'), ...rows.map(line)].join('\n');
+}
+
+/** The HUB cell, coloured when the probe did not get a plain answer. */
+function hubCell(probe: Parameters<typeof renderHubCell>[0]): string {
+  const cell = renderHubCell(probe);
+  return cell.tone ? colorize(cell.text, cell.tone) : cell.text;
+}
+
+/**
+ * Name the nodes whose HUB cell is a probe outcome rather than a verdict. `timeout` and `yes, slow`
+ * are both the budget running out, and the flag that changes them is the same one.
+ */
+function printHubProbeFooter(probed: readonly DiscoveredNode[], args: FleetArgs): void {
+  const timedOut = probed.filter((n) => n.probe.hubProbe === 'timeout');
+  const slow = probed.filter((n) => n.probe.hubProbe === 'slow');
+  if (!timedOut.length && !slow.length) return;
+  if (timedOut.length) {
+    console.log(
+      colorize(`${timedOut.length} node(s) answered nothing on the Hub port within ${args.timeoutMs} ms — not the same as no Hub:`, 'yellow'),
+    );
+    console.log(`  ${timedOut.map((n) => n.name).join(', ')}`);
+  }
+  const summaryBudget = Math.max(args.timeoutMs, HUB_SUMMARY_TIMEOUT_FLOOR_MS);
+  if (slow.length) {
+    console.log(
+      colorize(
+        `${slow.length} Hub(s) answered their phase route but not their backend summary within ${summaryBudget} ms — usually inference load:`,
+        'yellow',
+      ),
+    );
+    console.log(`  ${slow.map((n) => n.name).join(', ')}`);
+  }
+  console.log(
+    colorize(
+      `  Re-run with a longer --timeout (phase route: ${args.timeoutMs} ms, summary: ${summaryBudget} ms) to tell a busy Hub from an absent one.`,
+      'dim',
+    ),
+  );
+  console.log('');
 }
 
 async function probeAll(nodes: readonly FleetNode[], args: FleetArgs, source: DiscoveredNode['source']): Promise<DiscoveredNode[]> {
@@ -512,9 +782,21 @@ async function runScan(args: FleetArgs): Promise<void> {
     if (cli) {
       const { peers, error } = tailnetPeers(cli);
       if (error) notes.push(`tailnet: ${error}`);
+      const hostnameOf = new Map(peers.map((peer) => [peer.ip, peer.name]));
+      const ipOfHostname = new Map(peers.map((peer) => [peer.name, peer.ip]));
+      const renamed: string[] = [];
       for (const peer of peers) {
         const existing = candidates.get(peer.ip);
         if (!existing) fromTailnet.push(peer.name);
+        // A roster name is the operator's label and is kept; but when the machine now answers to a
+        // different hostname — and worse, when the roster's name is what a DIFFERENT machine is now
+        // called — `--nodes <name>` dials the wrong box. Say so, every scan, until the roster is fixed.
+        if (existing && existing.name !== peer.name) {
+          const collides = ipOfHostname.get(existing.name);
+          renamed.push(
+            `${existing.name} (${peer.ip}) is now ${peer.name}${collides && collides !== peer.ip ? ` — and ${existing.name} is what ${collides} is called now` : ''}`,
+          );
+        }
         candidates.set(peer.ip, {
           name: existing?.name ?? peer.name,
           ip: peer.ip,
@@ -522,10 +804,17 @@ async function runScan(args: FleetArgs): Promise<void> {
           user: existing?.user,
           local: existing?.local,
           skip: existing?.skip,
-          note: existing?.note ?? (peer.online ? undefined : 'tailnet reports offline'),
+          oob: existing?.oob,
+          // Operator notes only. The scan's own observation ("offline right now") goes in the
+          // report, not the roster: written there once, it outlived the outage on thirty rows.
+          note: existing?.note,
         });
       }
-      notes.push(`tailnet: ${peers.length} peer(s) enumerated, ${fromTailnet.length} not in the roster`);
+      const gone = roster.nodes.filter((n) => !n.local && !hostnameOf.has(n.ip));
+      notes.push(
+        `tailnet: ${peers.length} peer(s) enumerated, ${fromTailnet.length} not in the roster${gone.length ? `, ${gone.length} roster row(s) no longer on the tailnet: ${gone.map((n) => n.name).join(', ')}` : ''}`,
+      );
+      if (renamed.length) notes.push(`tailnet: ${renamed.length} roster name(s) no longer match the peer's hostname — ${renamed.join('; ')}`);
     } else {
       notes.push('tailscale CLI not found — skipping tailnet enumeration (set TAILSCALE_CLI to override)');
     }
@@ -564,12 +853,13 @@ async function runScan(args: FleetArgs): Promise<void> {
     n.name,
     n.ip,
     n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
-    n.probe.hub ? 'yes' : '—',
+    hubCell({ hub: n.probe.hub, hubProbe: n.probe.hubProbe }),
     n.probe.engines.length ? String(n.probe.engines.length) : '—',
     summariseNode(n),
   ]);
   console.log(renderTable(rows, ['NODE', 'ADDRESS', 'SSH', 'HUB', 'ENGINES', 'VERDICT']));
   console.log('');
+  printHubProbeFooter(probed, args);
 
   const wrongUser = probed.filter((n) => n.probe.sshFailure === 'acl-wrong-user');
   if (wrongUser.length) {
@@ -663,23 +953,40 @@ async function runStatus(args: FleetArgs): Promise<void> {
   // spread this column exists to expose (0.12.11 → 0.33.3 across eighteen nodes) went unnoticed
   // precisely because nothing printed it. `--ollama-version` sets the pin the fleet is measured against.
   const pin = resolveOllamaVersion(args.ollamaVersion);
-  const versions = await readOllamaVersions(
-    probed.map((n) => ({ node: n, sshOk: n.local ? undefined : n.probe.ssh, sshFailure: n.probe.sshFailure })),
-    { user: args.user, timeoutMs: args.timeoutMs, concurrency: args.concurrency },
-  );
+  // Beside the version, what each Ollama has loaded and whether it is on the GPU. Six Strix Halo
+  // nodes served qwen3-coder:30b from the CPU at half speed for a day with every other column here
+  // green: version at pin, bind managed, engine answering. `size_vram 0` was the only tell. The two
+  // readings dial the same nodes and are taken together so a node that answers neither costs one
+  // timeout, not two.
+  const ollamaInputs = probed.map((n) => ({ node: n, sshOk: n.local ? undefined : n.probe.ssh, sshFailure: n.probe.sshFailure }));
+  const ollamaOpts = { user: args.user, timeoutMs: args.timeoutMs, concurrency: args.concurrency };
+  const [versions, residencies] = await Promise.all([readOllamaVersions(ollamaInputs, ollamaOpts), readOllamaResidencies(ollamaInputs, ollamaOpts)]);
   const ollamaSummary = summariseOllamaVersions(versions, pin);
-  const rows = probed.map((n, i) => ({ n, v: versions[i] ?? { node: n.name, reason: 'no reading was taken' } }));
+  const rows = probed.map((n, i) => {
+    const r: OllamaResidencyReading = residencies[i] ?? { node: n.name, reason: 'no reading was taken' };
+    // The environment the probe read is the system unit's; where a user-scope unit serves the port
+    // (beta-1) it is not the daemon's, and a reason built on it would name the wrong file.
+    const status = binds.get(n.ip)?.status;
+    const systemUnitServes = status !== 'user-scope' && status !== 'foreign-owner';
+    return {
+      n,
+      v: versions[i] ?? { node: n.name, reason: 'no reading was taken' },
+      r,
+      cpu: judgeOllamaResidency(systemUnitServes ? r : { ...r, env: undefined }),
+    };
+  });
 
   if (args.json) {
     console.log(
       JSON.stringify(
         {
-          nodes: rows.map(({ n, v }) => ({
+          nodes: rows.map(({ n, v, r, cpu }) => ({
             ...n,
             ollamaBind: binds.get(n.ip) ?? null,
             tailscaleCert: certs.get(n.name),
             image: imageOf.get(n.name) ?? null,
             ollama: { ...v, pin, standing: renderOllamaCell(v, pin).standing },
+            residency: { ...r, cpuResident: cpu },
           })),
           image: { majority: summary.majority, tie: summary.tie, known: summary.known, total: summary.total },
           ollama: { pin, summary: ollamaSummary },
@@ -693,27 +1000,35 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
   console.log(
     renderTable(
-      rows.map(({ n, v }) => {
+      rows.map(({ n, v, r, cpu }) => {
         const cert = renderCertCell(certs.get(n.name) ?? unmeasuredCert('not probed'));
         const image = imageOf.get(n.name);
         const cell = renderOllamaCell(v, pin);
         const tone = cell.standing === 'behind' ? 'yellow' : cell.standing === 'at-pin' ? 'green' : 'dim';
+        const portal = renderPortalCell(n.probe.portal);
+        const resident = renderResidencyCell(r, cpu);
         return [
           n.name,
           n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
-          n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
+          // `—` only when the port refused the connection. A probe that ran out of budget under
+          // inference load says `timeout` or `yes, slow`, because it looked identical to no Hub once.
+          hubCell(n.probe),
+          // A Hub that answers its health route and a Hub Portal will talk to are different things;
+          // this column is the difference.
+          colorize(portal.text, portal.tone),
           image ? colorImageCell(image) : colorize('?', 'dim'),
           n.probe.engines.join(' ') || '—',
           describeBindCell(binds.get(n.ip), n),
           colorize(cert.text, cert.tone),
-          // Last column on purpose: colour codes count toward the padding width, so a coloured cell
-          // would misalign whatever followed it.
           colorize(cell.text, tone),
+          // Every loaded model by name; one on the CPU is marked, because nothing else here shows it.
+          resident.tone ? colorize(resident.text, resident.tone) : resident.text,
         ];
       }),
-      ['NODE', 'SSH', 'HUB', 'IMAGE', 'ENGINES', 'OLLAMA BIND', 'TLS CERT', 'OLLAMA'],
+      ['NODE', 'SSH', 'HUB', 'PORTAL', 'IMAGE', 'ENGINES', 'OLLAMA BIND', 'TLS CERT', 'OLLAMA', 'RESIDENT'],
     ),
   );
+  printCpuResidentFooter(rows.map(({ n, cpu }) => ({ node: n.name, findings: cpu })));
   const conflicts = probed.filter((n) => binds.get(n.ip)?.status === 'conflict');
   if (conflicts.length) {
     console.log('');
@@ -735,7 +1050,17 @@ async function runStatus(args: FleetArgs): Promise<void> {
     );
   }
   console.log('');
+  printHubProbeFooter(probed, args);
   printImageFooter(summary);
+  const notOk = probed.filter((n) => n.probe.hub && portalStanding(n.probe.portal) !== 'ok');
+  if (notOk.length) {
+    console.log('');
+    console.log(colorize(`Portal: ${notOk.length} Hub(s) answer their health route but are not in good standing with Portal:`, 'yellow'));
+    for (const n of notOk) {
+      const p = n.probe.portal;
+      console.log(colorize(`  ${n.name}: ${renderPortalCell(p).text}${p?.error ? ` — ${p.error}` : ''}`, 'dim'));
+    }
+  }
   const unmeasured = versions.filter((v) => !v.version);
   if (unmeasured.length) {
     console.log('');
@@ -747,6 +1072,18 @@ async function runStatus(args: FleetArgs): Promise<void> {
     console.log('');
     for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
   }
+}
+
+/**
+ * Name every model `status` found resident on a CPU next to an idle GPU, with the reason and the
+ * fix. Under the table rather than in it: the cell says which node, this says why.
+ */
+function printCpuResidentFooter(rows: ReadonlyArray<{ node: string; findings: readonly CpuResidentFinding[] }>): void {
+  const hit = rows.filter((r) => r.findings.length);
+  if (!hit.length) return;
+  console.log('');
+  console.log(colorize(`${hit.length} node(s) have a model resident on the CPU while the node has a GPU — HTTP 200 at half speed:`, 'yellow'));
+  for (const r of hit) for (const f of r.findings) console.log(colorize(`  ${r.node}: ${describeCpuResident(f)}`, 'dim'));
 }
 
 /** One cell of the preflight table: what the column is about, at a glance; the detail lines carry the rest. */
@@ -902,8 +1239,15 @@ interface OllamaBindPlanOnNode {
   noop: boolean;
   /** The one-sentence reason the system-unit path must not be taken here, when it must not. */
   refused?: string;
+  /**
+   * A user-scope `ollama*` unit is active on the node and is NOT what serves :11434 (core-2's
+   * `ollama-tunnel.service`). The system unit is managed; this says why the unit was not a reason to stop.
+   */
+  note?: string;
   effective: string;
   json: Record<string, unknown>;
+  /** The runtime drop-in's plan, from the same probe, when a runtime flag was given and the unit is ours to edit. */
+  runtime?: OllamaRuntimePlan;
 }
 
 /**
@@ -913,11 +1257,21 @@ interface OllamaBindPlanOnNode {
  * name, with their new names — before anything moves. Also what decides, on `--execute`, whether an
  * adopted Ollama needs touching at all.
  */
-async function planOllamaBindOnNode(target: { host: string; user?: string }, bind: OllamaBindMode, facts: HostFacts): Promise<OllamaBindPlanOnNode> {
+async function planOllamaBindOnNode(
+  target: { host: string; user?: string },
+  bind: OllamaBindMode,
+  facts: HostFacts,
+  runtime?: OllamaRuntimeSettings,
+): Promise<OllamaBindPlanOnNode> {
   const res = await sshCapture(target, ollamaBindProbeScript(), 20_000);
   const probe = parseOllamaBindProbe(res.out);
   const assessment = assessOllamaBind(probe);
   const current = `${assessment.summary}`;
+  // What the daemon runs right now. Read from the same probe on EVERY readable node, including the
+  // ones this run may not touch: a node whose unit is refused still serves inference, and its
+  // context is exactly what an operator comparing the fleet needs. See describeRuntimeEnvironment.
+  const runtimeNow = readRuntimeEnvironment(probe.show.Environment);
+  const runtimeNowLine = `runtime: now ${describeRuntimeEnvironment(runtimeNow)}`;
   if (!probe.present) {
     return {
       lines: ['bind: could not read the node (probe produced no output)'],
@@ -929,12 +1283,12 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
   }
   if (assessment.ownership.refuse) {
     return {
-      lines: [`bind: now ${current}`, `bind: would refuse — ${assessment.ownership.reason}`],
+      lines: [`bind: now ${current}`, `bind: would refuse — ${assessment.ownership.reason}`, runtimeNowLine],
       tone: 'yellow',
       noop: false,
       refused: assessment.ownership.reason,
       effective: assessment.resolution.effective.address,
-      json: { now: assessment.summary, refused: assessment.ownership.reason },
+      json: { now: assessment.summary, refused: assessment.ownership.reason, runtime: { now: runtimeNow } },
     };
   }
   const target_ = bindAddressFor(bind, probe.tailscaleIp);
@@ -943,11 +1297,12 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
       lines: [
         `bind: now ${current}`,
         `bind: would fail — ${describeBind(bind)} requested and 'tailscale ip -4' returned nothing on this node; pass --bind all or --bind local`,
+        runtimeNowLine,
       ],
       tone: 'yellow',
       noop: false,
       effective: assessment.resolution.effective.address,
-      json: { now: assessment.summary, error: 'no tailnet address' },
+      json: { now: assessment.summary, error: 'no tailnet address', runtime: { now: runtimeNow } },
     };
   }
   const plan = planBindConsolidation(
@@ -956,6 +1311,8 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
     { date: new Date().toISOString().slice(0, 10), extraEnv: ollamaManagedEnvironment(facts), guardUnit: probe.guard.unit },
   );
   const lines = [`bind: now ${current}`];
+  const note = assessment.ownership.refuse ? undefined : assessment.ownership.note;
+  if (note) lines.push(`bind: ${note}`);
   if (plan.noop) {
     // For `all`, "nothing to change" includes the guard: the plan only reads as a no-op when it is up.
     const guard = plan.guard.action === 'install' ? `, ${plan.guard.unit} active` : '';
@@ -964,21 +1321,105 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
     lines.push(`bind: would set OLLAMA_HOST=${target_.address} (${bind}) and verify it after restart`);
     for (const line of plan.summary) lines.push(`bind:   ${line}`);
   }
+  // The environment goes out on every run, flags or no flags: a run that read it and said nothing is
+  // why `OLLAMA_CONTEXT_LENGTH` could differ by 8x across this fleet unnoticed. `cihub fleet
+  // backends` with no flags now prints every node's context, parallelism, keep-alive, iGPU and
+  // resident-model cap in one read-only pass.
+  lines.push(runtimeNowLine);
+  // The runtime drop-in is planned from the same probe: the dump already carries every *.conf and the
+  // merged environment, which is all "would the file change, and what is in effect now" needs.
+  const runtimePlan = runtime ? planOllamaRuntime(probe.dropins, probe.show.Environment, runtime) : undefined;
+  if (runtimePlan) {
+    for (const line of runtimePlan.summary) lines.push(`runtime: ${runtimePlan.noop ? '' : 'would '}${line}`);
+  }
   return {
     lines,
-    tone: plan.unfixable.length || assessment.status === 'conflict' ? 'yellow' : plan.noop ? 'dim' : 'green',
+    tone:
+      plan.unfixable.length || runtimePlan?.outranked.length || assessment.status === 'conflict'
+        ? 'yellow'
+        : plan.noop && (runtimePlan?.noop ?? true)
+          ? 'dim'
+          : 'green',
     noop: plan.noop,
+    note,
     effective: assessment.resolution.effective.address,
     json: {
       now: assessment.summary,
       target: target_.address,
       noop: plan.noop,
+      ...(note ? { note } : {}),
       disable: plan.disable,
       shadowed: plan.shadowed,
       unfixable: plan.unfixable,
       guard: plan.guard,
+      // `runtime.now` is in the report whether or not a flag was passed, so `--json` on a read-only
+      // run is a machine-readable inventory of every node's OLLAMA_CONTEXT_LENGTH.
+      runtime: {
+        now: runtimeNow,
+        ...(runtimePlan
+          ? {
+              target: runtimePlan.target,
+              file: runtimePlan.file.action,
+              restart: runtimePlan.restart,
+              outranked: runtimePlan.outranked,
+            }
+          : {}),
+      },
     },
+    runtime: runtimePlan,
   };
+}
+
+/**
+ * What this node's Ollama has resident right now, and whether any of it is on the CPU.
+ *
+ * Read on every run, flags or no flags, like the runtime line — and for the same reason: the
+ * vulkan/iGPU combination that parked qwen3-coder:30b on six Strix Halo CPUs answered every "is it
+ * up" probe with a 200, and only `/api/ps`'s `size_vram` said otherwise. The GPU half of the
+ * judgement comes from the hardware facts this run already read, so a CPU-only box is not flagged
+ * for running a model on its CPU; the environment half comes from the node, as the daemon resolved it.
+ */
+async function reportOllamaResidency(
+  target: { host: string; user?: string },
+  facts: HostFacts,
+  opts: { systemUnitServes: boolean },
+): Promise<{ lines: Array<{ text: string; tone: 'dim' | 'yellow' }>; json: Record<string, unknown> }> {
+  const reading = await readOllamaResidencyOnNode(target);
+  // Facts outrank the probe's own GPU read where both exist: `facts` distinguishes present from
+  // working. The environment is the SYSTEM unit's; on a node the bind step refused because a
+  // user-scope unit serves the port (beta-1), it is not the daemon's, so it explains nothing.
+  const judged = { ...reading, gpu: residencyGpuFromFacts(facts), ...(opts.systemUnitServes ? {} : { env: undefined }) };
+  const findings = judgeOllamaResidency(judged);
+  const lines: Array<{ text: string; tone: 'dim' | 'yellow' }> = [{ text: describeResidency(reading), tone: 'dim' }];
+  for (const f of findings) lines.push({ text: `! ${describeCpuResident(f)}`, tone: 'yellow' });
+  return { lines, json: { ...reading, gpu: judged.gpu, cpuResident: findings } };
+}
+
+/**
+ * What the firewall step would do on this node: the Hub's engine probes must not hang on a ufw
+ * DROP. Read-only; `ufw status` is read under `sudo -n` when the account allows it. `ports` is the
+ * node's own list (`hubProbePortsFor`): the fixed probe ports, and llama-server's only where the
+ * Hub will probe it.
+ */
+async function planProbeFirewallOnNode(target: { host: string; user?: string }, ports: readonly number[]): Promise<ProbeFirewallPlan> {
+  const res = await sshCapture(target, firewallProbeScript(), 20_000);
+  return planProbeFirewall(parseFirewallProbe(res.out), ports);
+}
+
+function describeFirewallPlan(plan: ProbeFirewallPlan): { lines: string[]; tone: 'dim' | 'yellow' | 'green' } {
+  switch (plan.state) {
+    case 'unknown':
+    case 'unreadable':
+      return { lines: [`firewall: ${plan.why}`], tone: 'yellow' };
+    case 'inactive':
+    case 'present':
+      return { lines: [`firewall: ${plan.why}`], tone: 'dim' };
+    case 'add':
+      return {
+        lines: [`firewall: ${plan.why}`, ...plan.commands.map((c) => `firewall:   would run ${c}`)],
+        tone: 'green',
+      };
+  }
 }
 
 /**
@@ -1000,6 +1441,80 @@ function describeHostFactsFailure(node: FleetNode, target: SshTarget, error: unk
       ? '--user'
       : `your local username — this roster row has no "user" and --user was not given`;
   return `could not read hardware — the tailnet permits SSH here, but not as "${tried}" (${chosenBy}). Pass --user, or set "user" on ${node.name}'s row in ${fleetRosterPath()}.`;
+}
+
+/**
+ * What llama-server on one node should serve, from the flags and — for the model — the node's own
+ * Hub. Never throws: a Hub that cannot be asked becomes a `modelError` the planner turns into a
+ * skip that quotes it, and the fleet run continues.
+ */
+async function resolveLlamacppOptionsOnNode(target: { host: string; user?: string }, args: FleetArgs): Promise<LlamacppPlanOptions> {
+  const shape = { parallel: args.ollamaRuntime?.parallel, contextLength: args.ollamaRuntime?.contextLength };
+  if (args.llamacppModel) return { ...shape, model: args.llamacppModel, modelWhy: '--llamacpp-model' };
+  const res = await sshCapture(target, `bash <<'CIHUB_HUB_AUTO_MODEL_EOF'\n${hubAutoModelShell(args.dataDir)}\nCIHUB_HUB_AUTO_MODEL_EOF`, 90_000);
+  if (!res.ok && !res.out.includes('hub-auto-model-')) {
+    return {
+      ...shape,
+      modelError: `no --llamacpp-model, and this node's Hub could not be asked for its auto model: ${describeSshFailure(classifySshFailure(res), target.host)}`,
+    };
+  }
+  const auto = resolveHubAutoModel(res.out);
+  if (auto.kind === 'failed') return { ...shape, modelError: `no --llamacpp-model, and ${auto.why}` };
+  return { ...shape, model: auto.tag, modelWhy: auto.why };
+}
+
+interface LlamacppPlanOnNode {
+  lines: string[];
+  tone: 'green' | 'yellow' | 'dim';
+  json: Record<string, unknown>;
+}
+
+/**
+ * The dry run's read of one node for llama-server: the blob the tag resolves to, whether the unit
+ * the apply would write is already the one installed, and who answers on the port now. Unprivileged;
+ * runs the same resolution the apply does, so the two agree.
+ */
+async function planLlamacppOnNode(
+  target: { host: string; user?: string },
+  facts: HostFacts,
+  opts: LlamacppPlanOptions & { model: string },
+): Promise<LlamacppPlanOnNode> {
+  const spec = llamacppSpecFor(facts, opts);
+  const res = await sshCapture(target, `bash <<'CIHUB_LLAMACPP_PROBE_EOF'\n${llamacppProbeShell(spec)}\nCIHUB_LLAMACPP_PROBE_EOF`, 60_000);
+  const probe = classifyLlamacppProbeOutput(res.out);
+  const json: Record<string, unknown> = {
+    spec,
+    state: probe.state,
+    modelsDir: probe.modelsDir,
+    blob: probe.blob,
+    unit: probe.unit,
+    unitState: probe.unitState,
+    server: probe.server,
+  };
+  if (probe.state === 'incomplete') return { lines: ['llamacpp: could not read the node (probe produced no output)'], tone: 'yellow', json };
+  if (probe.state !== 'ok') return { lines: [`llamacpp: would skip — ${probe.why}`], tone: 'yellow', json };
+  const lines = [`llamacpp: model ${probe.blob} under ${probe.modelsDir}, mounted read-only`];
+  if (probe.execStart) lines.push(`llamacpp: ${probe.execStart}`);
+  // The three addresses the port is published on, and a warning when the one the Hub needs is missing.
+  const publish = describeLlamacppPublish(probe.publish);
+  lines.push(`llamacpp: ${publish.text}`);
+  const state = probe.unitState ?? 'inactive';
+  if (probe.unit === 'unchanged' && state === 'active') {
+    lines.push(`llamacpp: ${LLAMACPP_UNIT} already carries this; not restarted`);
+  } else if (probe.unit === 'unchanged') {
+    lines.push(`llamacpp: ${LLAMACPP_UNIT} already carries this but is ${state}; would start it`);
+  } else {
+    lines.push(
+      `llamacpp: would ${probe.unit === 'absent' ? 'write' : 'rewrite'} ${LLAMACPP_UNIT}, then daemon-reload and restart it (the model reloads)`,
+    );
+  }
+  if (probe.server) {
+    lines.push(
+      `llamacpp: now serving ${probe.server.id ?? '?'} (owned_by ${probe.server.ownedBy ?? '?'}) as ${probe.server.totalSlots ?? '?'} × ${probe.server.nCtx ?? '?'}`,
+    );
+  }
+  if (publish.tone === 'yellow') return { lines, tone: 'yellow', json };
+  return { lines, tone: probe.unit === 'unchanged' && state === 'active' ? 'dim' : 'green', json };
 }
 
 /**
@@ -1040,10 +1555,25 @@ async function runBackends(args: FleetArgs): Promise<void> {
     }
 
     const busy = isTooBusyForMaintenance(facts);
+    // llama-server's model is decided per node BEFORE planning: the default is what this node's own
+    // Hub hands out for `auto`, and that is a round trip the pure planner cannot make. `llamacppOpts`
+    // is also the one fact every Hub-side step for llama-server below is gated on: a run that did
+    // not say `--backends llamacpp` still PLANS the backend (the plan line reports what is on the
+    // port), but must not write `LLAMACPP_URL`, recreate `ci-hub`, state slots for it, or open
+    // `:8081` on the firewall — a plain `fleet backends` on a node with a stray listener on :8081
+    // once rewrote the node's env file and recreated its Hub, which nobody asked for.
+    const llamacppOpts = args.backends.includes('llamacpp') ? await resolveLlamacppOptionsOnNode(target, args) : undefined;
+    const llamacppNamed = llamacppOpts !== undefined;
     const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined, {
       ollamaBind: args.bind,
       ollamaVersion: args.ollamaVersion,
+      ...(llamacppOpts ? { llamacpp: llamacppOpts } : {}),
     });
+    // The Hub halves (`inferenceOllamaSlots`, `inferenceMaxNumCtx`) follow whichever engine this run
+    // brought to those numbers. When Ollama is in the run they follow its runtime step, as before;
+    // otherwise a llama-server that read back the same slots × context states them for the node.
+    const ollamaInRun = plans.some((p) => p.backend === 'ollama' && p.action !== 'skip');
+    const probePorts = hubProbePortsFor(facts, llamacppNamed);
     const gpu = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}${g.driverWorking ? '' : ' [driver dead]'}`).join(', ') || 'no gpu';
     console.log(`${node.name}  ${colorize(`${facts.os}/${facts.arch} · ${gpu} · load ${facts.load1 ?? '?'}`, 'dim')}`);
     for (const note of facts.notes) console.log(colorize(`  ! ${note}`, 'yellow'));
@@ -1061,13 +1591,43 @@ async function runBackends(args: FleetArgs): Promise<void> {
       // Ollama's bind is part of its plan, install or adopt: the same policy, read from the node
       // first so the dry run names the files it would move and the adopt path knows when there is
       // nothing to do.
-      const bindPlan = plan.backend === 'ollama' && plan.action !== 'skip' ? await planOllamaBindOnNode(target, args.bind, facts) : undefined;
+      const bindPlan =
+        plan.backend === 'ollama' && plan.action !== 'skip' ? await planOllamaBindOnNode(target, args.bind, facts, args.ollamaRuntime) : undefined;
+      // llama-server's dry run reads the node too: the tag has to resolve to a blob Ollama holds,
+      // and "unchanged" is only worth printing if the unit the apply would write is the one installed.
+      const llamacppPlan =
+        plan.backend === 'llamacpp' && plan.action === 'install' && llamacppOpts?.model && !args.execute
+          ? await planLlamacppOnNode(target, facts, { ...llamacppOpts, model: llamacppOpts.model })
+          : undefined;
 
       if (!args.execute) {
         const tag = plan.action === 'install' ? colorize('would install', 'green') : plan.action;
         console.log(`  ${plan.backend.padEnd(9)} ${tag} — ${plan.why}`);
         if (bindPlan) for (const line of bindPlan.lines) console.log(colorize(`            ${line}`, bindPlan.tone));
-        report.push({ node: node.name, backend: plan.backend, action: plan.action, why: plan.why, ...(bindPlan ? { bind: bindPlan.json } : {}) });
+        if (llamacppPlan) for (const line of llamacppPlan.lines) console.log(colorize(`            ${line}`, llamacppPlan.tone));
+        // The Hub's cap and slot count follow the runtime step, so they are planned only where that
+        // step is: a node whose unit this run may not edit gets none of these lines. Without Ollama
+        // in the run they follow llama-server, whose slots × context are the same two numbers —
+        // when it was named; a run that did not name it plans nothing on the Hub for it.
+        const llamacppHub = plan.backend === 'llamacpp' && llamacppNamed && plan.action !== 'skip';
+        const hubHalves = (plan.backend === 'ollama' && bindPlan?.runtime !== undefined) || (llamacppHub && !ollamaInRun) ? hubHalvesOf(args) : [];
+        if (llamacppHub) console.log(colorize(`            ${describeHubLlamacppUrlPlan()}`, 'green'));
+        for (const half of hubHalves) console.log(colorize(`            ${describeHubContextCapPlan(half.value, half.setting)}`, 'green'));
+        // What is loaded and where, on every readable Ollama — the plan's one line that can say a
+        // node is serving from the CPU while its GPU sits idle.
+        const residency = bindPlan ? await reportOllamaResidency(target, facts, { systemUnitServes: !bindPlan.refused }) : undefined;
+        if (residency) for (const line of residency.lines) console.log(colorize(`            ${line.text}`, line.tone));
+        report.push({
+          node: node.name,
+          backend: plan.backend,
+          action: plan.action,
+          why: plan.why,
+          ...(bindPlan ? { bind: bindPlan.json } : {}),
+          ...(llamacppPlan ? { llamacpp: llamacppPlan.json } : {}),
+          ...(llamacppHub ? { hubLlamacppUrl: HUB_LLAMACPP_URL } : {}),
+          ...Object.fromEntries(hubHalves.map((half) => [half.key, half.value])),
+          ...(residency ? { residency: residency.json } : {}),
+        });
         continue;
       }
 
@@ -1083,6 +1643,30 @@ async function runBackends(args: FleetArgs): Promise<void> {
           const applied = await applyOllamaBindPolicy(target, args.bind, facts);
           result = { ...applied, outcome: applied.outcome === 'installed' ? 'adopted' : applied.outcome, why: `${result.why}; ${applied.why}` };
         }
+        // The unit the operator can see in `systemctl --user` and why it did not stop this run.
+        if (bindPlan.note && result.outcome !== 'skipped' && result.outcome !== 'failed')
+          result = { ...result, why: `${result.why}; ${bindPlan.note}` };
+      }
+      // The runtime drop-in, after the bind and only on a unit this run may edit: a node refused
+      // above (user-scope unit, container) is not touched, and its skip already says why. A plan
+      // runs nothing only when the file is the same bytes AND the daemon already resolves every
+      // managed key to its value — a matching file the daemon does not run (cut-off run, later
+      // drop-in) goes through the apply shell so its read-back can fail the node.
+      if (plan.backend === 'ollama' && args.ollamaRuntime && bindPlan?.runtime && (result.outcome === 'installed' || result.outcome === 'adopted')) {
+        const settings = args.ollamaRuntime;
+        if (bindPlan.runtime.noop) {
+          const now = describeRuntimeTransition(bindPlan.runtime.current, bindPlan.runtime.current, settings);
+          result = { ...result, why: `${result.why}; runtime ${now} — ${RUNTIME_DROPIN} unchanged, not restarted` };
+        } else {
+          const applied = await applyOllamaRuntimeSettings(target, settings);
+          result = {
+            ...result,
+            outcome: applied.outcome === 'installed' || applied.outcome === 'adopted' ? result.outcome : applied.outcome,
+            why: `${result.why}; ${applied.why}`,
+            detail: applied.detail ?? result.detail,
+            ms: (result.ms ?? 0) + (applied.ms ?? 0),
+          };
+        }
       }
       if (result.outcome === 'failed') failed += 1;
       const tone = result.outcome === 'failed' ? 'red' : result.outcome === 'installed' ? 'green' : 'dim';
@@ -1090,6 +1674,98 @@ async function runBackends(args: FleetArgs): Promise<void> {
       console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
       if (result.detail && (result.outcome === 'failed' || plan.backend === 'ollama')) console.log(colorize(`    ${result.detail}`, 'dim'));
       report.push({ node: node.name, ...result });
+
+      // The Hub's half of llama-server: LLAMACPP_URL in the node's env file and ci-hub recreated
+      // with it, once the server answers — an adopted one included, since a Hub that cannot see the
+      // engine is the case docs/hub-pool.md spends a section on. ONLY when the backend was named in
+      // this run: a plain `fleet backends` reports an adopted llama-server and leaves the Hub alone,
+      // never re-adding a `LLAMACPP_URL` the operator may have removed. Then the slot count and cap,
+      // only where Ollama's runtime step is not in this run to state them, and only from a server
+      // that read back the requested shape on /props — an adopted server whose shape nobody read
+      // states nothing.
+      if (plan.backend === 'llamacpp' && llamacppNamed && (result.outcome === 'installed' || result.outcome === 'adopted')) {
+        const hub = await applyHubLlamacppUrl(target);
+        if (hub.outcome === 'failed') failed += 1;
+        const hubTone = hub.outcome === 'failed' ? 'red' : hub.outcome === 'applied' ? 'green' : 'dim';
+        const hubTook = hub.ms ? ` (${Math.round(hub.ms / 1000)}s)` : '';
+        console.log(`  ${'hub'.padEnd(9)} ${colorize(hub.outcome, hubTone)}${hubTook} — ${hub.why}`);
+        report.push({ node: node.name, hubLlamacppUrl: { requested: HUB_LLAMACPP_URL, ...hub } });
+        const shapeRead =
+          plan.llamacpp && result.llamacpp?.totalSlots === plan.llamacpp.parallel && result.llamacpp?.nCtx === plan.llamacpp.contextLength;
+        if (!ollamaInRun && shapeRead) {
+          for (const half of hubHalvesOf(args)) {
+            const cap = await applyHubContextCap(target, half.value, args.dataDir, undefined, half.setting);
+            if (cap.outcome === 'failed') failed += 1;
+            const capTone = cap.outcome === 'failed' ? 'red' : cap.outcome === 'applied' ? 'green' : 'dim';
+            const capTook = cap.ms ? ` (${Math.round(cap.ms / 1000)}s)` : '';
+            console.log(`  ${'hub'.padEnd(9)} ${colorize(cap.outcome, capTone)}${capTook} — ${cap.why}`);
+            report.push({ node: node.name, [half.key]: { requested: half.value, ...cap } });
+          }
+        }
+      }
+
+      // The Hub's half of --ollama-context and --ollama-parallel, once the daemon runs that
+      // context and those slots: `inferenceMaxNumCtx` and `inferenceOllamaSlots` on this node's Hub,
+      // over its loopback with its own key. Only where the runtime step applied or was already in
+      // effect — a skipped or failed node keeps whatever it had, and its line above already says
+      // why. A value nobody could read back is a failure, never a "done".
+      if (plan.backend === 'ollama' && bindPlan?.runtime && (result.outcome === 'installed' || result.outcome === 'adopted')) {
+        for (const half of hubHalvesOf(args)) {
+          const cap = await applyHubContextCap(target, half.value, args.dataDir, undefined, half.setting);
+          if (cap.outcome === 'failed') failed += 1;
+          const capTone = cap.outcome === 'failed' ? 'red' : cap.outcome === 'applied' ? 'green' : 'dim';
+          const capTook = cap.ms ? ` (${Math.round(cap.ms / 1000)}s)` : '';
+          console.log(`  ${'hub'.padEnd(9)} ${colorize(cap.outcome, capTone)}${capTook} — ${cap.why}`);
+          report.push({ node: node.name, [half.key]: { requested: half.value, ...cap } });
+        }
+      }
+      // After the daemon is up — installed, adopted, restarted or left alone — what it has resident
+      // and where. A restart unloads everything, so a run that restarted reads `none` here; a run
+      // that touched nothing is where a CPU-resident model shows, with the reason and the fix.
+      if (plan.backend === 'ollama' && bindPlan && result.outcome !== 'failed') {
+        const residency = await reportOllamaResidency(target, facts, { systemUnitServes: !bindPlan.refused });
+        for (const line of residency.lines) console.log(colorize(`    ${line.text}`, line.tone));
+        report.push({ node: node.name, residency: residency.json });
+      }
+    }
+
+    // The Hub's engine probes, whatever backends this run touched: on a ufw node that drops the
+    // Docker bridge, every pooled request pays a 5 s timeout per unreachable port before ranking.
+    // llama-server's :8081 is in the list only where this node's Hub will probe it (named in this
+    // run, or its unit already runs), never fleet-wide.
+    const firewallPlan = await planProbeFirewallOnNode(target, probePorts);
+    if (args.execute) {
+      // ufw enabled but its table needs root this account lacks: a failure with a fix, not a skip —
+      // the rules may well be missing, and "done" on that node would leave the 5 s stall unmentioned.
+      // A probe that produced nothing at all is reported as unread, like the bind's, and not counted.
+      const applied: ProbeFirewallResult =
+        firewallPlan.state === 'add'
+          ? await applyProbeFirewall(target, firewallPlan.missing)
+          : {
+              outcome: firewallPlan.state === 'present' ? 'present' : firewallPlan.state === 'unreadable' ? 'failed' : 'skipped',
+              why: firewallPlan.why,
+              added: [],
+              blocked: firewallPlan.blocked,
+            };
+      if (applied.outcome === 'failed') failed += 1;
+      const tone =
+        applied.outcome === 'failed' ? 'red' : applied.outcome === 'applied' ? 'green' : firewallPlan.state === 'unknown' ? 'yellow' : 'dim';
+      const took = applied.ms ? ` (${Math.round(applied.ms / 1000)}s)` : '';
+      console.log(`  ${'firewall'.padEnd(9)} ${colorize(applied.outcome, tone)}${took} — ${applied.why}`);
+      report.push({ node: node.name, firewall: { ...applied, ports: probePorts } });
+    } else {
+      const described = describeFirewallPlan(firewallPlan);
+      for (const line of described.lines) console.log(colorize(`  ${line}`, described.tone));
+      report.push({
+        node: node.name,
+        firewall: {
+          state: firewallPlan.state,
+          why: firewallPlan.why,
+          missing: firewallPlan.missing,
+          present: firewallPlan.present,
+          blocked: firewallPlan.blocked,
+        },
+      });
     }
     console.log('');
   }
@@ -1135,6 +1811,37 @@ export function resolvePairingCodeStrategy(input: { code?: string; canMint: bool
   };
 }
 
+/** Version of a local cihub asset, when this machine can run it (same OS and architecture). */
+function readLocalCihubVersion(binaryPath: string): string | undefined {
+  try {
+    return parseCihubVersionOutput(execFileSync(binaryPath, ['version'], { encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The source, decided once per run and pinned to a version: a `latest` becomes the tag GitHub
+ * resolves it to right now, so every node compares against — and installs — the same release, and a
+ * token that cannot see the repository is one line here rather than a silent adopt on every node.
+ */
+async function resolveBinarySourceForRun(args: FleetArgs): Promise<CihubBinarySource> {
+  return pinCihubReleaseSource(
+    resolveCihubBinarySource({ binaryPath: args.cihubBinary, version: args.cihubVersion, readVersion: readLocalCihubVersion }),
+  );
+}
+
+function describeBinarySource(source: CihubBinarySource): string {
+  switch (source.kind) {
+    case 'local':
+      return `cihub binary: ${source.path}${source.version ? ` (${source.version})` : ' (version unknown: it would not run here — is it executable? — and --cihub-version can say what it is)'}, streamed to nodes that need one`;
+    case 'release':
+      return `cihub binary: release ${source.version}${source.resolvedFrom ? ` (${source.resolvedFrom})` : ''}, fetched here with the GitHub token and streamed to nodes that need one`;
+    case 'unavailable':
+      return `${source.why} — nodes that already have a cihub are adopted without a version check; the rest fail at 'install cihub'. ${source.fix.join(' ')}`;
+  }
+}
+
 /**
  * `cihub fleet install` — stand a Hub up on every selected node.
  *
@@ -1154,8 +1861,15 @@ async function runInstall(args: FleetArgs): Promise<void> {
   // A stored `device:pair` login mints a code per node, which is the only way a
   // multi-node install is unattended: one `--code` is one device, so passing it
   // for a fleet would enroll the first node and fail the rest on a used code.
-  const storedLogin = readStoredLogin();
-  const canMint = loginScope(storedLogin) === DEVICE_PAIR_SCOPE;
+  let storedLogin: PortalLogin | null;
+  try {
+    storedLogin = portalLoginFromEnv() ?? readStoredLogin();
+  } catch (error) {
+    console.error(colorize(error instanceof Error ? error.message : String(error), 'red'));
+    process.exit(2);
+  }
+  const storedScope = loginScope(storedLogin);
+  const canMint = storedScope === DEVICE_PAIR_SCOPE || storedScope === DEVICE_MANAGE_SCOPE;
 
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
@@ -1169,12 +1883,25 @@ async function runInstall(args: FleetArgs): Promise<void> {
     if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
     if (canMint) {
       console.log(colorize(`  would mint a pairing code per node as ${storedLogin?.orgSlug ?? storedLogin?.orgId}`, 'dim'));
+      // The scope split cost a live run two 401s to discover: `device:pair` mints, but everything
+      // that touches a device Portal already knows — listing, releasing, re-registering — is
+      // `device:manage`, and so is the replacement a refused code needs.
+      console.log(
+        colorize(
+          storedScope === DEVICE_MANAGE_SCOPE
+            ? `  this login is ${DEVICE_MANAGE_SCOPE}, so a code Portal refuses is replaced by a re-register and sent once more`
+            : `  this login is ${storedScope}: a code Portal refuses is dropped, not replaced — 'cihub login --scope ${DEVICE_MANAGE_SCOPE}' (also what 'fleet devices' needs) lets the run re-register and retry`,
+          'dim',
+        ),
+      );
     } else if (args.code) {
       console.log(colorize('  would use the one --code given, which enrolls a single node', 'dim'));
     } else {
       console.log(colorize(`  needs 'cihub login --scope ${DEVICE_PAIR_SCOPE}', or --code for one node`, 'dim'));
     }
     console.log(colorize('  requires a Postgres password', 'dim'));
+    const binarySource = await resolveBinarySourceForRun(args);
+    console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
     console.log(
       colorize(
         `  each node is preflighted first (sudo, dpkg, grub, boot recovery, apt lock) — '${BASE_COMMAND} fleet preflight' shows it now`,
@@ -1198,33 +1925,100 @@ async function runInstall(args: FleetArgs): Promise<void> {
     process.exit(2);
   }
 
+  // Where a node that has no `cihub` — or an older one — gets one. Decided once, here, so a run with
+  // no way to get the binary says so on its first node rather than after that node's Portal device
+  // exists, and so `latest` is one tag for the whole run.
+  const binarySource = await resolveBinarySourceForRun(args);
+  console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
+  const binaryCache = new Map<string, { path: string; sha256: string; label: string }>();
+
   const reports = [];
   for (const node of run) {
     console.log(`\n${node.name}`);
 
-    let pairingCode: string;
+    // The code is minted (or reused) INSIDE installNode, after every gate and after the binary is on
+    // the node — the last step before `register`. A kept code survives a failed attempt; a spent one
+    // is forgotten once the Hub reports registered. A kept code that a later `fleet devices
+    // re-register` has replaced is refused by name: Portal honours only the newest, and sending the
+    // old one is a twenty-minute `hub up` ending in "Pairing failed" (core-1, 2026-09-20).
+    const orgId = storedLogin?.orgId ?? '';
+    const mint =
+      strategy.kind === 'given'
+        ? undefined
+        : async () => {
+            const pending = readPendingPairingCode(node.ip, orgId);
+            if (pending) {
+              const invalidated = findInvalidatingReRegistration(pending);
+              if (invalidated) throw new Error(describeInvalidatedPairingCode(pending, invalidated));
+              const origin = pending.reRegisteredAt ? 're-registered' : 'minted';
+              return { code: pending.pairingCode, detail: `reusing the code ${origin} ${pending.mintedAt.slice(0, 16)} for ${pending.slug}` };
+            }
+            try {
+              const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
+              savePendingPairingCode({
+                ip: node.ip,
+                name: node.name,
+                slug: minted.slug,
+                deviceId: minted.deviceId,
+                pairingCode: minted.pairingCode,
+                orgId,
+                mintedAt: new Date().toISOString(),
+              });
+              return { code: minted.pairingCode, detail: `registered as ${minted.slug}` };
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              throw new Error(/already exists/.test(message) ? describeDeviceNameConflict(node.name, findReRegistration(node.name, orgId)) : message);
+            }
+          };
 
-    if (strategy.kind === 'given') {
-      pairingCode = args.code as string;
-    } else {
-      try {
-        const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
-        pairingCode = minted.pairingCode;
-        console.log(`  ${colorize('✓', 'green')} portal device — registered as ${minted.slug}`);
-      } catch (error) {
-        // Registering is the first step; without a code the rest cannot run, so
-        // this node is reported and the fleet continues rather than aborting.
-        console.log(`  ${colorize('✗', 'red')} portal device — ${error instanceof Error ? error.message : String(error)}`);
-        reports.push({ node: node.name, ok: false, steps: [] });
-        continue;
-      }
-    }
+    // What happens when `register` comes back saying the code itself was the problem. The code just
+    // sent is gone either way, so the first thing this does is stop keeping it — three `fleet
+    // install` runs on 2026-09-22 each re-sent the same refused code to fifteen nodes, and a full
+    // `fleet devices release` of all fifteen in between changed nothing, because the code lives
+    // here and nothing ever dropped it (CI-Hub#1582). A refusal then earns one replacement, which
+    // only `re-register` can mint: the device row still exists, so a second `POST /api/devices`
+    // would answer 409. A code Portal already claimed earns none — see `classifyPairingFailure`.
+    const replacePairingCode =
+      strategy.kind === 'given'
+        ? undefined
+        : async (outcome: PairingCodeOutcome) => {
+            const spent = readPendingPairingCode(node.ip, orgId);
+            clearPendingPairingCode(node.ip);
+            if (outcome.kind === 'claimed') {
+              throw new Error(
+                `${outcome.why}. The code is spent and no longer kept, and a replacement would meet the same failure — fix that failure, not the code.`,
+              );
+            }
+            if (!spent) throw new Error(`${outcome.why}, and no code was kept for this node to replace — rerun to mint a fresh one.`);
+            if (storedScope !== DEVICE_MANAGE_SCOPE) {
+              throw new Error(
+                `${outcome.why}. The dead code is no longer kept, but minting a replacement needs 'cihub login --scope ${DEVICE_MANAGE_SCOPE}' (this run holds ${storedScope ?? 'none'}); rerun after that, or pass --code.`,
+              );
+            }
+            const fresh = await reRegisterPortalDevice({ login: storedLogin as PortalLogin, deviceId: spent.deviceId });
+            // Kept, not just sent: if the retry fails for some other reason, the next run reuses this
+            // one rather than minting a third, and `onRegistered` forgets it once it is spent.
+            recordReRegisteredPairingCode({
+              device: { id: spent.deviceId, name: spent.name, slug: spent.slug },
+              deviceId: fresh.deviceId,
+              pairingCode: fresh.pairingCode,
+              orgId,
+              roster: roster.nodes,
+            });
+            return { code: fresh.pairingCode, detail: `re-registered ${spent.slug} for a fresh code` };
+          };
 
     const report = await installNode(
       node,
       {
         postgresPassword: args.postgresPassword,
-        pairingCode,
+        pairingCode: strategy.kind === 'given' ? args.code : undefined,
+        mintPairingCode: mint,
+        portalOrigin: canMint ? storedLogin?.portalOrigin : undefined,
+        replacePairingCode,
+        onRegistered: () => clearPendingPairingCode(node.ip),
+        cihubBinary: binarySource,
+        binaryCache,
         claimEmail: args.claimEmail,
         joinPool: args.joinPool,
         poolPin: args.poolPin,
@@ -1233,6 +2027,14 @@ async function runInstall(args: FleetArgs): Promise<void> {
       },
       args.user,
     );
+    // Portal declaring the code dead or spent is not one of the retry-safe failures this store is
+    // built to survive (a dropped SSH session, a node that never came up) — those may still succeed
+    // if resent, but a code Portal has refused or claimed never will, and resending it is the whole
+    // bug this closes. `replacePairingCode` above already drops the code it was asked about; this is
+    // the net under it, and it reads every register step, including a retry's, by the step detail
+    // alone — so a run whose replacement is refused in turn leaves nothing kept either.
+    const refused = report.steps.some((st) => !st.ok && st.name.startsWith('hub up + register') && classifyPairingFailure(st.detail));
+    if (refused) clearPendingPairingCode(node.ip);
     for (const st of report.steps) {
       const icon = st.skipped ? colorize('·', 'dim') : st.ok ? colorize('✓', 'green') : colorize('✗', 'red');
       const took = st.ms ? colorize(` (${Math.round(st.ms / 1000)}s)`, 'dim') : '';
@@ -1272,9 +2074,9 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     : args.models.length > 0
       ? { kind: 'explicit', models: args.models }
       : undefined;
-  if (!args.hub && !args.ollama && !modelRequest) {
+  if (!args.hub && !args.ollama && !args.gpuProbe && !modelRequest) {
     console.log(
-      `Nothing to do. Pass --hub to update the Hub image, --ollama to bring Ollama to the pinned release, --models a,b or --models ${RECOMMENDED_MODELS_KEYWORD} to pull models, or any combination.`,
+      `Nothing to do. Pass --hub to update the Hub image, --ollama to bring Ollama to the pinned release, --gpu-probe to install the per-process GPU VRAM probe timer, --models a,b or --models ${RECOMMENDED_MODELS_KEYWORD} to pull models, or any combination.`,
     );
     return;
   }
@@ -1314,6 +2116,12 @@ async function runUpdate(args: FleetArgs): Promise<void> {
       );
       console.log(colorize('    nodes already serving that version are left alone; nodes with no Ollama are reported, not installed', 'dim'));
     }
+    if (args.gpuProbe) {
+      console.log(
+        '  would install the per-process GPU VRAM probe (cihub-gpu-processes.timer, a systemd --user unit) on each node that has nvidia-smi or rocm-smi',
+      );
+      console.log(colorize('    nodes with neither tool are reported as skipped; the Hub reads the file it writes and needs no restart', 'dim'));
+    }
     if (modelRequest?.kind === 'recommended') console.log(colorize("  asking each node's Hub for its list — reads only, changes nothing", 'dim'));
     for (const node of run) {
       const plan = await planFor(node, { host: node.ip, user: node.user ?? args.user });
@@ -1351,6 +2159,15 @@ async function runUpdate(args: FleetArgs): Promise<void> {
       const { ok, after } = await updateHubImageOnNode(target, pin);
       if (!ok) failed += 1;
       afterImages.push({ node: node.name, probe: after });
+    }
+    if (args.gpuProbe) {
+      // After the image, before the models: the probe touches nothing the other steps depend on,
+      // and its first sample is more useful once whatever this run restarted is back.
+      const probe = await gpuProbeTimerStep(target);
+      if (!probe.ok) failed += 1;
+      const icon = probe.ok ? (probe.skipped ? colorize('·', 'dim') : colorize('✓', 'green')) : colorize('✗', 'red');
+      const took = probe.ms ? colorize(` (${Math.round(probe.ms / 1000)}s)`, 'dim') : '';
+      console.log(`  ${icon} ${probe.name}${took} — ${probe.detail}`);
     }
     const plan = await planFor(node, target);
     if (!plan) continue;
@@ -1773,6 +2590,12 @@ async function resolveHubPin(
  */
 async function updateHubImageOnNode(target: SshTarget, pin: string | undefined): Promise<{ ok: boolean; after: HubImageProbe }> {
   const before = await probeHubImage(target);
+  if (before.kind === 'unknown' && before.reason === 'no ci-hub container') {
+    // Nothing to update. `status` already says "no ci-hub container" for this node; running
+    // `pool update` here would only fail more slowly and count as a fleet failure.
+    console.log(`  ${colorize('·', 'dim')} hub image — no Hub on this node; nothing to update (${BASE_COMMAND} fleet install puts one here)`);
+    return { ok: true, after: before };
+  }
   const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript(pin)}\nEOF`, 20 * 60_000);
   const after = await probeHubImage(target);
   let ok = res.ok && res.out.includes('hub-update-complete');
@@ -1944,5 +2767,126 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
     case 'rdp':
       await runRdp(args);
       return;
+    case 'devices':
+      await runDevices(args);
+      return;
+  }
+}
+
+/**
+ * `cihub fleet devices` — what Portal knows about this org's devices, and the two changes to it a
+ * fleet operator needs without a browser.
+ *
+ * `release` deletes the Portal record, and with it the device's tunnel, DNS, apps and OAuth client
+ * — the same thing the browser's delete does. It is for a device this org no longer owns (a node
+ * reinstalled into another org, an orphan from a failed install), so it asks first. `re-register`
+ * keeps the record and mints a replacement pairing code, for a node that is staying but has lost
+ * its key. Neither dials a node.
+ */
+async function runDevices(args: FleetArgs): Promise<void> {
+  let resolved: PortalLogin;
+  try {
+    resolved = requireManageLogin(portalLoginFromEnv() ?? readStoredLogin());
+  } catch (error) {
+    console.error(colorize(error instanceof Error ? error.message : String(error), 'red'));
+    process.exit(2);
+  }
+  const organizationId = args.org ?? resolved.orgId;
+  const orgLabel = args.org ?? resolved.orgSlug ?? resolved.orgId;
+
+  let devices: PortalDevice[];
+  try {
+    devices = await listPortalDevices({ login: resolved, organizationId });
+  } catch (error) {
+    console.error(colorize(`Could not list devices in ${orgLabel}: ${error instanceof Error ? error.message : String(error)}`, 'red'));
+    process.exitCode = 1;
+    return;
+  }
+
+  if (args.devicesAction === 'list') {
+    if (args.json) {
+      console.log(JSON.stringify({ organization: organizationId, devices }, null, 2));
+      return;
+    }
+    console.log(colorize(`${devices.length} device(s) in ${orgLabel} (${resolved.portalOrigin})`, 'dim'));
+    if (devices.length) {
+      console.log(
+        renderTable(
+          devices.map((d) => [d.name, d.slug ?? '—', d.status ?? '—', d.id, d.lastSeenAt ?? '—']),
+          ['NAME', 'SLUG', 'STATUS', 'PORTAL ID', 'LAST SEEN'],
+        ),
+      );
+    }
+    return;
+  }
+
+  const found = findPortalDevice(devices, args.devicesTarget as string);
+  if (!found.device) {
+    console.error(colorize(found.why ?? 'not found', 'red'));
+    process.exitCode = 1;
+    return;
+  }
+  const device = found.device;
+
+  if (args.devicesAction === 're-register') {
+    try {
+      const minted = await reRegisterPortalDevice({ login: resolved, deviceId: device.id });
+      console.log(`${colorize('✓', 'green')} ${device.name} — replacement pairing code minted; the device is inactive until it pairs again`);
+      console.log(colorize(`  on the node: cihub register --code ${minted.pairingCode}`, 'dim'));
+      // The code a `fleet install` kept for this node died the moment Portal answered. Replace it,
+      // so the next install reuses this one rather than failing at register with the old. Portal
+      // has already done its part, so a store this machine cannot write is a warning, not a failure.
+      let kept: ReturnType<typeof recordReRegisteredPairingCode>;
+      try {
+        kept = recordReRegisteredPairingCode({
+          device: { id: device.id, name: device.name, slug: device.slug },
+          deviceId: minted.deviceId,
+          pairingCode: minted.pairingCode,
+          orgId: organizationId,
+          roster: loadFleetRoster().nodes,
+        });
+      } catch (error) {
+        kept = { why: `the code could not be kept for fleet install (${error instanceof Error ? error.message : String(error)})` };
+      }
+      if (kept.ip) {
+        console.log(
+          colorize(
+            `  or from here: ${BASE_COMMAND} fleet install --nodes ${kept.node} --execute, which reuses this code${kept.replaced ? ` in place of the one kept ${kept.replaced.mintedAt.slice(0, 16)}` : ''}`,
+            'dim',
+          ),
+        );
+      } else {
+        console.log(colorize(`  ${kept.why}; pass it to the next fleet install with --code`, 'yellow'));
+      }
+      if (args.json) console.log(JSON.stringify({ device: device.id, pairingCode: minted.pairingCode, keptForNode: kept.node ?? null }, null, 2));
+    } catch (error) {
+      console.error(colorize(`${device.name}: ${error instanceof Error ? error.message : String(error)}`, 'red'));
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const confirmed = await confirmDestructiveAction(
+    `Releasing ${device.name} (${device.id}) from ${orgLabel}`,
+    args.yes,
+    `Release ${device.name} from ${orgLabel}? This deletes the Portal record and everything under it — tunnel, DNS, installed apps' registrations, OAuth client. [y/N] `,
+    'irreversible',
+  );
+  if (!confirmed) {
+    console.log(colorize('Not released.', 'dim'));
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    const result = await deletePortalDevice({ login: resolved, deviceId: device.id });
+    console.log(
+      `${colorize('✓', 'green')} ${device.name} — released from ${orgLabel}${result.warnings?.length ? ` (${result.warnings.join('; ')})` : ''}`,
+    );
+    console.log(
+      colorize(`  a fresh '${BASE_COMMAND} fleet install --nodes ${device.name}' can now enrol it into the org this login belongs to`, 'dim'),
+    );
+  } catch (error) {
+    console.error(colorize(`${device.name}: ${error instanceof Error ? error.message : String(error)}`, 'red'));
+    process.exitCode = 1;
   }
 }

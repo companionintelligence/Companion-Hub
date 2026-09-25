@@ -54,7 +54,7 @@ vi.mock('react-i18next', () => {
 
   return { useTranslation: () => ({ t }) };
 });
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => false }));
 vi.mock('@/api-client/client.gen', () => ({ client: { post: vi.fn(), delete: vi.fn(), patch: vi.fn() } }));
 vi.mock('@/api-client/sdk.gen', () => ({

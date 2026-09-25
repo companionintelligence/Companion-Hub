@@ -433,6 +433,92 @@ export function resolvePoolMaxPromptTokens(
   return fromSetting === null ? { maxPromptTokens: null, setBy: null } : { maxPromptTokens: fromSetting, setBy: 'setting' };
 }
 
+/**
+ * How long a local engine's health answer is reused for placement before the next pooled request
+ * triggers a fresh probe.
+ *
+ * Every pooled request used to run six live health probes before ranking, each with a 5 s
+ * transport timeout. On a node whose firewall drops (rather than refuses) the Hub container's SYN
+ * to an engine port, that put a flat 5.0 s in front of every request entering the node — measured
+ * pool TTFT 5035–5200 ms on four of fifteen fleet nodes against 22–100 ms once the port answered —
+ * for engines that were never going to be candidates. The snapshot moves that wait off the request
+ * path: a request reads the last answer, and the probe that refreshes it runs behind the caller.
+ *
+ * The value only changes WHEN an engine's answer is read, never what the answer means: with every
+ * probe answering, the candidate list is the one the live probes produced, in the same order. The
+ * cost is that an engine coming up, going down, or clearing a quarantine on its own is seen up to
+ * one TTL late — failover already covers the second, and the first two are rare next to a request.
+ *
+ * Zero, deliberately, the same way `DEFAULT_POOL_PRESSURE_WEIGHT` is: at 0 the snapshot is not
+ * consulted at all and every request probes live, so a node that takes this image without an
+ * operator touching the setting ranks byte for byte as the build before the snapshot existed — the
+ * 5 s stall included. The snapshot is validated one node at a time: PATCH
+ * `poolProbeSnapshotTtlMs` to 10000 on the canary, measure it against a node still at 0, and flip
+ * this default once the fleet has seen it. 10 s sits under the 20 s this node's own inventory is
+ * already cached for when it answers a peer's health poll, so a local candidate is never staler
+ * than the same node's advertisement to the rest of the pool.
+ */
+export const DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS = 0;
+/** `0` disables the snapshot; there is no shorter TTL worth having, because a request would then pay the probe anyway. */
+export const MIN_POOL_PROBE_SNAPSHOT_TTL_MS = 0;
+/** Five minutes: past this an engine that came up is invisible to the pool for longer than an operator will wait before restarting things. */
+export const MAX_POOL_PROBE_SNAPSHOT_TTL_MS = 300_000;
+
+/**
+ * How many requests the node that last served a prompt prefix may have in flight — counting the one
+ * being placed — and still be preferred for the next request carrying the same prefix.
+ *
+ * Prefill dominates an agent turn on this fleet. Measured on core-2 through the pool proxy,
+ * 2026-09-20: OpenClaw's first turn was 44,340 prompt tokens, 258 output, 100.8 s wall, and Ollama's
+ * journal put `prompt processing` at 67.34 s (608 tok/s). The agent's second model call in the same
+ * turn (44,630 tokens, same prefix) got only a partial cache hit — `cached n_tokens = 15958`, 28,672
+ * tokens re-prefilled in 63 s — because the four Ollama slots (`OLLAMA_NUM_PARALLEL=4`, fleet-wide)
+ * are shared with other traffic and the pool had no notion of which node held a session's prefix.
+ * Affinity remembers the node and engine that last served each prefix and moves them to the front
+ * of the ranked list while their queue is shorter than this, because past that point waiting behind
+ * the queue costs more than the ~60 s of re-prefill it would save.
+ *
+ * A preference, never a rule: the remembered node is moved to the front of the list the ranker built,
+ * so a node the pool excluded is never resurrected, an operator pin still wins, and failover is what
+ * it was. Zero, deliberately, the same way `DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS` and
+ * `DEFAULT_POOL_PRESSURE_WEIGHT` are: at 0 no prefix is hashed or remembered and ranking is byte for
+ * byte the build before affinity existed, so the canary node that PATCHes
+ * `poolPrefixAffinityMaxInFlight` to 2 can be measured against a node that took the same image and
+ * nothing else. 2 is the value to validate at: the remembered node takes the request when it is idle
+ * or has one other request in flight, and hands it on when it has two or more.
+ */
+export const DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 0;
+/** `0` turns affinity off; the request being placed always counts, so there is no lower value that would ever prefer anything. */
+export const MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 0;
+/** Same bound as `MAX_POOL_LOCAL_AFFINITY`: past this queue depth the wait behind it dwarfs any prefill saved. */
+export const MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 20;
+
+/**
+ * Whether placement reads each Ollama candidate's advertised slot count (`inferenceOllamaSlots`, the
+ * operator's statement of its `OLLAMA_NUM_PARALLEL`) and puts a candidate whose queue already fills
+ * its slots behind every candidate that still has one free.
+ *
+ * Queue depth alone cannot see this. Ollama serves `OLLAMA_NUM_PARALLEL` requests at once and queues
+ * the rest behind them, so two in flight is a full engine on a 2-slot node and half of one on a
+ * 4-slot node, and the ranker scores both the same. Measured 2026-09-21 (fleet-qa B5 cell, 4-way
+ * bursts): the nodes moved to 2 slots queued requests behind Ollama for 5–10 s to the first token —
+ * beta-max 0.47 s → 9.0 s — while 4-slot nodes sat idle, and the fleet aggregate at c=4 fell
+ * 14–16 %. A full node is demoted, never removed: failover still reaches it, a pin still applies
+ * within each group, and when every candidate is full nothing moves — see `applySlotPlacement`.
+ *
+ * Zero, deliberately, the same way `DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT` and
+ * `DEFAULT_POOL_PRESSURE_WEIGHT` are: at 0 no slot count is read and ranking is byte for byte the
+ * build before slots existed, so the canary node that PATCHes `poolSlotAwareness` to 1 can be
+ * measured against a node that took the same image and nothing else. There is no weight to tune —
+ * a slot is either free or it is not — so the knob is a switch that keeps the numeric shape of the
+ * others.
+ */
+export const DEFAULT_POOL_SLOT_AWARENESS = 0;
+/** `0` is off. */
+export const MIN_POOL_SLOT_AWARENESS = 0;
+/** `1` is on; there is no stronger form, because the demotion is already a whole ordering step rather than a weight. */
+export const MAX_POOL_SLOT_AWARENESS = 1;
+
 /** How often each `connected`/`unreachable` peer is probed for capabilities. */
 export const DEFAULT_POOL_HEALTH_POLL_SECONDS = 30;
 /** Below this the probes cost more than the routing accuracy they buy, and an 8s probe timeout would start overlapping ticks. */
@@ -493,6 +579,12 @@ export interface HubPoolPreferences {
    * resolve the two through {@link resolvePoolMaxPromptTokens} rather than reading this as effective.
    */
   poolMaxPromptTokens: number | null;
+  /** How long a local engine's health answer is reused for placement; `0` (the default) probes live on every request. See {@link DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS}. */
+  poolProbeSnapshotTtlMs: number;
+  /** The queue depth up to which the node that last served a prompt prefix is preferred for it, counting the request being placed; `0` (the default) turns affinity off. See {@link DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT}. */
+  poolPrefixAffinityMaxInFlight: number;
+  /** Whether an Ollama candidate whose queue fills its advertised slots is placed behind every candidate with a free one; `0` (the default) keeps slots out of ranking entirely. See {@link DEFAULT_POOL_SLOT_AWARENESS}. */
+  poolSlotAwareness: number;
   /**
    * Operator routing overrides, newest last. Empty (the default) means the ranker decides alone and
    * routing is byte-identical to a build without pinning — see {@link resolvePinFor}.
@@ -568,8 +660,9 @@ export function normalizePeerFqdn(raw: string): string | null {
  * `cf-ray` is already the Hub's established "arrived through the Cloudflare tunnel" signal (see
  * `AuthController.isTunnelRequest`); the rest are the same marker under Cloudflare's other names.
  * `x-forwarded-for` is deliberately NOT in this list — it is caller-controlled, so its presence
- * proves nothing on its own and callers handle it with their own rules ({@link PoolAppGuard} walks
- * every hop; {@link callerSourceIp} treats it as one more reason not to trust `req.ip`).
+ * proves nothing on its own and callers handle it with their own rules (`internalOriginRefusal` in
+ * `request-origin.ts` walks every hop; {@link callerSourceIp} treats it as one more reason not to
+ * trust `req.ip`).
  */
 export const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'] as const;
 
@@ -578,7 +671,7 @@ export const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor'
  *
  * `request.ip` is NOT the caller behind Traefik or the Cloudflare tunnel: it is the proxy's own
  * private address, because Express `trust proxy` is left unset by default (`HUB_TRUST_PROXY`, see
- * main.ts, and the same caveat is written on `InternalNetworkGuard` and `PoolAppGuard`). A
+ * main.ts, and the same caveat is written on `InternalNetworkGuard` and `internalOriginRefusal`). A
  * "per-source" rate limit keyed on that value is keyed on ONE value for every caller in the world —
  * a global limit wearing a per-source costume. For the pairing PIN that is worse than useless: the
  * PIN's real defence is its own attempt ceiling, and a global lockout would hand any caller that
@@ -713,7 +806,7 @@ function withLatestTag(id: string): string {
  * A model pin wins over the default pin and they never stack: two pins for one request would need a
  * precedence rule between two operator decisions that both say "this node", and the model-specific
  * one is unambiguously the more specific intent. Comparison is verbatim and case-sensitive, because
- * candidate matching is `modelsLoaded.includes(model)` in both `localCandidates` and
+ * candidate matching is `modelsLoaded.includes(model)` in both `probeLocalCandidates` and
  * `peerCandidates` — normalizing here would make pins that look right silently never match.
  */
 export function resolvePinFor(pins: readonly HubPoolPin[] | undefined, model: string): HubPoolPin | null {

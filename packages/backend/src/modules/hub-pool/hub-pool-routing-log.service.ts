@@ -109,13 +109,54 @@ export interface PoolRoutingRecord {
    */
   promptCeiling: PoolRoutingPromptCeiling | null;
   /**
+   * What the nodes' context caps did to this decision, or `null` when no candidate had a cap at all.
+   *
+   * The ceiling's twin for the context window: when an agent turn carrying `num_ctx: 65536` skips
+   * core-17, an operator has to be able to tell "its 16384 cap excluded it" from "the ranker
+   * preferred another node". Present (with an empty `excluded`) whenever some candidate carried a
+   * cap, so the window the request asked for is visible for the requests every node could take
+   * too. Always `null` on `inbound` rows — the cap is applied by the node that chooses.
+   */
+  contextCap: PoolRoutingContextCap | null;
+  /**
    * What measured prefill rates did to this decision, or `null` when no candidate had a measurement
    * that applies to a prompt this size — which is every request on a fleet nothing has been timed on.
    * The ceiling's twin for the automatic case: it answers "why did the long turn skip fzzy" with the
    * numbers. Always `null` on `inbound` rows, for the same reason.
    */
   throughput: PoolRoutingThroughput | null;
+  /**
+   * What prefix affinity did to this decision, or `null` when affinity is off
+   * (`poolPrefixAffinityMaxInFlight: 0`), the route is not one it judges, or the body had nothing to
+   * key on. The third companion to `pin` and `promptCeiling`: when every turn of an agent session
+   * lands on one node, an operator has to be able to tell "it followed its prefix" from the ranker
+   * or a pin deciding the same thing — and when a turn re-prefilled cold, whether affinity missed,
+   * stood aside for a queue, or was overruled. Always `null` on `inbound` rows, like the others.
+   */
+  affinity: PoolRoutingAffinity | null;
+  /**
+   * What slot-aware placement did to this decision, or `null` when it is off
+   * (`poolSlotAwareness: 0`) or no candidate advertised a slot count. The fourth companion: when a
+   * burst lands on the 4-slot nodes and skips a 2-slot node that scored better, an operator has to be
+   * able to tell "its slots were full" from the ranker or a pin. Present (with an empty `demoted`)
+   * whenever some candidate carried a slot count, so the figures are visible for the requests that
+   * found a free slot too. Always `null` on `inbound` rows, like the others.
+   */
+  slots: PoolRoutingSlots | null;
   outcome: PoolRoutingOutcome;
+  /**
+   * `true` when this row stopped because the CALLER went away, not because routing failed: the app
+   * closed its connection before any candidate had answered. The proxy does not fail such a request
+   * over — nobody is left to read the answer — so it settles as `failed` with no status, exactly
+   * like a request every candidate rejected.
+   *
+   * Which is why the flag exists. The two are otherwise the same row, and an operator scanning
+   * `cihub pool log` reads "failed, no status" as the pool being unable to place the work. Beta-max,
+   * 2026-09-21: four rows reading `-` in the NODE column at ~30 s were read as placement returning
+   * no candidate and timing out, when placement had ranked fourteen and the caller had given up on
+   * the first. `node` now names the candidate that was still working — this says why it stopped.
+   */
+  clientClosed: boolean;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
   /**
@@ -168,8 +209,8 @@ export interface PoolRoutingPin {
  * given; the request-shape fields default to `null`, so a path that has no body to describe (a
  * refusal, an unresolvable alias) does not have to invent one.
  */
-export type PoolRoutingRecordInput = Omit<PoolRoutingRecord, 'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs'> &
-  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs'>>;
+export type PoolRoutingRecordInput = Omit<PoolRoutingRecord, 'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed'> &
+  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed'>>;
 
 /** The prompt-ceiling half of a routing decision. Sizes and node names only — never any of the prompt it measured. */
 export interface PoolRoutingPromptCeiling {
@@ -190,6 +231,33 @@ export interface PoolRoutingPromptCeiling {
 export interface PoolRoutingCeilingExclusion {
   node: string;
   maxPromptTokens: number;
+}
+
+/** The context-cap half of a routing decision. Sizes and node names only — never any of the prompt. */
+export interface PoolRoutingContextCap {
+  /**
+   * The window the request needs: its `options.num_ctx` when it carried one, else the prompt
+   * estimate (`bytes / 4`, the same figure the ceiling judges), since an engine runs a request
+   * without `num_ctx` at its own default window and a prompt over that window is truncated.
+   */
+  numCtx: number;
+  /** `request`: the body carried `options.num_ctx`. `estimated`: it did not, so its prompt estimate stood in. */
+  source: 'request' | 'estimated';
+  /**
+   * Nodes whose cap was below `numCtx`, in ranked order; `'local'` for this node. They were moved
+   * behind every node that can take the window, not removed, so failover can still reach them.
+   */
+  excluded: PoolRoutingContextCapExclusion[];
+  /**
+   * `true` when the request was placed on one of those nodes anyway: every candidate was capped
+   * below it, or every candidate that was not failed first. A reload or a truncation beats a 502.
+   */
+  overridden: boolean;
+}
+
+export interface PoolRoutingContextCapExclusion {
+  node: string;
+  maxNumCtx: number;
 }
 
 /** The throughput half of a routing decision. Rates, sizes and node names only. */
@@ -226,11 +294,68 @@ export interface PoolRoutingThroughputEstimate {
   slow: boolean;
 }
 
+/**
+ * The prefix-affinity half of a routing decision. Node names and counts only — never the session
+ * key, which is either an app's own identifier or a digest of its prompt.
+ */
+export interface PoolRoutingAffinity {
+  /** Where the key came from: the app's `X-Hub-Pool-Session` header, or a digest of the prompt's head. */
+  key: 'header' | 'hashed';
+  /**
+   * `hit`: the remembered node was under the limit and is the first candidate. `skipped`: it is a
+   * candidate but was not placed first — at or over `maxInFlight` when `inFlight >= maxInFlight`,
+   * otherwise displaced by a later step (a ceiling, a throughput demotion, or a pin). `miss`: nothing
+   * is remembered for this prefix, or the remembered node and engine can no longer serve the model.
+   */
+  outcome: 'hit' | 'miss' | 'skipped';
+  /** The node remembered for this prefix, `'local'` for this one; `null` when nothing was. */
+  remembered: string | null;
+  /** The remembered node's queue depth at the decision, `null` when it was not a candidate. */
+  inFlight: number | null;
+  /** The `poolPrefixAffinityMaxInFlight` in force, counting the request being placed. */
+  maxInFlight: number;
+}
+
+/**
+ * The slot-awareness half of a routing decision. Node names and counts only.
+ */
+export interface PoolRoutingSlots {
+  /**
+   * Candidates whose known queue depth had reached their advertised slots, in ranked order;
+   * `'local'` for this node. They were moved behind every candidate with a free slot, not removed,
+   * so failover can still reach them.
+   */
+  demoted: PoolRoutingSlotDemotion[];
+  /**
+   * `true` when the request was placed on one of those anyway: every candidate was full, every one
+   * with a free slot failed first, or a prompt ceiling put every free one behind it. A queued
+   * answer beats none.
+   */
+  overridden: boolean;
+}
+
+export interface PoolRoutingSlotDemotion {
+  node: string;
+  backend: InferenceBackendType;
+  /** The queue depth the ranker knew at the decision — the same figure it sorted on. */
+  inFlight: number;
+  /** The slot count the node advertised. */
+  slots: number;
+}
+
 export interface PoolRoutingSummary {
   recorded: number;
   capacity: number;
   served: number;
   failed: number;
+  /**
+   * The subset of `failed` that ended because the caller hung up — see `PoolRoutingRecord.clientClosed`.
+   * Counted inside `failed`, not beside it: the request did not get an answer, which is what `failed`
+   * has always meant, and moving it out would change a number every existing reader compares over time.
+   * It is reported separately so that "4 failed" can be read as "4 callers left", which is a caller's
+   * patience against this fleet's prefill, not a pool that cannot place work.
+   */
+  clientClosed: number;
   /** Placed on a candidate and still waiting for its first byte. */
   pending: number;
   /** Records with a non-empty `failedOverFrom`, i.e. requests that a candidate rejected before one answered. */
@@ -314,6 +439,9 @@ export class HubPoolRoutingLogService {
       stream: null,
       bodyBytes: null,
       budgetMs: null,
+      // Defaulted rather than required of every caller: a request ends this way at exactly one
+      // place in the proxy, and the other dozen record sites should not have to say "not that".
+      clientClosed: false,
       ...entry,
       id: entry.id ?? randomUUID(),
       updatedAt: new Date().toISOString(),
@@ -399,16 +527,19 @@ export class HubPoolRoutingLogService {
     let served = 0;
     let pending = 0;
     let failovers = 0;
+    let clientClosed = 0;
     for (const entry of this.entries) {
       if (entry.outcome === 'served') served += 1;
       if (entry.outcome === 'pending') pending += 1;
       if (entry.failedOverFrom.length > 0) failovers += 1;
+      if (entry.clientClosed) clientClosed += 1;
     }
     return {
       recorded: this.entries.length,
       capacity: this.capacity,
       served,
       failed: this.entries.length - served - pending,
+      clientClosed,
       pending,
       failovers,
       lastAt: this.entries[this.entries.length - 1]?.at ?? null,

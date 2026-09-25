@@ -151,6 +151,64 @@ describe('api-key create', () => {
     });
   });
 
+  /**
+   * The key an editor or SDK holds in a config file that syncs to clouds. Same two invariants as
+   * qa:read, for a worse leak path: one row that also carried 'mcp' would turn a leaked Continue
+   * config into the whole MCP tool surface, and 'write' in the listing would make a GPU-only key look
+   * like it can change things. The box must print the two base URLs, because that is the field the
+   * operator fills in next and a route list would make them derive it.
+   */
+  describe('inference keys', () => {
+    it('mints one with --scope in either flag form, stored as read', () => {
+      runApiKeyCommand(['create', '--name', 'laptop-editor', '--scope', 'inference']);
+      expect(insertSql()).toContain("ARRAY['inference']::text[]");
+      expect(insertSql()).toContain("'read'");
+      expect(insertSql()).not.toContain("'write'");
+
+      mockedSpawnSync.mockClear();
+      runApiKeyCommand(['create', '--name', 'laptop-editor', '--scope=inference']);
+      expect(insertSql()).toContain("ARRAY['inference']::text[]");
+    });
+
+    it('prints both base URLs the key opens, so whoever mints it can paste one into an editor', () => {
+      runApiKeyCommand(['create', '--name', 'laptop-editor', '--scopes', 'inference']);
+
+      const printed = (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+      expect(printed).toContain('Accepted only on the inference routes:');
+      expect(printed).toContain('http://<hub-host>:5002/api/inference/v1');
+      expect(printed).toContain('http://<hub-host>:5002/api/inference/pool');
+      expect(printed).toContain('Every other route refuses it.');
+      // The qa:read route list is a different key's authority; printing it here would overstate this one.
+      expect(printed).not.toContain('GET /api/inference/pool/routing-log');
+      expect(printed).toContain('Revoke it in Settings → Security.');
+    });
+
+    it('refuses to put it on the same key as another scope', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'laptop-editor', '--scopes', 'mcp,inference'])).toThrow('exit');
+      expect(errorText()).toContain("The 'inference' scope must be the only scope on its key");
+      expect(insertSql()).toBeUndefined();
+    });
+
+    it('refuses the two standalone scopes together, naming both', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'laptop-editor', '--scopes', 'qa:read,inference'])).toThrow('exit');
+      expect(errorText()).toContain("Each of 'qa:read' and 'inference' must be the only scope on its key");
+      expect(insertSql()).toBeUndefined();
+    });
+
+    it('refuses a capability wider than read, which gates MCP tools the key never reaches', () => {
+      expect(() => runApiKeyCommand(['create', '--name', 'laptop-editor', '--scope', 'inference', '--capability', 'full'])).toThrow('exit');
+      expect(errorText()).toContain('--capability full would do nothing');
+      expect(errorText()).toContain('capability gates MCP tools only');
+      expect(insertSql()).toBeUndefined();
+    });
+
+    it('accepts an explicit --capability read, which is what it would have stored anyway', () => {
+      runApiKeyCommand(['create', '--name', 'laptop-editor', '--scope', 'inference', '--capability', 'read']);
+      expect(insertSql()).toContain("ARRAY['inference']::text[]");
+      expect(insertSql()).toContain("'read'");
+    });
+  });
+
   it('reads --name in either flag form, and still refuses one that is a forgotten flag value', () => {
     runApiKeyCommand(['create', '--name=laptop', '--capability=read']);
     expect(insertSql()).toContain("VALUES ('laptop'");

@@ -53,11 +53,19 @@ export class ApiKeyAdminController {
    */
   @Post()
   async createKey(@Body() body: CreateApiKeyBody, @Req() req: Request) {
-    if (body.capability === 'full') {
+    // Asked of the MCP surface only. `capability` is what a key may do with the *tools*, and the
+    // owner/admin gate exists because 'full' reaches the destructive ones; an 'inference' key
+    // reaches no tool at all, so requiring an admin to mint one would gate a credential that
+    // cannot uninstall anything behind the rule written for one that can.
+    //
+    // Written as "not inference" rather than "is mcp" so that it fails CLOSED: the DTO defaults the
+    // field, but a caller constructed without going through it (a test, a future scope) must land
+    // on the gate rather than skip it by omitting a value.
+    if (body.capability === 'full' && body.scope !== 'inference') {
       await this.assertMayGrantFull(req);
     }
 
-    return this.adminService.createKey(body.name, body.capability, hubSessionOperatorUserId(req) ?? null);
+    return this.adminService.createKey(body.name, body.capability, hubSessionOperatorUserId(req) ?? null, body.scope);
   }
 
   /**

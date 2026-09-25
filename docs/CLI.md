@@ -198,6 +198,7 @@ later commands present.
 ```bash
 cihub login                            # catalog:write, for cihub submit
 cihub login --scope device:pair        # register devices without a browser
+cihub login --scope device:manage      # …and list, re-register or release them (cihub fleet devices)
 cihub login --device                   # device-code flow; automatic over SSH
 ```
 
@@ -205,10 +206,13 @@ cihub login --device                   # device-code flow; automatic over SSH
 | --- | --- |
 | `catalog:write` (default) | Submit apps to the marketplace catalog (`cihub submit`) |
 | `device:pair` | Register devices into the organization, which is what mints pairing codes |
+| `device:manage` | Everything `device:pair` may, plus list the organization's devices, mint a replacement pairing code for one, and delete one — what [`cihub fleet devices`](#cihub-fleet-devices) needs |
 
-**The two do not overlap.** A `catalog:write` token cannot register a device and a `device:pair`
-token cannot publish an app; each is refused with `401` by the other's routes. Both are org-scoped
-and revocable from Portal, and neither is a device key — pairing is what mints one of those.
+**They do not overlap upward.** A `catalog:write` token cannot register a device and a `device:pair`
+token cannot publish an app or delete a device; each is refused with `401` by the other's routes.
+`device:manage` is its own scope rather than a widening of `device:pair` so that a fleet install,
+which only needs to enrol machines, never holds a token that can destroy their records. All are
+org-scoped and revocable from Portal, and none is a device key — pairing is what mints one of those.
 
 A token reaches exactly the organizations its holder is a member of. Portal runs the same membership
 check it runs for a browser session, so signing in headlessly removes the human, not the
@@ -295,6 +299,78 @@ cihub config [env]           # show resolved config values only
 
 ---
 
+## Keeping the CLI and the stack together
+
+`cihub` and the Hub stack image ship on **two independent channels**, and moving one has never moved
+the other:
+
+| | Artifact | Moved by |
+|---|---|---|
+| CLI | `cihub` — inside the desktop package, as a Homebrew cask / Scoop app, or as a standalone `cihub-<os>-<arch>` release asset | `companion-hub update`, `brew upgrade --cask companion-hub`, `scoop update companion-hub`, `cihub self-update` |
+| Stack | `ghcr.io/companionintelligence/ci-hub:<tag>` | `cihub pool update`, the Hub's own [stack self-update](hub-stack-self-update.md), `cihub fleet update --hub` |
+
+Drift between them is silent and it breaks runbooks. Measured on `beta-max`, 2026-09-21: `cihub
+version` said `0.2.72`, the running stack was an untagged GHCR index matching no published tag, and
+`cihub pool ceiling` — merged, released and documented — answered `Unknown pool subcommand`. Every
+local check was green.
+
+Three commands now report it, and they all give the same answer:
+
+- **`cihub doctor`** carries a `CLI vs stack` line naming both versions.
+- **`cihub update`** prints the comparison before it does anything.
+- **`cihub pool update`** prints it after the redeploy — the moment the skew is created.
+
+### How the two sides are identified
+
+The CLI reports the version stamped into it at build time, plus the commit when the build stamped
+one (`cihub version` shows `cihub 0.2.73 (abc123def)` on a `dev` or pre-tag build).
+
+The stack is read off the running container and **never** from `CI_HUB_VERSION` — that value comes
+from the install's env file, no build writes it, and it was wrong on 10 of 16 fleet Hubs on
+2026-09-17. In order: a version tag in the image reference, then `org.opencontainers.image.version`
+when it is version-shaped, then the highest version tag Docker holds locally for the same image.
+
+A `:dev` image, a digest pin and a local build match none of those, so the commit
+(`org.opencontainers.image.revision`) is compared instead. When neither a version nor a commit is
+available on both sides, that is reported as **cannot be compared** rather than as a match.
+
+**Only a proven mismatch fails `cihub doctor`** — two builds that each name a release and name
+different ones. A `:dev` node whose image carries no release tag is a yellow note, because that state
+is normal there.
+
+### `cihub self-update`
+
+```bash
+cihub self-update                 # install the release the running stack is on
+cihub self-update --to 0.2.73     # install a specific release
+cihub self-update --check         # report what would be installed; change nothing
+```
+
+Replaces **a standalone `cihub` binary** with a release asset, in place. It is the missing half on a
+headless appliance, where the CLI arrives once through `cihub fleet install` and nothing ever moves
+it again. It does not touch the Hub stack — `cihub pool update` is that half.
+
+The default target is the release the **stack** runs, not the newest one: the point is to end the
+skew on this machine, and pulling `latest` onto a node pinned two releases back would just invert it.
+When the stack names no release, it falls back to the newest and says so.
+
+It refuses, with the right command instead, when:
+
+| Situation | Why |
+|---|---|
+| Installed by Homebrew or Scoop | Overwriting the file leaves the manifest claiming a version that is not on disk, and the next upgrade reverts it |
+| Shipped inside the desktop app | The desktop updater replaces the app and its bundled CLI as one artifact |
+| Running from a source checkout | There is no binary to replace — `git pull`, then `node scripts/build-standalone-cli.cjs` |
+| Windows | Windows cannot replace a running executable |
+| No `GH_TOKEN`/`GITHUB_TOKEN` | The CI-Hub releases are **private**; unauthenticated the API answers 404, which reads like "no such release" |
+
+Before anything is replaced, the downloaded asset is staged beside the target on the same
+filesystem, run once to make it identify itself, and checked against the version that was asked for.
+A candidate that will not run — a wrong-architecture asset exits 126 — is discarded and the existing
+`cihub` is left exactly where it was.
+
+---
+
 ## App lifecycle
 
 Manage individual Docker containers on the host machine, independently of the compose stack.
@@ -346,9 +422,10 @@ carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_K
 **not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
 
 ```bash
-cihub api-key create --name "laptop"                     # operator keys carry the 'mcp' scope
-cihub api-key create --name "fleet-qa" --scope qa:read   # read-only test key (see below)
-cihub api-key list                                       # id, name, scopes, capability, prefix
+cihub api-key create --name "laptop"                        # MCP key (the default scope)
+cihub api-key create --name "fleet-qa" --scope qa:read      # read-only test key (see below)
+cihub api-key create --name "laptop-zed" --scope inference  # editor or SDK key (see below)
+cihub api-key list                                          # id, name, scopes, capability, prefix
 ```
 
 The raw key is printed **once** at creation; store it immediately. Revoke keys in
@@ -362,6 +439,14 @@ scope on its key, and it is stored as `read`. A Hub built before `qa:read` exist
 but authenticates nothing with it. See
 [Reading these without an operator credential](hub-pool.md#reading-these-without-an-operator-credential).
 
+An `inference` key opens the OpenAI-compatible routes under `/api/inference/v1` and the app-facing
+pool proxy under `/api/inference/pool`, and nothing else. The Hub reads it only when a request
+arrives from outside the appliance network — through the Cloudflare tunnel, or from a public
+address — so an editor on the LAN or tailnet is admitted by origin and the key is never looked up.
+It must be the only scope on its key and is stored as `read`; capability gates MCP tools only, so
+`--capability write|full` is refused. A Hub built before `inference` existed accepts the row but
+authenticates nothing with it. See [Use your Hub from your editor](editor-inference.md).
+
 `create` also accepts `--capability read|write|full`, which decides what the key may do on the
 surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
 **Settings → Security**; the CLI has `create` and `list` only.
@@ -371,10 +456,10 @@ reach on every app, and it can't change an app's custom domain. **Settings → S
 "Creator unknown". A key created in **Settings → Security** acts with the grants and role of the
 person who created it, so create a key there to limit it to one person's access.
 
-Operator keys carry `mcp` only. The `app` scope belongs to **managed** keys the Hub provisions to
-installed apps and revokes on uninstall — the callback guard resolves the key's owning app, so an
-operator key carrying `app` would authenticate nothing. Names beginning `app:` are reserved for the
-same reason.
+Operator keys carry `mcp`, `qa:read`, or `inference` — the last two alone on their key. The `app`
+scope belongs to **managed** keys the Hub provisions to installed apps and revokes on uninstall —
+the callback guard resolves the key's owning app, so an operator key carrying `app` would
+authenticate nothing. Names beginning `app:` are reserved for the same reason.
 
 Connect an external MCP client with:
 
@@ -477,6 +562,8 @@ cihub pool unpair <id>                        # remove a peer and revoke both to
 cihub pool pin <node|local> [--model <id>]    # prefer one node for a model, or for everything
 cihub pool unpin [--model <id>]               # drop that preference and rank by load again
 cihub pool ceiling <tokens>|clear [env]       # longer prompts go to another node when one can serve them
+cihub pool context-cap <tokens>|clear [env]   # cap the num_ctx handed to this node's apps at the engine's context
+cihub pool slots <n>|clear [env]              # state how many requests this node's Ollama runs at once (OLLAMA_NUM_PARALLEL)
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
@@ -499,8 +586,9 @@ received it**.
 
 **It needs the Portal device key**, the same credential the dashboard uses, read from
 `state/settings.json`. A Hub that has never run `cihub register` has none, and the command says so
-instead of returning a bare 401. A key from `cihub api-key create` is MCP-scoped and is *not* accepted
-here.
+instead of returning a bare 401. A key from `cihub api-key create` is *not* accepted here whatever
+its scope: `mcp` opens the MCP endpoint, `qa:read` reads status and the routing log, and
+`inference` opens the [inference routes](editor-inference.md); none of them is an operator credential.
 
 ### `cihub pool status`
 
@@ -514,11 +602,24 @@ authentication modes are listed — there is no `pool pins` subcommand to keep i
 | `This node` | Name, tailnet, hardware tier, live queue depth, engines, and this node's pool **identity fingerprint** |
 | `Pairing` | Only when a PIN is outstanding: until when, and how to revoke it. Never the digits |
 | `Pins` | Each pin with its target resolved, and whether it can apply right now |
-| `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
+| `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, **context cap**, engines |
+| `Context caps` | Only once any node is capped: this node's cap and every connected peer's, side by side, with a warning when they disagree enough to change where a request goes |
 | `Ceiling` / `Prompt ceilings` | Only when set: this node's prompt ceiling (and whether the `.env` sets it), and each peer's advertised one |
 | `Measured speed` | Only once something has been timed: prompt and output rates per node, engine and model, with each peer shown as timed here and as it reported itself |
 | `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
 | `Peers refusing this Hub` | Only when a peer answers but refuses this Hub: **identity changed** (its database was recreated) or **credentials refused**, since when, when it is next probed, and the exact re-pair commands. See [A peer whose identity changed](./hub-pool.md#a-peer-whose-identity-changed) |
+
+The `CONTEXT` column and the `Context caps` block exist because a cap is an input to placement: an
+app is handed the largest cap among the nodes serving its model, and every node capped below that
+window is then placed behind. Three readings, and they never share a cell — a **number** is the cap
+routing applies, **`none`** is a peer that answered and named no cap (routing reads that as "takes
+any window", so the large windows land there), and **`?`** is a cap nobody here knows, from a peer
+never probed or a Hub predating the field. An absent cap is never drawn as a number, and `none` is
+never drawn as `?`. The block's warnings distinguish a deliberate spread (a batch-tier node capped
+low, which placement is built for) from an uncapped node among capped ones, which is the one that
+collects windows its own `OLLAMA_CONTEXT_LENGTH` may not run. `cihub pool peers` carries the same
+column, and one line when the peers disagree. `cihub pool doctor` decides the same question as
+check **F2**.
 
 The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
 bearer token takes **both** directions of that pairing down. The upgrade runs on a health poll by
@@ -536,6 +637,51 @@ The value is a whole number from 1024 to 1048576 — no `16k`, which means diffe
 people. The box reports the ceiling actually in force after the write: when
 `HUB_POOL_MAX_PROMPT_TOKENS` is set in the Hub's environment it wins, and the box says the command
 changed nothing in effect.
+
+### `cihub pool context-cap`
+
+`cihub pool context-cap 16384` caps the context window (`num_ctx`) this node's Hub hands its apps at
+16384 tokens; `cihub pool context-cap clear` removes the cap. It is the Hub's half of Ollama's
+`OLLAMA_CONTEXT_LENGTH`: set both to the same number and no app asks for a window the engine does
+not run, so nothing reloads — see
+[Context caps](./hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs)
+for the 25 GB → 44 GB reload that made it a setting. Across a fleet, `cihub fleet backends
+--ollama-context N --execute` sets both halves on every node ([below](#ollamas-runtime-environment-a-second-file-restarted-only-on-change));
+this command is the single-node form, for a node whose engine was configured some other way.
+
+The value is a whole number from 2048 to 1048576, digits only. Confirmed like `ceiling`, because it
+is a state change — and one that restarts the AI apps whose env it changes. The command reads
+`GET /api/inference/preferences` before the write (a cap that already reads as requested is left
+alone, so nothing restarts) and again after it, and the box reports the cap in force rather than the
+one requested. The write goes through `PATCH /api/inference/preferences`, the route that can remove
+the key; a Hub whose preferences carry no `maxNumCtx` predates the cap and is told so without a
+write. `cihub pool status` shows the cap under **This node**, and every connected peer's next to it
+under **Context caps**.
+
+### `cihub pool slots`
+
+`cihub pool slots 4` states that this node's Ollama runs 4 requests at once; `cihub pool slots clear`
+withdraws the statement. It is the Hub's half of Ollama's `OLLAMA_NUM_PARALLEL`, the way `context-cap`
+is the half of `OLLAMA_CONTEXT_LENGTH`: the pool ranks by queue depth and cannot otherwise tell a
+full 2-slot engine from a half-empty 4-slot one, and with `poolSlotAwareness` switched on an entry
+node places behind every node that still has a free slot before a node whose slots are full — see
+[Slot-aware placement](./hub-pool.md#slot-aware-placement) for the 0.47 s → 9.0 s first-token wait
+that made it a setting. Across a fleet, `cihub fleet backends --ollama-parallel N --ollama-context C
+--ollama-keep-alive D --execute` sets both halves on every node
+([below](#ollamas-runtime-environment-a-second-file-restarted-only-on-change)) — with the node's
+other runtime flags on the same line, because that file is rendered whole from the flags it is
+given and `--ollama-parallel N` alone would drop `OLLAMA_KEEP_ALIVE` and `OLLAMA_CONTEXT_LENGTH`
+from every node it touches; this command is the single-node form, and touches no daemon.
+
+The value is a whole number from 1 to 64, digits only, the bounds `--ollama-parallel` accepts.
+Confirmed like `context-cap`, because it is a state change — though unlike the cap it restarts
+nothing: it changes what this node advertises to peers and how the pool ranks it, not any app's
+environment. The command reads `GET /api/inference/preferences` before the write (a count already in
+force is left alone) and again after it, and the box reports the count in force rather than the one
+requested. The write goes through `PATCH /api/inference/preferences`, the route that can remove the
+key; a Hub whose preferences carry no `ollamaSlots` predates the setting and is told so without a
+write. `cihub pool status` shows the count under **This node**, with whether `poolSlotAwareness` is
+on here.
 
 ### Identifying a peer
 
@@ -660,6 +806,7 @@ Tailscale and no Hub. That machine is the one being set up.
 | **D3** | Non-streaming first-byte latency vs the 15 s peer connect timeout | A warm 27B model could not return **headers** in 15 s non-streaming while the identical streaming request answered in ~1 s. Measured against a model an engine is actually holding (`loaded`/`pinned`, text modality) — a model on disk would time its cold load, and an embedding model would answer 400 — and asks for a few hundred tokens, because the defect is buffering the whole completion and one token has nothing to buffer. Opt-in behind `--check-latency`; otherwise reported as skipped with the reason |
 | **E1** | Can the Hub container reach the host's inference backends? | The existing bridge section, reused unchanged: `ufw` silently blocked container→host Ollama on a node with 8 models and the Hub reported an empty inventory with no error |
 | **F1** | Does every paired peer still accept this node as the Hub it paired with? | beta-max's database volume was recreated, which gave it a new pool identity. Every peer answered each poll with a 401 for 28 hours, showed only `unreachable`, and passed every check above. Reads the Hub's own classification from `GET /api/inference/pool/status`: a changed identity fails, a bare 401 warns, and the notes carry the re-pair commands. It never probes or unpairs a peer itself |
+| **F2** | Do the nodes this one would route to agree on a context window? | Measured across the fleet on 2026-09-21, `OLLAMA_CONTEXT_LENGTH` ran from 8192 to 65536, and nothing anywhere said so — the only way to see it was to ssh to seventeen boxes and grep their systemd drop-ins. Since a cap became an input to placement, a disagreement decides which nodes a large window may go to. A spread is reported with the nodes it places behind (deliberate on a batch tier, a surprise otherwise); a node advertising **no** cap among capped ones is the harder finding, because "no cap" reads as "takes any window" in both rules, so it collects exactly the windows its own engine may not run. A cap nobody knows is never read as an absent one |
 
 Section **B** is written to one rule: an unprovable claim is not made. Where the evidence supports only
 "the repo has commits the image cannot contain", that is what it prints; where it supports nothing, it says
@@ -699,6 +846,47 @@ different branch, no checkout at all — is left untouched and reported, never r
 behalf. After the pull and redeploy it polls `/api/health` for up to ~20s, then reads `poolProtocol`
 off `/api/inference/pool/identify` so you know at a glance whether the redeploy landed and whether this
 build has Hub Pool at all.
+
+#### Which image it deploys
+
+The command exports `CI_HUB_IMAGE` into the `docker compose` child's **environment**, and Compose
+gives the process environment precedence over `--env-file`. So whatever this command resolves
+overrides the pin in the env file Compose was handed, and the resolution order is the whole story:
+
+| Order | Source | Meaning |
+|---|---|---|
+| 1 | `CI_HUB_IMAGE` in the command's environment | `CI_HUB_IMAGE=<ref> cihub pool update` — a deliberate one-off roll |
+| 2 | `CI_HUB_IMAGE` in the env file **Compose actually reads** | the node's standing pin |
+| 3 | `ghcr.io/companionintelligence/ci-hub:<env>` | last resort, for a node that pins nothing |
+
+Source 2 is read from the file named by the running container's
+`com.docker.compose.project.environment_file` label, not from the file this CLI would otherwise
+guess — on the fleet those are `.env.dev` and `.env` respectively. The line printed before the pull
+names the reference **and** which of the three sources chose it.
+
+Before this order existed the env file was not consulted at all, so an explicit digest an operator
+had written lost to the channel tag — which on an appliance is a **downgrade**, since
+`resolveHubContext` forces `prod` whatever env argument was typed and the fleet does not publish to
+`:prod`.
+
+#### It records what it deployed
+
+Once `/api/health` answers, the deployed reference is written back to that same env file as
+`CI_HUB_IMAGE`. Without this the value lived only in the command's environment: on 2026-09-21
+fifteen fleet appliances were rolled onto a new `:dev` digest while their env files went on naming an
+older one, leaving every node one reboot away from silently reverting to the build it had been moved
+off. `cihub doctor`'s `Image pin` line reports that state wherever it already exists.
+
+The write-back preserves the channel — it records the reference that was deployed, so a `:dev` node
+stays on `:dev` and a digest-pinned node stays on its digest. A redeploy that does **not** come up
+healthy writes nothing, so the pin keeps naming the build that was serving.
+
+#### The `[env]` argument on an appliance
+
+`cihub pool update dev` on a packaged install runs as `[prod]`: outside a checkout there is one
+stack, and `resolveHubContext` infers `prod` for it. The argument is now reported as ignored instead
+of quietly disagreeing with the banner. **The env argument does not select a release channel** —
+`CI_HUB_IMAGE` in the env file does.
 
 Runs before the device-key gate, like `doctor` — the node most likely to need it has no key yet either.
 
@@ -757,8 +945,10 @@ cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
-cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
-cihub fleet update [--hub] [--ollama] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, pull models
+cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--execute]  # Ollama's runtime env, one file, restart only on change
+cihub fleet backends --backends llamacpp [--llamacpp-model qwen3-coder:30b] [--ollama-parallel N] [--ollama-context N] [--execute]  # llama-server on :8081, serving the GGUF Ollama already holds
+cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
+cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet update --hub [--pin-digest <repo@sha256:…> | --to-majority] --execute   # pin the Hub build
@@ -770,6 +960,7 @@ cihub fleet rdp [--nodes a,b] [--execute]              # remote desktop on each 
 `backends`, `install`, `update` and `rdp` require `--execute`; without it they print the plan they
 would run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
 cihub fleet cert [--nodes a,b] [--execute]             # the tailscale TLS cert each node needs to pool
+cihub fleet devices list | release <d> | re-register <d>  # what Portal knows about the org's devices; fix it without a browser
 ```
 
 **`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
@@ -861,7 +1052,7 @@ while believing it was twenty is the worse failure.
 | `--all-tailnet` | `scan` only: enumerate every tailnet peer as a candidate. Off by default, because the tailnet is shared and a probe is an SSH attempt in each peer's auth log. With `--write-roster`, everything it finds becomes a target — see [`cihub fleet scan`](#cihub-fleet-scan) |
 | `--lan` | `scan` only: also sweep the local subnet. Off by default, because touching every address on the operator's subnet is a more intrusive act than listing a tailnet they already belong to |
 | `--write-roster` | `scan` only: save the result to `fleet.json` |
-| `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000) |
+| `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000). The Hub's backend-summary route (`/api/inference/health`) gets a 10 s floor on top of this, because it health-checks each backend with a 5 s timeout of its own and a busy engine puts it past 4 s on a healthy Hub; see the **HUB** column under [`cihub fleet scan`](#cihub-fleet-scan) |
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
 | `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
 | `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
@@ -896,6 +1087,25 @@ It writes nothing unless `--write-roster` is passed, and says so at the end rath
 to wonder. With no Tailscale CLI it says that too, and enumerates nothing — set `TAILSCALE_CLI` if
 yours is somewhere unusual.
 
+The **HUB** column is a probe outcome, not a yes/no, because a probe that ran out of time once looked
+identical to a port with nothing on it. On 2026-09-20 four Hubs under inference load read `—` under
+HUB and PORTAL while each was serving, registered, and answering `/api/registration/phase` within a
+second; it was `/api/inference/health` — which health-checks every backend the Hub fronts, each with
+its own 5 s timeout — that had outrun the 4 s budget. The cell now says which:
+
+| HUB | Meaning |
+|---|---|
+| `tier high, 6 backends` (`status`) / `yes` (`scan`) | Both routes answered |
+| `yes, slow` | A Hub is there — the phase route answered, so PORTAL is filled in — but its backend summary did not arrive in time. Usually inference load |
+| `timeout` | Nothing answered on the Hub port within `--timeout`, and nothing refused the connection either. A Hub may be listening; the probe cannot say, and the verdict does not nominate the node for an install |
+| `error` | The port answered, but not as a Hub: a non-2xx status or a body that is not JSON |
+| `—` | The connection was refused (or the host unreachable). Nothing is listening. The only outcome that means "no Hub" |
+
+The summary route gets a floor of 10 s regardless of `--timeout`, the way SSH gets 8 s; the phase
+route keeps the flag's budget. `--json` carries the outcome as `probe.hubProbe`
+(`ok` · `slow` · `timeout` · `refused` · `error`). A footer names every `timeout` and `yes, slow`
+node and the flag that separates a busy Hub from an absent one.
+
 **`--all-tailnet` is how a machine gets into the roster, and it is asked for by name** because the
 tailnet is shared: its peers are colleagues' laptops, phones and headsets alongside the appliances,
 and no ACL tag tells them apart (`tag:ci-server` is an internal test tag, not an inventory). The
@@ -913,6 +1123,12 @@ administrable, running a Hub, serving engines, and which Ollama each is serving 
 the node resolves for itself, marked when behind the pin, with a one-line fleet summary
 (`0.34.0 on 17/18; behind: localhost-0 (0.30.9)`). A node that cannot be read shows `—` and the
 reason. Neither touches a node beyond the probe.
+
+The **HUB** column reads `tier high, 6 backends` when both Hub routes answered, `yes, slow` when the
+Hub is there but its backend summary outran the budget (PORTAL is still filled in), `timeout` when
+nothing answered and nothing refused, and `—` only when the port refused the connection — the
+outcomes are listed under [`cihub fleet scan`](#cihub-fleet-scan). Before 2026-09-20 a Hub busy
+with inference and a node with no Hub printed the same `—`.
 administrable, running a Hub, serving engines — and which **Hub image** each is actually running,
 as a short image ID, with a footer naming the fleet's majority and every node off it:
 
@@ -940,6 +1156,19 @@ administrable, running a Hub, serving engines, and — for every node it can SSH
 binds and **which drop-in decided it** (`100.64.0.9:11434 ← zzzzz-cihub-bind.conf`), with a
 `CONFLICT` flag when more than one file sets `OLLAMA_HOST` and the winner is not the canonical one.
 Neither touches a node beyond the probe.
+
+The **RESIDENT** column is what each Ollama has loaded right now, from `/api/ps`, and **where**: a
+model whose `size_vram` is less than half its size on a node that has a GPU is marked
+`qwen3-coder:30b ⚠ CPU`, and a footer names the reason and the fix. It exists because on
+2026-09-21 six Strix Halo nodes served qwen3-coder:30b from the CPU — 37.5 tok/s against 75–79 on
+the GPU — with every other column green: version at pin, bind managed, engine answering. `size_vram:
+0` was the only tell, and nothing printed it. `—` is a daemon with nothing loaded; `?` is a node
+whose `/api/ps` could not be read (the reason is in `--json` under `residency.reason`). A CPU-only
+box running a model on its CPU is not marked. The reading and the GPU evidence come from the node
+itself over SSH; a node without SSH is read from here on `:11434`, which lists its models but,
+knowing nothing about its GPU or environment, never flags one. See
+[Vulkan and the iGPU key](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file) for the case the
+marker was built around.
 
 ### `cihub fleet preflight`
 
@@ -998,6 +1227,33 @@ starts a second daemon that collides on the port — and ollama.com's own instal
 so the check happens *before* anything is downloaded. And `--bind tailnet` on a node with no tailnet
 address fails rather than silently binding somewhere else.
 
+That skip is decided by **who holds the listening socket**, not by a unit's name. The probe reads
+the cgroup `ss -e` reports for the socket on `:11434` (printed to any user, pid or no pid) and
+classifies it: the system `ollama.service`, a user unit, a container, some other system unit. A
+user-scope unit whose name matches `ollama*` stops being the reason to skip in exactly one case:
+the **system** `ollama.service` is the thing serving the port. core-2 is the case that taught this
+(2026-09-21): it runs `ollama-tunnel.service` under `ci`'s `systemd --user` — an `ssh -L` to beta-1,
+listening on `:11435` — while the system `ollama.service` serves `:11434`; a guard that went by the
+name printed *"ollama-tunnel.service is running under ci's systemd --user; the system ollama.service
+path would start a second daemon"* and managed nothing on the node. Now the system unit there is
+managed, and the line says why the unit you can see in `systemctl --user` did not stop the run:
+
+```
+bind: ollama-tunnel.service is active under ci's systemd --user, but the system ollama.service (uid 997) is what serves :11434 — that unit is not the daemon; managing the system unit
+```
+
+Everywhere else the name refuses as it always did, on purpose. **Nothing listening** on `:11434`
+beside an active `ollama*` user unit is still a skip: that is exactly what beta-1 looks like for
+the second between `systemctl --user restart ollama-local` stopping the daemon and the new one
+binding, and the probe's `systemctl --user list-units` rows carry no `OLLAMA_HOST` that could tell a
+tunnel from a daemon that has not bound yet — so a free port is not treated as proof. Something
+listening whose owner the probe **cannot see** (no pid, no cgroup — an `ss` before iproute2 5.10)
+is a skip too, unless the socket's uid belongs to no login user at all; a login user's socket may
+be the unit's, or anyone's hand-started `ollama serve`. A socket whose cgroup `ss` prints as a bare
+`/` or as `unreachable:` names nothing and is read from `/proc/<pid>/cgroup` instead when a pid is
+disclosed. On `--execute` the same guard runs as root at the top of the install and adopt shells,
+and refuses or notes on the same evidence.
+
 An Ollama that is already answering is **adopted**, and the same bind policy is applied to it — the
 nodes that already run one are exactly where the arrangements diverge. A node that already reads back
 as `zzzzz-cihub-bind.conf` with the requested bind — and, for `all`, with `ollama-tailnet-guard.service`
@@ -1012,16 +1268,449 @@ canonical file) without changing anything.
 > marks a `0.0.0.0` bind whose guard is not active as **EXPOSED**. Use `--bind tailnet` only on a
 > node that runs no Hub container.
 
+#### Strix Halo: Vulkan and the iGPU key, in the bind file
+
+On gfx1151 (Strix Halo) the bind file carries two more lines beside `OLLAMA_HOST`, both derived
+from the hardware and both **required**:
+
+```
+Environment="OLLAMA_LLM_LIBRARY=vulkan"
+Environment="OLLAMA_IGPU_ENABLE=1"
+```
+
+`OLLAMA_LLM_LIBRARY=vulkan` because ROCm on gfx1151 runs NO_VMM and cannot back a large contiguous
+allocation with GTT: the driver advertises the whole ~60 GB pool as free and then fails to allocate
+21 GB, so every model above the ~2 GB VRAM carve-out fails to load. Six nodes returned HTTP 500 on
+every real model until it was forced. `OLLAMA_IGPU_ENABLE=1` because Vulkan alone is not enough:
+Ollama 0.34's runner **drops an integrated GPU** unless that key is set (`dropping integrated GPU;
+to enable, set OLLAMA_IGPU_ENABLE=1` in the journal), and then loads the model on the CPU and
+serves it at HTTP 200. Measured 2026-09-21 on ci, core-4, core-6, core-14, core-17 and fzzy:
+qwen3-coder:30b at `size_vram 0`, 37.5 tok/s decode and 109 tok/s prefill; with the key, 75–79 tok/s
+and ~530 tok/s prefill on the same nodes.
+
+The iGPU key used to live only in the runtime file, written when `--ollama-igpu on` was passed —
+and that file is rendered whole from the flags on every run, so a later run with `--ollama-parallel`
+alone rendered it away. That is how the six nodes lost it. A key the hardware requires now lives
+with the other key the hardware requires, in the file that is rendered from the hardware; no runtime
+flag can remove it. A gfx1151 node whose bind file predates this is not a no-op: the plan says
+`write zzzzz-cihub-bind.conf with OLLAMA_HOST=0.0.0.0:11434 OLLAMA_LLM_LIBRARY=vulkan OLLAMA_IGPU_ENABLE=1`
+and `--execute` restarts the daemon once to make it so.
+
+**Precedence.** systemd applies drop-ins in byte order of filename, last assignment winning, and
+`zzzzz-cihub-bind.conf` sorts before `zzzzz-cihub-runtime.conf` (`b` < `r`). So the bind file's
+`OLLAMA_IGPU_ENABLE=1` is the hardware default, and `--ollama-igpu on|off` in the runtime file is
+the operator override that wins when given — `off` writes `0`, which outranks the `1`. `--ollama-igpu
+unset` (or no flag) leaves the key out of the runtime file and the bind file's default in force. A
+test pins that ordering; if either file is ever renamed, it is the test that says the override
+stopped working. The two files assign no other key in common.
+
+**The check.** Every `fleet backends` run — dry or `--execute`, flags or no flags — reads `/api/ps`
+on each Ollama it can reach and prints one `resident:` line under the plan: `resident: none`,
+`resident: qwen3-coder:30b (18.6 GiB, GPU)`, or, on a node with a GPU, a warning:
+
+```
+! qwen3-coder:30b resident on CPU — size_vram 0 of 18.6 GiB: OLLAMA_LLM_LIBRARY=vulkan with OLLAMA_IGPU_ENABLE unset — Ollama drops an integrated GPU unless OLLAMA_IGPU_ENABLE=1, so the model loaded on the CPU; run 'cihub fleet backends --backends ollama --execute' — the managed bind file now carries OLLAMA_IGPU_ENABLE=1 beside OLLAMA_LLM_LIBRARY=vulkan on gfx1151
+```
+
+The reason is named only when every part of it is in evidence — Vulkan forced, the key not `1`,
+an integrated AMD part — from the merged environment the daemon resolved, never from a file. Any
+other model with less than half its bytes in VRAM on a GPU node is flagged as measured but not
+explained, pointing at `journalctl -u ollama`. On `--execute` the read happens after the daemon is
+up; a run that restarted it reads `none`, since a restart unloads everything. `--json` carries the
+reading under `residency`, findings under `residency.cpuResident` with `cause` set to
+`vulkan-without-igpu` or `unknown`. `fleet status` shows the same reading as its RESIDENT column.
+
+#### Ollama's runtime environment: a second file, restarted only on change
+
+Measured on 2026-09-20: no node on the fleet set `OLLAMA_NUM_PARALLEL`, so every Ollama served one
+sequence at a time and the pool's ceiling was the sum of fifteen single streams. Five flags manage
+the settings that change that, and they write **one separate drop-in**,
+`/etc/systemd/system/ollama.service.d/zzzzz-cihub-runtime.conf` — never the bind file, and never a
+file that mentions `OLLAMA_HOST`, so the bind step's "move aside anything that sets the bind" rule
+can never touch it:
+
+| flag | key | value |
+|---|---|---|
+| `--ollama-parallel N` | `OLLAMA_NUM_PARALLEL` | 1–64 |
+| `--ollama-keep-alive D` | `OLLAMA_KEEP_ALIVE` | a duration: `24h`, `30m`, `1h30m`, `-1` (forever) |
+| `--ollama-context N` | `OLLAMA_CONTEXT_LENGTH` | 512–1048576 |
+| `--ollama-igpu on\|off` | `OLLAMA_IGPU_ENABLE` | `1` or `0` — the operator override; on gfx1151 the bind file already sets `1`, see [above](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file) |
+| `--ollama-max-loaded N` | `OLLAMA_MAX_LOADED_MODELS` | 1–16 (`0` is refused: Ollama reads it as 3 × GPUs, not a cap — use `unset`) |
+
+Every flag also accepts **`unset`**, which leaves that key out of the file. The file is rendered
+whole from the five values on every run: a key you did not pass is not in it, and falls back to
+Ollama's default or to whatever another drop-in sets — so a run is reproducible from its command
+line, and `--ollama-parallel unset` is how you revert. With none of the five flags the runtime file
+is not touched at all.
+
+**Every run reports what each node's daemon runs now, flags or no flags.** The bind probe already
+reads the merged environment, so `cihub fleet backends --backends ollama` — no runtime flag, nothing
+written — prints one `runtime: now …` line per node with all five keys, `<unset>` included and in a
+fixed order, so two nodes' lines line up:
+
+```
+core-3   runtime: now OLLAMA_NUM_PARALLEL=<unset> OLLAMA_KEEP_ALIVE=<unset> OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=<unset>
+core-14  runtime: now OLLAMA_NUM_PARALLEL=2 OLLAMA_KEEP_ALIVE=24h OLLAMA_CONTEXT_LENGTH=32768 OLLAMA_IGPU_ENABLE=<unset> OLLAMA_MAX_LOADED_MODELS=2
+```
+
+That is the fleet-wide inventory of `OLLAMA_CONTEXT_LENGTH`, and `--json` carries the same values
+under each node's `bind.runtime.now`. It exists because there was no such inventory: on 2026-09-21
+the fleet's contexts ran from 8192 to 65536, and reading them meant an ssh and a `grep` on each of
+seventeen boxes. A node this run may not touch — a user-scope unit, a container — still reports its
+environment, since it still serves inference.
+
+**It reports the value the daemon resolved, not the one in a file — read it this way and nothing
+else.** The line comes from `systemctl show ollama -p Environment`, which is the merged environment
+after every drop-in. `grep`ping `/etc/systemd/system/ollama.service.d/*.conf` does NOT answer this
+question: a node may carry several drop-ins assigning the same key, systemd merges them in lexical
+filename order, and the LAST assignment wins. core-14 carries both a `10-ci-tuning.conf` setting
+8192 and `zzzzz-cihub-runtime.conf` setting 32768 — a grep that takes the first match reports 8192
+for a node that has been running 32768 all along. That failure mode is invisible unless you already
+know to look for a second file, and it misreported seven of sixteen nodes the one time it was tried.
+The `zzzzz` prefix exists precisely so cihub's file sorts last and wins; a drop-in that would sort
+after it is the only real conflict, and `--ollama-context` reports that one as `CANNOT WIN`.
+
+`--ollama-max-loaded` is the other half of `--ollama-keep-alive`. A 24h keep-alive with no cap on
+resident models is a slow leak: on 2026-09-21 three 27–30B models had piled up on batch-tier Strix
+Halo nodes next to vLLM, Lucebox and Lemonade — core-7 at 122/123 GB with swap full, core-17's
+kernel OOM-killing `llama-server` and dbus. `OLLAMA_MAX_LOADED_MODELS=2`, set by hand, freed
+122 → 56 GB (core-7), 109 → 72 (core-17), 95 → 49 (core-14) and 102 → 56 (fzzy). Pass it on every
+run that manages it: a run with `--ollama-parallel` alone renders the file without the key, and
+Ollama's default (3 × GPU count) is back in force after the restart.
+
+On `--execute` the step writes the file only if its bytes differ from what is on disk, and only then
+runs `daemon-reload` and `restart` — a restart unloads every resident model, and a fleet command
+will be re-run. Whatever it did, it re-reads `systemctl show ollama -p Environment` and prints the
+previous and new effective value of every managed key (`runtime OLLAMA_NUM_PARALLEL <unset> → 4`);
+a managed key that reads back with a different value fails the node, naming the later drop-in that
+must be overriding it. "Nothing to do" is judged on what the daemon runs, not on the file alone: a
+file whose bytes already match while `systemctl show` resolves a managed key to something else is
+still applied — if systemd reports it never loaded the file (a previous run cut off before
+`daemon-reload`), it is reloaded and Ollama restarted; otherwise the read-back fails the node as
+above. The dry run prints the same plan — what is in effect now, whether the file would change, or
+what the daemon resolves instead — and runs nothing. A node whose `:11434` belongs to a user-scope unit (beta-1's
+`ollama-local.service`) is skipped with the reason: a drop-in under `ollama.service.d/` configures
+nothing there, and that unit carries its own environment. A user-scope unit that merely *looks* like
+one (core-2's `ollama-tunnel.service`, an ssh forward beside a **serving** system unit) is not a
+skip — [the listener decides](#ollamas-bind-one-file-read-back); the same unit with nobody on the
+port is, because a free port is also what the real daemon looks like mid-restart.
+
+```bash
+cihub fleet backends --backends ollama                                                        # inventory only: every node's runtime env, nothing written
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h            # plan
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # apply, restart where changed
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-keep-alive 24h --execute  # again: unchanged, no restart
+cihub fleet backends --backends ollama --ollama-parallel 2 --ollama-keep-alive 24h --ollama-context 32768 --ollama-max-loaded 2 --execute  # the batch tier: 2 slots × 32k, at most 2 resident
+```
+
+**`--ollama-context` also sets each node's Hub context cap.** The Hub does not read this file, and
+Ollama's API does not expose `OLLAMA_CONTEXT_LENGTH`, so on every node where the runtime step applied
+or was already in effect, the same run tells that node's Hub the same number —
+`inferenceMaxNumCtx`, written over the node's own loopback API with the node's own device key (read
+inside the `ci-hub` container, or from `--data-dir`'s `state/settings.json`; never printed, never
+carried back). The Hub then hands its apps `min(model window, memory-sized recommendation, N)`
+instead of a window that reloads the model — on core-2 an uncapped 65536 handout against four 16384
+slots took `qwen3-coder:30b` from 25 GB to 44 GB, and every request at another size reloaded it
+again. See
+[Context caps](./hub-pool.md#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs).
+
+The step runs after the drop-in, so the daemon runs the context before the Hub is told about it, and
+prints its own `hub` line per node: `applied — context cap none → 16384 (PATCH /api/user-settings
+200)`, `unchanged — context cap already 16384`, or `failed` with the HTTP code (a non-2xx fails the
+node, like a drop-in that read back wrong). A cap is reported applied only after
+`GET /api/inference/preferences` reads it back — an older Hub's settings schema strips a key it does
+not know and answers 200 having stored nothing, and a Hub whose preferences carry no `maxNumCtx` at
+all is failed as predating the cap, with `cihub fleet update --hub` as the fix. The dry run prints
+`hub: would set inferenceMaxNumCtx=16384 …` under the runtime plan and dials no Hub.
+
+`--ollama-context unset` clears the cap as well, through `PATCH /api/inference/preferences
+{"backend": <current>, "maxNumCtx": null}` — `/api/user-settings` cannot remove a key — and skips the
+write on a Hub that has none, because that route restarts every AI app on any write. The cap is
+touched **only when `--ollama-context` is passed**: a run with just `--ollama-keep-alive` renders the
+file without `OLLAMA_CONTEXT_LENGTH` but leaves the Hub's cap alone, so pass the flag on every run
+that manages it, the way the file's own reproducibility already asks. A node the runtime step
+skipped (user-scope unit) or failed keeps whatever cap it had; its line already says why.
+
+**`--ollama-parallel` also sets each node's Hub slot count**, on exactly the same terms: the same
+run tells the node's Hub `inferenceOllamaSlots=N` after the drop-in applies, so the pool knows how
+many requests the daemon runs at once and — with `poolSlotAwareness` on — places behind every node
+with a free slot before one whose slots are full (see
+[Slot-aware placement](./hub-pool.md#slot-aware-placement)). Same loopback write, same `hub` line
+(`applied — slot count none → 4 (PATCH /api/user-settings 200)`), same read-back before anything is
+called applied, same `unset` clearing through the preferences route, and a Hub whose preferences
+carry no `ollamaSlots` is failed as predating the setting. When both flags are given the cap is
+written first, then the slot count, each as its own `hub` line.
+
+```bash
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context 16384 --ollama-keep-alive 24h --execute   # drop-in + each Hub's inferenceOllamaSlots=4 and inferenceMaxNumCtx=16384
+cihub fleet backends --backends ollama --ollama-parallel 4 --ollama-context unset --ollama-keep-alive 24h --execute   # drop the context key from the file, clear each Hub's cap; slots still 4
+cihub pool context-cap 16384                                                                                           # the same cap, on this node only
+cihub pool slots 4                                                                                                     # the same slot count, on this node only
+```
+
+Both `fleet backends` lines carry `--ollama-keep-alive 24h` because the file is rendered whole from
+the flags on the line: a run that names only `--ollama-parallel` and `--ollama-context` would drop
+`OLLAMA_KEEP_ALIVE` from every node and restart each daemon to make it so. Roll the Hubs
+(`cihub fleet update --hub --execute`) before the first run that passes `--ollama-parallel`: on a
+Hub that predates the slot count, the drop-in applies and then the `hub` line fails as above, which
+leaves that node's daemon at N slots with its Hub stating nothing.
+
+#### llama-server: the same GGUF Ollama holds, on `:8081`
+
+`--backends llamacpp` runs `llama-server` (the `ghcr.io/ggml-org/llama.cpp` server image, build
+b11065 pinned) on a node as a systemd unit, **serving the exact model file its Ollama already has**.
+Measured 2026-09-21 on core-6 (Strix Halo, gfx1151) against the blob Ollama loads for
+`qwen3-coder:30b`, four slots of 32k each: prefill 1096 tok/s on a 16.3k prompt against 529 for
+GPU-Ollama, decode 70.7 against 75, 146.5 tok/s aggregate over four streams at 0.86 s to first
+token, 9 of 9 well-formed tool calls where Ollama managed 2 of 3 (ollama/ollama#18563), and a
+follow-up turn on a cached 16k prefix in 0.11 s. Agent traffic on this fleet is prefill-bound, so
+that first number is the one that matters. Speculative decoding was measured too, and was a net
+loss: the CLI never enables it.
+
+**Only when named.** Every other backend here is planned by a run that names none; this one is not,
+because a llama-server holds a whole model in memory beside Ollama's copy, and a run that did not
+ask must not double a node's residency. `cihub fleet backends` without `--backends llamacpp` still
+*reports* what is on the port and installs nothing: a server that names itself `llamacpp` on
+`/v1/models` reads `adopt` (with this CLI's own unit named when it is the one serving), a listener
+that names nothing reads `skip — something answers on :8081 but does not name itself llamacpp … —
+not adopted`, and neither touches the Hub. The `hub` steps below — `LLAMACPP_URL`, the `ci-hub`
+recreate, the slot count and cap, the `:8081` firewall rule — run only on a run that named the
+backend, so a plain `fleet backends` never re-adds a `LLAMACPP_URL` an operator removed. The gates
+are Lucebox's: Linux, a usable Docker.
+
+**The model is Ollama's blob, mounted read-only — never a second download.** The node resolves its
+own store (`OLLAMA_MODELS` from the daemon's merged environment, then the account's, then
+`/usr/share/ollama/.ollama/models`), reads the tag's manifest, and mounts the store into the
+container at `/models:ro` with `--model /models/blobs/sha256-<digest>`. `--alias <tag>` makes
+`/v1/models` report the Ollama tag, so an app that asks for `qwen3-coder:30b` reaches the same
+model by the same name on either engine. A tag Ollama has not pulled is refused by name, before
+the image is pulled or the unit written:
+
+```
+llamacpp: would skip — qwen3-coder:30b — no manifest at /mnt/cache/ollama/manifests/registry.ollama.ai/library/qwen3-coder/30b (ollama pull qwen3-coder:30b on this node first)
+```
+
+**Which model.** `--llamacpp-model <ollama-tag>` names it for every node in the run. Without the
+flag each node's **own Hub** is asked what it hands out for `auto` — the pinned `preferredModel`
+mapped to its Ollama tag through the onboarding profile, or the first recommended Ollama LLM the
+Hub reports installed — so a fleet whose nodes pin different models gets each node's own. A Hub
+that pins a vLLM row, or one the catalog cannot map, or nothing installed, is a skip that names the
+flag; the CLI never invents a tag. The tag is validated before any machine is dialled: it lands in
+a unit file's `ExecStart` and in a manifest path.
+
+**Which image.** Decided per node from the hardware facts the run already read: an AMD `gfx11xx`
+target → `server-rocm`, measured — ROCm loaded fine on gfx1151 at 33 GB of GTT, with none of the
+NO_VMM trouble that [forces Ollama onto Vulkan there](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file);
+any other AMD part → `server-vulkan`, the fallback that loads everywhere (604 prefill, 81 decode,
+a three-minute cold start on the same node); NVIDIA with a live driver → `server-cuda`; nothing →
+`server`, the CPU image. The unit passes each image what it needs — ROCm `/dev/kfd` and `/dev/dri`
+with the host's `video` and `render` group **ids** (resolved with `getent` on the node, because
+`--group-add video` is looked up in the container's `/etc/group`, where the id differs), Vulkan
+`/dev/dri` and the same groups, CUDA `--gpus all`, CPU nothing.
+
+**The flags** are the measured set and are not knobs: `-ngl 999 -fa on -ub 2048 -b 2048
+--cache-reuse 256 --jinja --metrics`, with `-np` from `--ollama-parallel` and `-c` from
+`--ollama-parallel × --ollama-context` — four slots of 32768 (`-np 4 -c 131072`) when neither flag
+is given. llama-server divides `-c` across its slots, which is why the product is what it is
+passed; `/props` reads back `total_slots` and the per-slot `n_ctx`, and the install is not called
+done until both match what was asked. Pass the same two flags you pass Ollama and the two engines
+run the same shape.
+
+**Port 8081, not llama-server's own 8080.** 8080 is mlx-dspark's default *and* the Traefik
+dashboard on every appliance — `ss` shows it taken on a node that runs no llama-server at all. The
+container listens on 8080 inside and the unit publishes it on `:8081`; the Hub's `LLAMACPP_URL` is
+opt-in for the same reason, and this step writes it explicitly (below).
+
+**Published on three addresses, never on 0.0.0.0.** llama-server has no authentication, and a bare
+`-p 8081:8080` is a `0.0.0.0` (and `[::]`) bind whose traffic Docker DNATs in PREROUTING — it never
+reaches ufw's INPUT chain, so the port guard that keeps the LAN out of Ollama would not keep it out
+of this. The unit carries three `-p` entries, resolved on the node when it is rendered: `127.0.0.1`,
+the node's tailnet address (`tailscale ip -4`, kept only when it looks like an address — a stopped
+tailscaled prints a sentence), and the docker0 gateway (`ip -4 addr show docker0`, falling back to
+`docker network inspect bridge`), which is what `host.docker.internal` resolves to inside `ci-hub`.
+Peers reach the server through the node's Hub, never directly, so the tailnet entry is for the
+operator's own `curl`; a LAN host gets a refused connection. The dry run prints the three and warns
+in yellow when the docker0 gateway could not be found, because the Hub would then reach nothing at
+`LLAMACPP_URL`. A tailnet address that changes rewrites the unit and restarts it, the same as any
+other change to its bytes. The firewall step admits the Docker bridge to `:8081` **on this node
+only** — see [Firewall rules](#firewall-rules-for-the-hubs-engine-probes).
+
+The ROCm image alone also runs `--security-opt seccomp=unconfined`, copied from the Lucebox runner
+for the reason recorded there: ROCm's userspace queues issue ioctls the default seccomp profile
+blocks. The core-6 measurement ran with it; whether llama-server's ROCm build needs it has not been
+tested on a node without it, so the measured configuration stands until it is. Vulkan, CUDA and the
+CPU image keep the default profile.
+
+**One unit, restarted only when its bytes change.** The unit is `cihub-llamacpp.service`, rendered
+on the node from what the node knows — the store, the digest, the group ids, the docker binary —
+into a temp file and compared with `/etc/systemd/system/cihub-llamacpp.service`. Identical bytes on
+an active unit run nothing: a restart unloads the model, and a fleet command will be re-run. A
+changed model, image or flag rewrites it, `daemon-reload`s and restarts; matching bytes on a unit
+that is not running start it. The dry run runs the same resolution unprivileged and prints the
+exact `docker run` it would install, and whether the installed unit already carries it:
+
+```
+core-6  linux/x86_64 · amd/gfx1151 · load 0.4
+  llamacpp  would install — AMD gfx1151 — ROCm image (measured on gfx1151) — installing cihub-llamacpp.service: ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 serving Ollama's qwen3-coder:30b (this node's Hub pins qwen3-coder-30b for auto) as 4 × 32768 (-np 4 -c 131072) on :8081
+            llamacpp: model sha256-1194…006a under /mnt/cache/ollama, mounted read-only
+            llamacpp: /usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080 --device /dev/kfd --device /dev/dri --group-add 44 --group-add 992 --security-opt seccomp=unconfined -v /mnt/cache/ollama:/models:ro ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 --model /models/blobs/sha256-1194…006a --alias qwen3-coder:30b --host 0.0.0.0 --port 8080 -ngl 999 -fa on -np 4 -ub 2048 -b 2048 --cache-reuse 256 --jinja --metrics -c 131072
+            llamacpp: published on 127.0.0.1, 100.64.0.6 (tailnet), 172.17.0.1 (docker0 — host.docker.internal inside ci-hub); never on 0.0.0.0 — Docker's DNAT would bypass ufw and the port guard
+            llamacpp: would write cihub-llamacpp.service, then daemon-reload and restart it (the model reloads)
+            hub: would set LLAMACPP_URL=http://host.docker.internal:8081 in the env file compose reads and recreate ci-hub, unless the running Hub already carries it
+```
+
+**What is on the port decides the plan**, three ways, because the host probe can ask: `:8081`
+answering `/v1/models` with `owned_by: llamacpp` from **this CLI's own unit** is converged (the
+apply above, which restarts only on change); a llama-server there that the unit did not start — a
+hand-run one — is **adopted** with nothing installed, the way a hand-started Ollama is; a server
+naming any other engine is **refused**, since the port is not ours to fight for. A listener that
+names nothing yet (a llama-server still mapping its GGUF answers 503) is adopted on port evidence
+rather than restarted from under itself.
+
+**On `--execute`** the unit step pulls the image if absent, writes and restarts as above, then polls
+`/health` for up to ten minutes — 503 while the GGUF is still being mapped, and a port that
+accepts a connection and then makes the first request wait minutes is not up — and reads back
+`/v1/models` and `/props`. The node is reported `installed` only when the server answers 200,
+names itself `llamacpp` under the requested alias, and reads back the requested slots × context;
+`adopted` when the unit already carried all of it and nothing restarted. A server that came up as
+somebody else, or a shape that does not match, fails the node with the difference in the sentence.
+A container that dies at start is a **crash loop**, not a slow load: the unit is `docker run --rm`
+under `Restart=always`/`RestartSec=5`, so systemd starts it again every five seconds, `is-active`
+never reads `failed`, and `docker logs` answers "No such container" because `--rm` already removed
+it. The wait watches `systemctl show -p NRestarts` and stops after the third automatic restart —
+seconds, not ten minutes per node — and the failure line names it (`llama-server is crash-looping:
+systemd restarted cihub-llamacpp.service 3 times in 15 s …`) with the last twenty lines of
+`journalctl -u cihub-llamacpp.service` beneath it, which is where a ROCm allocation failure or a
+bad flag shows.
+
+**Then the Hub's half.** A llama-server the Hub cannot see is a candidate the pool never offers —
+the case [Hub Pool spends a section on](./hub-pool.md#when-a-node-runs-the-model-and-the-hub-cannot-see-the-engine)
+— so after an install or an adoption the same run writes `LLAMACPP_URL=http://host.docker.internal:8081`
+into the node's env file and recreates `ci-hub` with it, the way `LEMONADE_URL` and `DSPARK_URL` are
+set for the other out-of-band engines. The file is the one the running container's
+`com.docker.compose.project.environment_file` label names (`~/.local/share/companion-hub/.env.dev`
+on this fleet — a guess of `.env` lands in a file compose never opens), the line is replaced in
+place when present and appended otherwise (after terminating a file with no trailing newline, the
+shape that produced `TRAEFIK_DASHBOARD_PORT=8080LEMONADE_URL=…` on two nodes), and the recreate is
+`docker compose up -d --no-build --no-deps ci-hub` with the project, working directory and compose
+files the container's own labels record — never a guessed project name. "Nothing to do" is judged
+on the **running** container's environment, not the file: a line written by a cut-off run and
+never applied is exactly the state that leaves. Unprivileged, like the cap step; a `hub` line per
+node reports `applied` (with the seconds until `/api/health/live` answered again), `unchanged`, or
+`failed` with the fix — `cihub up` on the node when the container carries no compose labels.
+
+**And the slot count and cap**, only when Ollama's runtime step is not in the run to state them and
+only from a server that read back the requested shape: `--ollama-parallel` and `--ollama-context`
+on a llamacpp-only run write `inferenceOllamaSlots` and `inferenceMaxNumCtx` to the node's Hub
+exactly as the Ollama path does, so peers — which see only the statement — rank the node by the
+slots llama-server actually runs. With both `ollama` and `llamacpp` named, the halves follow the
+Ollama runtime step and are written once. The Hub itself reads the local llama-server's `/props`
+directly and believes it over the statement; see
+[Slot-aware placement](./hub-pool.md#slot-aware-placement).
+
+```bash
+cihub fleet backends --backends llamacpp --nodes core-6                                   # plan: each node's Hub names the model, the blob resolves, nothing runs
+cihub fleet backends --backends llamacpp --llamacpp-model qwen3-coder:30b --execute       # install on every node whose Ollama has the tag; write LLAMACPP_URL; recreate ci-hub
+cihub fleet backends --backends llamacpp --ollama-parallel 2 --ollama-context 32768 --execute   # 2 × 32k (-np 2 -c 65536), and each Hub's slot count and cap to match
+cihub fleet backends --backends llamacpp --execute                                        # again: unit unchanged, nothing restarted, Hub already pointed at it
+```
+
+The `llamacpp` backend in the Hub is still a URL and a health check — it cannot tell a fleet-run
+server from a hand-run one and does not need to. On a node that is not in the fleet roster, run
+`llama-server` yourself and set `LLAMACPP_URL`; see
+[Three backends on one port](./hub-pool.md#three-backends-on-one-port) for how the Hub tells whose
+server it reached.
+
+#### Firewall rules for the Hub's engine probes
+
+Every pooled request runs a live health probe against each local engine port before it ranks
+candidates — six probes, each with a 5 s timeout. On a node whose `ufw` silently **drops** the
+Docker-bridge SYN to an engine port, the probe cannot get a reset and waits out the whole timeout:
+measured 2026-09-20 as a flat 5.0 s pool TTFT on beta-nas, beta-1, core-6 and core-5, against
+22–100 ms once the port answered. Only `:11434` had ever been allowed through.
+
+So `backends` also plans, for every node where ufw is active,
+`ufw allow from 172.16.0.0/12 to any port <p> proto tcp` for each port the Hub probes — **8000**
+(vllm/mtplx/lucebox), **8080** (dspark), **13305** (lemonade) and **8216** (the lucebox-hub stack) —
+next to the existing bridge → `:11434` rule, plus **8081** (the fleet's llama-server) **only on a
+node where the Hub will probe it**: one where `--backends llamacpp` was named in the run, or where
+`cihub-llamacpp.service` already runs. The Hub probes `LLAMACPP_URL` only when it is set, and the
+llamacpp step is what sets it, so fleet-wide the rule would match nothing and read "would add 1
+rule" on every node. Where it is set, the rule matters exactly when the server is down — a running
+unit's published port is DNATed before ufw sees it, but with nothing published the probe hits
+INPUT and a silent DROP costs 5 s per pooled request. `172.16.0.0/12` is Docker's whole default
+address pool, so compose networks are covered without enumerating them. It reads `ufw status` the way ufw
+does — top down, first match wins, and `ufw allow` appends — so a port the table already decides
+for the bridge gets nothing added: an `ALLOW` (from that CIDR or wider, or from `Anywhere`, alone
+or in a list such as `8000,8080,13305/tcp`) is reported as present, and a `DENY` or `REJECT` the
+operator placed (the audit's `ufw reject … port 8000,8080,13305` on beta-1, beta-nas, core-6 and
+core-5, kept as reject on beta-1's `:8000` on purpose) is reported as failing fast and left alone —
+an allow appended behind it would never fire. After adding, the step re-reads the whole table and
+fails the node if the first rule matching a planned port is still not an allow, however many allow
+rows sit below. Nothing is planned where ufw is inactive or absent — nothing drops the probes there
+— and a node whose `ufw status` needs root the account does not have says so rather than guessing.
+`--execute` only, like everything else here; the dry run prints the exact commands per node.
+
 ### `cihub fleet install`
 
-Per node, in order: probe hardware → **load gate** → Linux and Docker check → install `cihub` →
-`hub up` and register → **claim** → install the status-file timer → **tailscale cert** → optionally
-join a pool. Each step
 Per node, in order: probe hardware → **load gate** → Linux and Docker check → **preflight** →
-install `cihub` → `hub up` and register → **claim** → install the status-file timer → optionally join
-a pool. Each step
-re-checks the state it claims to have produced, because a step that trusts an exit code is how a fleet
-ends up believing it registered machines it never reached.
+install `cihub` → **portal device** → `hub up` and register → **claim** → install the status-file
+timer → install the GPU probe timer → **tailscale cert** → optionally join a pool. Each step re-checks the state it claims to have
+produced, because a step that trusts an exit code is how a fleet ends up believing it registered
+machines it never reached. `hub up` reads the port the Hub was actually given (`API_PORT`, which a
+port heal can move) and fails when nothing answers there or the answer does not say `registered`.
+
+The **`cihub` binary** comes from this machine, not from the node. The release assets live in a
+private repository, so a node cannot fetch them; the first installer had each node try and every
+node got a 404. Either set `GH_TOKEN` (for example `GH_TOKEN="$(gh auth token)"`) and the run
+fetches the release asset here — once per architecture, verified to be an ELF binary — and streams
+it down the SSH session it already holds, or pass `--cihub-binary <path>` to a `cihub-linux-x64` /
+`cihub-linux-arm64` asset already on disk (`--cihub-version <tag>` pins which release the token
+fetches; default `latest`). The token never reaches a node. Before any node is dialled, the run
+resolves what it has to a version: `latest` becomes the tag GitHub names right now, printed on the
+summary line as `release v0.2.72 (latest)`, and a `--cihub-binary` is run here with `version`. Every
+node then compares against that one real version, never the word `latest`. A `cihub` already on the
+node is adopted only when it is not older than it — a forgotten `~/.local/bin/cihub` from months ago
+once drove a fresh install and ran `up` against service names that no longer existed, and a July
+build adopted against `latest`, with a current release in hand, did not know how to seed a headless
+Hub — and a copy that would shadow `/usr/local/bin/cihub` on the login shell's PATH is moved aside
+(renamed, never deleted) so the node runs the one that was just installed. When nothing comparable is
+on offer — no token and no file, a release lookup the token cannot do, or a `--cihub-binary` that
+will not run on this machine (an arm64 asset on an x64 laptop; `--cihub-version` then names what it
+is) — an existing `cihub` is still adopted, and the node's line says `version not compared` and why,
+rather than reading like a check that passed.
+
+The **portal device** step mints the node's pairing code as late as possible: after every gate and
+after the binary is on the node, immediately before `register`. A code is one device's credential
+and Portal refuses a second device by the same name, so minting first meant one failed download
+left an orphan device in Portal and a name the next attempt could not use. A minted code is kept
+in `~/.config/cihub/fleet-pending-pairing-codes.json` (owner-readable only, scoped to the org of the
+login that minted it) until the Hub reports registered, and a retry reuses it. A kept code that a
+later `cihub fleet devices re-register` replaced is refused, naming the re-register, rather than
+sent — Portal honours only the newest (see `fleet devices` below). A `409` on mint names the two
+things it can mean — an orphan from an earlier attempt, or a node registered under another org —
+because only a person in Portal can tell which; when this machine re-registered the device, the
+`409` says that instead, and to pass the code with `--code`.
+
+A code Portal *refuses* is a different failure, and until 2026-09-22 it was the one with no way out:
+fifteen nodes failed with `410 PAIRING_CODE_INVALID`, and the two retries that followed re-sent every
+one of those dead codes — same code, same mint timestamp on the line — because the kept code was
+never dropped, not even after all fifteen devices were released in Portal. Now `register`'s answer is
+read. A refusal (`no longer valid`, `PAIRING_CODE_WRONG_DEVICE`, `DEVICE_PROOF_REQUIRED`) drops the
+kept code, and where the stored login is `device:manage` the run re-registers the device for a live
+code and sends that one, once — a re-register rather than a second mint, because the device row
+already exists and `POST /api/devices` would answer `409`. With a `device:pair` login there is
+nothing to re-register with, so the node's line says so and names the scope; the dead code is dropped
+either way, so the next run mints instead of re-sending it. The dry run says which of the two the
+stored login is before anything is dialled.
+
+A failure *after* Portal accepted the code is not retried at all. Portal claims a pairing code at
+validation and provisions the Cloudflare tunnel and DNS record afterwards, so a `DNS provider error
+while creating record` — despite its own "Please retry" — arrives with the code already spent, and a
+replacement meets the same wall: one node burned three freshly minted codes on three identical DNS
+errors. Those failures drop the kept code and stop the node, saying the code was spent and that the
+failure under it is what needs fixing. A failure that never reached Portal at all (`hub up` died
+first, the Portal was unreachable) leaves the kept code alone, to be reused on the next run.
 
 The **claim** step is the one this list used to be missing. Registering a node does not give it an
 operator, and a Hub with no operator answers `409 AUTH_ERROR_HUB_NOT_CLAIMED` to its own device key —
@@ -1066,8 +1755,18 @@ failure, whatever `pool update` said. The pin holds for that run only — it rea
 `CI_HUB_IMAGE` and is not written to the node — and the run ends by saying so.
 
 `--models a,b` pulls each model, trying the Hub-managed container, then a host `ollama` binary, then
-the HTTP API, because this fleet runs Ollama three different ways. Pass at least one of the two
-flags, or the command says there is nothing to do and exits `0`.
+the HTTP API, because this fleet runs Ollama three different ways. Pass at least one of the flags,
+or the command says there is nothing to do and exits `0`.
+
+`--gpu-probe` installs the per-process GPU VRAM probe on each node — the same step `fleet install`
+runs, alone, so it can be rolled onto a fleet that is otherwise untouched. It writes the checked-in
+`scripts/host-probes/cihub-gpu-processes.{sh,service,timer}` (bundled into the CLI) to the SSH
+account's `~/.local/bin` and `~/.config/systemd/user`, takes one sample, enables lingering, and
+enables the timer: `nvidia-smi` or `rocm-smi` on the host every 15 seconds into
+`<data-dir>/state/hardware/gpu_processes.json`, which the Hub container reads; the container itself
+has neither tool. A node with neither tool is reported as skipped, not failed. The Hub needs no
+restart and no new `cihub` binary on the node. What the file means and how the Hub uses it is in
+[`fleet-setup.md`](fleet-setup.md#per-process-gpu-vram-a-host-timer-the-hub-reads).
 
 `--models recommended` asks **each node's own Hub** for the list it already computes for that
 hardware, rather than applying one list to every machine — the flat list is how this fleet drifted
@@ -1139,6 +1838,48 @@ would print the private key into the SSH session's captured output.
 Non-Linux nodes, nodes without tailscale, and nodes where this session has neither root nor
 passwordless sudo are skipped with the reason on their line. The local node is never dialled; run
 `sudo tailscale cert` on it by hand.
+
+### `cihub fleet devices`
+
+```bash
+cihub fleet devices list [--org <id>] [--json]
+cihub fleet devices release <name|slug|id> [--org <id>] [--yes]
+cihub fleet devices re-register <name|slug|id> [--org <id>]
+```
+
+What Portal knows about the organization's devices, and the two changes to it a fleet operator
+needs without a browser. None of these dials a node; they talk to Portal with a stored
+`cihub login --scope device:manage`, and refuse — naming that command — with anything less.
+
+`release` deletes the Portal record and everything under it (tunnel, DNS, installed apps'
+registrations, OAuth client), exactly as the browser's delete does, and asks first unless `--yes`.
+It is for a device this organization no longer owns. Reinstalling fifteen nodes from scratch on
+2026-09-18 left three that Portal still knew under their old organization — `cihub register`
+answered `403 DEVICE_PROOF_REQUIRED` on every attempt, because Portal keys devices globally by
+device ID and the wipe had destroyed the key that would prove ownership — and one whose name an
+earlier failed attempt had taken. Each needed a person in Portal; now `release` from a login in the
+old organization frees it, and `fleet install` enrols it into the new one.
+
+`re-register` keeps the record and mints a replacement pairing code, marking the device inactive
+until it pairs again: for a node that is staying in this organization but has lost its key. The
+code is printed with the `cihub register --code` line to run on the node.
+
+Portal honours only the newest code, so a re-register also kills any code a `fleet install` on
+this machine had kept for the node (see `fleet install` above). On 2026-09-20 a re-register of
+core-1 was followed by `fleet install --nodes core-1`, which reused the code it had kept from the
+day before and failed at register with "Pairing failed". Now `re-register` writes the new code
+into the kept-codes file under the roster node whose name is the device's name or slug — the
+same mapping `fleet install` uses when it mints — replacing the stale one, and prints the
+`fleet install --nodes <node> --execute` line that will reuse it. If no roster node carries the
+name, it says so; pass the code to the next install with `--code`. Every re-register is also
+recorded, so a `fleet install` that still finds a kept code older than a re-register for that
+device refuses it and names the re-register, instead of sending a dead code. A re-register run on
+another machine leaves no record here.
+
+Targets must match exactly one device by name, slug or Portal id — `core-1` never matches
+`core-17` — and an ambiguous name is refused with the candidates listed, because this precedes a
+delete. `--org` names another organization the login's holder belongs to; the default is the one
+the login was minted for.
 ### `cihub fleet boot-params`
 
 Brings AMD Strix Halo (gfx1151) nodes up to the kernel parameters CI-OS now sets at first boot —
@@ -1204,6 +1945,8 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
 | `fleet boot-params --execute` | Any node failed, or was **refused** — by the quoting check or the console gate. A refusal is work the run did not do, and a chain must not read it as done. The dry run exits `1` only for a node it could not read |
 | `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
+| `pool context-cap` | The Hub's build predates the cap (nothing was written), or the cap read back after the write is not the one requested |
+| `pool slots` | The Hub's build predates the slot count (nothing was written), or the count read back after the write is not the one requested |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
@@ -1272,7 +2015,7 @@ normalization is in `scripts/lib/cli-args.ts`.
 | `cli-pool.ts` | `pool` |
 | `cli-fleet.ts` | `fleet` |
 | `cli-api-key.ts` | `api-key` |
-| `cli-update.ts` | `version`, `update`, `connect` |
+| `cli-update.ts` | `version`, `update`, `self-update`, `connect` |
 | `cli-wizard.ts` | `wizard` |
 | `catalog-submit.ts` | `login`, `logout`, `submit` |
 
@@ -1281,7 +2024,8 @@ appliance), `hub-context.ts` (env file, compose files, and working directory for
 context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded the same everywhere),
 `cli-proc.ts` (process execution), `cli-ui.ts` (colors, boxes, help and man rendering),
 `cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
-and pinning).
+and pinning), `cli-version-skew.ts` (the CLI-vs-stack comparison the three update entry points
+share) and `cli-self-update.ts` (which channel owns this binary, and the in-place replacement).
 
 `cli-fleet.ts` owns argument parsing and the eight subcommand runners only; the work is in
 `fleet-roster.ts` (the saved fleet), `fleet-discover.ts` (the three probe axes), `fleet-ssh.ts` (the
@@ -1312,7 +2056,10 @@ deleted, so an old script fails with guidance instead of "unknown command".
 
 `bin/cihub.cjs` runs the TypeScript through `tsx` at each invocation — that is the npm install.
 `pnpm run build:cli` (`scripts/build-standalone-cli.cjs`) instead bundles it with Bun into a single
-executable for six targets, which is what the desktop app bundles and installs onto `PATH`.
+executable for six targets, which is what the desktop app bundles and installs onto `PATH`. The
+bundle stamps both `CIHUB_BUILD_VERSION` and `CIHUB_BUILD_REVISION`, so a build with no release tag
+still has an identity the Hub image's `org.opencontainers.image.revision` can be compared against —
+see [Keeping the CLI and the stack together](#keeping-the-cli-and-the-stack-together).
 
 ---
 
@@ -1332,7 +2079,7 @@ The commands that target one environment accept an optional `[env]` argument —
 Every other command takes none, and passing one is not a way to retarget an environment. `fleet`
 refuses it outright — `cihub fleet scan prod` is an argument error, because fleet commands act on
 remote machines rather than on one of this machine's environments. `app`, `models` and `api-key`
-read it as a subcommand name and fail; `connect`, `update`, `uninstall`, `login`/`logout`/`submit`
+read it as a subcommand name and fail; `connect`, `update`, `self-update`, `uninstall`, `login`/`logout`/`submit`
 and `status --write-status-file` ignore it.
 
 Run outside a CI-Hub checkout (a packaged install), `up`/`down`/`reset`/`clean` infer `prod` and

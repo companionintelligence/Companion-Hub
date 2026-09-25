@@ -59,7 +59,9 @@ export function recommendedInferenceBackend(profile: HardwareProfileResponse): I
  * reports it is serving this".
  */
 export function isHostServedBackend(backend: InferenceBackendType | undefined): boolean {
-  return backend === 'vllm' || backend === 'mtplx' || backend === 'dspark' || backend === 'lucebox';
+  return (
+    backend === 'vllm' || backend === 'mtplx' || backend === 'dspark' || backend === 'lucebox' || backend === 'llamacpp' || backend === 'lmstudio'
+  );
 }
 
 /**

@@ -5,7 +5,7 @@ import clsx from 'clsx';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { client } from '@/api-client/client.gen';
 import { getAppQueryKey, getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';

@@ -36,7 +36,10 @@ import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { LlamacppBackend } from '../backends/llamacpp.backend';
+import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 
 describe('InferenceController — preferences', () => {
   let controller: InferenceController;
@@ -69,6 +72,8 @@ describe('InferenceController — preferences', () => {
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
+        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
+        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
         InferenceBackendRegistry,
         // The controller exposes GET inference/models/resident, which reads this service's
         // report. Mocked here: nothing in these suites exercises residency.
@@ -79,6 +84,10 @@ describe('InferenceController — preferences', () => {
         { provide: PoolProxyService, useValue: mock<PoolProxyService>() },
         { provide: HubPoolPeerService, useValue: mock<HubPoolPeerService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
+        // `@UseGuards(InferenceAccessGuard)` on the v1 routes registers the guard as an injectable
+        // of this module, and its key leg takes ApiKeyService. Mocked here: nothing in these suites
+        // dispatches through a guard.
+        { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
       ],
     }).compile();
 
@@ -142,6 +151,8 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'lemonade',
@@ -191,6 +202,8 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'ollama',
@@ -225,6 +238,8 @@ describe('InferenceController — preferences', () => {
       'http://192.168.1.50:8000',
       undefined,
       undefined,
+      undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -250,6 +265,8 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8000',
+      undefined,
+      undefined,
       undefined,
     );
   }, 30_000);
@@ -277,6 +294,8 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8080',
+      undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -325,6 +344,112 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'http://host.docker.internal:8000' }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: null }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'not-a-url' }).success).toBe(false);
+  });
+
+  it('passes the context cap through, and a null to clear it', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', maxNumCtx: 16_384 } as never);
+
+    await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 16_384 });
+    await controller.updatePreferences({ backend: 'ollama', maxNumCtx: null });
+
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      1,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      16_384,
+      undefined,
+    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      2,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      null,
+      undefined,
+    );
+  }, 30_000);
+
+  it('bounds the context cap in the preferences schema: an integer from 2048 to 2^20, or null', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 16_384 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: null }).success).toBe(true);
+    // A dropped digit, a fraction, and past the longest window on the fleet.
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 1638 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 16_384.5 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', maxNumCtx: 2 ** 21 }).success).toBe(false);
+  });
+
+  it('passes the Ollama slot count through, and a null to clear it', async () => {
+    configService.setInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama', ollamaSlots: 4 } as never);
+
+    await controller.updatePreferences({ backend: 'ollama', ollamaSlots: 4 });
+    await controller.updatePreferences({ backend: 'ollama', ollamaSlots: null });
+    // Both in one body: the cap and the slots land in their own positions, neither moves the other.
+    await controller.updatePreferences({ backend: 'ollama', maxNumCtx: 32_768, ollamaSlots: 2 });
+
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      1,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      4,
+    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      2,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      null,
+    );
+    expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
+      3,
+      'ollama',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      32_768,
+      2,
+    );
+  }, 30_000);
+
+  it('bounds the Ollama slot count in the preferences schema: an integer from 1 to 64, or null', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 4 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 1 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 64 }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama' }).success).toBe(true);
+    // Zero slots is not a daemon, a fraction is not a slot, and past the bound `--ollama-parallel` accepts.
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 0 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: -1 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 2.5 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: 65 }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: '4' }).success).toBe(false);
   });
 
   it('accepts the dspark backend and a valid dsparkUrl in the preferences schema', () => {

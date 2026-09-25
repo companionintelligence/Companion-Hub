@@ -1,9 +1,12 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
+import { InternalOriginGuard } from '@/modules/auth/internal-origin.guard';
 import { FilesystemModule } from '@/core/filesystem/filesystem.module';
 import { SystemModule } from '@/modules/system/system.module';
 import { DockerModule } from '@/modules/docker/docker.module';
 import { HubPoolModule } from '@/modules/hub-pool/hub-pool.module';
+import { ApiKeyModule } from '@/modules/api-keys/api-key.module';
+import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { GpuProcessSamplerService } from './gpu-process-sampler.service';
 import { ModelRegistryService } from './model-registry.service';
@@ -24,16 +27,20 @@ import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
+import { LlamacppBackend } from './backends/llamacpp.backend';
+import { LmStudioBackend } from './backends/lmstudio.backend';
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { InferenceController } from './inference.controller';
 
 @Module({
   // DockerModule needs no forwardRef: its own import graph is `AppsDataModule` alone, which imports
   // nothing, so there is no cycle back to inference. (SystemModule does forwardRef DockerModule, but
-  // that edge is SystemModule's, not this one's.)
-  imports: [LoggerModule, FilesystemModule, DockerModule, forwardRef(() => SystemModule), forwardRef(() => HubPoolModule)],
+  // that edge is SystemModule's, not this one's.) ApiKeyModule likewise: it imports only LoggerModule
+  // and the global database module, and InferenceAccessGuard's key leg needs its ApiKeyService.
+  imports: [LoggerModule, FilesystemModule, DockerModule, ApiKeyModule, forwardRef(() => SystemModule), forwardRef(() => HubPoolModule)],
   controllers: [InferenceController],
   providers: [
+    InferenceAccessGuard,
     HardwareInspectorService,
     GpuProcessSamplerService,
     ModelRegistryService,
@@ -53,8 +60,11 @@ import { InferenceController } from './inference.controller';
     MtplxBackend,
     DsparkBackend,
     LuceboxBackend,
+    LlamacppBackend,
+    LmStudioBackend,
     InferenceBackendRegistry,
     BackendObserverService,
+    InternalOriginGuard,
   ],
   exports: [
     HardwareInspectorService,
@@ -76,6 +86,8 @@ import { InferenceController } from './inference.controller';
     MtplxBackend,
     DsparkBackend,
     LuceboxBackend,
+    LlamacppBackend,
+    LmStudioBackend,
     InferenceBackendRegistry,
     BackendObserverService,
   ],

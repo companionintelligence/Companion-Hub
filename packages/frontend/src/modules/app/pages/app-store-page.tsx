@@ -25,7 +25,7 @@ import { ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-re
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
 import { Navigate, useLocation, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 
 const SKELETONS = Array.from({ length: CATALOG_PAGE_SIZE }, (_, i) => `skeleton-${i}`);
 const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;

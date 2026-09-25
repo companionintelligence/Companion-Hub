@@ -4,7 +4,8 @@
  * Argument parsing and rendering live here; the HTTP calls stay in `hub-pool-cli.ts` so the
  * two can be tested apart from each other.
  */
-import { parseEnvFile } from '../env-file.js';
+import { existsSync } from 'node:fs';
+import { parseEnvFile, upsertEnvVar } from '../env-file.js';
 import { discoverComposeIdentity } from './compose-discovery.js';
 import {
   approvePoolPeer,
@@ -12,7 +13,10 @@ import {
   deletePoolPin,
   fetchPoolPeers,
   fetchPoolRoutingLog,
+  fetchInferencePreferences,
   fetchPoolStatus,
+  formatContextCapResultLines,
+  formatOllamaSlotsResultLines,
   formatPoolPeersLines,
   formatPoolProbeLines,
   formatPairingPinCancelledLines,
@@ -26,14 +30,19 @@ import {
   rejectPoolPeer,
   resolvePoolPeerTarget,
   runPoolDiscover,
+  setInferenceContextCap,
+  setInferenceOllamaSlots,
   setPoolEnabledSetting,
   setPoolMaxPromptTokens,
   setPoolPeerEnabled,
   setPoolPin,
   unpairPoolPeer,
+  type InferencePreferencesResponse,
   type PoolEnableAxis,
 } from '../hub-pool-cli.js';
 import { readRunningImageIdentity, runPoolDoctorSection } from '../pool-diagnostics-cli.js';
+import { cliUpdateInstructions, gatherSkew } from './cli-version-skew.js';
+import { decideImagePinWrite, HUB_IMAGE_VAR, readDeclaredHubImage, resolveComposeEnvFile, shortImageRef } from './cli-image-pin.js';
 import { readHubApiKeySource, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
@@ -43,6 +52,7 @@ import {
   composeFilesForPoolUpdate,
   decideGitUpdate,
   describeImageChange,
+  describeImageSource,
   gatherGitUpdateFacts,
   resolvePoolUpdateImage,
 } from './cli-pool-update.js';
@@ -69,6 +79,8 @@ export const POOL_SUBCOMMANDS = [
   'pin',
   'unpin',
   'ceiling',
+  'context-cap',
+  'slots',
   // Four places in this repo and two in docs/CLI.md already tell the operator to run
   // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
   'pairing-pin',
@@ -88,6 +100,8 @@ const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = [
   'pin',
   // The token count (or `clear`) sits where a peer reference would, so `ceiling 16000 dev` reads the env.
   'ceiling',
+  'context-cap',
+  'slots',
 ];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
@@ -246,6 +260,41 @@ export function parsePromptCeilingArg(raw: string | undefined): number | null | 
   return tokens >= MIN_PROMPT_CEILING && tokens <= MAX_PROMPT_CEILING ? tokens : undefined;
 }
 
+/** Matches `MIN_INFERENCE_MAX_NUM_CTX` / `MAX_INFERENCE_MAX_NUM_CTX` on the backend (`inference-context-cap.ts`). */
+const MIN_CONTEXT_CAP = 2048;
+const MAX_CONTEXT_CAP = 1_048_576;
+
+/**
+ * `clear` → `null`; a plain integer within the backend's bounds → that number; anything else →
+ * `undefined`, which the caller turns into a usage error. Digits only, for the reason the ceiling
+ * gives: `16k` is 16000 to one operator and 16384 to the next, and this number is compared against
+ * `OLLAMA_CONTEXT_LENGTH`, which is exact. The floor is the Hub's: below 2048 no agent turn fits.
+ */
+export function parseContextCapArg(raw: string | undefined): number | null | undefined {
+  const value = raw?.trim() ?? '';
+  if (value.toLowerCase() === 'clear') return null;
+  if (!/^\d+$/.test(value)) return undefined;
+  const tokens = Number(value);
+  return tokens >= MIN_CONTEXT_CAP && tokens <= MAX_CONTEXT_CAP ? tokens : undefined;
+}
+
+/** Matches `MIN_INFERENCE_OLLAMA_SLOTS` / `MAX_INFERENCE_OLLAMA_SLOTS` on the backend (`inference-ollama-slots.ts`), and `--ollama-parallel`'s bounds. */
+const MIN_OLLAMA_SLOTS = 1;
+const MAX_OLLAMA_SLOTS = 64;
+
+/**
+ * `clear` → `null`; a plain integer within the backend's bounds → that number; anything else →
+ * `undefined`, which the caller turns into a usage error. The same shape as the cap's parser: this
+ * number is compared against `OLLAMA_NUM_PARALLEL`, which is exact.
+ */
+export function parseOllamaSlotsArg(raw: string | undefined): number | null | undefined {
+  const value = raw?.trim() ?? '';
+  if (value.toLowerCase() === 'clear') return null;
+  if (!/^\d+$/.test(value)) return undefined;
+  const slots = Number(value);
+  return slots >= MIN_OLLAMA_SLOTS && slots <= MAX_OLLAMA_SLOTS ? slots : undefined;
+}
+
 /** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
 function parsePairingPin(raw: string): string {
   const trimmed = raw.trim();
@@ -374,7 +423,7 @@ export async function runPoolCommand(args: string[]) {
   // Also before the device-key gate: the node most likely to need `pool update` — never started,
   // or stuck on an old image — has no key yet either, and pulling/redeploying needs none.
   if (parsed.subcommand === 'update') {
-    await runPoolUpdateCommand(ctx);
+    await runPoolUpdateCommand(ctx, parsed.env);
     return;
   }
 
@@ -471,6 +520,16 @@ export async function runPoolCommand(args: string[]) {
       return;
     }
 
+    if (parsed.subcommand === 'context-cap') {
+      await runPoolContextCapCommand(ctx, parsed);
+      return;
+    }
+
+    if (parsed.subcommand === 'slots') {
+      await runPoolSlotsCommand(ctx, parsed);
+      return;
+    }
+
     await runPoolPeerMutation(ctx, parsed);
   } catch (error) {
     poolErrorExit(error, envFile);
@@ -482,8 +541,21 @@ export async function runPoolCommand(args: string[]) {
  * cli-pool-update.ts for why this is a separate, narrow command instead of teaching `cihub up`
  * to skip `--build`.
  */
-async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
+async function runPoolUpdateCommand(ctx: HubContext, requestedEnv: HubEnv): Promise<void> {
   const lines: string[] = [];
+
+  // `resolveHubContext` forces `prod` on an appliance install whatever argument was typed, so
+  // `cihub pool update dev` runs as `[prod]` and nothing said so — the banner simply disagreed with
+  // the command. It still operates on the one stack this machine has (there is no other), but the
+  // discarded argument is named, because it is what an operator thinks selected the channel.
+  if (requestedEnv !== ctx.env) {
+    lines.push(
+      cliWarn(
+        `ignoring '${requestedEnv}': this is an appliance install with a single ${ctx.env} stack. ` +
+          `The env argument does not select a channel here — CI_HUB_IMAGE in ${ctx.envFile} does.`,
+      ),
+    );
+  }
 
   const gitFacts = gatherGitUpdateFacts(ctx.cwd);
   const gitDecision = decideGitUpdate(gitFacts);
@@ -502,16 +574,27 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   const imageBefore = readRunningImageIdentity();
 
   const { files, overlayApplied } = composeFilesForPoolUpdate(ctx.cwd, ctx.composeFiles);
-  const image = resolvePoolUpdateImage(ctx.env, process.env.CI_HUB_IMAGE);
-  if (overlayApplied) {
-    lines.push(cliOk(`will pull ${image} (set CI_HUB_IMAGE to override)`));
-  } else {
-    lines.push(cliWarn(`no pull-image overlay in ${ctx.cwd} — pulling ${image} directly, since the seeded compose caches a mutable tag`));
-  }
 
   // Read the running stack before assuming this checkout's shape. Costs one `docker inspect` and is
   // the difference between updating the Hub that exists and failing on a project-name mismatch.
+  // It has to happen BEFORE the image is resolved: the env file it names is where the node's own
+  // pin lives, and that pin is the second source `resolvePoolUpdateImage` consults.
   const identity = discoverComposeIdentity();
+  const pinTarget = resolveComposeEnvFile(identity, ctx.envFile);
+  const declaredImage = readDeclaredHubImage(pinTarget.path);
+  const { image, source } = resolvePoolUpdateImage({ env: ctx.env, processValue: process.env.CI_HUB_IMAGE, envFileValue: declaredImage });
+  lines.push(cliOk(`will pull ${shortImageRef(image)} — ${describeImageSource(source, pinTarget.path)}`));
+  if (!overlayApplied) {
+    lines.push(cliWarn(`no pull-image overlay in ${ctx.cwd} — pulling directly, since the seeded compose caches a mutable tag`));
+  }
+  if (source === 'channel-default' && ctx.appliance) {
+    // The appliance path forces `prod` whatever env was typed (see resolveHubContext), so this tag
+    // is a guess about a channel nobody selected. Say so rather than deploying it quietly.
+    lines.push(
+      cliWarn(`${ctx.envFile} pins nothing, so this falls back to the '${ctx.env}' tag — set CI_HUB_IMAGE if that is not the channel you want`),
+    );
+  }
+
   if (identity && (identity.project !== 'ci-hub' || identity.configFiles.length)) {
     console.log(
       colorize(
@@ -552,6 +635,9 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   }
   if (!healthy) {
     lines.push('', cliFail(`${base}/api/health did not answer after redeploy — check: ${BASE_COMMAND} logs ${ctx.env}`));
+    // Deliberately no pin write here: see decideImagePinWrite. A pin naming a build that did not
+    // come up would make the next restart fail the same way.
+    lines.push(cliWarn(`left ${resolveComposeEnvFile(identity, ctx.envFile).path} alone — the pin still names the build that was serving`));
     printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, 'red');
     return;
   }
@@ -574,7 +660,49 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   } catch {
     // identify is a bonus signal on top of health, not a requirement for a successful update.
   }
-  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, moved.warn ? 'yellow' : 'green');
+
+  // Record what was deployed, in the env file compose actually reads.
+  //
+  // Without this the image lives only in this command's environment. On 2026-09-21 fifteen fleet
+  // appliances were rolled onto a new `:dev` digest while their env files went on naming an older
+  // one, untouched since the previous day — so every one of those nodes was one restart away from
+  // silently reverting to the build it had just been moved off.
+  const pinDecision = decideImagePinWrite({
+    envFile: pinTarget.path,
+    envFileExists: existsSync(pinTarget.path),
+    declaredImage,
+    deployedImage: image,
+    healthy,
+  });
+  if (pinDecision.action === 'write') {
+    try {
+      upsertEnvVar(pinDecision.envFile, HUB_IMAGE_VAR, pinDecision.image);
+      lines.push(cliOk(`recorded ${HUB_IMAGE_VAR}=${shortImageRef(pinDecision.image)} in ${pinDecision.envFile} — ${pinDecision.reason}`));
+    } catch (error) {
+      lines.push(cliWarn(`could not record ${HUB_IMAGE_VAR} in ${pinDecision.envFile}: ${error instanceof Error ? error.message : String(error)}`));
+    }
+  } else {
+    lines.push(colorize(`  ${pinDecision.reason}`, 'dim'));
+  }
+
+  // The stack just moved. THIS CLI did not: it ships on the desktop/release-asset channel, and a
+  // `pool update` has never touched it. So this is the exact moment a skew is created, and the one
+  // place an operator is certain to be looking when it happens. Reported, never acted on — replacing
+  // the binary mid-command is `cihub self-update`, explicitly.
+  const skew = gatherSkew();
+  const skewLine =
+    skew.report.severity === 'fail'
+      ? cliFail(skew.report.headline)
+      : skew.report.severity === 'warn'
+        ? cliWarn(skew.report.headline)
+        : cliOk(skew.report.headline);
+  lines.push('', skewLine);
+  if (skew.report.severity !== 'ok') {
+    lines.push(colorize(`  fix: ${cliUpdateInstructions(skew.channel, skew.stack?.version ?? undefined)[0]}`, 'dim'));
+  }
+
+  const boxColor = skew.report.severity === 'fail' ? 'red' : moved.warn || skew.report.severity === 'warn' ? 'yellow' : 'green';
+  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, boxColor);
 }
 
 /** What each axis is called, which env var overrides it, and how `/status` reports its state. */
@@ -769,6 +897,98 @@ async function runPoolCeilingCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
   const status = await fetchPoolStatus(envFile).catch(() => null);
   const result = formatPromptCeilingResultLines(requested, settings, status);
   printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+}
+
+/**
+ * `cihub pool context-cap <tokens>|clear` — the largest `num_ctx` this node's Hub hands its apps, to
+ * be set to the context the engine runs (`OLLAMA_CONTEXT_LENGTH`) so no app asks for a window that
+ * reloads the model. See `docs/hub-pool.md` → Context caps for the 25 GB → 44 GB reload behind it.
+ *
+ * Confirmed like the ceiling — a state change, and one that restarts the AI apps whose env it
+ * changes. Preferences are read BEFORE the write, because the write route needs the stored backend
+ * and because a cap that already reads as requested is not worth an app sweep; and read AFTER it, so
+ * the box reports the cap in force rather than the one requested. A Hub whose preferences carry no
+ * `maxNumCtx` predates the cap and is told so without a write: its schema would strip the field and
+ * answer 200 having stored nothing.
+ */
+async function runPoolContextCapCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const requested = parseContextCapArg(parsed.target);
+  if (requested === undefined) {
+    usageAndExit(
+      `Usage: ${BASE_COMMAND} pool context-cap <tokens>|clear [env] [--yes] — tokens is a whole number from ${MIN_CONTEXT_CAP} to ${MAX_CONTEXT_CAP}, e.g. 16384 (the node's OLLAMA_CONTEXT_LENGTH)`,
+    );
+  }
+
+  const describe = requested === null ? 'Clear the context cap' : `Cap the context handout at ${requested} tokens`;
+  const confirmed = await confirmDestructiveAction(
+    `${describe} on this node`,
+    parsed.yes,
+    `${describe} on this node (AI apps whose env changes will restart)? [y/N]: `,
+    'a state change',
+  );
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left the context cap untouched.'], 'yellow');
+    return;
+  }
+
+  const before = await fetchInferencePreferences(envFile);
+  const supported = 'maxNumCtx' in before;
+  const alreadyInForce = supported && (before.maxNumCtx ?? null) === requested;
+  const written = supported && !alreadyInForce;
+  let after: InferencePreferencesResponse | null = null;
+  if (written) {
+    // An absent preference resolves to Ollama on the Hub already, so sending it back changes nothing.
+    const patched = await setInferenceContextCap(envFile, before.preferredBackend ?? 'ollama', requested);
+    // Best-effort: the PATCH already answered with the stored preferences; a read-back that fails
+    // falls back to that answer rather than reporting a write that did happen as unknown.
+    after = await fetchInferencePreferences(envFile).catch(() => patched);
+  }
+  const result = formatContextCapResultLines(requested, before, after, written);
+  printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+  if (result.tone === 'red') process.exitCode = 1;
+}
+
+/**
+ * `cihub pool slots <n>|clear` — how many requests this node's Ollama runs at once, to be set to the
+ * daemon's `OLLAMA_NUM_PARALLEL` so slot-aware placement (`poolSlotAwareness`) can tell a full
+ * engine from a half-empty one. See `docs/hub-pool.md` → Slot-aware placement for the B5 numbers.
+ *
+ * Confirmed like the cap — a state change. Unlike the cap it restarts nothing: the count changes what
+ * this node advertises and how the pool ranks it, not any app's env. Read before and after the write
+ * for the cap's reasons: the write route needs the stored backend, a count already in force is not
+ * worth a write, and the box reports the count in force rather than the one requested. A Hub whose
+ * preferences carry no `ollamaSlots` predates the setting and is told so without a write.
+ */
+async function runPoolSlotsCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const requested = parseOllamaSlotsArg(parsed.target);
+  if (requested === undefined) {
+    usageAndExit(
+      `Usage: ${BASE_COMMAND} pool slots <n>|clear [env] [--yes] — n is a whole number from ${MIN_OLLAMA_SLOTS} to ${MAX_OLLAMA_SLOTS}, e.g. 4 (the node's OLLAMA_NUM_PARALLEL)`,
+    );
+  }
+
+  const describe =
+    requested === null ? 'Clear the Ollama slot count' : `State that Ollama runs ${requested} request${requested === 1 ? '' : 's'} at once`;
+  const confirmed = await confirmDestructiveAction(`${describe} on this node`, parsed.yes, `${describe} on this node? [y/N]: `, 'a state change');
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left the slot count untouched.'], 'yellow');
+    return;
+  }
+
+  const before = await fetchInferencePreferences(envFile);
+  const supported = 'ollamaSlots' in before;
+  const alreadyInForce = supported && (before.ollamaSlots ?? null) === requested;
+  const written = supported && !alreadyInForce;
+  let after: InferencePreferencesResponse | null = null;
+  if (written) {
+    const patched = await setInferenceOllamaSlots(envFile, before.preferredBackend ?? 'ollama', requested);
+    after = await fetchInferencePreferences(envFile).catch(() => patched);
+  }
+  const result = formatOllamaSlotsResultLines(requested, before, after, written);
+  printMessageBox(`${result.title}  [${env}]`, result.lines, result.tone);
+  if (result.tone === 'red') process.exitCode = 1;
 }
 
 async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {

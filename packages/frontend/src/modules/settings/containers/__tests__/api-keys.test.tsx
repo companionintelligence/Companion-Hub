@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiKeysContainer } from '../api-keys';
 
@@ -16,7 +16,7 @@ vi.mock('react-i18next', () => {
   const t = (key: string) => key;
   return { useTranslation: () => ({ t }) };
 });
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // Minimal UI-primitive stubs so the test focuses on data flow, not Radix internals.
 vi.mock('@/components/ui/Button', () => ({
@@ -158,7 +158,7 @@ describe('ApiKeysContainer', () => {
     await waitFor(() =>
       expect(mockApiFetch).toHaveBeenCalledWith(
         '/api/api-keys',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'n8n', capability: 'write' }) }),
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'n8n', capability: 'write', scope: 'mcp' }) }),
       ),
     );
     // The raw key is surfaced exactly once, in the "copy it now" panel.
@@ -166,7 +166,7 @@ describe('ApiKeysContainer', () => {
     expect(toast.success).toHaveBeenCalledWith('API_KEYS_CREATED');
   });
 
-  it('states the fixed MCP scope when creating, without offering a scope selector', async () => {
+  it('offers the two mintable scopes, and never the two nobody mints by hand', async () => {
     const user = userEvent.setup();
     render(<ApiKeysContainer />);
     await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
@@ -174,18 +174,80 @@ describe('ApiKeysContainer', () => {
     await user.click(screen.getByTestId('api-key-create'));
     const dialog = await screen.findByTestId('dialog');
 
-    // The scope is disclosed, so the operator knows what the key will open...
-    expect(within(dialog).getByTestId('api-key-create-scope').textContent).toContain('API_KEYS_SCOPE_MCP');
+    expect(within(dialog).getByTestId('api-key-create-scope-mcp')).toBeTruthy();
+    expect(within(dialog).getByTestId('api-key-create-scope-inference')).toBeTruthy();
     expect(within(dialog).getByText('API_KEYS_CREATE_SCOPE_HINT')).toBeTruthy();
 
-    // ...but WHICH scope is not a choice: an operator-created 'app' key would have no owning app URN
-    // and could never authenticate anything, so it must never be offered here.
-    expect(within(dialog).getByTestId('api-key-new-name')).toBeTruthy();
+    // An operator-created 'app' key would have no owning app URN and could never authenticate
+    // anything, and 'qa:read' is minted over ssh on the node under test. Neither is offered here.
     expect(within(dialog).queryByText('API_KEYS_SCOPE_APP')).toBeNull();
+    expect(within(dialog).queryByText('API_KEYS_SCOPE_QA_READ')).toBeNull();
 
-    // What the key may DO on that scope IS a choice — the only radio group in the dialog.
-    expect(within(dialog).getAllByRole('radio')).toHaveLength(3);
+    // MCP is the default, and its capability picker is the other radio group in the dialog.
+    expect((within(dialog).getByTestId('api-key-create-scope-mcp') as HTMLInputElement).checked).toBe(true);
+    expect((within(dialog).getByTestId('api-key-create-scope-inference') as HTMLInputElement).checked).toBe(false);
     expect(within(dialog).getByTestId('api-key-new-capability-read')).toBeTruthy();
+  });
+
+  /*
+   * Capability grades the MCP TOOL surface. An inference key reaches no tool, so every level would
+   * mean the same thing — a control that changes nothing is worse than no control.
+   */
+  it('drops the capability picker for an inference key, and mints it without one', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/api-keys' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 4, key: 'raw' }) });
+      }
+      return mockGet(url);
+    });
+
+    render(<ApiKeysContainer />);
+    await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
+    await user.click(screen.getByTestId('api-key-create'));
+    await waitFor(() => expect(screen.getByTestId('api-key-new-name')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('api-key-new-name'), { target: { value: 'Cursor' } });
+    await user.click(screen.getByTestId('api-key-create-scope-inference'));
+
+    const dialog = await screen.findByTestId('dialog');
+    expect(within(dialog).queryByTestId('api-key-new-capability-read')).toBeNull();
+    expect(within(dialog).getByText('API_KEYS_CREATE_SCOPE_INFERENCE_HINT')).toBeTruthy();
+
+    await user.click(screen.getByTestId('api-key-create-submit'));
+
+    await waitFor(() =>
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/api-keys',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'Cursor', capability: 'write', scope: 'inference' }) }),
+      ),
+    );
+  });
+
+  /*
+   * The owner/admin gate exists because 'full' reaches the destructive TOOLS. An inference key
+   * reaches none, so a member must not be blocked from minting one by a rule written for the other
+   * surface — and the screen must not carry a stale 'full' from a previous choice into the body.
+   */
+  it('lets a member mint an inference key even while full capability is refused to them', async () => {
+    const user = userEvent.setup();
+    mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+      if (url === '/api/api-keys/grantable') return Promise.resolve({ ok: true, json: async () => ({ canGrantFull: false }) });
+      if (url === '/api/api-keys' && init?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ id: 5, key: 'raw' }) });
+      }
+      return mockGet(url);
+    });
+
+    render(<ApiKeysContainer />);
+    await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
+    await user.click(screen.getByTestId('api-key-create'));
+    await waitFor(() => expect(screen.getByTestId('api-key-new-name')).toBeTruthy());
+
+    fireEvent.change(screen.getByTestId('api-key-new-name'), { target: { value: 'Zed' } });
+    await user.click(screen.getByTestId('api-key-create-scope-inference'));
+
+    expect((screen.getByTestId('api-key-create-submit') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('mints at the chosen capability, so a read-only key is never wide open in between', async () => {
@@ -209,7 +271,7 @@ describe('ApiKeysContainer', () => {
     await waitFor(() =>
       expect(mockApiFetch).toHaveBeenCalledWith(
         '/api/api-keys',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'recall', capability: 'read' }) }),
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ name: 'recall', capability: 'read', scope: 'mcp' }) }),
       ),
     );
   });

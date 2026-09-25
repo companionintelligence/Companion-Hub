@@ -116,7 +116,7 @@ The backend has ~30 NestJS modules organized into **core infrastructure** and **
 | **System** | `SystemService` | Reports system metrics: CPU load, memory usage (reads `/host/proc/meminfo` from the bind mount), disk usage. Retrieves TLS certificates from Traefik's ACME storage. Lists running Docker services. Powers the dashboard system info panel. |
 | **System Update** | `SystemUpdateService` | Checks for new Hub versions (compares `CI_HUB_VERSION` against the latest available). Performs self-updates by pulling new Docker images and restarting the compose stack. |
 | **Network** | `PortAllocationRepository` | Tracks TCP/UDP port mappings in the database. Prevents port conflicts between apps. Allocates ports dynamically during install. |
-| **Inference** | `InferenceBackendRegistry`, `ModelRegistryService`, `ModelPullerService`, `InferenceRouterService`, `HardwareInspectorService` | Runs local models across six backends (Ollama, vLLM, Lemonade, MTPLX, mlx-dspark, Lucebox), each an `InferenceBackend` adapter under `inference/backends/`. `InferenceBackendRegistry` is the one type-to-instance mapping — a `Record` keyed by the closed `InferenceBackendType` union, so a backend added to the union without being wired here is a build error. `HardwareInspectorService` profiles GPU/NPU/RAM into a tier that the curated model catalog filters against. |
+| **Inference** | `InferenceBackendRegistry`, `ModelRegistryService`, `ModelPullerService`, `InferenceRouterService`, `HardwareInspectorService` | Runs local models across eight backends (Ollama, vLLM, Lemonade, MTPLX, mlx-dspark, Lucebox, llama.cpp, LM Studio), each an `InferenceBackend` adapter under `inference/backends/`. The last two are servers the operator runs themselves: the Hub holds a URL (`LLAMACPP_URL`, `LMSTUDIO_URL`), never a container, and cannot pull a model into either. `InferenceBackendRegistry` is the one type-to-instance mapping — a `Record` keyed by the closed `InferenceBackendType` union, so a backend added to the union without being wired here is a build error. `HardwareInspectorService` profiles GPU/NPU/RAM into a tier that the curated model catalog filters against. |
 | **Links** | `LinksService` | CRUD for dashboard shortcut links (title, URL, icon, visibility). |
 | **I18n** | `I18nModule` | Multi-language support using `i18next` with `i18next-fs-backend`. Translation files live in `assets/translations/`. |
 
@@ -349,7 +349,7 @@ The frontend is a **React 19 SPA** built with **React Router 7** (file-conventio
 | Animations | Framer Motion |
 | Code editing | CodeMirror (JSON, YAML, Markdown) with merge/diff view |
 | Markdown | react-markdown + remark-gfm |
-| Notifications | react-hot-toast |
+| Notifications | sonner, through the themed `Toaster` in `components/ui/Toaster` |
 | i18n | i18next + react-i18next |
 | QR codes | qrcode.react |
 
@@ -629,7 +629,12 @@ The app lifecycle follows these steps:
 6. Worker:
    a. Copies app definition files from repo to $DATA_DIR/apps/{store}/{app}/
    b. Generates docker-compose.yml from app spec + user config
-   c. Writes app.env with user-provided values
+   c. Writes app.env with user-provided values. The file is seeded from the Hub's own
+      `/data/.env`, but only an explicit allowlist of that file's keys is inherited
+      (`HUB_ENV_KEYS_INHERITED_BY_APPS` in `app.helpers.ts`: Hub identity such as `DOMAIN`,
+      `ROOT_FOLDER_HOST`, `TZ`, plus the documented operator pins). Everything else the Hub
+      wants an app to have — keys, Memory and inference credentials — is set explicitly.
+      Hub secrets (Postgres, RabbitMQ, JWT, the Portal device key) never reach an app.
    d. docker compose pull (downloads images)
    e. docker compose up -d (starts containers)
 7. Status transitions: stopped → installing → running (or install_error)
@@ -715,6 +720,15 @@ service, container, and Docker DNS name are also `ci-hub` (`ci-hub-queue`, `ci-h
 `ci-hub.managed` labels). The retired `ci-os-hub` spellings remain network aliases and
 lookup fallbacks so already-installed apps keep resolving. Pointing the **image** at the
 retired private `ci-os-hub` GHCR package is what broke Hub 0.2.44 (#920).
+
+Two Docker networks carry different trust. `ci-hub_network` (and its retired alias
+`ci-os-hub_network`) is the app-facing one: every installed app's main container joins it to
+reach the Hub API and other apps' gateways. `ci-hub_internal` is Hub-private: Postgres and
+RabbitMQ live only there and only the `ci-hub` service joins it, so a marketplace container
+cannot reach the Hub's database or its lifecycle queue at all — by topology, not by password.
+Both also publish a host port bound to `127.0.0.1` for local tooling, never to the LAN. The
+queue additionally authenticates every message it carries (`modules/queue/message-signing.ts`),
+so even a leaked broker password does not confer Hub authority.
 
 Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
 **public**: the desktop shells out to `docker compose` with no registry credentials, so any

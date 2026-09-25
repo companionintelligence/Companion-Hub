@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { AiSettingsContainer } from '../ai-settings';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 
 const {
   fetchInferenceOnboardingProfile,
@@ -67,8 +67,8 @@ vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
   };
 });
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     success: vi.fn(),
     error: vi.fn(),
   },

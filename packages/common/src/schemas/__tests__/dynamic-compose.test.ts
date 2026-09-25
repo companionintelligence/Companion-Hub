@@ -1391,6 +1391,8 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
       'strix',
       'sup3rs3cretmes5age',
       'torollo',
+      'transmission-vpn',
+      'wg-easy',
       'windows',
       'windows-arm',
       'wireguard',
@@ -1420,6 +1422,12 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
   it('grants the capability and confinement holes the shipped apps already rely on', () => {
     expect(collectServiceSecurityViolations({ capAdd: ['NET_ADMIN'] }, TRUSTED_APP_SECURITY_ALLOWLIST.wireguard)).toHaveLength(0);
     expect(collectServiceSecurityViolations({ capAdd: ['NET_ADMIN', 'SYS_MODULE'] }, TRUSTED_APP_SECURITY_ALLOWLIST.pangolin)).toHaveLength(0);
+    // The VPN apps CI-Marketplace#1672 publishes: `/dev/net/tun` is an ordinary character device,
+    // so NET_ADMIN alone covers what their manifests ask for, as it does for gluetun and wireguard.
+    expect(
+      collectServiceSecurityViolations({ capAdd: ['NET_ADMIN'], devices: ['/dev/net/tun'] }, TRUSTED_APP_SECURITY_ALLOWLIST['transmission-vpn']),
+    ).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ capAdd: ['NET_ADMIN'] }, TRUSTED_APP_SECURITY_ALLOWLIST['wg-easy'])).toHaveLength(0);
     expect(
       collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'], securityOpt: ['seccomp=unconfined'] }, TRUSTED_APP_SECURITY_ALLOWLIST.maxun),
     ).toHaveLength(0);
@@ -1431,6 +1439,8 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'] }, TRUSTED_APP_SECURITY_ALLOWLIST.wireguard)).toHaveLength(1);
     expect(collectServiceSecurityViolations({ privileged: true }, TRUSTED_APP_SECURITY_ALLOWLIST.wireguard)).toHaveLength(1);
     expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/etc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.pangolin)).toHaveLength(1);
+    // wg-easy's upstream compose lists SYS_MODULE too; the manifest drops it and the grant does not carry it.
+    expect(collectServiceSecurityViolations({ capAdd: ['NET_ADMIN', 'SYS_MODULE'] }, TRUSTED_APP_SECURITY_ALLOWLIST['wg-easy'])).toHaveLength(1);
   });
 
   it('grants the install-form host paths the device owner supplies, and only those', () => {

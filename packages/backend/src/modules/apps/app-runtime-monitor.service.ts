@@ -2,16 +2,20 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
+import { AppFilesManager } from './app-files-manager';
+import { type AppReadiness, normalizeReadinessBody, unknownReadiness } from './app-readiness.helpers';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
+import { EnvUtils } from '../env/env.utils';
 import { DockerReadFacade, type AppContainerRuntimeStats } from '../docker/docker-read.facade';
 import { HostTelemetryService } from '../system/host-telemetry.service';
 import type { PoolContainerRollup, PoolContainerSampler } from '@/common/helpers/hub-pool';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
-import { GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
+import { type GpuProcessSampleSource, GpuProcessSamplerService } from '@/modules/inference/gpu-process-sampler.service';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
@@ -22,6 +26,11 @@ const SNAPSHOT_COLLECTION_DEADLINE_MS = 30_000;
 const PROCESS_SCAN_TIMEOUT_MS = 3_000;
 const STOPPING_GRACE_MS = 30_000;
 const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
+/**
+ * Upstream Hermes's own dashboard probe uses 1 s, and the first authenticated call on a cold
+ * gateway can exceed it; 2 s tolerates that without letting one slow app hold the tick.
+ */
+const READINESS_PROBE_TIMEOUT_MS = 2_000;
 /**
  * How old the last successful sample may be and still be published to pool peers.
  *
@@ -74,10 +83,20 @@ export type AppRuntimeHealth = {
    * `DockerReadFacade.mapPidsToContainers`). `null`, never `0`: the underlying tools are a
    * presence list, not a per-container gauge, so there is no way to positively confirm "measured
    * and definitely zero" — `null` covers both "nothing found for this workload" and "the sampler
-   * did not run at all" (no supported GPU vendor), which look identical from here either way.
-   * Compute UTILIZATION per workload is not represented anywhere — see `workload-coverage.tsx`.
+   * had no source at all", which look identical from here either way. Whether a source existed
+   * is on the snapshot as {@link AppRuntimeMonitorSnapshot.gpuVramSource}, once per tick rather
+   * than once per row. Compute UTILIZATION per workload is not represented anywhere — see
+   * `workload-coverage.tsx`.
    */
   gpuVramMb: number | null;
+  /**
+   * What the app's own readiness endpoint said this sample (`hub_integration.readiness`,
+   * CI-Hub#1556): per-subsystem checks the Hub has no other view of, such as whether the model
+   * endpoint it handed out is reachable from inside the agent. `null` when the app declares no
+   * endpoint, or is not `running` so nothing was probed — the badge is hidden, not "unknown".
+   * A probe that ran but produced nothing readable is `status: 'unknown'`, never `degraded`.
+   */
+  readiness: AppReadiness | null;
 };
 
 export type AppRuntimeHistoryPoint = {
@@ -114,6 +133,15 @@ export type AppRuntimeMonitorSnapshot = {
    * nothing unattributed this tick — including when it did not run at all.
    */
   unattributedGpu: UnattributedGpuProcess[] | null;
+  /**
+   * Where this tick's per-process VRAM came from: the host probe file, the vendor tool run by
+   * this process, or `absent` — nothing on this node could answer, so every `gpuVramMb` above is
+   * `null` for want of a measurement rather than for want of a workload. `null` only on the empty
+   * snapshot, when the collection itself did not happen. The dashboard says `absent` in words
+   * (`workload-trends.tsx`, `workload-coverage.tsx`) instead of drawing an empty chart that reads
+   * as "nothing holds VRAM".
+   */
+  gpuVramSource: GpuProcessSampleSource | 'absent' | null;
 };
 
 const HUB_RUNTIME_URN = 'ci-hub:system';
@@ -122,6 +150,8 @@ const HUB_RUNTIME_URN = 'ci-hub:system';
 export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, PoolContainerSampler {
   private readonly samples = new Map<string, RuntimeSample[]>();
   private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
+  /** Apps already warned about a readiness `service` their compose does not declare — once, not every tick. */
+  private readonly readinessServiceWarned = new Set<string>();
   private readonly history: AppRuntimeHistorySample[] = [];
   private intervalHandle: NodeJS.Timeout | null = null;
   private latestSnapshot: AppRuntimeMonitorSnapshot | null = null;
@@ -136,6 +166,8 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     private readonly dockerReadFacade: DockerReadFacade,
     private readonly hardwareInspector: HardwareInspectorService,
     private readonly gpuSampler: GpuProcessSamplerService,
+    private readonly appFilesManager: AppFilesManager,
+    private readonly envUtils: EnvUtils,
     @Optional() private readonly telemetry?: HostTelemetryService,
   ) {}
 
@@ -252,6 +284,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       apps: [],
       history: [...this.history],
       unattributedGpu: null,
+      gpuVramSource: null,
     };
   }
 
@@ -314,6 +347,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       apps: entities.sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName)),
       history: [...this.history],
       unattributedGpu: gpu.unattributed.length > 0 ? gpu.unattributed : null,
+      gpuVramSource: gpu.source ?? 'absent',
     };
     this.latestSnapshotAtMs = Date.now();
     return this.latestSnapshot;
@@ -324,16 +358,27 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    * workload owns the container holding it, via `docker top`-based PID attribution (see
    * `DockerReadFacade.mapPidsToContainers`). Never throws: a GPU-sampling failure must not take
    * down CPU/memory monitoring it rides alongside on the same 60s tick, so every entity simply
-   * gets no GPU figure this round, same as a host with no supported vendor at all.
+   * gets no GPU figure this round, same as a host with no source at all — and `source` says
+   * which of the two it was.
+   *
+   * PIDs match across the two sources by construction: the host probe writes host-namespace
+   * PIDs, and `docker top` over the mounted socket reports host-namespace PIDs too.
    */
-  private async attributeGpuVram(entities: AppRuntimeHealth[]): Promise<{ byAppUrn: Map<string, number>; unattributed: UnattributedGpuProcess[] }> {
+  private async attributeGpuVram(
+    entities: AppRuntimeHealth[],
+  ): Promise<{ byAppUrn: Map<string, number>; unattributed: UnattributedGpuProcess[]; source: GpuProcessSampleSource | null }> {
     const byAppUrn = new Map<string, number>();
     const unattributed: UnattributedGpuProcess[] = [];
+    let source: GpuProcessSampleSource | null = null;
     try {
       const hardware = await this.hardwareInspector.getProfile();
-      const samples = await this.gpuSampler.sampleVramByProcess(hardware.gpu?.vendor);
+      const observation = await this.gpuSampler.observeVramByProcess(hardware.gpu?.vendor);
+      // Recorded before the early return: a source that answered "nothing holds VRAM" is still a
+      // source, and the difference between that and "no source" is what the dashboard reports.
+      source = observation.source;
+      const samples = observation.samples;
       if (samples.length === 0) {
-        return { byAppUrn, unattributed };
+        return { byAppUrn, unattributed, source };
       }
 
       const pidToContainer = await this.dockerReadFacade.mapPidsToContainers(samples.map((sample) => sample.pid));
@@ -356,7 +401,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     } catch (error) {
       this.logger.warn(`GPU VRAM attribution failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    return { byAppUrn, unattributed };
+    return { byAppUrn, unattributed, source };
   }
 
   private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {
@@ -431,6 +476,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         // attribution needs the full entity list (to match container names) and so can only run
         // once, after every entity already exists.
         gpuVramMb: null,
+        readiness: null,
       };
     } catch (error) {
       // Records that this collection did NOT reach Docker. Without it the empty result below is
@@ -543,6 +589,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       recentSamples.slice(-HIGH_CPU_SAMPLE_COUNT).every((sample) => sample.cpuPercent >= HIGH_CPU_THRESHOLD_PERCENT);
     const degraded = sustainedHighCpu && !responsive;
 
+    // Only a running app is asked: a stopped or restarting one has nothing to say about its
+    // subsystems, and an `unknown` badge on it would read as a fault.
+    const readiness = app.status === 'running' ? await this.probeReadiness(appUrn, sampledAt) : null;
+
     const appCpuLimit = typeof app.config?.cpuLimit === 'string' && app.config.cpuLimit.trim() ? app.config.cpuLimit.trim() : null;
     const defaultCpuLimit =
       typeof (this.config.get('userSettings') as Record<string, unknown>).defaultAppCpuLimit === 'string'
@@ -568,7 +618,87 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
       containers,
       // See the identical comment in `collectHubRuntimeHealth` — filled in by `attributeGpuVram`.
       gpuVramMb: null,
+      readiness,
     };
+  }
+
+  /**
+   * Dials the app's declared readiness endpoint the way `agent-notify.service.ts` dials its
+   * wake hook: `http://<compose service>:<port><path>` on the shared network, with the bearer
+   * read from the app's generated env when the manifest names one. `null` when the app declares
+   * no endpoint; `unknown` for every way the probe can fail (see `AppReadiness.status`).
+   *
+   * The bearer is the app's own API key (`APP_SEED` for Hermes). It goes into the header and
+   * nowhere else: no log line here carries the URL's response body, the header, or the env.
+   * And it only ever goes to the app's own containers: `service` is checked against the app's
+   * installed compose before anything is dialled, because marketplace manifests are not all
+   * first-party and a bare hostname here would otherwise hand this app's key to whatever it
+   * named — another app on the shared network, `host.docker.internal`, or the internet.
+   */
+  private async probeReadiness(appUrn: AppUrn, sampledAt: string): Promise<AppReadiness | null> {
+    // Never throws: an unreadable manifest is `null` from `getInstalledAppInfo`, and no endpoint.
+    const descriptor = (await this.appFilesManager.getInstalledAppInfo(appUrn))?.hub_integration?.readiness;
+    if (!descriptor) {
+      return null;
+    }
+
+    try {
+      if (!(await this.isOwnComposeService(appUrn, descriptor.service))) {
+        if (!this.readinessServiceWarned.has(appUrn)) {
+          this.readinessServiceWarned.add(appUrn);
+          this.logger.warn(
+            `Readiness probe for ${appUrn} skipped: "${descriptor.service}" is not a service in this app's docker-compose.json, so it will not be dialled`,
+          );
+        }
+        return unknownReadiness(sampledAt);
+      }
+      // A later reinstall or edit may break it again; warn again then.
+      this.readinessServiceWarned.delete(appUrn);
+
+      const url = `http://${descriptor.service}:${descriptor.port}${descriptor.path}`;
+      const headers: Record<string, string> = { Accept: 'application/json' };
+      if (descriptor.bearer_env) {
+        const appEnv = await this.appFilesManager.getAppEnv(appUrn);
+        const bearer = this.envUtils.envStringToMap(appEnv.content).get(descriptor.bearer_env);
+        if (bearer) {
+          headers.Authorization = `Bearer ${bearer}`;
+        } else {
+          // Still worth asking: the endpoint may answer unauthenticated, and a 401 reads as
+          // `unknown` below either way.
+          this.logger.debug(`Readiness probe for ${appUrn}: ${descriptor.bearer_env} is not in the app env; probing without a bearer`);
+        }
+      }
+
+      const response = await fetch(url, { headers, signal: AbortSignal.timeout(READINESS_PROBE_TIMEOUT_MS) });
+      if (!response.ok) {
+        this.logger.debug(`Readiness probe for ${appUrn} returned ${response.status} from ${url}`);
+        return unknownReadiness(sampledAt);
+      }
+      return normalizeReadinessBody(await response.json(), sampledAt);
+    } catch (error) {
+      // Everything from an unparseable compose or app env to a timeout or a non-JSON body lands
+      // here, and stays inside this one app's sample: a throw would fail the whole tick's
+      // `Promise.all`. An unreadable compose in particular means "not proven to be this app's
+      // service", which is the no-fetch branch above, not a reason to dial anyway.
+      // Debug, not warn: this runs every tick and every detail-page poll, and a gateway that is
+      // down for a while must not fill the log. The badge says `unknown`; that is the signal.
+      this.logger.debug(`Readiness probe for ${appUrn} failed: ${error instanceof Error ? error.message : String(error)}`);
+      return unknownReadiness(sampledAt);
+    }
+  }
+
+  /**
+   * Whether `service` is one of the services in this app's installed docker-compose.json — the
+   * same compose `agent-notify.service.ts` reads to find the main service. Missing or malformed
+   * compose is `false` (or a throw the caller treats as `false`): the check exists to prove the
+   * target is this app's own container, and "could not read the compose" is not that proof.
+   */
+  private async isOwnComposeService(appUrn: AppUrn, service: string): Promise<boolean> {
+    const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
+    if (!composeJson.content) {
+      return false;
+    }
+    return parseComposeJson(composeJson.content).services.some((entry) => entry.name === service);
   }
 
   private async hydrateHistoryFromDatabase() {
@@ -598,6 +728,18 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         .map((app) => `${app.appName} ${app.cpuPercent.toFixed(1)}% CPU`)
         .join(', ');
       this.logger.info(`[AppMonitor] CPU summary: ${topSummary}`);
+
+      // Once a tick, by check name only: the names are the app's subsystem vocabulary, while a
+      // check's `detail` is free text the app chose and belongs on the page, not in the log.
+      for (const app of activeApps) {
+        if (app.readiness?.status !== 'degraded') {
+          continue;
+        }
+        const failing = Object.entries(app.readiness.checks)
+          .filter(([, check]) => check.status !== 'ok')
+          .map(([name]) => name);
+        this.logger.warn(`[AppMonitor] ${app.appName} (${app.appUrn}) reports readiness degraded: ${failing.join(', ') || 'no failing check named'}`);
+      }
 
       const degradedApps = activeApps.filter((app) => app.degraded);
       for (const degradedApp of degradedApps) {

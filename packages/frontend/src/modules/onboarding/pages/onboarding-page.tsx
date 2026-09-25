@@ -7,7 +7,7 @@ import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { TranslatableError } from '@/types/error.types';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';

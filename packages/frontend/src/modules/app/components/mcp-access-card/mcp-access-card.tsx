@@ -6,7 +6,7 @@ import { Copy, Plug, RefreshCw, Terminal, Wrench } from 'lucide-react';
 import clsx from 'clsx';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Link } from 'react-router';
 
 type McpRuntime = {

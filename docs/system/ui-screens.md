@@ -125,7 +125,7 @@ These have no URL but are screens in every other sense.
 | `ErrorPage` | `components/error/error-page.tsx` | Any uncaught render error inside the authenticated tree. Stack traces only in dev. |
 | `EmptyPage` | `components/empty-page/empty-page.tsx` | Empty lists. |
 | Banners | `components/core-server-banner/`, `components/tunnel-status-banner/`, `modules/app/components/app-runtime-degraded-banner.tsx`, `modules/auth/components/registration-state-drift-dialog.tsx` | Above page content, per condition. |
-| Toasts | `react-hot-toast`, `<Toaster position="bottom-center" />` mounted twice in `root.tsx` (the two branches are mutually exclusive) | Install / start / stop / uninstall events via `SSEProvider`, and most mutation results. |
+| Toasts | **Sonner**, wrapped by `components/ui/Toaster/Toaster.tsx` and mounted twice in `root.tsx` (lines 719 and 727 — the two branches are mutually exclusive). The wrapper is kept in step with Portal's and CI-Common's so a toast looks the same in every app; its colours go through Sonner's own custom properties, because Sonner injects its stylesheet unlayered and unlayered CSS outranks every Tailwind utility. | Install / start / stop / uninstall events via `SSEProvider`, and most mutation results. |
 | `DebugPanel` | `components/debug-panel/debug-panel.tsx` | Dev builds only, by holding `d`+`e`+`v`. The only global keyboard affordance in the app — there is no command palette. |
 | Dialogs | `modules/app/components/dialogs/` (11), `modules/settings/components/` (7) | Install, uninstall, stop, force-stop, restart, reset, cancel-install, update-settings, app-data-folder, disconnect-memory, memory-provider-force-warning; add / edit / delete app store, advanced settings, update repo, change username, OTP. |
 

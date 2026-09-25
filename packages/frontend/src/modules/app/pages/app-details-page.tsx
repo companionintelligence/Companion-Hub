@@ -17,7 +17,10 @@ import { getCategoryLabel } from '../helpers/category-label';
 import { AppMediaGallery } from '../components/app-media-gallery/app-media-gallery';
 import { useAppMedia } from '../hooks/use-app-media';
 import { AppAccessPoints } from '../components/app-access-points/app-access-points';
+import { AppReadinessBadge, AppReadinessChecksCard } from '../components/app-readiness/app-readiness';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';
+import { CustomDomainRestartBanner } from '../components/custom-domain-restart-banner';
+import { PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY, queryPublicWebDiagnostics } from '@/lib/cloudflare-api';
 import { McpAccessCard } from '../components/mcp-access-card/mcp-access-card';
 import { MemoryStatusBadge } from '../components/memory-status-badge/memory-status-badge';
 import { useAppUrlAvailability } from '../helpers/use-app-url-availability';
@@ -124,6 +127,18 @@ export default () => {
     enabled: runtimeHealthEnabled,
   });
 
+  /*
+   * The app row's `pendingRestart` says a restart is owed; it cannot say that a
+   * customer's domain is dark because of it. Only the Hub's report distinguishes
+   * the two, and only the second is worth putting a banner on this page for.
+   */
+  const { data: publicWebDiagnostics } = useQuery({
+    queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY,
+    queryFn: queryPublicWebDiagnostics,
+    staleTime: 30_000,
+    enabled: runtimeHealthEnabled,
+  });
+
   // Owned here (like runtimeHealth) and handed to BOTH the status pill and the
   // launch action, so the two can never disagree about whether the app's public
   // address is serving yet. Read through optionals because this must run before
@@ -193,6 +208,10 @@ export default () => {
   return (
     <div className="mx-auto max-w-6xl space-y-4 px-0 pb-20 sm:space-y-8">
       <AppRuntimeDegradedBanner runtimeHealth={runtimeHealth.data} />
+      <CustomDomainRestartBanner
+        apps={(publicWebDiagnostics?.apps ?? []).filter((entry) => entry.appUrn === info.urn)}
+        namesByUrn={{ [info.urn]: info.name }}
+      />
       <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
         <CardContent className="space-y-4 p-3 sm:space-y-6 sm:p-6">
           <div className="space-y-4 sm:space-y-6">
@@ -219,6 +238,7 @@ export default () => {
                       {t('APP_PRICE_FREE')}
                     </span>
                     <MemoryStatusBadge appUrn={appUrn} />
+                    <AppReadinessBadge readiness={runtimeHealth.data?.readiness} />
                   </div>
                 </div>
 
@@ -273,6 +293,8 @@ export default () => {
       />
 
       <AppAccessPoints app={app} info={info} />
+
+      <AppReadinessChecksCard readiness={runtimeHealth.data?.readiness} />
 
       <McpAccessCard app={app} info={info} mcpRuntime={getApp.data.mcpRuntime ?? null} />
 

@@ -24,11 +24,20 @@ import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-r
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
+import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, DEFAULT_POOL_PRESSURE_WEIGHT } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+  DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+  DEFAULT_POOL_SLOT_AWARENESS,
+} from '@/common/helpers/hub-pool';
 import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
@@ -129,7 +138,14 @@ describe('client disconnects propagate to the engine', () => {
   beforeEach(async () => {
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
-    const others = [mock<LemonadeBackend>(), mock<MtplxBackend>(), mock<DsparkBackend>(), mock<LuceboxBackend>()];
+    const others = [
+      mock<LemonadeBackend>(),
+      mock<MtplxBackend>(),
+      mock<DsparkBackend>(),
+      mock<LuceboxBackend>(),
+      mock<LlamacppBackend>(),
+      mock<LmStudioBackend>(),
+    ];
     for (const backend of others) {
       backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     }
@@ -142,6 +158,9 @@ describe('client disconnects propagate to the engine', () => {
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
       poolPins: [],
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
+      poolProbeSnapshotTtlMs: DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
+      poolPrefixAffinityMaxInFlight: DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+      poolSlotAwareness: DEFAULT_POOL_SLOT_AWARENESS,
     });
     const peerService = mock<HubPoolPeerService>();
     peerService.listConnectedPeers.mockResolvedValue([]);
@@ -150,7 +169,11 @@ describe('client disconnects propagate to the engine', () => {
     loadService = new HubPoolLoadService();
     routingLog = new HubPoolRoutingLogService();
     service = new PoolProxyService(
-      new InferenceBackendRegistry(ollama, vllm, ...(others as [LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend])),
+      new InferenceBackendRegistry(
+        ollama,
+        vllm,
+        ...(others as [LemonadeBackend, MtplxBackend, DsparkBackend, LuceboxBackend, LlamacppBackend, LmStudioBackend]),
+      ),
       peerService,
       mock<TailscaleService>(),
       loadService,

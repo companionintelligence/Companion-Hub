@@ -7,6 +7,7 @@ import { InferenceBackendRegistry } from './backends/backend-registry';
 import type { InferenceBackend } from './backends/backend.interface';
 import { OllamaBackend } from './backends/ollama.backend';
 import { inventoryListsModel } from '@/common/helpers/hub-pool';
+import { clampContextCap } from '@/common/helpers/inference-context-cap';
 import type { PoolPeerCapabilities } from '@/modules/hub-pool/hub-pool.types';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { BackendHealthStatus, InferenceBackendType } from '@ci-hub/common/types';
@@ -166,8 +167,9 @@ export class InferenceEndpointService {
    * Rewrite an app's inference URLs to this Hub's pool proxy when `routing` says to.
    *
    * Apps need no extra credential for this: the pool's app-facing routes are guarded by
-   * `InternalNetworkGuard` + `PoolAppGuard`, which is an origin check (is this request from inside
-   * the appliance?), not caller authentication.
+   * `InferenceAccessGuard`, whose first leg is an origin check (is this request from inside the
+   * appliance?), not caller authentication — the `inference` API key it also accepts is for editors
+   * and SDKs arriving from outside, and is never read for a container-to-container call.
    */
   applyPoolRouting<T extends PoolRoutableEndpoints>(endpoints: T, routing: Pick<PoolRouting, 'baseUrl' | 'reason'> | null, context: string): T {
     if (!routing) {
@@ -184,6 +186,18 @@ export class InferenceEndpointService {
         : `[${context}] connected pool peer(s) present; routing app inference through the pool proxy at ${routing.baseUrl}`,
     );
     return routed;
+  }
+
+  /**
+   * This node's `inferenceMaxNumCtx`, read per call like the switch below so a PATCH reaches the
+   * next handout. `null` is no cap, which is also what a configuration that cannot answer means.
+   */
+  localContextCap(): number | null {
+    try {
+      return clampContextCap(this.config.getInferencePreferences()?.maxNumCtx);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -214,6 +228,7 @@ export class InferenceEndpointService {
   }
 
   private async localInventory(): Promise<PoolInventoryBackend[]> {
+    const maxNumCtx = this.localContextCap();
     const entries = await Promise.all(
       this.backends.entries().map(async ([type, backend]): Promise<PoolInventoryBackend | null> => {
         try {
@@ -222,7 +237,7 @@ export class InferenceEndpointService {
             return null;
           }
           const models = (health.modelsLoaded ?? []).filter((id) => !inventoryListsModel(health.unservableModels, id));
-          return { node: LOCAL_POOL_NODE, local: true, backend: type, models };
+          return { node: LOCAL_POOL_NODE, local: true, backend: type, models, ...(maxNumCtx === null ? {} : { maxNumCtx }) };
         } catch {
           // Six backends are probed and most nodes run one; a dead one is simply not in the inventory.
           return null;
@@ -242,9 +257,18 @@ export class InferenceEndpointService {
       for (const peer of peers) {
         const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
         if (!capabilities || capabilities.acceptingWork === false) continue;
+        // A peer's cap is what its operator set its engine to; clamped because it arrives over the
+        // wire, and null (absent on an older build) reads as "takes any window" — see poolContextCap.
+        const maxNumCtx = clampContextCap(capabilities.maxNumCtx);
         for (const backend of capabilities.backends ?? []) {
           if (!backend.healthy) continue;
-          entries.push({ node: peer.displayName || peer.nodeFqdn, local: false, backend: backend.type, models: backend.modelsLoaded ?? [] });
+          entries.push({
+            node: peer.displayName || peer.nodeFqdn,
+            local: false,
+            backend: backend.type,
+            models: backend.modelsLoaded ?? [],
+            ...(maxNumCtx === null ? {} : { maxNumCtx }),
+          });
         }
       }
       return entries;

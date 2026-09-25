@@ -75,6 +75,39 @@ export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } 
  * unattended — but there is no `CI_HUB_ASSUME_YES` equivalent here, because only the operator's CI
  * Account can produce a code. Exported so that refusal is reachable without detaching stdin.
  */
+const DEVICE_MOVE_CONFIRMATION_REQUIRED = 'DEVICE_MOVE_CONFIRMATION_REQUIRED';
+
+/**
+ * Ask before moving this Hub out of the organization that holds it. A terminal asks; without one
+ * the answer is no, and the message says how to say yes.
+ */
+async function confirmMove(env: HubEnv, organizationName: string | undefined, isTTY = process.stdin.isTTY === true): Promise<boolean> {
+  const organization = organizationName ?? 'the organization this code belongs to';
+  const lines = [
+    'This Hub is registered to another organization.',
+    `Pairing it with this code moves it to ${organization}, and the other organization loses it,`,
+    'along with its apps and web addresses there.',
+  ];
+
+  if (!isTTY) {
+    printMessageBox(
+      'Move this Hub?',
+      [...lines, '', `To move it, run again with --move: ${BASE_COMMAND} register ${env} --code <code> --move`],
+      'yellow',
+    );
+    return false;
+  }
+
+  printMessageBox('Move this Hub?', lines, 'yellow');
+  const rl = createInterface({ input, output });
+  try {
+    const answer = await rl.question(`  Move it to ${organization}? [y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
 export async function resolvePairingCode(env: HubEnv, code: string | undefined, isTTY = process.stdin.isTTY === true): Promise<string> {
   const supplied = code ? normalizePairingCode(code) : '';
   if (code && !isValidPairingCode(supplied)) {
@@ -241,7 +274,16 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
   const pairingCode = await resolvePairingCode(env, options.code);
 
   printMessageBox('Pairing', ['Submitting pairing code to the Hub\u2026'], 'cyan');
-  const pairResult = await submitPairingCode(apiBase, pairingCode, readHubApiKey(envFileName));
+  const deviceKey = readHubApiKey(envFileName);
+  let pairResult = await submitPairingCode(apiBase, pairingCode, deviceKey, { confirmMove: options.move === true });
+  if (!pairResult.success && pairResult.code === DEVICE_MOVE_CONFIRMATION_REQUIRED && options.move !== true) {
+    // Nothing changed yet and the code is still good: the Portal will only finish this as a move.
+    if (await confirmMove(env, pairResult.organizationName)) {
+      pairResult = await submitPairingCode(apiBase, pairingCode, deviceKey, { confirmMove: true });
+    } else {
+      process.exit(1);
+    }
+  }
   if (!pairResult.success) {
     printMessageBox('Pairing failed', [pairResult.message || 'Unknown error'], 'red');
     process.exit(1);

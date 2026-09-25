@@ -20,7 +20,7 @@ import { createElement, useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import './app-actions.css';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';
@@ -1035,6 +1035,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * reached yet.
            */
           ...(app ? { customDomainTakeover: app.customDomainTakeover ?? false } : {}),
+          // From the row, like the takeover above: the stored config snapshot leaves
+          // this setting out so that flipping it never restarts the app.
+          ...(app ? { autoRestartOnDomainChange: app.autoRestartOnDomainChange ?? false } : {}),
           /*
            * What the operator is being SHOWN this app is served on, carried so the
            * save can be refused if it stops being true (R2-HUBDOMAINS-3).
