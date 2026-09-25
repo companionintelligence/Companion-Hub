@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { useForm } from 'react-hook-form';
 import type { AppInfo, FormField } from '@/types/app.types';
@@ -1645,6 +1646,47 @@ describe('InstallForm', () => {
     await waitFor(() => {
       expect(getEnableAuthSwitch()).not.toBeChecked();
     });
+  });
+
+  it('reports unsaved edits only once the operator changes a field, and not after it is changed back', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+    const onDirtyChange = vi.fn();
+    const uploadField = { env_variable: 'UPLOAD_LOCATION', label: 'Upload Location', type: 'text', required: true } as never;
+    const lastReport = () => onDirtyChange.mock.calls.at(-1)?.[0];
+
+    // Mirrors update-settings-dialog.tsx: the installed app's stored config seeds the form, and the
+    // dialog shows its "changes will apply" banner and enables Update from this callback. The form
+    // has no defaultValues, so `isDirty` compared the seeded values with an empty baseline: a change
+    // reverted by hand still counted as an edit, and under StrictMode (the dev server's re-run of
+    // mount effects) the untouched dialog opened with the banner up.
+    render(
+      <StrictMode>
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[uploadField]}
+            initialValues={{ exposureMode: 'local', UPLOAD_LOCATION: '/data/photos', enableAuth: false }}
+            onDirtyChange={onDirtyChange}
+          />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    const uploadInput = await screen.findByLabelText(/Upload Location/);
+    await waitFor(() => expect(uploadInput).toHaveValue('/data/photos'));
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+    await waitFor(() => expect(lastReport()).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' }));
+    await waitFor(() => expect(lastReport()).toBe(false));
+
+    fireEvent.change(uploadInput, { target: { value: '/data/other' } });
+    await waitFor(() => expect(lastReport()).toBe(true));
+    fireEvent.change(uploadInput, { target: { value: '/data/photos' } });
+    await waitFor(() => expect(lastReport()).toBe(false));
   });
 
   it('shows the recommended hint when the manifest defaults edge auth on', async () => {
