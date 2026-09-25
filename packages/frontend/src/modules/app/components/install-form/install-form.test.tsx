@@ -42,6 +42,12 @@ vi.mock('@/lib/cloudflare-api', async (importOriginal) => ({
   repairPublicWebRouting,
 }));
 
+const { mockTauriInvoke } = vi.hoisted(() => ({ mockTauriInvoke: vi.fn() }));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mockTauriInvoke(...args),
+}));
+
 const { toast } = vi.hoisted(() => ({
   toast: {
     error: vi.fn(),
@@ -1659,6 +1665,71 @@ describe('InstallForm', () => {
       expect(exportedText).not.toContain(SECRET_VALUE);
       expect(exportedText).not.toContain('DB_PASSWORD');
       expect(clickSpy).toHaveBeenCalledOnce();
+    });
+
+    // The desktop webview ignores `<a download>`, which left this button doing nothing there.
+    it('saves the export through the desktop app and says where it went', async () => {
+      class ReadableBlob extends RecordingBlob {
+        async arrayBuffer() {
+          return new TextEncoder().encode(this.parts.join('')).buffer;
+        }
+      }
+      vi.stubGlobal('Blob', ReadableBlob);
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: { invoke: vi.fn() }, configurable: true });
+      mockTauriInvoke.mockResolvedValue('/home/user/Downloads/nextcloud-install-config.json');
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+      try {
+        render(
+          <MemoryRouter>
+            <InstallForm info={editInfo} onSubmit={vi.fn()} formId="test-form" formFields={[RANDOM_FIELD]} initialValues={editInitialValues} />
+          </MemoryRouter>,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
+
+        await waitFor(() => {
+          expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED');
+        });
+        expect(mockTauriInvoke).toHaveBeenCalledWith('save_download_command', {
+          filename: 'nextcloud-install-config.json',
+          contents: expect.any(Array),
+        });
+        const [, args] = mockTauriInvoke.mock.calls[0] as [string, { contents: number[] }];
+        const savedText = new TextDecoder().decode(new Uint8Array(args.contents));
+        expect(JSON.parse(savedText)).toMatchObject({ appId: 'nextcloud' });
+        expect(savedText).not.toContain(SECRET_VALUE);
+        expect(clickSpy).not.toHaveBeenCalled();
+      } finally {
+        delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      }
+    });
+
+    it('reports a failed desktop save instead of failing silently', async () => {
+      class ReadableBlob extends RecordingBlob {
+        async arrayBuffer() {
+          return new ArrayBuffer(0);
+        }
+      }
+      vi.stubGlobal('Blob', ReadableBlob);
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: { invoke: vi.fn() }, configurable: true });
+      mockTauriInvoke.mockRejectedValue(new Error('Failed to write download'));
+
+      try {
+        render(
+          <MemoryRouter>
+            <InstallForm info={editInfo} onSubmit={vi.fn()} formId="test-form" formFields={[RANDOM_FIELD]} initialValues={editInitialValues} />
+          </MemoryRouter>,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
+
+        await waitFor(() => {
+          expect(toast.error).toHaveBeenCalledWith('Failed to write download');
+        });
+      } finally {
+        delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      }
     });
 
     it('never writes the live secret to the "recently used" localStorage cache on submit', async () => {
