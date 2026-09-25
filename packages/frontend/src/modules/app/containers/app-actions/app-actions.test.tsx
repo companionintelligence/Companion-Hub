@@ -343,6 +343,34 @@ describe('AppActions', () => {
     });
   });
 
+  describe('the restart setting for a newly connected domain', () => {
+    /*
+     * The stored config snapshot leaves this setting out, so that flipping it never
+     * restarts the app — which makes the row the only place the dialog can read it
+     * from. Seeded from anywhere else, every save of an unrelated setting would
+     * quietly turn it back off.
+     */
+    it('seeds the settings dialog with what the app was saved with', () => {
+      render(
+        <AppActions
+          app={makeApp({ autoRestartOnDomainChange: true })}
+          metadata={metadata}
+          info={info}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).autoRestartOnDomainChange).toBe(true);
+    });
+
+    it('seeds it off for an app that never set it', () => {
+      render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).autoRestartOnDomainChange).toBe(false);
+    });
+  });
+
   it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
 
