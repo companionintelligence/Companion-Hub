@@ -123,9 +123,7 @@ describe('App lifecycle', () => {
     username: 'guest',
     port: Number(process.env.RABBITMQ_PORT) || 5672,
   });
-  // Queue messages are signed with a key derived from this since CI-Hub#1597, and a
-  // queue refuses to start without it — so this suite could not create one at all.
-  configurationService.get.calledWith('jwtSecret').mockReturnValue('integration-test-jwt-secret');
+  configurationService.get.calledWith('jwtSecret').mockReturnValue('test-jwt-secret');
   configurationService.get.calledWith('domain').mockReturnValue('ci.test');
   configurationService.get.calledWith('localDomain').mockReturnValue('ci.lan');
   configurationService.get.calledWith('userSettings').mockReturnValue({
