@@ -21,6 +21,8 @@ const appSchema = z.object({
   isVisibleOnGuestDashboard: z.boolean(),
   config: z.record(z.string(), z.unknown()).optional(),
   enableAuth: z.boolean().optional(),
+  /** Seeds the settings dialog from the ROW, the same way `customDomainTakeover` is. */
+  autoRestartOnDomainChange: z.boolean().optional(),
   localSubdomain: z.string().nullable().optional(),
   exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
   publicDomain: z.string().nullable().optional(),

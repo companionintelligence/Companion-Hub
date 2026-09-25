@@ -358,6 +358,10 @@ export type PortalDesktopExchangeDto = {
     redirectPath: string;
 };
 
+export type PortalDesktopHandoffStatusDto = {
+    [key: string]: unknown;
+};
+
 export type ChangeUsernameBody = {
     newUsername: string;
     password: string;
@@ -441,6 +445,7 @@ export type MyAppsDto = {
                 [key: string]: unknown;
             };
             enableAuth?: boolean;
+            autoRestartOnDomainChange?: boolean;
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
@@ -704,6 +709,7 @@ export type GuestAppsDto = {
                 [key: string]: unknown;
             };
             enableAuth?: boolean;
+            autoRestartOnDomainChange?: boolean;
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
@@ -1011,6 +1017,7 @@ export type GetAppDto = {
             [key: string]: unknown;
         };
         enableAuth?: boolean;
+        autoRestartOnDomainChange?: boolean;
         localSubdomain?: string;
         exposureMode?: 'local' | 'cloudflare' | 'tailscale';
         publicDomain?: string;
@@ -1468,6 +1475,7 @@ export type AppFormBody = {
     domain?: string;
     isVisibleOnGuestDashboard?: boolean;
     enableAuth?: boolean;
+    autoRestartOnDomainChange?: boolean;
     localSubdomain?: string;
     publicDomain?: string;
     customDomain?: string;
@@ -3367,6 +3375,21 @@ export type ExchangePortalDesktopLoginResponses = {
 };
 
 export type ExchangePortalDesktopLoginResponse = ExchangePortalDesktopLoginResponses[keyof ExchangePortalDesktopLoginResponses];
+
+export type PortalDesktopHandoffStatusData = {
+    body?: never;
+    path?: never;
+    query: {
+        token: string;
+    };
+    url: '/api/auth/portal/desktop-handoff-status';
+};
+
+export type PortalDesktopHandoffStatusResponses = {
+    default: PortalDesktopHandoffStatusDto;
+};
+
+export type PortalDesktopHandoffStatusResponse = PortalDesktopHandoffStatusResponses[keyof PortalDesktopHandoffStatusResponses];
 
 export type ChangeUsernameData = {
     body: ChangeUsernameBody;
