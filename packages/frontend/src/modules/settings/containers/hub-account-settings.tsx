@@ -10,7 +10,7 @@ import { portalConfigQueryOptions } from '@/lib/portal-config';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, Unlink } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { SectionHeader } from '../components/network-section/network-section';
 

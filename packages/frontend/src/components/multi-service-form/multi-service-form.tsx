@@ -15,7 +15,7 @@ import { VolumesConfig } from './elements/volumes';
 import { EnvironmentConfig } from './elements/environment';
 import { EssentialConfig } from './elements/essential';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import i18next from 'i18next';
 import { deepClean } from '@/utils/objects';
 

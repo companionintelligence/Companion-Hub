@@ -17,7 +17,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 vi.mock('@/lib/clear-client-hub-state', () => ({ clearClientHubState }));
 
-vi.mock('react-hot-toast', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key }),

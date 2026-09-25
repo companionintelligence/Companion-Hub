@@ -7,7 +7,7 @@ const { useRegistrationStatus, reconnectTunnel, resetRegistrationForRePair, navi
   resetRegistrationForRePair: vi.fn(),
   navigate: vi.fn(),
   invalidateQueries: vi.fn(),
-  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
 vi.mock('@/lib/hooks/use-registration-status', () => ({
@@ -35,8 +35,8 @@ vi.mock('react-router', () => ({
   useNavigate: () => navigate,
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: toast,
+vi.mock('sonner', () => ({
+  toast: toast,
 }));
 
 import { TunnelStatusBanner } from './tunnel-status-banner';
@@ -129,7 +129,7 @@ describe('TunnelStatusBanner', () => {
     render(<TunnelStatusBanner />);
     fireEvent.click(screen.getByRole('button', { name: 'TUNNEL_DEGRADED_BANNER_ACTION' }));
 
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('TUNNEL_DEGRADED_RECONNECT_NEEDS_RESTART', expect.anything()));
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('TUNNEL_DEGRADED_RECONNECT_NEEDS_RESTART', expect.anything()));
     expect(navigate).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 
 /**
  * Copy text to the clipboard, toasting ONLY on a confirmed successful write. The Clipboard API can

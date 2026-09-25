@@ -56,8 +56,8 @@ const { toast } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: toast,
+vi.mock('sonner', () => ({
+  toast: toast,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -1831,10 +1831,7 @@ describe('InstallForm', () => {
         fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
 
         await waitFor(() => {
-          expect(toast.success).toHaveBeenCalledWith(
-            'APP_INSTALL_FORM_EXPORT_CONFIG_SAVED',
-            expect.objectContaining({ style: expect.objectContaining({ overflowWrap: 'anywhere' }) }),
-          );
+          expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED');
         });
         expect(mockTauriInvoke).toHaveBeenCalledWith('save_download_command', {
           filename: 'nextcloud-install-config.json',
