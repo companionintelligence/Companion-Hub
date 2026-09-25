@@ -22,23 +22,35 @@ const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
  * Where one custom domain stands on this Hub, sent to Companion Portal so it can
  * tell a CONNECTED domain from a SERVING one.
  *
- * One entry per bound domain, whatever the app's status. That is the point of a
- * separate list: the `apps` payload deliberately carries only apps that should be
- * published, so a stopped app is absent from it — and Portal could not tell
- * "stopped, will pick the domain up when it starts" from "no news".
+ * One entry per app row holding a domain, whatever the app's status. That is the
+ * point of a separate list: the `apps` payload deliberately carries only apps that
+ * should be published, so a stopped app is absent from it — and Portal could not
+ * tell "stopped, will pick the domain up when it starts" from "no news".
+ *
+ * ⚠ KEYED BY `targetHostname` AS WELL AS `domain`. A stopped app keeps the domain
+ * it had while another app is bound to it, and a report composed before a sync
+ * still describes the binding that sync replaced. Portal records an entry only
+ * against the binding it names — the app's platform hostname, the same join key
+ * the delivered `customDomains` use — so neither can land on the wrong app.
  *
  * - `applied`: the app's environment already carries this domain.
- * - `pending-restart`: the app is running on its platform hostname and needs a
- *   restart to pick the domain up. Nothing happens until someone confirms one,
- *   unless `autoRestart` is on.
- * - `pending-start`: the app is not running. It picks the domain up when it next
- *   starts, so there is nothing to confirm.
+ * - `pending-restart`: the app is running on its platform hostname, and a restart
+ *   is exactly what this Hub would carry out on a confirmation — the same checks
+ *   the apply gate makes. Nothing happens until someone confirms one, unless
+ *   `autoRestart` is on.
+ * - `pending-start`: the app is not running, or is coming up now. It picks the
+ *   domain up as it starts, so there is nothing to confirm.
+ * - `blocked`: running and not serving the domain, but a confirmed restart would
+ *   not be carried out — the restart is not owed (`pendingRestart` is clear) or
+ *   another app answers on the same hostname. Portal offers no restart for it.
  *
  * Report-only: nothing here provisions or prunes anything.
  */
 export interface CustomDomainApplyReport {
   domain: string;
-  state: 'applied' | 'pending-restart' | 'pending-start';
+  /** The app's platform hostname — which binding this entry describes. */
+  targetHostname: string;
+  state: 'applied' | 'pending-restart' | 'pending-start' | 'blocked';
   autoRestart: boolean;
 }
 
