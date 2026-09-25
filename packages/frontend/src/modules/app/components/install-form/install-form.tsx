@@ -32,6 +32,7 @@ import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
+import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -284,21 +285,27 @@ export const InstallForm: React.FC<IProps> = ({
     [setValue],
   );
 
-  const handleExportConfig = useCallback(() => {
+  const handleExportConfig = useCallback(async () => {
     const json = serializeInstallConfig(info.id, getValues(), formFields);
     const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
     try {
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = installConfigFilename(info.id);
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-    } finally {
-      URL.revokeObjectURL(url);
+      // Only the desktop app reports a path; a browser shows its own download UI.
+      const savedPath = await saveBlobAsFile(installConfigFilename(info.id), blob);
+      if (savedPath) {
+        const { folder, file } = splitSavedPath(savedPath);
+        // A full path has no break points, so it overflowed the toast's default 350px.
+        toast.success(t('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED', { file, folder, defaultValue: 'Saved {{file}}\nto {{folder}}' }), {
+          style: { maxWidth: 'min(32rem, calc(100vw - 2rem))', overflowWrap: 'anywhere' },
+        });
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : t('APP_INSTALL_FORM_EXPORT_CONFIG_ERROR', { defaultValue: 'Could not save the install config.' }),
+      );
     }
-  }, [getValues, formFields, info.id]);
+  }, [getValues, formFields, info.id, t]);
 
   const handleImportButtonClick = useCallback(() => {
     importFileInputRef.current?.click();
