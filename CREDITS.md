@@ -114,7 +114,6 @@ The frameworks and libraries that define how this repository is built.
 | <img src="https://github.com/rust-random.png?size=40" width="20" height="20" alt=""> | [`rand`](https://rust-random.github.io/book) | MIT OR Apache-2.0 | Random number generators and other randomness functionality. |
 | <img src="https://github.com/bvaughn.png?size=40" width="20" height="20" alt=""> | [`react-error-boundary`](https://react-error-boundary-lib.vercel.app/) | MIT | Simple reusable React error boundary component |
 | <img src="https://github.com/react-hook-form.png?size=40" width="20" height="20" alt=""> | [`react-hook-form`](https://react-hook-form.com) | MIT | Performant, flexible and extensible forms library for React Hooks |
-| <img src="https://github.com/timolins.png?size=40" width="20" height="20" alt=""> | [`react-hot-toast`](https://github.com/timolins/react-hot-toast#readme) | MIT | Smoking hot React Notifications. Lightweight, customizable and beautiful by default. |
 | <img src="https://github.com/i18next.png?size=40" width="20" height="20" alt=""> | [`react-i18next`](https://github.com/i18next/react-i18next) | MIT | Internationalization for react done right. Using the i18next i18n ecosystem. |
 | <img src="https://github.com/remarkjs.png?size=40" width="20" height="20" alt=""> | [`react-markdown`](https://github.com/remarkjs/react-markdown#readme) | MIT | React component to render markdown |
 | <img src="https://github.com/remix-run.png?size=40" width="20" height="20" alt=""> | [`react-router`](https://github.com/remix-run/react-router) | MIT | Declarative routing for React |
@@ -134,6 +133,7 @@ The frameworks and libraries that define how this repository is built.
 | <img src="https://github.com/serde-rs.png?size=40" width="20" height="20" alt=""> | [`serde_json`](https://github.com/serde-rs/json) | MIT OR Apache-2.0 | A JSON serialization file format |
 | <img src="https://github.com/RustCrypto.png?size=40" width="20" height="20" alt=""> | [`sha2`](https://github.com/RustCrypto/hashes) | MIT OR Apache-2.0 | Pure Rust implementation of the SHA-2 hash function family including SHA-224, SHA-256, SHA-3 |
 | <img src="https://github.com/simov.png?size=40" width="20" height="20" alt=""> | [`slugify`](https://github.com/simov/slugify) | MIT | Slugifies a String |
+| <img src="https://github.com/emilkowalski.png?size=40" width="20" height="20" alt=""> | [`sonner`](https://sonner.emilkowal.ski/) | MIT | An opinionated toast component for React. |
 | <img src="https://github.com/sebhildebrandt.png?size=40" width="20" height="20" alt=""> | [`systeminformation`](https://systeminformation.io) | MIT | Advanced, lightweight system and OS information library |
 | <img src="https://github.com/dcastil.png?size=40" width="20" height="20" alt=""> | [`tailwind-merge`](https://github.com/dcastil/tailwind-merge) | MIT | Merge Tailwind CSS classes without style conflicts |
 | <img src="https://github.com/tauri-apps.png?size=40" width="20" height="20" alt=""> | [`tauri-build`](https://tauri.app/) | Apache-2.0 OR MIT | build time code to pair with https://crates.io/crates/tauri |

@@ -11,7 +11,8 @@ import { useTheme } from '@/components/providers/theme/theme-provider';
  * Sonner injects its stylesheet unlayered, and unlayered CSS outranks every Tailwind utility
  * (those sit in a cascade layer), so plain `bg-*` / `text-*` classes on a toast silently lose.
  * The card's colours go in through Sonner's own custom properties, set inline on the toaster,
- * and the few properties it hard-codes are overridden with `!` utilities.
+ * and the few properties it hard-codes are overridden with `!` utilities. `whitespace-pre-line`
+ * keeps a `\n` in a message as a line break, as react-hot-toast did.
  */
 const TOKEN_STYLE = {
   '--normal-bg': 'var(--popover)',
@@ -43,7 +44,8 @@ export const Toaster = (props: ToasterProps) => {
         classNames: {
           toast: '!text-sm',
           icon: '!size-5',
-          description: '!text-muted-foreground',
+          title: 'whitespace-pre-line',
+          description: '!text-muted-foreground whitespace-pre-line',
           actionButton: '!bg-primary !text-primary-foreground',
           cancelButton: '!bg-muted !text-muted-foreground',
         },
