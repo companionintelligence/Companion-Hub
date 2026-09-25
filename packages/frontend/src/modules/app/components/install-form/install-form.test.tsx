@@ -1689,7 +1689,10 @@ describe('InstallForm', () => {
         fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
 
         await waitFor(() => {
-          expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED');
+          expect(toast.success).toHaveBeenCalledWith(
+            'APP_INSTALL_FORM_EXPORT_CONFIG_SAVED',
+            expect.objectContaining({ style: expect.objectContaining({ overflowWrap: 'anywhere' }) }),
+          );
         });
         expect(mockTauriInvoke).toHaveBeenCalledWith('save_download_command', {
           filename: 'nextcloud-install-config.json',

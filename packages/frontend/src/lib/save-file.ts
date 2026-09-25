@@ -31,3 +31,12 @@ export async function saveBlobAsFile(filename: string, blob: Blob): Promise<stri
 
   return null;
 }
+
+/** Splits a saved path into its folder and file name, for either path separator. */
+export function splitSavedPath(savedPath: string): { folder: string; file: string } {
+  const separator = Math.max(savedPath.lastIndexOf('/'), savedPath.lastIndexOf('\\'));
+  if (separator < 0) {
+    return { folder: '', file: savedPath };
+  }
+  return { folder: savedPath.slice(0, separator) || savedPath.slice(0, 1), file: savedPath.slice(separator + 1) };
+}
