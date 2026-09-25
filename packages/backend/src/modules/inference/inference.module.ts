@@ -17,6 +17,7 @@ import { InferenceRouterService } from './inference-router.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
+import { AppContainerOriginGuard } from './app-container-origin.guard';
 import { AppCredentialsService } from './app-credentials.service';
 import { InferenceEnvResolver } from './inference-env-resolver';
 import { InferenceEndpointService } from './inference-endpoint.service';
@@ -65,6 +66,7 @@ import { InferenceController } from './inference.controller';
     InferenceBackendRegistry,
     BackendObserverService,
     InternalOriginGuard,
+    AppContainerOriginGuard,
   ],
   exports: [
     HardwareInspectorService,
