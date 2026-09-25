@@ -58,7 +58,9 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-h-[85vh] flex flex-col">
+      {/* Same width and height cap as the install dialog: both host the same InstallForm, and the
+          default sm:max-w-lg squeezed its fields (the exposure mode tabs wrapped onto two lines). */}
+      <DialogContent className="sm:max-w-2xl max-h-[calc(100dvh-2rem)] flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
           {hasChanges && (
