@@ -58,7 +58,7 @@ describe('downloadResponseAsFile', () => {
 
   it('saves downloads through Tauri when running in the desktop app', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      value: { invoke: vi.fn() },
+      value: {},
       configurable: true,
     });
     mockInvoke.mockResolvedValue('/Users/bennett/Downloads/ci-hub-logs.log');
