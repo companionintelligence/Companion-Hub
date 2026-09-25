@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { AppService } from '@/app.service';
+import { AppService, resolveEdgeSubnet } from '@/app.service';
 import { APP_DATA_DIR, APP_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -157,7 +157,8 @@ describe('AppService', () => {
       configurationService.getConfig.mockReturnValueOnce(fromPartial({ directories, userSettings: { persistTraefikConfig: false } }));
 
       (fs as unknown as FsMock).__applyMockFiles({
-        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]: 'certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: {{ACME_EMAIL}}',
+        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]:
+          'entryPoints:\n  web:\n    forwardedHeaders:\n      trustedIPs:\n        - {{EDGE_TRUSTED_CIDR}}\n  websecure:\n    forwardedHeaders:\n      trustedIPs:\n        - {{EDGE_TRUSTED_CIDR}}\ncertificatesResolvers:\n  letsencrypt:\n    acme:\n      email: {{ACME_EMAIL}}',
         [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]:
           'http:\n  middlewares:\n    ci-hub:\n      forwardAuth:\n        address: http://{{HUB_CONTAINER_NAME}}:5002/api/auth/traefik',
       });
@@ -184,7 +185,12 @@ describe('AppService', () => {
       }
 
       expect((await fs.promises.stat(traefikConfigPath)).isFile()).toBe(true);
-      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@localhost');
+      const traefikConfig = (await fs.promises.readFile(traefikConfigPath, 'utf8')).trim();
+      expect(traefikConfig).toContain('admin@localhost');
+      // Both entry points trust the edge subnet and nothing else; the
+      // placeholder never survives into the file Traefik reads.
+      expect(traefikConfig).not.toContain('{{EDGE_TRUSTED_CIDR}}');
+      expect(traefikConfig.match(/- 10\.128\.0\.0\/29/g)).toHaveLength(2);
       expect((await fs.promises.stat(dynamicConfigPath)).isFile()).toBe(true);
       expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toContain('address: http://ci-os-hub:5002/api/auth/traefik');
     });
@@ -229,5 +235,21 @@ describe('AppService', () => {
 
       expect(cacheService.clear).toHaveBeenCalledWith(expect.arrayContaining([SESSION_KEY_PREFIX, APP_SESSION_KEY_PREFIX]));
     });
+  });
+});
+
+describe('resolveEdgeSubnet', () => {
+  it('uses the compose default when unset', () => {
+    expect(resolveEdgeSubnet(undefined)).toBe('10.128.0.0/29');
+    expect(resolveEdgeSubnet('')).toBe('10.128.0.0/29');
+  });
+
+  it('honours an operator IPv4 CIDR', () => {
+    expect(resolveEdgeSubnet('10.200.0.0/29')).toBe('10.200.0.0/29');
+  });
+
+  it('refuses anything that is not an IPv4 CIDR rather than writing it into a trusted range', () => {
+    expect(resolveEdgeSubnet('0.0.0.0/0; insecure: true')).toBe('10.128.0.0/29');
+    expect(resolveEdgeSubnet('traefik')).toBe('10.128.0.0/29');
   });
 });

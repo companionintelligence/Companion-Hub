@@ -20,6 +20,21 @@ import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from './modules/auth/session.manager';
+import { parseIpv4Cidr } from './modules/network/cidr-overlap';
+import { DEFAULT_HUB_EDGE_SUBNET } from './modules/network/network-constants';
+
+/**
+ * The edge subnet for Traefik's `forwardedHeaders.trustedIPs`. An operator
+ * override that is not exactly an IPv4 CIDR is refused in favour of the
+ * default rather than written into Traefik's config as a trusted range.
+ */
+export function resolveEdgeSubnet(configured: string | undefined): string {
+  const candidate = configured?.trim();
+  if (candidate && /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(candidate) && parseIpv4Cidr(candidate)) {
+    return candidate;
+  }
+  return DEFAULT_HUB_EDGE_SUBNET;
+}
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -293,6 +308,10 @@ export class AppService implements OnApplicationShutdown {
       await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
         // Prefer operator email; avoid example.com (LetsEncrypt rejects it). localhost is for local ACME only.
         let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@localhost');
+        // The edge subnet Traefik trusts forwarded headers from: the same
+        // HUB_EDGE_SUBNET the compose file gives the `ci_hub_edge` network,
+        // so the two cannot disagree. See ProxyTrustService for the model.
+        next = next.replaceAll('{{EDGE_TRUSTED_CIDR}}', resolveEdgeSubnet(process.env.HUB_EDGE_SUBNET));
         // SECURITY: the Traefik dashboard/API is shipped fail-closed (`insecure: false`
         // in assets/traefik/traefik.yml). Only opt back into the unauthenticated
         // dashboard for explicit local development — never in production/staging/test,

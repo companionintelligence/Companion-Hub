@@ -18,11 +18,22 @@ providers:
     directory: /etc/traefik/dynamic
     watch: true
 
+# Which peers may vouch for a client's address. ONLY the edge network
+# (docker-compose.prod.yml: `ci_hub_edge`, a fixed subnet holding just
+# cloudflared and the Tailscale sidecar at fixed addresses). A request from
+# anywhere else — the LAN, an app container, the host — has its forwarded
+# headers stripped and is named as the client itself, so nothing outside that
+# subnet can choose the address it appears as. The placeholder is filled from
+# HUB_EDGE_SUBNET at config-copy time (AppService.copyAssets), the same value
+# the compose file gives the network.
 entryPoints:
   web:
     address: ":80"
     # Allow plain HTTP - no automatic redirect to HTTPS
     # Cloudflare Tunnel connects via plain HTTP
+    forwardedHeaders:
+      trustedIPs:
+        - {{EDGE_TRUSTED_CIDR}}
     transport:
       respondingTimeouts:
         readTimeout: 300s
@@ -33,6 +44,9 @@ entryPoints:
     http:
       tls:
         certResolver: myresolver
+    forwardedHeaders:
+      trustedIPs:
+        - {{EDGE_TRUSTED_CIDR}}
     transport:
       respondingTimeouts:
         readTimeout: 300s
