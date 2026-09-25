@@ -130,6 +130,20 @@ export const app = pgTable(
      */
     customDomainTakeover: boolean('custom_domain_takeover').default(false).notNull(),
     pendingRestart: boolean('pending_restart').default(false).notNull(),
+    /**
+     * Restart this app on its own when a custom domain is connected to it, instead
+     * of waiting for someone to confirm the restart.
+     *
+     * OFF by default: connecting a domain leaves the app running on its platform
+     * hostname and asks a person to choose the moment, because the restart makes
+     * the app briefly unavailable. Turning it on is for apps where that does not
+     * matter.
+     *
+     * CONNECTING ONLY. Losing a domain still restarts the app regardless — the
+     * container keeps sending the old hostname as `X-Forwarded-Host` until it is
+     * recreated, so it would break on its own fallback address (CI-Hub#1207).
+     */
+    autoRestartOnDomainChange: boolean('auto_restart_on_domain_change').default(false).notNull(),
     userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
     maxBackups: integer('max_backups'),
   },

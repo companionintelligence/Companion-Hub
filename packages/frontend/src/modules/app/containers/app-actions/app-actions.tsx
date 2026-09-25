@@ -1035,6 +1035,9 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * reached yet.
            */
           ...(app ? { customDomainTakeover: app.customDomainTakeover ?? false } : {}),
+          // From the row, like the takeover above: the stored config snapshot leaves
+          // this setting out so that flipping it never restarts the app.
+          ...(app ? { autoRestartOnDomainChange: app.autoRestartOnDomainChange ?? false } : {}),
           /*
            * What the operator is being SHOWN this app is served on, carried so the
            * save can be refused if it stops being true (R2-HUBDOMAINS-3).

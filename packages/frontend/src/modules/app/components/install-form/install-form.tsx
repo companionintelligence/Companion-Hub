@@ -99,6 +99,7 @@ export type FormValues = {
    * serving it now. Set only by the picker, and only after it has asked.
    */
   customDomainTakeover?: boolean;
+  autoRestartOnDomainChange?: boolean;
   /**
    * What this app was being served on when the dialog was drawn — the
    * compare-and-swap half of `customDomain: ''` (R2-HUBDOMAINS-3).
@@ -848,6 +849,34 @@ export const InstallForm: React.FC<IProps> = ({
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}
+          />
+        ) : null}
+        {/*
+         * Beside the picker because it answers the question the picker raises: when a
+         * domain is connected, who chooses the moment the app restarts to pick it up.
+         * OFF by default — the restart makes the app briefly unavailable, so a person
+         * confirms it. Only where a custom domain can be connected at all.
+         */}
+        {watchExposureMode === 'cloudflare' && customDomainsData?.supported === true ? (
+          <Controller
+            control={control}
+            name="autoRestartOnDomainChange"
+            defaultValue={false}
+            render={({ field: { onChange, value, ref, ...props } }) => (
+              <Switch
+                {...props}
+                className="mb-3"
+                ref={ref}
+                checked={value ?? false}
+                onCheckedChange={onChange}
+                label={
+                  <>
+                    {t('APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE')}
+                    <HintMarker anchorClass="auto-restart-domain-hint" hint={t('APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE_HINT')} />
+                  </>
+                }
+              />
+            )}
           />
         ) : null}
       </>
