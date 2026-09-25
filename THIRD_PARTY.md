@@ -84,18 +84,18 @@ package manager's own `licenses` command.
 59. [`react-dom`](https://react.dev/) `19.3.0` — runtime
 60. [`react-error-boundary`](https://react-error-boundary-lib.vercel.app/) `6.1.6` — runtime
 61. [`react-hook-form`](https://react-hook-form.com) `7.88.0` — runtime
-62. [`react-hot-toast`](https://github.com/timolins/react-hot-toast#readme) `2.6.1` — runtime
-63. [`react-i18next`](https://github.com/i18next/react-i18next) `17.0.15` — runtime
-64. [`react-markdown`](https://github.com/remarkjs/react-markdown#readme) `10.1.0` — runtime
-65. [`react-router`](https://github.com/remix-run/react-router) `8.4.0` — runtime
-66. [`react-timezone-select`](https://github.com/ndom91/react-timezone-select) `3.3.3` — runtime
-67. [`react-tooltip`](https://github.com/ReactTooltip/react-tooltip#readme) `6.0.8` — runtime
-68. [`redis`](https://github.com/redis/node-redis) `6.2.1` — runtime
-69. [`rehype-raw`](https://github.com/rehypejs/rehype-raw#readme) `7.0.0` — runtime
-70. [`remark-breaks`](https://github.com/remarkjs/remark-breaks#readme) `4.0.0` — runtime
-71. [`remark-gfm`](https://github.com/remarkjs/remark-gfm#readme) `4.0.1` — runtime
-72. [`sentry`](https://sentry.io/welcome/) `0.49.3` — runtime — cargo
-73. [`slugify`](https://github.com/simov/slugify) `1.6.9` — runtime
+62. [`react-i18next`](https://github.com/i18next/react-i18next) `17.0.15` — runtime
+63. [`react-markdown`](https://github.com/remarkjs/react-markdown#readme) `10.1.0` — runtime
+64. [`react-router`](https://github.com/remix-run/react-router) `8.4.0` — runtime
+65. [`react-timezone-select`](https://github.com/ndom91/react-timezone-select) `3.3.3` — runtime
+66. [`react-tooltip`](https://github.com/ReactTooltip/react-tooltip#readme) `6.0.8` — runtime
+67. [`redis`](https://github.com/redis/node-redis) `6.2.1` — runtime
+68. [`rehype-raw`](https://github.com/rehypejs/rehype-raw#readme) `7.0.0` — runtime
+69. [`remark-breaks`](https://github.com/remarkjs/remark-breaks#readme) `4.0.0` — runtime
+70. [`remark-gfm`](https://github.com/remarkjs/remark-gfm#readme) `4.0.1` — runtime
+71. [`sentry`](https://sentry.io/welcome/) `0.49.3` — runtime — cargo
+72. [`slugify`](https://github.com/simov/slugify) `1.6.9` — runtime
+73. [`sonner`](https://sonner.emilkowal.ski/) `2.0.8` — runtime
 74. [`systeminformation`](https://systeminformation.io) `5.33.13` — runtime
 75. [`tailwind-merge`](https://github.com/dcastil/tailwind-merge) `3.7.0` — runtime
 76. [`tokio`](https://tokio.rs) `1.53.1` — runtime — cargo
