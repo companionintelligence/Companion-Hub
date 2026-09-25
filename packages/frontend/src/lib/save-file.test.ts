@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { saveBlobAsFile } from './save-file';
+import { saveBlobAsFile, splitSavedPath } from './save-file';
 
 const mockInvoke = vi.fn();
 
@@ -50,5 +50,23 @@ describe('saveBlobAsFile', () => {
       contents: Array.from(new TextEncoder().encode('{"a":1}')),
     });
     expect(clickSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('splitSavedPath', () => {
+  it('splits POSIX and Windows paths into folder and file name', () => {
+    expect(splitSavedPath('/home/user/Downloads/app-install-config-2.json')).toEqual({
+      folder: '/home/user/Downloads',
+      file: 'app-install-config-2.json',
+    });
+    expect(splitSavedPath('C:\\Users\\user\\Downloads\\app-install-config.json')).toEqual({
+      folder: 'C:\\Users\\user\\Downloads',
+      file: 'app-install-config.json',
+    });
+  });
+
+  it('keeps the root folder and tolerates a bare file name', () => {
+    expect(splitSavedPath('/app-install-config.json')).toEqual({ folder: '/', file: 'app-install-config.json' });
+    expect(splitSavedPath('app-install-config.json')).toEqual({ folder: '', file: 'app-install-config.json' });
   });
 });
