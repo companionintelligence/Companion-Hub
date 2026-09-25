@@ -66,10 +66,13 @@ export function AppMediaGallery({ appName, screenshots, demoVideoUrl, isLoading 
   //
   // It deliberately starts below the titlebar + header rather than covering them, so the window
   // controls and nav stay usable; z-40 keeps the header (z-50) on top if the two ever overlap.
+  // The header sits at `top: --titlebar-height` and is `--header-offset` tall, so its bottom edge is
+  // the sum of the two. (--header-offset already includes the titlebar height, so `titlebar + 3.5rem`
+  // stopped a whole titlebar short and the header covered the close button on desktop.)
   const lightbox = (
     <div
       className="fixed inset-0 z-40 flex flex-col items-center justify-center bg-black/95 p-4"
-      style={{ top: 'calc(var(--titlebar-height, 0px) + 3.5rem)' }}
+      style={{ top: 'calc(var(--titlebar-height, 0px) + var(--header-offset))' }}
       role="dialog"
       aria-modal="true"
       aria-label={`${appName} screenshots`}
