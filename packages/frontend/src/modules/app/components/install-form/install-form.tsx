@@ -722,7 +722,7 @@ export const InstallForm: React.FC<IProps> = ({
                       data-tooltip-content={option.available ? undefined : option.tooltip}
                       onClick={() => option.available && onChange(option.key)}
                       className={clsx(
-                        'w-full rounded-md border px-3 py-2 text-sm font-medium transition-colors',
+                        'flex h-full w-full items-center justify-center rounded-md border px-3 py-2 text-sm font-medium transition-colors',
                         value === option.key
                           ? 'border-primary bg-primary text-primary-foreground'
                           : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700',
