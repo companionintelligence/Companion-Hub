@@ -26,7 +26,7 @@ import {
   markStackUpdatePending,
   subscribeStackUpdate,
 } from '@/lib/desktop-stack-session';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import {
   checkForUpdates,
   fetchHostListenerStatus,

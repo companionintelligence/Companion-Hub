@@ -19,7 +19,7 @@ import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { rememberPortalAccountEmail, resolvePortalSessionHint } from '@/lib/portal-session-hint';
 import { useUserContext } from '@/context/user-context';
 import { useCallback, useEffect, useRef } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
 /** One toast for a link, however many copies of it fail. */

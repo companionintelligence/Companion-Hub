@@ -2,7 +2,7 @@ import { checkAvailabilityOptions, resolveAvailabilityMutation } from '@/api-cli
 import type { AppStatus } from '@/types/app.types';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
 /**

@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Globe, Shield } from 'lucide-react';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
 import { Detail, DetailGrid, LoadingCard, SectionHeader, StatusBadge } from '../components/network-section/network-section';

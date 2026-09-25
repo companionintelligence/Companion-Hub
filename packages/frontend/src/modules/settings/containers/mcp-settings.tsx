@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Link } from 'react-router';
 
 // ENH-MCP-4: operator screen for the Hub's MCP server. Talks to the session-authed /api/mcp-admin

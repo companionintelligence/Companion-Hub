@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import type { FieldValues, Path, UseFormClearErrors, UseFormSetError } from 'react-hook-form';
 
 interface UseDnsAvailabilityParams<TFormValues extends FieldValues> {

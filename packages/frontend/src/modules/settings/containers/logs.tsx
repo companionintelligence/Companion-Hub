@@ -3,7 +3,7 @@ import { downloadHubLogs as downloadHubLogsSdk } from '@/api-client/sdk.gen';
 import { useSSE } from '@/lib/hooks/use-sse';
 import { Download } from 'lucide-react';
 import { Suspense, lazy, useRef, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { downloadResponseAsFile } from './log-download';
 

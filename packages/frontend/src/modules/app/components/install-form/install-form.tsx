@@ -24,7 +24,7 @@ import { Download, History, Upload } from 'lucide-react';
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
@@ -302,10 +302,9 @@ export const InstallForm: React.FC<IProps> = ({
       const savedPath = await saveBlobAsFile(installConfigFilename(info.id), blob);
       if (savedPath) {
         const { folder, file } = splitSavedPath(savedPath);
-        // A full path has no break points, so it overflowed the toast's default 350px.
-        toast.success(t('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED', { file, folder, defaultValue: 'Saved {{file}}\nto {{folder}}' }), {
-          style: { maxWidth: 'min(32rem, calc(100vw - 2rem))', overflowWrap: 'anywhere' },
-        });
+        // Sonner wraps a long path inside the card (overflow-wrap: anywhere), and the Toaster
+        // keeps the \n, so the file and its folder land on separate lines.
+        toast.success(t('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED', { file, folder, defaultValue: 'Saved {{file}}\nto {{folder}}' }));
       }
     } catch (error) {
       toast.error(

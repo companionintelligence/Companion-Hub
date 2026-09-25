@@ -6,7 +6,7 @@ import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import i18next from 'i18next';
 import { useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { type SettingsFormValues, UserSettingsForm } from '../components/user-settings-form/user-settings-form';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';

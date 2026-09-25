@@ -2,7 +2,7 @@ import { Titlebar } from './components/titlebar/titlebar';
 import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
 import { Suspense, useEffect, useRef, useState } from 'react';
-import { Toaster } from 'react-hot-toast';
+import { Toaster } from '@/components/ui/Toaster/Toaster';
 import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
 import { userContext } from './api-client';
@@ -716,7 +716,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
     return (
       <>
         <DesktopStartupFallback />
-        <Toaster position="bottom-center" />
+        <Toaster />
       </>
     );
   }
@@ -724,7 +724,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   return (
     <Providers>
       <Outlet />
-      <Toaster position="bottom-center" />
+      <Toaster />
     </Providers>
   );
 }

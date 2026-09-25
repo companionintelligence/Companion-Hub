@@ -4,7 +4,7 @@ import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { isMemoryProviderUrn } from '@/modules/app/helpers/memory-provider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
 /** Coarse ci-memory lifecycle, mirrors the backend MemoryProviderRuntimeStatus. */
