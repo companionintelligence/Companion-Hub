@@ -16,11 +16,20 @@ import type { PoolCandidate } from './hub-pool.types';
 // and a node that would prefill it cold.
 //
 // So the pool remembers. Every request on a judged route gets a key — the app's own
-// `X-Hub-Pool-Session` header when it sends one, else a digest of the prompt's head, which is the
-// part an engine's prefix cache matches on — and the node and engine that last served that key are
-// moved to the front of the ranked list while their queue is shorter than
+// `X-Hub-Pool-Session` header when it sends one, else a digest of the prompt's head: the system
+// prompt and the first turn after it, every byte of both — and the node and engine that last served
+// that key are moved to the front of the ranked list while their queue is shorter than
 // `poolPrefixAffinityMaxInFlight`. Past that, waiting behind the queue costs more than the prefill
 // it would save, and the ranker's order stands.
+//
+// The key has to name ONE session. An earlier build digested only the first 4 KB of the head, and
+// an agent whose system prompt alone filled that gave every one of its sessions the same key, so the
+// table remembered the node that last served ANY of them. Measured on core-2, 2026-09-21, with six
+// concurrent sessions behind one 25k-token system prefix: every session's first turn logged as a
+// `hit` on `local` though none had been served, and once slot awareness moved two of them to
+// core-1 the shared entry flipped and the sessions still local were sent to core-1 cold — 14–42 s to
+// a first byte where the warm node gave ~1 s. Herding is worse than no affinity, so the window is
+// gone: one SHA-256 over the head in full, on bytes the proxy is about to serialise anyway.
 //
 // A preference, never a rule, with the same three properties as a pin: it reorders a finished list,
 // so it cannot resurrect an excluded node; a key nothing is remembered for changes nothing; and every
@@ -55,15 +64,6 @@ export const PREFIX_AFFINITY_TTL_MS = Math.max(1_000, Number(process.env.HUB_POO
  * on this fleet routes for.
  */
 export const PREFIX_AFFINITY_CAPACITY = 1_000;
-
-/**
- * How much of the serialised prompt head the fallback key digests. The head — the leading system
- * message(s) and the first non-system message — is identical across every call of an agent session,
- * so a digest of it names the session without the app's help. 4 KB reaches past the tool schemas
- * that open an agent's system prompt and into text that differs between agents; it is small enough
- * that hashing it costs microseconds against a request measured in seconds.
- */
-export const PREFIX_HASH_CHARS = 4_096;
 
 /** What one affinity decision produced — see `PoolRoutingAffinity.outcome` for the meaning of each. */
 export type PrefixAffinityOutcome = 'hit' | 'miss' | 'skipped';
@@ -101,18 +101,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The part of a prompt an engine's prefix cache matches on, serialised: the leading `system`
- * messages and the first message after them for a chat body, the `system` and `prompt` fields for a
- * completion or Ollama generate body. `null` when the body carries neither, in which case there is
- * nothing stable to key a session on and affinity stands aside.
+ * The part of a prompt that names a session, as the parts the digest reads in order: the leading
+ * `system` messages and the first message after them for a chat body, the `system` and `prompt`
+ * fields for a completion or Ollama generate body. `null` when the body carries neither, in which
+ * case there is nothing stable to key a session on and affinity stands aside.
  *
  * The head and not the whole `messages` array, because the array grows by a turn each call and a
- * digest of all of it would name every call differently. The first non-system message is included
- * so two sessions of one agent — same system prompt, different task — get different keys once the
- * system prompt is shorter than {@link PREFIX_HASH_CHARS}. When it is longer they share a key, and
- * that is right: the shared prefix is exactly what the cache holds.
+ * digest of all of it would name every call differently. The system prompt alone is not enough
+ * either: every session of one agent shares it byte for byte — tool schemas, instructions, memory —
+ * and what tells them apart is the first turn after it. So the head ends at the first non-system
+ * message, and {@link derivePrefixKey} digests every byte of both halves: a window over the head
+ * collapses sessions again as soon as the system prompt outgrows it.
+ *
+ * A completion or generate body has no turn structure to stop at, so its `prompt` is digested whole.
+ * An app that rebuilds the conversation into `prompt` each call therefore keys every call apart and
+ * gets no affinity from the digest — never the wrong node, only the ranker's — and names its
+ * session with the header instead.
  */
-export function promptHead(body: unknown): string | null {
+export function promptHead(body: unknown): unknown[] | null {
   if (!isRecord(body)) {
     return null;
   }
@@ -124,10 +130,10 @@ export function promptHead(body: unknown): string | null {
         break;
       }
     }
-    return head.length > 0 ? JSON.stringify(head) : null;
+    return head.length > 0 ? head : null;
   }
   if (body.prompt !== undefined) {
-    return JSON.stringify([body.system ?? null, body.prompt]);
+    return [body.system ?? null, body.prompt];
   }
   return null;
 }
@@ -138,6 +144,11 @@ export function promptHead(body: unknown): string | null {
  * The model is part of both forms: a prefix cache is per loaded model, so the node that holds a
  * session's prefix for one model holds nothing useful for the same session on another. An app that
  * switches models mid-session starts a new affinity, which is what the engine sees too.
+ *
+ * The digest is one SHA-256 fed the head a part at a time, never a window over it — see
+ * {@link promptHead} for why. Its cost is bounded by the forward, which serialises the whole body
+ * once anyway. Each part goes in as its own JSON text behind a `\n`, which JSON never carries raw,
+ * so where one part ends and the next begins is never in doubt.
  */
 export function derivePrefixKey(model: string, body: unknown, sessionHeader: string | string[] | undefined): PrefixKey | null {
   const session = normalizePoolSessionKey(sessionHeader);
@@ -148,8 +159,12 @@ export function derivePrefixKey(model: string, body: unknown, sessionHeader: str
   if (head === null) {
     return null;
   }
-  const digest = createHash('sha256').update(model).update('\n').update(head.slice(0, PREFIX_HASH_CHARS)).digest('hex');
-  return { source: 'hashed', key: `hashed:${digest}` };
+  const hash = createHash('sha256').update(model);
+  for (const part of head) {
+    // `JSON.stringify(undefined)` is `undefined`, which `update` rejects. A parsed body never carries one; a hand-built one may.
+    hash.update('\n').update(JSON.stringify(part) ?? 'null');
+  }
+  return { source: 'hashed', key: `hashed:${hash.digest('hex')}` };
 }
 
 /**
