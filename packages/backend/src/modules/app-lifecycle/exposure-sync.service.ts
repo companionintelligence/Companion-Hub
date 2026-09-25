@@ -19,6 +19,7 @@ import {
   selectCustomDomain,
 } from '@ci-hub/common/types';
 import type { TunnelCustomDomain } from '@ci-hub/common/types';
+import type { CustomDomainApplyReport } from '../cloudflare/cloudflare-client.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { EnvUtils } from '../env/env.utils';
@@ -773,7 +774,6 @@ export class ExposureSyncService {
               orgSlug: orgInfo.slug,
               localDomain,
             }),
-            customDomainPendingApply: await this.customDomainPendingApply(createAppUrn(app.appName, app.appStoreSlug), app),
           };
         }),
       );
@@ -803,17 +803,9 @@ export class ExposureSyncService {
         });
       }
 
-      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
-
-      const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
-
-      // The partial-failure branch maps app names to database rows, exposed entries,
-      // and failure reasons. Index once to avoid a full scan for every failure on
-      // Hubs that run many apps.
-      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
-
       // Derive each public record name from its database row in one place so the
-      // failure toasts, the failure log, and the custom-domain passes remain consistent.
+      // failure toasts, the failure log, and the custom-domain passes remain consistent —
+      // and the report below names each binding by the same hostname.
       const toPublicHostname = (dbApp: AppFromDb): string =>
         buildPublicHostname({
           appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
@@ -821,6 +813,22 @@ export class ExposureSyncService {
           orgSlug: orgInfo.slug,
           publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
         });
+
+      /*
+       * Built from EVERY app row, not from `syncedDbApps`: the publish payload
+       * leaves stopped apps out on purpose, and a stopped app is exactly the one
+       * Portal must not offer to restart. See `CustomDomainApplyReport`.
+       */
+      const customDomainApps = await this.buildCustomDomainApplyReport(apps, toPublicHostname);
+
+      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined, customDomainApps);
+
+      const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
+
+      // The partial-failure branch maps app names to database rows, exposed entries,
+      // and failure reasons. Index once to avoid a full scan for every failure on
+      // Hubs that run many apps.
+      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
 
       const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
         appUrn: createAppUrn(dbApp.appName, dbApp.appStoreSlug),
@@ -1612,6 +1620,71 @@ export class ExposureSyncService {
     return envHostname !== customDomain;
   }
 
+  /**
+   * One entry per app row holding a custom domain, whatever the app's status —
+   * see `CustomDomainApplyReport`.
+   *
+   * ⚠ `pending-restart` MEANS "A CONFIRMATION WOULD BE CARRIED OUT". Portal offers a
+   * restart for exactly that state, so it is decided with the same checks the apply
+   * gate in `reconcileCustomDomains` makes: running, `pendingRestart` still set, the
+   * env not yet on the domain, and a platform hostname no other app answers on.
+   * Reporting it more widely than the gate acts put a button in front of people
+   * that accepted the click and then did nothing, until the click expired. Running
+   * but failing one of those checks is `blocked`: no button, "check your Hub".
+   *
+   * Only apps that can serve on a custom domain at all are reported. For any other
+   * the binding is being dropped by this very pass, and Portal should not be told
+   * about a binding that is going away.
+   *
+   * Never throws: this rides along with a sync that must keep working. On any
+   * failure it returns `undefined`, which the client omits from the payload so
+   * Portal keeps its previous reading — "no news" rather than "nothing is bound".
+   *
+   * One sync late for a domain bound DURING this pass: the report is built before
+   * the request, and the binding is written by `reconcileCustomDomains` after the
+   * response. The next sync reports it. Portal reads the gap as "waiting for your
+   * Hub" rather than guessing.
+   */
+  private async buildCustomDomainApplyReport(
+    apps: Awaited<ReturnType<AppsRepository['getApps']>>,
+    toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string,
+  ): Promise<CustomDomainApplyReport[] | undefined> {
+    try {
+      const servable = apps.filter((app) => canServeOnCustomDomain(app as AppPublicRoutingSnapshot));
+      // The same set the apply gate refuses — see `collectContestedCustomDomainTargets`.
+      const contestedTargets = collectContestedCustomDomainTargets(servable.map((app) => normalizeHostname(toPublicHostname(app))));
+      const report: CustomDomainApplyReport[] = [];
+
+      for (const app of servable) {
+        const domain = normalizeStoredHostname(app.customDomain);
+        if (domain === null) {
+          continue;
+        }
+
+        const targetHostname = normalizeHostname(toPublicHostname(app));
+        const envHostname = await this.readEnvPublicHostname(createAppUrn(app.appName, app.appStoreSlug));
+
+        let state: CustomDomainApplyReport['state'];
+        if (envHostname === domain) {
+          state = 'applied';
+        } else if (app.status === 'running') {
+          state = app.pendingRestart && !contestedTargets.has(targetHostname) ? 'pending-restart' : 'blocked';
+        } else {
+          // Stopped, or coming up now: starting and restarting both regenerate the
+          // env on the way up, so the domain arrives without anyone confirming.
+          state = 'pending-start';
+        }
+
+        report.push({ domain, targetHostname, state, autoRestart: app.autoRestartOnDomainChange === true });
+      }
+
+      return report;
+    } catch (error) {
+      this.logger.debug(`[Cloudflare] Could not build the custom-domain report: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
   /** `APP_PUBLIC_HOSTNAME` as the app's compose env currently holds it, or `null`. */
   private async readEnvPublicHostname(appUrn: AppUrn): Promise<string | null> {
     try {
@@ -1721,7 +1794,13 @@ export class ExposureSyncService {
     );
 
     /**
-     * Whether an apply was requested, by the customer hostname.
+     * Whether a restart was confirmed, by BINDING — the customer hostname AND the
+     * platform hostname it was delivered against.
+     *
+     * By domain alone, a confirmation given for one app would restart whichever app
+     * holds the domain when it arrives: the domain moved in between, and the new app
+     * went down at a moment nobody picked. Portal pins the confirmation to the
+     * binding it was given for; this keeps the Hub to the same.
      *
      * OR-ed rather than last-write-wins. `collectAmbiguousCustomDomains` only
      * catches a domain delivered against *different* targets; two rows for the
@@ -1729,10 +1808,11 @@ export class ExposureSyncService {
      * would silently keep the last — dropping the operator's "yes, start serving
      * it" whenever it arrived on the first of them.
      */
-    const applyRequestedByDomain = new Map<string, boolean>();
+    const bindingKey = (domain: string, target: string) => `${domain}\n${target}`;
+    const applyRequestedByBinding = new Map<string, boolean>();
     for (const entry of params.customDomains) {
-      const domain = normalizeHostname(entry.domain);
-      applyRequestedByDomain.set(domain, (applyRequestedByDomain.get(domain) ?? false) || entry.applyRequested === true);
+      const key = bindingKey(normalizeHostname(entry.domain), normalizeHostname(entry.targetHostname));
+      applyRequestedByBinding.set(key, (applyRequestedByBinding.get(key) ?? false) || entry.applyRequested === true);
     }
 
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
@@ -1878,7 +1958,13 @@ export class ExposureSyncService {
          * row since the snapshot was taken before a Portal round trip that can take
          * seconds. The dispatcher re-checks the status before it restarts anything.
          */
-        const applyRequested = current !== null && applyRequestedByDomain.get(current) === true;
+        /*
+         * A person confirmed the restart in Portal, or this app is one somebody set
+         * to restart on its own. Nothing else moves a running container here: the
+         * default is to wait to be asked.
+         */
+        const confirmed = current !== null && applyRequestedByBinding.get(bindingKey(current, target)) === true;
+        const applyRequested = current !== null && (confirmed || app.autoRestartOnDomainChange === true);
 
         if (
           applyRequested &&
@@ -1886,7 +1972,8 @@ export class ExposureSyncService {
           !params.skipAutoRestartAppUrns.has(appUrn) &&
           (await this.customDomainPendingApply(appUrn, app))
         ) {
-          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${current}; restarting it to apply that binding.`);
+          const why = confirmed ? 'a restart was confirmed' : 'it is set to restart on its own';
+          this.logger.info(`[Cloudflare] ${appUrn} is not serving ${current} yet and ${why}; restarting it to apply that binding.`);
           applyRequestedAppUrns.push(appUrn);
         }
 
@@ -2009,10 +2096,10 @@ export class ExposureSyncService {
       }
 
       /*
-       * A request can arrive on the SAME sync that first delivers the binding —
-       * in fact that is the ordinary case, because the operator answers in the
-       * connect flow and Companion Portal carries the answer as soon as the
-       * domain is ready. Handling it only on a later pass would leave the
+       * A restart for this binding can already be owed on the sync that binds it:
+       * the app is set to restart on its own, or a confirmation Companion Portal
+       * holds for exactly this binding reaches a Hub that lost the binding locally
+       * and is binding it again. Handling it only on a later pass would leave the
        * customer's domain dark for another poll interval for no reason.
        *
        * No "still not serving" check here: the binding is being written in this
@@ -2027,9 +2114,10 @@ export class ExposureSyncService {
        * the dispatcher below drops an app that is already restarting as a revert.
        */
       if (next !== null && !deferredRevert.has(appUrn) && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn)) {
-        const requestedForNext = applyRequestedByDomain.get(normalizeHostname(next)) === true;
-        if (requestedForNext) {
-          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${next}; restarting it to apply that binding.`);
+        const confirmedForNext = applyRequestedByBinding.get(bindingKey(normalizeHostname(next), target)) === true;
+        if (confirmedForNext || app.autoRestartOnDomainChange === true) {
+          const why = confirmedForNext ? 'a restart was confirmed' : 'it is set to restart on its own';
+          this.logger.info(`[Cloudflare] ${appUrn} is now bound to ${next} and ${why}; restarting it to apply that binding.`);
           applyRequestedAppUrns.push(appUrn);
         }
       }

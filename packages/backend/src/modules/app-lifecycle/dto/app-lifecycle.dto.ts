@@ -14,6 +14,13 @@ export const appFormSchema = z
     domain: z.string().optional(),
     isVisibleOnGuestDashboard: z.boolean().optional(),
     enableAuth: z.boolean().optional(),
+    /**
+     * See `app.auto_restart_on_domain_change`. A setting about the app rather than
+     * part of its configuration: it changes nothing in the env or compose file, so
+     * `toStoredConfig` keeps it out of the snapshot and saving it alone never
+     * restarts anything.
+     */
+    autoRestartOnDomainChange: z.boolean().optional(),
     localSubdomain: z
       .string()
       .regex(/^[a-zA-Z0-9-]{1,63}$/)
