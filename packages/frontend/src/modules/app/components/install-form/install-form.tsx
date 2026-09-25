@@ -32,7 +32,7 @@ import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
-import { saveBlobAsFile } from '@/lib/save-file';
+import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -291,7 +291,11 @@ export const InstallForm: React.FC<IProps> = ({
       // Only the desktop app reports a path; a browser shows its own download UI.
       const savedPath = await saveBlobAsFile(installConfigFilename(info.id), blob);
       if (savedPath) {
-        toast.success(t('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED', { path: savedPath, defaultValue: 'Saved to {{path}}' }));
+        const { folder, file } = splitSavedPath(savedPath);
+        // A full path has no break points, so it overflowed the toast's default 350px.
+        toast.success(t('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED', { file, folder, defaultValue: 'Saved {{file}}\nto {{folder}}' }), {
+          style: { maxWidth: 'min(32rem, calc(100vw - 2rem))', overflowWrap: 'anywhere' },
+        });
       }
     } catch (error) {
       toast.error(
