@@ -545,6 +545,106 @@ describe('InstallForm', () => {
     expect(fetchDnsAvailability).not.toHaveBeenCalled();
   });
 
+  describe('restarting for a newly connected custom domain', () => {
+    /*
+     * Connecting a domain to a running app leaves it on its old address until it
+     * restarts, and the restart makes it briefly unavailable — so by default a
+     * person picks the moment. This setting is the app owner saying "just do it".
+     */
+    const INFO = {
+      urn: 'comfyui:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      port: 8188,
+    } as unknown as AppInfo;
+
+    // Not production, so the submit below is not held up by the live DNS check.
+    const CONTEXT = {
+      userSettings: {
+        ciHubOrganizationSlug: 'acme',
+        ciHubDeviceSlug: 'core2',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: false,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>;
+
+    const renderForm = (initialValues: Record<string, unknown>, onSubmit = vi.fn()) => {
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+
+      return render(
+        <MemoryRouter>
+          <InstallForm info={INFO} onSubmit={onSubmit} formId="test-form" formFields={[]} initialValues={initialValues} />
+        </MemoryRouter>,
+      );
+    };
+
+    // The Switch carries aria-label={name}, so its accessible name is the field name.
+    const setting = () => screen.queryByRole('switch', { name: 'autoRestartOnDomainChange' });
+
+    afterEach(() => {
+      MOCK_CUSTOM_DOMAINS.supported = false;
+      MOCK_CUSTOM_DOMAINS.domains = [];
+    });
+
+    it('is offered, and off, wherever a custom domain can be connected', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+
+      renderForm({ exposureMode: 'cloudflare' });
+
+      expect(setting()).toBeInTheDocument();
+      expect(setting()).not.toBeChecked();
+      expect(screen.getByText('APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE')).toBeInTheDocument();
+    });
+
+    it('is not offered where no custom domain can be connected', () => {
+      // An older Portal, or one that did not answer: nothing to restart for.
+      MOCK_CUSTOM_DOMAINS.supported = false;
+      const { unmount } = renderForm({ exposureMode: 'cloudflare' });
+      expect(setting()).not.toBeInTheDocument();
+      unmount();
+
+      // A local-only app has no public route for a custom domain to alias.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      renderForm({ exposureMode: 'local' });
+      expect(setting()).not.toBeInTheDocument();
+    });
+
+    it('shows the setting an app was saved with', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+
+      renderForm({ exposureMode: 'cloudflare', autoRestartOnDomainChange: true });
+
+      expect(setting()).toBeChecked();
+    });
+
+    it('submits the choice', async () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      const onSubmit = vi.fn();
+      const { container } = renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' }, onSubmit);
+
+      const toggle = setting();
+      expect(toggle).not.toBeNull();
+      fireEvent.click(toggle as HTMLElement);
+      expect(setting()).toBeChecked();
+
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledOnce();
+      });
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ autoRestartOnDomainChange: true });
+    });
+  });
+
   describe('custom domain picker', () => {
     const CONTEXT = {
       userSettings: {
