@@ -75,7 +75,8 @@ interface IProps {
   formId: string;
   appStatus?: AppStatus;
   onValidityChange?: (isValid: boolean) => void;
-  onDirtyChange?: (isDirty: boolean) => void;
+  /** True while the operator has changed a field away from the value the form opened with. */
+  onDirtyChange?: (hasEdits: boolean) => void;
   editingAppUrn?: string;
 }
 
@@ -129,6 +130,14 @@ function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null):
 
   return `${cleanNodeFqdn}:${port}`;
 }
+
+/** Compares a form value with its stored one, treating empty as equal and `9000` as `'9000'`. */
+const isSameFormValue = (a: unknown, b: unknown) => {
+  const isEmpty = (v: unknown) => v === undefined || v === null || v === '';
+  if (isEmpty(a) || isEmpty(b)) return isEmpty(a) && isEmpty(b);
+  if (typeof a === 'object' || typeof b === 'object') return JSON.stringify(a) === JSON.stringify(b);
+  return String(a) === String(b);
+};
 
 export const InstallForm: React.FC<IProps> = ({
   formFields = [],
@@ -457,9 +466,17 @@ export const InstallForm: React.FC<IProps> = ({
     onValidityChange(isInstallFormValid(formValues, formFields, { requirePortWhenExposedLocal: isProduction }));
   }, [onValidityChange, info.exposable, info.dynamic_config, info.port, watchExposureMode, watchPort, formFields, watchedFormValues, isProduction]);
 
+  // Only fields the operator changed, and only while they differ from what the form opened with.
+  // Not `isDirty`: the form has no defaultValues (the seeding effect fills it with setValue), so
+  // react-hook-form compares every loaded value against an empty baseline and reports an untouched
+  // settings dialog as edited — its "changes will apply" banner showed on open and Update was never
+  // disabled. Derived during render: `dirtyFields` is mutated in place, so an effect keyed on it
+  // alone never re-runs.
+  const hasEdits = Object.keys(dirtyFields).some((key) => !isSameFormValue(watchedFormValues[key], initialValues?.[key]));
+
   useEffect(() => {
-    onDirtyChange?.(isDirty);
-  }, [isDirty, onDirtyChange]);
+    onDirtyChange?.(hasEdits);
+  }, [hasEdits, onDirtyChange]);
 
   useEffect(() => {
     // Detect when the form is reused for a different app so we can force-reset
