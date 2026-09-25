@@ -80,6 +80,7 @@ describe.runIf(RUN)('QueueFactory (real broker)', () => {
     const logger = mock<LoggerService>();
     const config = mock<ConfigurationService>();
     config.get.calledWith('queue').mockReturnValue({ host: 'localhost', username: USER, password: PASS, port: PORT } as never);
+    config.get.calledWith('jwtSecret').mockReturnValue('test-jwt-secret' as never);
 
     return new QueueFactory(logger, config);
   };
