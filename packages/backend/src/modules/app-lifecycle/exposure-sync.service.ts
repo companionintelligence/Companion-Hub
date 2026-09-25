@@ -19,6 +19,7 @@ import {
   selectCustomDomain,
 } from '@ci-hub/common/types';
 import type { TunnelCustomDomain } from '@ci-hub/common/types';
+import type { CustomDomainApplyReport } from '../cloudflare/cloudflare-client.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { EnvUtils } from '../env/env.utils';
@@ -773,7 +774,6 @@ export class ExposureSyncService {
               orgSlug: orgInfo.slug,
               localDomain,
             }),
-            customDomainPendingApply: await this.customDomainPendingApply(createAppUrn(app.appName, app.appStoreSlug), app),
           };
         }),
       );
@@ -803,7 +803,14 @@ export class ExposureSyncService {
         });
       }
 
-      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
+      /*
+       * Built from EVERY app row, not from `syncedDbApps`: the publish payload
+       * leaves stopped apps out on purpose, and a stopped app is exactly the one
+       * Portal must not offer to restart. See `CustomDomainApplyReport`.
+       */
+      const customDomainApps = await this.buildCustomDomainApplyReport(apps);
+
+      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined, customDomainApps);
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
 
@@ -1612,6 +1619,46 @@ export class ExposureSyncService {
     return envHostname !== customDomain;
   }
 
+  /**
+   * One entry per bound custom domain, whatever the app's status.
+   *
+   * Never throws: this rides along with a sync that must keep working. On any
+   * failure it returns `undefined`, which the client omits from the payload so
+   * Portal keeps its previous reading — "no news" rather than "nothing is bound".
+   *
+   * One sync late for a domain bound DURING this pass: the report is built before
+   * the request, and the binding is written by `reconcileCustomDomains` after the
+   * response. The next sync reports it.
+   */
+  private async buildCustomDomainApplyReport(apps: Awaited<ReturnType<AppsRepository['getApps']>>): Promise<CustomDomainApplyReport[] | undefined> {
+    try {
+      const report: CustomDomainApplyReport[] = [];
+
+      for (const app of apps) {
+        const domain = normalizeStoredHostname(app.customDomain);
+        if (domain === null) {
+          continue;
+        }
+
+        const envHostname = await this.readEnvPublicHostname(createAppUrn(app.appName, app.appStoreSlug));
+        // The same three statuses the publish payload treats as live. Anything else
+        // regenerates its env on the way up, so it needs no restart to pick this up.
+        const running = ['running', 'starting', 'restarting'].includes(app.status);
+
+        report.push({
+          domain,
+          state: envHostname === domain ? 'applied' : running ? 'pending-restart' : 'pending-start',
+          autoRestart: app.autoRestartOnDomainChange === true,
+        });
+      }
+
+      return report;
+    } catch (error) {
+      this.logger.debug(`[Cloudflare] Could not build the custom-domain report: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
   /** `APP_PUBLIC_HOSTNAME` as the app's compose env currently holds it, or `null`. */
   private async readEnvPublicHostname(appUrn: AppUrn): Promise<string | null> {
     try {
@@ -1878,7 +1925,12 @@ export class ExposureSyncService {
          * row since the snapshot was taken before a Portal round trip that can take
          * seconds. The dispatcher re-checks the status before it restarts anything.
          */
-        const applyRequested = current !== null && applyRequestedByDomain.get(current) === true;
+        /*
+         * A person confirmed the restart in Portal, or this app is one somebody set
+         * to restart on its own. Nothing else moves a running container here: the
+         * default is to wait to be asked.
+         */
+        const applyRequested = current !== null && (applyRequestedByDomain.get(current) === true || app.autoRestartOnDomainChange === true);
 
         if (
           applyRequested &&
@@ -1886,7 +1938,8 @@ export class ExposureSyncService {
           !params.skipAutoRestartAppUrns.has(appUrn) &&
           (await this.customDomainPendingApply(appUrn, app))
         ) {
-          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${current}; restarting it to apply that binding.`);
+          const why = applyRequestedByDomain.get(current) === true ? 'a restart was confirmed' : 'it is set to restart on its own';
+          this.logger.info(`[Cloudflare] ${appUrn} is not serving ${current} yet and ${why}; restarting it to apply that binding.`);
           applyRequestedAppUrns.push(appUrn);
         }
 
@@ -2027,9 +2080,10 @@ export class ExposureSyncService {
        * the dispatcher below drops an app that is already restarting as a revert.
        */
       if (next !== null && !deferredRevert.has(appUrn) && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn)) {
-        const requestedForNext = applyRequestedByDomain.get(normalizeHostname(next)) === true;
+        const requestedForNext = applyRequestedByDomain.get(normalizeHostname(next)) === true || app.autoRestartOnDomainChange === true;
         if (requestedForNext) {
-          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${next}; restarting it to apply that binding.`);
+          const why = applyRequestedByDomain.get(normalizeHostname(next)) === true ? 'a restart was confirmed' : 'it is set to restart on its own';
+          this.logger.info(`[Cloudflare] ${appUrn} is now bound to ${next} and ${why}; restarting it to apply that binding.`);
           applyRequestedAppUrns.push(appUrn);
         }
       }

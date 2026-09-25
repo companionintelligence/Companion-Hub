@@ -259,6 +259,8 @@ describe('AppLifecycleService', () => {
           }),
         ]),
         'tunnel-id',
+        // The per-domain report: empty, because none of these apps holds a custom domain.
+        [],
       );
     });
 
@@ -2359,6 +2361,8 @@ describe('AppLifecycleService', () => {
           }),
         ]),
         'tunnel-123',
+        // The per-domain report: empty, because none of these apps holds a custom domain.
+        [],
       );
     });
 
@@ -2396,6 +2400,8 @@ describe('AppLifecycleService', () => {
           }),
         ]),
         'tunnel-123',
+        // The per-domain report: empty, because none of these apps holds a custom domain.
+        [],
       );
     });
   });
