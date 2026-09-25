@@ -1,6 +1,6 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { openExternal } from '@/lib/helpers/open-external';
 import { TailscaleSetupStep } from '../tailscale-setup-step';
 
@@ -40,8 +40,8 @@ vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({
   useTailscaleReadinessSync: vi.fn(),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     error: vi.fn(),
     success: vi.fn(),
   },

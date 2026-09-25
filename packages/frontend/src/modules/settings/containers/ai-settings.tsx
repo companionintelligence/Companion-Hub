@@ -24,7 +24,7 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import type {
   CloudProviderInput,
   HardwareProfileResponse,

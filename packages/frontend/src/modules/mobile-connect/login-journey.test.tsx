@@ -64,7 +64,7 @@ vi.mock('./oidc', async (orig) => ({
 }));
 
 const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
-vi.mock('react-hot-toast', () => ({ default: { error: toastError, success: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { error: toastError, success: vi.fn() } }));
 
 const DEVICES: HubDevice[] = [
   { id: 'reg-1', name: 'Apple Hub', status: 'active', hubUrl: 'https://hub-apple.ci.computer' },

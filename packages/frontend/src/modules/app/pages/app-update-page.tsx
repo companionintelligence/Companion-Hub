@@ -6,7 +6,7 @@ import { Switch } from '@/components/ui/Switch';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { useMemo, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { ArrowRight, Check, ChevronLeft, Loader2, X } from 'lucide-react';
 import type { TranslatableError } from '@/types/error.types';

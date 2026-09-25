@@ -5,8 +5,8 @@ const mockInvoke = vi.fn();
 const mockToastError = vi.fn();
 const mobile = vi.hoisted(() => ({ isMobile: false }));
 
-vi.mock('react-hot-toast', () => ({
-  default: { error: (...args: unknown[]) => mockToastError(...args) },
+vi.mock('sonner', () => ({
+  toast: { error: (...args: unknown[]) => mockToastError(...args) },
 }));
 
 vi.mock('i18next', () => ({

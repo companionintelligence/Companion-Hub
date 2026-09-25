@@ -10,7 +10,7 @@ import { AlertCircle } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type React from 'react';
 import { useCallback, useId, useMemo, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Trans, useTranslation } from 'react-i18next';
 import { InstallFormButtons } from '../../install-form-buttons/install-form-buttons';
 import { type FormValues, InstallForm } from '../../install-form/install-form';

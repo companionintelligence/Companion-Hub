@@ -46,8 +46,8 @@ vi.mock('@/components/ui/Dialog', () => ({
   DialogTitle: () => null,
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: { error: vi.fn() },
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn() },
 }));
 
 vi.mock('react-i18next', () => ({
