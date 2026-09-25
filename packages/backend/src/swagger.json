@@ -8388,6 +8388,9 @@
                     "enableAuth": {
                       "type": "boolean"
                     },
+                    "autoRestartOnDomainChange": {
+                      "type": "boolean"
+                    },
                     "localSubdomain": {
                       "nullable": true,
                       "type": "string"
@@ -9667,6 +9670,9 @@
                       "additionalProperties": {}
                     },
                     "enableAuth": {
+                      "type": "boolean"
+                    },
+                    "autoRestartOnDomainChange": {
                       "type": "boolean"
                     },
                     "localSubdomain": {
@@ -11159,6 +11165,9 @@
                 "additionalProperties": {}
               },
               "enableAuth": {
+                "type": "boolean"
+              },
+              "autoRestartOnDomainChange": {
                 "type": "boolean"
               },
               "localSubdomain": {
@@ -13266,6 +13275,9 @@
             "type": "boolean"
           },
           "enableAuth": {
+            "type": "boolean"
+          },
+          "autoRestartOnDomainChange": {
             "type": "boolean"
           },
           "localSubdomain": {
