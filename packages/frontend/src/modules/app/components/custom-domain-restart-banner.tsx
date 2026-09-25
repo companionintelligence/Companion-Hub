@@ -1,14 +1,11 @@
-import { useQueryClient } from '@tanstack/react-query';
 import { RotateCw } from 'lucide-react';
 import { useState } from 'react';
-import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
 import { Alert, AlertDescription, AlertIcon } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
-import { customDomainAwaitingRestart, fetchPublicWebDiagnostics, repairPublicWebRouting, type PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
-import { formatApiError } from '@/lib/format-api-error';
-import { invalidateAppQueries } from '@/modules/app/helpers/app-sse-cache';
+import { customDomainAwaitingRestart, type PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
+import { RestartDialog } from '@/modules/app/components/dialogs/restart-dialog/restart-dialog';
 
 interface CustomDomainRestartBannerProps {
   /** Diagnostics entries, unfiltered. The banner decides which of them it speaks for. */
@@ -25,94 +22,50 @@ interface CustomDomainRestartBannerProps {
  * the time and saying something untrue most of the time — and a banner that is
  * usually wrong is one operators learn to scroll past. This narrower state means
  * exactly "a bound custom domain is dark", which is worth interrupting someone for.
+ *
+ * ⚠ THE BUTTON ASKS BEFORE IT RESTARTS. A restart makes the app briefly
+ * unavailable, and connecting a domain deliberately leaves the moment to a
+ * person. So the button opens the same confirmation as the app's own Restart —
+ * which also means the same grant (`restart`) gates both, where a direct repair
+ * needed `configure` and refused operators who could restart the app from its
+ * own page.
  */
 export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRestartBannerProps) => {
   const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const [restarting, setRestarting] = useState<string | null>(null);
-
-  const waiting = apps.filter((app) => customDomainAwaitingRestart(app) !== null);
-
-  if (waiting.length === 0) {
-    return null;
-  }
+  const [confirming, setConfirming] = useState<PublicWebDiagnosticsApp | null>(null);
 
   /*
-   * `invalidateAppQueries` — the app's own queries plus the Public Web report — is
-   * the whole blast radius of a restart, and it is not awaited. An unfiltered
-   * `invalidateQueries()` would also throw away caches held deliberately (app image
-   * size is given an hour because it hits a registry), and awaiting either would
-   * hold the button's spinner behind the slowest unrelated refetch.
+   * An app set to restart on its own is not waiting on anyone — the Hub restarts it
+   * on its next sync. Offering a button there would ask a person to do something
+   * that is already happening. Its tile still badges the pending restart.
    */
-  const handleRestart = async (appUrn: string) => {
-    setRestarting(appUrn);
-    try {
-      /*
-       * RE-READ BEFORE ACTING. This banner is rendered from a cached report and the
-       * restart it asks for may already have happened — through the app's own page,
-       * the CLI, or an unrelated save. Restarting on a stale banner would take a
-       * working app down to apply a change that is already applied, which is the
-       * opposite of what the click meant.
-       */
-      const current = await fetchPublicWebDiagnostics();
-      if (!current) {
-        /*
-         * `null` is "the Hub did not answer" — a 401, a 403, a 500, a dropped
-         * connection. Folding it into the already-synced branch below would report a
-         * failed read as a fixed domain, which is the one thing this banner exists to
-         * never do.
-         */
-        toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
-        return;
-      }
-
-      const entry = current.apps.find((app) => app.appUrn === appUrn);
-      if (customDomainAwaitingRestart(entry) === null) {
-        invalidateAppQueries(queryClient, appUrn);
-        toast.success(t('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
-        return;
-      }
-
-      const results = await repairPublicWebRouting(appUrn);
-      const outcome = results.find((result) => result.appUrn === appUrn);
-      /*
-       * The Hub reports a per-app failure INSIDE a 200 — "the routing was rewritten
-       * but the app failed to restart" is the likely one. Dropping the result would
-       * let the banner clear itself (the env now matches) while the app is down, and
-       * say nothing at all.
-       */
-      if (outcome && !outcome.success) {
-        toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
-        return;
-      }
-
-      invalidateAppQueries(queryClient, appUrn);
-      // No entry at all is not a failure: the Hub returns one per app it found
-      // drifted, so an empty result means someone else already repaired this one.
-      toast.success(t(outcome ? 'APP_PUBLIC_WEB_REPAIR_SUCCESS' : 'APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
-    } catch (error) {
-      // `formatApiError`, not a fixed string: a repair the operator has no grant for
-      // comes back as APP_ACTION_GRANT_DENIED, and "check the Hub logs" would send
-      // them looking for a fault that is not there.
-      toast.error(formatApiError(error, t));
-    } finally {
-      setRestarting(null);
-    }
-  };
+  const waiting = apps.filter((app) => customDomainAwaitingRestart(app) !== null && app.autoRestartOnDomainChange !== true);
 
   const nameFor = (app: PublicWebDiagnosticsApp) => namesByUrn[app.appUrn] ?? app.appName ?? app.appUrn;
 
-  /*
-   * `restarting !== null`, not `restarting === app.appUrn`: a repair blocks on the
-   * container for tens of seconds, and the report can refetch underneath it. Keying
-   * the spinner to one row would re-enable every other button mid-flight the moment
-   * the list reorders, and a second click would fire a concurrent repair.
-   */
   const restartButton = (app: PublicWebDiagnosticsApp) => (
-    <Button size="sm" variant="outline" loading={restarting !== null} onClick={() => void handleRestart(app.appUrn)}>
+    <Button size="sm" variant="outline" onClick={() => setConfirming(app)}>
       {t('MY_APPS_CUSTOM_DOMAIN_RESTART_ACTION')}
     </Button>
   );
+
+  /*
+   * Rendered whether or not the banner is, so a confirmation opened just before the
+   * report refreshed — and the app dropped out of `waiting` — still closes cleanly
+   * instead of vanishing mid-decision.
+   */
+  const dialog = confirming ? (
+    <RestartDialog
+      info={{ urn: confirming.appUrn, name: nameFor(confirming) }}
+      isOpen
+      onClose={() => setConfirming(null)}
+      reason={t('APP_RESTART_FORM_CUSTOM_DOMAIN_REASON', { domain: confirming.customDomain, name: nameFor(confirming) })}
+    />
+  ) : null;
+
+  if (waiting.length === 0) {
+    return dialog;
+  }
 
   /*
    * Styled here rather than through `Alert variant="warning"`: that variant only
@@ -128,15 +81,18 @@ export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRest
 
   if (only) {
     return (
-      <Alert variant="warning" className={`${frame} flex flex-wrap items-center gap-3`} data-testid="custom-domain-restart-banner">
-        <AlertIcon>
-          <RotateCw className="w-4 h-4 shrink-0" />
-        </AlertIcon>
-        <AlertDescription className="min-w-0 flex-1 text-sm">
-          {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: only.customDomain, name: nameFor(only) })}
-        </AlertDescription>
-        {restartButton(only)}
-      </Alert>
+      <>
+        <Alert variant="warning" className={`${frame} flex flex-wrap items-center gap-3`} data-testid="custom-domain-restart-banner">
+          <AlertIcon>
+            <RotateCw className="w-4 h-4 shrink-0" />
+          </AlertIcon>
+          <AlertDescription className="min-w-0 flex-1 text-sm">
+            {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: only.customDomain, name: nameFor(only) })}
+          </AlertDescription>
+          {restartButton(only)}
+        </Alert>
+        {dialog}
+      </>
     );
   }
 
@@ -147,30 +103,33 @@ export const CustomDomainRestartBanner = ({ apps, namesByUrn }: CustomDomainRest
    * tiles and open each app's page.
    */
   return (
-    <Alert variant="warning" className={`${frame} space-y-2`} data-testid="custom-domain-restart-banner">
-      <div className="flex items-center gap-3">
-        <AlertIcon>
-          <RotateCw className="w-4 h-4 shrink-0" />
-        </AlertIcon>
-        <AlertDescription className="min-w-0 flex-1 text-sm">
-          {/*
-           * `_COUNT` with i18next's own `_one`/`_other` suffixes, not a hand-rolled
-           * `_MANY`: en.json is pushed to 30 locales, several of which have three to
-           * six plural categories, and a single flat string leaves no slot for them.
-           */}
-          {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_COUNT', { count: waiting.length })}
-        </AlertDescription>
-      </div>
-      <ul className="space-y-1.5">
-        {waiting.map((app) => (
-          <li key={app.appUrn} className="flex flex-wrap items-center gap-3 pl-7">
-            <span className="min-w-0 flex-1 truncate text-sm">
-              {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: app.customDomain, name: nameFor(app) })}
-            </span>
-            {restartButton(app)}
-          </li>
-        ))}
-      </ul>
-    </Alert>
+    <>
+      <Alert variant="warning" className={`${frame} space-y-2`} data-testid="custom-domain-restart-banner">
+        <div className="flex items-center gap-3">
+          <AlertIcon>
+            <RotateCw className="w-4 h-4 shrink-0" />
+          </AlertIcon>
+          <AlertDescription className="min-w-0 flex-1 text-sm">
+            {/*
+             * `_COUNT` with i18next's own `_one`/`_other` suffixes, not a hand-rolled
+             * `_MANY`: en.json is pushed to 30 locales, several of which have three to
+             * six plural categories, and a single flat string leaves no slot for them.
+             */}
+            {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_COUNT', { count: waiting.length })}
+          </AlertDescription>
+        </div>
+        <ul className="space-y-1.5">
+          {waiting.map((app) => (
+            <li key={app.appUrn} className="flex flex-wrap items-center gap-3 pl-7">
+              <span className="min-w-0 flex-1 truncate text-sm">
+                {t('MY_APPS_CUSTOM_DOMAIN_RESTART_BANNER_ONE', { domain: app.customDomain, name: nameFor(app) })}
+              </span>
+              {restartButton(app)}
+            </li>
+          ))}
+        </ul>
+      </Alert>
+      {dialog}
+    </>
   );
 };

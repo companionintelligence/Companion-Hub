@@ -51,6 +51,8 @@ export type PublicWebDiagnosticsApp = {
    * only this one justifies telling a customer their domain does not work.
    */
   awaitingCustomDomainRestart?: boolean;
+  /** The app restarts on its own when a domain is connected, so nobody needs to be asked. */
+  autoRestartOnDomainChange?: boolean;
 };
 
 /**
