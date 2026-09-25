@@ -35,8 +35,8 @@ vi.mock('react-router', () => ({
   useSearchParams: () => [mockSearchParams(), vi.fn()],
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: toast,
+vi.mock('sonner', () => ({
+  toast: toast,
 }));
 
 describe('ResetPasswordPage', () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Link } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import {
@@ -44,28 +44,27 @@ export function useUpdateChecker(): UseUpdateCheckerResult {
 
   const showUpdateToast = useCallback(
     (info: UpdateInfo, onDismiss: () => void) => {
-      toast(
-        (toastInstance) => (
-          <span className="flex flex-col gap-1 text-sm">
-            <strong>{t('UPDATE_TOAST_AVAILABLE', { version: info.latestVersion })}</strong>
-            <span className="flex gap-2 mt-1">
-              <Link to="/settings" className="underline font-medium" onClick={() => toast.dismiss(toastInstance.id)}>
-                {t('UPDATE_TOAST_OPEN_SETTINGS')}
-              </Link>
-              <button
-                type="button"
-                className="text-muted-foreground underline"
-                onClick={() => {
-                  onDismiss();
-                  toast.dismiss(toastInstance.id);
-                }}
-              >
-                {t('UPDATE_TOAST_LATER')}
-              </button>
-            </span>
+      const toastId = `hub-update-${info.latestVersion}`;
+      toast.info(
+        <span className="flex flex-col gap-1">
+          <strong>{t('UPDATE_TOAST_AVAILABLE', { version: info.latestVersion })}</strong>
+          <span className="flex gap-2 mt-1">
+            <Link to="/settings" className="underline font-medium" onClick={() => toast.dismiss(toastId)}>
+              {t('UPDATE_TOAST_OPEN_SETTINGS')}
+            </Link>
+            <button
+              type="button"
+              className="text-muted-foreground underline"
+              onClick={() => {
+                onDismiss();
+                toast.dismiss(toastId);
+              }}
+            >
+              {t('UPDATE_TOAST_LATER')}
+            </button>
           </span>
-        ),
-        { duration: 8000, id: `hub-update-${info.latestVersion}` },
+        </span>,
+        { id: toastId, duration: 8000 },
       );
     },
     [t],

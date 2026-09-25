@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 import { useMutation } from '@tanstack/react-query';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
 import { z } from 'zod';
 import { deriveAppSlug, RESERVED_APP_NAMES } from '@ci-hub/common/types';

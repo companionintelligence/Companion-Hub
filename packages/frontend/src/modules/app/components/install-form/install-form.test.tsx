@@ -56,8 +56,8 @@ const { toast } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: toast,
+vi.mock('sonner', () => ({
+  toast: toast,
 }));
 
 vi.mock('react-i18next', () => ({

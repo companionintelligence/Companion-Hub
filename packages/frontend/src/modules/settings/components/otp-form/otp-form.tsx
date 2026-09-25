@@ -10,7 +10,7 @@ import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import React from 'react';
-import { toast } from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
 export const OtpForm = (props: { totpEnabled: boolean }) => {

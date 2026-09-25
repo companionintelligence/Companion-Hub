@@ -11,7 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
 import { Loader2 } from 'lucide-react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 
 interface RehydrationPlanItem {
   portalApp: { name: string; slug: string };

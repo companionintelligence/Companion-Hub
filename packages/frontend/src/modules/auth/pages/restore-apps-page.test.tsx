@@ -47,8 +47,8 @@ vi.mock('@/modules/app/helpers/use-install-queue', async (importOriginal) => {
   };
 });
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     success: vi.fn(),
     error: vi.fn(),
   },
@@ -111,7 +111,7 @@ describe('RestoreAppsPage', () => {
         skipped: [],
       }),
     );
-    const toast = (await import('react-hot-toast')).default;
+    const { toast } = await import('sonner');
 
     await act(async () => {
       render(<RestoreAppsPage />);
