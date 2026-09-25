@@ -69,8 +69,8 @@ vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({
   useTailscaleReadinessSync: vi.fn(),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: { error: vi.fn(), success: vi.fn() },
+vi.mock('sonner', () => ({
+  toast: { error: vi.fn(), success: vi.fn() },
 }));
 
 // The Companion Memory card lazy-loads lottie-react, and lottie-web reaches for a canvas 2D context

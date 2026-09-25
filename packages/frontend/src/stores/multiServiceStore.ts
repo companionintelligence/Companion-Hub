@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { z } from 'zod';
 import { dynamicComposeFormSchema, type dynamicComposeSchema, type ServiceInput } from '@ci-hub/common/schemas';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import i18next from 'i18next';
 
 type MultiServiceFormData = z.infer<typeof dynamicComposeSchema>;

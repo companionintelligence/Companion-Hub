@@ -55,8 +55,8 @@ vi.mock('@/lib/sentry', () => ({
   setHubSentryDeviceId,
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: toast,
+vi.mock('sonner', () => ({
+  toast: toast,
 }));
 
 /** The desktop shell's side of a `cihub://pair` link, as in main.rs: one parked code, plus listeners. */

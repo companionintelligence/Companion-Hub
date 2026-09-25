@@ -55,8 +55,8 @@ vi.mock('@/modules/app/helpers/use-memory-connection', async () => {
 });
 
 const mockToastError = vi.fn();
-vi.mock('react-hot-toast', () => ({
-  default: { error: (...args: unknown[]) => mockToastError(...args), success: vi.fn() },
+vi.mock('sonner', () => ({
+  toast: { error: (...args: unknown[]) => mockToastError(...args), success: vi.fn() },
 }));
 
 const normalApp = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never;

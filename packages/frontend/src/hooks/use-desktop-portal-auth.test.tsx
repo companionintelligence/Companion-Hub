@@ -4,7 +4,7 @@ import { renderHook, waitFor } from '@/tests/test-utils';
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
 const toastMock = vi.hoisted(() => ({ error: vi.fn() }));
-vi.mock('react-hot-toast', () => ({ default: { error: (...a: unknown[]) => toastMock.error(...a) } }));
+vi.mock('sonner', () => ({ toast: { error: (...a: unknown[]) => toastMock.error(...a) } }));
 
 const ctx = vi.hoisted(() => ({ setUserContext: vi.fn(), isLoggedIn: false }));
 vi.mock('@/context/user-context', () => ({ useUserContext: () => ctx }));

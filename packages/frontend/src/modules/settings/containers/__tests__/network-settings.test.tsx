@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { startAuth } from '@/api-client/sdk.gen';
 import { openExternal } from '@/lib/helpers/open-external';
 import { NetworkSettingsContainer } from '../network-settings';
@@ -16,7 +16,7 @@ vi.mock('react-i18next', () => {
   const t = (key: string) => key;
   return { useTranslation: () => ({ t }) };
 });
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => false }));
 vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({ useTailscaleReadinessSync: () => undefined }));
 vi.mock('@/lib/clear-client-hub-state', () => ({ clearClientHubState: vi.fn() }));
