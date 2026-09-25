@@ -123,6 +123,7 @@ describe('App lifecycle', () => {
     username: 'guest',
     port: Number(process.env.RABBITMQ_PORT) || 5672,
   });
+  configurationService.get.calledWith('jwtSecret').mockReturnValue('test-jwt-secret');
   configurationService.get.calledWith('domain').mockReturnValue('ci.test');
   configurationService.get.calledWith('localDomain').mockReturnValue('ci.lan');
   configurationService.get.calledWith('userSettings').mockReturnValue({
