@@ -5,6 +5,7 @@ import { Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { Connection } from 'rabbitmq-client';
 import { z } from 'zod';
 import { HUB_QUEUE_ARGUMENTS } from './queue.constants';
+import { deriveQueueSigningKey } from './message-signing';
 import { EventPublisher } from './event.publisher';
 import { Queue } from './queue.entity';
 
@@ -520,9 +521,24 @@ export class QueueFactory implements OnApplicationShutdown {
       this.logger,
       () => this.isReady(),
       () => this.getConnectionState(),
+      this.queueSigningKey(),
     );
     this.createdQueues.push({ queue, queueName, timeout });
     return queue;
+  }
+
+  /**
+   * Fails closed: a Hub without JWT_SECRET cannot run a queue at all, rather
+   * than running one that accepts unauthenticated lifecycle commands. The env
+   * generator always provisions JWT_SECRET, so this only fires on a broken
+   * deployment — which is exactly when an unsigned queue must not appear.
+   */
+  private queueSigningKey(): string {
+    const jwtSecret = this.config.get('jwtSecret');
+    if (!jwtSecret) {
+      throw new Error('Queue message signing requires JWT_SECRET; refusing to create an unsigned queue');
+    }
+    return deriveQueueSigningKey(jwtSecret);
   }
 
   async onApplicationShutdown() {

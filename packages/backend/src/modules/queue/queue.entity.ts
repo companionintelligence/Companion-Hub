@@ -5,6 +5,7 @@ import type { ScheduledTask } from 'node-cron';
 import { AMQPConnectionError, AMQPError, type Connection, type Consumer, type RPCClient } from 'rabbitmq-client';
 import { z } from 'zod';
 import { HUB_QUEUE_ARGUMENTS, QUEUE_UNAVAILABLE_CODE } from './queue.constants';
+import { QueueNonceCache, signQueueMessage, verifyQueueMessage } from './message-signing';
 import type { EventPublisher } from './event.publisher';
 import type { QueueConnectionState } from './queue.factory';
 
@@ -31,7 +32,27 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
     private logger: LoggerService,
     private isConnectionReady: () => boolean = () => true,
     private getConnectionState: () => QueueConnectionState = () => ({ status: 'ready', ready: true, attempts: 0 }),
-  ) {}
+    /**
+     * HMAC key for per-message authentication (see message-signing.ts). Always
+     * supplied by QueueFactory. Left undefined only by unit tests that exercise
+     * transport behaviour and by the OpenAPI-generation stub; a queue without
+     * it accepts anything the broker delivers, which is why it says so loudly.
+     */
+    private signingKey?: string,
+  ) {
+    if (!this.signingKey) {
+      this.logger.warn(`Queue '${this.queueName}' has no message signing key: messages will be neither signed nor verified.`);
+    }
+  }
+
+  private readonly nonces = new QueueNonceCache();
+
+  /** The wire body for `payload`: signed when this queue has a key, the bare payload otherwise. */
+  private outbound(payload: z.output<T>): unknown {
+    // Every event schema is an object schema (the consumer indexes `.requestId`),
+    // so the cast only names what zod's generic output type cannot express.
+    return this.signingKey ? signQueueMessage(this.signingKey, this.queueName, payload as Record<string, unknown>) : payload;
+  }
 
   public onEvent(callback: (data: z.output<T> & { eventId: string }, reply: (response: z.input<R>) => Promise<void>) => Promise<void>) {
     this.consumerCallback = callback;
@@ -43,11 +64,34 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
       this.activeConsumer = this.rabbit.createConsumer(
         { queue: this.queueName, concurrency: this.workers, queueOptions: { durable: true, arguments: HUB_QUEUE_ARGUMENTS } },
         async (req, reply) => {
+          let body = req.body;
+
+          // Authenticate before anything else runs. A message that fails here
+          // never reaches the callback: it is answered (so a legitimate but
+          // mis-signed publisher learns why) and reported on the event exchange,
+          // and that is all.
+          if (this.signingKey) {
+            const verified = verifyQueueMessage(this.signingKey, this.queueName, req.body, { nonces: this.nonces });
+            if (!verified.ok) {
+              const message = `Rejected unauthenticated message on queue '${this.queueName}' (${verified.reason})`;
+              this.logger.error(message);
+              await reply({ success: false, message });
+              await this.publisher.publish(`rpc.rejected.${this.queueName}`, {
+                queueName: this.queueName,
+                reason: verified.reason,
+                requestId: (req.body as { requestId?: unknown } | null)?.requestId,
+                timestamp: new Date().toISOString(),
+              });
+              return;
+            }
+            body = verified.payload;
+          }
+
           let rpcSuccess = false;
           let rpcResultMessage = '';
 
           try {
-            await callback(req.body, reply);
+            await callback(body, reply);
             rpcSuccess = true;
             rpcResultMessage = 'RPC processed successfully.';
           } catch (error) {
@@ -58,10 +102,10 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
           } finally {
             const eventToPublish = {
               queueName: this.queueName,
-              requestData: req.body,
+              requestData: body,
               rpcStatus: rpcSuccess ? 'success' : 'failure',
               rpcMessage: rpcResultMessage,
-              requestId: req.body.requestId,
+              requestId: body.requestId,
               timestamp: new Date().toISOString(),
             };
 
@@ -145,7 +189,7 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
 
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const res = await this.rpcClient.send(this.queueName, eventData.data);
+        const res = await this.rpcClient.send(this.queueName, this.outbound(eventData.data));
         const response = this.resultSchema.safeParse(res.body);
 
         if (response.success) {
@@ -187,7 +231,7 @@ export class Queue<T extends z.ZodType, R extends z.ZodType<{ success: boolean; 
 
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          await this.rpcClient.send(this.queueName, eventData.data);
+          await this.rpcClient.send(this.queueName, this.outbound(eventData.data));
           return;
         } catch (e) {
           if (attempt === 0 && this.shouldRetry(e)) {
