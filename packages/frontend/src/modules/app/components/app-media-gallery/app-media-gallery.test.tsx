@@ -23,6 +23,14 @@ describe('AppMediaGallery', () => {
     expect(screen.getByRole('dialog', { name: 'Companion Memory screenshots' })).toBeInTheDocument();
   });
 
+  it('starts the lightbox at the header bottom edge so the close button is not covered', () => {
+    render(<AppMediaGallery appName="Companion Memory" screenshots={['https://example.com/one.png']} demoVideoUrl={null} isLoading={false} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open screenshot fullscreen' }));
+    // The header is fixed at `top: --titlebar-height` with `height: --header-offset` (see header.tsx).
+    expect(screen.getByRole('dialog').style.top).toBe('calc(var(--titlebar-height, 0px) + var(--header-offset))');
+  });
+
   it('returns null when there is no media', () => {
     const { container } = render(<AppMediaGallery appName="Companion Memory" screenshots={[]} demoVideoUrl={null} isLoading={false} />);
 
