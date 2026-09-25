@@ -11,11 +11,14 @@ import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
 interface IProps {
-  info: AppInfo;
+  /** Only the two fields this dialog reads, so a caller holding a report entry needs no full AppInfo. */
+  info: Pick<AppInfo, 'urn' | 'name'>;
   isOpen: boolean;
   onClose: () => void;
+  /** Why the restart is being offered, shown above the standard line — e.g. the domain it will start serving. */
+  reason?: string;
 }
-export const RestartDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
+export const RestartDialog: React.FC<IProps> = ({ info, isOpen, onClose, reason }) => {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
@@ -43,6 +46,7 @@ export const RestartDialog: React.FC<IProps> = ({ info, isOpen, onClose }) => {
           <DialogTitle>{t('APP_RESTART_FORM_TITLE', { name: info.name })}</DialogTitle>
         </DialogHeader>
         <DialogDescription>
+          {reason ? <span className="block mb-2">{reason}</span> : null}
           <span className="text-muted-foreground">{t('COMMON_ALL_DATA_RETAINED')}</span>
         </DialogDescription>
         <DialogFooter>

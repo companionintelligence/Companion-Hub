@@ -39,6 +39,12 @@ export interface PublicWebDiagnosticEntry {
    * claim every time an unrelated setting is saved and stops being read.
    */
   awaitingCustomDomainRestart: boolean;
+  /**
+   * The app restarts on its own when a domain is connected, so nobody needs to be
+   * asked. Carried here so a surface can say "restarting automatically" instead of
+   * offering a button for a restart that is already on its way.
+   */
+  autoRestartOnDomainChange: boolean;
 }
 
 export interface PublicWebDiagnosticsResponse {
@@ -184,6 +190,7 @@ export class PublicWebService {
         customDomain,
         pendingRestart: app.pendingRestart,
         awaitingCustomDomainRestart,
+        autoRestartOnDomainChange: app.autoRestartOnDomainChange === true,
       });
     }
 
