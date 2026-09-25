@@ -16,7 +16,7 @@ import {
 import type { RegistrationStatus } from '@/lib/registration-status';
 import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistration, requiresPortalRePairing } from '@/lib/registration-status';
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import {
   REGISTRATION_ACCOUNT_HINT,
@@ -363,7 +363,7 @@ export default function DeviceRegistrationPage() {
 
       if (status.phase === 'degraded') {
         setRedirectStatusKey('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_REDIRECTING');
-        toast(t('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_TOAST'), { duration: 8000 });
+        toast.warning(t('DEVICE_REGISTRATION_LOCAL_READY_PUBLIC_NEEDS_ATTENTION_TOAST'), { duration: 8000 });
         await sleep(2000);
         navigate('/login', { replace: true });
         return;
@@ -404,7 +404,7 @@ export default function DeviceRegistrationPage() {
         }
 
         setRedirectStatusKey('DEVICE_REGISTRATION_PUBLIC_ROUTE_PROPAGATING_REDIRECTING_LOCAL');
-        toast(t('DEVICE_REGISTRATION_CLOUDFLARE_PROPAGATING_TOAST'), { duration: 8000 });
+        toast.info(t('DEVICE_REGISTRATION_CLOUDFLARE_PROPAGATING_TOAST'), { duration: 8000 });
         await sleep(2000);
         navigate('/login', { replace: true });
         return;

@@ -12,7 +12,7 @@ import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { isI18nKey } from '@/lib/format-api-error';
 import type { TFunction } from 'i18next';
 import { useCallback, useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
 // Hub-wide API-key management (Settings → Security), extracted from the MCP settings tab.

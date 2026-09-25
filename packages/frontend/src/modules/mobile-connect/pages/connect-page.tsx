@@ -6,7 +6,7 @@ import { initMobileConnection, setHubConnection, usesCloudConnect } from '@/lib/
 import { resolveHubConnection } from '@/lib/lan-direct-connect';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { redirect, useNavigate } from 'react-router';
 import { rememberPortalAccountEmail } from '@/lib/portal-session-hint';
 import { emailFromIdToken, loginWithPortalOidc, OidcCancelledError, resumePendingOidcLogin } from '../oidc';

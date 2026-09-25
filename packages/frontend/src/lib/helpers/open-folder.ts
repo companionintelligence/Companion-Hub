@@ -1,5 +1,5 @@
 import i18next from 'i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { getTauriInvoke } from './tauri-invoke';
 

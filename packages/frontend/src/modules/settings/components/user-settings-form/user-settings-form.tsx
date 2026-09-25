@@ -11,7 +11,7 @@ import type React from 'react';
 import { Suspense, lazy, useEffect } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Tooltip } from 'react-tooltip';
 import validator from 'validator';
 import { z } from 'zod';

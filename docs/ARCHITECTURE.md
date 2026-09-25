@@ -349,7 +349,7 @@ The frontend is a **React 19 SPA** built with **React Router 7** (file-conventio
 | Animations | Framer Motion |
 | Code editing | CodeMirror (JSON, YAML, Markdown) with merge/diff view |
 | Markdown | react-markdown + remark-gfm |
-| Notifications | react-hot-toast |
+| Notifications | sonner, through the themed `Toaster` in `components/ui/Toaster` |
 | i18n | i18next + react-i18next |
 | QR codes | qrcode.react |
 

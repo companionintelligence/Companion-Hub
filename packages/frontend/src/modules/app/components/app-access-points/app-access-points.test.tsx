@@ -35,8 +35,8 @@ vi.mock('@/context/app-context', () => ({
   }),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     success: vi.fn(),
     error: vi.fn(),
   },
@@ -303,7 +303,7 @@ describe('AppAccessPoints', () => {
       configurable: true,
     });
 
-    const toast = (await import('react-hot-toast')).default;
+    const { toast } = await import('sonner');
 
     render(
       <AppAccessPoints

@@ -9,7 +9,7 @@ import { CustomDomainRestartBanner } from '@/modules/app/components/custom-domai
 import { Cpu, Database, MemoryStick } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { CompactSystemStat } from '../components/compact-system-stat';
@@ -35,9 +35,7 @@ export default () => {
     const state = location.state as DashboardLocationState | null;
     if (!state?.showBackgroundInstallToast) return;
 
-    toast(t('DASHBOARD_SETUP_RUNNING_BACKGROUND'), {
-      duration: 7000,
-    });
+    toast.info(t('DASHBOARD_SETUP_RUNNING_BACKGROUND'), { duration: 8000 });
 
     navigate({ pathname: location.pathname, search: location.search, hash: location.hash }, { replace: true, state: null });
   }, [location.hash, location.pathname, location.search, location.state, navigate, t]);
