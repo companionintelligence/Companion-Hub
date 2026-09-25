@@ -9,7 +9,7 @@
   "files": {
     "includes": [
       "**",
-      "!**/.claude/worktrees",
+      "!.claude/worktrees",
       "!**/dist/*",
       "!**/public/*",
       "!**/legacy/*",
