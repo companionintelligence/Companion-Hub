@@ -136,8 +136,8 @@ vi.mock('@/context/app-context', () => ({
   }),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     error: (...args: unknown[]) => hoisted.toastError(...args),
     success: vi.fn(),
   },

@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { AppStoresTable } from '../components/app-stores-table/app-stores-table';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 

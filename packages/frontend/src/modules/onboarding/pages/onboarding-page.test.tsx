@@ -33,13 +33,13 @@ const { mockCatalogState, mockCatalogRefetch, mockAppContext, mockCompleteOnboar
 }));
 
 // Only error/dismiss are replaced; the real Toaster and the rest of the API stay in place.
-vi.mock('react-hot-toast', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  const toast = Object.assign(((...args: unknown[]) => (actual.default as (...a: unknown[]) => unknown)(...args)) as never, actual.default, {
+vi.mock('sonner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('sonner')>();
+  const toast = Object.assign((...args: Parameters<typeof actual.toast>) => actual.toast(...args), actual.toast, {
     error: mockToast.error,
     dismiss: mockToast.dismiss,
   });
-  return { ...actual, default: toast, toast };
+  return { ...actual, toast };
 });
 
 // Only useNavigate is replaced; MemoryRouter and <Navigate> stay real so the render guards behave.

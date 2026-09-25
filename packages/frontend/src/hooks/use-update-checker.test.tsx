@@ -22,8 +22,8 @@ import type { UpdateInfo } from '@/lib/update-service';
 const i18n = vi.hoisted(() => ({ t: (key: string) => key }));
 vi.mock('react-i18next', () => ({ useTranslation: () => i18n }));
 
-const toastMock = vi.hoisted(() => Object.assign(vi.fn(), { dismiss: vi.fn() }));
-vi.mock('react-hot-toast', () => ({ default: toastMock }));
+const toastMock = vi.hoisted(() => ({ info: vi.fn(), dismiss: vi.fn() }));
+vi.mock('sonner', () => ({ toast: toastMock }));
 
 const svc = vi.hoisted(() => ({
   checkForUpdates: vi.fn(),
@@ -53,7 +53,7 @@ const info = (over: Partial<UpdateInfo> = {}): UpdateInfo => ({
 
 beforeEach(() => {
   mc.mobile = false;
-  toastMock.mockClear();
+  toastMock.info.mockClear();
   toastMock.dismiss.mockClear();
   svc.checkForUpdates.mockReset().mockResolvedValue(info());
   svc.dismissVersion.mockClear();
@@ -78,7 +78,7 @@ describe('useUpdateChecker — platform gating', () => {
 
     await new Promise((r) => setTimeout(r, 20));
     expect(svc.checkForUpdates).not.toHaveBeenCalled();
-    expect(toastMock).not.toHaveBeenCalled();
+    expect(toastMock.info).not.toHaveBeenCalled();
     expect(result.current.update).toBeNull();
   });
 
@@ -125,7 +125,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
     const { result } = renderHook(() => useUpdateChecker());
 
     await waitFor(() => expect(result.current.update).toEqual(info()));
-    expect(toastMock).toHaveBeenCalledTimes(1);
+    expect(toastMock.info).toHaveBeenCalledTimes(1);
     expect(svc.markToastShown).toHaveBeenCalledWith('1.1.0');
   });
 
@@ -136,7 +136,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
 
     await waitFor(() => expect(svc.checkForUpdates).toHaveBeenCalled());
     expect(result.current.update).toBeNull();
-    expect(toastMock).not.toHaveBeenCalled();
+    expect(toastMock.info).not.toHaveBeenCalled();
   });
 
   it('stays quiet when the feed check fails', async () => {
@@ -146,7 +146,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
 
     await waitFor(() => expect(svc.checkForUpdates).toHaveBeenCalled());
     expect(result.current.update).toBeNull();
-    expect(toastMock).not.toHaveBeenCalled();
+    expect(toastMock.info).not.toHaveBeenCalled();
   });
 
   it('honours a version the user already dismissed', async () => {
@@ -156,7 +156,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
 
     await waitFor(() => expect(svc.checkForUpdates).toHaveBeenCalled());
     expect(result.current.update).toBeNull();
-    expect(toastMock).not.toHaveBeenCalled();
+    expect(toastMock.info).not.toHaveBeenCalled();
   });
 
   it('does not re-toast a version already announced this session', async () => {
@@ -166,7 +166,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
 
     // Still offered in the UI — just not toasted at the user again.
     await waitFor(() => expect(result.current.update).toEqual(info()));
-    expect(toastMock).not.toHaveBeenCalled();
+    expect(toastMock.info).not.toHaveBeenCalled();
     expect(svc.markToastShown).not.toHaveBeenCalled();
   });
 
@@ -195,7 +195,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
 
   it('recheck() re-queries without toasting (it is user-initiated)', async () => {
     const { result } = renderHook(() => useUpdateChecker());
-    await waitFor(() => expect(toastMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toastMock.info).toHaveBeenCalledTimes(1));
     svc.wasToastShown.mockReturnValue(false);
 
     await act(async () => {
@@ -203,7 +203,7 @@ describe('useUpdateChecker — desktop behaviour', () => {
     });
 
     expect(svc.checkForUpdates).toHaveBeenCalledTimes(2);
-    expect(toastMock).toHaveBeenCalledTimes(1); // no second toast
+    expect(toastMock.info).toHaveBeenCalledTimes(1); // no second toast
   });
 
   it('polls on the service-provided interval and stops on unmount', async () => {

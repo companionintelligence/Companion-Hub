@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { Shield, Loader2, Check, ExternalLink, AlertCircle, Smartphone } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { openExternal } from '@/lib/helpers/open-external';
 import { BrandLogo } from './ai-setup/icons';

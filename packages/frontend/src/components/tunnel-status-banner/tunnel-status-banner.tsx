@@ -5,7 +5,7 @@ import { requiresPortalRePairing } from '@/lib/registration-status';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle } from 'lucide-react';
 import { useState } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
@@ -47,7 +47,7 @@ export function TunnelStatusBanner() {
         }
         const reset = await resetRegistrationForRePair();
         if (reset.ok) {
-          toast(t('TUNNEL_DEGRADED_RECONNECT_NEEDS_REPAIR'), { duration: 8000 });
+          toast.warning(t('TUNNEL_DEGRADED_RECONNECT_NEEDS_REPAIR'), { duration: 8000 });
           navigate('/device-registration');
         } else {
           toast.error(t('TUNNEL_DEGRADED_RECONNECT_FAILED'));
@@ -57,7 +57,7 @@ export function TunnelStatusBanner() {
       if (result.action === 'restart') {
         // Credentials exist but the token file could not be written (tunnel dir
         // not writable). A restart lets the container entrypoint heal ownership.
-        toast(t('TUNNEL_DEGRADED_RECONNECT_NEEDS_RESTART'), { duration: 8000 });
+        toast.warning(t('TUNNEL_DEGRADED_RECONNECT_NEEDS_RESTART'), { duration: 8000 });
         return;
       }
       toast.error(t('TUNNEL_DEGRADED_RECONNECT_FAILED'));

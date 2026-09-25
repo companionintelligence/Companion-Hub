@@ -35,7 +35,7 @@ vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   invalidateAppQueries: (...args: unknown[]) => h.invalidateAppQueries(...args),
 }));
 
-vi.mock('react-hot-toast', () => ({ default: { error: (...args: unknown[]) => h.toastError(...args), success: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => h.toastError(...args), success: vi.fn() } }));
 
 const app = { id: 'plane', name: 'Plane', urn: 'plane:ci-marketplace' } as never;
 
