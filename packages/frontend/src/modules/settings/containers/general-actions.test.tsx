@@ -2,7 +2,7 @@ import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
 import { checkForUpdates, fetchHostListenerStatus, getInstalledDesktopVersion, isTauri, performUpdate } from '@/lib/update-service';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { GeneralActionsContainer } from './general-actions';
 
@@ -43,8 +43,8 @@ vi.mock('@/lib/update-service', async () => {
   };
 });
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     success: vi.fn(),
     error: vi.fn(),
   },

@@ -20,7 +20,7 @@ import { createElement, useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button, type ButtonProps } from '@/components/ui/Button';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import './app-actions.css';
 import { ignoreAppVersionMutation, startAppMutation, unignoreAppVersionMutation } from '@/api-client/@tanstack/react-query.gen';

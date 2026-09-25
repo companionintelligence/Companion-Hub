@@ -9,7 +9,7 @@ import { AlertCircle, AlertTriangle, Cpu, ExternalLink, HardDrive, Shield, Shiel
 import { useMutation } from '@tanstack/react-query';
 import { Suspense } from 'react';
 import React from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { retryDynamicImport } from '@/lib/chunk-load-error';

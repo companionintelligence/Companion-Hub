@@ -93,8 +93,8 @@ vi.mock('@tanstack/react-query', () => ({
   useMutation: () => mockUseMutation(),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     error: mockToastError,
     success: mockToastSuccess,
   },
