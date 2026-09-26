@@ -124,9 +124,19 @@ export type PublicDnsFailureReason =
 
 export interface PublicDnsFailure {
   app: string;
+  /** The hostname the app asked for, and did not get. */
   hostname?: string;
   reason: PublicDnsFailureReason;
   message?: string;
+  /**
+   * Where Companion Portal published the app instead, when it published it at all.
+   *
+   * Set on a `zone_unreachable` entry for an app moved to the environment's own
+   * domain because Portal cannot write DNS in the requested one (CI-Portal#841).
+   * Proposed with that change and not yet sent by any Portal: until it is, the
+   * same hostname is read from the entry's message. See `readServedHostname`.
+   */
+  servedHostname?: string;
 }
 
 /**
@@ -384,11 +394,17 @@ export class CloudflareClientService {
         // Require `reason` because an absent value would render as `undefined`.
         // Accept unknown strings so a newer Companion Portal can add a class
         // without breaking older consumers, which already use a generic fallback.
+        //
+        // `servedHostname` moves an app's public identity, so a value that is not a
+        // string is dropped from its entry rather than trusted; the entry itself
+        // still reports the failure.
         const failures: PublicDnsFailure[] = Array.isArray(response.data.failures)
-          ? response.data.failures.filter(
-              (failure): failure is PublicDnsFailure =>
-                typeof failure === 'object' && failure !== null && typeof failure.app === 'string' && typeof failure.reason === 'string',
-            )
+          ? response.data.failures
+              .filter(
+                (failure): failure is PublicDnsFailure =>
+                  typeof failure === 'object' && failure !== null && typeof failure.app === 'string' && typeof failure.reason === 'string',
+              )
+              .map(({ servedHostname, ...failure }) => (typeof servedHostname === 'string' ? { ...failure, servedHostname } : failure))
           : [];
         const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
         // Apply the same wire-boundary validation to `customDomains`, while
