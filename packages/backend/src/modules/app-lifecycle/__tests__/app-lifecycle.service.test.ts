@@ -2585,7 +2585,16 @@ describe('AppLifecycleService', () => {
     });
 
     it('still reports another app the same sync refused', async () => {
-      appsRepository.getApps.mockResolvedValue([n8n(), n8n({ id: 12, appName: 'docmost', localSubdomain: 'docmost', config: {} })] as any);
+      appsRepository.getApps.mockResolvedValue([
+        n8n(),
+        n8n({
+          id: 12,
+          appName: 'docmost',
+          localSubdomain: 'docmost',
+          // Published like n8n: whether an app is public is read from its saved form (#1621).
+          config: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'docmost', publicDomain: 'companionintelligence.com' },
+        }),
+      ] as any);
       cloudflareClientService.syncState.mockResolvedValue({
         ok: true,
         failed: ['n8n', 'docmost'],
