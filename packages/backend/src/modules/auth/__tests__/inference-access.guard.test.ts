@@ -364,8 +364,8 @@ describe('the inference route table', () => {
       'InferenceController.getOmlxStatus': 'GET omlx/status → AuthGuard',
       'InferenceController.getManualEndpointStatus': 'GET manual-endpoint/status → AuthGuard',
       'InferenceController.installOllama': 'POST ollama/install → AuthGuard',
-      'InferenceController.getAppCredentials': 'GET apps/:slug/credentials → InternalOriginGuard',
-      'InferenceController.getAppCredentialsEnv': 'GET apps/:slug/credentials.env|apps/:slug/bootstrap.env → InternalOriginGuard',
+      'InferenceController.getAppCredentials': 'GET apps/:slug/credentials → AppContainerOriginGuard',
+      'InferenceController.getAppCredentialsEnv': 'GET apps/:slug/credentials.env|apps/:slug/bootstrap.env → AppContainerOriginGuard',
       // ── HubPoolController: app-facing proxy on the same guard; peers, pairing and operators untouched ──
       'HubPoolController.identify': 'GET identify → (none)',
       'HubPoolController.poolStatus': 'GET status → ObservabilityReadGuard',
