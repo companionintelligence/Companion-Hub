@@ -108,6 +108,7 @@ export class ApiKeyAdminController {
   private async mayGrantFull(req: Request): Promise<boolean> {
     switch (req.hubPrincipal) {
       case 'cli':
+      case 'host-local':
       case 'portal-device':
         return true;
       case 'session': {

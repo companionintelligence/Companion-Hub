@@ -10,6 +10,8 @@ const SCOPE_BADGE_KEYS: Record<string, string> = {
   inference: 'API_KEYS_SCOPE_INFERENCE',
   // Minted by the CLI only (`cihub api-key create --scope qa:read`); the list must still name it.
   'qa:read': 'API_KEYS_SCOPE_QA_READ',
+  // Minted by the Hub for Companion Portal's pushes (PortalPushKeyService); revocable here.
+  portal: 'API_KEYS_SCOPE_PORTAL',
 };
 
 /** A small pill labelling one scope a key carries (e.g. "MCP", "App"). */

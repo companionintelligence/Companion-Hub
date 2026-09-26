@@ -21,7 +21,7 @@ export type LifecycleActor =
   /** A Hub session person — checked against their WhoIs grant for the action. */
   | { kind: 'operator'; userId: number }
   /** A grant-exempt named principal; see `isGrantExemptPrincipal`. */
-  | { kind: 'exempt'; principal: 'portal-device' | 'cli' }
+  | { kind: 'exempt'; principal: 'portal-device' | 'cli' | 'host-local' }
   /**
    * An MCP key. The tool registry already enforces its capability on each tool.
    *
