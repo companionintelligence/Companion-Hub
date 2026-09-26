@@ -6,6 +6,7 @@ import {
   type ServiceInput,
   serviceSchema,
   collectServiceSecurityViolations,
+  LOOPBACK_HOST_PORT_INTERFACE,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -54,6 +55,11 @@ export interface ComposeBuilderOptions {
   securityOptions?: ComposeSecurityOptions | string[] | boolean;
   securityOpt?: string[];
   security_opt?: string[];
+  /**
+   * Publish the main service's `${APP_PORT}` on loopback instead of every interface. Set from
+   * `hostPortStaysOnLoopback(appInfo)` in `@ci-hub/common/schemas`, which says which apps and why.
+   */
+  loopbackHostPort?: boolean;
 }
 
 interface Network {
@@ -132,6 +138,7 @@ export class DockerComposeBuilder {
   private readonly posixPermissionsSupported: boolean;
   private networkIsolationOptions?: NetworkIsolationOptions;
   private securityOptions?: string[];
+  private loopbackHostPort = false;
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -204,6 +211,9 @@ export class DockerComposeBuilder {
       this.setSecurityOpt(options.security_opt);
     } else if (options.securityOptions !== undefined) {
       this.setSecurityOptions(options.securityOptions);
+    }
+    if (options.loopbackHostPort !== undefined) {
+      this.loopbackHostPort = options.loopbackHostPort;
     }
     return this;
   }
@@ -460,6 +470,9 @@ export class DockerComposeBuilder {
           containerPort: params.internalPort,
           // biome-ignore lint/suspicious/noTemplateCurlyInString: intended
           hostPort: '${APP_PORT}',
+          // Without an interface Docker binds 0.0.0.0 and [::], reachable from the LAN and the
+          // tailnet with no Hub login in front of it.
+          interface: this.loopbackHostPort ? LOOPBACK_HOST_PORT_INTERFACE : undefined,
         });
       }
     }

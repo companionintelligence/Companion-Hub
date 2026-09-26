@@ -144,6 +144,36 @@ describe('AppsService.checkAppAvailability', () => {
     expect(mockedAxiosGet).not.toHaveBeenCalled();
   });
 
+  describe('an app whose host port stays on loopback', () => {
+    beforeEach(() => {
+      Object.assign(ctx.mockInfo, { exposable: true, hub_integration: { mcp_client: true } });
+      ctx.mockApp.port = 18789;
+    });
+
+    it('opens on loopback in local mode, since the LAN address refuses the connection', async () => {
+      ctx.mockApp.exposureMode = 'local';
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result.available).toBe(true);
+      expect(result.appUrl).toBe('http://127.0.0.1:18789');
+      // Nor is the LAN address offered as the "Open on local network" alternative.
+      expect(result.localUrl).toBeUndefined();
+      expect(mockedAxiosGet).not.toHaveBeenCalled();
+    });
+
+    it('falls back to loopback, not the LAN, when a cloudflare app has no tunnel token', async () => {
+      ctx.mockApp.exposureMode = 'cloudflare';
+      Object.assign(ctx.mockApp, { exposedLocal: true });
+      ctx.moduleRefMock.get.mockReturnValue({ getTunnelToken: () => null });
+
+      const result = await ctx.service.checkAppAvailability('test-app:test-store' as AppUrn);
+
+      expect(result.appUrl).toBe('http://127.0.0.1:18789');
+      expect(result.localUrl).toBeUndefined();
+    });
+  });
+
   // Test 2: local mode without port → unavailable
   it('local mode without port → unavailable', async () => {
     ctx.mockApp.exposureMode = 'local';

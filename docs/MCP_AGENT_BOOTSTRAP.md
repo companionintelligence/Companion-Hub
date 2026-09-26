@@ -34,6 +34,11 @@ At **app install**, when `hub_integration.mcp_client: true`, the Hub injects:
 
 Marketplace entries for `ci-hermes` and `ci-openclaw` set `mcp_client: true`.
 
+The app's UI drives an agent that holds this key, so the Hub publishes an `mcp_client` app's host port
+on `127.0.0.1` only, not on the LAN or tailnet. To reach the app from another device, use Private VPN
+or Public web. Apps whose manifest sets `hub_integration.edge_auth.default: true` get the same bind,
+because they have no login of their own.
+
 On its own app a managed key passes every per-app grant check but one: changing which custom domain the
 app serves takes an organization owner or admin, so that change is refused with
 `CUSTOM_DOMAIN_ROLE_REQUIRED` at every level. On every other app, the level the key is given in
