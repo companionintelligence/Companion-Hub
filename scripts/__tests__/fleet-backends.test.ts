@@ -8,8 +8,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { hubProbePortsFor, planBackend, planAllBackends, INSTALLABLE_BACKENDS, ollamaManagedEnvironment } from '../lib/fleet-backends.js';
-import { LLAMACPP_FLEET_PORT, LLAMACPP_UNIT } from '../lib/fleet-llamacpp.js';
+import { planBackend, planAllBackends, INSTALLABLE_BACKENDS, ollamaManagedEnvironment } from '../lib/fleet-backends.js';
 import {
   CANONICAL_BIND_DROPIN,
   canonicalBindDropinContent,
@@ -18,7 +17,6 @@ import {
   systemdNameCompare,
 } from '../lib/fleet-ollama-bind.js';
 import { ollamaRuntimeDropinContent, RUNTIME_DROPIN } from '../lib/fleet-ollama-runtime.js';
-import { HUB_PROBE_PORTS } from '../lib/fleet-probe-firewall.js';
 import { type HostFacts, isIntegratedAmdGpu } from '../lib/fleet-hardware.js';
 
 const host = (over: Partial<HostFacts> = {}): HostFacts => ({
