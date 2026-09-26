@@ -260,7 +260,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         command: `${BASE_COMMAND} clean [env] [--yes]`,
         description: 'Remove generated host-state files (outside a checkout: full wipe of the prod data dir)',
       },
-      { command: `${BASE_COMMAND} reset [env] [--yes]`, description: 'Remove runtime state (outside a checkout: full wipe of the prod install)' },
+      {
+        command: `${BASE_COMMAND} reset [env] [--yes] [--dry-run]`,
+        description: 'Remove runtime state (outside a checkout: full wipe of the prod install); --dry-run lists what would go',
+      },
       { command: `${BASE_COMMAND} uninstall [--yes]`, description: 'Full machine cleanup of CI-Hub runtime state' },
     ],
   },
