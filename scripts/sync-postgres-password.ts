@@ -15,7 +15,12 @@ import { isDirectScriptRun } from './lib/is-direct-run';
 import { parseEnvFile } from './env-file';
 
 const DB_CONTAINER = 'ci-hub-db';
-const DOCKER_NETWORKS = ['ci-hub_network', 'ci-os-hub_network'] as const;
+/**
+ * Networks to try when the database container's own attachments cannot be read. Since #1597 a
+ * stack built from the current compose file puts ci-hub-db on `ci-hub_internal` ONLY, so this list
+ * is a fallback for older stacks, never the whole answer.
+ */
+const FALLBACK_DOCKER_NETWORKS = ['ci-hub_internal', 'ci-hub_network', 'ci-os-hub_network'] as const;
 const HEALTH_POLL_INTERVAL_MS = 1000;
 const HEALTH_WAIT_TIMEOUT_MS = 60_000;
 
@@ -72,8 +77,36 @@ async function waitForContainerHealthy(name: string): Promise<boolean> {
   return false;
 }
 
+/** The networks ci-hub-db is attached to right now, as Docker reports them; empty when unreadable. */
+function dbContainerNetworks(): string[] {
+  const result = spawnSync('docker', ['inspect', '-f', '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}', DB_CONTAINER], {
+    encoding: 'utf-8',
+    stdio: 'pipe',
+  });
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Where to run the TCP probe from: every network the database is actually on, then the known names.
+ *
+ * The probe joins a throwaway client to a network and connects to `ci-hub-db` by name, so it can only
+ * succeed on a network the database is attached to. Probing fixed names alone reported a correct
+ * password as wrong on every stack built from the post-#1597 compose file (database on
+ * `ci-hub_internal` only): `docker run --network ci-hub_network` failed because that network did not
+ * exist yet, the sync then "fixed" a password that was already right, and the re-check failed the
+ * same way — `password sync did not fix TCP authentication`, blocking `cihub up` on a fresh install
+ * (seen on a fleet node, 2026-09-26).
+ */
+export function tcpProbeNetworks(attached: readonly string[]): string[] {
+  return [...new Set([...attached, ...FALLBACK_DOCKER_NETWORKS])];
+}
+
 function postgresTcpAuthWorks(password: string): boolean {
-  for (const network of DOCKER_NETWORKS) {
+  for (const network of tcpProbeNetworks(dbContainerNetworks())) {
     const result = spawnSync(
       'docker',
       [
