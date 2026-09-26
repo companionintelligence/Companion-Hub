@@ -21,6 +21,7 @@ import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from './modules/auth/session.manager';
+import { fillEdgeHopAddresses } from './modules/network/edge-hops';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -315,6 +316,12 @@ export class AppService implements OnApplicationShutdown {
       await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
         // Prefer operator email; avoid example.com (LetsEncrypt rejects it). localhost is for local ACME only.
         let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@localhost');
+        // The edge hops Traefik trusts forwarded headers from: the same
+        // HUB_EDGE_CLOUDFLARED_IP / HUB_EDGE_TAILSCALE_IP the compose file pins
+        // those containers to, so the two cannot disagree. By address, never
+        // the edge subnet, whose gateway is how the host reaches Traefik. See
+        // `resolveEdgeHops` and ProxyTrustService.
+        next = fillEdgeHopAddresses(next);
         // SECURITY: the Traefik dashboard/API is shipped fail-closed (`insecure: false`
         // in assets/traefik/traefik.yml). Only opt back into the unauthenticated
         // dashboard for explicit local development — never in production/staging/test,
