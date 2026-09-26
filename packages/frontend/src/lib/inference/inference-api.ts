@@ -139,10 +139,7 @@ export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
   return unwrap(getVllmStatus({ query, headers } as Parameters<typeof getVllmStatus>[0]));
 }
 
-/**
- * Probe the operator's mlx-dspark server. No API-key header, unlike fetchVllmInstallStatus:
- * mlx-dspark's `/health` is auth-exempt, so detection works with or without a key configured.
- */
+/** Probe the operator's oMLX server. No API-key header. */
 export async function fetchOmlxInstallStatus(url?: string) {
   const query = url?.trim() ? { url: url.trim() } : undefined;
   return unwrap(getOmlxStatus({ query } as Parameters<typeof getOmlxStatus>[0]));

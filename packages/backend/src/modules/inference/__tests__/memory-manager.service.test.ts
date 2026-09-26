@@ -46,9 +46,7 @@ describe('MemoryManagerService', () => {
     { backend: 'ollama', source: 'measured', models: [] },
     { backend: 'vllm', source: 'unsupported', models: null },
     { backend: 'lemonade', source: 'measured', models: [] },
-    { backend: 'mtplx', source: 'unsupported', models: null },
-    { backend: 'dspark', source: 'unsupported', models: null },
-    { backend: 'lucebox', source: 'unsupported', models: null },
+    { backend: 'omlx', source: 'unsupported', models: null },
   ];
 
   const reportResidency = (entries: BackendResidency[]) => {
@@ -82,7 +80,7 @@ describe('MemoryManagerService', () => {
     // Ollama and Lemonade answer residency; the other four only ever answer a health check.
     const withResidency: InferenceBackendType[] = ['ollama', 'lemonade'];
     backendRegistry.entries.mockImplementation(() =>
-      (['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]).map((type) => {
+      (['ollama', 'vllm', 'lemonade', 'omlx'] as InferenceBackendType[]).map((type) => {
         const backend = {
           type,
           healthCheck: vi.fn(async () => health[type] ?? { running: false, healthy: false, modelsLoaded: [] }),
@@ -305,19 +303,12 @@ describe('MemoryManagerService', () => {
         gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 2048, unifiedMemory: true, driverVersion: '', runtimeAvailable: true },
       });
       health.vllm = { running: true, healthy: true, modelsLoaded: ['Qwen/Qwen3.5-9B'] };
-      health.lucebox = { running: true, healthy: true, modelsLoaded: ['qwen3.6-27b'] };
-      gpuSampler.sampleVramByProcess.mockResolvedValue([
-        { pid: 9399, processName: 'VLLM::EngineCor', vramMb: 314 },
-        { pid: 6534, processName: 'dflash_server', vramMb: 17788 },
-      ]);
+      gpuSampler.sampleVramByProcess.mockResolvedValue([{ pid: 9399, processName: 'VLLM::EngineCor', vramMb: 314 }]);
 
       const budget = await service.calculateBudget(profile);
 
-      expect(budget.modelUsedRamMb).toBe(314 + 17788);
-      expect(budget.usage.backends.map((entry) => [entry.backend, entry.usedMb, entry.source])).toEqual([
-        ['vllm', 314, 'process'],
-        ['lucebox', 17788, 'process'],
-      ]);
+      expect(budget.modelUsedRamMb).toBe(314);
+      expect(budget.usage.backends.map((entry) => [entry.backend, entry.usedMb, entry.source])).toEqual([['vllm', 314, 'process']]);
     });
 
     it('an engine that is up but holds nothing contributes no row at all', async () => {

@@ -10,13 +10,12 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (100 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + 8 MTPLX LLMs + 11 mlx-dspark LLMs + voice + embeddings) with unique ids', () => {
+  it('decodes the full catalog (104 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + 64 oMLX LLMs + voice + embeddings) with unique ids', () => {
     expect(llms.filter((m) => m.backend === 'ollama').length).toBe(104);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
-    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(72);
-    expect(llms.filter((m) => m.backend === 'mtplx').length).toBe(8);
-    expect(llms.filter((m) => m.backend === 'dspark').length).toBe(11);
-    expect(llms.length).toBe(199);
+    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
+    expect(llms.filter((m) => m.backend === 'omlx').length).toBe(64);
+    expect(llms.length).toBe(180);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -28,60 +27,21 @@ describe('curated-models (TOON catalog)', () => {
       ollama: ['darwin', 'linux', 'win32'],
       lemonade: ['darwin', 'linux', 'win32'],
       vllm: ['linux', 'win32'],
-      mtplx: ['darwin'],
-      dspark: ['darwin'],
+      omlx: ['darwin'],
     } as const;
 
     for (const model of CURATED_MODELS) {
-      const expected = model.backend === 'vllm' && model.id.endsWith('-mlx') ? ['darwin'] : expectedByBackend[model.backend];
-      expect(model.requirements.supportedPlatforms, `${model.id} platform matrix`).toEqual(expected);
+      expect(model.requirements.supportedPlatforms, `${model.id} platform matrix`).toEqual(expectedByBackend[model.backend]);
     }
 
-    // vLLM's Apple-native MLX rows are a separate serving path from its CUDA rows.
-    expect(
-      llms.filter((m) => m.backend === 'vllm' && m.id.endsWith('-mlx')).every((m) => m.requirements.supportedPlatforms?.includes('darwin')),
-    ).toBe(true);
-    expect(
-      llms.filter((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx')).every((m) => !m.requirements.supportedPlatforms?.includes('darwin')),
-    ).toBe(true);
-  });
-
-  describe('mlx-dspark rows', () => {
-    const dspark = llms.filter((m) => m.backend === 'dspark');
-
-    it('are Apple-Silicon-gated MLX repos with a speculative-decoding quant tag', () => {
-      expect(dspark.length).toBe(11);
-      for (const m of dspark) {
-        expect(m.id, `${m.id} id suffix`).toMatch(/-dspark$/);
-        // `gpuVendors: ['apple']` is the entire gating story — the CPU/RAM fallback path reports
-        // vendor 'cpu', so an apple-only row can never be resurrected onto non-Apple hardware.
-        expect(m.requirements.gpuVendors, `${m.id} vendors`).toEqual(['apple']);
-        // backendModelId is the TARGET repo — what POST /admin/load takes and what
-        // GET /health.target reports back, so DsparkBackend.isModelLoaded matches it exactly.
-        expect(m.backendModelId, `${m.id} target repo`).toMatch(/^[\w.-]+\/[\w.-]+$/);
-        expect(m.runtime.quantization, `${m.id} quant`).toMatch(/\+(dspark|dflash2)$/);
-      }
-    });
-
-    it('budget resident RAM from the measured ramGb column, not disk x 1.1', () => {
-      for (const m of dspark) {
-        // A dspark row downloads a target AND a drafter, and the drafter is quantized to 4-bit at
-        // load — so neither `diskMb` nor `diskMb * 1.1` describes what is actually resident.
-        expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).not.toBe(Math.round(m.requirements.diskMb * 1.1));
-        expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.runtime.memoryFootprintMb);
-      }
-    });
-
-    it('carry MoE active-parameter counts so unified-memory ranking is right', () => {
-      expect(byId.get('qwen3-6-35b-dspark')?.activeParameterScale).toBe(3);
-      expect(byId.get('nemotron-3-5-lightning-30b-dspark')?.activeParameterScale).toBe(3);
-    });
+    expect(llms.filter((m) => m.backend === 'omlx').every((m) => m.requirements.supportedPlatforms?.includes('darwin'))).toBe(true);
+    expect(llms.filter((m) => m.backend === 'vllm').every((m) => !m.requirements.supportedPlatforms?.includes('darwin'))).toBe(true);
   });
 
   it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint', () => {
     // Regression guard for the optional `ramGb` column added for mlx-dspark: adding it must not
     // have shifted a single pre-existing row's memory numbers.
-    for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm' && m.backend !== 'dspark')) {
+    for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm')) {
       expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(Math.round(m.requirements.diskMb * 1.1));
       expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.requirements.diskMb);
       expect(m.requirements.recommendedVramMb, `${m.id} recVram`).toBe(Math.round(m.requirements.diskMb * 1.1 + 1024));
@@ -104,21 +64,20 @@ describe('curated-models (TOON catalog)', () => {
     for (const m of llms.filter((m) => m.backend === 'lemonade')) {
       expect(m.backendModelId, `${m.id} tag`).not.toContain(':');
     }
-    // vLLM LLM tags are HuggingFace repo ids (`org/model`) served as-is by `vllm serve`,
-    // and their quantization reflects the served precision, never Ollama's q4_K_M default.
-    // ('mlx-4bit'/'mlx-8bit'/'mlx-2.4bit'/'mxfp4' cover the vLLM-Metal/MLX rows — mlx-community
-    // repos, served on Apple Silicon instead of the CUDA image the plain 'bf16'/'mxfp4' rows target.)
     for (const m of llms.filter((m) => m.backend === 'vllm')) {
       expect(m.backendModelId, `${m.id} tag`).toMatch(/^[\w.-]+\/[\w.-]+$/);
-      expect(['bf16', 'mxfp4', 'mlx-4bit', 'mlx-8bit', 'mlx-2.4bit'], `${m.id} quantization`).toContain(m.runtime.quantization);
+      expect(['bf16', 'mxfp4'], `${m.id} quantization`).toContain(m.runtime.quantization);
+    }
+    for (const m of llms.filter((m) => m.backend === 'omlx')) {
+      expect(m.backendModelId, `${m.id} tag`).toMatch(/^[\w.-]+\/[\w.-]+$/);
+      expect(['mlx-4bit', 'mlx-8bit', 'mlx-2.4bit', 'mxfp4'], `${m.id} quantization`).toContain(m.runtime.quantization);
     }
   });
 
-  it('gates vLLM-Metal (MLX) rows to Apple Silicon only, never an NVIDIA VRAM budget', () => {
-    const mlxRows = llms.filter((m) => m.id.endsWith('-mlx'));
+  it('gates oMLX rows to Apple Silicon only, never an NVIDIA VRAM budget', () => {
+    const mlxRows = llms.filter((m) => m.backend === 'omlx');
     expect(mlxRows.length).toBe(64);
     for (const m of mlxRows) {
-      expect(m.backend, `${m.id} backend`).toBe('vllm');
       expect(m.backendModelId, `${m.id} tag`).toMatch(/^mlx-community\//);
       expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['apple']);
     }
@@ -133,26 +92,6 @@ describe('curated-models (TOON catalog)', () => {
     expect(mlxRows.some((m) => m.requirements.minTier === 'high')).toBe(true);
     // MoE row carries active-params so hardware-fit ranking doesn't treat it as dense.
     expect(byId.get('qwen3-30b-a3b-mlx')?.activeParameterScale).toBe(3);
-  });
-
-  it('gates MTPLX rows to Apple Silicon only, with real Youssofal HF repo ids and dynamic-precision quant', () => {
-    const mtplxRows = llms.filter((m) => m.backend === 'mtplx');
-    expect(mtplxRows.length).toBe(8);
-    for (const m of mtplxRows) {
-      expect(m.id, `${m.id} id`).toMatch(/-mtplx/);
-      expect(m.backendModelId, `${m.id} tag`).toMatch(/^Youssofal\//);
-      expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['apple']);
-      expect(m.runtime.quantization, `${m.id} quantization`).toBe('mtplx-dynamic');
-    }
-    // Spans cpu-only/low/medium/high, so Macs of different unified-memory sizes get a fit — even
-    // MTPLX's smallest curated model (Qwen 3.5 4B) is cpu-only-class small.
-    expect(mtplxRows.some((m) => m.requirements.minTier === 'cpu-only')).toBe(true);
-    expect(mtplxRows.some((m) => m.requirements.minTier === 'low')).toBe(true);
-    expect(mtplxRows.some((m) => m.requirements.minTier === 'medium')).toBe(true);
-    expect(mtplxRows.some((m) => m.requirements.minTier === 'high')).toBe(true);
-    // MoE rows carry active-params so hardware-fit ranking doesn't treat them as dense.
-    expect(byId.get('qwen3-6-35b-mtplx-speed')?.activeParameterScale).toBe(3);
-    expect(byId.get('qwen3-6-35b-mtplx-balance')?.activeParameterScale).toBe(3);
   });
 
   it('surfaces vLLM chat models so selecting the vLLM backend yields usable recommendations', () => {
