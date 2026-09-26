@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { manifestDefaultsEdgeAuthOn, hubIntegrationSchema } from '../app-info';
+import { hostPortStaysOnLoopback, manifestDefaultsEdgeAuthOn, hubIntegrationSchema } from '../app-info';
 import { appInfoSchema } from '../app-info';
 
 describe('hubIntegrationSchema', () => {
@@ -426,6 +426,45 @@ describe('hubIntegrationSchema', () => {
         expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: {} } })).toBe(false);
         expect(manifestDefaultsEdgeAuthOn({ exposable: true, hub_integration: { edge_auth: { default: false } } })).toBe(false);
       });
+    });
+  });
+
+  describe('hostPortStaysOnLoopback', () => {
+    // Parsed through the real schema, so `mcp_client` carries its `default(false)` exactly as an
+    // installed manifest does — a hand-built object could omit it and pass for the wrong reason.
+    const manifest = {
+      id: 'agent-app',
+      urn: 'agent-app:ci-marketplace',
+      available: true,
+      port: 18789,
+      name: 'Agent',
+      short_desc: 'Agent app',
+      author: 'Test',
+      source: 'https://example.com',
+      cihub_app_version: 1,
+    };
+    const parsed = (fields: Record<string, unknown>) => appInfoSchema.parse({ ...manifest, ...fields });
+
+    it('keeps an app that asks for edge auth on loopback', () => {
+      expect(hostPortStaysOnLoopback(parsed({ exposable: true, hub_integration: { edge_auth: { default: true } } }))).toBe(true);
+    });
+
+    it('keeps an MCP client on loopback whether or not it asks for edge auth', () => {
+      // CI-OpenClaw and CI-Hermes ship exactly this: exposable, mcp_client, no edge_auth block.
+      expect(hostPortStaysOnLoopback(parsed({ exposable: true, hub_integration: { mcp_client: true } }))).toBe(true);
+      expect(hostPortStaysOnLoopback(parsed({ exposable: false, hub_integration: { mcp_client: true } }))).toBe(true);
+    });
+
+    it('leaves every other app on all interfaces', () => {
+      expect(hostPortStaysOnLoopback(parsed({ exposable: true }))).toBe(false);
+      expect(hostPortStaysOnLoopback(parsed({ exposable: true, hub_integration: {} }))).toBe(false);
+      expect(hostPortStaysOnLoopback(parsed({ exposable: true, hub_integration: { edge_auth: { default: false } } }))).toBe(false);
+      // A memory consumer (ci-memory, ci-capture) has its own login and a phone client on the LAN.
+      expect(hostPortStaysOnLoopback(parsed({ exposable: true, hub_integration: { memory: { url_env: 'CI_SERVER_URL' } } }))).toBe(false);
+    });
+
+    it('ignores edge auth on a non-exposable app, as the toggle it defaults does not exist there', () => {
+      expect(hostPortStaysOnLoopback(parsed({ exposable: false, hub_integration: { edge_auth: { default: true } } }))).toBe(false);
     });
   });
 });

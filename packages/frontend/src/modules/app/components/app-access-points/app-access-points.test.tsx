@@ -293,6 +293,33 @@ describe('buildAppAccessPoints', () => {
       stateLabel: 'APP_DETAILS_ACCESS_PENDING',
     });
   });
+
+  describe('an app whose host port stays on loopback', () => {
+    const localInstall = { status: 'running', port: 18789, localSubdomain: 'openclaw', exposureMode: 'local', openPort: false } as any;
+    const build = (appInfo: typeof info) =>
+      buildAppAccessPoints({
+        app: localInstall,
+        info: appInfo,
+        sslPort: 443,
+        // A real LAN address, so a loopback result can only come from the app's own posture.
+        internalIp: '192.168.1.9',
+        cloudflareAvailable: true,
+        tailscaleAvailable: true,
+      });
+
+    it('links the local card to loopback, which also withholds its QR code', () => {
+      for (const hub_integration of [{ mcp_client: true }, { edge_auth: { default: true } }]) {
+        const local = build({ ...info, urn: 'ci-openclaw:ci-marketplace', hub_integration }).find((entry) => entry.key === 'local');
+
+        expect(local).toMatchObject({ url: 'http://127.0.0.1:18789/login', host: '127.0.0.1:18789', state: 'active' });
+        expect(isLoopbackAccessUrl(local?.url ?? null)).toBe(true);
+      }
+    });
+
+    it('keeps the LAN address for every other app', () => {
+      expect(build(info)[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:18789/login' });
+    });
+  });
 });
 
 describe('AppAccessPoints', () => {

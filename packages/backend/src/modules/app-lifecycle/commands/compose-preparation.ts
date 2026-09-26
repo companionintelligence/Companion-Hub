@@ -12,7 +12,7 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
@@ -165,7 +165,15 @@ export async function prepareAppComposeDir(
       logger.info(`[compose] ${appDataDir} cannot carry POSIX permissions; ownership-sensitive volumes will use named volumes`);
     }
 
-    const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported);
+    // Whether the host port stays on loopback is read from the manifest. Without one this keeps the
+    // all-interfaces default: binding an arbitrary app to loopback would cut its LAN access over a
+    // transient lookup failure.
+    if (!appInfo) {
+      logger.warn(`[compose] No manifest for ${appUrn}; publishing its host port on all interfaces`);
+    }
+    const loopbackHostPort = appInfo ? hostPortStaysOnLoopback(appInfo) : false;
+
+    const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, { loopbackHostPort });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
     const composeFile = await dockerComposeBuilder.getDockerCompose(
