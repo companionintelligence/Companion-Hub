@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   login: null as unknown,
   roster: [] as { name: string; ip: string }[],
+  rosterProblem: undefined as import('../lib/fleet-roster.js').FleetRosterProblem | undefined,
   listPortalDevices: vi.fn(),
   deletePortalDevice: vi.fn(),
   reRegisterPortalDevice: vi.fn(),
@@ -22,7 +23,7 @@ vi.mock('../lib/catalog-submit.js', async (importOriginal) => ({
 
 vi.mock('../lib/fleet-roster.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/fleet-roster.js')>()),
-  loadFleetRoster: () => ({ nodes: mocks.roster, source: 'test-roster', dropped: [] }),
+  loadFleetRoster: () => ({ nodes: mocks.roster, source: 'test-roster', dropped: [], problem: mocks.rosterProblem }),
 }));
 
 vi.mock('../lib/fleet-devices.js', async (importOriginal) => ({
@@ -70,6 +71,7 @@ describe('fleet devices release', () => {
     process.env.XDG_CONFIG_HOME = configHome;
     mocks.login = manage;
     mocks.roster = [];
+    mocks.rosterProblem = undefined;
     mocks.listPortalDevices.mockReset().mockResolvedValue([
       { id: 'd7', name: 'core-7', slug: 'core-7', status: 'active' },
       { id: 'd6', name: 'core-6', slug: 'core-6', status: 'active' },
@@ -103,6 +105,49 @@ describe('fleet devices release', () => {
     expect(mocks.deletePortalDevice).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'd7' }));
     expect(logs.join('\n')).toMatch(/core-7 — released from bill-co/);
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('forgets the pairing code fleet install kept for the released device, and only that one', async () => {
+    // The row is gone, so its code can never pair; kept, it would be the first thing the "fresh
+    // install" this command promises sends — a twenty-minute `hub up` ending in a 410.
+    const { readPendingPairingCode, recordReRegisteredPairingCode, savePendingPairingCode } = await import('../lib/fleet-pairing-codes.js');
+    const code = (ip: string, name: string, deviceId: string, pairingCode: string) =>
+      savePendingPairingCode({ ip, name, slug: name, deviceId, pairingCode, orgId: 'org-1', mintedAt: '2026-09-26T03:14:00Z' });
+    recordReRegisteredPairingCode({
+      device: { id: 'd7', name: 'core-7', slug: 'core-7' },
+      deviceId: 'd7',
+      pairingCode: 'UNKEPT',
+      orgId: 'org-1',
+      roster: [],
+      at: '2026-09-26T01:00:00Z',
+    });
+    code('10.0.0.7', 'core-7', 'd7', 'DEAD77');
+    code('10.0.0.6', 'core-6', 'd6', 'KEEP66');
+
+    await runFleetCommand(['devices', 'release', 'core-7', '--yes']);
+
+    expect(readPendingPairingCode('10.0.0.7', 'org-1')).toBeUndefined();
+    expect(readPendingPairingCode('10.0.0.6', 'org-1')?.pairingCode).toBe('KEEP66');
+    expect(JSON.parse(readFileSync(storePath(), 'utf8')).reRegistered).toEqual({});
+    expect(logs.join('\n')).toContain('forgot the pairing code kept for it (minted 2026-09-26T03:14)');
+  });
+
+  it('keeps no code when Portal refuses the release', async () => {
+    const { readPendingPairingCode, savePendingPairingCode } = await import('../lib/fleet-pairing-codes.js');
+    savePendingPairingCode({
+      ip: '10.0.0.7',
+      name: 'core-7',
+      slug: 'core-7',
+      deviceId: 'd7',
+      pairingCode: 'LIVE77',
+      orgId: 'org-1',
+      mintedAt: '2026-09-26T03:14:00Z',
+    });
+    mocks.deletePortalDevice.mockRejectedValue(new Error('HTTP 500'));
+    await runFleetCommand(['devices', 'release', 'core-7', '--yes']);
+    // The row is still there, so its code may still pair: nothing is forgotten.
+    expect(readPendingPairingCode('10.0.0.7', 'org-1')?.pairingCode).toBe('LIVE77');
+    expect(process.exitCode).toBe(1);
   });
 
   it('never deletes on a target that does not match exactly one device', async () => {
@@ -169,6 +214,17 @@ describe('fleet devices release', () => {
     const store = JSON.parse(readFileSync(storePath(), 'utf8'));
     expect(store.codes).toEqual({});
     expect(Object.values(store.reRegistered)).toHaveLength(1);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('re-register blames a roster refused for an unrecognised skip, not a missing node name', async () => {
+    mocks.rosterProblem = { kind: 'invalid-skip', path: '/scratch/fleet.json', rows: ['row 1 (core-6, 10.0.0.6): "skip": "excluded-tmp"'] };
+    await runFleetCommand(['devices', 're-register', 'core-6']);
+    const out = logs.join('\n');
+    expect(out).toContain('the roster at /scratch/fleet.json was not read');
+    expect(out).toContain("'cihub fleet list' names the rows");
+    expect(out).not.toContain('no roster node is named');
+    expect(out).toContain('pass it to the next fleet install with --code');
     expect(process.exitCode).toBeUndefined();
   });
 

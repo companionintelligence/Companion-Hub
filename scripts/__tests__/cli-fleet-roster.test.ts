@@ -166,6 +166,138 @@ describe('loadFleetRoster on the real filesystem', () => {
     expect(roster.nodes).toEqual([]);
     expect(roster.problem).toBeUndefined();
   });
+
+  it('refuses the whole file, with no nodes, when any row carries a skip no command honours', () => {
+    const path = join(dir, 'fleet.json');
+    writeFileSync(
+      path,
+      JSON.stringify([
+        { name: 'core-1', ip: '192.0.2.1' },
+        { name: 'core-2', ip: '192.0.2.2', skip: 'excluded-tmp' },
+      ]),
+    );
+    const roster = realLoadFleetRoster(path);
+    // Not core-1 alone: a partial fleet is exactly what the operator did not ask for.
+    expect(roster.nodes).toEqual([]);
+    expect(roster.problem).toEqual({ kind: 'invalid-skip', path, rows: ['row 1 (core-2, 192.0.2.2): "skip": "excluded-tmp"'] });
+  });
+});
+
+describe('a roster with a skip no command honours', () => {
+  // 2026-09-26: 22 of 23 rows were marked "skip": "excluded-tmp" to narrow an install to one node.
+  // Every reader here once treated the unknown value as "attempt it", and the install ran on all 23.
+  const invalid = () => {
+    mocks.roster = {
+      nodes: [],
+      source: ROSTER_PATH,
+      dropped: [],
+      problem: { kind: 'invalid-skip', path: ROSTER_PATH, rows: ['row 1 (core-2, 192.0.2.2): "skip": "excluded-tmp"'] },
+    };
+  };
+
+  for (const command of [...DIALLING, 'install --execute', 'scan', 'scan --all-tailnet --write-roster', 'list', 'list --json']) {
+    it(`${command}: refuses, names the row and the values it accepts, exits 1, dials and writes nothing`, async () => {
+      invalid();
+      sharedTailnet();
+      await runFleetCommand(command.split(' '));
+      expect(process.exitCode).toBe(1);
+      expect(errored()).toContain(ROSTER_PATH);
+      expect(errored()).toContain('row 1 (core-2, 192.0.2.2): "skip": "excluded-tmp"');
+      expect(errored()).toContain('"llm-only", "unreachable", "excluded"');
+      expect(errored()).toContain('--nodes');
+      expect(logged()).not.toContain('192.0.2.2');
+      expect(mocks.sshCapture).not.toHaveBeenCalled();
+      expect(mocks.probeNode).not.toHaveBeenCalled();
+      expect(mocks.tailnetPeers).not.toHaveBeenCalled();
+      expect(mocks.saveFleetRoster).not.toHaveBeenCalled();
+    });
+  }
+
+  it('reproduces the 2026-09-26 roster through the real loader, and installs on nothing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cihub-roster-'));
+    try {
+      const path = join(dir, 'fleet.json');
+      const rows = Array.from({ length: 23 }, (_, i) => ({
+        name: `core-${i + 1}`,
+        ip: `192.0.2.${i + 1}`,
+        ...(i === 5 ? {} : { skip: 'excluded-tmp' }),
+      }));
+      writeFileSync(path, JSON.stringify(rows));
+      mocks.roster = realLoadFleetRoster(path);
+      await runFleetCommand(['install', '--execute']);
+      expect(process.exitCode).toBe(1);
+      expect(errored()).toContain('has 22 row(s) with a "skip" no fleet command recognises');
+      expect(errored()).toContain('row 0 (core-1, 192.0.2.1): "skip": "excluded-tmp"');
+      expect(errored()).not.toContain('core-6,');
+      expect(mocks.sshCapture).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('fleet install dry run', () => {
+  let configHome: string;
+  const saved = {
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    GH_TOKEN: process.env.GH_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    CI_PORTAL_TOKEN: process.env.CI_PORTAL_TOKEN,
+  };
+  beforeEach(() => {
+    // No Portal login and no GitHub token of the developer's may leak in: the plan reads the one and
+    // would resolve a release with the other.
+    configHome = mkdtempSync(join(tmpdir(), 'cihub-xdg-'));
+    process.env.XDG_CONFIG_HOME = configHome;
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.CI_PORTAL_TOKEN;
+  });
+  afterEach(() => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(configHome, { recursive: true, force: true });
+  });
+
+  it('leads with the count against the roster, one row per node, and lists what the roster holds back', async () => {
+    // The old plan was "would install on 23 node(s): …" on one line among ten; an operator who meant
+    // one node read past it. "N of M" reads as the whole fleet when it is.
+    mocks.roster = {
+      nodes: [
+        { name: 'core-1', ip: '192.0.2.1' },
+        { name: 'core-2', ip: '192.0.2.2' },
+        { name: "Bennett's MacBook Pro", ip: '198.51.100.7', skip: 'excluded' },
+      ],
+      source: ROSTER_PATH,
+      dropped: [],
+    };
+    await runFleetCommand(['install']);
+    const lines = logged().split('\n');
+    expect(lines).toContain('Would install on 2 of 3 rostered node(s):');
+    expect(lines.some((line) => /^ {2}core-1\s+192\.0\.2\.1/.test(line))).toBe(true);
+    expect(lines.some((line) => /^ {2}core-2\s+192\.0\.2\.2/.test(line))).toBe(true);
+    expect(lines).toContain('Not attempted (1):');
+    expect(lines).toContain("  Bennett's MacBook Pro: marked excluded from fleet operations");
+    expect(logged()).toContain('--nodes <name,...> narrows this run');
+    expect(mocks.sshCapture).not.toHaveBeenCalled();
+  });
+
+  it('drops the narrowing hint once --nodes has narrowed it', async () => {
+    mocks.roster = {
+      nodes: [
+        { name: 'core-1', ip: '192.0.2.1' },
+        { name: 'core-2', ip: '192.0.2.2' },
+      ],
+      source: ROSTER_PATH,
+      dropped: [],
+    };
+    await runFleetCommand(['install', '--nodes', 'core-2']);
+    expect(logged()).toContain('Would install on 1 of 2 rostered node(s):');
+    expect(logged()).not.toMatch(/^ {2}core-1\s/m);
+    expect(logged()).not.toContain('narrows this run');
+  });
 });
 
 describe('a fleet command with no roster', () => {

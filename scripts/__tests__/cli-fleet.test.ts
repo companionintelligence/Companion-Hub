@@ -322,9 +322,34 @@ describe('parseFleetRoster', () => {
     expect(parsed.dropped.join(' ')).toMatch(/duplicate/);
   });
 
-  it('ignores a skip value it does not recognise instead of trusting it', () => {
-    const parsed = parseFleetRoster([{ name: 'a', ip: '10.0.0.1', skip: 'maybe-later' }]);
-    expect(parsed.nodes[0]?.skip).toBeUndefined();
+  it('refuses a skip value it does not recognise, naming the row, rather than reading it as "attempt it"', () => {
+    // 2026-09-26: 22 rows marked "excluded-tmp" to narrow an install to one node. The old parser
+    // dropped the unknown value, the rows read as live targets, and the install ran on all 23.
+    const parsed = parseFleetRoster([
+      { name: 'core-1', ip: '10.0.0.1' },
+      { name: 'core-2', ip: '10.0.0.2', skip: 'excluded-tmp' },
+      { name: 'core-3', ip: '10.0.0.3', skip: true },
+      { name: 'core-4', ip: '10.0.0.4', skip: '' },
+    ]);
+    expect(parsed.invalid).toEqual([
+      'row 1 (core-2, 10.0.0.2): "skip": "excluded-tmp"',
+      'row 2 (core-3, 10.0.0.3): "skip": true',
+      'row 3 (core-4, 10.0.0.4): "skip": ""',
+    ]);
+    // Left out of `nodes` too, so a caller that forgets `invalid` still never dials them.
+    expect(parsed.nodes.map((n) => n.name)).toEqual(['core-1']);
+    expect(parsed.dropped).toEqual([]);
+  });
+
+  it('accepts every documented skip, and null as absent', () => {
+    const parsed = parseFleetRoster([
+      { name: 'a', ip: '10.0.0.1', skip: 'llm-only' },
+      { name: 'b', ip: '10.0.0.2', skip: 'unreachable' },
+      { name: 'c', ip: '10.0.0.3', skip: 'excluded' },
+      { name: 'd', ip: '10.0.0.4', skip: null },
+    ]);
+    expect(parsed.invalid).toEqual([]);
+    expect(parsed.nodes.map((n) => n.skip)).toEqual(['llm-only', 'unreachable', 'excluded', undefined]);
   });
 
   it('keeps an out-of-band console, which only the roster can know about', () => {
