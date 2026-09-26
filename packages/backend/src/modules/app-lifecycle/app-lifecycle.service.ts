@@ -56,7 +56,12 @@ import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
-import { canServeOnCustomDomain, didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import {
+  canServeOnCustomDomain,
+  didPublicRoutingIdentityChange,
+  publicRoutingSnapshotOf,
+  type AppPublicRoutingSnapshot,
+} from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
@@ -2442,7 +2447,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.claimCustomDomainIntent(app.id, parsedForm.customDomain);
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const routingChanged = didPublicRoutingIdentityChange(app as AppPublicRoutingSnapshot, parsedForm, appName, appStoreId);
+    // The row as it was published: the sync judged it by its stored form, not its columns.
+    const routingChanged = didPublicRoutingIdentityChange(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot), parsedForm, appName, appStoreId);
 
     if (!changed?.pendingRestart) {
       await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });

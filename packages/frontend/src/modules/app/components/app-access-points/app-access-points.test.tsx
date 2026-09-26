@@ -267,6 +267,42 @@ describe('buildAppAccessPoints', () => {
     });
   });
 
+  describe('judged by the stored install form', () => {
+    /*
+     * An install that sent no exposure settings (MCP `hub_install_app` with `{}`) gets a row with
+     * `exposureMode: 'local'` and `exposedLocal: true`, while its stored form resolves to local.
+     * Compose builds no route for it and Portal sync no longer publishes it.
+     */
+    const publicEntry = (app: Record<string, unknown>) =>
+      buildAppAccessPoints({
+        app: { status: 'running', port: 3000, exposed: false, ...app } as any,
+        info,
+        sslPort: 443,
+        internalIp: '0.0.0.0',
+        publicDomain: 'companionintelligence.com',
+        cloudflareAvailable: true,
+        tailscaleAvailable: false,
+        organizationSlug: 'companion',
+        deviceSlug: 'studio',
+        hubSubdomain: 'hub-studio-companion',
+      })[0];
+
+    it('does not call Public web enabled for an install that sent no exposure settings', () => {
+      expect(publicEntry({ exposureMode: 'local', exposedLocal: true, config: { openPort: true } })).toMatchObject({
+        key: 'public',
+        state: 'available',
+        stateLabel: 'APP_DETAILS_ACCESS_NOT_CONFIGURED',
+      });
+    });
+
+    it('still calls it enabled when the form carried the legacy Public web flag', () => {
+      expect(publicEntry({ exposureMode: 'local', exposedLocal: true, config: { exposedLocal: true } })).toMatchObject({
+        key: 'public',
+        state: 'active',
+      });
+    });
+  });
+
   describe('after an install that named no subdomain', () => {
     // core-2 on 2026-09-23: org demopool1, device core-2, domain ci.computer.
     const hermes = {

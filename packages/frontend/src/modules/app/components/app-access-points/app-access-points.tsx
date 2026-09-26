@@ -8,7 +8,7 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
-import { resolveRoutingSubdomain } from '@ci-hub/common/types';
+import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -173,18 +173,6 @@ function hasDirectLocalAccess(
   return Boolean(record.openPort) || Boolean(record.exposedLocal) || !options.dynamicConfig;
 }
 
-function getEffectiveExposureMode(record: { exposureMode?: string | null; exposedLocal?: boolean }): 'local' | 'cloudflare' | 'tailscale' {
-  if (record.exposureMode === 'local' || record.exposureMode === 'cloudflare' || record.exposureMode === 'tailscale') {
-    return record.exposureMode;
-  }
-
-  return record.exposedLocal ? 'cloudflare' : 'local';
-}
-
-function publishesPublicWebAccess(record: { exposureMode?: string | null; exposedLocal?: boolean }): boolean {
-  return getEffectiveExposureMode(record) === 'cloudflare' || Boolean(record.exposedLocal);
-}
-
 export function buildAppAccessPoints(input: {
   app?: AppDetails | null;
   info: AppInfo;
@@ -288,7 +276,10 @@ export function buildAppAccessPoints(input: {
         ? 'available'
         : 'unavailable'
     : 'unavailable';
-  const publicWebConfigured = publishesPublicWebAccess(record) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
+  // Judged by the stored install form, as Portal sync and compose judge it. The row's
+  // `exposedLocal` defaults to true for an exposable app installed without exposure settings,
+  // and reading it showed "Enabled" for a route nothing served.
+  const publicWebConfigured = publishesPublicWebRoute(storedExposureForm(record)) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
   const publicActive = Boolean(publicUrl && publicWebConfigured);
   const publicState: AccessPointState = publicActive ? 'active' : cloudflareAvailable && publicUrl && info.exposable ? 'available' : 'unavailable';
 

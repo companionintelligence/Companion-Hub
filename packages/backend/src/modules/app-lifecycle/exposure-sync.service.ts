@@ -25,6 +25,7 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { EnvUtils } from '../env/env.utils';
 import {
   canServeOnCustomDomain,
+  publicRoutingSnapshotOf,
   publishesCloudflarePublicRoute,
   resolveRoutingSubdomain,
   type AppPublicRoutingSnapshot,
@@ -743,7 +744,10 @@ export class ExposureSyncService {
         if (exclude.has(appUrn)) {
           return false;
         }
-        return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
+        return (
+          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) &&
+          ['running', 'starting', 'restarting'].includes(app.status)
+        );
       });
 
       /*

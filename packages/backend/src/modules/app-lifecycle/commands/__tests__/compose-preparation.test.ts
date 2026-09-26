@@ -533,6 +533,32 @@ describe('prepareAppComposeDir', () => {
       expect(stubs.registrationService.getDeviceRegistrationInfo).not.toHaveBeenCalled();
     });
 
+    it('builds no route for an install that sent no exposure settings', async () => {
+      // An MCP `hub_install_app` or `hub-api.sh install` sends `{}`, stored as `{ openPort: true }`.
+      // Its row's `exposed_local` defaults to true for an exposable app, but the form resolves to
+      // local, and the Portal sync judges that same form, so nothing publishes a route here.
+      const { moduleRef, docker } = createHarness();
+      const event = appEventSchema.parse({
+        command: 'start',
+        appUrn: APP_URN,
+        requestId: '00000000-0000-4000-8000-000000000000',
+        form: { openPort: true },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, event.form as AppEventFormInput);
+
+      expect(lastComposeCall()).toMatchObject({ originHostname: undefined, publicHostname: undefined });
+    });
+
+    it('builds no route when exposedLocal sits beside another mode', async () => {
+      // The Traefik labels attach the tunnel route only in the cloudflare mode.
+      const { moduleRef, docker } = createHarness();
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'tailscale', exposedLocal: true, openPort: false }));
+
+      expect(lastComposeCall()).toMatchObject({ originHostname: undefined, publicHostname: undefined });
+    });
+
     it('treats a legacy exposedLocal form with no exposureMode as cloudflare', async () => {
       const { moduleRef, docker } = createHarness();
 

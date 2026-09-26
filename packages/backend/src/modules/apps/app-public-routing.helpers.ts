@@ -1,5 +1,5 @@
-import { resolveRoutingSubdomain } from '@ci-hub/common/types';
-import { getEffectiveExposureMode, type AppFormHostPortFields } from './app-exposure.helpers';
+import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
+import type { AppFormHostPortFields } from './app-exposure.helpers';
 
 export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
   localSubdomain?: string | null;
@@ -8,9 +8,37 @@ export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
   domain?: string | null;
 };
 
-/** True when this app should participate in Companion Portal tunnel/DNS sync. */
+/**
+ * True when this app should participate in Companion Portal tunnel/DNS sync.
+ *
+ * The same rule compose builds the tunnel router under (`publishesPublicWebRoute`). Judge an
+ * installed app by {@link publicRoutingSnapshotOf}, not by its row columns.
+ */
 export function publishesCloudflarePublicRoute(snapshot: AppFormHostPortFields): boolean {
-  return getEffectiveExposureMode(snapshot) === 'cloudflare' || Boolean(snapshot.exposedLocal);
+  return publishesPublicWebRoute(snapshot);
+}
+
+/**
+ * An app row with its exposure read from the stored install form, which compose is generated
+ * from. The row's `exposed_local` defaults to true for an exposable app installed without
+ * exposure settings, so judging the row itself published a route that compose never built.
+ */
+export function publicRoutingSnapshotOf<T extends AppPublicRoutingSnapshot & { config?: unknown }>(app: T): T {
+  return { ...app, ...storedExposureForm(app) };
+}
+
+/**
+ * Whether the tunnel route puts the Hub login (`ci-hub@file`) in front of the app.
+ *
+ * The form's `enableAuth` when it holds one. When it does not, an open host port turns the login
+ * on. Compose once skipped the tunnel route for apps on an open host port (#678's gate), and most
+ * of them never chose a login, because the queue sets `openPort` to true for any API or MCP install
+ * that left it out. Without this default, the next Hub upgrade (`restartRunningApps`) would put
+ * those apps on the internet with no login, CI-OpenClaw among them, whose `/` hands out a gateway
+ * token. The install and settings dialogs also turn the toggle on by default.
+ */
+export function requiresHubLoginOnPublicRoute(form: { enableAuth?: boolean; openPort?: boolean }): boolean {
+  return form.enableAuth ?? Boolean(form.openPort);
 }
 
 /**

@@ -547,6 +547,47 @@ describe('AppHelpers', () => {
           expect(written().get('APP_BASE_URL')).toBe('https://agents.acme.org');
         });
 
+        it('keeps an operator URL that merely starts with the chosen subdomain', async () => {
+          // The install dialog sets `localSubdomain` to the bare app name, so an operator's own
+          // `<app>-<team>.<corp>` host looks like `<subdomain>-<org>.<zone>`. Nothing ties it to this Hub.
+          for (const pinned of ['https://comfy-team.acme.io', 'https://comfy-staging.apps.acme.io']) {
+            withAppBaseUrlField(`APP_BASE_URL=${pinned}\n`);
+
+            await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, localSubdomain: 'comfy', APP_BASE_URL: pinned });
+
+            expect(written().get('APP_BASE_URL')).toBe(pinned);
+            expect(written().get('APP_BASE_HOST')).toBe(new URL(pinned).host);
+          }
+        });
+
+        it('moves an earlier address under the chosen subdomain when it carries this Hub', async () => {
+          // `<subdomain>-<device>-<org>`: the device slug survives the move to another org.
+          const previousOrg = 'https://comfy-core2-bill-co.companionintelligence.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, localSubdomain: 'comfy', APP_BASE_URL: previousOrg });
+
+          expect(written().get('APP_BASE_URL')).toBe('https://comfy-core2-acme.example.com');
+        });
+
+        it('keeps a LAN HTTPS name under a local domain of two labels', async () => {
+          config.getConfig.mockReturnValue(
+            fromPartial({
+              internalIp: '127.0.0.1',
+              envFilePath: '/data/.env',
+              rootFolderHost: '/opt/ci-hub',
+              domain: 'example.com',
+              userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com', localDomain: 'home.arpa' },
+            }),
+          );
+          const lanName = 'https://test-app-test-store-core2-acme.home.arpa';
+          withAppBaseUrlField(`APP_BASE_URL=${lanName}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(lanName);
+        });
+
         it('keeps an operator value that only resembles the platform address', async () => {
           // A path, a port or plain HTTP is something a person typed; the Hub never derives one.
           for (const pinned of [
@@ -2104,26 +2145,44 @@ describe('AppHelpers', () => {
 });
 
 describe('isPlatformIdentityUrlFor', () => {
-  const subdomains = ['ci-hermes-ci-marketplace'];
+  const hermes = { defaultSubdomain: 'ci-hermes-ci-marketplace', deviceSlug: 'core-2', localDomainRoot: 'ci.lan' };
 
-  it('matches the platform address under any org, device and zone', () => {
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-bill-co.companionintelligence.com', subdomains)).toBe(true);
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-demopool1.ci.computer', subdomains)).toBe(true);
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-acme.my.lifescope.io/', subdomains)).toBe(true);
+  it('matches the store-qualified default under any org, device and zone', () => {
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-bill-co.companionintelligence.com', hermes)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-demopool1.ci.computer', hermes)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-acme.my.lifescope.io/', hermes)).toBe(true);
+    // A Hub whose device slug changed, or that had none, still wrote the default.
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-old-box-acme.ci.computer', { ...hermes, deviceSlug: null })).toBe(true);
+  });
+
+  it('matches a chosen subdomain only when this Hub device slug follows it', () => {
+    const n8n = { defaultSubdomain: 'n8n-ci-marketplace', routingSubdomain: 'n8n', deviceSlug: 'core-2', localDomainRoot: 'ci.lan' };
+
+    expect(isPlatformIdentityUrlFor('https://n8n-core-2-bill-co.companionintelligence.com', n8n)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://n8n-team.acme.io', n8n)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://n8n-core-2.acme.io', n8n)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://n8n-core-2-bill-co.companionintelligence.com', { ...n8n, deviceSlug: null })).toBe(false);
+  });
+
+  it('never matches a name under the local domain', () => {
+    const lan = { ...hermes, routingSubdomain: 'hermes', localDomainRoot: 'home.arpa' };
+
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-acme.home.arpa', lan)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://hermes-core-2-acme.home.arpa', lan)).toBe(false);
   });
 
   it('does not match another app, the bare subdomain, or a single-label zone', () => {
-    expect(isPlatformIdentityUrlFor('https://ci-openclaw-ci-marketplace-core-2-acme.ci.computer', subdomains)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-openclaw-ci-marketplace-core-2-acme.ci.computer', hermes)).toBe(false);
     // `<subdomain>.<zone>` is the unregistered shape, which `APP_PUBLIC_URL` already tracks.
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace.ci.computer', subdomains)).toBe(false);
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2.localhost', subdomains)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace.ci.computer', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2.localhost', hermes)).toBe(false);
   });
 
   it('does not match anything the Hub would never have written', () => {
-    expect(isPlatformIdentityUrlFor('not a url', subdomains)).toBe(false);
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer?x=1', subdomains)).toBe(false);
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer#top', subdomains)).toBe(false);
-    expect(isPlatformIdentityUrlFor('https://user@ci-hermes-ci-marketplace-acme.ci.computer', subdomains)).toBe(false);
-    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer', [''])).toBe(false);
+    expect(isPlatformIdentityUrlFor('not a url', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer?x=1', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer#top', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://user@ci-hermes-ci-marketplace-acme.ci.computer', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer', { defaultSubdomain: '' })).toBe(false);
   });
 });
