@@ -120,6 +120,12 @@ function deriveVolumeName(hostPath: string): string {
   return /^[a-zA-Z0-9]/.test(slug) ? slug : `v${slug}`;
 }
 
+/**
+ * Sandbox refusals that no `TRUSTED_APP_SECURITY_ALLOWLIST` entry can lift, because they are
+ * decided on the value's shape rather than on what it grants.
+ */
+const UNGRANTABLE_SECURITY_VIOLATIONS = new Set(['CUSTOM_APP_ERROR_VOLUME_NAME_INVALID', 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED']);
+
 export class DockerComposeBuilder {
   private services: Record<string, BuiltService> = {};
   private networks: Record<string, Omit<Network, 'key'>> = {};
@@ -345,14 +351,19 @@ export class DockerComposeBuilder {
     const securityViolations = collectServiceSecurityViolations(params, securityGrants);
     if (securityViolations.length > 0) {
       const details = securityViolations.map((v) => `${v.path.join('.')}${v.hostPath ? ` (${v.hostPath})` : ''} [${v.message}]`).join(', ');
-      // An unusable volume name is rejected on its shape, before any grant is consulted, so
-      // pointing the operator at the allowlist would send them after a fix that cannot work.
-      const grantable = securityViolations.some((v) => v.message !== 'CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+      // An unusable volume name and a network mode that names a network are rejected on their
+      // shape, before any grant is consulted, so pointing the operator at the allowlist would send
+      // them after a fix that cannot work.
+      const grantable = securityViolations.some((v) => !UNGRANTABLE_SECURITY_VIOLATIONS.has(v.message));
+      const networkModeRefused = securityViolations.some((v) => v.message === 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED');
       throw new Error(
         grantable
           ? `App "${appName}" service "${params.name}" requests host-privileged access that is not permitted by the app sandbox: ${details}. ` +
               'If this app legitimately requires it, add an audited entry to TRUSTED_APP_SECURITY_ALLOWLIST in @ci-hub/common/schemas.'
-          : `App "${appName}" service "${params.name}" declares an unusable volume name: ${details}. ` +
+          : networkModeRefused
+            ? `App "${appName}" service "${params.name}" declares a network mode no app may use: ${details}. ` +
+              'networkMode may be bridge, none, default or service:<name>; any other value joins the named network, and the Hub never lets an app join one of its own.'
+            : `App "${appName}" service "${params.name}" declares an unusable volume name: ${details}. ` +
               'A volume name must start with a letter or number; a path belongs in hostPath, which is checked against the app sandbox.',
       );
     }

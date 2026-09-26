@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 // The shared test setup mocks `fs`; these assertions are ABOUT the real files on disk.
 const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
 import { FORWARD_AUTH_SIGNATURE_HEADER, FORWARD_AUTH_TIMESTAMP_HEADER, FORWARD_AUTH_USER_HEADER } from '@/modules/auth/utils/forward-auth-signing';
+import { EDGE_HEADERS_MIDDLEWARE } from '@/modules/docker/builders/traefik-labels.builder';
+import YAML from 'yaml';
 
 /**
  * Lock-step guard for the Traefik `ci-hub` forward-auth middleware config (CI-Engineering#74).
@@ -28,6 +30,35 @@ describe('traefik ci-hub forward-auth middleware config', () => {
     expect(match, `authResponseHeaders label missing in ${relativePath}`).toBeTruthy();
     const headers = (match?.[1] ?? '').split(',').map((header) => header.trim());
     expect(headers).toEqual(EXPECTED_HEADERS);
+  });
+
+  /*
+   * The entry points trust cloudflared's forwarded headers (traefik.yml `trustedIPs`), and Cloudflare
+   * passes a visitor's own X-Forwarded-Uri / -Method / -Host through. With `trustForwardHeader: true`
+   * forward auth would take those instead of the request the router matched: a visitor could name
+   * Memory's public path while asking for another, and pass the Memory-only exemption.
+   */
+  it.each(COMPOSE_COPIES)('%s decides forward auth from the matched request, not forwarded headers', (relativePath) => {
+    const content = readFileSync(path.join(REPO_ROOT, relativePath), 'utf-8');
+    expect(content).toMatch(/forwardauth\.trustForwardHeader:\s*"false"/);
+    expect(content).not.toMatch(/trustForwardHeader:\s*"?true/);
+  });
+
+  it('backend traefik dynamic.yml decides forward auth from the matched request, and strips visitor-set headers on tunnel routes', () => {
+    const dynamic = YAML.parse(readFileSync(path.join(REPO_ROOT, 'packages/backend/assets/traefik/dynamic/dynamic.yml'), 'utf-8'));
+    expect(dynamic.http.middlewares['ci-hub'].forwardAuth.trustForwardHeader).toBe(false);
+
+    // The name the label builder puts first on every tunnel route must exist, or Traefik disables the route.
+    const [name, provider] = EDGE_HEADERS_MIDDLEWARE.split('@');
+    expect(provider).toBe('file');
+    const stripped = dynamic.http.middlewares[name as string].headers.customRequestHeaders;
+    // Traefik keeps these from a trusted peer and fills them only when empty; nothing upstream sets them.
+    for (const header of ['X-Real-Ip', 'X-Forwarded-Prefix', 'X-Forwarded-Uri', 'X-Forwarded-Method', 'X-Forwarded-Tls-Client-Cert']) {
+      expect(stripped[header], header).toBe('');
+    }
+    // Cloudflare rewrites these two, and the Hub and apps rely on them, so they must survive.
+    expect(stripped).not.toHaveProperty('X-Forwarded-For');
+    expect(stripped).not.toHaveProperty('X-Forwarded-Proto');
   });
 
   it('backend traefik dynamic.yml forwards all three signed identity headers', () => {

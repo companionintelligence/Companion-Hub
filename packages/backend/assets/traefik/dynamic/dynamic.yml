@@ -17,7 +17,14 @@ http:
     ci-hub:
       forwardAuth:
         address: "http://{{HUB_CONTAINER_NAME}}:5002/api/auth/traefik"
-        trustForwardHeader: true
+        # false: the Hub decides from the request the router matched — its Host
+        # (the tunnel's rewritten origin host), URI and method — never from
+        # X-Forwarded-* headers that arrived with it. The entry points trust
+        # cloudflared's forwarded headers (traefik.yml), and Cloudflare passes a
+        # visitor's own X-Forwarded-Uri / -Method / -Prefix through untouched, so
+        # with true a visitor could name a public path while requesting another,
+        # or name another app's host. The Hub still sees the peer Traefik saw.
+        trustForwardHeader: false
         # All three signed identity headers must ride through — Traefik copies ONLY the
         # headers listed here, and consumers verifying the signature fail closed on a
         # missing timestamp/signature (CI-Engineering#74).
@@ -25,3 +32,23 @@ http:
           - "X-CI-Hub-User"
           - "X-CI-Hub-User-Timestamp"
           - "X-CI-Hub-User-Signature"
+
+    # First on every tunnel route (TraefikLabelsBuilder.addCloudflareLabels).
+    # Traefik keeps a trusted peer's forwarded headers and fills in only those
+    # left empty, and the entry points trust cloudflared (traefik.yml). Neither
+    # Cloudflare nor cloudflared sets these, so on a tunnel request each is
+    # whatever the visitor sent: an X-Real-Ip of their choosing would reach
+    # every app that reads it, defeating its per-address throttles. Empty
+    # removes the header; an app that needs the visitor's address reads
+    # X-Forwarded-For past HUB_TRUSTED_PROXY_CIDRS. X-Forwarded-Port is set
+    # again by the app's public-host middleware, which runs after this one.
+    ci-hub-edge-headers:
+      headers:
+        customRequestHeaders:
+          X-Real-Ip: ""
+          X-Forwarded-Prefix: ""
+          X-Forwarded-Uri: ""
+          X-Forwarded-Method: ""
+          X-Forwarded-Port: ""
+          X-Forwarded-Tls-Client-Cert: ""
+          X-Forwarded-Tls-Client-Cert-Info: ""

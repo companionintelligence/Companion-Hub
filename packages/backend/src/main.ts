@@ -14,6 +14,7 @@ import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
 import { resolvePortalRootBounce } from './modules/auth/portal-sso';
 import { ProxyTrustService } from './modules/network/proxy-trust.service';
+import { configureTrustProxy } from './modules/network/trust-proxy';
 
 // Process-level safety nets for failures that escape local try/catch handlers.
 // - unhandledRejection: log and keep running — detached async work (e.g. a DB
@@ -104,41 +105,10 @@ async function bootstrap() {
       next();
     });
 
-  // Express `trust proxy`. Behind Traefik / the Cloudflare tunnel, `req.ip` is
-  // the proxy's (private) address unless Express is told which hops to trust — so
-  // the InternalNetworkGuard IP allowlist, the pairing-PIN limiter and every
-  // audit log otherwise see Traefik for every remote visitor.
-  //
-  // By default the hops are RESOLVED, not configured: ProxyTrustService trusts
-  // the two edge hops (cloudflared and the Tailscale sidecar, by their fixed
-  // addresses, while the edge network exists) and Traefik's own address, read
-  // from Docker, and Express asks it per hop. A stack without the edge network
-  // trusts only Traefik; no Traefik and nothing is trusted, which is the old
-  // behaviour. Nothing on the LAN, in an app container, or at a bridge gateway
-  // (which is where anything that reaches Traefik through the host comes
-  // from) is ever in that set, so a spoofed X-Forwarded-For from there is
-  // ignored.
-  //
-  // HUB_TRUST_PROXY still overrides it for an operator with their own proxy in
-  // front — a hop count (e.g. "1") or a trusted subnet/IP list (e.g.
-  // "172.16.0.0/12"). A too-broad value lets a spoofed X-Forwarded-For appear
-  // internal, so set it only with known provenance.
-  //
-  // NOTE: `trust proxy` is a PROCESS-WIDE Express setting — it changes
-  // `req.ip`/`req.protocol` for audit logging, registration, and SSO
-  // (generally making them more accurate). An invalid value (e.g. "true") makes
-  // Express throw here at startup — fail-closed, but be deliberate about the value.
-  const trustProxy = process.env.HUB_TRUST_PROXY?.trim();
-  if (trustProxy) {
-    const value = /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy;
-    app.getHttpAdapter().getInstance().set('trust proxy', value);
-  } else {
-    const proxyTrust = app.get(ProxyTrustService, { strict: false });
-    app
-      .getHttpAdapter()
-      .getInstance()
-      .set('trust proxy', (address: string) => proxyTrust.isTrustedProxy(address));
-  }
+  // Express `trust proxy`, which decides `req.ip` for every guard and audit log: the edge hops and
+  // Traefik as ProxyTrustService resolves them, or HUB_TRUST_PROXY when an operator sets it. See
+  // `resolveTrustProxySetting` for what each allows and why nothing else is trusted.
+  configureTrustProxy(app.getHttpAdapter().getInstance(), process.env, app.get(ProxyTrustService, { strict: false }));
 
   await setupSwagger(app);
 

@@ -22,6 +22,8 @@ import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
+import { resolveEdgeHopAddress } from '../network/edge-hops';
+import { DEFAULT_HUB_EDGE_TRAEFIK_IP, HUB_EDGE_NETWORK_NAME, TRAEFIK_CONTAINER_NAME } from '../network/network-constants';
 
 export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVerification } from './docker-read.facade';
 
@@ -1314,6 +1316,61 @@ export class DockerService {
       // A failed removal still lets the force-recreate below report the real error.
       await this.removeContainer(containerName);
       await this.composeUpService(containerName, { ...opts, forceRecreate: true });
+    }
+  }
+
+  /**
+   * Puts a running Traefik on the edge network, at its fixed address, when it is not there yet.
+   *
+   * cloudflared is on the edge network ONLY, so the tunnel's `traefik:80` resolves only while
+   * Traefik is there too. The two are created together by a full `up`, but not always: a Hub rolled
+   * with `up -d ci-hub` against the new compose file keeps the Traefik created before the edge
+   * network existed, and when this Hub then recreates cloudflared (a re-pair, a recovered token, a
+   * crash-looping tunnel at boot) compose creates the network for cloudflared alone, and every app
+   * hostname returns 502 until someone runs a full `up`.
+   *
+   * Connected in place rather than recreated: recreating Traefik from inside the Hub would take the
+   * Hub's compose and env file (see `ensureCloudflaredRunning` on the config hashes they disagree
+   * on), not the host's `.env.dev`, which alone holds the fleet's HTTPS_PORT. `GwPriority: -1` keeps
+   * its default route where it was: a network connected to a running container otherwise takes it
+   * over when it sorts first (Docker 29.8), and Traefik's own connections to the host would then
+   * leave from the edge subnet, outside what fleet firewalls admit from Docker bridges.
+   *
+   * Does nothing when the edge network does not exist (a compose file from before it, where
+   * cloudflared shares the Hub network with Traefik) or Traefik is not running. Never throws: a
+   * failure is logged with the command that fixes it.
+   */
+  public async ensureTraefikOnEdgeNetwork(): Promise<'attached' | 'present' | 'skipped' | 'failed'> {
+    let traefikNetworks: Record<string, unknown>;
+    try {
+      await this.docker.getNetwork(HUB_EDGE_NETWORK_NAME).inspect();
+      const traefik = await this.docker.getContainer(TRAEFIK_CONTAINER_NAME).inspect();
+      if (!traefik?.State?.Running) {
+        return 'skipped';
+      }
+      traefikNetworks = traefik.NetworkSettings?.Networks ?? {};
+    } catch {
+      return 'skipped';
+    }
+
+    if (traefikNetworks[HUB_EDGE_NETWORK_NAME]) {
+      return 'present';
+    }
+
+    const address = resolveEdgeHopAddress(process.env.HUB_EDGE_TRAEFIK_IP, DEFAULT_HUB_EDGE_TRAEFIK_IP);
+    try {
+      // `GwPriority` is newer than the dockerode typings (Engine API 1.48).
+      const endpoint = { IPAMConfig: { IPv4Address: address }, Aliases: [TRAEFIK_CONTAINER_NAME], GwPriority: -1 };
+      await this.docker.getNetwork(HUB_EDGE_NETWORK_NAME).connect({ Container: TRAEFIK_CONTAINER_NAME, EndpointConfig: endpoint } as never);
+      this.logger.info(`Attached ${TRAEFIK_CONTAINER_NAME} to ${HUB_EDGE_NETWORK_NAME} at ${address}, where cloudflared reaches it`);
+      return 'attached';
+    } catch (error) {
+      this.logger.warn(
+        `Could not attach ${TRAEFIK_CONTAINER_NAME} to ${HUB_EDGE_NETWORK_NAME} at ${address}: ${error instanceof Error ? error.message : String(error)}. ` +
+          'Tunnelled app hostnames cannot reach Traefik until it is recreated from the current compose file ' +
+          "(`cihub up`, or `docker compose up -d traefik` with the stack's env file).",
+      );
+      return 'failed';
     }
   }
 
