@@ -41,9 +41,11 @@
  * A kept code can also just be old. On 2026-09-26 core-6's install went out with "reusing the code
  * minted 2026-09-23T03:14" — three days on, with nothing on the line to say the code was older than
  * the run. A kept code exists to bridge a retry, so one older than `MAX_PENDING_PAIRING_CODE_AGE_MS`
- * is dropped and replaced before anything is sent, and every reuse says how old the code is. A
- * release (`fleet devices release`) forgets the device's codes outright: the row they belonged to is
- * gone, so none of them can pair.
+ * is replaced where the run can replace it, and every reuse says how old the code is. It stays kept
+ * until the replacement is in hand: it is the only record of the device id a re-register needs, and
+ * Portal may still honour it — up to `PORTAL_PAIRING_CODE_TTL_MS`, which is what a login that cannot
+ * re-register falls back on. A release (`fleet devices release`) forgets the device's codes outright:
+ * the row they belonged to is gone, so none of them can pair.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -78,12 +80,11 @@ interface Store {
 }
 
 /**
- * How long a kept code is reused before `fleet install` drops it and gets a fresh one.
+ * How long a kept code is reused before `fleet install` tries to replace it with a fresh one.
  *
- * Portal's own lifetime is the ceiling, not the target: CI-Portal's `PAIRING_CODE_TTL_MS` is seven
- * days (migration 0060, 2026-09-10), and its own comment calls that number a guess to be shortened.
- * Nothing in the mint response carries it, so this side cannot learn it per code. A day sits well
- * inside it for three reasons:
+ * Portal's own lifetime (`PORTAL_PAIRING_CODE_TTL_MS`) is the ceiling, not the target. Nothing in the
+ * mint response carries it, so this side cannot learn it per code. A day sits well inside it for
+ * three reasons:
  *
  * - The store's job is to bridge a retry. A code a day old belongs to an attempt nobody retried
  *   that day, and the Portal state it was minted against — the device row, a release, a re-register
@@ -92,8 +93,26 @@ interface Store {
  * - A dead code is only found out at `register`, after a `hub up` of up to twenty minutes, so the
  *   check has to run before that, on age alone.
  * - Portal's seven days may shrink without this CLI shipping; a day survives any plausible cut.
+ *
+ * Past it the code is replaced, not discarded: a replacement can fail, and a `device:pair` login
+ * cannot get one at all while the device row still exists. Either way the old code is still the
+ * best one on hand, so it is kept until a fresh one is.
  */
 export const MAX_PENDING_PAIRING_CODE_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long Portal honours a pairing code: CI-Portal's `PAIRING_CODE_TTL_MS` (`DeviceService.ts`,
+ * migration 0060, 2026-09-10), mirrored because the mint response does not carry it. Expiry is part
+ * of Portal's claim, so a code past it fails at `register`, but the device row it was minted with
+ * outlives it, so a fresh mint still answers 409. Portal's comment calls the number a guess to be
+ * shortened; if it is, a code sent under this bound fails at `register` as any dead code does.
+ *
+ * `fleet install` uses it for the one case where it cannot replace an old code: the device row
+ * still exists and the login is `device:pair`, which cannot re-register. Under this age the code is
+ * sent, with its age on the line; past it, sending it would buy a twenty-minute `hub up` ending in a
+ * refusal, so the node stops instead.
+ */
+export const PORTAL_PAIRING_CODE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * How long ago the code was minted (or re-registered). An unparseable `mintedAt` is infinitely old:

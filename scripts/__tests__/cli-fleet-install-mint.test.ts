@@ -43,6 +43,7 @@ vi.mock('../lib/fleet-install.js', async (importOriginal) => ({
 }));
 
 const { runFleetCommand } = await import('../lib/cli-fleet.js');
+const { stripAnsi } = await import('../lib/cli-ui.js');
 
 let configHome: string;
 const savedXdg = process.env.XDG_CONFIG_HOME;
@@ -406,7 +407,7 @@ describe('a kept code and its age', () => {
     expect(mocks.mintPairingCode).not.toHaveBeenCalled();
   });
 
-  it('drops a code kept past a day and mints a fresh one — core-6 on 2026-09-26, three days on', async () => {
+  it('replaces a code kept past a day with a fresh mint — core-6 on 2026-09-26, three days on', async () => {
     // What went out instead: "reusing the code minted 2026-09-23T03:14", with nothing to say when.
     clockAt('2026-09-26T06:14:00Z');
     await keep();
@@ -414,7 +415,7 @@ describe('a kept code and its age', () => {
     expect(mocks.mintPairingCode).toHaveBeenCalledTimes(1);
     expect(seen.code).toBe('ABC123');
     expect(seen.detail).toBe(
-      'dropped the code minted 2026-09-23T03:14 for core-7 (3d 3h ago), older than the 1d a kept code is reused for; registered as core-7',
+      'replaced the code minted 2026-09-23T03:14 for core-7 (3d 3h ago), older than the 1d a kept code is reused for; registered as core-7',
     );
     // The fresh code is the one kept for a retry now, stamped with today.
     expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'ABC123', mintedAt: '2026-09-26T06:14:00.000Z' });
@@ -430,42 +431,138 @@ describe('a kept code and its age', () => {
     const seen = await installOnce();
     expect(mocks.reRegisterPortalDevice).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'dev-old' }));
     expect(seen.code).toBe('FRESH7');
-    expect(seen.detail).toMatch(/^dropped the code minted 2026-09-23T03:14 for core-7 \(3d 3h ago\).*; re-registered core-7 for a fresh one$/);
+    expect(seen.detail).toMatch(/^replaced the code minted 2026-09-23T03:14 for core-7 \(3d 3h ago\).*; re-registered core-7 for a fresh one$/);
     expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'FRESH7', reRegisteredAt: '2026-09-26T06:14:00.000Z' });
   });
 
-  it('says what it would take when the mint 409s and the login cannot re-register, and keeps no code', async () => {
+  it('keeps the old code when the replacement mint fails, so the next run still re-registers its row', async () => {
+    // Dropping the code before the mint came back left nothing to re-register with: a Portal 503
+    // here, then the certain 409 on the next run read as a bare name conflict, and a person had to
+    // re-register or release the device by hand.
+    clockAt('2026-09-26T06:14:00Z');
+    mocks.scope = 'device:manage';
+    mocks.mintPairingCode.mockRejectedValueOnce(new Error('HTTP 503 Service Unavailable'));
+    await keep();
+    const first = await installOnce();
+    expect(first.code).toBeUndefined();
+    expect(first.error).toBe(
+      'the code minted 2026-09-23T03:14 for core-7 (3d 3h ago), older than the 1d a kept code is reused for: minting a replacement failed (HTTP 503 Service Unavailable). It is still kept, so the next run tries to replace it again.',
+    );
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'OLD777', deviceId: 'dev-old' });
+
+    // An hour on, Portal is back and the row the old code was minted with is still there.
+    clockAt('2026-09-26T07:14:00Z');
+    mocks.mintPairingCode.mockRejectedValueOnce(new Error('a device named "core-7" already exists in this org'));
+    const second = await installOnce();
+    expect(mocks.reRegisterPortalDevice).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'dev-old' }));
+    expect(second.code).toBe('FRESH7');
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'FRESH7', reRegisteredAt: '2026-09-26T07:14:00.000Z' });
+  });
+
+  it('keeps the old code when the re-register fails, for the next run to try again', async () => {
+    clockAt('2026-09-26T06:14:00Z');
+    mocks.scope = 'device:manage';
+    mocks.mintPairingCode.mockRejectedValue(new Error('a device named "core-7" already exists in this org'));
+    mocks.reRegisterPortalDevice.mockRejectedValueOnce(new Error('HTTP 502 Bad Gateway'));
+    await keep();
+    const seen = await installOnce();
+    expect(seen.code).toBeUndefined();
+    expect(seen.error).toMatch(/^the code minted 2026-09-23T03:14 for core-7 \(3d 3h ago\)/);
+    expect(seen.error).toContain('re-registering it for a fresh code failed (HTTP 502 Bad Gateway). It is still kept');
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'OLD777', deviceId: 'dev-old' });
+  });
+
+  it('keeps the re-registered code under the node even when the roster has renamed it', async () => {
+    // The fresh code is filed under a roster node named for the device, or else where the old code
+    // was kept. With the old code already gone there was neither, and the fresh one was kept for none.
+    clockAt('2026-09-26T06:14:00Z');
+    mocks.scope = 'device:manage';
+    mocks.nodes = [{ name: 'core-seven', ip: '10.0.0.7' }];
+    mocks.mintPairingCode.mockRejectedValue(new Error('a device named "core-seven" already exists in this org'));
+    await keep();
+    const seen = await installOnce();
+    expect(seen.code).toBe('FRESH7');
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'FRESH7', deviceId: 'dev-1' });
+  });
+
+  it('under device:pair, sends a code Portal still honours when the mint 409s, saying how old it is, and keeps it', async () => {
+    // This login cannot re-register, so there is no replacement to be had while the row exists — and
+    // Portal honours the code for seven days. Dropping it here failed the node and lost a code that
+    // would have paired.
     clockAt('2026-09-26T06:14:00Z');
     mocks.mintPairingCode.mockRejectedValue(new Error('a device named "core-7" already exists in this org'));
     await keep();
     const seen = await installOnce();
     expect(mocks.reRegisterPortalDevice).not.toHaveBeenCalled();
-    expect(seen.code).toBeUndefined();
-    expect(seen.error).toMatch(/^dropped the code minted 2026-09-23T03:14 for core-7 \(3d 3h ago\)/);
-    expect(seen.error).toContain("cihub login --scope device:manage' (this run holds device:pair)");
-    expect(seen.error).toContain('delete the device in Portal and rerun');
-    expect(readStore().codes).toEqual({});
+    expect(seen.error).toBeUndefined();
+    expect(seen.code).toBe('OLD777');
+    expect(seen.detail).toBe(
+      `reusing the code minted 2026-09-23T03:14 for core-7 (3d 3h ago) anyway, past the 1d a kept code is normally reused for: a device named "core-7" still exists, Portal honours a code for 7d, and replacing it is a re-register, which needs 'cihub login --scope device:manage' (this run holds device:pair)`,
+    );
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'OLD777' });
   });
 
-  it('shows, per node, what a dry run would do with each kept code', async () => {
-    clockAt('2026-09-26T06:14:00Z');
-    mocks.nodes = [
-      { name: 'core-5', ip: '10.0.0.5' },
-      { name: 'core-6', ip: '10.0.0.6' },
-      { name: 'core-7', ip: '10.0.0.7' },
-    ];
-    await keep({ ip: '10.0.0.6', name: 'core-6', slug: 'core-6' });
-    await keep({ mintedAt: '2026-09-26T03:44:00.000Z' });
-    const log = vi.spyOn(console, 'log');
-    await runFleetCommand(['install']);
-    const out = log.mock.calls.map((call) => String(call[0])).join('\n');
-    expect(out).toContain('Would install on 3 of 3 rostered node(s):');
-    expect(out).toMatch(/core-5\s+10\.0\.0\.5\s+mint new/);
-    expect(out).toMatch(/core-6\s+10\.0\.0\.6\s+replace, kept 3d 3h/);
-    expect(out).toMatch(/core-7\s+10\.0\.0\.7\s+reuse, kept 2h 30m/);
-    // A dry run reads the store and never writes it.
-    expect(readStore().codes['10.0.0.6']).toMatchObject({ pairingCode: 'OLD777' });
-    expect(mocks.installNode).not.toHaveBeenCalled();
-    expect(mocks.mintPairingCode).not.toHaveBeenCalled();
+  it("under device:pair, refuses a code past Portal's seven days but keeps it for a login that can re-register", async () => {
+    clockAt('2026-10-01T06:14:00Z');
+    mocks.mintPairingCode.mockRejectedValue(new Error('a device named "core-7" already exists in this org'));
+    await keep();
+    const seen = await installOnce();
+    expect(mocks.reRegisterPortalDevice).not.toHaveBeenCalled();
+    expect(seen.code).toBeUndefined();
+    expect(seen.error).toMatch(/^the code minted 2026-09-23T03:14 for core-7 \(8d 3h ago\), .*past the 7d Portal honours a code for\./);
+    expect(seen.error).toContain("cihub login --scope device:manage' (this run holds device:pair)");
+    expect(seen.error).toContain('delete the device in Portal and rerun');
+    expect(readStore().codes['10.0.0.7']).toMatchObject({ pairingCode: 'OLD777', deviceId: 'dev-old' });
+
+    // The kept device id is what lets a device:manage run replace it without a person in Portal.
+    mocks.scope = 'device:manage';
+    const retry = await installOnce();
+    expect(mocks.reRegisterPortalDevice).toHaveBeenCalledWith(expect.objectContaining({ deviceId: 'dev-old' }));
+    expect(retry.code).toBe('FRESH7');
+  });
+
+  describe('in a dry run', () => {
+    const dryRun = async () => {
+      const log = vi.spyOn(console, 'log');
+      await runFleetCommand(['install']);
+      return stripAnsi(log.mock.calls.map((call) => String(call[0])).join('\n'));
+    };
+
+    beforeEach(async () => {
+      clockAt('2026-09-26T06:14:00Z');
+      mocks.nodes = [
+        { name: 'core-5', ip: '10.0.0.5' },
+        { name: 'core-6', ip: '10.0.0.6' },
+        { name: 'core-7', ip: '10.0.0.7' },
+        { name: 'core-8', ip: '10.0.0.8' },
+      ];
+      await keep({ ip: '10.0.0.6', name: 'core-6', slug: 'core-6' });
+      await keep({ mintedAt: '2026-09-26T03:44:00.000Z' });
+      await keep({ ip: '10.0.0.8', name: 'core-8', slug: 'core-8', mintedAt: '2026-09-18T03:14:00.000Z' });
+    });
+
+    it('shows, per node, what the run would do with each kept code', async () => {
+      const out = await dryRun();
+      expect(out).toContain('Would install on 4 of 4 rostered node(s):');
+      expect(out).toMatch(/core-5\s+10\.0\.0\.5\s+mint new/);
+      expect(out).toMatch(/core-7\s+10\.0\.0\.7\s+reuse, kept 2h 30m/);
+      // device:pair cannot re-register, so an old code whose row still exists is reused inside
+      // Portal's seven days and refused past them — and a dry run cannot know which rows still exist.
+      expect(out).toMatch(/core-6\s+10\.0\.0\.6\s+replace or reuse, kept 3d 3h/);
+      expect(out).toMatch(/core-8\s+10\.0\.0\.8\s+replace or refuse, kept 8d 3h/);
+      expect(out).toContain(`"replace" mints a fresh code if the node's device is gone from Portal`);
+      // A dry run reads the store and never writes it.
+      expect(readStore().codes['10.0.0.6']).toMatchObject({ pairingCode: 'OLD777' });
+      expect(mocks.installNode).not.toHaveBeenCalled();
+      expect(mocks.mintPairingCode).not.toHaveBeenCalled();
+    });
+
+    it('says plainly "replace" when the login can re-register whatever row still exists', async () => {
+      mocks.scope = 'device:manage';
+      const out = await dryRun();
+      expect(out).toMatch(/core-6\s+10\.0\.0\.6\s+replace, kept 3d 3h/);
+      expect(out).toMatch(/core-8\s+10\.0\.0\.8\s+replace, kept 8d 3h/);
+      expect(out).not.toContain('"replace" mints a fresh code');
+    });
   });
 });

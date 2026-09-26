@@ -1529,15 +1529,19 @@ because only a person in Portal can tell which; when this machine re-registered 
 `409` says that instead, and to pass the code with `--code`.
 
 A kept code is reused for a day, and every reuse says how old it is. One kept longer than 24 hours
-is dropped and replaced before anything is sent: a fresh mint, or — when that `409`s because the
-device row outlived its code — a re-register of that row with a `device:manage` login (a
-`device:pair` login stops the node and names the scope). Portal's own lifetime for a code is seven
-days, which its source calls a guess to be shortened; a code a day old belongs to an attempt nobody
-retried, and the only other test of it is a twenty-minute `hub up` ending at `register` (core-6 on
-2026-09-26 went out "reusing the code minted 2026-09-23T03:14", three days on, with nothing to say
-so). `fleet devices release` forgets the released device's kept code, since its row is gone. The dry
-run lists the nodes it would install on as a table led by `Would install on N of M rostered
-node(s)`, says per node whether it would mint, reuse or replace a kept code, and lists the rows the
+is replaced before anything is sent: a fresh mint, or — when that `409`s because the device row
+outlived its code — a re-register of that row with a `device:manage` login. Portal's own lifetime
+for a code is seven days, which its source calls a guess to be shortened; a code a day old belongs
+to an attempt nobody retried, and the only other test of it is a twenty-minute `hub up` ending at
+`register` (core-6 on 2026-09-26 went out "reusing the code minted 2026-09-23T03:14", three days on,
+with nothing to say so). The old code stays kept until its replacement is in hand, so a mint or
+re-register that fails leaves it for the next run to replace — it holds the device id a re-register
+needs. A `device:pair` login cannot re-register, so when the row still exists it sends the old code
+anyway while it is inside Portal's seven days, saying so on the node's line, and past them stops the
+node, keeps the code, and names the scope. `fleet devices release` forgets the released device's
+kept code, since its row is gone. The dry run lists the nodes it would install on as a table led by
+`Would install on N of M rostered node(s)`, says per node whether it would mint, reuse or replace a
+kept code (`replace or reuse` / `replace or refuse` under `device:pair`), and lists the rows the
 roster holds back with their reasons.
 
 A code Portal *refuses* is a different failure, and until 2026-09-22 it was the one with no way out:

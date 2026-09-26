@@ -123,6 +123,7 @@ import {
   type KeptPairingCode,
   MAX_PENDING_PAIRING_CODE_AGE_MS,
   type PairingCodeOutcome,
+  PORTAL_PAIRING_CODE_TTL_MS,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
   savePendingPairingCode,
@@ -1883,15 +1884,23 @@ function describeBinarySource(source: CihubBinarySource): string {
   }
 }
 
-/** The dry run's PAIRING CODE cell: what the run would do with the code an earlier run kept. */
-function keptCodeCell(kept: KeptPairingCode): string {
+/**
+ * The dry run's PAIRING CODE cell: what the run would do with the code an earlier run kept. A code
+ * past the day is replaced by a mint when its device is gone; when the device is still there only a
+ * re-register replaces it, so a login that cannot ask for one falls back — on the old code inside
+ * Portal's lifetime, on refusing the node past it. The dry run cannot tell which case a node is in
+ * without asking Portal, so the cell names both.
+ */
+function keptCodeCell(kept: KeptPairingCode, canReRegister: boolean): string {
   switch (kept.kind) {
     case 'none':
       return 'mint new';
     case 'reuse':
       return `reuse, kept ${describePairingCodeAge(kept.ageMs)}`;
-    case 'too-old':
-      return colorize(`replace, kept ${describePairingCodeAge(kept.ageMs)}`, 'yellow');
+    case 'too-old': {
+      const fallback = canReRegister ? '' : kept.ageMs <= PORTAL_PAIRING_CODE_TTL_MS ? ' or reuse' : ' or refuse';
+      return colorize(`replace${fallback}, kept ${describePairingCodeAge(kept.ageMs)}`, 'yellow');
+    }
     case 'invalidated':
       return colorize(`refuse, re-registered ${kept.reRegistered.at.slice(0, 16)}`, 'yellow');
   }
@@ -1912,14 +1921,26 @@ function printInstallTargets(
   run: readonly FleetNode[],
   skipped: readonly { node: FleetNode; why: string }[],
   args: FleetArgs,
-  codes: { orgId?: string },
+  codes: { orgId?: string; canReRegister: boolean },
 ): void {
-  const { orgId } = codes;
+  const { orgId, canReRegister } = codes;
   console.log('');
   console.log(bold(`Would install on ${run.length} of ${roster.nodes.length} rostered node(s):`));
-  const rows = run.map((n) => [n.name, n.ip, ...(orgId === undefined ? [] : [keptCodeCell(assessKeptPairingCode(n.ip, orgId))])]);
+  const kept = new Map(orgId === undefined ? [] : run.map((n) => [n.ip, assessKeptPairingCode(n.ip, orgId)]));
+  const rows = run.map((n) => {
+    const code = kept.get(n.ip);
+    return [n.name, n.ip, ...(code ? [keptCodeCell(code, canReRegister)] : [])];
+  });
   const table = renderTable(rows, ['NODE', 'ADDRESS', ...(orgId === undefined ? [] : ['PAIRING CODE'])]);
   for (const line of table.split('\n')) console.log(`  ${line}`);
+  if (!canReRegister && [...kept.values()].some((code) => code.kind === 'too-old')) {
+    console.log(
+      colorize(
+        `  "replace" mints a fresh code if the node's device is gone from Portal. If it is still there, replacing the code is a re-register this login cannot ask for ('cihub login --scope ${DEVICE_MANAGE_SCOPE}' can), so the run reuses a code inside Portal's ${describePairingCodeAge(PORTAL_PAIRING_CODE_TTL_MS)} and refuses the node past it.`,
+        'dim',
+      ),
+    );
+  }
   if (skipped.length) {
     console.log(colorize(`Not attempted (${skipped.length}):`, 'dim'));
     for (const s of skipped) console.log(colorize(`  ${s.node.name}: ${s.why}`, 'dim'));
@@ -1964,6 +1985,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
     printInstallTargets(roster, run, skipped, args, {
       // Only when the run would mint: a `--code` run sends the code it was given and reads no store.
       orgId: resolvePairingCodeStrategy({ code: args.code, canMint, nodeCount: run.length }).kind === 'mint' ? (storedLogin?.orgId ?? '') : undefined,
+      canReRegister: storedScope === DEVICE_MANAGE_SCOPE,
     });
     if (args.claimEmail) {
       console.log(`  each would then be claimed for ${args.claimEmail}`);
@@ -2040,8 +2062,9 @@ async function runInstall(args: FleetArgs): Promise<void> {
     // is forgotten once the Hub reports registered. A kept code that a later `fleet devices
     // re-register` has replaced is refused by name: Portal honours only the newest, and sending the
     // old one is a twenty-minute `hub up` ending in "Pairing failed" (core-1, 2026-09-20). A kept code
-    // older than a day is dropped and replaced rather than sent — and every reuse says its age, which
-    // core-6's "reusing the code minted 2026-09-23T03:14" three days later did not.
+    // older than a day is replaced where the login can replace it, and kept until it is — and every
+    // reuse says its age, which core-6's "reusing the code minted 2026-09-23T03:14" three days later
+    // did not.
     const orgId = storedLogin?.orgId ?? '';
     const mint =
       strategy.kind === 'given'
@@ -2052,13 +2075,18 @@ async function runInstall(args: FleetArgs): Promise<void> {
             if (kept.kind === 'reuse') {
               return { code: kept.pending.pairingCode, detail: `reusing ${describeKeptPairingCode(kept.pending, kept.ageMs)}` };
             }
+            // A code past the day is replaced, but it stays in the store until the replacement is in
+            // hand — `savePendingPairingCode` overwrites it on a mint, `recordReRegisteredPairingCode`
+            // drops it on a re-register. It is the only record of the device id a re-register needs,
+            // and Portal may still honour it: dropping it first turned a Portal 503 into a node no
+            // later run would re-register, and under device:pair threw away a code Portal would take.
+            const aged = kept.kind === 'too-old' ? kept : undefined;
             // Said on the node's line whatever happens next, so a replacement is never silent either.
-            let dropped: string | undefined;
-            if (kept.kind === 'too-old') {
-              clearPendingPairingCode(node.ip);
-              dropped = `dropped ${describeKeptPairingCode(kept.pending, kept.ageMs)}, older than the ${describePairingCodeAge(MAX_PENDING_PAIRING_CODE_AGE_MS)} a kept code is reused for`;
-            }
-            const withDropped = (detail: string) => (dropped ? `${dropped}; ${detail}` : detail);
+            const agedCode = aged
+              ? `${describeKeptPairingCode(aged.pending, aged.ageMs)}, older than the ${describePairingCodeAge(MAX_PENDING_PAIRING_CODE_AGE_MS)} a kept code is reused for`
+              : undefined;
+            const replaced = (detail: string) => (agedCode ? `replaced ${agedCode}; ${detail}` : detail);
+            const stillKept = (failure: string) => new Error(`${agedCode}: ${failure}. It is still kept, so the next run tries to replace it again.`);
             try {
               const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
               savePendingPairingCode({
@@ -2070,36 +2098,46 @@ async function runInstall(args: FleetArgs): Promise<void> {
                 orgId,
                 mintedAt: new Date().toISOString(),
               });
-              return { code: minted.pairingCode, detail: withDropped(`registered as ${minted.slug}`) };
+              return { code: minted.pairingCode, detail: replaced(`registered as ${minted.slug}`) };
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
-              if (!/already exists/.test(message)) throw new Error(withDropped(message));
-              if (kept.kind !== 'too-old') throw new Error(describeDeviceNameConflict(node.name, findReRegistration(node.name, orgId)));
+              if (!/already exists/.test(message)) throw aged ? stillKept(`minting a replacement failed (${message})`) : new Error(message);
+              if (!aged) throw new Error(describeDeviceNameConflict(node.name, findReRegistration(node.name, orgId)));
               // Minting first is what a released device needs: its row is gone and a new one is the
               // fix. A 409 means the row outlived its code instead, so the fresh code is a re-register
               // of that row — the same replacement a code Portal refused gets, and as then, only a
               // device:manage login can ask for it.
-              if (storedScope !== DEVICE_MANAGE_SCOPE) {
-                throw new Error(
-                  withDropped(
-                    `a device named "${node.name}" still exists in this org, and replacing its code is a re-register, which needs 'cihub login --scope ${DEVICE_MANAGE_SCOPE}' (this run holds ${storedScope ?? 'none'}). Rerun after that, delete the device in Portal and rerun, or pass --code.`,
-                  ),
-                );
+              if (storedScope === DEVICE_MANAGE_SCOPE) {
+                try {
+                  const fresh = await reRegisterPortalDevice({ login: storedLogin as PortalLogin, deviceId: aged.pending.deviceId });
+                  recordReRegisteredPairingCode({
+                    device: { id: aged.pending.deviceId, name: aged.pending.name, slug: aged.pending.slug },
+                    deviceId: fresh.deviceId,
+                    pairingCode: fresh.pairingCode,
+                    orgId,
+                    roster: roster.nodes,
+                  });
+                  return { code: fresh.pairingCode, detail: replaced(`re-registered ${aged.pending.slug} for a fresh one`) };
+                } catch (reRegisterError) {
+                  const why = reRegisterError instanceof Error ? reRegisterError.message : String(reRegisterError);
+                  throw stillKept(`a device named "${node.name}" still exists, and re-registering it for a fresh code failed (${why})`);
+                }
               }
-              try {
-                const fresh = await reRegisterPortalDevice({ login: storedLogin as PortalLogin, deviceId: kept.pending.deviceId });
-                recordReRegisteredPairingCode({
-                  device: { id: kept.pending.deviceId, name: kept.pending.name, slug: kept.pending.slug },
-                  deviceId: fresh.deviceId,
-                  pairingCode: fresh.pairingCode,
-                  orgId,
-                  roster: roster.nodes,
-                });
-                return { code: fresh.pairingCode, detail: withDropped(`re-registered ${kept.pending.slug} for a fresh one`) };
-              } catch (reRegisterError) {
-                const why = reRegisterError instanceof Error ? reRegisterError.message : String(reRegisterError);
-                throw new Error(withDropped(`a device named "${node.name}" still exists, and re-registering it for a fresh code failed: ${why}`));
+              // A login that cannot re-register has no replacement to get while the row stands, and the
+              // code it holds was minted with a row of that name — Portal redeems it until its own
+              // lifetime runs out. Sending it, with its age on the line, is what every run did before
+              // the day limit existed; past that lifetime it is a twenty-minute `hub up` to a refusal.
+              const needs = `replacing it is a re-register, which needs 'cihub login --scope ${DEVICE_MANAGE_SCOPE}' (this run holds ${storedScope ?? 'none'})`;
+              const portalTtl = describePairingCodeAge(PORTAL_PAIRING_CODE_TTL_MS);
+              if (aged.ageMs <= PORTAL_PAIRING_CODE_TTL_MS) {
+                return {
+                  code: aged.pending.pairingCode,
+                  detail: `reusing ${describeKeptPairingCode(aged.pending, aged.ageMs)} anyway, past the ${describePairingCodeAge(MAX_PENDING_PAIRING_CODE_AGE_MS)} a kept code is normally reused for: a device named "${node.name}" still exists, Portal honours a code for ${portalTtl}, and ${needs}`,
+                };
               }
+              throw new Error(
+                `${agedCode}, and past the ${portalTtl} Portal honours a code for. A device named "${node.name}" still exists, so no fresh code can be minted, and ${needs}. The code stays kept, since that re-register needs its device id: rerun after that login, or delete the device in Portal and rerun.`,
+              );
             }
           };
 

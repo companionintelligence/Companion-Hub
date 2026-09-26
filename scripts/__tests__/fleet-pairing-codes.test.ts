@@ -21,6 +21,7 @@ import {
   MAX_PENDING_PAIRING_CODE_AGE_MS,
   type PendingPairingCode,
   pendingPairingCodeAgeMs,
+  PORTAL_PAIRING_CODE_TTL_MS,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
   savePendingPairingCode,
@@ -279,7 +280,9 @@ describe('the age of a kept code', () => {
   it('bounds reuse well inside the seven days Portal gives a code', () => {
     // CI-Portal's PAIRING_CODE_TTL_MS is 7 days and flagged there as a guess to be shortened. A bound
     // at or past it would send codes Portal has already expired, after a twenty-minute `hub up`.
-    expect(MAX_PENDING_PAIRING_CODE_AGE_MS).toBeLessThan(7 * 24 * HOUR);
+    expect(PORTAL_PAIRING_CODE_TTL_MS).toBe(7 * 24 * HOUR);
+    expect(describePairingCodeAge(PORTAL_PAIRING_CODE_TTL_MS)).toBe('7d');
+    expect(MAX_PENDING_PAIRING_CODE_AGE_MS).toBeLessThan(PORTAL_PAIRING_CODE_TTL_MS);
     expect(MAX_PENDING_PAIRING_CODE_AGE_MS).toBe(24 * HOUR);
   });
 });
