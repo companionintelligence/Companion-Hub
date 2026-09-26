@@ -805,6 +805,48 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
     expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe('ci-hub@file,nginx-store-id-public-host@docker');
   });
 
+  describe('the Hub login on an open-port route', () => {
+    /*
+     * Until compose built the tunnel route for apps that also publish a host port, those apps had
+     * no route at all. Many never chose a login: an API or MCP install of CI-OpenClaw that sends
+     * `{ exposureMode: 'cloudflare' }` reaches the builder with the queue's `openPort: true` and no
+     * `enableAuth`, and OpenClaw's `/` hands out its gateway token.
+     */
+    const routeMiddlewares = async (form: Record<string, unknown>) => {
+      const result = await builder.getDockerCompose(
+        [{ ...mainService, internalPort: 18789 }],
+        form,
+        urn,
+        subnet,
+        'ci.computer',
+        'ci.lan',
+        undefined,
+        'openclaw-core-2-acme.ci.lan',
+        'openclaw-core-2-acme.ci.computer',
+      );
+      const labels: Record<string, string> = yaml.parse(result).services.nginx.labels;
+      return [labels['traefik.http.routers.nginx-store-id.middlewares'], labels['traefik.http.routers.nginx-store-id-insecure.middlewares']];
+    };
+
+    it('requires it when the form never decided', async () => {
+      const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true });
+
+      expect(middlewares).toEqual(['ci-hub@file,nginx-store-id-public-host@docker', 'ci-hub@file,nginx-store-id-public-host@docker']);
+    });
+
+    it('leaves it off when the operator turned it off', async () => {
+      const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true, enableAuth: false });
+
+      expect(middlewares).toEqual(['nginx-store-id-public-host@docker', 'nginx-store-id-public-host@docker']);
+    });
+
+    it('does not change a route that served without a host port before', async () => {
+      const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: false });
+
+      expect(middlewares).toEqual(['nginx-store-id-public-host@docker', 'nginx-store-id-public-host@docker']);
+    });
+  });
+
   it('keeps the same origin hostname even when the public domain has multiple labels', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
