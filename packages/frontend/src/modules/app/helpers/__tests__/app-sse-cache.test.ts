@@ -212,6 +212,20 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
   });
 
+  it('refetches the app and the Public Web report when its public domain moved', () => {
+    // The row's public domain changed, so every URL the app page and the Public Web
+    // report show was composed from the old one.
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'public_domain_changed',
+      appUrn: 'n8n:ci-marketplace',
+      hostname: 'n8n-core-2-acme.ci.computer',
+    });
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: ['getApp', 'n8n:ci-marketplace'] });
+    expect(queryClient.invalidateQueries).toHaveBeenCalledWith({ queryKey: PUBLIC_WEB_DIAGNOSTICS_QUERY_KEY });
+    expect(queryClient.invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ['getCustomDomains'] });
+  });
+
   it('leaves the custom-domain listing alone on other lifecycle events', () => {
     handleAppSseEvent(queryClient as unknown as QueryClient, {
       event: 'restart_success',
