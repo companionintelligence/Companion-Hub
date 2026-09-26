@@ -1039,7 +1039,11 @@ Two properties of the file are load-bearing:
   `tailnetName`, which is a fact about the network rather than a preference.
 
 A malformed row costs that row and names it, not the whole file: running against nineteen nodes
-while believing it was twenty is the worse failure.
+while believing it was twenty is the worse failure. A `"skip"` outside those three values is the
+exception — every fleet subcommand, `list` and `scan` included, refuses the whole roster on it,
+names each row and the value it holds, and exits 1. Unknown values used to read as "attempt it":
+on 2026-09-26 22 of 23 rows marked `"skip": "excluded-tmp"` to narrow an install to one node were
+all installed on. To act on some nodes only, pass `--nodes`.
 
 ### Flags
 
@@ -1523,6 +1527,18 @@ sent — Portal honours only the newest (see `fleet devices` below). A `409` on 
 things it can mean — an orphan from an earlier attempt, or a node registered under another org —
 because only a person in Portal can tell which; when this machine re-registered the device, the
 `409` says that instead, and to pass the code with `--code`.
+
+A kept code is reused for a day, and every reuse says how old it is. One kept longer than 24 hours
+is dropped and replaced before anything is sent: a fresh mint, or — when that `409`s because the
+device row outlived its code — a re-register of that row with a `device:manage` login (a
+`device:pair` login stops the node and names the scope). Portal's own lifetime for a code is seven
+days, which its source calls a guess to be shortened; a code a day old belongs to an attempt nobody
+retried, and the only other test of it is a twenty-minute `hub up` ending at `register` (core-6 on
+2026-09-26 went out "reusing the code minted 2026-09-23T03:14", three days on, with nothing to say
+so). `fleet devices release` forgets the released device's kept code, since its row is gone. The dry
+run lists the nodes it would install on as a table led by `Would install on N of M rostered
+node(s)`, says per node whether it would mint, reuse or replace a kept code, and lists the rows the
+roster holds back with their reasons.
 
 A code Portal *refuses* is a different failure, and until 2026-09-22 it was the one with no way out:
 fifteen nodes failed with `410 PAIRING_CODE_INVALID`, and the two retries that followed re-sent every

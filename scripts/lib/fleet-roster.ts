@@ -16,7 +16,9 @@
  *    four nodes that can never pass — no account, no Docker, an ACL that grants nothing — are
  *    re-attempted on every single run at a 30-second timeout each, and land in the report looking
  *    exactly like a machine that broke this morning. `skip` makes "we know, and here is why"
- *    expressible.
+ *    expressible — in `FLEET_NODE_SKIPS` and nothing else. A value outside it refuses the roster
+ *    rather than reading as "attempt it", which is how an operator's `"excluded-tmp"` on 22 rows
+ *    became an install on all 23.
  *
  * 3. **The roster is the only source of targets.** No roster means no fleet, not "everyone on the
  *    tailnet". The tailnet is shared with colleagues' laptops, phones and headsets, and a run that
@@ -31,14 +33,19 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { resolveCanonicalDataDir } from './paths.js';
 
+/**
+ * Every `skip` value a fleet command honours. Absent (or `null`) means "attempt it"; anything else
+ * is refused at load — see `parseFleetRoster`.
+ *
+ * - `llm-only` — serves inference and is not administrable, usually a tailnet ACL that grants no SSH.
+ * - `unreachable` — known down, awaiting hands-on recovery. Attempting it wastes the budget and
+ *   reports nothing new.
+ * - `excluded` — deliberately out of scope for fleet operations (someone's workstation, a demo box).
+ */
+export const FLEET_NODE_SKIPS = ['llm-only', 'unreachable', 'excluded'] as const;
+
 /** Why a node is deliberately not attempted. Absent means "attempt it". */
-export type FleetNodeSkip =
-  /** Serves inference and is not administrable — usually a tailnet ACL that grants no SSH. */
-  | 'llm-only'
-  /** Known down, awaiting hands-on recovery. Attempting it wastes the budget and reports nothing new. */
-  | 'unreachable'
-  /** Deliberately out of scope for fleet operations (someone's workstation, a demo box). */
-  | 'excluded';
+export type FleetNodeSkip = (typeof FLEET_NODE_SKIPS)[number];
 
 export interface FleetNode {
   /** Display label. Not an identity — see the header. */
@@ -92,13 +99,23 @@ export function isPlausibleHost(value: string): boolean {
  * Returns the reasons alongside, rather than throwing: one malformed row in a
  * twenty-node file should cost that row, not the whole fleet. A silent drop would be worse than
  * either — the operator would run against nineteen nodes believing it was twenty.
+ *
+ * A `skip` this code does not recognise is the exception, and lands in `invalid` rather than
+ * `dropped`: `loadFleetRoster` refuses the whole file on it. Dropping an undialable row costs that
+ * row; misreading a skip costs the rows it was written to protect. On 2026-09-26 an operator marked
+ * 22 of 23 rows `"skip": "excluded-tmp"` to narrow an install to one node, the old parser read the
+ * unknown value as "attempt it", and `fleet install --execute` ran on all 23. The operator's intent
+ * is unknowable from the typo — "skip it" and "not a real skip" are both plausible — so neither
+ * guess is safe, and the row is named with the values that are. Such a row is also left out of
+ * `nodes`, so a caller that forgets to look at `invalid` still never dials it.
  */
-export function parseFleetRoster(raw: unknown): { nodes: FleetNode[]; dropped: string[] } {
+export function parseFleetRoster(raw: unknown): { nodes: FleetNode[]; dropped: string[]; invalid: string[] } {
   const rows = Array.isArray(raw) ? raw : Array.isArray((raw as { nodes?: unknown })?.nodes) ? (raw as { nodes: unknown[] }).nodes : null;
-  if (!rows) return { nodes: [], dropped: ['roster is neither an array nor an object with a `nodes` array'] };
+  if (!rows) return { nodes: [], dropped: ['roster is neither an array nor an object with a `nodes` array'], invalid: [] };
 
   const nodes: FleetNode[] = [];
   const dropped: string[] = [];
+  const invalid: string[] = [];
   const seenIps = new Set<string>();
 
   for (const [i, row] of rows.entries()) {
@@ -124,22 +141,30 @@ export function parseFleetRoster(raw: unknown): { nodes: FleetNode[]; dropped: s
       continue;
     }
     seenIps.add(ip);
+    // `null` is JSON's way to clear a field, so it reads as absent. Nothing else does — not `false`,
+    // not `""`, not a near-miss spelling — because every one of those was typed by someone who
+    // meant something, and the loader cannot tell what.
+    const skip = r.skip ?? undefined;
+    if (skip !== undefined && !isFleetNodeSkip(skip)) {
+      invalid.push(`row ${i} (${name}, ${ip}): "skip": ${JSON.stringify(skip)}`);
+      continue;
+    }
     nodes.push({
       name,
       ip,
       tailnetName: typeof r.tailnetName === 'string' ? r.tailnetName : undefined,
       user: typeof r.user === 'string' ? r.user : undefined,
       local: r.local === true ? true : undefined,
-      skip: isFleetNodeSkip(r.skip) ? r.skip : undefined,
+      skip,
       note: typeof r.note === 'string' ? r.note : undefined,
       oob: typeof r.oob === 'string' && r.oob.trim() ? r.oob.trim() : undefined,
     });
   }
-  return { nodes, dropped };
+  return { nodes, dropped, invalid };
 }
 
 function isFleetNodeSkip(value: unknown): value is FleetNodeSkip {
-  return value === 'llm-only' || value === 'unreachable' || value === 'excluded';
+  return (FLEET_NODE_SKIPS as readonly unknown[]).includes(value);
 }
 
 /**
@@ -150,7 +175,9 @@ export type FleetRosterProblem =
   /** The file does not exist — the pre-scan state. */
   | { kind: 'absent'; path: string }
   /** The file exists but is not JSON the parser accepts. */
-  | { kind: 'unreadable'; path: string; why: string };
+  | { kind: 'unreadable'; path: string; why: string }
+  /** Rows carry a `skip` no fleet command honours. Each entry names the row and the value it holds. */
+  | { kind: 'invalid-skip'; path: string; rows: string[] };
 
 export interface LoadedFleetRoster extends FleetRoster {
   dropped: string[];
@@ -161,9 +188,9 @@ export interface LoadedFleetRoster extends FleetRoster {
 /**
  * Read the roster.
  *
- * A missing or unreadable file comes back with `nodes: []` AND a `problem`, so a caller that only
- * looks at `nodes` sees an empty fleet and dials nothing — never a fallback list. The `problem` is
- * for the caller to name the file and how to create it.
+ * A missing or unreadable file — or one with a `skip` no command honours — comes back with
+ * `nodes: []` AND a `problem`, so a caller that only looks at `nodes` sees an empty fleet and dials
+ * nothing — never a fallback list. The `problem` is for the caller to name the file and how to fix it.
  */
 export function loadFleetRoster(path: string = fleetRosterPath()): LoadedFleetRoster {
   if (!existsSync(path)) {
@@ -176,6 +203,16 @@ export function loadFleetRoster(path: string = fleetRosterPath()): LoadedFleetRo
   }
   try {
     const parsed = parseFleetRoster(JSON.parse(readFileSync(path, 'utf-8')));
+    // The whole roster, not just the bad rows: a partial fleet is exactly what the operator did not
+    // ask for, whichever way the typo is read.
+    if (parsed.invalid.length > 0) {
+      return {
+        nodes: [],
+        source: `${path} (${parsed.invalid.length} row(s) with an unrecognised skip)`,
+        dropped: parsed.dropped,
+        problem: { kind: 'invalid-skip', path, rows: parsed.invalid },
+      };
+    }
     return { nodes: parsed.nodes, source: path, dropped: parsed.dropped };
   } catch (error) {
     const why = String(error);

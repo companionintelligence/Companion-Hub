@@ -27,12 +27,14 @@ import {
   readStoredLogin,
 } from './catalog-submit.js';
 import {
+  FLEET_NODE_SKIPS,
   loadFleetRoster,
   mergeFleetRoster,
   partitionForRun,
   saveFleetRoster,
   fleetRosterPath,
   type FleetNode,
+  type FleetRosterProblem,
   type LoadedFleetRoster,
 } from './fleet-roster.js';
 import {
@@ -109,12 +111,17 @@ import {
 import { gpuProbeTimerStep, installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { type CihubBinarySource, parseCihubVersionOutput, pinCihubReleaseSource, resolveCihubBinarySource } from './fleet-cihub-binary.js';
 import {
+  assessKeptPairingCode,
   clearPendingPairingCode,
   describeDeviceNameConflict,
   describeInvalidatedPairingCode,
-  findInvalidatingReRegistration,
+  describeKeptPairingCode,
+  describePairingCodeAge,
   findReRegistration,
+  forgetReleasedDevice,
   classifyPairingFailure,
+  type KeptPairingCode,
+  MAX_PENDING_PAIRING_CODE_AGE_MS,
   type PairingCodeOutcome,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
@@ -187,7 +194,7 @@ import {
   renderResidencyCell,
   residencyGpuFromFacts,
 } from './fleet-ollama-residency.js';
-import { colorize, stripAnsi } from './cli-ui.js';
+import { bold, colorize, stripAnsi } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
 export const FLEET_SUBCOMMANDS = [
@@ -651,6 +658,25 @@ function reportUnknownNodes(roster: readonly FleetNode[], wanted: readonly strin
 }
 
 /**
+ * The refusal for a roster whose rows carry a `skip` no command honours — the same words from every
+ * subcommand that reads the roster, `list` and `scan` included, since both would otherwise show or
+ * probe the rows as live targets. The old reading ("unknown means attempt it") ran an install on 23
+ * nodes that an operator had meant to narrow to one with `"skip": "excluded-tmp"`.
+ */
+function refuseInvalidSkips(problem: Extract<FleetRosterProblem, { kind: 'invalid-skip' }>): void {
+  console.error(colorize(`The fleet roster at ${problem.path} has ${problem.rows.length} row(s) with a "skip" no fleet command recognises:`, 'red'));
+  for (const row of problem.rows) console.error(`  ${row}`);
+  console.error(`  "skip" must be one of ${FLEET_NODE_SKIPS.map((value) => `"${value}"`).join(', ')} — or absent, to attempt the node.`);
+  console.error(
+    colorize(
+      `  Nothing was dialled: the rows' intent cannot be read from the value. To act on some nodes only, pass --nodes <name,...> instead.`,
+      'dim',
+    ),
+  );
+  process.exitCode = 1;
+}
+
+/**
  * The roster a fleet operation runs on, or `null` with the refusal already printed.
  *
  * Every subcommand that dials a machine starts here, and the rule is that no roster means no
@@ -667,6 +693,10 @@ function reportUnknownNodes(roster: readonly FleetNode[], wanted: readonly strin
 function loadRosterForRun(args: FleetArgs): LoadedFleetRoster | null {
   const roster = loadFleetRoster();
   if (roster.problem) {
+    if (roster.problem.kind === 'invalid-skip') {
+      refuseInvalidSkips(roster.problem);
+      return null;
+    }
     const { path } = roster.problem;
     if (roster.problem.kind === 'absent') console.error(colorize(`No fleet roster at ${path}.`, 'red'));
     else console.error(colorize(`The fleet roster at ${path} could not be read: ${roster.problem.why}`, 'red'));
@@ -762,6 +792,13 @@ async function runScan(args: FleetArgs): Promise<void> {
   const notes: string[] = [];
 
   const roster = loadFleetRoster();
+  // An absent roster is what a scan exists to fill; a roster with a skip this code cannot read is
+  // not. Probing past it would dial the very rows the operator was trying to shelve, and
+  // `--write-roster` would save them back without the skip they were written with.
+  if (roster.problem?.kind === 'invalid-skip') {
+    refuseInvalidSkips(roster.problem);
+    return;
+  }
   // `excluded` means "not ours" — someone's workstation, a KVM dongle, a demo box. Re-probing it on
   // every scan is the SSH attempt in a colleague's auth log the roster exists to stop, so it is
   // shelved unless `--all-tailnet` asks for everything. The other skips still get a probe: an
@@ -909,6 +946,10 @@ async function runScan(args: FleetArgs): Promise<void> {
 
 function runList(args: FleetArgs): void {
   const roster = loadFleetRoster();
+  if (roster.problem?.kind === 'invalid-skip') {
+    refuseInvalidSkips(roster.problem);
+    return;
+  }
   reportUnknownNodes(roster.nodes, args.nodes);
   if (args.json) {
     console.log(JSON.stringify({ source: roster.source, nodes: roster.nodes, dropped: roster.dropped }, null, 2));
@@ -1842,6 +1883,53 @@ function describeBinarySource(source: CihubBinarySource): string {
   }
 }
 
+/** The dry run's PAIRING CODE cell: what the run would do with the code an earlier run kept. */
+function keptCodeCell(kept: KeptPairingCode): string {
+  switch (kept.kind) {
+    case 'none':
+      return 'mint new';
+    case 'reuse':
+      return `reuse, kept ${describePairingCodeAge(kept.ageMs)}`;
+    case 'too-old':
+      return colorize(`replace, kept ${describePairingCodeAge(kept.ageMs)}`, 'yellow');
+    case 'invalidated':
+      return colorize(`refuse, re-registered ${kept.reRegistered.at.slice(0, 16)}`, 'yellow');
+  }
+}
+
+/**
+ * Which nodes an install would touch, as a table rather than a comma list at the end of a line.
+ *
+ * On 2026-09-26 the dry run said "would install on 23 node(s): …" in a single line among ten others,
+ * an operator who meant to install on one read past it, and `--execute` ran on all 23. The count
+ * leads, against the roster's size, so "23 of 23" reads as the whole fleet; the rows the roster
+ * holds back are listed with their reasons, so an intended exclusion that did not take is visible
+ * as a missing line. With `orgId`, each row also says what happens to the pairing code an earlier
+ * run kept for it — including the day-old one that would otherwise go out unannounced.
+ */
+function printInstallTargets(
+  roster: LoadedFleetRoster,
+  run: readonly FleetNode[],
+  skipped: readonly { node: FleetNode; why: string }[],
+  args: FleetArgs,
+  codes: { orgId?: string },
+): void {
+  const { orgId } = codes;
+  console.log('');
+  console.log(bold(`Would install on ${run.length} of ${roster.nodes.length} rostered node(s):`));
+  const rows = run.map((n) => [n.name, n.ip, ...(orgId === undefined ? [] : [keptCodeCell(assessKeptPairingCode(n.ip, orgId))])]);
+  const table = renderTable(rows, ['NODE', 'ADDRESS', ...(orgId === undefined ? [] : ['PAIRING CODE'])]);
+  for (const line of table.split('\n')) console.log(`  ${line}`);
+  if (skipped.length) {
+    console.log(colorize(`Not attempted (${skipped.length}):`, 'dim'));
+    for (const s of skipped) console.log(colorize(`  ${s.node.name}: ${s.why}`, 'dim'));
+  }
+  if (args.nodes.length === 0 && run.length > 1) {
+    console.log(colorize('  --nodes <name,...> narrows this run; "skip" in the roster takes a node out of every fleet command.', 'dim'));
+  }
+  console.log('');
+}
+
 /**
  * `cihub fleet install` — stand a Hub up on every selected node.
  *
@@ -1873,7 +1961,10 @@ async function runInstall(args: FleetArgs): Promise<void> {
 
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
-    console.log(`  would install on ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
+    printInstallTargets(roster, run, skipped, args, {
+      // Only when the run would mint: a `--code` run sends the code it was given and reads no store.
+      orgId: resolvePairingCodeStrategy({ code: args.code, canMint, nodeCount: run.length }).kind === 'mint' ? (storedLogin?.orgId ?? '') : undefined,
+    });
     if (args.claimEmail) {
       console.log(`  each would then be claimed for ${args.claimEmail}`);
     } else {
@@ -1882,7 +1973,12 @@ async function runInstall(args: FleetArgs): Promise<void> {
     console.log('  each would then get a `sudo tailscale cert <its MagicDNS name>`, skipped with a reason where HTTPS is off or tailscale is absent');
     if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
     if (canMint) {
-      console.log(colorize(`  would mint a pairing code per node as ${storedLogin?.orgSlug ?? storedLogin?.orgId}`, 'dim'));
+      console.log(
+        colorize(
+          `  would mint a pairing code per node as ${storedLogin?.orgSlug ?? storedLogin?.orgId}, reusing one an earlier run kept for up to ${describePairingCodeAge(MAX_PENDING_PAIRING_CODE_AGE_MS)}`,
+          'dim',
+        ),
+      );
       // The scope split cost a live run two 401s to discover: `device:pair` mints, but everything
       // that touches a device Portal already knows — listing, releasing, re-registering — is
       // `device:manage`, and so is the replacement a refused code needs.
@@ -1925,6 +2021,9 @@ async function runInstall(args: FleetArgs): Promise<void> {
     process.exit(2);
   }
 
+  // The same count the dry run leads with, printed on a real run too, before any node is dialled.
+  console.log(bold(`Installing on ${run.length} of ${roster.nodes.length} rostered node(s): ${run.map((n) => n.name).join(', ')}`));
+
   // Where a node that has no `cihub` — or an older one — gets one. Decided once, here, so a run with
   // no way to get the binary says so on its first node rather than after that node's Portal device
   // exists, and so `latest` is one tag for the whole run.
@@ -1940,19 +2039,26 @@ async function runInstall(args: FleetArgs): Promise<void> {
     // the node — the last step before `register`. A kept code survives a failed attempt; a spent one
     // is forgotten once the Hub reports registered. A kept code that a later `fleet devices
     // re-register` has replaced is refused by name: Portal honours only the newest, and sending the
-    // old one is a twenty-minute `hub up` ending in "Pairing failed" (core-1, 2026-09-20).
+    // old one is a twenty-minute `hub up` ending in "Pairing failed" (core-1, 2026-09-20). A kept code
+    // older than a day is dropped and replaced rather than sent — and every reuse says its age, which
+    // core-6's "reusing the code minted 2026-09-23T03:14" three days later did not.
     const orgId = storedLogin?.orgId ?? '';
     const mint =
       strategy.kind === 'given'
         ? undefined
         : async () => {
-            const pending = readPendingPairingCode(node.ip, orgId);
-            if (pending) {
-              const invalidated = findInvalidatingReRegistration(pending);
-              if (invalidated) throw new Error(describeInvalidatedPairingCode(pending, invalidated));
-              const origin = pending.reRegisteredAt ? 're-registered' : 'minted';
-              return { code: pending.pairingCode, detail: `reusing the code ${origin} ${pending.mintedAt.slice(0, 16)} for ${pending.slug}` };
+            const kept = assessKeptPairingCode(node.ip, orgId);
+            if (kept.kind === 'invalidated') throw new Error(describeInvalidatedPairingCode(kept.pending, kept.reRegistered));
+            if (kept.kind === 'reuse') {
+              return { code: kept.pending.pairingCode, detail: `reusing ${describeKeptPairingCode(kept.pending, kept.ageMs)}` };
             }
+            // Said on the node's line whatever happens next, so a replacement is never silent either.
+            let dropped: string | undefined;
+            if (kept.kind === 'too-old') {
+              clearPendingPairingCode(node.ip);
+              dropped = `dropped ${describeKeptPairingCode(kept.pending, kept.ageMs)}, older than the ${describePairingCodeAge(MAX_PENDING_PAIRING_CODE_AGE_MS)} a kept code is reused for`;
+            }
+            const withDropped = (detail: string) => (dropped ? `${dropped}; ${detail}` : detail);
             try {
               const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
               savePendingPairingCode({
@@ -1964,10 +2070,36 @@ async function runInstall(args: FleetArgs): Promise<void> {
                 orgId,
                 mintedAt: new Date().toISOString(),
               });
-              return { code: minted.pairingCode, detail: `registered as ${minted.slug}` };
+              return { code: minted.pairingCode, detail: withDropped(`registered as ${minted.slug}`) };
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
-              throw new Error(/already exists/.test(message) ? describeDeviceNameConflict(node.name, findReRegistration(node.name, orgId)) : message);
+              if (!/already exists/.test(message)) throw new Error(withDropped(message));
+              if (kept.kind !== 'too-old') throw new Error(describeDeviceNameConflict(node.name, findReRegistration(node.name, orgId)));
+              // Minting first is what a released device needs: its row is gone and a new one is the
+              // fix. A 409 means the row outlived its code instead, so the fresh code is a re-register
+              // of that row — the same replacement a code Portal refused gets, and as then, only a
+              // device:manage login can ask for it.
+              if (storedScope !== DEVICE_MANAGE_SCOPE) {
+                throw new Error(
+                  withDropped(
+                    `a device named "${node.name}" still exists in this org, and replacing its code is a re-register, which needs 'cihub login --scope ${DEVICE_MANAGE_SCOPE}' (this run holds ${storedScope ?? 'none'}). Rerun after that, delete the device in Portal and rerun, or pass --code.`,
+                  ),
+                );
+              }
+              try {
+                const fresh = await reRegisterPortalDevice({ login: storedLogin as PortalLogin, deviceId: kept.pending.deviceId });
+                recordReRegisteredPairingCode({
+                  device: { id: kept.pending.deviceId, name: kept.pending.name, slug: kept.pending.slug },
+                  deviceId: fresh.deviceId,
+                  pairingCode: fresh.pairingCode,
+                  orgId,
+                  roster: roster.nodes,
+                });
+                return { code: fresh.pairingCode, detail: withDropped(`re-registered ${kept.pending.slug} for a fresh one`) };
+              } catch (reRegisterError) {
+                const why = reRegisterError instanceof Error ? reRegisterError.message : String(reRegisterError);
+                throw new Error(withDropped(`a device named "${node.name}" still exists, and re-registering it for a fresh code failed: ${why}`));
+              }
             }
           };
 
@@ -2838,13 +2970,22 @@ async function runDevices(args: FleetArgs): Promise<void> {
       // has already done its part, so a store this machine cannot write is a warning, not a failure.
       let kept: ReturnType<typeof recordReRegisteredPairingCode>;
       try {
+        const roster = loadFleetRoster();
         kept = recordReRegisteredPairingCode({
           device: { id: device.id, name: device.name, slug: device.slug },
           deviceId: minted.deviceId,
           pairingCode: minted.pairingCode,
           orgId: organizationId,
-          roster: loadFleetRoster().nodes,
+          roster: roster.nodes,
         });
+        // A roster refused for an unrecognised skip lists no nodes, which would otherwise read here
+        // as "no roster node is named core-6" — true of the parse, false of the file.
+        if (!kept.ip && roster.problem?.kind === 'invalid-skip') {
+          kept = {
+            ...kept,
+            why: `the roster at ${roster.problem.path} was not read — it has a "skip" no fleet command recognises ('${BASE_COMMAND} fleet list' names the rows) — so the code was kept for none`,
+          };
+        }
       } catch (error) {
         kept = { why: `the code could not be kept for fleet install (${error instanceof Error ? error.message : String(error)})` };
       }
@@ -2882,6 +3023,22 @@ async function runDevices(args: FleetArgs): Promise<void> {
     console.log(
       `${colorize('✓', 'green')} ${device.name} — released from ${orgLabel}${result.warnings?.length ? ` (${result.warnings.join('; ')})` : ''}`,
     );
+    // A code kept for the row just deleted can never pair, and the "fresh install" promised below
+    // would otherwise send it first — a twenty-minute `hub up` ending in a 410. Portal has already
+    // done its part, so a store this machine cannot write is a warning, not a failure.
+    try {
+      const forgotten = forgetReleasedDevice({ id: device.id, name: device.name, slug: device.slug }, organizationId);
+      if (forgotten.length) {
+        console.log(colorize(`  forgot the pairing code kept for it (minted ${forgotten.map((c) => c.mintedAt.slice(0, 16)).join(', ')})`, 'dim'));
+      }
+    } catch (error) {
+      console.log(
+        colorize(
+          `  could not forget the pairing code kept for it (${error instanceof Error ? error.message : String(error)}); the next install may send it once and fail at register`,
+          'yellow',
+        ),
+      );
+    }
     console.log(
       colorize(`  a fresh '${BASE_COMMAND} fleet install --nodes ${device.name}' can now enrol it into the org this login belongs to`, 'dim'),
     );

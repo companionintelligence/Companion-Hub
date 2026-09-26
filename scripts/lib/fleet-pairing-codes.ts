@@ -37,6 +37,13 @@
  * says "Get a new pairing code before trying again" and the DNS error from #1582 was followed by a
  * `410` on the very same code. Those answers spend the code without registering the Hub; keeping it
  * would buy the next run a twenty-minute `hub up` ending in the 410 it was trying to avoid.
+ *
+ * A kept code can also just be old. On 2026-09-26 core-6's install went out with "reusing the code
+ * minted 2026-09-23T03:14" — three days on, with nothing on the line to say the code was older than
+ * the run. A kept code exists to bridge a retry, so one older than `MAX_PENDING_PAIRING_CODE_AGE_MS`
+ * is dropped and replaced before anything is sent, and every reuse says how old the code is. A
+ * release (`fleet devices release`) forgets the device's codes outright: the row they belonged to is
+ * gone, so none of them can pair.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -68,6 +75,46 @@ interface Store {
   codes: Record<string, PendingPairingCode>;
   /** By org and device, latest only. */
   reRegistered: Record<string, ReRegisteredDevice>;
+}
+
+/**
+ * How long a kept code is reused before `fleet install` drops it and gets a fresh one.
+ *
+ * Portal's own lifetime is the ceiling, not the target: CI-Portal's `PAIRING_CODE_TTL_MS` is seven
+ * days (migration 0060, 2026-09-10), and its own comment calls that number a guess to be shortened.
+ * Nothing in the mint response carries it, so this side cannot learn it per code. A day sits well
+ * inside it for three reasons:
+ *
+ * - The store's job is to bridge a retry. A code a day old belongs to an attempt nobody retried
+ *   that day, and the Portal state it was minted against — the device row, a release, a re-register
+ *   from another machine — is no longer anything this machine can vouch for. core-1's code that
+ *   failed at register on 2026-09-20 had been kept since the day before.
+ * - A dead code is only found out at `register`, after a `hub up` of up to twenty minutes, so the
+ *   check has to run before that, on age alone.
+ * - Portal's seven days may shrink without this CLI shipping; a day survives any plausible cut.
+ */
+export const MAX_PENDING_PAIRING_CODE_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How long ago the code was minted (or re-registered). An unparseable `mintedAt` is infinitely old:
+ * a code whose age cannot be read cannot be shown to be young enough to send.
+ */
+export function pendingPairingCodeAgeMs(pending: Pick<PendingPairingCode, 'mintedAt'>, now = Date.now()): number {
+  const minted = Date.parse(pending.mintedAt);
+  return Number.isNaN(minted) ? Number.POSITIVE_INFINITY : Math.max(0, now - minted);
+}
+
+/** `3d 2h`, `5h 12m`, `14m` — an age an operator reads at a glance, precise enough to spot "days". */
+export function describePairingCodeAge(ms: number): string {
+  if (!Number.isFinite(ms)) return 'an unknown time';
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return 'under a minute';
+  const days = Math.floor(minutes / 1440);
+  const hours = Math.floor((minutes % 1440) / 60);
+  if (days > 0) return hours ? `${days}d ${hours}h` : `${days}d`;
+  const mins = minutes % 60;
+  if (hours > 0) return mins ? `${hours}h ${mins}m` : `${hours}h`;
+  return `${mins}m`;
 }
 
 export function pendingPairingCodesPath(loginPath = loginFilePath()): string {
@@ -126,6 +173,29 @@ export function clearPendingPairingCode(ip: string, file = pendingPairingCodesPa
 }
 
 const lower = (value: string | undefined): string => (value ?? '').trim().toLowerCase();
+
+/**
+ * Forget everything kept for a device Portal has just deleted: its codes, at any address, and the
+ * record of any re-register. A code for a deleted row can never pair, so keeping it only buys the
+ * next `fleet install` a twenty-minute `hub up` ending in a 410 — and a re-register record would
+ * explain the fresh device's name conflict with a code that no longer exists. Returns the codes
+ * dropped, for the caller to mention.
+ */
+export function forgetReleasedDevice(
+  device: { id: string; name: string; slug?: string },
+  orgId: string,
+  file = pendingPairingCodesPath(),
+): PendingPairingCode[] {
+  const store = readStore(file);
+  const identity = { deviceId: device.id, name: device.name, slug: device.slug };
+  const codes = Object.values(store.codes).filter((entry) => entry.orgId === orgId && sameDevice(entry, identity));
+  const records = Object.entries(store.reRegistered).filter(([, record]) => record.orgId === orgId && sameDevice(record, identity));
+  if (codes.length === 0 && records.length === 0) return [];
+  for (const entry of codes) delete store.codes[entry.ip];
+  for (const [key] of records) delete store.reRegistered[key];
+  writeStore(file, store);
+  return codes;
+}
 
 /**
  * Whether a Portal device and a kept code (or a re-register record) are the same device, by any of
@@ -256,6 +326,33 @@ export function describeInvalidatedPairingCode(pending: PendingPairingCode, reRe
     `the code kept for ${pending.name} was minted ${pending.mintedAt.slice(0, 16)}, but 'cihub fleet devices re-register' at ${reRegistered.at.slice(0, 16)} replaced it — Portal accepts only the newest.`,
     'Pass the code that re-register printed with --code, or re-register again and rerun.',
   ].join(' ');
+}
+
+/**
+ * What `fleet install` would do with the code kept for a node, decided once so the dry run's plan and
+ * the run itself cannot disagree. Reads the store and nothing else; changes nothing.
+ */
+export type KeptPairingCode =
+  | { kind: 'none' }
+  | { kind: 'reuse'; pending: PendingPairingCode; ageMs: number }
+  | { kind: 'too-old'; pending: PendingPairingCode; ageMs: number }
+  | { kind: 'invalidated'; pending: PendingPairingCode; reRegistered: ReRegisteredDevice };
+
+export function assessKeptPairingCode(ip: string, orgId: string, options: { now?: number; file?: string } = {}): KeptPairingCode {
+  const file = options.file ?? pendingPairingCodesPath();
+  const pending = readPendingPairingCode(ip, orgId, file);
+  if (!pending) return { kind: 'none' };
+  // Checked before age: it names the exact reason and the exact code to send instead.
+  const reRegistered = findInvalidatingReRegistration(pending, file);
+  if (reRegistered) return { kind: 'invalidated', pending, reRegistered };
+  const ageMs = pendingPairingCodeAgeMs(pending, options.now);
+  return ageMs <= MAX_PENDING_PAIRING_CODE_AGE_MS ? { kind: 'reuse', pending, ageMs } : { kind: 'too-old', pending, ageMs };
+}
+
+/** `the code minted 2026-09-23T03:14 for core-6 (3d 2h ago)` — what every line about a kept code says. */
+export function describeKeptPairingCode(pending: PendingPairingCode, ageMs: number): string {
+  const origin = pending.reRegisteredAt ? 're-registered' : 'minted';
+  return `the code ${origin} ${pending.mintedAt.slice(0, 16)} for ${pending.slug} (${describePairingCodeAge(ageMs)} ago)`;
 }
 
 /**
