@@ -36,6 +36,7 @@ import { LemonadeBackend } from '../backends/lemonade.backend';
 import { OmlxBackend } from '../backends/omlx.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 
 describe('InferenceController — preferences', () => {
   let controller: InferenceController;
@@ -60,6 +61,8 @@ describe('InferenceController — preferences', () => {
         { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
         { provide: RocmInstallerService, useValue: mock<RocmInstallerService>() },
         { provide: AppCredentialsService, useValue: appCredentials },
+        // AppContainerOriginGuard (on the bootstrap-handout routes) is built with the controller.
+        { provide: DockerReadFacade, useValue: mock<DockerReadFacade>() },
         { provide: HostMetricsService, useValue: mock<HostMetricsService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },

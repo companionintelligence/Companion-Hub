@@ -6,8 +6,10 @@ import { LoggerService } from '@/core/logger/logger.service';
  * Admit a request only when it provably originated inside the appliance — no credential leg.
  *
  * For routes that are app-only and hand out material an app needs before it has any credential of
- * its own: `GET /api/inference/apps/:slug/credentials*`, which CI-OpenClaw and CI-Hermes fetch at
- * container start, and whose body can carry a configured cloud provider's API key. Apps reach
+ * its own. The bootstrap handout (`GET /api/inference/apps/:slug/credentials*`, which CI-OpenClaw
+ * and CI-Hermes fetch at container start, and whose body can carry a configured cloud provider's
+ * API key) now sits behind `AppContainerOriginGuard`, which runs this same check and then also
+ * requires the source address to belong to a running container of the slug's app. Apps reach
  * those routes container-to-container, which traverses no proxy, so a request carrying proxy
  * provenance is not one of them. {@link InternalNetworkGuard} alone let such a request through:
  * behind the Cloudflare tunnel `request.ip` is the proxy's own private address unless
