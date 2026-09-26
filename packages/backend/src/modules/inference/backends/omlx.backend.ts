@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
+import axios from 'axios';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import { HardwareInspectorService } from '../hardware-inspector.service';
 import type { InferenceBackend } from './backend.interface';
 import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
-import { foreignEngineHealth, openAiModelIds } from './engine-identity';
+import { foreignEngineHealth, openAiModelIds, openAiModelOwner } from './engine-identity';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
 
 /**
@@ -29,6 +31,27 @@ export function buildOmlxRemediation(): { command: string; hint: string } {
 
 export const resolveOmlxProbeUrl = resolveHostBackendProbeUrl;
 
+/**
+ * Reported without probing when the host is not Apple Silicon and no oMLX URL is set. oMLX's
+ * default port is vLLM's, so on a Linux node the default URL can only reach vLLM or nothing.
+ */
+export const OMLX_NOT_APPLE_SILICON_ERROR =
+  'oMLX runs only on Apple Silicon and this host is not, so the Hub does not probe for it. ' +
+  'To use an oMLX server on another machine, set its URL in Settings → AI or OMLX_URL.';
+
+/**
+ * oMLX's own `GET /health` body: `status` "healthy" (or "loading", with a 503, while pinned models
+ * preload) beside an `engine_pool` key, per `health()` in jundot/omlx server.py from v0.2.10 on.
+ * It identifies oMLX where `/v1/models` cannot: that list has no `owned_by` to read until a model
+ * is installed, and it wants an API key once oMLX listens beyond loopback. vLLM's `/health` is an
+ * empty 200 and llama-server's is `{"status":"ok"}`.
+ */
+export function isOmlxHealthBody(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const { status } = body as { status?: unknown };
+  return (status === 'healthy' || status === 'loading') && 'engine_pool' in body;
+}
+
 @Injectable()
 export class OmlxBackend implements InferenceBackend {
   readonly type = 'omlx' as const;
@@ -37,41 +60,80 @@ export class OmlxBackend implements InferenceBackend {
   constructor(
     private readonly logger: LoggerService,
     private readonly configuration: ConfigurationService,
+    private readonly hardwareInspector: HardwareInspectorService,
   ) {}
 
   getBaseUrl(): string {
-    const configured = this.configuration.getInferencePreferences().preferredOmlxUrl?.trim();
     const host = detectHubContainer() ? 'host.docker.internal' : 'localhost';
-    return resolveOmlxProbeUrl(configured || process.env.OMLX_URL || `http://${host}:${OMLX_DEFAULT_PORT}`);
+    return resolveOmlxProbeUrl(this.configuredUrl() || `http://${host}:${OMLX_DEFAULT_PORT}`);
   }
 
   getApiKey(): string | undefined {
     return process.env.OMLX_API_KEY?.trim() || undefined;
   }
 
+  /** The operator's own oMLX address: Settings first, then OMLX_URL. Undefined means the default. */
+  private configuredUrl(): string | undefined {
+    return this.configuration.getInferencePreferences().preferredOmlxUrl?.trim() || process.env.OMLX_URL?.trim() || undefined;
+  }
+
+  /** An unreadable profile is not evidence against Apple Silicon, and the identity check still applies. */
+  private async mayHostOmlx(): Promise<boolean> {
+    const profile = await this.hardwareInspector.getProfile().catch(() => null);
+    return !profile || profile.gpu.vendor === 'apple';
+  }
+
+  /**
+   * `running` means oMLX answered, not that something did: taking any `/v1/models` answer as oMLX
+   * reported it running on every fleet node where vLLM held port 8000. The default URL is probed
+   * only on Apple Silicon; a URL the operator gave is always probed, since a Linux Hub may use a
+   * Mac's oMLX. Either way the server must name itself `omlx` or answer `/health` as oMLX does.
+   */
   async healthCheck(baseUrlOverride?: string): Promise<BackendHealthStatus> {
-    const baseUrl = baseUrlOverride ? resolveOmlxProbeUrl(normalizeHostBackendUrl(baseUrlOverride)) : this.getBaseUrl();
-    try {
-      const body = await this.api.fetchModels(baseUrl, { timeout: 5000, apiKey: this.getApiKey() });
-      const foreign = foreignEngineHealth('omlx', body, baseUrl);
-      if (foreign) return foreign;
-      return { running: true, healthy: true, modelsLoaded: openAiModelIds(body) };
-    } catch (err) {
+    const explicitUrl = baseUrlOverride?.trim() || this.configuredUrl();
+    if (!explicitUrl && !(await this.mayHostOmlx())) {
+      return { running: false, healthy: false, modelsLoaded: [], error: OMLX_NOT_APPLE_SILICON_ERROR };
+    }
+    const baseUrl = baseUrlOverride?.trim() ? resolveOmlxProbeUrl(normalizeHostBackendUrl(baseUrlOverride)) : this.getBaseUrl();
+
+    const [health, models] = await Promise.allSettled([
+      // Any status: oMLX answers 503 while it preloads, and that body identifies it as well as a 200.
+      axios.get(`${baseUrl}/health`, { timeout: 5000, validateStatus: () => true }),
+      this.api.fetchModels(baseUrl, { timeout: 5000, apiKey: this.getApiKey() }),
+    ]);
+    const healthSaysOmlx = health.status === 'fulfilled' && isOmlxHealthBody(health.value.data);
+
+    if (models.status === 'rejected') {
+      const message = models.reason instanceof Error ? models.reason.message : String(models.reason);
+      if (!healthSaysOmlx) return { running: false, healthy: false, modelsLoaded: [], error: message };
+      const status = axios.isAxiosError(models.reason) ? models.reason.response?.status : undefined;
+      const hint =
+        status === 401 || status === 403
+          ? ' oMLX asks for an API key on /v1/models once it listens beyond loopback. Set OMLX_API_KEY to one of its keys.'
+          : '';
+      return { running: true, healthy: false, modelsLoaded: [], error: `${message}.${hint}` };
+    }
+
+    const body = models.value;
+    const foreign = foreignEngineHealth('omlx', body, baseUrl);
+    if (foreign) return { ...foreign, running: false };
+    if (openAiModelOwner(body) !== 'omlx' && !healthSaysOmlx) {
       return {
         running: false,
         healthy: false,
         modelsLoaded: [],
-        error: err instanceof Error ? err.message : String(err),
+        error:
+          `The server at ${baseUrl} answers GET /v1/models but is not oMLX: no model is owned_by "omlx" and GET /health ` +
+          `is not oMLX's. Point Settings → AI or OMLX_URL at the oMLX server, or add any other OpenAI-compatible server as a decode endpoint.`,
       };
     }
+    return { running: true, healthy: true, modelsLoaded: openAiModelIds(body) };
   }
 
+  /** From {@link healthCheck}, so the model list and the status agree on whose server this is. */
   async listModels(): Promise<BackendModelInfo[]> {
-    try {
-      return await this.api.listModels(this.getBaseUrl(), { timeout: 10000, apiKey: this.getApiKey(), claimedBy: 'omlx' });
-    } catch {
-      return [];
-    }
+    const health = await this.healthCheck();
+    return health.healthy ? health.modelsLoaded.map((id) => ({ id, name: id, size: 0, loaded: true })) : [];
   }
 
   async pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
