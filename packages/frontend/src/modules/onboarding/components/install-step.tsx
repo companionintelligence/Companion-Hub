@@ -251,8 +251,9 @@ export const InstallStep = ({
             visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
             vllmApiKey: aiSetupConfig.vllmApiKey ?? null,
             vllmUrl: configuredOrAutomaticUrl(aiSetupConfig.vllmUrl, 'vllm'),
-            mtplxUrl: configuredOrAutomaticUrl(aiSetupConfig.mtplxUrl, 'mtplx'),
-            dsparkUrl: configuredOrAutomaticUrl(aiSetupConfig.dsparkUrl, 'dspark'),
+            omlxUrl: configuredOrAutomaticUrl(aiSetupConfig.omlxUrl, 'omlx'),
+            decodeEndpoint: aiSetupConfig.decodeEndpoint ?? null,
+            encodeEndpoint: aiSetupConfig.encodeEndpoint ?? null,
           });
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));

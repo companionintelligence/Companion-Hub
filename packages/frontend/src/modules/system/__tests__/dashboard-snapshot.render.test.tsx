@@ -251,7 +251,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           models: [{ id: 'Qwen/Qwen3.5-9B', engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength: null, quantization: null }],
         },
         { backend: 'lemonade', source: 'unreachable', models: null, error: 'connection refused' },
-        { backend: 'lucebox', source: 'unsupported', models: null },
+        { backend: 'omlx', source: 'unsupported', models: null },
       ],
       residentCount: 2,
       sampledAt: secondsAgo(5),

@@ -590,6 +590,10 @@ export const getLemonadeStatus = <ThrowOnError extends boolean = false>(options?
 
 export const getVllmStatus = <ThrowOnError extends boolean = false>(options?: Options<GetVllmStatusData, ThrowOnError>) => (options?.client ?? client).get<GetVllmStatusResponses, unknown, ThrowOnError>({ url: '/api/inference/vllm/status', ...options });
 
+export const getOmlxStatus = <ThrowOnError extends boolean = false>(options?: Options<GetVllmStatusData, ThrowOnError>) => (options?.client ?? client).get<GetVllmStatusResponses, unknown, ThrowOnError>({ url: '/api/inference/omlx/status', ...options });
+
+export const getManualEndpointStatus = <ThrowOnError extends boolean = false>(options?: Options<GetVllmStatusData, ThrowOnError>) => (options?.client ?? client).get<GetVllmStatusResponses, unknown, ThrowOnError>({ url: '/api/inference/manual-endpoint/status', ...options });
+
 export const getDsparkStatus = <ThrowOnError extends boolean = false>(options?: Options<GetDsparkStatusData, ThrowOnError>) => (options?.client ?? client).get<GetDsparkStatusResponses, unknown, ThrowOnError>({ url: '/api/inference/dspark/status', ...options });
 
 export const getMtplxStatus = <ThrowOnError extends boolean = false>(options?: Options<GetMtplxStatusData, ThrowOnError>) => (options?.client ?? client).get<GetMtplxStatusResponses, unknown, ThrowOnError>({ url: '/api/inference/mtplx/status', ...options });

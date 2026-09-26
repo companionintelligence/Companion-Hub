@@ -212,13 +212,14 @@ describe('InstallStep', () => {
         visionModel: null,
         vllmApiKey: null,
         vllmUrl: null,
-        mtplxUrl: null,
-        dsparkUrl: null,
+        omlxUrl: null,
+        decodeEndpoint: null,
+        encodeEndpoint: null,
       });
     });
   });
 
-  it('installs only mlx-dspark and Ollama for the Mac speculative-inference FTUE', async () => {
+  it('installs oMLX for the Apple Silicon first-run set', async () => {
     const invoke = vi.fn().mockResolvedValue([]);
     (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
 
@@ -231,7 +232,7 @@ describe('InstallStep', () => {
           remoteAccess: [],
           selectedModels: [],
           installedCatalogIds: [],
-          backend: 'dspark',
+          backend: 'omlx',
           cloudProviders: [],
           skipped: false,
         }}
@@ -240,7 +241,7 @@ describe('InstallStep', () => {
 
     await waitFor(() => {
       expect(invoke).toHaveBeenCalledWith('install_and_start_inference_runners_command', {
-        backends: ['dspark', 'ollama'],
+        backends: ['omlx'],
       });
     });
   });
@@ -278,8 +279,9 @@ describe('InstallStep', () => {
           visionModel: null,
           vllmApiKey: null,
           vllmUrl: null,
-          mtplxUrl: null,
-          dsparkUrl: null,
+          omlxUrl: null,
+          decodeEndpoint: null,
+          encodeEndpoint: null,
         });
       },
       { timeout: 5000 },
@@ -328,8 +330,9 @@ describe('InstallStep', () => {
           visionModel: null,
           vllmApiKey: null,
           vllmUrl: null,
-          mtplxUrl: null,
-          dsparkUrl: null,
+          omlxUrl: null,
+          decodeEndpoint: null,
+          encodeEndpoint: null,
         });
       },
       { timeout: 5000 },
