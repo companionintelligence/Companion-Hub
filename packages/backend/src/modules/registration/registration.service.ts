@@ -67,6 +67,7 @@ import {
 } from './tunnel-markers';
 import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
+import { PortalPushKeyService } from './portal-push-key.service';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
@@ -301,6 +302,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     @Optional() private readonly tunnelHealthService?: TunnelHealthService,
     @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
+
+  /**
+   * Lazily, and optional: the check-in must not depend on the key store being wired, and the
+   * service's tests build this class without it.
+   */
+  private portalPushKey(): PortalPushKeyService | null {
+    try {
+      return this.moduleRef?.get(PortalPushKeyService, { strict: false }) ?? null;
+    } catch {
+      return null;
+    }
+  }
 
   private portalAxiosConfig() {
     const { ciCloudUrl } = this.config.getConfig();
@@ -972,6 +985,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // `check-in-payload.ts` for the rules that govern the body, and `CheckIn.ts` on the Portal
       // side for the field-absent-vs-blank contract they follow.
       const diagnostics = await this.collectCheckInDiagnostics();
+      const pushKeyService = this.portalPushKey();
+      const pushKey = pushKeyService ? await pushKeyService.checkInFields() : null;
 
       // Confirm that Companion Portal still considers the device active. The
       // check-in endpoint authenticates with the registered device's
@@ -987,6 +1002,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           phase: this._currentPhase,
           degradedReasons: this._degradedReasons,
           ...diagnostics,
+          pushKey,
         }),
         {
           timeout: 5_000,
@@ -1081,6 +1097,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       this.consecutiveValidationFailures = 0;
       this.portalRejectedSince = null;
       this.reconcileOperatorMembershipsAfterCheckIn();
+      // Portal's answer names the push key it holds; this is what retires the device key as a bearer.
+      await pushKeyService?.acknowledge(response.data);
 
       // A successful check-in restores a registration degraded by remote failures.
       if (this._currentPhase === 'degraded') {
@@ -1221,6 +1239,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
     this.portalRejectedSince = null;
+    // The next Portal this Hub pairs with must receive a push key of its own.
+    await this.portalPushKey()?.forget();
 
     // Stop validation before removing its registration state.
     if (this.periodicValidationInterval) {

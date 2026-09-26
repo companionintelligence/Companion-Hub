@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
@@ -23,6 +24,25 @@ import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from './modules/auth/sessi
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
+  /**
+   * The host-local credential `cihub` presents on the box (claim, doctor, pool). Minted once into
+   * `state/settings.json` and never rotated here — an operator who wants it rotated deletes the key
+   * from the file and restarts. It replaced the Portal DEVICE key in that role, which is also held by
+   * first-party Memory (`AppHelpers`) and so could not stay a Hub credential. See AuthMiddleware.
+   */
+  private async ensureHubLocalKey(): Promise<void> {
+    if (this.configuration.getConfig().hubLocalKey) {
+      return;
+    }
+    try {
+      await this.configuration.setFileOnlySettings({ hubLocalKey: randomBytes(32).toString('hex') });
+      this.logger.info('Minted the host-local key into state/settings.json');
+    } catch (error) {
+      // Boot goes on: `cihub` on the box reports a missing key with the paths it checked.
+      this.logger.warn(`Could not mint the host-local key: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private isDockerBootstrapPermissionIssue(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
 
@@ -66,6 +86,8 @@ export class AppService implements OnApplicationShutdown {
       // may itself be restarting or waiting on Docker DNS. Bounded wait, then fail loudly.
       await this.databaseService.waitUntilReady();
       await this.databaseService.migrate();
+
+      await this.ensureHubLocalKey();
       this.logger.info('Database migration completed');
 
       // No key is seeded at boot. Every MCP key is created deliberately by an operator (Settings →

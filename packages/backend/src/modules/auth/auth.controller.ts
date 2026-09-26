@@ -329,7 +329,7 @@ export class AuthController {
   /**
    * The Hub's own state, for the one caller that can do something about it.
    *
-   * Behind the device key rather than public: "this appliance has nobody on it" is exactly the
+   * Behind the host-local key rather than public: "this appliance has nobody on it" is exactly the
    * sentence you would want before deciding to attack one, and the only caller who needs it —
    * `cihub doctor` on the box itself — already holds the key.
    */
@@ -410,14 +410,17 @@ export class AuthController {
   }
 
   /**
-   * The device key, and nothing else, admits a caller to the claim routes.
+   * The host-local key, and nothing else, admits a caller to the claim routes.
    *
-   * A session would be circular (there is no operator to hold one) and the CLI JWT is not accepted
+   * A session would be circular (there is no operator to hold one); the CLI JWT is not accepted
    * because it is minted by the backend for its own callers rather than presented by an operator
-   * who can read the state file.
+   * who can read the state file; and Portal's push key (`portal-device`) is Portal, not someone on
+   * the box. The host-local key is written into `state/settings.json` at boot and read by `cihub`
+   * there, so presenting it is proof of exactly that access. (It replaced the Portal DEVICE key in
+   * this role: that key is also held by first-party Memory, which must not be able to claim a Hub.)
    */
   private requireDeviceKeyPrincipal(req: Request) {
-    if (req.hubPrincipal !== 'portal-device') {
+    if (req.hubPrincipal !== 'host-local') {
       throw new TranslatableError('AUTH_ERROR_HUB_CLAIM_REQUIRES_DEVICE_KEY', {}, HttpStatus.UNAUTHORIZED);
     }
   }

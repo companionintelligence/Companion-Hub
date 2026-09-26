@@ -2237,7 +2237,7 @@ describe('AuthController', () => {
    * become an operator have one home and cannot drift.
    */
   describe('POST /auth/hub/claim', () => {
-    const claimReq = (over: Partial<Request> = {}) => ({ hubPrincipal: 'portal-device', ...over }) as unknown as Request;
+    const claimReq = (over: Partial<Request> = {}) => ({ hubPrincipal: 'host-local', ...over }) as unknown as Request;
 
     const keyOf = (error: unknown) => {
       const response = (error as TranslatableError).getResponse();
@@ -2262,11 +2262,13 @@ describe('AuthController', () => {
       expect(authService.admitHubPerson).toHaveBeenCalledWith({ issuer: '', subject: null, email: 'Owner@Example.com', emailVerified: false });
     });
 
-    it('refuses a caller who did not present the host-local device key', async () => {
-      // Pairing proves the ORG. The device key proves you are ON THE HUB — it lives in
+    it('refuses a caller who did not present the host-local key', async () => {
+      // Pairing proves the ORG. The host-local key proves you are ON THE HUB — it lives in
       // state/settings.json, so presenting it means you could already read the Hub's credentials off
       // the disk. Without it this route would let anyone who can reach port 5002 own the appliance.
-      for (const principal of [undefined, 'session', 'cli'] as const) {
+      // `portal-device` is Portal's push key, held by Portal (and, in its old form, by first-party
+      // Memory's container): neither is someone on the box.
+      for (const principal of [undefined, 'session', 'cli', 'portal-device'] as const) {
         const error = await authController.claimHub({ email: 'a@b.co' } as never, claimReq({ hubPrincipal: principal })).catch((err) => err);
 
         expect(keyOf(error)).toBe('AUTH_ERROR_HUB_CLAIM_REQUIRES_DEVICE_KEY');
@@ -2320,7 +2322,7 @@ describe('AuthController', () => {
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
       config.get.mockReturnValue('org-1' as never);
 
-      await expect(authController.hubClaimStatus({ hubPrincipal: 'portal-device' } as unknown as Request)).resolves.toEqual({
+      await expect(authController.hubClaimStatus({ hubPrincipal: 'host-local' } as unknown as Request)).resolves.toEqual({
         claimed: true,
         operators: 2,
         registered: true,
@@ -2332,7 +2334,7 @@ describe('AuthController', () => {
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
       config.get.mockReturnValue(null as never);
 
-      await expect(authController.hubClaimStatus({ hubPrincipal: 'portal-device' } as unknown as Request)).resolves.toEqual({
+      await expect(authController.hubClaimStatus({ hubPrincipal: 'host-local' } as unknown as Request)).resolves.toEqual({
         claimed: false,
         operators: 0,
         registered: false,
