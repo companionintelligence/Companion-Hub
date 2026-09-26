@@ -4,15 +4,8 @@ import type { SupervisionContainerState, SupervisionTarget } from './supervision
 /**
  * Container names each backend could plausibly be running under.
  *
- * `mtplx`, `dspark`, `llamacpp` and `lmstudio` have none, and that is a property of the code rather
- * than an oversight: `getDockerImage()` and `getComposeConfig()` throw unconditionally in all four
- * backends, so none of them has ever had a container to find. MTPLX and mlx-dspark run as launchd
- * LaunchAgents started by the desktop app; `llama-server` and LM Studio are started by the operator
- * themselves, which is the whole point of those two backends.
- *
- * `lucebox` has two, because two different components create it under two different names: the
- * dead compose config in `lucebox.backend.ts` uses `ci-hub-lucebox`, and the desktop's `docker run`
- * uses `ci-hub-inference-lucebox`. Both are listed; the port check below is what breaks the tie.
+ * oMLX has none. It runs on the Apple Silicon host. vLLM's container name is listed for an
+ * operator who still runs one; the product path is the host `vllm serve` command.
  */
 export const SUPERVISION_CONTAINER_CANDIDATES: Record<InferenceBackendType, readonly string[]> = {
   ollama: ['ci-hub-ollama'],

@@ -10,12 +10,8 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
-import { MtplxBackend } from '../backends/mtplx.backend';
+import { OmlxBackend } from '../backends/omlx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { DsparkBackend } from '../backends/dspark.backend';
-import { LuceboxBackend } from '../backends/lucebox.backend';
-import { LlamacppBackend } from '../backends/llamacpp.backend';
-import { LmStudioBackend } from '../backends/lmstudio.backend';
 import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -146,9 +142,7 @@ describe('AppCredentialsService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
-  let mtplxBackend: MockProxy<MtplxBackend>;
-  let dsparkBackend: MockProxy<DsparkBackend>;
-  let luceboxBackend: MockProxy<LuceboxBackend>;
+  let omlxBackend: MockProxy<OmlxBackend>;
   let configurationService: MockProxy<ConfigurationService>;
   let hubPoolPeerService: MockProxy<HubPoolPeerService>;
   let testingModule: TestingModule;
@@ -162,9 +156,7 @@ describe('AppCredentialsService', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
-    mtplxBackend = mock<MtplxBackend>();
-    dsparkBackend = mock<DsparkBackend>();
-    luceboxBackend = mock<LuceboxBackend>();
+    omlxBackend = mock<OmlxBackend>();
     configurationService = mock<ConfigurationService>();
     hubPoolPeerService = mock<HubPoolPeerService>();
     // No connected peers by default — every existing case asserts the direct-backend shape, so the
@@ -219,11 +211,7 @@ describe('AppCredentialsService', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
-        { provide: MtplxBackend, useValue: mtplxBackend },
-        { provide: DsparkBackend, useValue: dsparkBackend },
-        { provide: LuceboxBackend, useValue: luceboxBackend },
-        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
-        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
+        { provide: OmlxBackend, useValue: omlxBackend },
         InferenceBackendRegistry,
         { provide: ConfigurationService, useValue: configurationService },
         { provide: HubPoolPeerService, useValue: hubPoolPeerService },
@@ -538,26 +526,26 @@ describe('AppCredentialsService', () => {
     });
   });
 
-  describe('getCredentials — desktop-managed mlx-dspark', () => {
-    it('hands the generated API key to direct sibling-app clients', async () => {
-      const model = makeLlm('qwen-dspark', 'mlx-community/Qwen3-8B-8bit', 8000, 16000, 'dspark');
+  describe('getCredentials — host-served oMLX', () => {
+    it('hands the API key to direct sibling-app clients', async () => {
+      const model = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
       configurationService.getInferencePreferences.mockReturnValue({
-        preferredBackend: 'dspark',
-        preferredModel: 'qwen-dspark',
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
         preferredEmbeddingModel: null,
         preferredVisionModel: null,
       });
-      dsparkBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
-      dsparkBackend.getApiKey.mockReturnValue('managed-dspark-key');
-      dsparkBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
       modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
       modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
       service.invalidateCache();
 
       const config = await service.getCredentials('openclaw');
 
-      expect(config.env.OPENAI_API_KEY).toBe('managed-dspark-key');
-      expect(config.endpointUrl).toBe('http://host.docker.internal:8080/v1');
+      expect(config.env.OPENAI_API_KEY).toBe('managed-omlx-key');
+      expect(config.endpointUrl).toBe('http://host.docker.internal:8000/v1');
     });
   });
 

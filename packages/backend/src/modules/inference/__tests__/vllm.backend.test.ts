@@ -51,15 +51,15 @@ describe('VllmBackend', () => {
       expect(health.modelsLoaded).toContain('llama-70b');
     });
 
-    it('yields the server to lucebox or mtplx when /v1/models says it is theirs — three backends share host port 8000', async () => {
+    it('yields the server to oMLX when /v1/models says it is theirs — both default to host port 8000', async () => {
       (axios.get as any) = vi.fn().mockResolvedValue({
-        data: { data: [{ id: 'dflash', owned_by: 'dflash' }] },
+        data: { data: [{ id: 'mlx-community/Qwen3-8B-4bit', owned_by: 'omlx' }] },
       });
 
       const health = await backend.healthCheck();
 
       expect(health).toMatchObject({ running: true, healthy: false, modelsLoaded: [] });
-      expect(health.error).toContain("the lucebox backend's server, not vllm's");
+      expect(health.error).toContain("the omlx backend's server, not vllm's");
       expect(health.error).toContain('VLLM_URL');
       await expect(backend.listModels()).resolves.toEqual([]);
     });
@@ -191,18 +191,10 @@ describe('VllmBackend', () => {
   });
 
   describe('buildVllmRemediation', () => {
-    it('suggests the CUDA bitsandbytes command on non-Apple hosts', () => {
-      const remediation = buildVllmRemediation(false);
-      expect(remediation.command).toContain('--quantization bitsandbytes');
-      expect(remediation.command).toContain('Qwen/Qwen3-4B-Instruct-2507');
-      expect(remediation.hint).not.toMatch(/vllm-metal|mlx/i);
-    });
-
-    it('suggests the vLLM-Metal install + an MLX catalog model on Apple Silicon', () => {
-      const remediation = buildVllmRemediation(true);
-      expect(remediation.command).toContain('mlx-community/Qwen3-8B-4bit');
-      expect(remediation.command).not.toContain('bitsandbytes');
-      expect(remediation.hint).toContain('vllm-metal/main/install.sh');
+    it('prints the NVIDIA serve command and sends Apple Silicon to oMLX', () => {
+      const remediation = buildVllmRemediation();
+      expect(remediation.command).toBe('vllm serve Qwen/Qwen3-4B-Instruct-2507 --host 0.0.0.0 --port 8000');
+      expect(remediation.hint).toContain('oMLX');
     });
   });
 });

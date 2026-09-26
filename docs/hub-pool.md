@@ -335,25 +335,7 @@ candidate stated a count, otherwise the demoted nodes with their queue depth and
 was moved on, and `↳ placed anyway with every slot full on …` when the request landed on one
 regardless; a row where every candidate had a free slot gets no line.
 
-### llama-server slots: the engine states them
-
-`llama-server` runs `-np` slots and, unlike Ollama, says so: `GET /props` answers `total_slots`
-and `default_generation_settings.n_ctx`, the window **each slot** gets (`-c` divided by the slot
-count — 32768 on a server started `-np 4 -c 131072`, not 131072). The `llamacpp` backend reads
-`/props` on every healthy probe and keeps the answer, so the pool can rank against it without a
-request of its own; a server that stops answering forgets it, and a server without the route (an
-older build) states nothing rather than something invented.
-
-For **this node's own** llama-server the pool believes that statement over the node's
-`inferenceOllamaSlots` and `inferenceMaxNumCtx`: the statement describes Ollama, and a window the
-engine itself runs is exactly what the cap exists to keep a request inside. A **peer's** llama-server
-is judged through the peer's statement, because the statement is all a peer advertises — which is
-why `cihub fleet backends --backends llamacpp --ollama-parallel N --ollama-context C --execute`
-writes both to the node's Hub after the server reads back that shape on `/props`, and refuses to
-when it does not (see [`cihub fleet backends`](./CLI.md#llama-server-the-same-gguf-ollama-holds-on-8081)).
-A fleet-run llama-server serves the same GGUF the node's Ollama holds under the same tag, so
-`qwen3-coder:30b` on such a node is two candidates — `local/ollama` and `local/llamacpp` — each
-placed by its own slots.
+Hub does not place work on a separate llama-server. Ollama is that engine, and the slot count above is the one the pool reads.
 
 ## Throughput-aware placement
 
@@ -596,7 +578,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
   | Header | Value |
   |---|---|
   | `X-Hub-Pool-Served-By` | `local` when this node's own engine served the request, otherwise the peer's tailnet FQDN (for example `core-14.tailxyz.ts.net`) |
-  | `X-Hub-Pool-Backend` | The engine type on the serving node: `ollama`, `vllm`, `lemonade`, `mtplx`, `dspark`, `lucebox`, `llamacpp`, or `lmstudio` |
+  | `X-Hub-Pool-Backend` | The engine type on the serving node: `ollama`, `omlx`, `vllm`, or `lemonade` |
   | `X-Hub-Pool-Model` | The model the request was routed for |
   | `X-Hub-Pool-Request-Id` | The `id` of this request's row in the routing log. Also sent to the serving peer on the `/local/*` forward, so the peer's inbound row carries the same `id` |
   | `X-Hub-Pool-Affinity` | `hit`, `miss` or `skipped` — what [prefix affinity](#prefix-affinity) did, on the chat/completion/generate routes when it is on. Absent otherwise. An app names its session for it with the `X-Hub-Pool-Session` request header |
@@ -1059,10 +1041,10 @@ Only routing reads this. `modelsLoaded` keeps its meaning as the on-disk invento
 
 ## When a node runs the model and the Hub cannot see the engine
 
-The other way a listed model earns a 502 is that the Hub never saw it listed. The Hub probes its engines **from inside its container**, at `VLLM_URL`, `LEMONADE_URL`, `SPECULATIVE_INFERENCE_URL`, `MTPLX_URL`, `DSPARK_URL`, `LMSTUDIO_URL` (defaults: `http://host.docker.internal:<port>`) and `LLAMACPP_URL` (no default: llama-server's own 8080 is dspark's, so it is probed only when set — `cihub fleet backends --backends llamacpp` sets it to `:8081` after an install), and an engine the operator started on the host is only a candidate if that probe answers. On the September 2026 fleet it did not, on six of fifteen nodes, for two reasons that look identical from the outside:
+The other way a listed model earns a 502 is that the Hub never saw it listed. The Hub probes its engines **from inside its container**, at `OLLAMA_URL`, `OMLX_URL`, `VLLM_URL`, and `LEMONADE_URL` (defaults: `http://host.docker.internal:<port>`), or at the decode and encode endpoints the operator typed, and an engine the operator started on the host is only a candidate if that probe answers. On the September 2026 fleet it did not, on six of fifteen nodes, for two reasons that look identical from the outside:
 
 - **A firewall that only knows Ollama.** ufw allowed the Docker bridge to reach `:11434` and nothing else, so vLLM on `:8000` timed out from the container and worked from everywhere else.
-- **An engine published on the tailnet address only.** Lemonade and Lucebox containers published on `100.x.y.z:13305` and `:8216` refuse `host.docker.internal`; the fix is to point the env var at the tailnet address, which the Hub container can reach.
+- **An engine published on the tailnet address only.** A Lemonade server published on `100.x.y.z:13305` refuses `host.docker.internal`; the fix is to point the env var at the tailnet address, which the Hub container can reach.
 
 The 502 for that case used to read `No pool node currently has model "X" available.` — true of the pool's view, and wrong about where to look. It now carries the container's-eye view of every local backend: `localBackends` in the body lists each backend's probed URL, whether it answered, the error, and `probedMsAgo` — how old that answer was when the request read it, because placement can read a snapshot rather than a live probe (next section). An operator who has just fixed a firewall rule and still sees `running: false` with a `probedMsAgo` of 8000 is looking at the answer from before the fix; one with `probedMsAgo: 0` is not.
 
@@ -1086,10 +1068,6 @@ The snapshot changes **when** an engine's answer is read, never what an answered
 
 `poolProbeSnapshotTtlMs: 0` is the build before the snapshot existed, stall included. 10 s is the value to validate at: it sits under the 20 s this node's own inventory is cached for when it answers a peer's health poll, so a local candidate is never staler than the same node's advertisement to the rest of the pool. Raise it on a node whose engines rarely change and whose requests are frequent; there is little reason to go lower once it is on, since a request arriving inside the TTL pays nothing either way.
 
-### Three backends on one port
+### Two engines on port 8000
 
-`vllm`, `mtplx` and `lucebox` all default to host port 8000, and every OpenAI-compatible server answers `GET /v1/models`, so a health check built on that route cannot tell whose server it reached. A node serving vLLM there reported all three backends healthy with vLLM's model: three local candidates for one process (each failover hop re-hit the same engine), the model advertised three times to peers, and a status page claiming two engines the node has never run.
-
-Each of the three names itself in `data[0].owned_by` of its own `/v1/models` body — `vllm`, `mtplx`, and `dflash` for Lucebox — so the backends now honour that claim: a server that names another engine is reported `running: true, healthy: false` with an error that says which env var points the backend at a server of its own. A server that does not name itself is left alone; absent evidence is not evidence of a foreign engine.
-
-`llamacpp` is the fourth: llama-server answers `owned_by: llamacpp` (verified against build b11065 and Ollama's bundled build), its own default port 8080 is dspark's, and the fleet's managed one sits on 8081 where a hand-started one may be too. `LLAMACPP_URL` pointed at a vLLM stands the `llamacpp` backend down and names the variable; `VLLM_URL` pointed at the fleet's llama-server stands `vllm` down the same way. Once the server is its own, the backend also reads `/props` — the model path, `total_slots`, and the per-slot `n_ctx` — which is where [slot-aware placement](#llama-server-slots-the-engine-states-them) gets a local llama-server's figures.
+`vllm` and `omlx` both default to host port 8000, and every OpenAI-compatible server answers `GET /v1/models`, so a health check built on that route cannot tell whose server it reached. The probe reads `owned_by`. Ollama answering is Ollama. A server that names another engine is reported `running: true, healthy: false`. A server that does not name itself is left alone.

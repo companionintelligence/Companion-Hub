@@ -128,7 +128,7 @@ export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'all';
  * a visibly wrong plan on the first live run: every node running lucebox on :8000 was reported as
  * "adopt mtplx", a backend not installed anywhere on this fleet.
  */
-const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['ollama', 'lemonade', 'omlx']);
+const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['ollama', 'lemonade']);
 
 /**
  * llamacpp's :8081 is unambiguous too — nothing else defaults there, which is why the fleet chose
@@ -339,7 +339,7 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
     return {
       backend,
       action: 'skip',
-      why: `port :${port} is already in use, and vllm/mtplx/lucebox share it — cannot attribute it without fingerprinting /v1/models, so nothing is installed or claimed here`,
+      why: `port :${port} is already in use, and vllm and omlx share it — cannot attribute it without fingerprinting /v1/models, so nothing is installed or claimed here`,
       port,
     };
   }

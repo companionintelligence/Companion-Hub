@@ -138,9 +138,7 @@ than asking you to switch. Point it at one and the pool places work on it like a
 | vLLM | `VLLM_URL` | Also settable in **Settings → AI**. |
 | Manual endpoints | decode and encode fields in Settings | Either URL may be set alone. Re-check probes the typed URL. |
 
-The Hub cannot download a model for llama.cpp or LM Studio — whatever the server reports on
-`/v1/models` is what it can serve. Both appear in **Settings → AI** with their reachability, and
-their models show up in this Hub's `GET /v1/models` alongside everything else.
+Hub does not download weights for oMLX or vLLM. Whatever the server reports on `/v1/models` is what it can serve. A typed decode or encode endpoint is probed the same way, and its models show up in this Hub's `GET /v1/models` alongside everything else.
 
 ## Limits
 
