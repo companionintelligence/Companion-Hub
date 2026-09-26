@@ -2363,6 +2363,256 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('an app CI-Cloud moved off a domain it cannot write (CI-Portal#841)', () => {
+    const APP_URN = 'n8n:ci-marketplace';
+    const DEAD = 'n8n-core-2-bill-co.companionintelligence.com';
+    const SERVED = 'n8n-core-2-bill-co.ci.computer';
+    /** The message CI-Portal#841 sends for a moved app, verbatim. */
+    const MOVED_MESSAGE = `This environment cannot write DNS in the zone for companionintelligence.com, so ${DEAD} was not published; the app is served at ${SERVED} instead`;
+
+    const n8n = (overrides: Record<string, unknown> = {}) => ({
+      id: 11,
+      appName: 'n8n',
+      appStoreSlug: 'ci-marketplace',
+      localSubdomain: 'n8n',
+      exposedLocal: true,
+      exposureMode: 'cloudflare',
+      openPort: false,
+      status: 'running',
+      port: 80,
+      customDomain: null,
+      publicDomain: 'companionintelligence.com',
+      config: {
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        localSubdomain: 'n8n',
+        publicDomain: 'companionintelligence.com',
+        N8N_BASE_URL: `https://${DEAD}`,
+      },
+      ...overrides,
+    });
+
+    /** A sync the Portal answered, moving n8n. */
+    const movedAnswer = (failure: Record<string, unknown> = {}) => ({
+      ok: true,
+      failed: ['n8n'],
+      failures: [{ app: 'n8n', hostname: DEAD, reason: 'zone_unreachable' as const, message: MOVED_MESSAGE, ...failure }],
+      synced: 1,
+    });
+
+    let restartApp: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-1',
+        tunnelId: 'tunnel-1',
+        slug: 'bill-co',
+        hubSubdomain: 'core-2-bill-co',
+      } as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'ci.computer', localDomain: 'ci.lan' },
+        localDomain: 'ci.lan',
+        domain: 'ci.computer',
+      } as any);
+      appsRepository.getApps.mockResolvedValue([n8n()] as any);
+      appsRepository.getAppByUrn.mockResolvedValue(n8n() as any);
+      sseService.hasSubscribers.mockReturnValue(true);
+      restartApp = vi.fn().mockResolvedValue({ requestId: 'req-1' });
+      vi.mocked((exposureSyncService as any).moduleRef.get).mockReturnValue({ restartApp });
+    });
+
+    const moveEvents = () => sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'public_domain_changed');
+    const dnsToasts = () => sseService.emit.mock.calls.filter(([, data]) => (data as { event?: string }).event === 'public_dns_error');
+
+    it('adopts the served domain on the row and in the saved form, and asks for a restart', async () => {
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer());
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(11, 'running', {
+        publicDomain: 'ci.computer',
+        // The prefilled base URL moves with it: left behind, the second regeneration
+        // would read it as an operator's pin and put APP_BASE_URL back on the dead name.
+        config: {
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          localSubdomain: 'n8n',
+          publicDomain: 'ci.computer',
+          N8N_BASE_URL: `https://${SERVED}`,
+        },
+        pendingRestart: true,
+      });
+    });
+
+    it('recreates the running app so its env and labels follow', async () => {
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer());
+
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledTimes(1);
+      expect(restartApp).toHaveBeenCalledWith({ appUrn: APP_URN, skipPull: true, actor: { kind: 'system', reason: 'public-domain-move' } });
+    });
+
+    it('tells the UI where the app is served instead of reporting a failure', async () => {
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer());
+
+      await service.triggerCloudflareSync();
+
+      // "Couldn't create a public address" would be false: the app is published.
+      expect(dnsToasts()).toEqual([]);
+      expect(errorReportingService.captureMessage).not.toHaveBeenCalled();
+      expect(moveEvents()).toEqual([['app', { event: 'public_domain_changed', appUrn: APP_URN, hostname: SERVED }]]);
+      expect(logger.info).toHaveBeenCalledWith(`[Cloudflare] Public hostnames synced: n8n -> ${SERVED}`);
+    });
+
+    it('takes the explicit servedHostname field over the message', async () => {
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer({ message: 'moved', servedHostname: 'n8n-core-2-bill-co.example.org' }));
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(11, 'running', expect.objectContaining({ publicDomain: 'example.org' }));
+    });
+
+    it('moves nothing on a zone_unreachable that names no other hostname, and still reports it', async () => {
+      // What every Portal before #841 sends: the app was refused, not moved.
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer({ message: 'Cloudflare record lookup failed: 403' }));
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      expect(restartApp).not.toHaveBeenCalled();
+      expect(moveEvents()).toEqual([]);
+      expect(dnsToasts()).toEqual([['app', { event: 'public_dns_error', appUrn: APP_URN, error: DEAD, errorCode: 'zone_unreachable' }]]);
+    });
+
+    it('moves nothing when the served hostname is not one this Hub can compose, and says so', async () => {
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer({ servedHostname: 'n8n-renamed-bill-co.ci.computer' }));
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      expect(warnings()).toContainEqual(expect.stringContaining('n8n-renamed-bill-co.ci.computer, which this Hub cannot compose'));
+      // Still unresolved from the Hub's side, so the failure is still reported.
+      expect(dnsToasts()).toHaveLength(1);
+    });
+
+    it('moves nothing when two synced apps answer to the name the Portal used', async () => {
+      appsRepository.getApps.mockResolvedValue([n8n(), n8n({ id: 12, appStoreSlug: 'community' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer());
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      expect(warnings()).toContainEqual(expect.stringContaining('more than one app'));
+    });
+
+    it('leaves the restart to a caller that owns it', async () => {
+      // A settings save awaits this sync and restarts the app itself.
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer());
+
+      await exposureSyncService.syncExposureAfterRoutingChange(APP_URN as AppUrn, false);
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(11, 'running', expect.objectContaining({ publicDomain: 'ci.computer' }));
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
+    it('defers an app a lifecycle command is running for to the next sync', async () => {
+      appsRepository.getApps.mockResolvedValue([n8n({ status: 'restarting' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer());
+
+      await service.triggerCloudflareSync();
+
+      // That command generated the env from the old row; the Portal reports the move again next pass.
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+      expect(restartApp).not.toHaveBeenCalled();
+      expect(dnsToasts()).toEqual([]);
+    });
+
+    it('neither restarts nor announces a move whose write a lifecycle command beat', async () => {
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(false);
+      cloudflareClientService.syncState.mockResolvedValue(movedAnswer());
+
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).not.toHaveBeenCalled();
+      expect(moveEvents()).toEqual([]);
+    });
+
+    it('retries a restart that could not be dispatched once the Portal stops reporting the move', async () => {
+      restartApp.mockRejectedValueOnce(new Error('queue unavailable'));
+      cloudflareClientService.syncState.mockResolvedValueOnce(movedAnswer());
+      await service.triggerCloudflareSync();
+
+      // The row now names the served domain, so the Portal has nothing to report.
+      appsRepository.getApps.mockResolvedValue([n8n({ publicDomain: 'ci.computer' })] as any);
+      cloudflareClientService.syncState.mockResolvedValueOnce({ ok: true, failed: [], failures: [], synced: 1 });
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledTimes(2);
+      expect(restartApp).toHaveBeenLastCalledWith({ appUrn: APP_URN, skipPull: true, actor: { kind: 'system', reason: 'public-domain-move' } });
+    });
+
+    it('drops a retry for an app that has since stopped, which picks the move up when it starts', async () => {
+      restartApp.mockRejectedValueOnce(new Error('queue unavailable'));
+      cloudflareClientService.syncState.mockResolvedValueOnce(movedAnswer());
+      await service.triggerCloudflareSync();
+
+      appsRepository.getAppByUrn.mockResolvedValue(n8n({ status: 'stopped', publicDomain: 'ci.computer' }) as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0 });
+      await service.triggerCloudflareSync();
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a custom domain CI-Cloud delivers against the served hostname', async () => {
+      // CI-Cloud keys a delivered custom domain by the hostname it serves the app at.
+      // Reconciled against the old row, that reads as lost: unbound now, bound again next pass.
+      appsRepository.getApps
+        .mockResolvedValueOnce([n8n({ customDomain: 'n8n.acme.com' })] as any)
+        .mockResolvedValue([n8n({ customDomain: 'n8n.acme.com', publicDomain: 'ci.computer' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ...movedAnswer(),
+        customDomains: [{ id: 'cd_1', domain: 'n8n.acme.com', targetHostname: SERVED }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      // The move is the only write: the binding is kept, not cleared.
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledTimes(1);
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(11, 'running', expect.objectContaining({ publicDomain: 'ci.computer' }));
+      expect(restartApp).toHaveBeenCalledTimes(1);
+    });
+
+    it('still reports another app the same sync refused', async () => {
+      appsRepository.getApps.mockResolvedValue([n8n(), n8n({ id: 12, appName: 'docmost', localSubdomain: 'docmost', config: {} })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: ['n8n', 'docmost'],
+        failures: [...movedAnswer().failures, { app: 'docmost', reason: 'api_error' as const, message: 'Cloudflare said no' }],
+        synced: 1,
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(dnsToasts()).toEqual([
+        [
+          'app',
+          {
+            event: 'public_dns_error',
+            appUrn: 'docmost:ci-marketplace',
+            error: 'docmost-core-2-bill-co.companionintelligence.com',
+            errorCode: 'api_error',
+          },
+        ],
+      ]);
+      expect(errorReportingService.captureMessage).toHaveBeenCalledWith(expect.stringContaining('NOT created for 1 app(s)'), 'error', {
+        failedApps: ['docmost'],
+      });
+      expect(errorReportingService.captureMessage).not.toHaveBeenCalledWith(expect.stringContaining('n8n:'), expect.anything(), expect.anything());
+    });
+  });
+
   describe('syncCloudflareState - device slug in hostname', () => {
     it('should include device slug in publicHostname when hubSubdomain has different device slug', async () => {
       // Setup: org with hubSubdomain hub-test1-myorg

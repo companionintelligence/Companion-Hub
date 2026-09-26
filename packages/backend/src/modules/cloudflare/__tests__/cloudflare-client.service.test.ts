@@ -213,6 +213,27 @@ describe('CloudflareClientService', () => {
       expect(result.failures).toEqual([{ app: 'anything-llm', reason: 'conflict', message: 'taken' }]);
     });
 
+    it('keeps a served hostname that is a string and drops one that is not, keeping its entry', async () => {
+      // `servedHostname` moves an app's public identity, so only a string gets through.
+      // The entry still reports its failure either way.
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        failed: ['n8n', 'docmost'],
+        failures: [
+          { app: 'n8n', reason: 'zone_unreachable', message: 'moved', servedHostname: 'n8n-core-2-acme.ci.computer' },
+          { app: 'docmost', reason: 'zone_unreachable', message: 'moved', servedHostname: 42 },
+        ],
+        synced: 2,
+      } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result.failures).toEqual([
+        { app: 'n8n', reason: 'zone_unreachable', message: 'moved', servedHostname: 'n8n-core-2-acme.ci.computer' },
+        { app: 'docmost', reason: 'zone_unreachable', message: 'moved' },
+      ]);
+    });
+
     it('should name every failed app in the log, even those with no structured failure', async () => {
       // `failures` need not cover every failed app. Building the log line from it named
       // fewer apps than the count in the same sentence, and the ones it dropped were the

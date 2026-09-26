@@ -220,6 +220,13 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           // must not share the same message.
           toast.error(t(PUBLIC_DNS_ERROR_KEYS[errorCode ?? ''] ?? 'APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));
           break;
+        case 'public_domain_changed':
+          // Not an error: the app IS published, only not on the domain it asked
+          // for. A warning, because that choice was overridden.
+          if (payload.hostname) {
+            toast.warning(t('APP_NOTICE_PUBLIC_DOMAIN_MOVED', { id: appName, hostname: payload.hostname }), { duration: 10000 });
+          }
+          break;
         case 'tailscale_serve_error': {
           const toastId: string | number = toast.error(
             <Trans
