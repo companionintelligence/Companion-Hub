@@ -246,6 +246,46 @@ function deriveAppBaseWsOrigin(parsed: URL): string {
   return `${wsScheme}://${parsed.host}`;
 }
 
+/**
+ * Whether `url` is a platform address the Hub derived for this app, under any
+ * organization, Hub or public domain rather than only the current ones.
+ *
+ * With an organization, `buildPublicWebIdentity` always produces a bare HTTPS
+ * origin whose first label is `<app subdomain>-<device>-<org>` or
+ * `<app subdomain>-<org>`, under a zone of at least two labels. Matching that
+ * shape recognises the address this Hub wrote before it was re-registered to
+ * another org, renamed, or moved to another public domain, none of which it
+ * keeps a record of.
+ *
+ * The shape is narrow on purpose. A value with a path, a port, plain HTTP, or a
+ * first label that is not this app's subdomain followed by `-` is something an
+ * operator typed, and stays. The default app subdomain carries the store slug
+ * (`ci-hermes-ci-marketplace-…`), so an operator's own hostname matches only by
+ * deliberately reusing it.
+ */
+export function isPlatformIdentityUrlFor(url: string, appSubdomains: readonly string[]): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== 'https:' || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') {
+    return false;
+  }
+
+  const [firstLabel, ...zone] = parsed.hostname.split('.');
+  if (!firstLabel || zone.length < 2) {
+    return false;
+  }
+
+  return appSubdomains.some((subdomain) => {
+    const clean = sanitizeAppSubdomain(subdomain);
+    return clean.length > 0 && firstLabel.length > clean.length + 1 && firstLabel.startsWith(`${clean}-`);
+  });
+}
+
 @Injectable()
 export class AppHelpers {
   constructor(
@@ -701,6 +741,29 @@ export class AppHelpers {
     );
 
     /*
+     * The two values above miss a Hub that changed organization or domain.
+     *
+     * An app that was never exposed has no `APP_PUBLIC_URL`, so its base URL is
+     * the platform URL from the previous registration, which is neither value.
+     * After core-2 moved from `bill-co`/companionintelligence.com to
+     * `demopool1`/ci.computer, Hermes (whose Public URL field is replayed from
+     * the stored install form) kept `APP_BASE_URL` on
+     * `…-bill-co.companionintelligence.com` across restarts, a hostname that no
+     * longer exists. A value with this app's platform shape is automatic no
+     * matter which registration produced it.
+     *
+     * This rule applies only while the Hub has a platform identity for the app.
+     * During a brief unregistered window, the fallback is the LAN `APP_URL`,
+     * which is kept once written. Moving onto it would therefore strand the
+     * app on the LAN after the Hub registered again.
+     */
+    const platformIdentitySubdomains = [form.localSubdomain, `${appName}-${appStoreId}`].filter(
+      (subdomain): subdomain is string => typeof subdomain === 'string' && subdomain.trim().length > 0,
+    );
+    const isAutoBaseUrl = (baseUrl: string): boolean =>
+      supersededAutoBaseUrls.has(baseUrl) || (Boolean(platformPublicUrl) && isPlatformIdentityUrlFor(baseUrl, platformIdentitySubdomains));
+
+    /*
      * Apply the identity update to both the form value and existing environment.
      *
      * The install dialog prefills each `app_base_url` field with
@@ -711,11 +774,10 @@ export class AppHelpers {
      * domain.
      *
      * An automatically derived value follows the exposed identity regardless of
-     * its source. A value entered by the operator matches neither superseded URL
-     * and remains unchanged.
+     * its source. A value entered by the operator fails `isAutoBaseUrl` and
+     * remains unchanged.
      */
-    const followExposedIdentity = (baseUrl: string): string =>
-      defaultAppBaseUrl && supersededAutoBaseUrls.has(baseUrl) ? defaultAppBaseUrl : baseUrl;
+    const followExposedIdentity = (baseUrl: string): string => (defaultAppBaseUrl && isAutoBaseUrl(baseUrl) ? defaultAppBaseUrl : baseUrl);
 
     for (const field of config.form_fields) {
       if (field.type !== 'app_base_url') {

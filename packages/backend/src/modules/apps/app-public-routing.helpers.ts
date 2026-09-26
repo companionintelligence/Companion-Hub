@@ -1,3 +1,4 @@
+import { resolveRoutingSubdomain } from '@ci-hub/common/types';
 import { getEffectiveExposureMode, type AppFormHostPortFields } from './app-exposure.helpers';
 
 export type AppPublicRoutingSnapshot = AppFormHostPortFields & {
@@ -18,8 +19,9 @@ export function publishesCloudflarePublicRoute(snapshot: AppFormHostPortFields):
  * Deliberately narrower than {@link publishesCloudflarePublicRoute}, which is
  * about what gets sent to Companion Portal. `generateEnvFile` only sets `isExposed` (and
  * therefore only writes `APP_PUBLIC_URL` / `APP_PUBLIC_HOSTNAME`, and only
- * applies a custom-domain override) for `exposedLocal && !openPort` — an app on
- * an open host port gets no Traefik router at all.
+ * applies a custom-domain override) for `exposedLocal && !openPort`. An app on
+ * an open host port still gets its tunnel router (`prepareAppComposeDir`), but
+ * its env names the LAN address, so it never learns a custom hostname.
  *
  * Binding a custom domain to an app outside this set would store the hostname,
  * raise a "restart required" badge, and then change nothing on the restart,
@@ -29,9 +31,8 @@ export function canServeOnCustomDomain(snapshot: AppFormHostPortFields): boolean
   return Boolean(snapshot.exposedLocal) && !snapshot.openPort;
 }
 
-export function resolveRoutingSubdomain(subdomain: string | null | undefined, appName: string, appStoreSlug: string): string {
-  return subdomain?.trim() || `${appName}-${appStoreSlug}`;
-}
+// Defined in @ci-hub/common so the frontend builds the same hostname the tunnel sync publishes.
+export { resolveRoutingSubdomain };
 
 /**
  * Returns true when a config save changes the public hostname/subdomain Companion Portal

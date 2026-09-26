@@ -34,6 +34,7 @@ export {
   deriveAppSlug,
   extractDeviceSlug,
   resolvePublicDomainRoot,
+  resolveRoutingSubdomain,
   RESERVED_APP_NAMES,
   sanitizeAppSubdomain,
 } from '../public-web/identity.js';

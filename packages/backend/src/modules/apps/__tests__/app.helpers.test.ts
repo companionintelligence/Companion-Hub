@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { AppFilesManager } from '../app-files-manager';
-import { AppHelpers } from '../app.helpers';
+import { AppHelpers, isPlatformIdentityUrlFor } from '../app.helpers';
 import { AppsRepository } from '../apps.repository';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
@@ -482,6 +482,104 @@ describe('AppHelpers', () => {
           await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, PUBLIC_BASE_URL: 'https://pinned.example.org' });
 
           expect(written().get('PUBLIC_BASE_URL')).toBe('https://pinned.example.org');
+        });
+      });
+
+      describe('after the Hub changes organization or domain', () => {
+        /*
+         * core-2, 2026-09-23: re-registered from `bill-co` on companionintelligence.com
+         * to `demopool1` on ci.computer. Hermes was never exposed (`openPort: true`),
+         * so it had no `APP_PUBLIC_URL`, and its Public URL field is replayed from the
+         * stored install form on every restart. Neither of the two values the Hub used
+         * to recognise an automatic base URL was the old org's address, so it stayed.
+         */
+        const openPortForm = { exposedLocal: true, openPort: true } as const;
+
+        const withAppBaseUrlField = (content: string) => {
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({
+            ...mockAppInfo,
+            form_fields: [{ type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL', required: false }],
+          } as AppInfo);
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content });
+        };
+
+        beforeEach(() => {
+          bind(null);
+        });
+
+        it('moves a base URL from the previous organization onto the current one', async () => {
+          const previousOrg = 'https://test-app-test-store-core2-bill-co.example.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, APP_BASE_URL: previousOrg });
+
+          const env = written();
+          expect(env.get('APP_BASE_URL')).toBe(PLATFORM_URL);
+          // What OpenClaw-style apps derive their allowed origin from.
+          expect(env.get('APP_BASE_HOST')).toBe(PLATFORM_HOSTNAME);
+          expect(env.get('APP_BASE_WSS_ORIGIN')).toBe(`wss://${PLATFORM_HOSTNAME}`);
+        });
+
+        it('moves a base URL from the previous public domain onto the current one', async () => {
+          const previousDomain = 'https://test-app-test-store-core2-acme.companionintelligence.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousDomain}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('recognises the previous identity under the default subdomain after a custom one was chosen', async () => {
+          // The shape is checked against the subdomain the app routes on now and the
+          // `<app>-<store>` default, so choosing a subdomain does not strand the old one.
+          withAppBaseUrlField('APP_BASE_URL=https://test-app-test-store-core2-bill-co.example.com\n');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, localSubdomain: 'comfy' });
+
+          expect(written().get('APP_BASE_URL')).toBe('https://comfy-core2-acme.example.com');
+        });
+
+        it('keeps a custom URL the operator pinned', async () => {
+          withAppBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, APP_BASE_URL: 'https://agents.acme.org' });
+
+          expect(written().get('APP_BASE_URL')).toBe('https://agents.acme.org');
+        });
+
+        it('keeps an operator value that only resembles the platform address', async () => {
+          // A path, a port or plain HTTP is something a person typed; the Hub never derives one.
+          for (const pinned of [
+            'https://test-app-test-store-core2-bill-co.example.com/app',
+            'https://test-app-test-store-core2-bill-co.example.com:8443',
+            'http://test-app-test-store-core2-bill-co.example.com',
+          ]) {
+            withAppBaseUrlField('');
+
+            await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, APP_BASE_URL: pinned });
+
+            expect(written().get('APP_BASE_URL')).toBe(pinned);
+          }
+        });
+
+        it('keeps a LAN APP_URL written while the Hub was unregistered', async () => {
+          withAppBaseUrlField('APP_BASE_URL=http://192.168.1.20:9091\n');
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe('http://192.168.1.20:9091');
+        });
+
+        it('does not move a previous platform address while the Hub has no organization', async () => {
+          // The only thing to move it to would be the LAN APP_URL, which is kept once
+          // written, so a brief unregistered window would strand the app there.
+          deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
+          const previousOrg = 'https://test-app-test-store-core2-bill-co.example.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(previousOrg);
         });
       });
     });
@@ -2002,5 +2100,30 @@ describe('AppHelpers', () => {
         expect(envMap.has('HUB_API_KEY')).toBe(false);
       });
     });
+  });
+});
+
+describe('isPlatformIdentityUrlFor', () => {
+  const subdomains = ['ci-hermes-ci-marketplace'];
+
+  it('matches the platform address under any org, device and zone', () => {
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-bill-co.companionintelligence.com', subdomains)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-demopool1.ci.computer', subdomains)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-acme.my.lifescope.io/', subdomains)).toBe(true);
+  });
+
+  it('does not match another app, the bare subdomain, or a single-label zone', () => {
+    expect(isPlatformIdentityUrlFor('https://ci-openclaw-ci-marketplace-core-2-acme.ci.computer', subdomains)).toBe(false);
+    // `<subdomain>.<zone>` is the unregistered shape, which `APP_PUBLIC_URL` already tracks.
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace.ci.computer', subdomains)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2.localhost', subdomains)).toBe(false);
+  });
+
+  it('does not match anything the Hub would never have written', () => {
+    expect(isPlatformIdentityUrlFor('not a url', subdomains)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer?x=1', subdomains)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer#top', subdomains)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://user@ci-hermes-ci-marketplace-acme.ci.computer', subdomains)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer', [''])).toBe(false);
   });
 });

@@ -8,6 +8,7 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { resolveRoutingSubdomain } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -87,6 +88,55 @@ export function isMalformedAccessUrl(url: string | null): boolean {
   return url ? parseAccessUrl(url) === null : false;
 }
 
+function isLoopbackHost(host: string): boolean {
+  const lower = host.toLowerCase();
+  // `*.localhost` resolves to loopback in browsers (RFC 6761), and the Tauri desktop
+  // shell serves from `tauri.localhost` on Windows.
+  return LOOPBACK_HOSTS.has(lower) || lower.startsWith('127.') || lower === 'localhost' || lower.endsWith('.localhost');
+}
+
+function currentViewerHostname(): string | undefined {
+  return typeof window === 'undefined' ? undefined : window.location.hostname;
+}
+
+/**
+ * The Hub address a Local access link should name, as seen from the browser showing it.
+ *
+ * Many appliances report no LAN address, or a listen-all or loopback one, and the card
+ * turned every one of those into `127.0.0.1`. That is right only for a browser running
+ * on the Hub. From another machine (`https://core-2.<tailnet>.ts.net`, a LAN IP, an
+ * mDNS name) `127.0.0.1` is the viewer's own computer. The hostname that browser used to
+ * reach the Hub dashboard is one it can demonstrably reach, and the app's host port is
+ * published on the same interfaces, so it is the better address.
+ *
+ * Two viewers keep the reported value. A browser on the Hub (loopback or `*.localhost`)
+ * already reaches `127.0.0.1`. A browser on a hostname under the public domain came
+ * through the Cloudflare tunnel, which carries 443 only, so `<that name>:<port>` would
+ * not connect either; it is never a Local address.
+ */
+export function resolveReachableHubHost(input: {
+  internalIp?: string | null;
+  viewerHostname?: string | null;
+  publicDomain?: string | null;
+}): string | undefined {
+  const reported = input.internalIp?.trim() || undefined;
+  if (reported && !isLoopbackHost(reported) && reported !== '0.0.0.0' && reported !== '::') {
+    return reported;
+  }
+
+  const viewer = input.viewerHostname?.trim().toLowerCase().replace(/\.+$/, '');
+  if (!viewer || isLoopbackHost(viewer)) {
+    return reported;
+  }
+
+  const publicDomain = input.publicDomain?.trim().toLowerCase().replace(/\.+$/, '');
+  if (publicDomain && (viewer === publicDomain || viewer.endsWith(`.${publicDomain}`))) {
+    return reported;
+  }
+
+  return viewer;
+}
+
 function buildHttpsUrl(hostname: string, sslPort: number, suffix: string): string {
   return `https://${hostname}${sslPort === 443 ? '' : `:${sslPort}`}${suffix}`;
 }
@@ -146,6 +196,8 @@ export function buildAppAccessPoints(input: {
   info: AppInfo;
   sslPort: number;
   internalIp?: string;
+  /** Hostname the browser reached the Hub on; defaults to `window.location.hostname`. */
+  viewerHostname?: string | null;
   publicDomain?: string;
   cloudflareAvailable: boolean;
   tailscaleAvailable: boolean;
@@ -160,7 +212,8 @@ export function buildAppAccessPoints(input: {
     app,
     info,
     sslPort,
-    internalIp,
+    internalIp: reportedInternalIp,
+    viewerHostname = currentViewerHostname(),
     publicDomain,
     cloudflareAvailable,
     tailscaleAvailable,
@@ -176,6 +229,8 @@ export function buildAppAccessPoints(input: {
     return [];
   }
 
+  const internalIp = resolveReachableHubHost({ internalIp: reportedInternalIp, viewerHostname, publicDomain });
+
   const record = app as AppDetails &
     Record<string, unknown> & {
       domain?: string | null;
@@ -188,7 +243,12 @@ export function buildAppAccessPoints(input: {
     };
 
   const urlSuffix = info.url_suffix || '';
-  const baseSubdomain = record.localSubdomain || info.urn.split(':')[0];
+  const [urnAppName = '', urnAppStoreSlug = ''] = info.urn.split(':');
+  // The label Portal serves: `<app>-<store>` when no subdomain was chosen. The bare app name
+  // linked every app installed without one (API, MCP, restore) to a hostname that does not resolve.
+  const baseSubdomain = urnAppStoreSlug
+    ? resolveRoutingSubdomain(record.localSubdomain, urnAppName, urnAppStoreSlug)
+    : record.localSubdomain || urnAppName;
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
   const browserHost = resolveBrowserHost(internalIp);
   const directPort = app.port ?? info.port ?? null;

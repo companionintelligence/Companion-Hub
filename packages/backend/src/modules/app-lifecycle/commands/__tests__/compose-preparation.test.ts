@@ -11,7 +11,7 @@ import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
-import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
+import { appEventSchema, type AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { prepareAppComposeDir } from '../compose-preparation';
 
@@ -492,14 +492,36 @@ describe('prepareAppComposeDir', () => {
       expect(call.publicHostname).toBe('nextcloud.companion.example');
     });
 
-    it('skips hostname computation entirely when the app publishes a host port', async () => {
-      const { stubs, moduleRef, docker } = createHarness();
+    it('builds the tunnel route for a Public web app that also publishes a host port', async () => {
+      /*
+       * core-2, 2026-09-23: Companion Portal published these apps and the app page
+       * showed "Public domain: Enabled", but no origin hostname was built here, so
+       * the router carried `traefik.enable=false`. The tunnel then reached
+       * Traefik's 404. Traefik reaches the container over the Docker network, so
+       * an open host port changes nothing about the route.
+       */
+      const { moduleRef, docker } = createHarness();
 
-      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'cloudflare', openPort: true }));
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'cloudflare', openPort: true, localSubdomain: 'nextcloud' }));
 
-      expect(lastComposeCall()).toMatchObject({ originHostname: undefined, publicHostname: undefined });
-      expect(stubs.registrationService.getDeviceRegistrationInfo).not.toHaveBeenCalled();
-      expect(stubs.appsRepository.getAppCustomDomain).not.toHaveBeenCalled();
+      expect(lastComposeCall()).toMatchObject({ originHostname: PLATFORM_ORIGIN_HOSTNAME, publicHostname: PLATFORM_PUBLIC_HOSTNAME });
+    });
+
+    it('builds it for an install that never said anything about the host port', async () => {
+      // The queue form defaults `openPort` to true, so an API install that sent only
+      // `exposedLocal` (the legacy Public web flag) reaches compose as an open-port app.
+      const { moduleRef, docker } = createHarness();
+      const event = appEventSchema.parse({
+        command: 'restart',
+        appUrn: APP_URN,
+        requestId: '00000000-0000-4000-8000-000000000000',
+        form: { exposedLocal: true, localSubdomain: 'nextcloud' },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, event.form as AppEventFormInput);
+
+      expect(lastComposeCall().form).toMatchObject({ openPort: true });
+      expect(lastComposeCall().originHostname).toBe(PLATFORM_ORIGIN_HOSTNAME);
     });
 
     it('skips hostname computation for a local-only app even without an open port', async () => {
