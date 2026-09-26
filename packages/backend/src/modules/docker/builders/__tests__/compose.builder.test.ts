@@ -682,6 +682,55 @@ describe('DockerComposeBuilder', () => {
     expect(yamlObject.services.service.labels['traefik.enable']).toBeUndefined();
   });
 
+  describe('loopbackHostPort', () => {
+    const main: ServiceInput = { name: 'service', image: 'image', internalPort: 18789, isMain: true };
+
+    it('publishes the main port on loopback for every mode that binds a host port', async () => {
+      const loopbackBuilder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true });
+      for (const form of [
+        { exposureMode: 'local' as const, openPort: false },
+        { exposureMode: 'cloudflare' as const, exposedLocal: true, openPort: false },
+        { exposureMode: 'tailscale' as const, openPort: true },
+      ]) {
+        const yamlObject = yaml.parse(await loopbackBuilder.getDockerCompose([main], form, urn, subnet));
+        expect(yamlObject.services.service.ports, form.exposureMode).toEqual(['127.0.0.1:${APP_PORT}:18789']);
+      }
+    });
+
+    it('still publishes nothing where no host port was asked for', async () => {
+      const loopbackBuilder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true });
+      const yamlObject = yaml.parse(await loopbackBuilder.getDockerCompose([main], { exposureMode: 'tailscale', openPort: false }, urn, subnet));
+
+      expect(yamlObject.services.service.ports).toBeUndefined();
+    });
+
+    it('leaves the Traefik router in front of the container untouched', async () => {
+      const form = { exposureMode: 'cloudflare' as const, exposedLocal: true, enableAuth: true };
+      const plain = yaml.parse(await composeBuilder.getDockerCompose([main], form, urn, subnet, 'ci.computer', 'ci.lan', undefined, 'agent.origin'));
+      const loopback = yaml.parse(
+        await new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true }).getDockerCompose(
+          [main],
+          form,
+          urn,
+          subnet,
+          'ci.computer',
+          'ci.lan',
+          undefined,
+          'agent.origin',
+        ),
+      );
+
+      expect(loopback.services.service.labels).toEqual(plain.services.service.labels);
+      expect(loopback.services.service.labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe('ci-hub@file');
+    });
+
+    it('binds every interface when the option is absent, as it always has', async () => {
+      const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([main], { exposureMode: 'local' }, urn, subnet));
+
+      expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:18789']);
+    });
+  });
+
   it('should be able to parse a compose.json file', async () => {
     const composeJson: { services: ServiceInput[] } = {
       services: [
