@@ -62,6 +62,9 @@ const appScopedEventSchema = z.object({
     // no status — the row's `pendingRestart` is what changed, so the client just
     // refetches the app.
     'custom_domain_changed',
+    // CI-Cloud published the app on another domain than the one it asked for,
+    // and the Hub moved the app there. `hostname` is where it is served now.
+    'public_domain_changed',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),
@@ -69,6 +72,7 @@ const appScopedEventSchema = z.object({
   errorCode: z.string().optional(),
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
+  hostname: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
   // Identifier for a non-fatal caveat on an otherwise-successful op (e.g. uninstall
   // completed but a root-owned path could not be fully removed). The client maps it

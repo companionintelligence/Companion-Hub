@@ -221,6 +221,33 @@ describe('SSEProvider', () => {
     });
   });
 
+  describe('public_domain_changed', () => {
+    it('says where the app is published now, as a warning rather than an error', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'public_domain_changed', appUrn: 'n8n:ci-marketplace', hostname: 'n8n-core-2-acme.ci.computer' });
+      });
+
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledTimes(1);
+      expect(mockToastWarning.mock.calls[0]?.[0]).toBe(
+        "n8n is now published at n8n-core-2-acme.ci.computer. The domain it used isn't available for this device, so its old address never worked. n8n restarts to use the new one.",
+      );
+    });
+
+    it('shows nothing when the event names no hostname', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'public_domain_changed', appUrn: 'n8n:ci-marketplace' });
+      });
+
+      expect(mockToastWarning).not.toHaveBeenCalled();
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
+  });
+
   describe('hub_hello', () => {
     const mountWithHandler = () => {
       let onEvent: ((data: unknown) => void) | undefined;

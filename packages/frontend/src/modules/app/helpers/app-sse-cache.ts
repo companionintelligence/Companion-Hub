@@ -33,6 +33,8 @@ export type AppSsePayload = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** `public_domain_changed` only: the hostname CI-Cloud serves the app at now. */
+  hostname?: string;
   /** Identifier for a non-fatal caveat on an otherwise-successful op; the client maps it to a warning toast. */
   warningCode?: string;
   /** Optional detail for the caveat (e.g. the host path of an uninstall remnant) used to render an actionable message. */
@@ -66,6 +68,8 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
   // Carries no appStatus — only the row's pendingRestart flag changed, so the
   // refetch below is the whole point of the event.
   'custom_domain_changed',
+  // The row's public domain moved, so every URL the app page shows is stale.
+  'public_domain_changed',
 ]);
 
 const TERMINAL_PROGRESS_STATUSES = new Set(['running', 'missing', 'install_failed']);

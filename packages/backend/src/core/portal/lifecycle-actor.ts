@@ -61,6 +61,7 @@ export type SystemLifecycleReason =
   | 'inference-env-refresh' // inference settings or the Hub version changed; AI apps pick up the new env
   | 'custom-domain-revert' // an app still forwarding a removed custom domain is restarted off it
   | 'custom-domain-apply' // the operator asked for a bound custom domain to start serving, so the app is recreated onto it
+  | 'public-domain-move' // CI-Cloud published the app on another domain than it asked for, so it is recreated onto that one
   | 'memory-connect' // a Companion Memory connection change reaches the app holding it
   | 'device-key-refresh' // pairing issued a new Portal device key; the app that calls Portal as this device picks it up
   // The debug routes:
