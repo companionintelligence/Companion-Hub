@@ -29,6 +29,7 @@
  */
 
 import type { TunnelHealth } from '../cloudflare/tunnel-health.service';
+import type { PortalPushKeyCheckInFields } from './portal-push-key.service';
 import type { DegradedReason, ProvisioningPhase } from './registration-state';
 
 /**
@@ -51,6 +52,9 @@ export interface CheckInPayload {
    */
   tunnel_health?: Exclude<TunnelHealth, 'unknown'>;
   tailscale_connected?: boolean;
+  /** See `PortalPushKeyService`: the fingerprint always, the key itself only until Portal confirms. */
+  hub_push_key_prefix?: string;
+  hub_push_key?: string;
 }
 
 /**
@@ -77,6 +81,8 @@ export interface CheckInFacts {
   degradedReasons?: readonly DegradedReason[];
   /** Cached liveness of the public origin, or `'unknown'`/nullish when nothing conclusive. */
   tunnelHealth?: TunnelHealth | null;
+  /** `null` when the push key could not be prepared this time; the next check-in retries. */
+  pushKey?: PortalPushKeyCheckInFields | null;
 }
 
 /**
@@ -123,6 +129,15 @@ export function buildCheckInPayload(facts: CheckInFacts): CheckInPayload {
   // — and on a Hub that does not use Tailscale at all, a hard `false` would look like a fault.
   if (typeof facts.tailscaleConnected === 'boolean') {
     payload.tailscale_connected = facts.tailscaleConnected;
+  }
+
+  // The push key rides on the check-in because the device key already authenticates it — the one
+  // Hub→Portal channel there is. The raw key is present only while undelivered.
+  if (facts.pushKey) {
+    payload.hub_push_key_prefix = facts.pushKey.hub_push_key_prefix;
+    if (facts.pushKey.hub_push_key) {
+      payload.hub_push_key = facts.pushKey.hub_push_key;
+    }
   }
 
   return payload;

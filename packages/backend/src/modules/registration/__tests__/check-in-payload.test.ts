@@ -131,4 +131,22 @@ describe('buildCheckInPayload', () => {
 
     expect(payload).toEqual({ device_id: 'device-1', phase: 'locally_ready' });
   });
+  it('carries the push key fingerprint always, and the key itself only while undelivered', () => {
+    const delivered = buildCheckInPayload({ deviceId: 'dev', phase: 'locally_ready', pushKey: { hub_push_key_prefix: 'abcdef01' } });
+    expect(delivered.hub_push_key_prefix).toBe('abcdef01');
+    expect(delivered).not.toHaveProperty('hub_push_key');
+
+    const pending = buildCheckInPayload({
+      deviceId: 'dev',
+      phase: 'locally_ready',
+      pushKey: { hub_push_key_prefix: 'abcdef01', hub_push_key: 'abcdef01' + 'c'.repeat(56) },
+    });
+    expect(pending.hub_push_key).toBe('abcdef01' + 'c'.repeat(56));
+  });
+
+  it('sends nothing about the push key when it could not be prepared', () => {
+    const payload = buildCheckInPayload({ deviceId: 'dev', phase: 'locally_ready', pushKey: null });
+    expect(payload).not.toHaveProperty('hub_push_key_prefix');
+    expect(payload).not.toHaveProperty('hub_push_key');
+  });
 });

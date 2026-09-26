@@ -8,7 +8,7 @@ import { API_KEY_SCOPES, type ApiKeyScope } from './api-key.scopes';
 import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY, coerceApiKeyCapability } from './api-key.capabilities';
 
 const KEY_BYTES = 32; // 64 hex chars — 256 bits of entropy
-const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
+export const PREFIX_LEN = 8; // leading chars shown in the UI to identify a key without revealing it
 
 /**
  * The raw form of a key {@link ApiKeyService.create} mints: `KEY_BYTES` random bytes as lowercase

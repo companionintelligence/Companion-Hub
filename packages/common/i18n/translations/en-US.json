@@ -1838,6 +1838,7 @@
   "API_KEYS_SCOPE_APP": "App",
   "API_KEYS_SCOPE_INFERENCE": "Inference",
   "API_KEYS_SCOPE_QA_READ": "Read-only",
+  "API_KEYS_SCOPE_PORTAL": "Portal push",
   "API_KEYS_LAST_USED": "Last used {{when}}",
   "API_KEYS_NEVER_USED": "Never used",
   "API_KEYS_CREATED_BY": "Created by {{name}}",

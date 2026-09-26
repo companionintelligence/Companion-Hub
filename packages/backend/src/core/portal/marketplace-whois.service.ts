@@ -278,6 +278,7 @@ export class MarketplaceWhoIsService {
     switch (req.hubPrincipal) {
       case 'portal-device':
       case 'cli':
+      case 'host-local':
         return { kind: 'exempt', principal: req.hubPrincipal };
       default:
         this.logUnrecognisedPrincipal(req, action);
