@@ -2413,7 +2413,7 @@ describe('runPoolDoctorSection', () => {
     expect(maxConcurrent).toBe(1);
     // Every backend, in the order the Hub's own fan-out builds them (INFERENCE_BACKEND_TYPES).
     const probed = fetchMock.mock.calls.map(([url]) => /backend=(\w+)/.exec(String(url))?.[1]).filter(Boolean);
-    expect(probed).toEqual(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio']);
+    expect(probed).toEqual(['ollama', 'omlx', 'vllm', 'lemonade']);
     expect(text(section.lines)).toContain('so the slow one is named, not averaged away');
     vi.unstubAllGlobals();
   });

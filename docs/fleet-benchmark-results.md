@@ -1,5 +1,7 @@
 # Fleet Benchmark Results — Speculative Decoding
 
+**25 Sep 2026.** Hub no longer offers speculative inference, mlx-dspark, MTPLX, or Lucebox. This file is a dated measurement log. It is not a setup guide, and the speed numbers below are not a current Hub claim.
+
 **Run date:** 2026-09-06 / 2026-09-07 · **Nodes measured:** 15 · **Method:** each node benchmarked by a dedicated agent, then adversarially verified by a second agent whose job was to refute it. Every number below is one a verifier reproduced from the node's own logs, or is explicitly marked unverified.
 
 **Reading rule for this document:** where a verifier could not separate an effect from the noise floor, this report says *no measured difference* rather than quoting a ratio. Where a verifier marked a claim UNSUPPORTED, the claim appears only in [§6](#6-refuted-and-unsupported-claims), never in the results tables.

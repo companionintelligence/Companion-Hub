@@ -17,32 +17,28 @@ describe('the server names itself', () => {
   it('owned_by beats every route-shape heuristic', () => {
     // The heuristics below cannot tell lucebox from mtplx when both answer only /v1/models, so an
     // engine that names itself must not be fingerprinted at all.
-    const verdict = fingerprintSharedPort({ ...NOTHING, models: { status: 200, body: modelsBody('mtplx') } });
-    expect(verdict).toEqual({ kind: 'match', backend: 'mtplx', via: 'GET /v1/models (owned_by=mtplx)' });
+    const verdict = fingerprintSharedPort({ ...NOTHING, models: { status: 200, body: modelsBody('omlx') } });
+    expect(verdict).toEqual({ kind: 'match', backend: 'omlx', via: 'GET /v1/models (owned_by=omlx)' });
   });
 
-  it('maps a runtime name onto its product', () => {
-    // lucebox reports its runtime's name rather than the product's — the reason this is a table and
-    // not a string match on the backend id.
+  it('does not invent a backend for a name nothing in the table claims', () => {
     expect(fingerprintSharedPort({ ...NOTHING, models: { status: 200, body: modelsBody('dflash') } })).toMatchObject({
-      kind: 'match',
-      backend: 'lucebox',
+      kind: 'none',
     });
   });
 
-  it('outranks a /version that would otherwise say vllm', () => {
+  it('lets owned_by outrank a /version that would otherwise say vllm', () => {
     const verdict = fingerprintSharedPort({
-      models: { status: 200, body: modelsBody('DFlash') },
+      models: { status: 200, body: modelsBody('omlx') },
       version: { status: 200, body: { version: '0.1.0' } },
       health: { status: 200, body: { status: 'ok' } },
     });
-    expect(verdict).toMatchObject({ kind: 'match', backend: 'lucebox' });
+    expect(verdict).toMatchObject({ kind: 'match', backend: 'omlx' });
   });
 
-  it('ignores an owner nothing in the table claims', () => {
-    // An unknown owner falls through to the heuristics rather than inventing a seventh backend.
+  it('leaves an unknown owner unidentified', () => {
     const verdict = fingerprintSharedPort({ ...NOTHING, models: { status: 200, body: modelsBody('some-other-vendor') } });
-    expect(verdict).toMatchObject({ kind: 'match', backend: 'mtplx', via: expect.stringContaining('ambiguous') });
+    expect(verdict.kind).toBe('none');
   });
 });
 
@@ -61,30 +57,24 @@ describe('the three probe shapes', () => {
     expect(verdict).toEqual({ kind: 'none', reason: null });
   });
 
-  it('/health plus a real OpenAI model list is lucebox', () => {
+  it('/health plus a model list that does not name itself stays unidentified', () => {
     const verdict = fingerprintSharedPort({
       models: { status: 200, body: { data: [] } },
       version: null,
       health: { status: 200, body: { status: 'ok' } },
     });
-    expect(verdict).toEqual({ kind: 'match', backend: 'lucebox', via: 'GET /health + /v1/models' });
+    expect(verdict.kind).toBe('none');
   });
 
-  it('/v1/models alone is the AMBIGUOUS case, and says so in the verdict', () => {
-    // mtplx is the fallback, not a confident identification — the `via` string is what tells a
-    // reader the row's backend label is a guess between two engines that are driven identically.
+  it('/v1/models alone, with no owner, stays unidentified', () => {
     const verdict = fingerprintSharedPort({ ...NOTHING, models: { status: 200, body: modelsBody() } });
-    expect(verdict).toEqual({ kind: 'match', backend: 'mtplx', via: 'GET /v1/models (fingerprint ambiguous)' });
+    expect(verdict.kind).toBe('none');
   });
 
-  it('a guarded /v1/models still proves the route exists', () => {
-    // Demanding an inventory from a 401 would discard a real backend for being secured.
+  it('a guarded /v1/models is not treated as a named engine', () => {
     for (const status of [401, 403]) {
-      expect(fingerprintSharedPort({ ...NOTHING, models: { status } })).toMatchObject({ kind: 'match', backend: 'mtplx' });
-      expect(fingerprintSharedPort({ ...NOTHING, models: { status }, health: { status: 200 } })).toMatchObject({
-        kind: 'match',
-        backend: 'lucebox',
-      });
+      expect(fingerprintSharedPort({ ...NOTHING, models: { status } }).kind).toBe('none');
+      expect(fingerprintSharedPort({ ...NOTHING, models: { status }, health: { status: 200 } }).kind).toBe('none');
     }
   });
 

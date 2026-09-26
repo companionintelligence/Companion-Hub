@@ -1,12 +1,8 @@
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { describe, expect, it } from 'vitest';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
-import { DsparkBackend } from '../backends/dspark.backend';
+import { OmlxBackend } from '../backends/omlx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { LlamacppBackend } from '../backends/llamacpp.backend';
-import { LmStudioBackend } from '../backends/lmstudio.backend';
-import { LuceboxBackend } from '../backends/lucebox.backend';
-import { MtplxBackend } from '../backends/mtplx.backend';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { InferenceModule } from '../inference.module';
@@ -22,11 +18,7 @@ const BACKEND_CLASSES = [
   ['ollama', OllamaBackend],
   ['vllm', VllmBackend],
   ['lemonade', LemonadeBackend],
-  ['mtplx', MtplxBackend],
-  ['dspark', DsparkBackend],
-  ['lucebox', LuceboxBackend],
-  ['llamacpp', LlamacppBackend],
-  ['lmstudio', LmStudioBackend],
+  ['omlx', OmlxBackend],
 ] as const;
 
 const providersOf = (module: unknown): unknown[] => (Reflect.getMetadata(MODULE_METADATA.PROVIDERS, module as never) as unknown[]) ?? [];
@@ -55,7 +47,7 @@ describe('InferenceModule wiring', () => {
     }
   });
 
-  /* Keeps the list above honest: a ninth backend type must arrive with its class, not without one. */
+  /* Keeps the list above honest: a new backend type must arrive with its class, not without one. */
   it('has one class for every declared backend type', () => {
     expect(BACKEND_CLASSES.map(([type]) => type)).toEqual([...INFERENCE_BACKEND_TYPES]);
   });
