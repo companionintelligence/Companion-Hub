@@ -10,11 +10,7 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
-import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
-import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
-import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
-import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
-import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
+import { OmlxBackend } from '@/modules/inference/backends/omlx.backend';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
@@ -165,11 +161,7 @@ describe('PoolProxyService', () => {
   let ollama: MockProxy<OllamaBackend>;
   let vllm: MockProxy<VllmBackend>;
   let lemonade: MockProxy<LemonadeBackend>;
-  let mtplx: MockProxy<MtplxBackend>;
-  let dspark: MockProxy<DsparkBackend>;
-  let lucebox: MockProxy<LuceboxBackend>;
-  let llamacpp: MockProxy<LlamacppBackend>;
-  let lmstudio: MockProxy<LmStudioBackend>;
+  let omlx: MockProxy<OmlxBackend>;
   let peerService: MockProxy<HubPoolPeerService>;
   let tailscaleService: MockProxy<TailscaleService>;
   let configuration: MockProxy<ConfigurationService>;
@@ -204,17 +196,13 @@ describe('PoolProxyService', () => {
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
     lemonade = mock<LemonadeBackend>();
-    mtplx = mock<MtplxBackend>();
-    dspark = mock<DsparkBackend>();
-    lucebox = mock<LuceboxBackend>();
-    llamacpp = mock<LlamacppBackend>();
-    lmstudio = mock<LmStudioBackend>();
+    omlx = mock<OmlxBackend>();
     peerService = mock<HubPoolPeerService>();
     tailscaleService = mock<TailscaleService>();
     configuration = mock<ConfigurationService>();
     setPoolPreferences({});
 
-    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio]) {
+    for (const backend of [ollama, vllm, lemonade, omlx]) {
       backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     }
     ollama.getBaseUrl.mockReturnValue('http://local-ollama:11434');
@@ -248,7 +236,7 @@ describe('PoolProxyService', () => {
     return new PoolProxyService(
       // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
       // return undefined and quietly drop every local candidate.
-      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
+      new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
       peerService,
       tailscaleService,
       loadService,
@@ -850,8 +838,8 @@ describe('PoolProxyService', () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
       vllm.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
       vllm.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [], error: 'timeout of 5000ms exceeded' });
-      mtplx.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
-      mtplx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
+      omlx.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      omlx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
       const res = createMockResponse();
 
       await service.proxyRequest({
@@ -864,8 +852,8 @@ describe('PoolProxyService', () => {
 
       expect(res.status).toHaveBeenCalledWith(502);
       const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string; localBackends: unknown[] };
-      expect(body.error).toContain('local mtplx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
-      expect(body.error).toContain('local vllm, lemonade, dspark, lucebox, llamacpp, lmstudio not reachable from inside the Hub container');
+      expect(body.error).toContain('local omlx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
+      expect(body.error).toContain('local vllm, lemonade not reachable from inside the Hub container');
       expect(body.localBackends).toEqual(
         expect.arrayContaining([
           {
@@ -887,7 +875,7 @@ describe('PoolProxyService', () => {
             probedMsAgo: expect.any(Number),
           },
           {
-            type: 'mtplx',
+            type: 'omlx',
             url: 'http://host.docker.internal:8000',
             running: true,
             healthy: false,
@@ -3106,7 +3094,7 @@ describe('PoolProxyService', () => {
         ollamaSlots?: unknown;
         maxPromptTokens?: number;
         hardwareTier?: string;
-        backend?: 'ollama' | 'vllm' | 'llamacpp';
+        backend?: 'ollama' | 'vllm';
       } = {},
     ): HubPoolPeer {
       return mockPeer({
@@ -3216,48 +3204,13 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
       });
 
-      it('judges Ollama and llama-server only: a vLLM candidate on a node that states slots keeps its place', async () => {
+      it('leaves a vLLM candidate in rank order when the node states a full slot count', async () => {
         peerService.listConnectedPeers.mockResolvedValue([
           node('vllm-node', { inFlightRequests: 2, ollamaSlots: 2, backend: 'vllm' }),
           node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
         ]);
 
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['vllm-node', 'core-2']);
-      });
-
-      it("judges a peer's llama-server by the node's stated slots — the fleet writes them from the same -np", async () => {
-        // core-6 after `cihub fleet backends --backends llamacpp --ollama-parallel 2`: a 2-slot
-        // llama-server, both slots busy, ranked ahead of a 4-slot node with one free.
-        peerService.listConnectedPeers.mockResolvedValue([
-          node('core-6', { inFlightRequests: 2, ollamaSlots: 2, backend: 'llamacpp' }),
-          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
-        ]);
-
-        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'core-6']);
-      });
-
-      it("judges THIS node's llama-server by its own /props, ahead of the operator's statement", async () => {
-        // The statement says 4 (Ollama's), the engine says 2 (its own -np); two in flight fill it.
-        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
-        llamacpp.engineCapabilities.mockReturnValue({ slots: 2, contextLength: 32768 });
-        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 4 } as never);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
-
-        const candidates = await service.buildCandidateList(MODEL);
-        expect(candidates.map((candidate) => `${candidate.peerId ?? 'local'}/${candidate.backend}`)).toEqual(['core-2/ollama', 'local/llamacpp']);
-      });
-
-      it("falls back to the node's statement for a local llama-server whose /props was not read", async () => {
-        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
-        llamacpp.engineCapabilities.mockReturnValue(null);
-        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
-
-        expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId ?? 'local')).toEqual(['core-2', 'local']);
       });
 
       it('counts the requests this node forwarded a peer since its snapshot, so a burst fills its slots here before the peer reports it', async () => {
@@ -4405,7 +4358,7 @@ describe('PoolProxyService', () => {
     // scores, and a mocked catalog would only prove the test's own fixture.
     function serviceWithCatalog(): PoolProxyService {
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
         peerService,
         tailscaleService,
         loadService,
@@ -5019,7 +4972,7 @@ describe('PoolProxyService', () => {
       router = mock<InferenceRouterService>();
       router.prepareTrackedModel.mockResolvedValue(null);
       withRouter = new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
         peerService,
         tailscaleService,
         loadService,
