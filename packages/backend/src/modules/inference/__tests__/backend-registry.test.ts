@@ -3,12 +3,8 @@ import { Test } from '@nestjs/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { InferenceBackendRegistry, UnknownInferenceBackendError } from '../backends/backend-registry';
 import type { InferenceBackend } from '../backends/backend.interface';
-import { DsparkBackend } from '../backends/dspark.backend';
+import { OmlxBackend } from '../backends/omlx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { LuceboxBackend } from '../backends/lucebox.backend';
-import { LlamacppBackend } from '../backends/llamacpp.backend';
-import { LmStudioBackend } from '../backends/lmstudio.backend';
-import { MtplxBackend } from '../backends/mtplx.backend';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 
@@ -32,11 +28,7 @@ const makeBackends = (make: (name: InferenceBackendType) => InferenceBackend = s
   ollama: make('ollama'),
   vllm: make('vllm'),
   lemonade: make('lemonade'),
-  mtplx: make('mtplx'),
-  dspark: make('dspark'),
-  lucebox: make('lucebox'),
-  llamacpp: make('llamacpp'),
-  lmstudio: make('lmstudio'),
+  omlx: make('omlx'),
 });
 
 /**
@@ -47,16 +39,7 @@ const makeBackends = (make: (name: InferenceBackendType) => InferenceBackend = s
  * re-imported against a mocked `INFERENCE_BACKEND_TYPES`.
  */
 const buildRegistry = (backends: BackendsByType, Registry = InferenceBackendRegistry): InferenceBackendRegistry =>
-  new Registry(
-    backends.ollama as OllamaBackend,
-    backends.vllm as VllmBackend,
-    backends.lemonade as LemonadeBackend,
-    backends.mtplx as MtplxBackend,
-    backends.dspark as DsparkBackend,
-    backends.lucebox as LuceboxBackend,
-    backends.llamacpp as LlamacppBackend,
-    backends.lmstudio as LmStudioBackend,
-  );
+  new Registry(backends.ollama as OllamaBackend, backends.vllm as VllmBackend, backends.lemonade as LemonadeBackend, backends.omlx as OmlxBackend);
 
 describe('InferenceBackendRegistry', () => {
   describe('get', () => {
@@ -163,7 +146,7 @@ describe('InferenceBackendRegistry', () => {
       // indistinguishable from the real walk under the real tuple. Only a tuple that disagrees with
       // the record can tell the two implementations apart, and a frozen `as const` export cannot be
       // reordered in place. Hence the re-import under a mock.
-      const reordered = ['lucebox', 'mtplx', 'dspark', 'lemonade', 'vllm', 'ollama'] as const;
+      const reordered = ['omlx', 'lemonade', 'vllm', 'ollama'] as const;
 
       vi.resetModules();
       vi.doMock('@ci-hub/common/types', async (importOriginal) => ({
@@ -234,9 +217,9 @@ describe('InferenceBackendRegistry', () => {
     });
 
     it('never sources the type from the instance, not even one that reports a wrong but plausible type', () => {
-      // Every stand-in claims to be lucebox. A defined-but-wrong `type` is the case the undefined-type
-      // double above cannot catch: `backend.type` would produce six plausible strings, all of them wrong.
-      const backends = makeBackends((name) => mislabelledStandIn(name, 'lucebox'));
+      // Every stand-in claims to be omlx. A defined-but-wrong `type` is the case the undefined-type
+      // double above cannot catch: `backend.type` would produce plausible strings, all of them wrong.
+      const backends = makeBackends((name) => mislabelledStandIn(name, 'omlx'));
       const registry = buildRegistry(backends);
 
       const entries = registry.entries();
@@ -255,11 +238,7 @@ describe('InferenceBackendRegistry', () => {
           { provide: OllamaBackend, useValue: backends.ollama },
           { provide: VllmBackend, useValue: backends.vllm },
           { provide: LemonadeBackend, useValue: backends.lemonade },
-          { provide: MtplxBackend, useValue: backends.mtplx },
-          { provide: DsparkBackend, useValue: backends.dspark },
-          { provide: LuceboxBackend, useValue: backends.lucebox },
-          { provide: LlamacppBackend, useValue: backends.llamacpp },
-          { provide: LmStudioBackend, useValue: backends.lmstudio },
+          { provide: OmlxBackend, useValue: backends.omlx },
         ],
       }).compile();
 

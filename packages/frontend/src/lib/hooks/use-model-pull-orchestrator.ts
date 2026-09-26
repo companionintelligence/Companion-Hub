@@ -1,11 +1,4 @@
-import {
-  fetchDsparkInstallStatus,
-  fetchLemonadeInstallStatus,
-  fetchMtplxInstallStatus,
-  fetchOllamaInstallStatus,
-  fetchSpeculativeInferenceStatus,
-  fetchVllmInstallStatus,
-} from '@/lib/inference/inference-api';
+import { fetchLemonadeInstallStatus, fetchOllamaInstallStatus, fetchOmlxInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -97,18 +90,8 @@ export function useModelPullOrchestrator({
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }
-        if (inferenceBackend === 'dspark') {
-          const data = (await fetchDsparkInstallStatus(backendUrl)) as { ready?: boolean; running?: boolean };
-          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
-          return;
-        }
-        if (inferenceBackend === 'mtplx') {
-          const data = (await fetchMtplxInstallStatus(backendUrl)) as { ready?: boolean; running?: boolean };
-          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
-          return;
-        }
-        if (inferenceBackend === 'lucebox') {
-          const data = (await fetchSpeculativeInferenceStatus()) as { ready?: boolean; running?: boolean };
+        if (inferenceBackend === 'omlx') {
+          const data = (await fetchOmlxInstallStatus(backendUrl)) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }

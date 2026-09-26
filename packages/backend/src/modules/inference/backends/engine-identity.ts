@@ -1,30 +1,19 @@
 import type { BackendHealthStatus, InferenceBackendType } from '@ci-hub/common/types';
 
 /**
- * The backends whose default port another backend also probes — and which therefore may reach the
- * SAME server on a node that runs only one of them: vllm, mtplx and lucebox all default to host
- * port 8000; llama-server's own 8080 is mlx-dspark's (which is why `LLAMACPP_URL` is opt-in), and
- * the fleet's managed llama-server sits on 8081 where a hand-started one may be too.
+ * vLLM and oMLX both default to host port 8000, so a probe of that port can reach either server.
+ * `owned_by` on GET /v1/models is what tells them apart.
  */
-export type SharedPortEngine = Extract<InferenceBackendType, 'vllm' | 'mtplx' | 'lucebox' | 'llamacpp'>;
+export type SharedPortEngine = Extract<InferenceBackendType, 'vllm' | 'omlx'>;
 
 /**
- * Who each engine NAMES ITSELF as, in `data[0].owned_by` of its own `/v1/models` body.
- *
- * Measured against live servers, not guessed: lucebox returns `owned_by:dflash` (its runtime's
- * name, not the product's — which is why this is a table and not a string match on the backend
- * id), mtplx returns `owned_by:mtplx`, vLLM returns `owned_by:vllm`, llama-server returns
- * `owned_by:llamacpp` (and answers `/props` with its model path, per-slot `n_ctx` and
- * `total_slots`, which `llamacpp.backend.ts` reads once the server is its own). Shared with the
- * eval port sweep (`eval/backend-fingerprint.ts`), which learned the first three first.
+ * Who each engine names itself as, in `data[0].owned_by` of its own `/v1/models` body.
+ * vLLM returns `owned_by:vllm`. oMLX returns `owned_by:omlx`.
  */
 export const OWNED_BY_ENGINE: Record<string, SharedPortEngine> = {
-  dflash: 'lucebox',
-  lucebox: 'lucebox',
-  mtplx: 'mtplx',
   vllm: 'vllm',
-  // llama-server (`ggml-org/llama.cpp`, verified against b11065 and Ollama's bundled build).
-  llamacpp: 'llamacpp',
+  // oMLX's GET /v1/models rows use owned_by "omlx" (measured against a live /v1/models body).
+  omlx: 'omlx',
 };
 
 /** Model ids from an OpenAI `/v1/models` body. Shared so every reader agrees on the shape. */
@@ -44,9 +33,7 @@ export function openAiModelOwner(body: unknown): string {
 /** The env var an operator sets to point `type` at its own server — named in the error so the fix is one line. */
 const ENDPOINT_VAR: Record<SharedPortEngine, string> = {
   vllm: 'VLLM_URL',
-  mtplx: 'MTPLX_URL',
-  lucebox: 'SPECULATIVE_INFERENCE_URL',
-  llamacpp: 'LLAMACPP_URL',
+  omlx: 'OMLX_URL',
 };
 
 /**

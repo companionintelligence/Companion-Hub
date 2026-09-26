@@ -23,7 +23,7 @@ type GpuVendorKey = CuratedModel['requirements']['gpuVendors'][number]; // 'nvid
 // Vendors Ollama can actually offload to. Anything else (e.g. Intel) falls back to CPU inference.
 const GPU_INFERENCE_VENDORS = new Set<HardwareProfile['gpu']['vendor']>(['nvidia', 'amd', 'apple']);
 
-const HOST_SERVED_BACKENDS = new Set<InferenceBackendType>(['vllm', 'mtplx', 'dspark', 'lucebox']);
+const HOST_SERVED_BACKENDS = new Set<InferenceBackendType>(['vllm', 'omlx']);
 
 // Fraction of each memory pool a model may occupy, leaving headroom for the OS, the app container,
 // KV-cache/context growth, and (for shared pools) everything else running on the machine.

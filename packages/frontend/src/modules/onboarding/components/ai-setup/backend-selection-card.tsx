@@ -2,54 +2,30 @@ import { Card, CardContent } from '@/components/ui/Card';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import {
-  ONBOARDING_BACKEND_DSPARK_HINT,
   ONBOARDING_BACKEND_LEMONADE_HINT,
-  ONBOARDING_BACKEND_LLAMACPP_HINT,
-  ONBOARDING_BACKEND_LMSTUDIO_HINT,
-  ONBOARDING_BACKEND_MTPLX_HINT,
   ONBOARDING_BACKEND_OLLAMA_HINT,
-  ONBOARDING_BACKEND_SPECULATIVE_HINT,
+  ONBOARDING_BACKEND_OMLX_HINT,
   ONBOARDING_BACKEND_VLLM_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
-import { BrandLogo, LemonadeIcon, SpeculativeInferenceIcon, VllmIcon } from './icons';
+import { BrandLogo, LemonadeIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
-import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   ollama: ONBOARDING_BACKEND_OLLAMA_HINT,
   vllm: ONBOARDING_BACKEND_VLLM_HINT,
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
-  mtplx: ONBOARDING_BACKEND_MTPLX_HINT,
-  dspark: ONBOARDING_BACKEND_DSPARK_HINT,
-  lucebox: ONBOARDING_BACKEND_SPECULATIVE_HINT,
-  llamacpp: ONBOARDING_BACKEND_LLAMACPP_HINT,
-  lmstudio: ONBOARDING_BACKEND_LMSTUDIO_HINT,
+  omlx: ONBOARDING_BACKEND_OMLX_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey?: string }> = {
   ollama: { label: 'Ollama', descriptionKey: 'ONBOARDING_BACKEND_OLLAMA_DESC' },
   vllm: { label: 'vLLM', descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
-  mtplx: { label: 'MTPLX' },
-  dspark: { label: 'mlx-dspark' },
-  lucebox: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_SPECULATIVE_DESC' },
-  llamacpp: { label: 'llama.cpp', descriptionKey: 'ONBOARDING_BACKEND_LLAMACPP_DESC' },
-  lmstudio: { label: 'LM Studio', descriptionKey: 'ONBOARDING_BACKEND_LMSTUDIO_DESC' },
+  omlx: { label: 'oMLX', descriptionKey: 'ONBOARDING_BACKEND_OMLX_DESC' },
 };
 
-/**
- * Keep the Apple-Silicon speculative path prominent, with MTPLX as its variant.
- *
- * llama.cpp and LM Studio come last: neither is something the Hub can set up, so offering them
- * above an engine it can install would send an operator with no server running to a dead end. They
- * are here for the operator who already has one — which the picker shows by probing the default
- * port, so a running LM Studio on this machine appears healthy with nothing configured.
- */
-const BACKEND_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox', 'ollama', 'vllm', 'lemonade', 'lmstudio', 'llamacpp'];
-
-/** Runners that do speculative decoding, grouped under one heading in this order. */
-const SPECULATIVE_GROUP_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox'];
+const BACKEND_ORDER: InferenceBackendType[] = ['ollama', 'omlx', 'vllm', 'lemonade'];
 
 type BackendStatus = { type: InferenceBackendType; running: boolean; healthy: boolean };
 
@@ -153,29 +129,7 @@ export const BackendSelectionCard = ({
   // Never hide the current selection, so an existing configuration stays visible and changeable.
   const visibleBackends = available.filter(({ type }) => type === selected || !hiddenTypes.includes(type));
   const backendsByType = new Map(visibleBackends.map((backend) => [backend.type, backend] as const));
-  // Every runner that does speculative decoding shares one group. Its description follows the host:
-  // mlx-dspark and MTPLX are only listed on Apple Silicon Macs, so without them the group is the GPU runner alone.
-  const speculativeGroup = SPECULATIVE_GROUP_ORDER.flatMap((type) => backendsByType.get(type) ?? []);
-  const hasAppleSiliconRunner = backendsByType.has('dspark') || backendsByType.has('mtplx');
-  const speculativeGroupDescriptionKey = hasAppleSiliconRunner ? 'ONBOARDING_BACKEND_DSPARK_DESC' : 'ONBOARDING_BACKEND_SPECULATIVE_GPU_DESC';
   const orderedBackends = BACKEND_ORDER.filter((type) => backendsByType.has(type));
-
-  // Speculative runners replace the chat engine rather than adding to it, so they share the one
-  // selection. They render as checkboxes so they can be unticked: that returns to the last regular
-  // engine picked here, else the recommended one, else the first listed.
-  const standardBackends = orderedBackends.filter((type) => !SPECULATIVE_GROUP_ORDER.includes(type));
-  const lastStandardBackend = useRef<InferenceBackendType | null>(null);
-  useEffect(() => {
-    if (!SPECULATIVE_GROUP_ORDER.includes(selected)) lastStandardBackend.current = selected;
-  }, [selected]);
-  const deselectSpeculative = () => {
-    const previous = lastStandardBackend.current;
-    const fallback =
-      (previous && standardBackends.includes(previous) ? previous : undefined) ??
-      (standardBackends.includes(recommended) ? recommended : undefined) ??
-      standardBackends[0];
-    if (fallback) onSelect(fallback);
-  };
 
   const content = (
     <>
@@ -189,30 +143,7 @@ export const BackendSelectionCard = ({
       )}
 
       <div className="space-y-1" data-testid="backend-options">
-        {speculativeGroup.length > 0 && (
-          <div className="space-y-1" data-testid="backend-option-speculative-group">
-            <div className="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {t('ONBOARDING_BACKEND_SPECULATIVE_GROUP')}
-            </div>
-            <p className="px-3 text-xs text-muted-foreground">{t(speculativeGroupDescriptionKey)}</p>
-            <div className="space-y-1">
-              {speculativeGroup.map((backend) => (
-                <BackendOption
-                  key={backend.type}
-                  backend={backend}
-                  recommended={recommended}
-                  selected={selected}
-                  onSelect={onSelect}
-                  disabled={disabled}
-                  unavailableTypes={unavailableTypes}
-                  nested
-                  onDeselect={standardBackends.length > 0 ? deselectSpeculative : undefined}
-                />
-              ))}
-            </div>
-          </div>
-        )}
-        {standardBackends.map((type) => {
+        {orderedBackends.map((type) => {
           const backend = backendsByType.get(type);
           if (!backend) return null;
           return (
@@ -280,13 +211,13 @@ export const BackendCard = () => {
           hint={t(ONBOARDING_BACKEND_LEMONADE_HINT)}
         />
         <OptionCard
-          testId="backend-option-speculative-inference"
-          title="Speculative inference"
-          description={t('ONBOARDING_BACKEND_SPECULATIVE_OPTION_DESC')}
-          icon={<SpeculativeInferenceIcon />}
+          testId="backend-option-omlx"
+          title="oMLX"
+          description={t('ONBOARDING_BACKEND_OMLX_DESC')}
+          icon={<BrandLogo name="ollama" />}
           disabled
           badge={t('ONBOARDING_SOON')}
-          hint={t(ONBOARDING_BACKEND_SPECULATIVE_HINT)}
+          hint={t(ONBOARDING_BACKEND_OMLX_HINT)}
         />
       </div>
     </StepSection>

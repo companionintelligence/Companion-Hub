@@ -141,7 +141,7 @@ describe('memoryBudgetRows', () => {
       ...budget,
       usage: {
         sampledAt: '2026-09-20T00:00:00Z',
-        backends: [{ backend: 'lucebox', models: ['qwen3.6-27b'], pool: 'vram', usedMb: null, source: 'unmeasured' }],
+        backends: [{ backend: 'omlx', models: ['qwen3.6-27b'], pool: 'vram', usedMb: null, source: 'unmeasured' }],
       },
     });
 

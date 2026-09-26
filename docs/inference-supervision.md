@@ -1,6 +1,6 @@
 # Inference backend observation
 
-The Hub can watch its six inference backends and the containers in its own Compose project, and
+The Hub can watch Ollama, oMLX, vLLM, and Lemonade, and the containers in its own Compose project, and
 raise an alarm when something is being restarted in a loop. It is **off by default**, and it never
 restarts, stops, or starts an inference backend.
 
@@ -40,12 +40,12 @@ have to be designed against.
 ### Per backend
 
 Each tick resolves, per backend, **what control plane the Hub actually has** — never assuming one,
-because the six backends are genuinely not uniform:
+because the four engines are not uniform:
 
 | Target kind | What it means | Which backends land here |
 |---|---|---|
-| `container` | A local container whose published port matches the URL the health check probes | `lucebox` on a fleet node; `ollama`, `vllm`, `lemonade` if the operator runs the container |
-| `host-process` | A daemon outside this container's PID namespace | Host ollama under systemd; `mtplx` and `dspark`, always |
+| `container` | A local container whose published port matches the URL the health check probes | `ollama`, `vllm`, or `lemonade` if the operator runs that container |
+| `host-process` | A daemon outside this container's PID namespace | Host Ollama under systemd; oMLX and vLLM, which run on the host |
 | `remote` | An endpoint on another machine | `vllm` whenever `preferredVllmUrl` points across a tailnet |
 | `absent` | Nothing answers and nothing matches | Any backend that is not deployed here |
 
@@ -55,14 +55,9 @@ Two rules matter more than the rest:
   that gate the Hub would report on a local container named `ci-hub-vllm` because a Mac across the
   tailnet went down.
 - **A name match is not enough.** The container's published host port must match the port in the
-  base URL. The desktop publishes Lucebox on a *dynamic* host port (`available_host_port`), so
-  `ci-hub-inference-lucebox` routinely has nothing to do with whatever answers
-  `SPECULATIVE_INFERENCE_URL`. No port match downgrades to `host-process`, never up to `container`.
+  base URL. No port match downgrades to `host-process`, never up to `container`.
 
-`mtplx` and `dspark` are permanently `host-process`: both `getDockerImage()` and
-`getComposeConfig()` throw unconditionally in those backends, so neither has ever had a container to
-find. They run as launchd LaunchAgents with `KeepAlive` and `ThrottleInterval`, which is already a
-correct supervisor for them.
+oMLX and vLLM are host processes. Their compose helpers throw, so neither has a Hub container to find.
 
 ### Across the whole Compose project
 
@@ -90,16 +85,9 @@ Repeat alarms are spaced an hour apart, and escalate early if the count climbs a
 
 | Code | Signature | What the operator is told |
 |---|---|---|
-| `lucebox_rocm_legacy_image` | Image is `ghcr.io/luce-org/lucebox-hub:rocm`, GPU vendor is `amd`, and two or more SIGSEGV-shaped deaths | `assertLuceboxImageSupportsArch`'s own message, plus: the container has to be **recreated**, because starting it again reuses the image it was created with |
+| `startup_dependency` | The container is stopped and the log shows a JIT or import failure | Fix the host dependency the log names. Restarting the same image does not |
 | `startup_dependency_failure` | Exited with a JIT/compile/import failure in the log tail | Names the failure; a deterministic one, so it fails identically every start |
 | `zombie_child_processes` | Eight or more `Z`/`defunct` entries in `docker top` | They clear on a restart, which is an operator action |
-| `no_weights` | Lucebox answers `/health` with no loaded model | Check `DFLASH_TARGET`/`DFLASH_DRAFT` and the models bind mount |
-
-The Lucebox diagnosis deliberately does **not** match on a `gfx*` architecture string. Nothing in
-this repo produces one at runtime: `HardwareProfile.gpu` has no LLVM-target field, and
-`LuceboxComposeOptions.gpuArch` is an input nothing ever fills. An arch-based rule would never have
-fired on the seven fleet nodes it was aimed at. The image tag, the vendor, and a repeated segfault
-are evidence that exists.
 
 ## Relationship to `ServingQuarantine`
 
@@ -154,7 +142,7 @@ would make the flag permanent and the setting could never be switched back on fr
 
 ### Why the default is `off`
 
-`'observe'` is cheap but not inert. Each tick calls `healthCheck()` on all six backends, which
+`'observe'` is cheap but not inert. Each tick calls `healthCheck()` on Ollama, oMLX, vLLM, and Lemonade, which
 bypasses the 20-second `OWN_INVENTORY_TTL_MS` cache `HubPoolPeerService` maintains precisely because
 that fan-out is expensive, and `OllamaBackend`'s health check mutates the shared `resolvedUrl` that
 the live request path reads through `getBaseUrl()`. On a node whose host ollama is down, one tick

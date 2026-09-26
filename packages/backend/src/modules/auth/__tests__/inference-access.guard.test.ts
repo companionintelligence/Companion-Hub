@@ -361,13 +361,8 @@ describe('the inference route table', () => {
       'InferenceController.getOllamaStatus': 'GET ollama/status → AuthGuard',
       'InferenceController.getLemonadeStatus': 'GET lemonade/status → AuthGuard',
       'InferenceController.getVllmStatus': 'GET vllm/status → AuthGuard',
-      'InferenceController.getDsparkStatus': 'GET dspark/status → AuthGuard',
-      'InferenceController.getMtplxStatus': 'GET mtplx/status → AuthGuard',
-      'InferenceController.getLuceboxStatus': 'GET lucebox/status → AuthGuard',
-      // Operator status routes for the two host-run engines, on AuthGuard like every other
-      // `<backend>/status`: they report reachability to Settings, and serve no inference.
-      'InferenceController.getLlamacppStatus': 'GET llamacpp/status → AuthGuard',
-      'InferenceController.getLmStudioStatus': 'GET lmstudio/status → AuthGuard',
+      'InferenceController.getOmlxStatus': 'GET omlx/status → AuthGuard',
+      'InferenceController.getManualEndpointStatus': 'GET manual-endpoint/status → AuthGuard',
       'InferenceController.installOllama': 'POST ollama/install → AuthGuard',
       'InferenceController.getAppCredentials': 'GET apps/:slug/credentials → InternalOriginGuard',
       'InferenceController.getAppCredentialsEnv': 'GET apps/:slug/credentials.env|apps/:slug/bootstrap.env → InternalOriginGuard',

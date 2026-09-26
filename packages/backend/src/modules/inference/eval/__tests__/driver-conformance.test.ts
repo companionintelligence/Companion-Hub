@@ -88,10 +88,10 @@ describe('the ledger adds up', () => {
   it('a skip left behind by a widened backends array is reported as stale', () => {
     // The opposite drift: an engine gains a route, the bank entry is widened, and the old "cannot do
     // this" reason stays. `native-chat` is skipped for everything but ollama.
-    const widened: ConformancePrompt[] = BANK.map((p) => (p.id === 'ollama-native-chat' ? { ...p, backends: [...p.backends, 'mtplx'] } : p));
+    const widened: ConformancePrompt[] = BANK.map((p) => (p.id === 'ollama-native-chat' ? { ...p, backends: [...p.backends, 'omlx'] } : p));
     const stale = staleSkips(widened);
-    expect(stale.map((s) => `${s.backend}/${s.dimension}`)).toContain('mtplx/native-chat');
-    expect(stale.find((s) => s.backend === 'mtplx')?.bankPromptIds).toContain('ollama-native-chat');
+    expect(stale.map((s) => `${s.backend}/${s.dimension}`)).toContain('omlx/native-chat');
+    expect(stale.find((s) => s.backend === 'omlx')?.bankPromptIds).toContain('ollama-native-chat');
   });
 
   it('an empty bank leaves only what this module itself declares', () => {
@@ -158,11 +158,7 @@ describe('SPEC_DECODE', () => {
     // The headline claim of the module, asserted as a count so a third trap cannot be added without
     // the docs above it being reread — and so neither of these two can quietly be deleted.
     const traps = INFERENCE_BACKEND_TYPES.filter((b) => SPEC_DECODE[b].falseOffArm !== null);
-    expect(traps.sort()).toEqual(['dspark', 'lemonade']);
-    // dspark's is a false OFF: the parameter is silently coerced, so the control arm speculates too.
-    expect(SPEC_DECODE.dspark.falseOffArm).toMatch(/max_draft/);
-    expect(SPEC_DECODE.dspark.falseOffArm).toMatch(/coerced/i);
-    // lemonade's is the mirror image — a false ON that loads a drafter and never drafts a token.
+    expect(traps).toEqual(['lemonade']);
     expect(SPEC_DECODE.lemonade.falseOffArm).toMatch(/false ON/);
   });
 
@@ -171,14 +167,13 @@ describe('SPEC_DECODE', () => {
     expect(SPEC_OFF_TRAPS.map((t) => t.param)).toContain('max_draft');
     const maxDraft = SPEC_OFF_TRAPS.find((t) => t.param === 'max_draft');
     expect(maxDraft?.value).toBe(0);
-    expect(SPEC_DECODE.dspark.falseOffArm).toContain(maxDraft?.param ?? 'unreachable');
   });
 
   it('separates "can be toggled" from "can be observed"', () => {
     // The asymmetry is the reason `reach` and `observable` are different fields: an engine that
     // cannot be toggled by a request can still report, per completion, whether the drafter ran.
-    expect(SPEC_DECODE.lucebox.reach).toBe('launch-flag');
-    expect(SPEC_DECODE.lucebox.observable).toBeTruthy();
+    expect(SPEC_DECODE.omlx.capable).toBe('unmeasured');
+    expect(SPEC_DECODE.omlx.reach).toBe('launch-flag');
     // vLLM is the one engine that was DRIVEN and says nothing read-only, which is why its cell is a
     // sourced skip. The unmeasured engines skip too, but for a weaker reason, and the two must not
     // be allowed to read as the same finding — so they are asserted apart.
@@ -209,9 +204,8 @@ describe('THINKING_SUPPRESSION', () => {
   it('names the spelling that works and the spelling that answers 200 and does nothing', () => {
     // The trap the table exists for: copying the ollama override to mtplx reproduces a run where the
     // entire token budget goes to hidden reasoning and nothing in the response says so.
-    expect(THINKING_SUPPRESSION.mtplx.works).toMatch(/enable_thinking/);
-    expect(THINKING_SUPPRESSION.mtplx.silentNoOp).toMatch(/reasoning_effort/);
     expect(THINKING_SUPPRESSION.ollama.works).toMatch(/reasoning_effort/);
+    expect(THINKING_SUPPRESSION.omlx.works).toBeNull();
   });
 
   it('never lists one spelling as both working and a no-op, and always says where that was established', () => {

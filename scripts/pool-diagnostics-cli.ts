@@ -112,7 +112,7 @@ const BACKEND_URL_VARS = [
 ] as const;
 
 /** INFERENCE_BACKEND_TYPES (packages/common/src/types/inference.ts:84), in the order the fan-out builds them. */
-const INFERENCE_BACKENDS = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'] as const;
+const INFERENCE_BACKENDS = ['ollama', 'omlx', 'vllm', 'lemonade'] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Result shapes
