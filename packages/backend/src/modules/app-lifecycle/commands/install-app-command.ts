@@ -326,6 +326,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
                       await fs.promises.mkdir(hostPath, { recursive: true }).catch(() => {
                         /* ignore mkdir errors */
                       });
+                      // A `private: true` mount is the app's own root-written directory (Memory's
+                      // secrets); it starts, and stays, unreadable to other local accounts. The
+                      // permissions sweep below prunes it — see setAppDataDirPermissions.
+                      if (vol.private === true && process.platform !== 'win32') {
+                        await fs.promises.chmod(hostPath, 0o700).catch(() => {
+                          /* a mount that rejects chmod is the drvfs case handled elsewhere */
+                        });
+                      }
                     }
                   }
                 }

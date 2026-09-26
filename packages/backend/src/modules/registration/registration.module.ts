@@ -2,6 +2,8 @@ import { Module, forwardRef } from '@nestjs/common';
 import { RegistrationController } from './registration.controller';
 import { RegistrationGuard } from './registration.guard';
 import { RegistrationService } from './registration.service';
+import { PortalPushKeyService } from './portal-push-key.service';
+import { ApiKeyModule } from '../api-keys/api-key.module';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { ConfigurationModule } from '@/core/config/configuration.module';
 import { LoggerModule } from '@/core/logger/logger.module';
@@ -15,6 +17,8 @@ import { TailscaleModule } from '../tailscale/tailscale.module';
 @Module({
   imports: [
     ConfigurationModule,
+    // Its own import graph is LoggerModule alone, so no cycle back here.
+    ApiKeyModule,
     LoggerModule,
     DatabaseModule,
     forwardRef(() => PortalModule),
@@ -24,7 +28,7 @@ import { TailscaleModule } from '../tailscale/tailscale.module';
     TailscaleModule,
   ],
   controllers: [RegistrationController],
-  providers: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository],
-  exports: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository],
+  providers: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository, PortalPushKeyService],
+  exports: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository, PortalPushKeyService],
 })
 export class RegistrationModule {}

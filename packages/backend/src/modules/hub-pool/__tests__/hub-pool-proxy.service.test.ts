@@ -10,11 +10,7 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
-import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
-import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
-import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
-import { LlamacppBackend } from '@/modules/inference/backends/llamacpp.backend';
-import { LmStudioBackend } from '@/modules/inference/backends/lmstudio.backend';
+import { OmlxBackend } from '@/modules/inference/backends/omlx.backend';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import {
@@ -57,7 +53,6 @@ import {
 import {
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
-  PREFIX_HASH_CHARS,
   PrefixAffinityStore,
   applyPrefixAffinity,
   derivePrefixKey,
@@ -166,11 +161,7 @@ describe('PoolProxyService', () => {
   let ollama: MockProxy<OllamaBackend>;
   let vllm: MockProxy<VllmBackend>;
   let lemonade: MockProxy<LemonadeBackend>;
-  let mtplx: MockProxy<MtplxBackend>;
-  let dspark: MockProxy<DsparkBackend>;
-  let lucebox: MockProxy<LuceboxBackend>;
-  let llamacpp: MockProxy<LlamacppBackend>;
-  let lmstudio: MockProxy<LmStudioBackend>;
+  let omlx: MockProxy<OmlxBackend>;
   let peerService: MockProxy<HubPoolPeerService>;
   let tailscaleService: MockProxy<TailscaleService>;
   let configuration: MockProxy<ConfigurationService>;
@@ -205,17 +196,13 @@ describe('PoolProxyService', () => {
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
     lemonade = mock<LemonadeBackend>();
-    mtplx = mock<MtplxBackend>();
-    dspark = mock<DsparkBackend>();
-    lucebox = mock<LuceboxBackend>();
-    llamacpp = mock<LlamacppBackend>();
-    lmstudio = mock<LmStudioBackend>();
+    omlx = mock<OmlxBackend>();
     peerService = mock<HubPoolPeerService>();
     tailscaleService = mock<TailscaleService>();
     configuration = mock<ConfigurationService>();
     setPoolPreferences({});
 
-    for (const backend of [ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio]) {
+    for (const backend of [ollama, vllm, lemonade, omlx]) {
       backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     }
     ollama.getBaseUrl.mockReturnValue('http://local-ollama:11434');
@@ -249,7 +236,7 @@ describe('PoolProxyService', () => {
     return new PoolProxyService(
       // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
       // return undefined and quietly drop every local candidate.
-      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
+      new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
       peerService,
       tailscaleService,
       loadService,
@@ -851,8 +838,8 @@ describe('PoolProxyService', () => {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
       vllm.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
       vllm.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [], error: 'timeout of 5000ms exceeded' });
-      mtplx.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
-      mtplx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
+      omlx.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      omlx.healthCheck.mockResolvedValue({ running: true, healthy: false, modelsLoaded: [], error: 'The server names itself "vllm"' });
       const res = createMockResponse();
 
       await service.proxyRequest({
@@ -865,8 +852,8 @@ describe('PoolProxyService', () => {
 
       expect(res.status).toHaveBeenCalledWith(502);
       const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string; localBackends: unknown[] };
-      expect(body.error).toContain('local mtplx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
-      expect(body.error).toContain('local vllm, lemonade, dspark, lucebox, llamacpp, lmstudio not reachable from inside the Hub container');
+      expect(body.error).toContain('local omlx at http://host.docker.internal:8000 answered but was left out: The server names itself "vllm"');
+      expect(body.error).toContain('local vllm, lemonade not reachable from inside the Hub container');
       expect(body.localBackends).toEqual(
         expect.arrayContaining([
           {
@@ -888,7 +875,7 @@ describe('PoolProxyService', () => {
             probedMsAgo: expect.any(Number),
           },
           {
-            type: 'mtplx',
+            type: 'omlx',
             url: 'http://host.docker.internal:8000',
             running: true,
             healthy: false,
@@ -2053,6 +2040,41 @@ describe('PoolProxyService', () => {
         expect(second?.affinity).toEqual({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
       });
 
+      /**
+       * The herding bug, measured on core-2, 2026-09-21: six concurrent sessions behind one 25k-token
+       * system prefix, differing only in their first user message, all keyed together — every
+       * session's first turn was a `hit` on a node that had never served it, and when one session
+       * moved they all followed, cold. Two sessions of one agent stand in for the six.
+       */
+      it('keeps two concurrent sessions of one agent apart, however long the system prompt they share', async () => {
+        const sharedSystem = { role: 'system', content: `You are an agent with these tools: ${'…'.repeat(8_192)}` };
+        const sessionA = { model: MODEL, stream: false, messages: [sharedSystem, { role: 'user', content: 'read the repo' }] };
+        const sessionB = { model: MODEL, stream: false, messages: [sharedSystem, { role: 'user', content: 'write the tests' }] };
+        // A's first turn goes to the peer because local is busy. Local is idle again for everything after.
+        await firstCallLandsOnPeer(sessionA);
+
+        // B's first turn: nothing has been served for THIS session, so the ranker decides — local, not A's peer.
+        const bFirst = await route(sessionB);
+        // A's second turn follows A to the peer; B's follows B, which stayed home.
+        const aSecond = await route({
+          ...sessionA,
+          messages: [...sessionA.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now fix it' }],
+        });
+        const bSecond = await route({
+          ...sessionB,
+          messages: [...sessionB.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'run them' }],
+        });
+
+        expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY, PEER_FQDN, LOCAL_CANDIDATE_KEY]);
+        expect(headersSetOn(bFirst)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
+        expect(headersSetOn(aSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        expect(headersSetOn(bSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
+        const [bSecondRow, aSecondRow, bFirstRow] = routingLog.list();
+        expect(bFirstRow?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+        expect(aSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN });
+        expect(bSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: LOCAL_CANDIDATE_KEY });
+      });
+
       it('falls through to the ranker once the remembered node has the limit in flight, and says so', async () => {
         await firstCallLandsOnPeer();
         // Two already queued there: this request would be its third, and waiting costs more than re-prefilling.
@@ -2271,7 +2293,7 @@ describe('PoolProxyService', () => {
 
       it('includes every leading system message and the first message after them, and nothing later', () => {
         const twoSystem = [SYSTEM, { role: 'system', content: 'and also…' }, { role: 'user', content: 'go' }];
-        expect(promptHead({ messages: [...twoSystem, { role: 'assistant', content: 'later' }] })).toBe(JSON.stringify(twoSystem));
+        expect(promptHead({ messages: [...twoSystem, { role: 'assistant', content: 'later' }] })).toEqual(twoSystem);
         expect(
           promptHead({
             messages: [
@@ -2279,24 +2301,65 @@ describe('PoolProxyService', () => {
               { role: 'assistant', content: 'later' },
             ],
           }),
-        ).toBe(JSON.stringify([{ role: 'user', content: 'go' }]));
+        ).toEqual([{ role: 'user', content: 'go' }]);
       });
 
       it('keys a completion or generate body on its system and prompt fields, and nothing on a body with neither', () => {
-        expect(promptHead({ model: MODEL, prompt: 'Once upon' })).toBe(JSON.stringify([null, 'Once upon']));
-        expect(promptHead({ model: MODEL, system: 'Be brief', prompt: 'Once upon' })).toBe(JSON.stringify(['Be brief', 'Once upon']));
+        expect(promptHead({ model: MODEL, prompt: 'Once upon' })).toEqual([null, 'Once upon']);
+        expect(promptHead({ model: MODEL, system: 'Be brief', prompt: 'Once upon' })).toEqual(['Be brief', 'Once upon']);
         expect(promptHead({ model: MODEL, input: ['a'] })).toBeNull();
         expect(promptHead({ model: MODEL, messages: [] })).toBeNull();
         expect(derivePrefixKey(MODEL, { model: MODEL }, undefined)).toBeNull();
         expect(derivePrefixKey(MODEL, 'not an object', undefined)).toBeNull();
       });
 
-      /** Two sessions of one agent share a key once the system prompt alone fills the digest — and that is right: the shared prefix is what the cache holds. */
-      it('digests only the first PREFIX_HASH_CHARS of the head', () => {
-        const longSystem = { role: 'system', content: 'x'.repeat(PREFIX_HASH_CHARS) };
-        const a = derivePrefixKey(MODEL, { messages: [longSystem, { role: 'user', content: 'task a' }] }, undefined);
-        const b = derivePrefixKey(MODEL, { messages: [longSystem, { role: 'user', content: 'task b' }] }, undefined);
-        expect(a).toEqual(b);
+      /**
+       * The digest reads the whole head, never a window over it. An earlier 4 KB window keyed
+       * every session of an agent together once the system prompt alone filled it (core-2,
+       * 2026-09-21: six sessions behind one 25k-token prefix, one key), and the table then
+       * remembered the node that last served any of them.
+       */
+      it('keys two sessions apart that share a system prompt longer than any window, and one session together as it grows', () => {
+        // ~64 KB of system prompt, then a first user message that differs by a word.
+        const longSystem = { role: 'system', content: 'x'.repeat(65_536) };
+        const a1 = { messages: [longSystem, { role: 'user', content: 'task a' }] };
+        const b1 = { messages: [longSystem, { role: 'user', content: 'task b' }] };
+        const a = derivePrefixKey(MODEL, a1, undefined);
+        const b = derivePrefixKey(MODEL, b1, undefined);
+        expect(a).not.toBeNull();
+        expect(a).not.toEqual(b);
+
+        // Session A on its next turn: the head is unchanged, so is the key.
+        const a2 = { messages: [...a1.messages, { role: 'assistant', content: 'done' }, { role: 'user', content: 'now b' }] };
+        expect(derivePrefixKey(MODEL, a2, undefined)).toEqual(a);
+
+        // A difference deep in the system prompt — past where any window would read — keys apart too.
+        const edited = {
+          messages: [
+            { role: 'system', content: `${'x'.repeat(65_535)}y` },
+            { role: 'user', content: 'task a' },
+          ],
+        };
+        expect(derivePrefixKey(MODEL, edited, undefined)).not.toEqual(a);
+
+        // The header still overrides the digest: two bodies that key apart follow one header.
+        expect(derivePrefixKey(MODEL, a1, 'chat-42')).toEqual(derivePrefixKey(MODEL, b1, 'chat-42'));
+        expect(derivePrefixKey(MODEL, a1, 'chat-42')?.source).toBe('header');
+      });
+
+      it('digests a completion body as two framed parts, so the same text split differently between system and prompt keys apart', () => {
+        const a = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief.', prompt: ' Once upon' }, undefined);
+        const b = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief. ', prompt: 'Once upon' }, undefined);
+        expect(a).not.toBeNull();
+        expect(a).not.toEqual(b);
+        // And the whole prompt counts: a body that rebuilds the conversation into `prompt` keys each call apart.
+        const grown = derivePrefixKey(MODEL, { model: MODEL, system: 'Be brief.', prompt: ' Once upon a time' }, undefined);
+        expect(grown).not.toEqual(a);
+      });
+
+      it('never keys an embeddings body, however it is shaped', () => {
+        expect(derivePrefixKey(MODEL, { model: MODEL, input: 'x'.repeat(65_536) }, undefined)).toBeNull();
+        expect(derivePrefixKey(MODEL, { model: MODEL, input: ['a', 'b'] }, undefined)).toBeNull();
       });
     });
 
@@ -3031,7 +3094,7 @@ describe('PoolProxyService', () => {
         ollamaSlots?: unknown;
         maxPromptTokens?: number;
         hardwareTier?: string;
-        backend?: 'ollama' | 'vllm' | 'llamacpp';
+        backend?: 'ollama' | 'vllm';
       } = {},
     ): HubPoolPeer {
       return mockPeer({
@@ -3141,48 +3204,13 @@ describe('PoolProxyService', () => {
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['beta-max', 'core-2']);
       });
 
-      it('judges Ollama and llama-server only: a vLLM candidate on a node that states slots keeps its place', async () => {
+      it('leaves a vLLM candidate in rank order when the node states a full slot count', async () => {
         peerService.listConnectedPeers.mockResolvedValue([
           node('vllm-node', { inFlightRequests: 2, ollamaSlots: 2, backend: 'vllm' }),
           node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
         ]);
 
         expect(ids(await service.buildCandidateList(MODEL))).toEqual(['vllm-node', 'core-2']);
-      });
-
-      it("judges a peer's llama-server by the node's stated slots — the fleet writes them from the same -np", async () => {
-        // core-6 after `cihub fleet backends --backends llamacpp --ollama-parallel 2`: a 2-slot
-        // llama-server, both slots busy, ranked ahead of a 4-slot node with one free.
-        peerService.listConnectedPeers.mockResolvedValue([
-          node('core-6', { inFlightRequests: 2, ollamaSlots: 2, backend: 'llamacpp' }),
-          node('core-2', { inFlightRequests: 3, ollamaSlots: 4 }),
-        ]);
-
-        expect(ids(await service.buildCandidateList(MODEL))).toEqual(['core-2', 'core-6']);
-      });
-
-      it("judges THIS node's llama-server by its own /props, ahead of the operator's statement", async () => {
-        // The statement says 4 (Ollama's), the engine says 2 (its own -np); two in flight fill it.
-        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
-        llamacpp.engineCapabilities.mockReturnValue({ slots: 2, contextLength: 32768 });
-        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 4 } as never);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
-
-        const candidates = await service.buildCandidateList(MODEL);
-        expect(candidates.map((candidate) => `${candidate.peerId ?? 'local'}/${candidate.backend}`)).toEqual(['core-2/ollama', 'local/llamacpp']);
-      });
-
-      it("falls back to the node's statement for a local llama-server whose /props was not read", async () => {
-        llamacpp.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
-        llamacpp.engineCapabilities.mockReturnValue(null);
-        configuration.getInferencePreferences.mockReturnValue({ ollamaSlots: 2 } as never);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        loadService.acquire(LOCAL_CANDIDATE_KEY);
-        peerService.listConnectedPeers.mockResolvedValue([node('core-2', { inFlightRequests: 1, ollamaSlots: 4 })]);
-
-        expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId ?? 'local')).toEqual(['core-2', 'local']);
       });
 
       it('counts the requests this node forwarded a peer since its snapshot, so a burst fills its slots here before the peer reports it', async () => {
@@ -4330,7 +4358,7 @@ describe('PoolProxyService', () => {
     // scores, and a mocked catalog would only prove the test's own fixture.
     function serviceWithCatalog(): PoolProxyService {
       return new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
         peerService,
         tailscaleService,
         loadService,
@@ -4944,7 +4972,7 @@ describe('PoolProxyService', () => {
       router = mock<InferenceRouterService>();
       router.prepareTrackedModel.mockResolvedValue(null);
       withRouter = new PoolProxyService(
-        new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox, llamacpp, lmstudio),
+        new InferenceBackendRegistry(ollama, vllm, lemonade, omlx),
         peerService,
         tailscaleService,
         loadService,

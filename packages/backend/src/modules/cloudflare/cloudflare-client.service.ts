@@ -18,6 +18,42 @@ import { PortalClientService } from '@/core/portal/portal-client.service';
 /** How long `getDeviceApplications` waits for the Portal before it counts as no answer. */
 const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
 
+/**
+ * Where one custom domain stands on this Hub, sent to Companion Portal so it can
+ * tell a CONNECTED domain from a SERVING one.
+ *
+ * One entry per app row holding a domain, whatever the app's status. That is the
+ * point of a separate list: the `apps` payload deliberately carries only apps that
+ * should be published, so a stopped app is absent from it — and Portal could not
+ * tell "stopped, will pick the domain up when it starts" from "no news".
+ *
+ * ⚠ KEYED BY `targetHostname` AS WELL AS `domain`. A stopped app keeps the domain
+ * it had while another app is bound to it, and a report composed before a sync
+ * still describes the binding that sync replaced. Portal records an entry only
+ * against the binding it names — the app's platform hostname, the same join key
+ * the delivered `customDomains` use — so neither can land on the wrong app.
+ *
+ * - `applied`: the app's environment already carries this domain.
+ * - `pending-restart`: the app is running on its platform hostname, and a restart
+ *   is exactly what this Hub would carry out on a confirmation — the same checks
+ *   the apply gate makes. Nothing happens until someone confirms one, unless
+ *   `autoRestart` is on.
+ * - `pending-start`: the app is not running, or is coming up now. It picks the
+ *   domain up as it starts, so there is nothing to confirm.
+ * - `blocked`: running and not serving the domain, but a confirmed restart would
+ *   not be carried out — the restart is not owed (`pendingRestart` is clear) or
+ *   another app answers on the same hostname. Portal offers no restart for it.
+ *
+ * Report-only: nothing here provisions or prunes anything.
+ */
+export interface CustomDomainApplyReport {
+  domain: string;
+  /** The app's platform hostname — which binding this entry describes. */
+  targetHostname: string;
+  state: 'applied' | 'pending-restart' | 'pending-start' | 'blocked';
+  autoRestart: boolean;
+}
+
 export interface AppInfo {
   name: string;
   subdomain: string; // Complete Cloudflare public-hostname prefix, such as `n8n-bdc`.
@@ -26,28 +62,6 @@ export interface AppInfo {
   protocol?: 'http' | 'https';
   hostname?: string;
   originServerName?: string; // HTTP Host header sent to Traefik, such as `n8n-bdc.ci.lan`.
-  /**
-   * This app has a custom domain bound and is STILL ANSWERING ON ITS PLATFORM
-   * HOSTNAME — the customer's domain is dark until the container is recreated.
-   *
-   * Reported so Companion Portal can stop badging such a domain `Live`, which is
-   * the state that made this failure invisible: DNS, certificate and tunnel all
-   * check out, and the app sends the visitor away anyway.
-   *
-   * ⚠ NARROWER THAN `pendingRestart`, deliberately. Every settings save raises
-   * that flag, and a Portal badge driven by it would claim a customer's domain
-   * was down each time an unrelated setting changed. So the Hub reads the app's
-   * compose env rather than the flag: a domain is dark only when the env is still
-   * on some other hostname. Absent on Hubs that predate the field, which is not
-   * `false` — the Portal must keep its previous reading rather than infer one.
-   *
-   * ⚠ ONE SYNC BEHIND A FIRST BIND. This payload is built from rows read before
-   * `reconcileCustomDomains` writes the binding it is announcing, so the sync that
-   * creates the dark window still reports `false`. The following sync — the poll,
-   * or the one a queued apply restart triggers on its way out — carries the truth.
-   * Reported only for apps in the payload, i.e. `running`/`starting`/`restarting`.
-   */
-  customDomainPendingApply?: boolean;
   /**
    * Distinguishes infrastructure entries that Companion Portal must preserve
    * across regular app synchronization.
@@ -110,9 +124,19 @@ export type PublicDnsFailureReason =
 
 export interface PublicDnsFailure {
   app: string;
+  /** The hostname the app asked for, and did not get. */
   hostname?: string;
   reason: PublicDnsFailureReason;
   message?: string;
+  /**
+   * Where Companion Portal published the app instead, when it published it at all.
+   *
+   * Set on a `zone_unreachable` entry for an app moved to the environment's own
+   * domain because Portal cannot write DNS in the requested one (CI-Portal#841).
+   * Proposed with that change and not yet sent by any Portal: until it is, the
+   * same hostname is read from the entry's message. See `readServedHostname`.
+   */
+  servedHostname?: string;
 }
 
 /**
@@ -278,7 +302,12 @@ export class CloudflareClientService {
    * Sends running-app state to Companion Portal for Cloudflare tunnel and DNS
    * reconciliation.
    */
-  async syncState(organizationId: string, apps: AppInfo[], tunnelId?: string): Promise<CloudflareSyncResult> {
+  async syncState(
+    organizationId: string,
+    apps: AppInfo[],
+    tunnelId?: string,
+    customDomainApps?: CustomDomainApplyReport[],
+  ): Promise<CloudflareSyncResult> {
     if (tunnelId) {
       this.tunnelId = tunnelId;
     }
@@ -298,7 +327,7 @@ export class CloudflareClientService {
     let lastError: CloudflareSyncResult | null = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const result = await this.syncStateOnce(organizationId, apps);
+      const result = await this.syncStateOnce(organizationId, apps, customDomainApps);
       if (result.ok) {
         return result;
       }
@@ -320,7 +349,7 @@ export class CloudflareClientService {
     return lastError ?? { ok: false, failed: [], failures: [], synced: 0, errorMessage: 'State sync failed' };
   }
 
-  private async syncStateOnce(organizationId: string, apps: AppInfo[]): Promise<CloudflareSyncResult> {
+  private async syncStateOnce(organizationId: string, apps: AppInfo[], customDomainApps?: CustomDomainApplyReport[]): Promise<CloudflareSyncResult> {
     const tunnelId = this.tunnelId;
     if (!tunnelId) {
       return {
@@ -339,6 +368,10 @@ export class CloudflareClientService {
         organizationId,
         tunnelId,
         apps,
+        // Omitted, never `[]`, when the Hub could not build it: Portal reads an
+        // absent list as "no news" and keeps what it had, while an empty one would
+        // say this device has no bound domain at all.
+        ...(customDomainApps ? { customDomainApps } : {}),
       });
       const response = { data: responseData };
 
@@ -361,11 +394,17 @@ export class CloudflareClientService {
         // Require `reason` because an absent value would render as `undefined`.
         // Accept unknown strings so a newer Companion Portal can add a class
         // without breaking older consumers, which already use a generic fallback.
+        //
+        // `servedHostname` moves an app's public identity, so a value that is not a
+        // string is dropped from its entry rather than trusted; the entry itself
+        // still reports the failure.
         const failures: PublicDnsFailure[] = Array.isArray(response.data.failures)
-          ? response.data.failures.filter(
-              (failure): failure is PublicDnsFailure =>
-                typeof failure === 'object' && failure !== null && typeof failure.app === 'string' && typeof failure.reason === 'string',
-            )
+          ? response.data.failures
+              .filter(
+                (failure): failure is PublicDnsFailure =>
+                  typeof failure === 'object' && failure !== null && typeof failure.app === 'string' && typeof failure.reason === 'string',
+              )
+              .map(({ servedHostname, ...failure }) => (typeof servedHostname === 'string' ? { ...failure, servedHostname } : failure))
           : [];
         const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
         // Apply the same wire-boundary validation to `customDomains`, while

@@ -25,7 +25,7 @@ vi.mock('react-i18next', () => {
   const t = (key: string) => key;
   return { useTranslation: () => ({ t }) };
 });
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => false }));
 // The per-peer verbs and the two directional switches go through the generated client's low-level
 // post/patch until swagger.json and the api-client are regenerated; see hub-pool-settings.tsx.

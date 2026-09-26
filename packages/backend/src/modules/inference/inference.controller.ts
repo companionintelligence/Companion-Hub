@@ -16,12 +16,12 @@ import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
+import { AppContainerOriginGuard } from './app-container-origin.guard';
 import { AppCredentialsService } from './app-credentials.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InferenceAccessGuard } from '@/modules/auth/inference-access.guard';
-import { InternalOriginGuard } from '@/modules/auth/internal-origin.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import {
@@ -30,18 +30,15 @@ import {
   UpdateRocmInstallStateBody,
   OnboardingProfileQueryDto,
   VllmStatusQueryDto,
-  MtplxStatusQueryDto,
-  DsparkStatusQueryDto,
+  OmlxStatusQueryDto,
+  ManualEndpointStatusQueryDto,
 } from './inference.dto';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
-import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
-import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
-import { LuceboxBackend } from './backends/lucebox.backend';
-import { LlamacppBackend } from './backends/llamacpp.backend';
-import { LmStudioBackend } from './backends/lmstudio.backend';
+import { buildOmlxRemediation, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
+import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
 
@@ -73,11 +70,7 @@ export class InferenceController {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
-    private readonly mtplxBackend: MtplxBackend,
-    private readonly dsparkBackend: DsparkBackend,
-    private readonly luceboxBackend: LuceboxBackend,
-    private readonly llamacppBackend: LlamacppBackend,
-    private readonly lmstudioBackend: LmStudioBackend,
+    private readonly omlxBackend: OmlxBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
     private readonly backends: InferenceBackendRegistry,
@@ -87,29 +80,14 @@ export class InferenceController {
   ) {}
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
-    // AMD GPUs (including the Strix Halo APU) always recommend Ollama, whether or not ROCm is
-    // ready: its official image covers both cases — the `:rocm` tag when /dev/kfd passthrough
-    // works, and the default tag (which bundles a Vulkan/RADV ggml backend that auto-activates via
-    // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
-    // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
-    // which declines AMD outright rather than mount devices into an image that can't use them.
-    // Apple Silicon recommends mlx-dspark (2026-08-30): like vLLM-Metal and MTPLX, it has no Docker
-    // path — it's a host-run Python process (see DsparkBackend.getComposeConfig, which throws
-    // unconditionally) — but unlike either of them it supports real hot-swap via POST /admin/load,
-    // so the Hub can actually install/switch models into it the way it can with Ollama (see
-    // isHubLoadableBackend). The install gap is a single `pip install mlx-dspark`, and
-    // DsparkSetupCard already surfaces that command prominently with a live recheck when the
-    // endpoint isn't reachable yet — recommending it before install just means a new Mac user sees
-    // that card instead of a green one, not a dead end. vLLM-Metal and MTPLX remain opt-in only in
-    // Settings: neither supports hot-swap, so the Hub can only stub their load/unload — see
-    // buildVllmRemediation in vllm.backend.ts and buildMtplxRemediation in mtplx.backend.ts for the
-    // guidance surfaced when either is selected.
+    // NVIDIA with a usable runtime: vLLM. Apple Silicon: oMLX. An NPU: Lemonade.
+    // Everything else, including AMD without a cited vLLM ROCm path: Ollama.
     return profile.npu.available
       ? 'lemonade'
       : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
         ? 'vllm'
         : profile.gpu.vendor === 'apple'
-          ? 'dspark'
+          ? 'omlx'
           : 'ollama';
   }
 
@@ -286,8 +264,9 @@ export class InferenceController {
       body.visionModel,
       body.vllmApiKey,
       body.vllmUrl,
-      body.mtplxUrl,
-      body.dsparkUrl,
+      body.omlxUrl,
+      body.decodeEndpoint,
+      body.encodeEndpoint,
       body.maxNumCtx,
       body.ollamaSlots,
     );
@@ -596,31 +575,19 @@ export class InferenceController {
         modelsLoaded: [] as string[],
       }));
       installedCatalogIds = resolveInstalledCatalogIdsFromServedModels(catalog, lemonadeHealth.modelsLoaded ?? [], 'lemonade', getTrackedState);
-    } else if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark' || installBackend === 'lucebox') {
+    } else if (installBackend === 'vllm' || installBackend === 'omlx') {
       const servedHealth =
-        installBackend === 'dspark'
-          ? await this.dsparkBackend.healthCheck(query?.dsparkUrl).catch(() => ({
+        installBackend === 'omlx'
+          ? await this.omlxBackend.healthCheck(query?.omlxUrl).catch(() => ({
               running: false,
               healthy: false,
               modelsLoaded: [] as string[],
             }))
-          : installBackend === 'mtplx'
-            ? await this.mtplxBackend.healthCheck(query?.mtplxUrl).catch(() => ({
-                running: false,
-                healthy: false,
-                modelsLoaded: [] as string[],
-              }))
-            : installBackend === 'lucebox'
-              ? await this.luceboxBackend.healthCheck().catch(() => ({
-                  running: false,
-                  healthy: false,
-                  modelsLoaded: [] as string[],
-                }))
-              : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
-                  running: false,
-                  healthy: false,
-                  modelsLoaded: [] as string[],
-                }));
+          : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+              running: false,
+              healthy: false,
+              modelsLoaded: [] as string[],
+            }));
       const servedInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, servedHealth.modelsLoaded ?? [], installBackend, getTrackedState);
       const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
         const model = catalog.find((m) => m.id === id);
@@ -699,10 +666,7 @@ export class InferenceController {
     }));
     const ready = !!(health.running && health.healthy);
     const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
-    // Only worth a hardware lookup on the unhappy path — Apple Silicon has a completely different
-    // (Docker-less, MLX-based) remediation path than everything else. See buildVllmRemediation.
-    const profile = ready ? undefined : await this.hardwareInspector.getProfile().catch(() => undefined);
-    const remediation = ready ? undefined : buildVllmRemediation(profile?.gpu.vendor === 'apple');
+    const remediation = ready ? undefined : buildVllmRemediation();
     return {
       ready,
       running: health.running,
@@ -716,144 +680,45 @@ export class InferenceController {
     };
   }
 
-  /**
-   * Probe the operator's mlx-dspark server. No API-key header, unlike the vLLM route: mlx-dspark
-   * defaults to no key, and `GET /health` — the route DsparkBackend probes — is the one route that
-   * stays auth-exempt even when a key IS configured, so this works either way.
-   */
   @UseGuards(AuthGuard)
-  @Get('dspark/status')
-  async getDsparkStatus(@Query() query?: DsparkStatusQueryDto) {
-    const requestedUrl = query?.url?.trim() || this.dsparkBackend.getBaseUrl();
-    const probeUrl = resolveDsparkProbeUrl(requestedUrl);
-    const health = await this.dsparkBackend.healthCheck(requestedUrl).catch((err) => ({
+  @Get('omlx/status')
+  async getOmlxStatus(@Query() query?: OmlxStatusQueryDto) {
+    const requestedUrl = query?.url?.trim() || this.omlxBackend.getBaseUrl();
+    const probeUrl = resolveOmlxProbeUrl(requestedUrl);
+    const health = await this.omlxBackend.healthCheck(requestedUrl).catch((err) => ({
       running: false,
       healthy: false,
       modelsLoaded: [] as string[],
       error: err instanceof Error ? err.message : String(err),
     }));
     const ready = !!(health.running && health.healthy);
-    const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
-    // Only worth a hardware lookup on the unhappy path — the remediation text differs sharply off
-    // Apple Silicon, where mlx-dspark cannot run at all. See buildDsparkRemediation.
-    const profile = ready ? undefined : await this.hardwareInspector.getProfile().catch(() => undefined);
-    const remediation = ready ? undefined : buildDsparkRemediation(profile?.gpu.vendor === 'apple');
+    const remediation = ready ? undefined : buildOmlxRemediation();
     return {
       ready,
       running: health.running,
       endpointUrl: probeUrl,
-      displayEndpoint,
-      // A reachable server with no model loaded is `ready` but serves nothing yet — the onboarding
-      // card uses this to say "detected, no model loaded" rather than "detected".
+      displayEndpoint: ready ? `${probeUrl}/v1` : undefined,
       loadedModels: health.modelsLoaded,
       remediationCommand: remediation?.command,
       error: ready ? undefined : health.error,
       hint: remediation
-        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8080, not localhost. Currently probing ${probeUrl}.`
-        : undefined,
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @Get('mtplx/status')
-  async getMtplxStatus(@Query() query?: MtplxStatusQueryDto) {
-    const requestedUrl = query?.url?.trim() || this.mtplxBackend.getBaseUrl();
-    const probeUrl = resolveMtplxProbeUrl(requestedUrl);
-    const health = await this.mtplxBackend.healthCheck(requestedUrl).catch((err) => ({
-      running: false,
-      healthy: false,
-      modelsLoaded: [] as string[],
-      error: err instanceof Error ? err.message : String(err),
-    }));
-    const ready = !!(health.running && health.healthy);
-    const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
-    const remediation = ready ? undefined : buildMtplxRemediation();
-    return {
-      ready,
-      running: health.running,
-      endpointUrl: probeUrl,
-      displayEndpoint,
-      remediationCommand: remediation?.command,
-      error: ready ? undefined : health.error,
-      hint: remediation
         ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
         : undefined,
     };
   }
 
-  /**
-   * Both of these are servers the operator started, so the whole of the status is "can the Hub
-   * reach it". There is no install to offer and no lifecycle to report — the hint names the
-   * environment variable instead, which is the only thing an operator can change here.
-   */
+  /** Re-check a manual decode or encode endpoint. The URL in the response is the URL that was probed. */
   @UseGuards(AuthGuard)
-  @Get('llamacpp/status')
-  async getLlamacppStatus() {
-    const endpointUrl = this.llamacppBackend.getBaseUrl();
-    const health = await this.llamacppBackend.healthCheck().catch((err) => ({
-      running: false,
-      healthy: false,
-      modelsLoaded: [] as string[],
-      error: err instanceof Error ? err.message : String(err),
-    }));
-    const ready = !!(health.running && health.healthy);
+  @Get('manual-endpoint/status')
+  async getManualEndpointStatus(@Query() query: ManualEndpointStatusQueryDto) {
+    const probeUrl = resolveOmlxProbeUrl(query.url.trim());
+    const health = await new OpenAiCompatibleClient().healthCheck(probeUrl, { timeout: 5000 });
     return {
-      ready,
+      ready: !!(health.running && health.healthy),
       running: health.running,
-      endpointUrl,
-      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
-      error: ready ? undefined : health.error,
-      hint: ready
-        ? undefined
-        : `Start llama-server with a model (llama-server -m <model.gguf> --port 8080), then re-check. Hub probes ${endpointUrl}; set LLAMACPP_URL if it listens elsewhere.`,
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @Get('lmstudio/status')
-  async getLmStudioStatus() {
-    const endpointUrl = this.lmstudioBackend.getBaseUrl();
-    const health = await this.lmstudioBackend.healthCheck().catch((err) => ({
-      running: false,
-      healthy: false,
-      modelsLoaded: [] as string[],
-      error: err instanceof Error ? err.message : String(err),
-    }));
-    const ready = !!(health.running && health.healthy);
-    return {
-      ready,
-      running: health.running,
-      endpointUrl,
-      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
-      error: ready ? undefined : health.error,
-      // Naming the network switch matters more here than the server switch: LM Studio binds to
-      // localhost by default, so a Hub in a container reaches nothing even with the server running.
-      hint: ready
-        ? undefined
-        : `Start LM Studio's local server (Developer → Start Server), and turn on "Serve on Local Network" if the Hub is not on that machine. Hub probes ${endpointUrl}; set LMSTUDIO_URL if it listens elsewhere.`,
-    };
-  }
-
-  @UseGuards(AuthGuard)
-  @Get('lucebox/status')
-  async getLuceboxStatus() {
-    const endpointUrl = this.luceboxBackend.getBaseUrl();
-    const health = await this.luceboxBackend.healthCheck().catch((err) => ({
-      running: false,
-      healthy: false,
-      modelsLoaded: [] as string[],
-      error: err instanceof Error ? err.message : String(err),
-    }));
-    const ready = !!(health.running && health.healthy);
-    return {
-      ready,
-      running: health.running,
-      endpointUrl,
-      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
-      error: ready ? undefined : health.error,
-      hint: ready
-        ? undefined
-        : `Start the speculative inference server with a loaded target model, then re-check. Hub probes ${endpointUrl}; set SPECULATIVE_INFERENCE_URL if the server uses another address.`,
+      endpointUrl: probeUrl,
+      displayEndpoint: health.healthy ? `${probeUrl}/v1` : undefined,
+      error: health.healthy ? undefined : health.error,
     };
   }
 
@@ -872,12 +737,14 @@ export class InferenceController {
   // (mounted at /api/inference/v1), which pool the same way.
   //
   // App-only, no credential accepted. Apps fetch these container-to-container,
-  // which traverses no proxy, so InternalOriginGuard refuses anything carrying
-  // tunnel or forwarded-hop provenance: InternalNetworkGuard alone answered
-  // them from the public internet through a registered Hub's tunnel, and the
-  // body can carry a configured cloud provider's API key.
+  // which traverses no proxy, and the body can carry a configured cloud
+  // provider's API key — so AppContainerOriginGuard admits a request only from
+  // an address a running container of the slug's own app holds (with the
+  // origin check that refuses tunnel or forwarded-hop provenance as its outer
+  // layer). Origin alone let any installed app, LAN host or tailnet peer read
+  // it; InternalNetworkGuard alone once answered it from the public internet.
 
-  @UseGuards(InternalOriginGuard)
+  @UseGuards(AppContainerOriginGuard)
   @Get('apps/:slug/credentials')
   async getAppCredentials(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);
@@ -890,7 +757,7 @@ export class InferenceController {
 
   // `bootstrap.env` is an alias of `credentials.env`: the CI-OpenClaw / CI-Hermes bootstrap-from-hub.sh
   // scripts fetch `/api/inference/apps/:slug/bootstrap.env`, so both paths must serve the dotenv body.
-  @UseGuards(InternalOriginGuard)
+  @UseGuards(AppContainerOriginGuard)
   @Get(['apps/:slug/credentials.env', 'apps/:slug/bootstrap.env'])
   async getAppCredentialsEnv(@Param('slug') slug: string, @Query('v') v: string | undefined, @Res() res: Response) {
     const apiVersion = this.appCredentials.parseApiVersion(v);

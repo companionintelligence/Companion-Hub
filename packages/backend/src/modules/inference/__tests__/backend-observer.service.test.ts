@@ -8,7 +8,6 @@ import type { LoggerService } from '@/core/logger/logger.service';
 import type { DockerReadFacade, SupervisionContainerInspection } from '@/modules/docker/docker-read.facade';
 import type { HostTelemetryService } from '@/modules/system/host-telemetry.service';
 import type { InferenceBackendRegistry } from '../backends/backend-registry';
-import { LUCEBOX_ROCM_LEGACY_IMAGE } from '../backends/lucebox.backend';
 import type { HardwareInspectorService } from '../hardware-inspector.service';
 import { BackendObserverService } from '../supervision/backend-observer.service';
 
@@ -192,9 +191,7 @@ describe('BackendObserverService — the external crash-loop alarm', () => {
     expect(dockerRead.inspectSupervisionCandidates).toHaveBeenCalledWith(
       expect.objectContaining({
         composeProject: 'ci-hub',
-        // Plus the inference containers by name, because the desktop's `docker run` for Lucebox
-        // carries no compose labels at all.
-        containerNames: expect.arrayContaining(['ci-hub-ollama', 'ci-hub-inference-lucebox']),
+        containerNames: expect.arrayContaining(['ci-hub-ollama', 'ci-hub-vllm', 'ci-hub-lemonade']),
       }),
     );
   });
@@ -278,22 +275,17 @@ describe('BackendObserverService — the external crash-loop alarm', () => {
 });
 
 describe('BackendObserverService — per-backend observation', () => {
-  it('classifies all six backends and explains every one it cannot supervise', async () => {
+  it('classifies the four engines and explains every one it cannot supervise', async () => {
     const { service } = harness({
       mode: 'observe',
       baseUrls: {
         ollama: 'http://localhost:11434',
         vllm: 'http://beta-max.tailnet.ts.net:8000',
         lemonade: 'http://ci-hub-lemonade:13305',
-        mtplx: 'http://host.docker.internal:8080',
-        dspark: 'http://host.docker.internal:8081',
-        lucebox: 'http://host.docker.internal:8000',
+        omlx: 'http://host.docker.internal:8000',
       },
-      health: { ollama: HEALTHY, mtplx: HEALTHY },
-      containers: [
-        containerFixture({ name: 'ci-hub-lemonade', ports: [{ hostPort: null, containerPort: 13305 }] }),
-        containerFixture({ name: 'ci-hub-inference-lucebox', ports: [{ hostPort: 8000, containerPort: 8080 }], inHubComposeProject: false }),
-      ],
+      health: { ollama: HEALTHY, omlx: HEALTHY },
+      containers: [containerFixture({ name: 'ci-hub-lemonade', ports: [{ hostPort: null, containerPort: 13305 }] })],
     });
 
     await service.sweepOnce();
@@ -302,9 +294,7 @@ describe('BackendObserverService — per-backend observation', () => {
     expect(byBackend.get('ollama')?.target.kind).toBe('host-process');
     expect(byBackend.get('vllm')?.target.kind).toBe('remote');
     expect(byBackend.get('lemonade')?.target.kind).toBe('container');
-    expect(byBackend.get('mtplx')?.target.kind).toBe('host-process');
-    expect(byBackend.get('dspark')?.target.kind).toBe('absent');
-    expect(byBackend.get('lucebox')?.target.kind).toBe('container');
+    expect(byBackend.get('omlx')?.target.kind).toBe('host-process');
 
     for (const entry of byBackend.values()) {
       expect(entry.target.reason.length).toBeGreaterThan(0);
@@ -336,60 +326,6 @@ describe('BackendObserverService — per-backend observation', () => {
     await service.sweepOnce();
 
     expect(getProfile).not.toHaveBeenCalled();
-  });
-
-  it('diagnoses the Lucebox ROCm 6.4.1 image after repeated segfaults and tells someone once', async () => {
-    const { service, telemetry } = harness({
-      mode: 'observe',
-      gpuVendor: 'amd',
-      baseUrls: { lucebox: 'http://host.docker.internal:8000' },
-      logTail: 'ggml-hip: Segmentation fault (core dumped)',
-      containers: [
-        containerFixture({
-          name: 'ci-hub-inference-lucebox',
-          image: LUCEBOX_ROCM_LEGACY_IMAGE,
-          ports: [{ hostPort: 8000, containerPort: 8080 }],
-          running: false,
-          state: 'exited',
-          exitCode: 139,
-          restartCount: 3,
-          inHubComposeProject: false,
-        }),
-      ],
-    });
-
-    await service.sweepOnce();
-    // A second death — the restart counter moved, so this is a distinct observation and not the
-    // same corpse counted twice.
-    const dockerRead = Reflect.get(service, 'dockerRead') as { inspectSupervisionCandidates: ReturnType<typeof vi.fn> };
-    dockerRead.inspectSupervisionCandidates.mockResolvedValue([
-      containerFixture({
-        name: 'ci-hub-inference-lucebox',
-        image: LUCEBOX_ROCM_LEGACY_IMAGE,
-        ports: [{ hostPort: 8000, containerPort: 8080 }],
-        running: false,
-        state: 'exited',
-        exitCode: 139,
-        restartCount: 4,
-        inHubComposeProject: false,
-      }),
-    ]);
-    await service.sweepOnce();
-
-    const lucebox = service.getReport().backends.find((entry) => entry.backend === 'lucebox');
-    expect(lucebox?.diagnoses.map((entry) => entry.code)).toContain('lucebox_rocm_legacy_image');
-    expect(telemetry.recordEvent).toHaveBeenCalledWith(
-      'error',
-      'inference-observer',
-      expect.stringContaining('hipMemcpy'),
-      expect.objectContaining({ backend: 'lucebox', code: 'lucebox_rocm_legacy_image' }),
-    );
-
-    // Announced on the transition, not on every tick: a third identical sweep adds nothing.
-    const callsAfterTwo = telemetry.recordEvent.mock.calls.filter((call) => call[3]?.code === 'lucebox_rocm_legacy_image').length;
-    await service.sweepOnce();
-    const callsAfterThree = telemetry.recordEvent.mock.calls.filter((call) => call[3]?.code === 'lucebox_rocm_legacy_image').length;
-    expect(callsAfterThree).toBe(callsAfterTwo);
   });
 
   it('spends no evidence-gathering calls on a healthy backend', async () => {

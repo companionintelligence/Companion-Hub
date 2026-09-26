@@ -682,6 +682,55 @@ describe('DockerComposeBuilder', () => {
     expect(yamlObject.services.service.labels['traefik.enable']).toBeUndefined();
   });
 
+  describe('loopbackHostPort', () => {
+    const main: ServiceInput = { name: 'service', image: 'image', internalPort: 18789, isMain: true };
+
+    it('publishes the main port on loopback for every mode that binds a host port', async () => {
+      const loopbackBuilder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true });
+      for (const form of [
+        { exposureMode: 'local' as const, openPort: false },
+        { exposureMode: 'cloudflare' as const, exposedLocal: true, openPort: false },
+        { exposureMode: 'tailscale' as const, openPort: true },
+      ]) {
+        const yamlObject = yaml.parse(await loopbackBuilder.getDockerCompose([main], form, urn, subnet));
+        expect(yamlObject.services.service.ports, form.exposureMode).toEqual(['127.0.0.1:${APP_PORT}:18789']);
+      }
+    });
+
+    it('still publishes nothing where no host port was asked for', async () => {
+      const loopbackBuilder = new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true });
+      const yamlObject = yaml.parse(await loopbackBuilder.getDockerCompose([main], { exposureMode: 'tailscale', openPort: false }, urn, subnet));
+
+      expect(yamlObject.services.service.ports).toBeUndefined();
+    });
+
+    it('leaves the Traefik router in front of the container untouched', async () => {
+      const form = { exposureMode: 'cloudflare' as const, exposedLocal: true, enableAuth: true };
+      const plain = yaml.parse(await composeBuilder.getDockerCompose([main], form, urn, subnet, 'ci.computer', 'ci.lan', undefined, 'agent.origin'));
+      const loopback = yaml.parse(
+        await new DockerComposeBuilder('ci.computer', 'ci.lan', true, { loopbackHostPort: true }).getDockerCompose(
+          [main],
+          form,
+          urn,
+          subnet,
+          'ci.computer',
+          'ci.lan',
+          undefined,
+          'agent.origin',
+        ),
+      );
+
+      expect(loopback.services.service.labels).toEqual(plain.services.service.labels);
+      expect(loopback.services.service.labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe('ci-hub@file');
+    });
+
+    it('binds every interface when the option is absent, as it always has', async () => {
+      const yamlObject = yaml.parse(await composeBuilder.getDockerCompose([main], { exposureMode: 'local' }, urn, subnet));
+
+      expect(yamlObject.services.service.ports).toEqual(['${APP_PORT}:18789']);
+    });
+  });
+
   it('should be able to parse a compose.json file', async () => {
     const composeJson: { services: ServiceInput[] } = {
       services: [
@@ -803,6 +852,48 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
       'myapp-dev1-org.example.com',
     );
     expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe('ci-hub@file,nginx-store-id-public-host@docker');
+  });
+
+  describe('the Hub login on an open-port route', () => {
+    /*
+     * Until compose built the tunnel route for apps that also publish a host port, those apps had
+     * no route at all. Many never chose a login: an API or MCP install of CI-OpenClaw that sends
+     * `{ exposureMode: 'cloudflare' }` reaches the builder with the queue's `openPort: true` and no
+     * `enableAuth`, and OpenClaw's `/` hands out its gateway token.
+     */
+    const routeMiddlewares = async (form: Record<string, unknown>) => {
+      const result = await builder.getDockerCompose(
+        [{ ...mainService, internalPort: 18789 }],
+        form,
+        urn,
+        subnet,
+        'ci.computer',
+        'ci.lan',
+        undefined,
+        'openclaw-core-2-acme.ci.lan',
+        'openclaw-core-2-acme.ci.computer',
+      );
+      const labels: Record<string, string> = yaml.parse(result).services.nginx.labels;
+      return [labels['traefik.http.routers.nginx-store-id.middlewares'], labels['traefik.http.routers.nginx-store-id-insecure.middlewares']];
+    };
+
+    it('requires it when the form never decided', async () => {
+      const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true });
+
+      expect(middlewares).toEqual(['ci-hub@file,nginx-store-id-public-host@docker', 'ci-hub@file,nginx-store-id-public-host@docker']);
+    });
+
+    it('leaves it off when the operator turned it off', async () => {
+      const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true, enableAuth: false });
+
+      expect(middlewares).toEqual(['nginx-store-id-public-host@docker', 'nginx-store-id-public-host@docker']);
+    });
+
+    it('does not change a route that served without a host port before', async () => {
+      const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: false });
+
+      expect(middlewares).toEqual(['nginx-store-id-public-host@docker', 'nginx-store-id-public-host@docker']);
+    });
   });
 
   it('keeps the same origin hostname even when the public domain has multiple labels', async () => {

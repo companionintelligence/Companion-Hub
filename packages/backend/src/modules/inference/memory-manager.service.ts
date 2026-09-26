@@ -38,10 +38,8 @@ const LIVE_USAGE_TTL_MS = 5_000;
 const ENGINE_PROCESS_PATTERNS: Partial<Record<InferenceBackendType, RegExp>> = {
   ollama: /ollama/,
   vllm: /vllm/,
-  lucebox: /dflash|lucebox/,
   lemonade: /lemonade|lemond/,
-  mtplx: /mtplx/,
-  dspark: /dspark/,
+  omlx: /omlx/,
 };
 
 /**

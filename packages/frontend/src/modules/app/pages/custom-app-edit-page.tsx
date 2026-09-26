@@ -1,7 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { redirect, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { dynamicComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';

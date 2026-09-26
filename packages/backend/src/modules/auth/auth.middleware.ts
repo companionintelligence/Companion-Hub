@@ -4,7 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
 import { isTransientDbError } from '@/modules/api-keys/api-key.errors';
 import { ApiKeyService, isHubApiKeyShaped } from '@/modules/api-keys/api-key.service';
-import { QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
+import { PORTAL_SCOPE, QA_READ_SCOPE } from '@/modules/api-keys/api-key.scopes';
 import { Injectable, type NestMiddleware, ServiceUnavailableException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
@@ -219,7 +219,7 @@ export class AuthMiddleware implements NestMiddleware {
    * route whose entire job is to clear this condition, and which is reached with this very key).
    * Throwing here would turn all of them into 409s and lock the Hub out of its own remedy.
    */
-  private async attachFirstOperator(req: Request, principal: 'portal-device' | 'cli') {
+  private async attachFirstOperator(req: Request, principal: 'portal-device' | 'cli' | 'host-local') {
     const user = await loadUserResilient(() => this.userRepository.getFirstOperator());
     req.hubPrincipal = principal;
 
@@ -277,24 +277,46 @@ export class AuthMiddleware implements NestMiddleware {
         return next();
       }
 
-      // The Hub's Portal device credential, accepted here as an operator bearer.
-      //
-      // This is a HOST-LOCAL credential: it lives in `state/settings.json`, so presenting it means
-      // the caller could already read that file, which is the same access `cihub` itself needs. It
-      // must therefore never be distributed to anything with a smaller blast radius than the host —
-      // it was previously injected into every app container as `HUB_API_KEY`, which handed every
-      // installed app operator authority on this API (see the delete in `AppHelpers.generateEnvFile`).
-      //
-      // Compared in constant time because it is a secret, not an identifier. The durable fix is a
-      // hashed, scoped, revocable api-key row resolved the way `McpAuthGuard` resolves the `mcp`
-      // scope; until then this branch stays deliberately narrow.
+      // Companion Portal's push key: a hashed, scoped (`portal`), revocable row this Hub minted and
+      // handed to Portal over the check-in (PortalPushKeyService). Named `portal-device` so the
+      // org-grant gate exempts it deliberately rather than by accident — Portal's own GRANT_DENIED
+      // gate is what authorises a push, and that answer holds only while the exemption stays this
+      // narrow. The fingerprint is checked first, so a pool peer's or an app's 64-hex bearer on a
+      // hot path never costs a key-store lookup here.
+      if (this.apiKeys && isHubApiKeyShaped(token)) {
+        const pushPrefix = this.config.get('portalPushKeyPrefix');
+        if (pushPrefix && token.startsWith(pushPrefix)) {
+          let resolved = false;
+          try {
+            resolved = (await this.apiKeys.resolve(token, PORTAL_SCOPE)) !== null;
+          } catch {
+            // A key store that cannot answer leaves the request unauthenticated, not failed.
+          }
+          if (resolved) {
+            await this.attachFirstOperator(req, 'portal-device');
+            return next();
+          }
+        }
+      }
+
+      // The host-local key: minted at boot into `state/settings.json`, read by `cihub` on the box
+      // (claim, doctor, pool). Presenting it proves the caller could read that file, which is the
+      // same access `cihub` itself needs. Never handed to an app or to Portal. Compared in constant
+      // time because it is a secret, not an identifier.
+      const hubLocalKey = this.config.get('hubLocalKey');
+      if (hubLocalKey && secretEquals(token, hubLocalKey)) {
+        await this.attachFirstOperator(req, 'host-local');
+        return next();
+      }
+
+      // The Hub's Portal DEVICE key, accepted as `portal-device` ONLY until Portal has confirmed it
+      // holds the push key above. It used to be the bearer for Portal's pushes, and it is also what
+      // first-party Memory holds to call Portal as the device — so accepting it here made a
+      // compromised Memory container a Hub operator (2026-09-24 audit). The window closes on each
+      // Hub the first time its Portal answers a check-in with the push key's fingerprint, and a
+      // Portal that predates the exchange keeps the old contract until it is updated.
       const ciHubApiKey = this.config.get('ciHubApiKey');
-      if (ciHubApiKey && secretEquals(token, ciHubApiKey)) {
-        // Named, so the org-grant gate exempts this deliberately rather than by
-        // accident — the exemption used to follow from having no `hubSessionId`,
-        // which covered every arm that forgot to set one. Portal's own
-        // GRANT_DENIED gate is what authorises a push, and that answer holds only
-        // while the exemption stays this narrow.
+      if (ciHubApiKey && !this.config.get('portalPushKeyDeliveredAt') && secretEquals(token, ciHubApiKey)) {
         await this.attachFirstOperator(req, 'portal-device');
         return next();
       }

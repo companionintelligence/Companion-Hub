@@ -396,13 +396,16 @@ describe('AuthController', () => {
       });
     });
 
+    const memoryPassthroughCases: Array<{ uri?: string; extra?: Record<string, string> }> = [
+      { uri: '/api/authenticate/oidc/native/exchange' },
+      { uri: '/api/authenticate?client=native' },
+      { uri: '/api/keys' },
+      { uri: '/graphql', extra: { 'x-api-key': 'mem_live_abc' } },
+    ];
+
     it('lets Memory login and API-key traffic through without a Hub session', async () => {
-      const cases: Array<{ uri?: string; extra?: Record<string, string> }> = [
-        { uri: '/api/authenticate/oidc/native/exchange' },
-        { uri: '/api/authenticate?client=native' },
-        { uri: '/api/keys' },
-        { uri: '/graphql', extra: { 'x-api-key': 'mem_live_abc' } },
-      ];
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
+      const cases = memoryPassthroughCases;
 
       for (const { uri, extra } of cases) {
         vi.mocked(verifyPortalIdToken).mockClear();
@@ -429,7 +432,45 @@ describe('AuthController', () => {
       }
     });
 
+    it('SECURITY: the Memory exemptions do not apply to any other edge-authenticated app', async () => {
+      // opencode, aider, opencode-web and pi-web ship with edge auth ON and never look at an
+      // x-api-key header. With the exemption unscoped, `x-api-key: anything` was an
+      // unauthenticated pass into them from the public internet (2026-09-24 audit).
+      const hosts: Array<[string, string | null]> = [
+        ['opencode-core3-team.companionintelligence.com', 'opencode:ci-marketplace'],
+        // A third-party store's app calling itself ci-memory is not the provider.
+        ['ci-memory-core3-team.companionintelligence.com', 'ci-memory:some-other-store'],
+        // A host no installed app claims.
+        ['stranger.companionintelligence.com', null],
+      ];
+
+      for (const [host, urn] of hosts) {
+        forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue(urn as never);
+        for (const { uri, extra } of memoryPassthroughCases) {
+          const req = {
+            user: undefined,
+            headers: {
+              'x-forwarded-host': host,
+              ...(uri ? { 'x-forwarded-uri': uri } : {}),
+              ...extra,
+            },
+          } as unknown as Request;
+          const res = {
+            status: vi.fn().mockReturnThis(),
+            send: vi.fn(),
+            redirect: vi.fn(),
+            setHeader: vi.fn(),
+          } as unknown as Response;
+
+          await authController.traefik(req, res);
+
+          expect(res.status, `${host} ${uri}`).not.toHaveBeenCalledWith(200);
+        }
+      }
+    });
+
     it('does not treat a Memory JWT on /api/keys as an invalid Portal Bearer', async () => {
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('ci-memory:ci-marketplace' as never);
       vi.mocked(verifyPortalIdToken).mockResolvedValue(null);
       const req = {
         user: undefined,
@@ -2237,7 +2278,7 @@ describe('AuthController', () => {
    * become an operator have one home and cannot drift.
    */
   describe('POST /auth/hub/claim', () => {
-    const claimReq = (over: Partial<Request> = {}) => ({ hubPrincipal: 'portal-device', ...over }) as unknown as Request;
+    const claimReq = (over: Partial<Request> = {}) => ({ hubPrincipal: 'host-local', ...over }) as unknown as Request;
 
     const keyOf = (error: unknown) => {
       const response = (error as TranslatableError).getResponse();
@@ -2262,11 +2303,13 @@ describe('AuthController', () => {
       expect(authService.admitHubPerson).toHaveBeenCalledWith({ issuer: '', subject: null, email: 'Owner@Example.com', emailVerified: false });
     });
 
-    it('refuses a caller who did not present the host-local device key', async () => {
-      // Pairing proves the ORG. The device key proves you are ON THE HUB — it lives in
+    it('refuses a caller who did not present the host-local key', async () => {
+      // Pairing proves the ORG. The host-local key proves you are ON THE HUB — it lives in
       // state/settings.json, so presenting it means you could already read the Hub's credentials off
       // the disk. Without it this route would let anyone who can reach port 5002 own the appliance.
-      for (const principal of [undefined, 'session', 'cli'] as const) {
+      // `portal-device` is Portal's push key, held by Portal (and, in its old form, by first-party
+      // Memory's container): neither is someone on the box.
+      for (const principal of [undefined, 'session', 'cli', 'portal-device'] as const) {
         const error = await authController.claimHub({ email: 'a@b.co' } as never, claimReq({ hubPrincipal: principal })).catch((err) => err);
 
         expect(keyOf(error)).toBe('AUTH_ERROR_HUB_CLAIM_REQUIRES_DEVICE_KEY');
@@ -2320,7 +2363,7 @@ describe('AuthController', () => {
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
       config.get.mockReturnValue('org-1' as never);
 
-      await expect(authController.hubClaimStatus({ hubPrincipal: 'portal-device' } as unknown as Request)).resolves.toEqual({
+      await expect(authController.hubClaimStatus({ hubPrincipal: 'host-local' } as unknown as Request)).resolves.toEqual({
         claimed: true,
         operators: 2,
         registered: true,
@@ -2332,7 +2375,7 @@ describe('AuthController', () => {
       deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
       config.get.mockReturnValue(null as never);
 
-      await expect(authController.hubClaimStatus({ hubPrincipal: 'portal-device' } as unknown as Request)).resolves.toEqual({
+      await expect(authController.hubClaimStatus({ hubPrincipal: 'host-local' } as unknown as Request)).resolves.toEqual({
         claimed: false,
         operators: 0,
         registered: false,

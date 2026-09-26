@@ -134,14 +134,11 @@ than asking you to switch. Point it at one and the pool places work on it like a
 
 | Engine | Variable | Notes |
 |---|---|---|
-| llama.cpp (`llama-server`) | `LLAMACPP_URL` | Required. Without it the Hub does not probe — `llama-server` and mlx-dspark both default to port 8080, and probing it unasked would report one engine as two. |
-| LM Studio | `LMSTUDIO_URL` | Optional; the Hub finds a local LM Studio on its default port 1234. Turn on **Developer → Start Server**, and **Serve on Local Network** if the Hub is not on that machine. |
+| oMLX | `OMLX_URL` | Apple Silicon. Default `http://host.docker.internal:8000`, probed only when the Hub's host is Apple Silicon; set `OMLX_URL` to use an oMLX on another machine. The Hub counts it as running only if `owned_by` is `omlx` or `/health` is oMLX's. |
 | vLLM | `VLLM_URL` | Also settable in **Settings → AI**. |
-| MTPLX, mlx-dspark, Lucebox | `MTPLX_URL`, `DSPARK_URL`, `SPECULATIVE_INFERENCE_URL` | See [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md). |
+| Manual endpoints | decode and encode fields in Settings | Either URL may be set alone. Re-check probes the typed URL. |
 
-The Hub cannot download a model for llama.cpp or LM Studio — whatever the server reports on
-`/v1/models` is what it can serve. Both appear in **Settings → AI** with their reachability, and
-their models show up in this Hub's `GET /v1/models` alongside everything else.
+Hub does not download weights for oMLX or vLLM. Whatever the server reports on `/v1/models` is what it can serve. A typed decode or encode endpoint is probed the same way, and its models show up in this Hub's `GET /v1/models` alongside everything else.
 
 ## Limits
 

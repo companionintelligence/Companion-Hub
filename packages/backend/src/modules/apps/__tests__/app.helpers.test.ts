@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { AppFilesManager } from '../app-files-manager';
-import { AppHelpers } from '../app.helpers';
+import { AppHelpers, isPlatformIdentityUrlFor } from '../app.helpers';
 import { AppsRepository } from '../apps.repository';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
@@ -166,6 +166,74 @@ describe('AppHelpers', () => {
       expect(written.has('MCP_API_KEY')).toBe(false);
       // Non-secret base config still reaches the app.
       expect(written.get('DOMAIN')).toBe('example.com');
+    });
+
+    it('SECURITY: inherits ONLY the allowlisted Hub .env keys — the broker password and anything else in that file stay put', async () => {
+      // The Hub's .env is the seed for every app.env, and it holds every Hub
+      // secret. A denylist covered four of them; the RabbitMQ password was not
+      // on it, so every installed app could publish lifecycle commands to the
+      // Hub's own queue. Nor is the leak limited to what we can name today:
+      // whatever an installer or operator adds to that file must not flow.
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['RABBITMQ_HOST', 'ci-hub-queue'],
+          ['RABBITMQ_USERNAME', 'companion'],
+          ['RABBITMQ_PASSWORD', 'broker-password'],
+          ['POSTGRES_PASSWORD', 'db-password'],
+          ['POSTGRES_HOST', 'ci-hub-db'],
+          ['HUB_API_KEY', 'portal-device-key'],
+          ['NODE_AUTH_TOKEN', 'registry-token'],
+          ['SOME_FUTURE_HUB_SECRET', 'whatever-lands-here-next'],
+          // …and the documented, non-secret identity an app may rely on.
+          ['DOMAIN', 'example.com'],
+          ['LOCAL_DOMAIN', 'hub.local'],
+          ['ROOT_FOLDER_HOST', '/opt/hub'],
+          ['TZ', 'Europe/Berlin'],
+          ['CI_HUB_VERSION', '0.2.99'],
+        ]),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+
+      for (const withheld of [
+        'RABBITMQ_HOST',
+        'RABBITMQ_USERNAME',
+        'RABBITMQ_PASSWORD',
+        'POSTGRES_PASSWORD',
+        'POSTGRES_HOST',
+        'HUB_API_KEY',
+        'NODE_AUTH_TOKEN',
+        'SOME_FUTURE_HUB_SECRET',
+      ]) {
+        expect(written.has(withheld), `${withheld} must not reach app.env`).toBe(false);
+      }
+      expect(written.get('DOMAIN')).toBe('example.com');
+      expect(written.get('LOCAL_DOMAIN')).toBe('hub.local');
+      expect(written.get('TZ')).toBe('Europe/Berlin');
+      expect(written.get('CI_HUB_VERSION')).toBe('0.2.99');
+    });
+
+    it('still honours the documented operator pins from the Hub .env', async () => {
+      // These are the values `setUnlessOperatorSet` and the maps-key gate read
+      // back from the seed on purpose; the allowlist must not silently turn
+      // that operator override off.
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['CI_CLOUD_URL', 'https://portal.example'],
+          ['GOOGLE_MAPS_KEY', 'operator-maps-key'],
+          ['PORTAL_OIDC_ISSUER', 'https://portal.example'],
+        ]),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+
+      expect(written.get('CI_CLOUD_URL')).toBe('https://portal.example');
+      expect(written.get('GOOGLE_MAPS_KEY')).toBe('operator-maps-key');
+      expect(written.get('PORTAL_OIDC_ISSUER')).toBe('https://portal.example');
     });
 
     describe('Companion Memory credential injection', () => {
@@ -420,6 +488,145 @@ describe('AppHelpers', () => {
           await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, PUBLIC_BASE_URL: 'https://pinned.example.org' });
 
           expect(written().get('PUBLIC_BASE_URL')).toBe('https://pinned.example.org');
+        });
+      });
+
+      describe('after the Hub changes organization or domain', () => {
+        /*
+         * core-2, 2026-09-23: re-registered from `bill-co` on companionintelligence.com
+         * to `demopool1` on ci.computer. Hermes was never exposed (`openPort: true`),
+         * so it had no `APP_PUBLIC_URL`, and its Public URL field is replayed from the
+         * stored install form on every restart. Neither of the two values the Hub used
+         * to recognise an automatic base URL was the old org's address, so it stayed.
+         */
+        const openPortForm = { exposedLocal: true, openPort: true } as const;
+
+        const withAppBaseUrlField = (content: string) => {
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({
+            ...mockAppInfo,
+            form_fields: [{ type: 'app_base_url', label: 'Public URL', env_variable: 'APP_BASE_URL', required: false }],
+          } as AppInfo);
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content });
+        };
+
+        beforeEach(() => {
+          bind(null);
+        });
+
+        it('moves a base URL from the previous organization onto the current one', async () => {
+          const previousOrg = 'https://test-app-test-store-core2-bill-co.example.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, APP_BASE_URL: previousOrg });
+
+          const env = written();
+          expect(env.get('APP_BASE_URL')).toBe(PLATFORM_URL);
+          // What OpenClaw-style apps derive their allowed origin from.
+          expect(env.get('APP_BASE_HOST')).toBe(PLATFORM_HOSTNAME);
+          expect(env.get('APP_BASE_WSS_ORIGIN')).toBe(`wss://${PLATFORM_HOSTNAME}`);
+        });
+
+        it('moves a base URL from the previous public domain onto the current one', async () => {
+          const previousDomain = 'https://test-app-test-store-core2-acme.companionintelligence.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousDomain}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('recognises the previous identity under the default subdomain after a custom one was chosen', async () => {
+          // The shape is checked against the subdomain the app routes on now and the
+          // `<app>-<store>` default, so choosing a subdomain does not strand the old one.
+          withAppBaseUrlField('APP_BASE_URL=https://test-app-test-store-core2-bill-co.example.com\n');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, localSubdomain: 'comfy' });
+
+          expect(written().get('APP_BASE_URL')).toBe('https://comfy-core2-acme.example.com');
+        });
+
+        it('keeps a custom URL the operator pinned', async () => {
+          withAppBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, APP_BASE_URL: 'https://agents.acme.org' });
+
+          expect(written().get('APP_BASE_URL')).toBe('https://agents.acme.org');
+        });
+
+        it('keeps an operator URL that merely starts with the chosen subdomain', async () => {
+          // The install dialog sets `localSubdomain` to the bare app name, so an operator's own
+          // `<app>-<team>.<corp>` host looks like `<subdomain>-<org>.<zone>`. Nothing ties it to this Hub.
+          for (const pinned of ['https://comfy-team.acme.io', 'https://comfy-staging.apps.acme.io']) {
+            withAppBaseUrlField(`APP_BASE_URL=${pinned}\n`);
+
+            await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, localSubdomain: 'comfy', APP_BASE_URL: pinned });
+
+            expect(written().get('APP_BASE_URL')).toBe(pinned);
+            expect(written().get('APP_BASE_HOST')).toBe(new URL(pinned).host);
+          }
+        });
+
+        it('moves an earlier address under the chosen subdomain when it carries this Hub', async () => {
+          // `<subdomain>-<device>-<org>`: the device slug survives the move to another org.
+          const previousOrg = 'https://comfy-core2-bill-co.companionintelligence.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, localSubdomain: 'comfy', APP_BASE_URL: previousOrg });
+
+          expect(written().get('APP_BASE_URL')).toBe('https://comfy-core2-acme.example.com');
+        });
+
+        it('keeps a LAN HTTPS name under a local domain of two labels', async () => {
+          config.getConfig.mockReturnValue(
+            fromPartial({
+              internalIp: '127.0.0.1',
+              envFilePath: '/data/.env',
+              rootFolderHost: '/opt/ci-hub',
+              domain: 'example.com',
+              userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com', localDomain: 'home.arpa' },
+            }),
+          );
+          const lanName = 'https://test-app-test-store-core2-acme.home.arpa';
+          withAppBaseUrlField(`APP_BASE_URL=${lanName}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(lanName);
+        });
+
+        it('keeps an operator value that only resembles the platform address', async () => {
+          // A path, a port or plain HTTP is something a person typed; the Hub never derives one.
+          for (const pinned of [
+            'https://test-app-test-store-core2-bill-co.example.com/app',
+            'https://test-app-test-store-core2-bill-co.example.com:8443',
+            'http://test-app-test-store-core2-bill-co.example.com',
+          ]) {
+            withAppBaseUrlField('');
+
+            await appHelpers.generateEnvFile(testAppUrn, { ...openPortForm, APP_BASE_URL: pinned });
+
+            expect(written().get('APP_BASE_URL')).toBe(pinned);
+          }
+        });
+
+        it('keeps a LAN APP_URL written while the Hub was unregistered', async () => {
+          withAppBaseUrlField('APP_BASE_URL=http://192.168.1.20:9091\n');
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe('http://192.168.1.20:9091');
+        });
+
+        it('does not move a previous platform address while the Hub has no organization', async () => {
+          // The only thing to move it to would be the LAN APP_URL, which is kept once
+          // written, so a brief unregistered window would strand the app there.
+          deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
+          const previousOrg = 'https://test-app-test-store-core2-bill-co.example.com';
+          withAppBaseUrlField(`APP_BASE_URL=${previousOrg}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, openPortForm);
+
+          expect(written().get('APP_BASE_URL')).toBe(previousOrg);
         });
       });
     });
@@ -1483,9 +1690,14 @@ describe('AppHelpers', () => {
       });
 
       it("R-ENV/SEC-MCP-8: passes the app's existing HUB_MCP_API_KEY to provisionManagedKey (preserve path)", async () => {
-        // The same mocked map is the app's existing env; seed it with a prior key.
-        const envMap = new Map<string, string>([['HUB_MCP_API_KEY', 'old-key']]);
-        envUtils.envStringToMap.mockReturnValue(envMap);
+        // The prior key lives in the app's OWN app.env, not the Hub's .env — keep
+        // the two maps distinct, as generateEnvFile does: the Hub .env seed is
+        // allowlisted (a managed key is not inheritable), the app env is where
+        // preservation reads from.
+        const envMap = new Map<string, string>();
+        const existingAppEnv = new Map<string, string>([['HUB_MCP_API_KEY', 'old-key']]);
+        appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: 'EXISTING' });
+        envUtils.envStringToMap.mockImplementation((content?: string) => (content === 'EXISTING' ? existingAppEnv : envMap));
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
         apiKeys.provisionManagedKey.mockResolvedValue('old-key');
@@ -1973,5 +2185,48 @@ describe('AppHelpers', () => {
         expect(envMap.has('HUB_API_KEY')).toBe(false);
       });
     });
+  });
+});
+
+describe('isPlatformIdentityUrlFor', () => {
+  const hermes = { defaultSubdomain: 'ci-hermes-ci-marketplace', deviceSlug: 'core-2', localDomainRoot: 'ci.lan' };
+
+  it('matches the store-qualified default under any org, device and zone', () => {
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-bill-co.companionintelligence.com', hermes)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-demopool1.ci.computer', hermes)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-acme.my.lifescope.io/', hermes)).toBe(true);
+    // A Hub whose device slug changed, or that had none, still wrote the default.
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-old-box-acme.ci.computer', { ...hermes, deviceSlug: null })).toBe(true);
+  });
+
+  it('matches a chosen subdomain only when this Hub device slug follows it', () => {
+    const n8n = { defaultSubdomain: 'n8n-ci-marketplace', routingSubdomain: 'n8n', deviceSlug: 'core-2', localDomainRoot: 'ci.lan' };
+
+    expect(isPlatformIdentityUrlFor('https://n8n-core-2-bill-co.companionintelligence.com', n8n)).toBe(true);
+    expect(isPlatformIdentityUrlFor('https://n8n-team.acme.io', n8n)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://n8n-core-2.acme.io', n8n)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://n8n-core-2-bill-co.companionintelligence.com', { ...n8n, deviceSlug: null })).toBe(false);
+  });
+
+  it('never matches a name under the local domain', () => {
+    const lan = { ...hermes, routingSubdomain: 'hermes', localDomainRoot: 'home.arpa' };
+
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2-acme.home.arpa', lan)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://hermes-core-2-acme.home.arpa', lan)).toBe(false);
+  });
+
+  it('does not match another app, the bare subdomain, or a single-label zone', () => {
+    expect(isPlatformIdentityUrlFor('https://ci-openclaw-ci-marketplace-core-2-acme.ci.computer', hermes)).toBe(false);
+    // `<subdomain>.<zone>` is the unregistered shape, which `APP_PUBLIC_URL` already tracks.
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace.ci.computer', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-core-2.localhost', hermes)).toBe(false);
+  });
+
+  it('does not match anything the Hub would never have written', () => {
+    expect(isPlatformIdentityUrlFor('not a url', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer?x=1', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer#top', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://user@ci-hermes-ci-marketplace-acme.ci.computer', hermes)).toBe(false);
+    expect(isPlatformIdentityUrlFor('https://ci-hermes-ci-marketplace-acme.ci.computer', { defaultSubdomain: '' })).toBe(false);
   });
 });

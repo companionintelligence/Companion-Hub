@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiKeysContainer } from '../api-keys';
 
@@ -16,7 +16,7 @@ vi.mock('react-i18next', () => {
   const t = (key: string) => key;
   return { useTranslation: () => ({ t }) };
 });
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // Minimal UI-primitive stubs so the test focuses on data flow, not Radix internals.
 vi.mock('@/components/ui/Button', () => ({

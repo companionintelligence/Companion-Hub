@@ -22,7 +22,7 @@ import { OPERATOR_MINTABLE_SCOPES as SHARED_OPERATOR_MINTABLE_SCOPES, type Opera
  * Append new scopes LAST: `normalizeScopes` orders a stored set by this list, so inserting one in
  * the middle would re-order every existing row's scopes the next time it is reconciled.
  */
-export const API_KEY_SCOPES = ['mcp', 'app', 'qa:read', 'inference'] as const;
+export const API_KEY_SCOPES = ['mcp', 'app', 'qa:read', 'inference', 'portal'] as const;
 
 export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
 
@@ -68,6 +68,14 @@ export const QA_READ_SCOPE: ApiKeyScope = 'qa:read';
  * apps sending a placeholder bearer keep working with zero key-store lookups.
  */
 export const INFERENCE_SCOPE: ApiKeyScope = 'inference';
+
+/**
+ * The key Companion Portal presents when it pushes to this Hub (an app install it brokered). Minted
+ * by the Hub itself, handed to Portal over the check-in, never to an operator or an app — see
+ * `PortalPushKeyService`. It replaced the Portal DEVICE key as the bearer for those pushes: that key
+ * also lives in first-party Memory's container, so accepting it here made Memory a Hub operator.
+ */
+export const PORTAL_SCOPE: ApiKeyScope = 'portal';
 
 /**
  * Scopes an operator may mint for themselves, re-exported from `@ci-hub/common` — see the docblock

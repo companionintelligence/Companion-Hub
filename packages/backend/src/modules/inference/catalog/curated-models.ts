@@ -296,22 +296,11 @@ const ALL_HOST_PLATFORMS: HostPlatform[] = ['darwin', 'linux', 'win32'];
 function defaultSupportedPlatforms(backend: InferenceBackendType): HostPlatform[] {
   switch (backend) {
     case 'vllm':
-      // Plain vLLM rows use the CUDA host/image path in VllmBackend. Apple Silicon has its own
-      // vLLM-Metal table below; neither path is a Hub-supported native macOS CUDA deployment.
       return ['linux', 'win32'];
-    case 'mtplx':
-    case 'dspark':
+    case 'omlx':
       return ['darwin'];
-    case 'lucebox':
-      return ['linux'];
     case 'ollama':
     case 'lemonade':
-    case 'llamacpp':
-    case 'lmstudio':
-      // Both are host-run on every desktop platform the Hub supports: llama.cpp builds everywhere,
-      // and LM Studio ships macOS, Windows, and Linux applications. Neither has catalog rows today
-      // (the Hub cannot pull for either — see their backends), so this gate decides nothing yet; it
-      // is here so that adding a row later does not silently inherit a narrower platform set.
       return [...ALL_HOST_PLATFORMS];
   }
 }
@@ -694,138 +683,8 @@ llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reaso
   minimax-m2-mlx|mlx-community/MiniMax-M2-4bit|MiniMax M2 (MLX)|general|230|128.7|high|205|MiniMax||1|0|1|0||||mlx-4bit
 `;
 
-const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) =>
-  buildLlmModel(row, 'vllm', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
-);
-
-// ─── MTPLX LLM catalog (TOON) ─────────────────────────────────────────────────
-// Chat models for the `mtplx` backend — github.com/youssofal/MTPLX, a native macOS app/CLI (Apple
-// Silicon, macOS 14+, no Docker or Linux path at all) that speeds up decoding ~1.6-2.9x via native
-// multi-token-prediction (MTP) speculative decoding: the served model drafts several tokens ahead of
-// itself using its own trained-in MTP head (no external drafter model) and verifies them in one
-// batched pass, with exact rejection-sampling correction so the output distribution is unchanged at
-// any temperature. `mtplx serve --model <repo>` exposes an OpenAI-compatible `/v1` surface, the same
-// shape MtplxBackend talks to — see mtplx.backend.ts.
-//
-// `backendModelId` is the exact `Youssofal/...` HuggingFace repo id `mtplx serve --model` loads.
-// Every row was checked live against huggingface.co on 2026-08-25 (hub_repo_search + hf_fs directory
-// listing + each repo's own config.json, not a paraphrased fetch) to confirm it exists and to sum its
-// real download bytes for `gb` — every MTP repo bundles more than the base weights: an extra
-// `mtp.safetensors` (or `mtp/weights.safetensors`) tensor file holding the trained MTP head, loaded
-// via a proprietary `mlx_lm_extra_tensors` config key only MTPLX's own loader understands, plus an
-// `mtplx_runtime.json` with the auto-tuned draft depth for that exact artifact. None of this is
-// optional or generic-MLX-loadable — it is why these rows exist under a dedicated `mtplx` backend
-// rather than the vLLM-Metal catalog above: loading one of these repos through a generic MLX runtime
-// (vLLM-Metal, plain mlx-lm) would silently ignore the MTP head and `mtplx_runtime.json`, downloading
-// the extra weight for zero speedup — the entire reason the repo exists. `quant` is `mtplx-dynamic`
-// (not a uniform bit-width) because MTPLX hand-tunes precision per tensor group — per the model
-// cards: the bulk of the model at 4-bit, layers/embeddings/output-head that hurt most at 4-bit kept
-// at 8-bit, and the MTP head itself kept at 16-bit.
-//
-// `params`/`ctxK`/purpose/capability flags are reused from the matching Ollama-backend row for the
-// same base model, as the other per-backend tables above do. `gpuVendors` is overridden to `['apple']`
-// (see buildLlmModel) — Apple Silicon only, no viable path on any other vendor. intel/perf
-// columns are left blank for the same reason the other per-backend tables leave them blank: none of
-// these MTP-adapted checkpoints have been independently benchmarked by Artificial Analysis.
-//
-// Scope: only Qwen-family rows are included. Youssofal also publishes a Gemma 4 pair
-// (`Gemma4-MTPLX-Optimized-Speed`/`-Optimized-Quality`), but those repos use a structurally different
-// `assistant/` + `target/` two-checkpoint layout (paired via `mtplx_pair.json`) rather than a single
-// checkpoint with a native MTP head — which looks like exactly the external-drafter architecture
-// MTPLX's own README says it does not use ("Not an external-drafter system. The drafter is the target
-// model's own MTP heads."). Given that unresolved inconsistency, and without independent confirmation
-// of how `mtplx serve` actually loads that pair, the Gemma 4 rows are left out rather than guessed at.
-// `Qwen3.6-35B-A3B-MTPLX-Optimized-Quality` (referenced by name in the org's other READMEs) 404s and
-// was not added — see the fabrication-guard precedent in this file's header for why a 404 is a hard
-// stop, not a "probably still there" guess. The 25 non-MTP "Abliterated-Heretic-Uncensored" models in
-// the same HF org (Qwen3.6/MiniMax fine-tunes with refusal-training removed) are a different,
-// unrelated product line from the same publisher — out of scope for this catalog on quality/safety
-// grounds regardless of MTP status.
-const MTPLX_LLM_TOON = `
-llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
-  qwen3-8-27b-mtplx-speed|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed|Qwen 3.8 27B MTPLX Optimized Speed|reasoning|27|20.7|medium|256|Alibaba||1|1|1|0||||mtplx-dynamic
-  qwen3-8-27b-mtplx-quality|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality|Qwen 3.8 27B MTPLX Optimized Quality|reasoning|27|30.0|high|256|Alibaba||1|1|1|0||||mtplx-dynamic
-  qwen3-8-27b-mtplx-bare|Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed|Qwen 3.8 27B MTPLX Bare Speed|reasoning|27|16.3|medium|256|Alibaba||1|1|1|0||||mtplx-dynamic
-  qwen3-6-27b-mtplx-v2|Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2|Qwen 3.6 27B MTPLX Optimized Speed V2|coding|27|19.9|medium|262|Alibaba||1|1|1|0||||mtplx-dynamic
-  qwen3-6-35b-mtplx-speed|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed|Qwen 3.6 35B A3B MTPLX Optimized Speed|coding|35|21.0|medium|262|Alibaba||1|1|1|0||||mtplx-dynamic
-  qwen3-6-35b-mtplx-balance|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance|Qwen 3.6 35B A3B MTPLX Optimized Balance|coding|35|29.7|high|262|Alibaba||1|1|1|0||||mtplx-dynamic
-  qwen3-5-4b-mtplx-speed|Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed|Qwen 3.5 4B MTPLX Optimized Speed|reasoning|4|2.5|cpu-only|262|Alibaba||1|1|1|0||||mtplx-dynamic
-  qwen3-5-9b-mtplx-speed|Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed|Qwen 3.5 9B MTPLX Optimized Speed|reasoning|9|8.7|low|262|Alibaba||1|1|1|0||||mtplx-dynamic
-`;
-
-const mtplxLlms: CuratedModel[] = decodeToonTable(MTPLX_LLM_TOON, 'llms').map((row) =>
-  buildLlmModel(row, 'mtplx', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
-);
-
-// ─── mlx-dspark (speculative decoding / Apple Silicon) LLM catalog (TOON) ────
-// Chat models for mlx-dspark (github.com/ARahim3/mlx-dspark), which runs two EAGLE-family
-// speculative-decoding drafters natively on Apple Silicon via MLX: DeepSeek's DSpark and z-lab's
-// DFlash. Both are lossless — the target verifies every drafted token, so output is identical to
-// plain decoding and only the speed changes — provided the acceptance threshold stays at 0, which
-// DsparkBackend pins explicitly on every `/admin/load` (see its `loadPayload`).
-//
-// Same host-run posture as the vLLM-Metal table above: no Docker path on any platform, installed
-// natively (`pip install mlx-dspark`) and reached over an operator-configured URL. What is
-// different, and why this is a separate backend rather than more `-mlx` rows, is that mlx-dspark
-// loads a SECOND checkpoint — the drafter — alongside the target, and only its own runtime knows
-// how to pair them. A generic MLX loader pointed at these targets would serve them with no
-// speculation at all.
-//
-// `backendModelId` is the **target** repo: it is what `POST /admin/load` takes and what
-// `GET /health.target` reports back, so it compares directly against what the backend reports as
-// loaded. The drafter is not named here — mlx-dspark auto-resolves it from its own registry, and
-// pinning our own guess would silently diverge from theirs on their next release.
-//
-// Every id and size below was checked live against the Hugging Face API on 2026-08-26 (per-repo
-// `?blobs=true`, summing real `.safetensors` bytes — not a web-search summary, per the
-// fabrication-guard convention documented in this file's header). All 21 repos (11 targets + 10
-// distinct drafters) returned 200, `gated:false`, exact case-sensitive id match.
-//   gb     = total DOWNLOAD in decimal GB: target safetensors + the drafter `--mode auto` resolves
-//            for that target. `resolve_mode` (load.py:321) prefers a stamped measured-best mode —
-//            only the two Qwen3.8-27B rows have one, DFlash 2 — then the row's DSpark head, so
-//            every other row downloads its `dspark` drafter.
-//   ramGb  = PEAK RESIDENT, taken from each pair's own measured `ram` field in mlx-dspark's
-//            registry (load.py:60-217) rather than derived here. Measured beats arithmetic: the
-//            drafter is quantized to 4-bit at load, so weight math alone would say 5.1 GB for the
-//            4B row where the project measured ~8 GB — the difference is the KV cache and runtime
-//            overhead at chat-length context, which is precisely what memoryFootprintMb means.
-//            (This is also why one row's ramGb exceeds its gb: Muse-Glimmer is multimodal, and its
-//            vision tower sits outside the weight sum.) See buildLlmModel for why this needs its
-//            own column instead of being folded into `gb`.
-// `params`/`ctxK`/purpose/capability flags are reused from the matching existing catalog row for
-// the same base model rather than re-derived — architecture and context length don't change with
-// the serving engine. intel/perf are left blank for the same reason the vLLM tables leave
-// them blank: none of these pairs are on the Artificial Analysis leaderboard.
-//
-// The project's README quotes 2.6–4.06× speedups on an M4 Pro. Those are author-reported, measured
-// on hardware we do not have, against each engine's own baseline — deliberately NOT surfaced in
-// the UI and not encoded in any column here.
-//
-// Deliberately NOT included, though their repos verify: the LFM2.5 rows (1.2B/2.6B/8B-A1B) and
-// Ternary-Bonsai-27B. They are the only pairs small enough for 8/16 GB Macs, so they are worth a
-// follow-up — but no existing catalog row covers those base models, so their context windows and
-// capability flags would have to be sourced fresh, and this file's header is explicit that
-// unverified field-level metadata is how fabricated rows got in last time.
-const DSPARK_LLM_TOON = `
-llms[11|]{id,backendModelId,name,purpose,params,gb,ramGb,tier,ctxK,creator,intel,reason,vision,tools,audio,tps,ttft,e2e,quant}:
-  qwen3-4b-dspark|mlx-community/Qwen3-4B-8bit|Qwen 3 4B (mlx-dspark)|general|4|7.05|8.0|low|256|Alibaba||1|0|1|0||||mlx-8bit+dspark
-  qwen3-8b-dspark|mlx-community/Qwen3-8B-8bit|Qwen 3 8B (mlx-dspark)|general|8|13.44|11.0|medium|40|Alibaba||1|0|1|0||||mlx-8bit+dspark
-  ornith-9b-dspark|mlx-community/Ornith-1.0-9B-8bit|Ornith 1.0 9B (mlx-dspark)|coding|9|17.00|13.0|medium|256|Deep Reinforce||1|0|1|0||||mlx-8bit+dspark
-  gemma4-12b-dspark|mlx-community/gemma-4-12B-it-8bit|Gemma 4 12B (mlx-dspark)|general|12|19.57|15.0|medium|128|Google||1|1|1|0||||mlx-8bit+dspark
-  qwen3-8-27b-dspark|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (mlx-dspark)|reasoning|27|19.89|18.0|medium|256|Alibaba||1|1|1|0||||mlx-4bit+dflash2
-  qwen3-14b-dspark|mlx-community/Qwen3-14B-8bit|Qwen 3 14B (mlx-dspark)|general|14|22.52|19.0|medium|40|Alibaba||1|0|1|0||||mlx-8bit+dspark
-  nemotron-3-5-lightning-30b-dspark|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (mlx-dspark)|general|30|19.70|20.0|medium|1000|NVIDIA||0|0|1|0||||mlx-4bit+dspark
-  qwen3-6-35b-dspark|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B A3B (mlx-dspark)|coding|35|23.46|23.0|medium|262|Alibaba||1|1|1|0||||mlx-4bit+dspark
-  muse-glimmer-30b-dspark|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer 30B (mlx-dspark)|general|30|24.72|26.0|high|128|Meta||1|1|1|0||||mlx-4bit+dspark
-  qwen3-8-27b-8bit-dspark|mlx-community/Qwen3.8-27B-8bit|Qwen 3.8 27B 8-bit (mlx-dspark)|reasoning|27|33.34|29.0|high|256|Alibaba||1|1|1|0||||mlx-8bit+dflash2
-  qwen3-6-27b-dspark|mlx-community/Qwen3.6-27B-8bit|Qwen 3.6 27B (mlx-dspark)|coding|27|38.30|32.0|high|262|Alibaba||1|1|1|0||||mlx-8bit+dspark
-`;
-
-// `gpuVendors: ['apple']` is the whole gating story (enforced in ModelRegistryService): mlx-dspark
-// is Metal-only, and because the system-RAM fallback path reports vendor 'cpu', an 'apple'-only row
-// can never be resurrected onto non-Apple hardware.
-const dsparkLlms: CuratedModel[] = decodeToonTable(DSPARK_LLM_TOON, 'llms').map((row) =>
-  buildLlmModel(row, 'dspark', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
+const omlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) =>
+  buildLlmModel(row, 'omlx', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
 );
 
 // Non-LLM models (voice + embedding) in TOON. Unlike the LLM table these carry explicit requirements
@@ -882,12 +741,4 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
   };
 });
 
-export const CURATED_MODELS: CuratedModel[] = [
-  ...generatedLlms,
-  ...lemonadeLlms,
-  ...vllmLlms,
-  ...vllmMlxLlms,
-  ...mtplxLlms,
-  ...dsparkLlms,
-  ...extraModels,
-];
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...omlxLlms, ...extraModels];

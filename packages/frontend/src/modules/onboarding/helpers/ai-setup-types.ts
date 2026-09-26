@@ -49,14 +49,12 @@ export interface AiSetupConfig {
   vllmApiKey?: string;
   /** Optional custom vLLM base URL (persisted to Hub settings as inferenceVllmUrl). */
   vllmUrl?: string;
-  /** Optional custom MTPLX base URL (persisted to Hub settings as inferenceMtplxUrl). MTPLX has no
-   *  API key concept — its server is local-only with no auth, unlike vLLM's optional --api-key. */
-  mtplxUrl?: string;
-  /**
-   * Optional custom mlx-dspark base URL (persisted to Hub settings as inferenceDsparkUrl). No
-   * API-key sibling: mlx-dspark's /health probe is auth-exempt, so none is needed to detect it.
-   */
-  dsparkUrl?: string;
+  /** Optional custom oMLX base URL. */
+  omlxUrl?: string;
+  /** Manual decode endpoint. Overrides the selected engine's chat URL when set. */
+  decodeEndpoint?: string;
+  /** Manual encode endpoint. Overrides the embedding host when set. */
+  encodeEndpoint?: string;
   /** When true, onboarding install must not proceed (budget or missing agent model). */
   installBlocked?: boolean;
   installBlockReason?: string;
@@ -102,22 +100,8 @@ export interface VllmStatus {
   error?: string;
 }
 
-/** Same shape as {@link VllmStatus} — MTPLX has no API key field to match since it's a local-only,
- *  unauthenticated server. */
-export type MtplxStatus = VllmStatus;
-
-/**
- * Same shape as {@link VllmStatus} plus `loadedModels`: mlx-dspark can be up and healthy with no
- * model resident (the state `serve --no-model` starts in), which the card distinguishes from a
- * server that is actually ready to answer.
- */
-export interface DsparkStatus extends VllmStatus {
-  /** Full HF repo ids the server reports as loaded. Empty when started with `--no-model`. */
-  loadedModels?: string[];
-}
-
-/** Lucebox exposes the same OpenAI-compatible health shape but is configured outside the Hub. */
-export type SpeculativeInferenceStatus = VllmStatus;
+/** oMLX answers the same OpenAI-compatible health shape as vLLM, without an API key. */
+export type OmlxStatus = VllmStatus;
 
 /** Lemonade's health card uses the same connection shape and also reports cached model ids. */
 export interface LemonadeStatus extends VllmStatus {
@@ -131,8 +115,9 @@ export interface InferencePreferencesResponse {
   preferredVisionModel: string | null;
   preferredVllmApiKey?: string | null;
   preferredVllmUrl?: string | null;
-  preferredMtplxUrl?: string | null;
-  preferredDsparkUrl?: string | null;
+  preferredOmlxUrl?: string | null;
+  preferredDecodeEndpoint?: string | null;
+  preferredEncodeEndpoint?: string | null;
 }
 
 export interface RuntimeModelInfo {

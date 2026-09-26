@@ -76,7 +76,7 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
@@ -185,7 +185,7 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
@@ -288,7 +288,7 @@ export type HostEventLogDto = {
 };
 
 export type FactoryResetDto = {
-    confirmation: 'factory-reset';
+    confirmation: string;
 };
 
 export type LoginBody = {
@@ -356,6 +356,10 @@ export type HubOperatorsDto = {
 export type PortalDesktopExchangeDto = {
     sessionId: string;
     redirectPath: string;
+};
+
+export type PortalDesktopHandoffStatusDto = {
+    [key: string]: unknown;
 };
 
 export type ChangeUsernameBody = {
@@ -441,6 +445,7 @@ export type MyAppsDto = {
                 [key: string]: unknown;
             };
             enableAuth?: boolean;
+            autoRestartOnDomainChange?: boolean;
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
@@ -704,6 +709,7 @@ export type GuestAppsDto = {
                 [key: string]: unknown;
             };
             enableAuth?: boolean;
+            autoRestartOnDomainChange?: boolean;
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
@@ -1011,6 +1017,7 @@ export type GetAppDto = {
             [key: string]: unknown;
         };
         enableAuth?: boolean;
+        autoRestartOnDomainChange?: boolean;
         localSubdomain?: string;
         exposureMode?: 'local' | 'cloudflare' | 'tailscale';
         publicDomain?: string;
@@ -1387,7 +1394,7 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
@@ -1468,6 +1475,7 @@ export type AppFormBody = {
     domain?: string;
     isVisibleOnGuestDashboard?: boolean;
     enableAuth?: boolean;
+    autoRestartOnDomainChange?: boolean;
     localSubdomain?: string;
     publicDomain?: string;
     customDomain?: string;
@@ -2136,14 +2144,14 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     vllmUrl?: string;
     mtplxUrl?: string;
     dsparkUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
 };
 
 export type RoutingLogQueryDto = {
@@ -3368,6 +3376,21 @@ export type ExchangePortalDesktopLoginResponses = {
 
 export type ExchangePortalDesktopLoginResponse = ExchangePortalDesktopLoginResponses[keyof ExchangePortalDesktopLoginResponses];
 
+export type PortalDesktopHandoffStatusData = {
+    body?: never;
+    path?: never;
+    query: {
+        token: string;
+    };
+    url: '/api/auth/portal/desktop-handoff-status';
+};
+
+export type PortalDesktopHandoffStatusResponses = {
+    default: PortalDesktopHandoffStatusDto;
+};
+
+export type PortalDesktopHandoffStatusResponse = PortalDesktopHandoffStatusResponses[keyof PortalDesktopHandoffStatusResponses];
+
 export type ChangeUsernameData = {
     body: ChangeUsernameBody;
     path?: never;
@@ -4037,7 +4060,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     };
     url: '/api/inference/models/runtime';
 };
@@ -4243,7 +4266,7 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
         vllmUrl?: string;
         mtplxUrl?: string;
         dsparkUrl?: string;

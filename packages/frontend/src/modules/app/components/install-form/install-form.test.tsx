@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { MemoryRouter } from 'react-router';
 import { useForm } from 'react-hook-form';
 import type { AppInfo, FormField } from '@/types/app.types';
@@ -42,6 +43,12 @@ vi.mock('@/lib/cloudflare-api', async (importOriginal) => ({
   repairPublicWebRouting,
 }));
 
+const { mockTauriInvoke } = vi.hoisted(() => ({ mockTauriInvoke: vi.fn() }));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => mockTauriInvoke(...args),
+}));
+
 const { toast } = vi.hoisted(() => ({
   toast: {
     error: vi.fn(),
@@ -49,8 +56,8 @@ const { toast } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: toast,
+vi.mock('sonner', () => ({
+  toast: toast,
 }));
 
 vi.mock('react-i18next', () => ({
@@ -543,6 +550,106 @@ describe('InstallForm', () => {
     });
 
     expect(fetchDnsAvailability).not.toHaveBeenCalled();
+  });
+
+  describe('restarting for a newly connected custom domain', () => {
+    /*
+     * Connecting a domain to a running app leaves it on its old address until it
+     * restarts, and the restart makes it briefly unavailable — so by default a
+     * person picks the moment. This setting is the app owner saying "just do it".
+     */
+    const INFO = {
+      urn: 'comfyui:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      port: 8188,
+    } as unknown as AppInfo;
+
+    // Not production, so the submit below is not held up by the live DNS check.
+    const CONTEXT = {
+      userSettings: {
+        ciHubOrganizationSlug: 'acme',
+        ciHubDeviceSlug: 'core2',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: false,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>;
+
+    const renderForm = (initialValues: Record<string, unknown>, onSubmit = vi.fn()) => {
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+
+      return render(
+        <MemoryRouter>
+          <InstallForm info={INFO} onSubmit={onSubmit} formId="test-form" formFields={[]} initialValues={initialValues} />
+        </MemoryRouter>,
+      );
+    };
+
+    // The Switch carries aria-label={name}, so its accessible name is the field name.
+    const setting = () => screen.queryByRole('switch', { name: 'autoRestartOnDomainChange' });
+
+    afterEach(() => {
+      MOCK_CUSTOM_DOMAINS.supported = false;
+      MOCK_CUSTOM_DOMAINS.domains = [];
+    });
+
+    it('is offered, and off, wherever a custom domain can be connected', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+
+      renderForm({ exposureMode: 'cloudflare' });
+
+      expect(setting()).toBeInTheDocument();
+      expect(setting()).not.toBeChecked();
+      expect(screen.getByText('APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE')).toBeInTheDocument();
+    });
+
+    it('is not offered where no custom domain can be connected', () => {
+      // An older Portal, or one that did not answer: nothing to restart for.
+      MOCK_CUSTOM_DOMAINS.supported = false;
+      const { unmount } = renderForm({ exposureMode: 'cloudflare' });
+      expect(setting()).not.toBeInTheDocument();
+      unmount();
+
+      // A local-only app has no public route for a custom domain to alias.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      renderForm({ exposureMode: 'local' });
+      expect(setting()).not.toBeInTheDocument();
+    });
+
+    it('shows the setting an app was saved with', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+
+      renderForm({ exposureMode: 'cloudflare', autoRestartOnDomainChange: true });
+
+      expect(setting()).toBeChecked();
+    });
+
+    it('submits the choice', async () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      const onSubmit = vi.fn();
+      const { container } = renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' }, onSubmit);
+
+      const toggle = setting();
+      expect(toggle).not.toBeNull();
+      fireEvent.click(toggle as HTMLElement);
+      expect(setting()).toBeChecked();
+
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledOnce();
+      });
+      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ autoRestartOnDomainChange: true });
+    });
   });
 
   describe('custom domain picker', () => {
@@ -1541,6 +1648,47 @@ describe('InstallForm', () => {
     });
   });
 
+  it('reports unsaved edits only once the operator changes a field, and not after it is changed back', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+    const onDirtyChange = vi.fn();
+    const uploadField = { env_variable: 'UPLOAD_LOCATION', label: 'Upload Location', type: 'text', required: true } as never;
+    const lastReport = () => onDirtyChange.mock.calls.at(-1)?.[0];
+
+    // Mirrors update-settings-dialog.tsx: the installed app's stored config seeds the form, and the
+    // dialog shows its "changes will apply" banner and enables Update from this callback. The form
+    // has no defaultValues, so `isDirty` compared the seeded values with an empty baseline: a change
+    // reverted by hand still counted as an edit, and under StrictMode (the dev server's re-run of
+    // mount effects) the untouched dialog opened with the banner up.
+    render(
+      <StrictMode>
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[uploadField]}
+            initialValues={{ exposureMode: 'local', UPLOAD_LOCATION: '/data/photos', enableAuth: false }}
+            onDirtyChange={onDirtyChange}
+          />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    const uploadInput = await screen.findByLabelText(/Upload Location/);
+    await waitFor(() => expect(uploadInput).toHaveValue('/data/photos'));
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+    await waitFor(() => expect(lastReport()).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_LOCAL' }));
+    await waitFor(() => expect(lastReport()).toBe(false));
+
+    fireEvent.change(uploadInput, { target: { value: '/data/other' } });
+    await waitFor(() => expect(lastReport()).toBe(true));
+    fireEvent.change(uploadInput, { target: { value: '/data/photos' } });
+    await waitFor(() => expect(lastReport()).toBe(false));
+  });
+
   it('shows the recommended hint when the manifest defaults edge auth on', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());
 
@@ -1659,6 +1807,71 @@ describe('InstallForm', () => {
       expect(exportedText).not.toContain(SECRET_VALUE);
       expect(exportedText).not.toContain('DB_PASSWORD');
       expect(clickSpy).toHaveBeenCalledOnce();
+    });
+
+    // The desktop webview ignores `<a download>`, which left this button doing nothing there.
+    it('saves the export through the desktop app and says where it went', async () => {
+      class ReadableBlob extends RecordingBlob {
+        async arrayBuffer() {
+          return new TextEncoder().encode(this.parts.join('')).buffer;
+        }
+      }
+      vi.stubGlobal('Blob', ReadableBlob);
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: { invoke: vi.fn() }, configurable: true });
+      mockTauriInvoke.mockResolvedValue('/home/user/Downloads/nextcloud-install-config.json');
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+      try {
+        render(
+          <MemoryRouter>
+            <InstallForm info={editInfo} onSubmit={vi.fn()} formId="test-form" formFields={[RANDOM_FIELD]} initialValues={editInitialValues} />
+          </MemoryRouter>,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
+
+        await waitFor(() => {
+          expect(toast.success).toHaveBeenCalledWith('APP_INSTALL_FORM_EXPORT_CONFIG_SAVED');
+        });
+        expect(mockTauriInvoke).toHaveBeenCalledWith('save_download_command', {
+          filename: 'nextcloud-install-config.json',
+          contents: expect.any(Array),
+        });
+        const [, args] = mockTauriInvoke.mock.calls[0] as [string, { contents: number[] }];
+        const savedText = new TextDecoder().decode(new Uint8Array(args.contents));
+        expect(JSON.parse(savedText)).toMatchObject({ appId: 'nextcloud' });
+        expect(savedText).not.toContain(SECRET_VALUE);
+        expect(clickSpy).not.toHaveBeenCalled();
+      } finally {
+        delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      }
+    });
+
+    it('reports a failed desktop save instead of failing silently', async () => {
+      class ReadableBlob extends RecordingBlob {
+        async arrayBuffer() {
+          return new ArrayBuffer(0);
+        }
+      }
+      vi.stubGlobal('Blob', ReadableBlob);
+      Object.defineProperty(window, '__TAURI_INTERNALS__', { value: { invoke: vi.fn() }, configurable: true });
+      mockTauriInvoke.mockRejectedValue(new Error('Failed to write download'));
+
+      try {
+        render(
+          <MemoryRouter>
+            <InstallForm info={editInfo} onSubmit={vi.fn()} formId="test-form" formFields={[RANDOM_FIELD]} initialValues={editInitialValues} />
+          </MemoryRouter>,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
+
+        await waitFor(() => {
+          expect(toast.error).toHaveBeenCalledWith('Failed to write download');
+        });
+      } finally {
+        delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+      }
     });
 
     it('never writes the live secret to the "recently used" localStorage cache on submit', async () => {

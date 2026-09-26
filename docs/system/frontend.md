@@ -120,17 +120,9 @@ Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-pag
 
 `AiSetupStep` owns Step 3 of the FTUE: one “Set up inference” panel contains the backend choice,
 the selected backend's readiness check, and the Ollama embeddings check when a host-served backend
-is selected. On Apple Silicon macOS it presents a Speculative inference group with `mlx-dspark`
-first, MTPLX nested beneath it, and Lucebox available as the provider-neutral option. When the
-operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install and start the
-selected speculative runner (`mlx-dspark` or MTPLX) alongside Ollama (embeddings); it persists the
-actual MTPLX endpoint when the runner has to move off port 8000. A plain browser build does not
+is selected. Apple Silicon offers Ollama and oMLX. NVIDIA offers Ollama and vLLM. AMD or NPU offers Ollama and Lemonade. Manual mode is a decode endpoint and an encode endpoint. When the
+operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install the chosen runner. oMLX is Homebrew. vLLM pairs with Ollama for embeddings. A plain browser build does not
 have a native process boundary, so it retains the manual setup and re-check flow.
-
-Runner selection is exact rather than a fleet-wide install: mlx-dspark, MTPLX, vLLM, and Lucebox
-each pair only with Ollama; Ollama and operator-managed Lemonade request only Ollama. Unknown future
-backend ids retain the complete native fallback set. This keeps FTUE from downloading unrelated
-engines and lets desktop reconcile the two mutually exclusive macOS login services.
 
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category

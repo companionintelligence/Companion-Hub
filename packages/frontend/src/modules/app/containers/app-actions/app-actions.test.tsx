@@ -136,8 +136,8 @@ vi.mock('@/context/app-context', () => ({
   }),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     error: (...args: unknown[]) => hoisted.toastError(...args),
     success: vi.fn(),
   },
@@ -340,6 +340,34 @@ describe('AppActions', () => {
 
       expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).customDomainExpected).toBe('');
       expect(hoisted.installDialogProps?.boundCustomDomain).toBeNull();
+    });
+  });
+
+  describe('the restart setting for a newly connected domain', () => {
+    /*
+     * The stored config snapshot leaves this setting out, so that flipping it never
+     * restarts the app — which makes the row the only place the dialog can read it
+     * from. Seeded from anywhere else, every save of an unrelated setting would
+     * quietly turn it back off.
+     */
+    it('seeds the settings dialog with what the app was saved with', () => {
+      render(
+        <AppActions
+          app={makeApp({ autoRestartOnDomainChange: true })}
+          metadata={metadata}
+          info={info}
+          urlAvailability={idleAvailability}
+          layout="hero"
+        />,
+      );
+
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).autoRestartOnDomainChange).toBe(true);
+    });
+
+    it('seeds it off for an app that never set it', () => {
+      render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).autoRestartOnDomainChange).toBe(false);
     });
   });
 

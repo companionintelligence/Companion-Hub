@@ -7,14 +7,21 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  assessKeptPairingCode,
   classifyPairingFailure,
   clearPendingPairingCode,
   describeDeviceNameConflict,
   describeInvalidatedPairingCode,
+  describeKeptPairingCode,
+  describePairingCodeAge,
   findInvalidatingReRegistration,
   findReRegistration,
+  forgetReleasedDevice,
   isDeadPairingCodeFailure,
+  MAX_PENDING_PAIRING_CODE_AGE_MS,
   type PendingPairingCode,
+  pendingPairingCodeAgeMs,
+  PORTAL_PAIRING_CODE_TTL_MS,
   readPendingPairingCode,
   recordReRegisteredPairingCode,
   savePendingPairingCode,
@@ -236,5 +243,115 @@ describe('isDeadPairingCodeFailure', () => {
     // it. Not dead, then, but not keepable either: the retry that followed it got the 410. That is
     // the distinction `classifyPairingFailure` draws and this narrower question cannot.
     expect(isDeadPairingCodeFailure('DNS provider error while creating record. Please retry.')).toBe(false);
+  });
+});
+
+describe('the age of a kept code', () => {
+  const HOUR = 60 * 60_000;
+
+  it('is read from mintedAt, and an unreadable mintedAt is infinitely old rather than young', () => {
+    const now = Date.parse('2026-09-26T06:14:00Z');
+    expect(pendingPairingCodeAgeMs({ mintedAt: '2026-09-23T03:14:00Z' }, now)).toBe(75 * HOUR);
+    // A code whose age cannot be read cannot be shown to be young enough to send.
+    expect(pendingPairingCodeAgeMs({ mintedAt: 'yesterday-ish' }, now)).toBe(Number.POSITIVE_INFINITY);
+    // A clock that moved backwards is not a negative age.
+    expect(pendingPairingCodeAgeMs({ mintedAt: '2026-09-26T07:00:00Z' }, now)).toBe(0);
+  });
+
+  it('reads at a glance, precise enough to tell minutes from hours from days', () => {
+    expect(describePairingCodeAge(30_000)).toBe('under a minute');
+    expect(describePairingCodeAge(14 * 60_000)).toBe('14m');
+    expect(describePairingCodeAge(5 * HOUR)).toBe('5h');
+    expect(describePairingCodeAge(5 * HOUR + 12 * 60_000)).toBe('5h 12m');
+    expect(describePairingCodeAge(MAX_PENDING_PAIRING_CODE_AGE_MS)).toBe('1d');
+    expect(describePairingCodeAge(75 * HOUR)).toBe('3d 3h');
+    expect(describePairingCodeAge(Number.POSITIVE_INFINITY)).toBe('an unknown time');
+  });
+
+  it('is named, with its origin, on every line about a kept code', () => {
+    expect(describeKeptPairingCode(kept({ mintedAt: '2026-09-23T03:14:00Z', slug: 'core-6' }), 75 * HOUR)).toBe(
+      'the code minted 2026-09-23T03:14 for core-6 (3d 3h ago)',
+    );
+    expect(describeKeptPairingCode(kept({ reRegisteredAt: '2026-09-20T18:02:00Z', mintedAt: '2026-09-20T18:02:00Z' }), 14 * 60_000)).toBe(
+      'the code re-registered 2026-09-20T18:02 for core-1 (14m ago)',
+    );
+  });
+
+  it('bounds reuse well inside the seven days Portal gives a code', () => {
+    // CI-Portal's PAIRING_CODE_TTL_MS is 7 days and flagged there as a guess to be shortened. A bound
+    // at or past it would send codes Portal has already expired, after a twenty-minute `hub up`.
+    expect(PORTAL_PAIRING_CODE_TTL_MS).toBe(7 * 24 * HOUR);
+    expect(describePairingCodeAge(PORTAL_PAIRING_CODE_TTL_MS)).toBe('7d');
+    expect(MAX_PENDING_PAIRING_CODE_AGE_MS).toBeLessThan(PORTAL_PAIRING_CODE_TTL_MS);
+    expect(MAX_PENDING_PAIRING_CODE_AGE_MS).toBe(24 * HOUR);
+  });
+});
+
+describe('assessKeptPairingCode', () => {
+  const at = (iso: string) => ({ now: Date.parse(iso), file });
+
+  it('has nothing to say about a node with no kept code, or one kept for another org', () => {
+    expect(assessKeptPairingCode('10.0.0.1', 'org-1', at('2026-09-19T18:00:00Z'))).toEqual({ kind: 'none' });
+    savePendingPairingCode(kept({ orgId: 'org-2' }), file);
+    expect(assessKeptPairingCode('10.0.0.1', 'org-1', at('2026-09-19T18:00:00Z'))).toEqual({ kind: 'none' });
+  });
+
+  it('reuses a code inside the limit and reports its age', () => {
+    savePendingPairingCode(kept(), file);
+    expect(assessKeptPairingCode('10.0.0.1', 'org-1', at('2026-09-19T19:49:00Z'))).toMatchObject({
+      kind: 'reuse',
+      ageMs: 150 * 60_000,
+      pending: { pairingCode: 'OLD111' },
+    });
+  });
+
+  it('calls a code past the limit too old — core-6 on 2026-09-26, three days after its mint', () => {
+    savePendingPairingCode(kept({ ip: '10.0.0.6', name: 'core-6', slug: 'core-6', mintedAt: '2026-09-23T03:14:00Z' }), file);
+    expect(assessKeptPairingCode('10.0.0.6', 'org-1', at('2026-09-23T03:14:00Z')).kind).toBe('reuse');
+    expect(assessKeptPairingCode('10.0.0.6', 'org-1', at('2026-09-24T03:14:00Z')).kind).toBe('reuse');
+    expect(assessKeptPairingCode('10.0.0.6', 'org-1', at('2026-09-24T03:15:00Z')).kind).toBe('too-old');
+    expect(assessKeptPairingCode('10.0.0.6', 'org-1', at('2026-09-26T06:14:00Z'))).toMatchObject({ kind: 'too-old', ageMs: 75 * 60 * 60_000 });
+  });
+
+  it('names a later re-register ahead of age, since that reason comes with the code to send instead', () => {
+    // A re-register the roster could not place, then an older code reappearing — the shape
+    // `findInvalidatingReRegistration` exists for. Six days on it is also too old; the re-register wins.
+    reRegister({ roster: [] });
+    savePendingPairingCode(kept(), file);
+    expect(assessKeptPairingCode('10.0.0.1', 'org-1', at('2026-09-26T00:00:00Z'))).toMatchObject({
+      kind: 'invalidated',
+      reRegistered: { at: '2026-09-20T18:02:00.000Z' },
+    });
+  });
+
+  it('changes nothing in the store', () => {
+    savePendingPairingCode(kept(), file);
+    const before = readFileSync(file, 'utf8');
+    assessKeptPairingCode('10.0.0.1', 'org-1', at('2026-09-26T00:00:00Z'));
+    expect(readFileSync(file, 'utf8')).toBe(before);
+  });
+});
+
+describe('forgetReleasedDevice', () => {
+  it("drops the released device's codes and re-register record, and nothing of any other device or org", () => {
+    reRegister({ roster: [] });
+    savePendingPairingCode(kept(), file);
+    savePendingPairingCode(kept({ ip: '10.0.0.7', name: 'core-7', slug: 'core-7', deviceId: 'd7', pairingCode: 'KEEP77' }), file);
+    savePendingPairingCode(kept({ ip: '10.0.0.9', orgId: 'org-2', pairingCode: 'OTHER9' }), file);
+
+    const forgotten = forgetReleasedDevice(device, 'org-1', file);
+
+    expect(forgotten.map((c) => c.pairingCode)).toEqual(['OLD111']);
+    expect(Object.keys(store().codes).sort()).toEqual(['10.0.0.7', '10.0.0.9']);
+    expect(store().reRegistered).toEqual({});
+    // The fresh device minted after the release is not explained by a re-register of the old row.
+    expect(findReRegistration('core-1', 'org-1', file)).toBeUndefined();
+  });
+
+  it('matches by slug when Portal renamed the device, and leaves the file alone when nothing matches', () => {
+    savePendingPairingCode(kept({ name: 'Core 1', slug: 'core-1', deviceId: 'other-id' }), file);
+    expect(forgetReleasedDevice({ id: 'd-new', name: 'core-1' }, 'org-1', file)).toHaveLength(1);
+    expect(store().codes).toEqual({});
+    expect(forgetReleasedDevice({ id: 'd-new', name: 'core-1' }, 'org-1', join(dir, 'never-written.json'))).toEqual([]);
   });
 });

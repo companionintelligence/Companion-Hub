@@ -284,6 +284,29 @@ export function manifestDefaultsEdgeAuthOn(info: { exposable?: boolean; hub_inte
   return Boolean(info.exposable) && info.hub_integration?.edge_auth?.default === true;
 }
 
+/** The only interface a {@link hostPortStaysOnLoopback} app's host port is published on. */
+export const LOOPBACK_HOST_PORT_INTERFACE = '127.0.0.1';
+
+/**
+ * Whether an app's host port is published on loopback only, instead of on every interface.
+ *
+ * A port published with no interface binds 0.0.0.0 and [::], so it answers the LAN and the tailnet
+ * with no Hub login in front of it: forward-auth guards the Traefik routers, not the port. Most apps
+ * want that "Local network" route. Two kinds must not get it:
+ *
+ * - `edge_auth.default: true`: the app has no login of its own (OpenCode, Aider, Pi Web).
+ * - `mcp_client: true`: the app drives an agent holding a Hub-minted MCP key (CI-OpenClaw,
+ *   CI-Hermes). OpenClaw's wrapper also hands its gateway token to any caller of `/`.
+ *
+ * Reach these apps off-box through Private VPN or Public web; nothing in the Hub dials the host port.
+ * The stored `enableAuth` is no opt-out: the column is `NOT NULL DEFAULT false`, so an install that
+ * never decided reads like an operator who turned auth off. Honored from any store, like
+ * `edge_auth.default`, because it can only narrow reach.
+ */
+export function hostPortStaysOnLoopback(info: { exposable?: boolean; hub_integration?: HubIntegration }): boolean {
+  return manifestDefaultsEdgeAuthOn(info) || info.hub_integration?.mcp_client === true;
+}
+
 /**
  * How a consumer wants the brokered Companion Memory address shaped. Derived from the
  * schema rather than restated, so a new style cannot be added in one place and silently

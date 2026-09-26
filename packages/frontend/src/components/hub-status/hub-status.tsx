@@ -1000,7 +1000,7 @@ function StartupScreen({
       <div className="flex flex-col gap-5 tight-window:gap-4 compact-window:gap-3.5">
         <div className="flex flex-col items-center gap-1.5 text-center">
           <h2 className="text-xl font-semibold leading-[1.3] text-foreground">{title}</h2>
-          <p role="status" className="max-w-[560px] text-balance text-sm leading-[1.55] text-muted-foreground compact-window:max-w-[600px]">
+          <p role="status" className="w-full text-sm leading-[1.55] text-muted-foreground">
             {line}
           </p>
         </div>

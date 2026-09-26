@@ -19,11 +19,13 @@ import {
   selectCustomDomain,
 } from '@ci-hub/common/types';
 import type { TunnelCustomDomain } from '@ci-hub/common/types';
+import type { CustomDomainApplyReport } from '../cloudflare/cloudflare-client.service';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { EnvUtils } from '../env/env.utils';
 import {
   canServeOnCustomDomain,
+  publicRoutingSnapshotOf,
   publishesCloudflarePublicRoute,
   resolveRoutingSubdomain,
   type AppPublicRoutingSnapshot,
@@ -38,6 +40,7 @@ import { resolveHubLocalDomainRoot, resolveHubPublicDomainRoot } from '@/common/
 import { isPrivateVpnEnabled } from '@/common/helpers/private-vpn';
 import { hasPairingAppCheck, hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 import { customDomainAuditLine } from './custom-domain-audit';
+import { moveStoredPublicDomain, readServedHostname, resolveMovedPublicDomainRoot } from './public-domain-move';
 import { TailscaleServeOwnership } from './tailscale-serve-ownership';
 
 /** Options shared by every entry point into an exposure sync. */
@@ -70,6 +73,28 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
 
 /** Identifies an app whose public DNS sync failed and the reason for its toast. */
 type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
+
+type AppRow = Awaited<ReturnType<AppsRepository['getApps']>>[number];
+
+/**
+ * An app Companion Portal published on another domain than the one it asked
+ * for, because it cannot write DNS there (CI-Portal#841). See
+ * {@link ExposureSyncService.adoptServedPublicDomains}.
+ */
+type PublicDomainMove = {
+  appUrn: AppUrn;
+  app: AppRow;
+  /** The hostname this Hub composes today, which nothing serves. */
+  previousHostname: string;
+  previousDomain: string;
+  /** Where CI-Cloud serves the app. */
+  servedHostname: string;
+  /** The public root that makes the Hub compose `servedHostname`. */
+  publicDomain: string;
+};
+
+/** Why an app is recreated for its public identity; see `restartRevertedApps`. */
+type PublicIdentityRestart = 'revert' | 'apply' | 'public-domain-move';
 
 /**
  * Refusals that come from the user's own plan or naming. The Portal refuses every
@@ -254,6 +279,14 @@ export class ExposureSyncService {
    * hostname the Hub has stopped serving.
    */
   private readonly failedCustomDomainReverts = new Set<AppUrn>();
+
+  /**
+   * Public-domain moves whose restart could not be dispatched, to retry on a
+   * later pass — for the same reason as {@link failedCustomDomainReverts}: the
+   * row already names the served domain, so CI-Cloud stops reporting the move
+   * and nothing else would ever notice the container still carries the old one.
+   */
+  private readonly failedPublicDomainMoveRestarts = new Set<AppUrn>();
 
   /** Cloudflare passes currently running. See {@link isCloudflareSyncInFlight}. */
   private cloudflareSyncDepth = 0;
@@ -742,7 +775,10 @@ export class ExposureSyncService {
         if (exclude.has(appUrn)) {
           return false;
         }
-        return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
+        return (
+          publishesCloudflarePublicRoute(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot)) &&
+          ['running', 'starting', 'restarting'].includes(app.status)
+        );
       });
 
       /*
@@ -773,7 +809,6 @@ export class ExposureSyncService {
               orgSlug: orgInfo.slug,
               localDomain,
             }),
-            customDomainPendingApply: await this.customDomainPendingApply(createAppUrn(app.appName, app.appStoreSlug), app),
           };
         }),
       );
@@ -803,17 +838,9 @@ export class ExposureSyncService {
         });
       }
 
-      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
-
-      const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
-
-      // The partial-failure branch maps app names to database rows, exposed entries,
-      // and failure reasons. Index once to avoid a full scan for every failure on
-      // Hubs that run many apps.
-      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
-
       // Derive each public record name from its database row in one place so the
-      // failure toasts, the failure log, and the custom-domain passes remain consistent.
+      // failure toasts, the failure log, and the custom-domain passes remain consistent —
+      // and the report below names each binding by the same hostname.
       const toPublicHostname = (dbApp: AppFromDb): string =>
         buildPublicHostname({
           appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
@@ -822,6 +849,22 @@ export class ExposureSyncService {
           publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
         });
 
+      /*
+       * Built from EVERY app row, not from `syncedDbApps`: the publish payload
+       * leaves stopped apps out on purpose, and a stopped app is exactly the one
+       * Portal must not offer to restart. See `CustomDomainApplyReport`.
+       */
+      const customDomainApps = await this.buildCustomDomainApplyReport(apps, toPublicHostname);
+
+      const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined, customDomainApps);
+
+      const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
+
+      // The partial-failure branch maps app names to database rows, exposed entries,
+      // and failure reasons. Index once to avoid a full scan for every failure on
+      // Hubs that run many apps.
+      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
+
       const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
         appUrn: createAppUrn(dbApp.appName, dbApp.appStoreSlug),
         hostname: toPublicHostname(dbApp),
@@ -829,6 +872,17 @@ export class ExposureSyncService {
 
       /** Apps this sync refused for a reason that stands until someone acts. */
       const standingRefusals = new Map<AppUrn, PublicDnsFailureReason>();
+
+      /*
+       * Apps CI-Cloud did publish, only on its own domain instead of the one they
+       * asked for (CI-Portal#841). They are served, so they are not failures here:
+       * "couldn't create a public address" would be false, and there is nothing
+       * for Sentry. They are adopted below, once this sync's reporting is done.
+       */
+      const publicDomainMoves = result.ok
+        ? this.collectPublicDomainMoves({ result, syncedDbApps, toPublicHostname, defaultPublicDomain })
+        : new Map<string, PublicDomainMove>();
+      const refusedNames = result.failed.filter((name) => !publicDomainMoves.has(name));
 
       if (!result.ok) {
         // The Portal gave no answer about any app: it could not be reached, timed
@@ -843,14 +897,14 @@ export class ExposureSyncService {
           }`,
           appEntries.map((entry) => entry.name),
         );
-      } else if (result.failed.length > 0) {
+      } else if (refusedNames.length > 0) {
         // Map Companion Portal's failed app names to URNs and hostnames so the
         // frontend can raise per-app toasts. The privileged Hub entry is absent
         // from `appEntries`, so unmatched names are skipped.
         const exposedByName = indexByFirst(appEntries, (entry) => entry.name);
         const failureByApp = indexByFirst(result.failures, (failure) => failure.app);
 
-        const toastTargets = result.failed
+        const toastTargets = refusedNames
           .map((name): PublicDnsToastTarget | null => {
             const dbApp = dbAppByName.get(name);
             if (!dbApp || !exposedByName.has(name)) {
@@ -877,7 +931,7 @@ export class ExposureSyncService {
         // database row and the privileged Hub entry, which `appEntries` excludes.
         // Listing only mapped hostnames would make the log count more failures
         // than it names and hide the entries operators cannot identify elsewhere.
-        const failedLabels = result.failed.map((name) => {
+        const failedLabels = refusedNames.map((name) => {
           const dbApp = dbAppByName.get(name);
 
           return dbApp ? toPublicHostname(dbApp) : name;
@@ -886,12 +940,14 @@ export class ExposureSyncService {
         // A plan limit or a duplicate subdomain is the user's to clear, not a Hub
         // fault, so a sync refused only for those reports nothing to Sentry. Any
         // other failure in the same sync, including one with no reason, still does.
-        const onlyUserActionRefusals = result.failed.every((name) => isUserActionRefusal(failureByApp.get(name)?.reason));
+        const onlyUserActionRefusals = refusedNames.every((name) => isUserActionRefusal(failureByApp.get(name)?.reason));
 
         this.surfacePublicDnsFailure(
-          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${failedLabels.join(', ')}. ` +
-            `These apps will not resolve at their public domain — ${describePublicDnsFailures(result.failures)}`,
-          result.failed,
+          `[Cloudflare] Public DNS records were NOT created for ${refusedNames.length} app(s): ${failedLabels.join(', ')}. ` +
+            `These apps will not resolve at their public domain — ${describePublicDnsFailures(
+              result.failures.filter((failure) => !publicDomainMoves.has(failure.app)),
+            )}`,
+          refusedNames,
           toastTargets,
           { reportError: !onlyUserActionRefusals },
         );
@@ -902,12 +958,15 @@ export class ExposureSyncService {
           `[Cloudflare] Public hostnames synced: ${appEntries
             .map(
               (entry) =>
-                `${entry.name} -> ${buildPublicHostname({
-                  appSubdomain: entry.subdomain,
-                  hubSubdomain: orgInfo.hubSubdomain,
-                  orgSlug: orgInfo.slug,
-                  publicDomainRoot: entry.publicDomain || defaultPublicDomain,
-                })}`,
+                `${entry.name} -> ${
+                  publicDomainMoves.get(entry.name)?.servedHostname ??
+                  buildPublicHostname({
+                    appSubdomain: entry.subdomain,
+                    hubSubdomain: orgInfo.hubSubdomain,
+                    orgSlug: orgInfo.slug,
+                    publicDomainRoot: entry.publicDomain || defaultPublicDomain,
+                  })
+                }`,
             )
             .join(', ')}`,
         );
@@ -931,14 +990,31 @@ export class ExposureSyncService {
         // Only a sync the Portal answered says which apps it stopped refusing.
         this.forgetSettledRefusals(standingRefusals);
 
+        const skipAutoRestartAppUrns = new Set(options?.skipAutoRestartAppUrns ?? []);
+
+        /*
+         * Adopt moves BEFORE reconciling custom domains. CI-Cloud delivers a moved
+         * app's custom domains against the hostname it serves, and the platform
+         * hostname is the reconcile's join key: on the old row the domain would
+         * read as lost and be unbound, then bound again on the next pass.
+         */
+        let moved: { adopted: AppUrn[]; restart: AppUrn[] } = { adopted: [], restart: [] };
+        try {
+          moved = await this.adoptServedPublicDomains(publicDomainMoves, skipAutoRestartAppUrns);
+        } catch (error) {
+          this.logger.error(`[Cloudflare] Public-domain move failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+
         let deferredRevertAppUrns: AppUrn[] = [];
         try {
           deferredRevertAppUrns = await this.reconcileCustomDomains({
-            apps,
+            // Re-read only when a row moved, so the join sees the served hostname.
+            apps: moved.adopted.length > 0 ? await this.appRepository.getApps() : apps,
             syncedAppUrns,
             customDomains: result.customDomains,
             toPublicHostname,
-            skipAutoRestartAppUrns: new Set(options?.skipAutoRestartAppUrns ?? []),
+            // The move restarts these below, once, after their custom domains settle.
+            skipAutoRestartAppUrns: new Set([...skipAutoRestartAppUrns, ...moved.adopted]),
           });
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -968,6 +1044,13 @@ export class ExposureSyncService {
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain bind pass failed: ${error instanceof Error ? error.message : String(error)}`);
         }
+
+        // Last, so one recreation carries both the new domain and anything the
+        // passes above wrote for it. Earlier dispatches that failed go again too.
+        const retries = [...this.failedPublicDomainMoveRestarts].filter((appUrn) => !moved.restart.includes(appUrn));
+        if (moved.restart.length > 0 || retries.length > 0) {
+          await this.restartRevertedApps([...moved.restart, ...retries], 'public-domain-move');
+        }
       }
     } catch (error) {
       if (error instanceof Error) {
@@ -978,6 +1061,154 @@ export class ExposureSyncService {
     } finally {
       this.cloudflareSyncDepth -= 1;
     }
+  }
+
+  /**
+   * The apps this sync's answer says CI-Cloud published on another domain than
+   * the one they asked for, keyed by the name the answer uses.
+   *
+   * Taken from `failed`, which stays the source of truth for which apps an entry
+   * is about, and matched only to an app this payload asked about under a name
+   * no other synced app shares: the answer names apps by `appName` alone, and a
+   * move rewrites a row, so an entry two apps could claim moves neither.
+   */
+  private collectPublicDomainMoves(params: {
+    result: { failed: string[]; failures: PublicDnsFailure[] };
+    syncedDbApps: AppRow[];
+    toPublicHostname: (app: AppRow) => string;
+    defaultPublicDomain: string;
+  }): Map<string, PublicDomainMove> {
+    const moves = new Map<string, PublicDomainMove>();
+    const failureByApp = indexByFirst(params.result.failures, (failure) => failure.app);
+
+    for (const name of new Set(params.result.failed)) {
+      const failure = failureByApp.get(name);
+      const servedHostname = failure ? readServedHostname(failure) : null;
+
+      if (!servedHostname) {
+        continue;
+      }
+
+      const candidates = params.syncedDbApps.filter((candidate) => candidate.appName === name);
+      const app = candidates.length === 1 ? candidates[0] : undefined;
+
+      if (!app) {
+        this.logger.warn(
+          `[Cloudflare] CI-Cloud serves ${name} at ${servedHostname}, but ${candidates.length === 0 ? 'no app' : 'more than one app'} ` +
+            'in this sync goes by that name, so no public domain was changed.',
+        );
+        continue;
+      }
+
+      const previousHostname = params.toPublicHostname(app);
+      const previousDomain = app.publicDomain?.trim() || params.defaultPublicDomain;
+      const publicDomain = resolveMovedPublicDomainRoot({ servedHostname, composedHostname: previousHostname, composedRoot: previousDomain });
+
+      if (!publicDomain) {
+        if (normalizeHostname(servedHostname) !== normalizeHostname(previousHostname)) {
+          this.logger.warn(
+            `[Cloudflare] CI-Cloud serves ${name} at ${servedHostname}, which this Hub cannot compose from any public domain ` +
+              `(it composes ${previousHostname}), so the app keeps advertising a hostname nothing serves. Check its subdomain.`,
+          );
+        }
+        continue;
+      }
+
+      moves.set(name, {
+        appUrn: createAppUrn(app.appName, app.appStoreSlug),
+        app,
+        previousHostname,
+        previousDomain,
+        servedHostname,
+        publicDomain,
+      });
+    }
+
+    return moves;
+  }
+
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * FOLLOW AN APP TO WHERE CI-CLOUD ACTUALLY PUBLISHED IT
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * CI-Cloud cannot write DNS in every zone it offers — production can see
+   * `companionintelligence.com` and not write it — and since CI-Portal#841 it
+   * publishes such an app on its own domain instead and says so in
+   * `zone_unreachable`. The Hub composes every public URL itself, from the
+   * domain it ASKED for, so without this the app's env (`APP_PUBLIC_URL`,
+   * `APP_BASE_URL`, `APP_BASE_HOST`, `APP_BASE_WSS_ORIGIN`), its
+   * `X-Forwarded-Host`, and the Open link all keep naming a hostname that never
+   * resolved.
+   *
+   * ⚠ ADOPTED AS THE APP'S PUBLIC DOMAIN, on the row and in the saved form, not
+   * kept as an override beside it. Every surface already composes from that
+   * domain, so they all follow; and the next sync asks for what CI-Cloud serves,
+   * so the move stops being reported instead of repeating on every pass. The
+   * domain the app asked for is not coming back: CI-Cloud has already released
+   * the name there.
+   *
+   * ⚠ AND THE APP IS RECREATED, like a custom-domain revert and for the same
+   * reason: its env and its Traefik labels are fixed when the container is
+   * created, so until then it redirects every visitor — LAN ones included — to
+   * the dead name. A lifecycle command already in flight has regenerated the env
+   * from the old row, so that app is left for the next sync, which reports the
+   * move again.
+   *
+   * @returns every app moved, and the running ones the caller must restart.
+   */
+  private async adoptServedPublicDomains(
+    moves: ReadonlyMap<string, PublicDomainMove>,
+    skipAutoRestartAppUrns: ReadonlySet<AppUrn>,
+  ): Promise<{ adopted: AppUrn[]; restart: AppUrn[] }> {
+    const adopted: AppUrn[] = [];
+    const restart: AppUrn[] = [];
+
+    for (const move of moves.values()) {
+      const { appUrn, app } = move;
+
+      if (app.status === 'starting' || app.status === 'restarting') {
+        this.logger.debug(`[Cloudflare] Deferred moving ${appUrn} to ${move.publicDomain}: a lifecycle command is running for it`);
+        continue;
+      }
+
+      let persisted: boolean;
+      try {
+        persisted = await this.appRepository.updateAppByIdIfStatus(app.id, app.status, {
+          publicDomain: move.publicDomain,
+          config: moveStoredPublicDomain(app.config, {
+            publicDomain: move.publicDomain,
+            fromUrl: `https://${move.previousHostname}`,
+            toUrl: `https://${move.servedHostname}`,
+          }),
+          pendingRestart: true,
+        });
+      } catch (error) {
+        this.logger.error(`[Cloudflare] Failed to move ${appUrn} to ${move.publicDomain}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+
+      if (!persisted) {
+        this.logger.debug(`[Cloudflare] Deferred moving ${appUrn} to ${move.publicDomain}: a lifecycle command claimed it during this sync`);
+        continue;
+      }
+
+      adopted.push(appUrn);
+      const restarting = app.status === 'running' && !skipAutoRestartAppUrns.has(appUrn);
+      if (restarting) {
+        restart.push(appUrn);
+      }
+
+      this.logger.warn(
+        `[Cloudflare] CI-Cloud cannot publish ${appUrn} on ${move.previousDomain} in this environment, so ${move.previousHostname} never resolved; ` +
+          `it serves the app at ${move.servedHostname}. Moved the app to ${move.publicDomain}` +
+          (restarting ? ' and restarting it so its env follows.' : '; it picks that up when it next starts.'),
+      );
+      // Omit the third `appUrn` argument: the frontend opens only `/api/sse/app`.
+      this.sseService.emit('app', { event: 'public_domain_changed', appUrn, hostname: move.servedHostname });
+    }
+
+    return { adopted, restart };
   }
 
   /**
@@ -1612,6 +1843,71 @@ export class ExposureSyncService {
     return envHostname !== customDomain;
   }
 
+  /**
+   * One entry per app row holding a custom domain, whatever the app's status —
+   * see `CustomDomainApplyReport`.
+   *
+   * ⚠ `pending-restart` MEANS "A CONFIRMATION WOULD BE CARRIED OUT". Portal offers a
+   * restart for exactly that state, so it is decided with the same checks the apply
+   * gate in `reconcileCustomDomains` makes: running, `pendingRestart` still set, the
+   * env not yet on the domain, and a platform hostname no other app answers on.
+   * Reporting it more widely than the gate acts put a button in front of people
+   * that accepted the click and then did nothing, until the click expired. Running
+   * but failing one of those checks is `blocked`: no button, "check your Hub".
+   *
+   * Only apps that can serve on a custom domain at all are reported. For any other
+   * the binding is being dropped by this very pass, and Portal should not be told
+   * about a binding that is going away.
+   *
+   * Never throws: this rides along with a sync that must keep working. On any
+   * failure it returns `undefined`, which the client omits from the payload so
+   * Portal keeps its previous reading — "no news" rather than "nothing is bound".
+   *
+   * One sync late for a domain bound DURING this pass: the report is built before
+   * the request, and the binding is written by `reconcileCustomDomains` after the
+   * response. The next sync reports it. Portal reads the gap as "waiting for your
+   * Hub" rather than guessing.
+   */
+  private async buildCustomDomainApplyReport(
+    apps: Awaited<ReturnType<AppsRepository['getApps']>>,
+    toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string,
+  ): Promise<CustomDomainApplyReport[] | undefined> {
+    try {
+      const servable = apps.filter((app) => canServeOnCustomDomain(app as AppPublicRoutingSnapshot));
+      // The same set the apply gate refuses — see `collectContestedCustomDomainTargets`.
+      const contestedTargets = collectContestedCustomDomainTargets(servable.map((app) => normalizeHostname(toPublicHostname(app))));
+      const report: CustomDomainApplyReport[] = [];
+
+      for (const app of servable) {
+        const domain = normalizeStoredHostname(app.customDomain);
+        if (domain === null) {
+          continue;
+        }
+
+        const targetHostname = normalizeHostname(toPublicHostname(app));
+        const envHostname = await this.readEnvPublicHostname(createAppUrn(app.appName, app.appStoreSlug));
+
+        let state: CustomDomainApplyReport['state'];
+        if (envHostname === domain) {
+          state = 'applied';
+        } else if (app.status === 'running') {
+          state = app.pendingRestart && !contestedTargets.has(targetHostname) ? 'pending-restart' : 'blocked';
+        } else {
+          // Stopped, or coming up now: starting and restarting both regenerate the
+          // env on the way up, so the domain arrives without anyone confirming.
+          state = 'pending-start';
+        }
+
+        report.push({ domain, targetHostname, state, autoRestart: app.autoRestartOnDomainChange === true });
+      }
+
+      return report;
+    } catch (error) {
+      this.logger.debug(`[Cloudflare] Could not build the custom-domain report: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
   /** `APP_PUBLIC_HOSTNAME` as the app's compose env currently holds it, or `null`. */
   private async readEnvPublicHostname(appUrn: AppUrn): Promise<string | null> {
     try {
@@ -1721,7 +2017,13 @@ export class ExposureSyncService {
     );
 
     /**
-     * Whether an apply was requested, by the customer hostname.
+     * Whether a restart was confirmed, by BINDING — the customer hostname AND the
+     * platform hostname it was delivered against.
+     *
+     * By domain alone, a confirmation given for one app would restart whichever app
+     * holds the domain when it arrives: the domain moved in between, and the new app
+     * went down at a moment nobody picked. Portal pins the confirmation to the
+     * binding it was given for; this keeps the Hub to the same.
      *
      * OR-ed rather than last-write-wins. `collectAmbiguousCustomDomains` only
      * catches a domain delivered against *different* targets; two rows for the
@@ -1729,10 +2031,11 @@ export class ExposureSyncService {
      * would silently keep the last — dropping the operator's "yes, start serving
      * it" whenever it arrived on the first of them.
      */
-    const applyRequestedByDomain = new Map<string, boolean>();
+    const bindingKey = (domain: string, target: string) => `${domain}\n${target}`;
+    const applyRequestedByBinding = new Map<string, boolean>();
     for (const entry of params.customDomains) {
-      const domain = normalizeHostname(entry.domain);
-      applyRequestedByDomain.set(domain, (applyRequestedByDomain.get(domain) ?? false) || entry.applyRequested === true);
+      const key = bindingKey(normalizeHostname(entry.domain), normalizeHostname(entry.targetHostname));
+      applyRequestedByBinding.set(key, (applyRequestedByBinding.get(key) ?? false) || entry.applyRequested === true);
     }
 
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
@@ -1878,7 +2181,13 @@ export class ExposureSyncService {
          * row since the snapshot was taken before a Portal round trip that can take
          * seconds. The dispatcher re-checks the status before it restarts anything.
          */
-        const applyRequested = current !== null && applyRequestedByDomain.get(current) === true;
+        /*
+         * A person confirmed the restart in Portal, or this app is one somebody set
+         * to restart on its own. Nothing else moves a running container here: the
+         * default is to wait to be asked.
+         */
+        const confirmed = current !== null && applyRequestedByBinding.get(bindingKey(current, target)) === true;
+        const applyRequested = current !== null && (confirmed || app.autoRestartOnDomainChange === true);
 
         if (
           applyRequested &&
@@ -1886,7 +2195,8 @@ export class ExposureSyncService {
           !params.skipAutoRestartAppUrns.has(appUrn) &&
           (await this.customDomainPendingApply(appUrn, app))
         ) {
-          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${current}; restarting it to apply that binding.`);
+          const why = confirmed ? 'a restart was confirmed' : 'it is set to restart on its own';
+          this.logger.info(`[Cloudflare] ${appUrn} is not serving ${current} yet and ${why}; restarting it to apply that binding.`);
           applyRequestedAppUrns.push(appUrn);
         }
 
@@ -2009,10 +2319,10 @@ export class ExposureSyncService {
       }
 
       /*
-       * A request can arrive on the SAME sync that first delivers the binding —
-       * in fact that is the ordinary case, because the operator answers in the
-       * connect flow and Companion Portal carries the answer as soon as the
-       * domain is ready. Handling it only on a later pass would leave the
+       * A restart for this binding can already be owed on the sync that binds it:
+       * the app is set to restart on its own, or a confirmation Companion Portal
+       * holds for exactly this binding reaches a Hub that lost the binding locally
+       * and is binding it again. Handling it only on a later pass would leave the
        * customer's domain dark for another poll interval for no reason.
        *
        * No "still not serving" check here: the binding is being written in this
@@ -2027,9 +2337,10 @@ export class ExposureSyncService {
        * the dispatcher below drops an app that is already restarting as a revert.
        */
       if (next !== null && !deferredRevert.has(appUrn) && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn)) {
-        const requestedForNext = applyRequestedByDomain.get(normalizeHostname(next)) === true;
-        if (requestedForNext) {
-          this.logger.info(`[Cloudflare] ${appUrn} was asked to start serving ${next}; restarting it to apply that binding.`);
+        const confirmedForNext = applyRequestedByBinding.get(bindingKey(normalizeHostname(next), target)) === true;
+        if (confirmedForNext || app.autoRestartOnDomainChange === true) {
+          const why = confirmedForNext ? 'a restart was confirmed' : 'it is set to restart on its own';
+          this.logger.info(`[Cloudflare] ${appUrn} is now bound to ${next} and ${why}; restarting it to apply that binding.`);
           applyRequestedAppUrns.push(appUrn);
         }
       }
@@ -2151,7 +2462,8 @@ export class ExposureSyncService {
 
   /**
    * Recreates apps whose public identity changed under them — a custom domain
-   * removed (`revert`) or one the operator asked to start serving (`apply`).
+   * removed (`revert`), one the operator asked to start serving (`apply`), or a
+   * public domain CI-Cloud moved the app off (`public-domain-move`).
    *
    * A restart is the whole repair: it regenerates `app.env`, rebuilds the Compose
    * file — and with it the Traefik `X-Forwarded-Host` middleware, which is
@@ -2164,17 +2476,20 @@ export class ExposureSyncService {
    * not hold the sync open, and the app event queue serializes the restart
    * against any lifecycle command that claims the app first.
    *
-   * ⚠ ONLY A REVERT IS REMEMBERED ON FAILURE. Its row was settled before the
-   * dispatch, so every later reconcile computes `next === current` and returns
-   * early — without the retry list nothing would notice the app again, and it
-   * would sit forwarding a hostname the Hub has stopped serving. An apply is the
-   * opposite: the next pass re-derives it from `applyRequested`, the env and the
-   * app's status, so remembering it would re-dispatch a restart with none of
-   * those conditions re-checked — after the operator withdrew the request, or
-   * onto an app they have since stopped. A cooldown-skipped REVERT is remembered
-   * for the same reason a failed one is: nothing else will ever look at it.
+   * ⚠ ONLY A REVERT OR A MOVE IS REMEMBERED ON FAILURE. Its row was settled
+   * before the dispatch, so no later pass derives it again — without the retry
+   * list nothing would notice the app again, and it would sit forwarding a
+   * hostname nothing serves. An apply is the opposite: the next pass re-derives
+   * it from `applyRequested`, the env and the app's status, so remembering it
+   * would re-dispatch a restart with none of those conditions re-checked — after
+   * the operator withdrew the request, or onto an app they have since stopped. A
+   * cooldown-skipped revert or move is remembered for the same reason a failed
+   * one is: nothing else will ever look at it.
    */
-  private async restartRevertedApps(appUrns: AppUrn[], direction: 'revert' | 'apply'): Promise<void> {
+  private async restartRevertedApps(appUrns: AppUrn[], direction: PublicIdentityRestart): Promise<void> {
+    const retries =
+      direction === 'revert' ? this.failedCustomDomainReverts : direction === 'public-domain-move' ? this.failedPublicDomainMoveRestarts : undefined;
+
     /*
      * Imported dynamically. `AppLifecycleService` injects this service, so a
      * static import would close the cycle and leave this module's DI tokens
@@ -2195,14 +2510,20 @@ export class ExposureSyncService {
     }
 
     if (!lifecycleService) {
+      for (const appUrn of appUrns) {
+        retries?.add(appUrn);
+      }
       if (direction === 'revert') {
-        for (const appUrn of appUrns) {
-          this.failedCustomDomainReverts.add(appUrn);
-        }
         this.logger.warn(
           `[Cloudflare] Could not revert ${appUrns.join(', ')} to the platform hostname automatically. ` +
             'Those apps are still forwarding a hostname that no longer resolves — the next sync will try again, ' +
             'or run `cihub public-web repair` to apply it now.',
+        );
+      } else if (direction === 'public-domain-move') {
+        this.logger.warn(
+          `[Cloudflare] Could not restart ${appUrns.join(', ')} onto the public domain CI-Cloud serves them on. ` +
+            'Those apps are still forwarding a hostname that never resolved — the next sync will try again, ' +
+            'or restart the app to apply it now.',
         );
       } else {
         this.logger.warn(
@@ -2222,29 +2543,34 @@ export class ExposureSyncService {
           `[Cloudflare] ${appUrn} changed public hostname again within the restart cooldown — leaving it alone. ` +
             'Its restart badge is still raised, so it can be applied by hand.',
         );
-        // A revert has nothing else watching it, so a cooldown skip would strand
-        // the app forwarding a hostname that no longer resolves. Queue the retry.
-        if (direction === 'revert') {
-          this.failedCustomDomainReverts.add(appUrn);
-        }
+        // A revert or a move has nothing else watching it, so a cooldown skip
+        // would strand the app forwarding a dead hostname. Queue the retry.
+        retries?.add(appUrn);
         continue;
       }
 
       /*
-       * ⚠ APPLIES ONLY. The status an apply was decided on is a snapshot taken
+       * ⚠ APPLIES AND MOVES. The status an apply was decided on is a snapshot taken
        * before a Portal round trip that can take seconds, and — unlike the bind
        * branch — nothing on that path performs an `updateAppByIdIfStatus` that
        * would fail if a command claimed the app meanwhile. `restartApp` has no
        * status guard of its own and, as a `system` actor, skips the entitlement
        * gate, so without this an app the operator stopped mid-sync is brought back
-       * up. A revert is not re-checked: its row was settled by a compare-and-set in
-       * the same iteration, and an app still injecting a dead `X-Forwarded-Host`
-       * has to be recreated whatever it is doing now.
+       * up. A move is re-checked too, and dropped rather than retried: an app that
+       * is not running carries no env, and whatever starts it next generates one
+       * from the moved row. A revert is not re-checked: its row was settled by a
+       * compare-and-set in the same iteration, and an app still injecting a dead
+       * `X-Forwarded-Host` has to be recreated whatever it is doing now.
        */
-      if (direction === 'apply') {
+      if (direction !== 'revert') {
         const row = await this.appRepository.getAppByUrn(appUrn).catch(() => null);
         if (row && row.status !== 'running') {
-          this.logger.debug(`[Cloudflare] Not applying ${appUrn}'s custom domain: it is ${row.status}, not running.`);
+          this.logger.debug(
+            direction === 'apply'
+              ? `[Cloudflare] Not applying ${appUrn}'s custom domain: it is ${row.status}, not running.`
+              : `[Cloudflare] Not restarting ${appUrn} onto its moved public domain: it is ${row.status}, not running, and picks it up when it next starts.`,
+          );
+          retries?.delete(appUrn);
           continue;
         }
       }
@@ -2255,23 +2581,32 @@ export class ExposureSyncService {
         await lifecycleService.restartApp({
           appUrn,
           skipPull: true,
-          actor: { kind: 'system', reason: direction === 'revert' ? 'custom-domain-revert' : 'custom-domain-apply' },
+          actor: {
+            kind: 'system',
+            reason: direction === 'apply' ? 'custom-domain-apply' : direction === 'revert' ? 'custom-domain-revert' : 'public-domain-move',
+          },
         });
         // Recorded only once the command is queued. A dispatch that threw
-        // restarted nothing, so it must not spend the cooldown.
+        // restarted nothing, so it must not spend the cooldown. Any restart
+        // regenerates the env from the current row, so it settles both kinds of
+        // owed restart at once.
         this.lastCustomDomainRestartAt.set(appUrn, now);
         this.failedCustomDomainReverts.delete(appUrn);
+        this.failedPublicDomainMoveRestarts.delete(appUrn);
       } catch (error) {
+        // Retry a revert or a move on the next pass. Its row was settled before
+        // this dispatch, so no later pass would ever look at this app again.
+        retries?.add(appUrn);
+        const cause = error instanceof Error ? error.message : String(error);
         if (direction === 'revert') {
-          // Retry on the next pass. The row was settled before this dispatch, so
-          // no later reconcile would ever look at this app again.
-          this.failedCustomDomainReverts.add(appUrn);
+          this.logger.error(`[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${cause}. Retrying on the next sync.`);
+        } else if (direction === 'public-domain-move') {
           this.logger.error(
-            `[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${error instanceof Error ? error.message : String(error)}. Retrying on the next sync.`,
+            `[Cloudflare] Failed to restart ${appUrn} onto the public domain CI-Cloud serves it on: ${cause}. Retrying on the next sync.`,
           );
         } else {
           this.logger.error(
-            `[Cloudflare] Failed to restart ${appUrn} to start serving its custom domain: ${error instanceof Error ? error.message : String(error)}. The next sync re-derives this and will try again.`,
+            `[Cloudflare] Failed to restart ${appUrn} to start serving its custom domain: ${cause}. The next sync re-derives this and will try again.`,
           );
         }
       }

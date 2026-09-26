@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { ipOnHubNetwork } from '@/common/constants';
+import { HUB_APPURN_LABEL, LEGACY_HUB_APPURN_LABEL, ipOnHubNetwork } from '@/common/constants';
 import { appUrnLabelSets, listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
@@ -189,6 +189,46 @@ export class DockerReadFacade {
     );
 
     return results.filter((result): result is AppContainerRuntimeStats => result !== null);
+  }
+
+  /**
+   * Every address a RUNNING container of any app named in `appNames` (any
+   * store) holds on any Docker network. What `AppContainerOriginGuard` compares
+   * a request's source address against: a container-to-container call arrives
+   * from one of these, and nothing else on the appliance's networks does.
+   * Read from the container list, which already carries per-network addresses,
+   * so no inspect round-trip; a Docker failure yields an empty set (refuse).
+   */
+  public async runningContainerAddressesForApps(appNames: readonly string[]): Promise<Set<string>> {
+    const addresses = new Set<string>();
+    if (appNames.length === 0) {
+      return addresses;
+    }
+    let containers: Dockerode.ContainerInfo[];
+    try {
+      containers = await withTimeout(
+        listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(), false),
+        DOCKER_INSPECT_TIMEOUT_MS,
+        'Docker container listing timed out for the app origin check',
+      );
+    } catch (error) {
+      this.logger.warn(`Could not list app containers for origin check: ${error instanceof Error ? error.message : String(error)}`);
+      return addresses;
+    }
+    for (const container of containers) {
+      const labels = container.Labels ?? {};
+      const appUrn = labels[HUB_APPURN_LABEL] ?? labels[LEGACY_HUB_APPURN_LABEL];
+      if (!appUrn || !appNames.includes(appUrn.split(':')[0] ?? '')) {
+        continue;
+      }
+      for (const network of Object.values(container.NetworkSettings?.Networks ?? {})) {
+        const address = network?.IPAddress;
+        if (address) {
+          addresses.add(address);
+        }
+      }
+    }
+    return addresses;
   }
 
   public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {

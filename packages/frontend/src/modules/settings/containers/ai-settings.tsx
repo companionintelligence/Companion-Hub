@@ -5,10 +5,8 @@ import {
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
   fetchLemonadeInstallStatus,
-  fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
-  fetchDsparkInstallStatus,
-  fetchSpeculativeInferenceStatus,
+  fetchOmlxInstallStatus,
   fetchVllmInstallStatus,
   pinInferenceModel,
   rescanInferenceHardware,
@@ -24,13 +22,8 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
-import toast from 'react-hot-toast';
-import type {
-  CloudProviderInput,
-  HardwareProfileResponse,
-  RuntimeModelInfo,
-  SpeculativeInferenceStatus,
-} from '@/modules/onboarding/helpers/ai-setup-types';
+import { toast } from 'sonner';
+import type { CloudProviderInput, HardwareProfileResponse, RuntimeModelInfo } from '@/modules/onboarding/helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType, ModelState, TrackedModel } from '@ci-hub/common/types';
 import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
@@ -41,12 +34,11 @@ import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
-import { MtplxSetupCard } from '@/modules/onboarding/components/ai-setup/mtplx-setup-card';
-import { DsparkSetupCard } from '@/modules/onboarding/components/ai-setup/dspark-setup-card';
+import { OmlxSetupCard } from '@/modules/onboarding/components/ai-setup/omlx-setup-card';
+import { ManualEndpointsCard } from '@/modules/onboarding/components/ai-setup/manual-endpoints-card';
 import { LemonadeSetupCard } from '@/modules/onboarding/components/ai-setup/lemonade-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
-import { SpeculativeInferenceSetupCard } from '@/modules/onboarding/components/ai-setup/speculative-inference-setup-card';
-import type { LemonadeStatus, MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import type { LemonadeStatus, OmlxStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
@@ -120,19 +112,16 @@ export const AiSettingsContainer = () => {
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
-  const [mtplxUrl, setMtplxUrl] = useState('');
-  const [dsparkUrl, setDsparkUrl] = useState('');
+  const [omlxUrl, setOmlxUrl] = useState('');
+  const [decodeEndpoint, setDecodeEndpoint] = useState('');
+  const [encodeEndpoint, setEncodeEndpoint] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
-  const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
-  const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
-  const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
+  const [omlxStatus, setOmlxStatus] = useState<OmlxStatus | null>(null);
   const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
-  const [checkingMtplx, setCheckingMtplx] = useState(false);
-  const [checkingDspark, setCheckingDspark] = useState(false);
-  const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
+  const [checkingOmlx, setCheckingOmlx] = useState(false);
   const [checkingLemonade, setCheckingLemonade] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
@@ -142,10 +131,12 @@ export const AiSettingsContainer = () => {
   vllmUrlRef.current = vllmUrl;
   const vllmApiKeyRef = useRef('');
   vllmApiKeyRef.current = vllmApiKey;
-  const mtplxUrlRef = useRef('');
-  mtplxUrlRef.current = mtplxUrl;
-  const dsparkUrlRef = useRef('');
-  dsparkUrlRef.current = dsparkUrl;
+  const omlxUrlRef = useRef('');
+  omlxUrlRef.current = omlxUrl;
+  const decodeEndpointRef = useRef('');
+  decodeEndpointRef.current = decodeEndpoint;
+  const encodeEndpointRef = useRef('');
+  encodeEndpointRef.current = encodeEndpoint;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
   // Share one catalog index between Save and confirmation so they cannot disagree or
   // rebuild it independently.
@@ -213,14 +204,17 @@ export const AiSettingsContainer = () => {
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
       }
-      if (prefData?.preferredDsparkUrl) {
-        setDsparkUrl(prefData.preferredDsparkUrl);
-      }
       if (prefData?.preferredVllmUrl) {
         setVllmUrl(prefData.preferredVllmUrl);
       }
-      if (prefData?.preferredMtplxUrl) {
-        setMtplxUrl(prefData.preferredMtplxUrl);
+      if (prefData?.preferredOmlxUrl) {
+        setOmlxUrl(prefData.preferredOmlxUrl);
+      }
+      if (prefData?.preferredDecodeEndpoint) {
+        setDecodeEndpoint(prefData.preferredDecodeEndpoint);
+      }
+      if (prefData?.preferredEncodeEndpoint) {
+        setEncodeEndpoint(prefData.preferredEncodeEndpoint);
       }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
       const data = await fetchInferenceOnboardingProfile(requestedBackend);
@@ -235,17 +229,12 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, preferredBackend, tracked);
       await fetchRuntimeModels(preferredBackend);
       void checkOllamaStatus();
-      if (preferredBackend === 'dspark') {
-        void checkDsparkStatus();
-      }
       if (preferredBackend === 'vllm') {
         void checkVllmStatus();
-      } else if (preferredBackend === 'mtplx') {
-        void checkMtplxStatus();
+      } else if (preferredBackend === 'omlx') {
+        void checkOmlxStatus();
       } else if (preferredBackend === 'lemonade') {
         void checkLemonadeStatus();
-      } else if (preferredBackend === 'lucebox') {
-        void checkSpeculativeInferenceStatus();
       }
 
       const configured = await fetchConfiguredCloudProviders();
@@ -283,8 +272,7 @@ export const AiSettingsContainer = () => {
         selectedBackend,
         selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
         selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
-        selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
-        selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
+        selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
       );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -316,76 +304,28 @@ export const AiSettingsContainer = () => {
     }
   }, [checkVllmStatus, seedSelectedModelIds]);
 
-  const checkMtplxStatus = useCallback(async () => {
-    setCheckingMtplx(true);
+  const checkOmlxStatus = useCallback(async () => {
+    setCheckingOmlx(true);
     try {
-      const data = (await fetchMtplxInstallStatus(mtplxUrlRef.current)) as MtplxStatus;
-      setMtplxStatus(data);
+      const data = (await fetchOmlxInstallStatus(omlxUrlRef.current)) as OmlxStatus;
+      setOmlxStatus(data);
       return data;
     } catch {
-      setMtplxStatus({ ready: false, running: false, endpointUrl: '' });
+      setOmlxStatus({ ready: false, running: false, endpointUrl: '' });
       return null;
     } finally {
-      setCheckingMtplx(false);
+      setCheckingOmlx(false);
     }
   }, []);
 
-  const handleRecheckMtplx = useCallback(async () => {
-    const status = await checkMtplxStatus();
+  const handleRecheckOmlx = useCallback(async () => {
+    const status = await checkOmlxStatus();
     if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('mtplx', undefined, undefined, mtplxUrlRef.current);
+      const data = await fetchInferenceOnboardingProfile('omlx', undefined, undefined, omlxUrlRef.current);
       setProfile(data);
-      seedSelectedModelIds(data, 'mtplx', trackedModelsRef.current);
+      seedSelectedModelIds(data, 'omlx', trackedModelsRef.current);
     }
-  }, [checkMtplxStatus, seedSelectedModelIds]);
-
-  const checkDsparkStatus = useCallback(async () => {
-    setCheckingDspark(true);
-    try {
-      const data = await fetchDsparkInstallStatus(dsparkUrlRef.current);
-      setDsparkStatus(data);
-      return data;
-    } catch {
-      setDsparkStatus({ ready: false, running: false, endpointUrl: '' });
-      return null;
-    } finally {
-      setCheckingDspark(false);
-    }
-  }, []);
-
-  // Same stale-profile reason as handleRecheckVllm above (#1105).
-  const handleRecheckDspark = useCallback(async () => {
-    const status = await checkDsparkStatus();
-    if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('dspark', undefined, undefined, undefined, dsparkUrlRef.current);
-      setProfile(data);
-      seedSelectedModelIds(data, 'dspark', trackedModelsRef.current);
-    }
-  }, [checkDsparkStatus, seedSelectedModelIds]);
-
-  const checkSpeculativeInferenceStatus = useCallback(async () => {
-    setCheckingSpeculativeInference(true);
-    try {
-      const data = await fetchSpeculativeInferenceStatus();
-      setSpeculativeInferenceStatus(data);
-      return data;
-    } catch {
-      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
-      setSpeculativeInferenceStatus(unreachable);
-      return null;
-    } finally {
-      setCheckingSpeculativeInference(false);
-    }
-  }, []);
-
-  const handleRecheckSpeculativeInference = useCallback(async () => {
-    const status = await checkSpeculativeInferenceStatus();
-    if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('lucebox');
-      setProfile(data);
-      seedSelectedModelIds(data, 'lucebox', trackedModelsRef.current);
-    }
-  }, [checkSpeculativeInferenceStatus, seedSelectedModelIds]);
+  }, [checkOmlxStatus, seedSelectedModelIds]);
 
   const checkLemonadeStatus = useCallback(async () => {
     setCheckingLemonade(true);
@@ -449,8 +389,7 @@ export const AiSettingsContainer = () => {
       selectedBackend,
       selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
-      selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
-      selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
+      selectedBackend === 'omlx' ? omlxUrlRef.current : undefined,
     ).then((data) => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
@@ -459,26 +398,12 @@ export const AiSettingsContainer = () => {
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
-    } else if (selectedBackend === 'mtplx') {
-      void checkMtplxStatus();
+    } else if (selectedBackend === 'omlx') {
+      void checkOmlxStatus();
     } else if (selectedBackend === 'lemonade') {
       void checkLemonadeStatus();
-    } else if (selectedBackend === 'lucebox') {
-      void checkSpeculativeInferenceStatus();
     }
-    if (selectedBackend === 'dspark') {
-      void checkDsparkStatus();
-    }
-  }, [
-    selectedBackend,
-    fetchRuntimeModels,
-    checkVllmStatus,
-    checkMtplxStatus,
-    checkDsparkStatus,
-    checkSpeculativeInferenceStatus,
-    checkLemonadeStatus,
-    seedSelectedModelIds,
-  ]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkOmlxStatus, checkLemonadeStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -506,7 +431,7 @@ export const AiSettingsContainer = () => {
       const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
       const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
-      const embeddingBackend = selectedBackend === 'lemonade' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+      const embeddingBackend = selectedBackend === 'omlx' || selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
       const preferredEmbeddingModel = resolvePreferredModelId(profile, embeddingBackend, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
@@ -527,8 +452,9 @@ export const AiSettingsContainer = () => {
         visionModel: preferredVisionModel,
         vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
-        mtplxUrl: selectedBackend === 'mtplx' ? mtplxUrl.trim() || null : null,
-        dsparkUrl: selectedBackend === 'dspark' ? dsparkUrl.trim() || null : null,
+        omlxUrl: selectedBackend === 'omlx' ? omlxUrl.trim() || null : null,
+        decodeEndpoint: decodeEndpoint.trim() || null,
+        encodeEndpoint: encodeEndpoint.trim() || null,
       });
 
       // Include every Hub-loadable backend so a saved preference cannot point to a selected
@@ -778,20 +704,6 @@ export const AiSettingsContainer = () => {
             hiddenTypes={profile ? hiddenInferenceBackends(profile) : []}
           />
 
-          {selectedBackend === 'lucebox' && (
-            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
-              <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_SPECULATIVE_SECTION_TITLE')}</h2>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_SPECULATIVE_SECTION_DESC')}</p>
-              </div>
-              <SpeculativeInferenceSetupCard
-                status={speculativeInferenceStatus}
-                checking={checkingSpeculativeInference}
-                onRecheck={handleRecheckSpeculativeInference}
-              />
-            </section>
-          )}
-
           {selectedBackend === 'vllm' && (
             <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
               <div>
@@ -815,47 +727,19 @@ export const AiSettingsContainer = () => {
             </section>
           )}
 
-          {selectedBackend === 'mtplx' && (
+          {selectedBackend === 'omlx' && (
             <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_MTPLX_SECTION_TITLE')}</h2>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_MTPLX_SECTION_DESC')}</p>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_OMLX_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_OMLX_SECTION_DESC')}</p>
               </div>
-              <MtplxSetupCard
-                status={mtplxStatus}
-                checking={checkingMtplx}
-                onRecheck={handleRecheckMtplx}
-                endpointUrl={mtplxUrl}
-                onEndpointUrlChange={setMtplxUrl}
+              <OmlxSetupCard
+                status={omlxStatus}
+                checking={checkingOmlx}
+                onRecheck={handleRecheckOmlx}
+                endpointUrl={omlxUrl}
+                onEndpointUrlChange={setOmlxUrl}
               />
-              <div>
-                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
-                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
-                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
-              </div>
-            </section>
-          )}
-
-          {selectedBackend === 'dspark' && (
-            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
-              <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_DSPARK_SECTION_TITLE')}</h2>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_DSPARK_SECTION_DESC')}</p>
-              </div>
-              <DsparkSetupCard
-                status={dsparkStatus}
-                checking={checkingDspark}
-                onRecheck={handleRecheckDspark}
-                endpointUrl={dsparkUrl}
-                onEndpointUrlChange={setDsparkUrl}
-              />
-              {/* Embeddings stay on Ollama regardless of the chat backend — mlx-dspark serves no
-                  /v1/embeddings route at all, so the co-install is required, not merely advised. */}
-              <div>
-                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
-                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_DSPARK_SECTION_DESC')}</p>
-                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
-              </div>
             </section>
           )}
 
@@ -866,8 +750,20 @@ export const AiSettingsContainer = () => {
                 <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_LEMONADE_SECTION_DESC')}</p>
               </div>
               <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleRecheckLemonade} />
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              </div>
             </section>
           )}
+
+          <ManualEndpointsCard
+            decodeEndpoint={decodeEndpoint}
+            encodeEndpoint={encodeEndpoint}
+            onDecodeEndpointChange={setDecodeEndpoint}
+            onEncodeEndpointChange={setEncodeEndpoint}
+          />
 
           <ResourceSummaryBar
             selectedModels={selectedModels}

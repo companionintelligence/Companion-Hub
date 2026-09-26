@@ -56,7 +56,12 @@ import type { ApiKeyCapability } from '@/modules/api-keys/api-key.capabilities';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
-import { canServeOnCustomDomain, didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import {
+  canServeOnCustomDomain,
+  didPublicRoutingIdentityChange,
+  publicRoutingSnapshotOf,
+  type AppPublicRoutingSnapshot,
+} from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
@@ -240,6 +245,17 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
  * snapshot and be discarded as "no change". The frontend already seeds its picker
  * from the row rather than from here, for exactly this reason.
  */
+/**
+ * The automatic-restart setting as a row patch, or nothing.
+ *
+ * OMITTED MEANS KEEP, like the custom-domain columns: the device-restore form and
+ * any caller that patches one setting send no value, and reading that as `false`
+ * would quietly turn off a choice somebody made.
+ */
+function autoRestartColumn(parsedForm: ParsedAppForm): { autoRestartOnDomainChange?: boolean } {
+  return parsedForm.autoRestartOnDomainChange === undefined ? {} : { autoRestartOnDomainChange: parsedForm.autoRestartOnDomainChange };
+}
+
 function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
   const stored: Record<string, unknown> = { ...parsedForm };
   delete stored.customDomain;
@@ -259,6 +275,13 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
    * can seed an IN-FLIGHT confirmation from there instead.
    */
   delete stored.customDomainTakeover;
+  /*
+   * A setting ABOUT the app, not part of its configuration: it changes nothing in
+   * the env or compose file. Left in the snapshot, flipping it would compare as a
+   * config change and restart the app — the one thing a person turning automatic
+   * restarts OFF is trying to avoid. It lives on the row, read by the sync.
+   */
+  delete stored.autoRestartOnDomainChange;
   /*
    * ⚠ AND THE EXPECTED VALUE, FOR THE SAME REASON ONE STEP FURTHER ON.
    *
@@ -1368,6 +1391,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           appStoreSlug: appStoreId,
           isVisibleOnGuestDashboard,
           enableAuth: parsedForm.enableAuth ?? false,
+          autoRestartOnDomainChange: parsedForm.autoRestartOnDomainChange ?? false,
         });
         installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
         await this.claimCustomDomainIntent(created.id, parsedForm.customDomain);
@@ -1425,6 +1449,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         exposureMode: parsedForm.exposureMode ?? 'local',
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
+        ...autoRestartColumn(parsedForm),
       });
       await this.claimCustomDomainIntent(installRecord.id, parsedForm.customDomain);
     }
@@ -2294,6 +2319,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const settingsChanged =
       this.hasConfigChanged(normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>), toStoredConfig(parsedForm)) ||
       customDomainChanged;
+    /*
+     * ⚠ SAVED ON ITS OWN, AND BEFORE THE EARLY RETURN BELOW.
+     *
+     * `toStoredConfig` keeps this setting out of the snapshot so flipping it never
+     * restarts the app — which also means flipping ONLY it compares as "no
+     * changes", and returns before the row write further down. Writing it here is
+     * what lets a person turn automatic restarts on or off without taking the app
+     * down to do it.
+     */
+    const autoRestart = autoRestartColumn(parsedForm);
+    if (autoRestart.autoRestartOnDomainChange !== undefined && autoRestart.autoRestartOnDomainChange !== app.autoRestartOnDomainChange) {
+      await this.appRepository.updateAppById(app.id, autoRestart);
+    }
+
     if (!settingsChanged) {
       this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
       return { requestId: crypto.randomUUID() };
@@ -2408,7 +2447,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     await this.claimCustomDomainIntent(app.id, parsedForm.customDomain);
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const routingChanged = didPublicRoutingIdentityChange(app as AppPublicRoutingSnapshot, parsedForm, appName, appStoreId);
+    // The row as it was published: the sync judged it by its stored form, not its columns.
+    const routingChanged = didPublicRoutingIdentityChange(publicRoutingSnapshotOf(app as AppPublicRoutingSnapshot), parsedForm, appName, appStoreId);
 
     if (!changed?.pendingRestart) {
       await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });

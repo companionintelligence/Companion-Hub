@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl, isMalformedAccessUrl } from './app-access-points';
+import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl, isMalformedAccessUrl, resolveReachableHubHost } from './app-access-points';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -35,8 +35,8 @@ vi.mock('@/context/app-context', () => ({
   }),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     success: vi.fn(),
     error: vi.fn(),
   },
@@ -267,6 +267,129 @@ describe('buildAppAccessPoints', () => {
     });
   });
 
+  describe('judged by the stored install form', () => {
+    /*
+     * An install that sent no exposure settings (MCP `hub_install_app` with `{}`) gets a row with
+     * `exposureMode: 'local'` and `exposedLocal: true`, while its stored form resolves to local.
+     * Compose builds no route for it and Portal sync no longer publishes it.
+     */
+    const publicEntry = (app: Record<string, unknown>) =>
+      buildAppAccessPoints({
+        app: { status: 'running', port: 3000, exposed: false, ...app } as any,
+        info,
+        sslPort: 443,
+        internalIp: '0.0.0.0',
+        publicDomain: 'companionintelligence.com',
+        cloudflareAvailable: true,
+        tailscaleAvailable: false,
+        organizationSlug: 'companion',
+        deviceSlug: 'studio',
+        hubSubdomain: 'hub-studio-companion',
+      })[0];
+
+    it('does not call Public web enabled for an install that sent no exposure settings', () => {
+      expect(publicEntry({ exposureMode: 'local', exposedLocal: true, config: { openPort: true } })).toMatchObject({
+        key: 'public',
+        state: 'available',
+        stateLabel: 'APP_DETAILS_ACCESS_NOT_CONFIGURED',
+      });
+    });
+
+    it('still calls it enabled when the form carried the legacy Public web flag', () => {
+      expect(publicEntry({ exposureMode: 'local', exposedLocal: true, config: { exposedLocal: true } })).toMatchObject({
+        key: 'public',
+        state: 'active',
+      });
+    });
+  });
+
+  describe('after an install that named no subdomain', () => {
+    // core-2 on 2026-09-23: org demopool1, device core-2, domain ci.computer.
+    const hermes = {
+      urn: 'ci-hermes:ci-marketplace',
+      no_gui: false,
+      https: false,
+      port: 18790,
+      dynamic_config: true,
+      exposable: true,
+    } as any;
+    const core2 = {
+      sslPort: 443,
+      publicDomain: 'ci.computer',
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+      organizationSlug: 'demopool1',
+      deviceSlug: 'core-2',
+      hubSubdomain: 'hub-core-2-demopool1',
+    };
+
+    it('links the hostname Portal serves, which carries the store slug', () => {
+      // The card showed `ci-hermes-core-2-demopool1`, which is NXDOMAIN; Portal and the
+      // backend build `<app>-<store>` when no subdomain was chosen.
+      const accessPoints = buildAppAccessPoints({
+        ...core2,
+        app: { status: 'running', port: 18790, localSubdomain: null, exposureMode: 'cloudflare', exposedLocal: true } as any,
+        info: hermes,
+        internalIp: '0.0.0.0',
+        viewerHostname: 'localhost',
+      });
+
+      expect(accessPoints[0]).toMatchObject({
+        key: 'public',
+        url: 'https://ci-hermes-ci-marketplace-core-2-demopool1.ci.computer',
+        state: 'active',
+      });
+    });
+
+    it('still links a subdomain the operator chose', () => {
+      const accessPoints = buildAppAccessPoints({
+        ...core2,
+        app: { status: 'running', port: 18790, localSubdomain: 'hermes', exposureMode: 'cloudflare', exposedLocal: true } as any,
+        info: hermes,
+        internalIp: '0.0.0.0',
+        viewerHostname: 'localhost',
+      });
+
+      expect(accessPoints[0]?.url).toBe('https://hermes-core-2-demopool1.ci.computer');
+    });
+  });
+
+  describe('Local access link', () => {
+    const localApp = { status: 'running', port: 18790, localSubdomain: 'hermes', exposureMode: 'local', openPort: true } as any;
+    const base = {
+      app: localApp,
+      info: { ...info, url_suffix: '' },
+      sslPort: 443,
+      publicDomain: 'ci.computer',
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    };
+    const localUrl = (overrides: { internalIp?: string; viewerHostname?: string }) =>
+      buildAppAccessPoints({ ...base, ...overrides }).find((entry) => entry.key === 'local')?.url;
+
+    it('names the host the browser reached the Hub on when the Hub reports only loopback', () => {
+      // Viewed over Tailscale, `127.0.0.1` is the viewer's own computer.
+      expect(localUrl({ internalIp: '127.0.0.1', viewerHostname: 'core-2.tail1234.ts.net' })).toBe('http://core-2.tail1234.ts.net:18790');
+      expect(localUrl({ internalIp: '0.0.0.0', viewerHostname: '192.168.1.40' })).toBe('http://192.168.1.40:18790');
+      expect(localUrl({ viewerHostname: 'core-2.local' })).toBe('http://core-2.local:18790');
+    });
+
+    it('keeps loopback for a browser running on the Hub itself', () => {
+      expect(localUrl({ internalIp: '0.0.0.0', viewerHostname: 'localhost' })).toBe('http://127.0.0.1:18790');
+      expect(localUrl({ internalIp: '127.0.0.1', viewerHostname: '127.0.0.1' })).toBe('http://127.0.0.1:18790');
+      // The Tauri desktop shell on Windows.
+      expect(localUrl({ internalIp: '0.0.0.0', viewerHostname: 'tauri.localhost' })).toBe('http://127.0.0.1:18790');
+    });
+
+    it('never names the public hostname, which the tunnel serves on 443 only', () => {
+      expect(localUrl({ internalIp: '0.0.0.0', viewerHostname: 'hub-core-2-demopool1.ci.computer' })).toBe('http://127.0.0.1:18790');
+    });
+
+    it('keeps a LAN address the Hub reported', () => {
+      expect(localUrl({ internalIp: '192.168.1.20', viewerHostname: 'core-2.tail1234.ts.net' })).toBe('http://192.168.1.20:18790');
+    });
+  });
+
   it('marks tailscale-only VPN as pending when the app port is not served yet', () => {
     const accessPoints = buildAppAccessPoints({
       app: {
@@ -293,6 +416,33 @@ describe('buildAppAccessPoints', () => {
       stateLabel: 'APP_DETAILS_ACCESS_PENDING',
     });
   });
+
+  describe('an app whose host port stays on loopback', () => {
+    const localInstall = { status: 'running', port: 18789, localSubdomain: 'openclaw', exposureMode: 'local', openPort: false } as any;
+    const build = (appInfo: typeof info) =>
+      buildAppAccessPoints({
+        app: localInstall,
+        info: appInfo,
+        sslPort: 443,
+        // A real LAN address, so a loopback result can only come from the app's own posture.
+        internalIp: '192.168.1.9',
+        cloudflareAvailable: true,
+        tailscaleAvailable: true,
+      });
+
+    it('links the local card to loopback, which also withholds its QR code', () => {
+      for (const hub_integration of [{ mcp_client: true }, { edge_auth: { default: true } }]) {
+        const local = build({ ...info, urn: 'ci-openclaw:ci-marketplace', hub_integration }).find((entry) => entry.key === 'local');
+
+        expect(local).toMatchObject({ url: 'http://127.0.0.1:18789/login', host: '127.0.0.1:18789', state: 'active' });
+        expect(isLoopbackAccessUrl(local?.url ?? null)).toBe(true);
+      }
+    });
+
+    it('keeps the LAN address for every other app', () => {
+      expect(build(info)[2]).toMatchObject({ key: 'local', url: 'http://192.168.1.9:18789/login' });
+    });
+  });
 });
 
 describe('AppAccessPoints', () => {
@@ -303,7 +453,7 @@ describe('AppAccessPoints', () => {
       configurable: true,
     });
 
-    const toast = (await import('react-hot-toast')).default;
+    const { toast } = await import('sonner');
 
     render(
       <AppAccessPoints
@@ -506,5 +656,26 @@ describe('isMalformedAccessUrl', () => {
 
   it('does not call a missing URL malformed', () => {
     expect(isMalformedAccessUrl(null)).toBe(false);
+  });
+});
+
+describe('resolveReachableHubHost', () => {
+  it('keeps what the Hub reported when there is no viewer to substitute', () => {
+    expect(resolveReachableHubHost({ internalIp: '0.0.0.0' })).toBe('0.0.0.0');
+    expect(resolveReachableHubHost({})).toBeUndefined();
+  });
+
+  it('normalises the viewer hostname and keeps an IPv6 literal bracketed', () => {
+    expect(resolveReachableHubHost({ internalIp: '::', viewerHostname: 'Core-2.Tail1234.ts.net.' })).toBe('core-2.tail1234.ts.net');
+    expect(resolveReachableHubHost({ internalIp: '::', viewerHostname: '[fd7a:115c:a1e0::1]' })).toBe('[fd7a:115c:a1e0::1]');
+  });
+
+  it('treats the IPv6 loopback as the Hub itself', () => {
+    expect(resolveReachableHubHost({ internalIp: '::1', viewerHostname: '[::1]' })).toBe('::1');
+  });
+
+  it('matches the public domain itself, not just names under it', () => {
+    expect(resolveReachableHubHost({ internalIp: '0.0.0.0', viewerHostname: 'ci.computer', publicDomain: 'ci.computer' })).toBe('0.0.0.0');
+    expect(resolveReachableHubHost({ internalIp: '0.0.0.0', viewerHostname: 'notci.computer', publicDomain: 'ci.computer' })).toBe('notci.computer');
   });
 });

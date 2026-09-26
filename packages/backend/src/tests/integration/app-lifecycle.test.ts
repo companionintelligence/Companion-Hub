@@ -123,6 +123,7 @@ describe('App lifecycle', () => {
     username: 'guest',
     port: Number(process.env.RABBITMQ_PORT) || 5672,
   });
+  configurationService.get.calledWith('jwtSecret').mockReturnValue('test-jwt-secret');
   configurationService.get.calledWith('domain').mockReturnValue('ci.test');
   configurationService.get.calledWith('localDomain').mockReturnValue('ci.lan');
   configurationService.get.calledWith('userSettings').mockReturnValue({
@@ -749,6 +750,13 @@ describe('App lifecycle', () => {
       await runToQuiescence(appUrn, () => appLifecycleService.restartApp({ actor: TEST_ACTOR, appUrn, skipPull: true }));
     };
 
+    /** The row id for an installed app, failing the test outright if it is missing. */
+    const rowIdOf = async (urn: AppUrn) => {
+      const row = await appsRepository.getAppByUrn(urn);
+      if (!row) throw new Error(`no app row for ${urn}`);
+      return row.id;
+    };
+
     const syncReporting = async (customDomains: unknown) => {
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains } as never);
       await appLifecycleService.triggerCloudflareSync();
@@ -827,13 +835,137 @@ describe('App lifecycle', () => {
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
     });
 
+    it('restarts on its own for an app set to, without anyone confirming', async () => {
+      /*
+       * The one way a connected domain restarts an app with nobody confirming it:
+       * someone turned the setting on for this app. The delivery carries no
+       * request — this is the app's own choice doing the work.
+       */
+      const appInfo = await installExposed('cdauto');
+      const platformHostname = 'cdauto-test-core2-acme.ci.test';
+      await appsRepository.updateAppById(await rowIdOf(appInfo.urn), { autoRestartOnDomainChange: true });
+
+      await runToQuiescence(appInfo.urn, () => syncReporting([{ id: 'cd_1', domain: 'auto.acme.com', targetHostname: platformHostname }]));
+
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://auto.acme.com');
+    });
+
+    it('saves the setting on its own without restarting the app', async () => {
+      /*
+       * Kept out of the stored config snapshot so flipping it never compares as a
+       * config change — which would restart the app, the very thing a person
+       * turning automatic restarts OFF is trying to avoid. That also means a save
+       * changing only this setting takes the "no changes" early return, so the row
+       * write has to happen before it, or the setting never saves at all.
+       */
+      const appInfo = await installExposed('cdsetting');
+
+      await appLifecycleService.updateAppConfig({
+        actor: TEST_ACTOR,
+        appUrn: appInfo.urn,
+        form: { ...exposedForm, autoRestartOnDomainChange: true },
+      });
+
+      const row = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(row?.autoRestartOnDomainChange).toBe(true);
+      expect(row?.pendingRestart).toBe(false);
+    });
+
+    it('tells Companion Portal a stopped app will pick its domain up when it starts', async () => {
+      /*
+       * The publish payload leaves stopped apps out on purpose, so without a
+       * separate report Portal cannot tell "stopped, nothing to confirm" from "no
+       * news" — and would offer a restart the Hub refuses for a stopped app, leaving
+       * "Restarting…" on screen forever.
+       */
+      const appInfo = await installExposed('cdstopped');
+      const platformHostname = 'cdstopped-test-core2-acme.ci.test';
+      await syncReporting([{ id: 'cd_1', domain: 'stopped.acme.com', targetHostname: platformHostname }]);
+
+      await appsRepository.updateAppById(await rowIdOf(appInfo.urn), { status: 'stopped' });
+      await syncReporting([{ id: 'cd_1', domain: 'stopped.acme.com', targetHostname: platformHostname }]);
+
+      const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
+      expect(report).toContainEqual({ domain: 'stopped.acme.com', targetHostname: platformHostname, state: 'pending-start', autoRestart: false });
+    });
+
+    it('reports a running app still on its platform hostname as waiting for a restart', async () => {
+      await installExposed('cdwaiting');
+      const platformHostname = 'cdwaiting-test-core2-acme.ci.test';
+      await syncReporting([{ id: 'cd_1', domain: 'waiting.acme.com', targetHostname: platformHostname }]);
+      // The binding lands during that sync, so it is the NEXT report that carries it.
+      await syncReporting([{ id: 'cd_1', domain: 'waiting.acme.com', targetHostname: platformHostname }]);
+
+      const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
+      expect(report).toContainEqual({ domain: 'waiting.acme.com', targetHostname: platformHostname, state: 'pending-restart', autoRestart: false });
+    });
+
+    it('reports an app coming up as picking its domain up on its own', async () => {
+      // Starting and restarting both regenerate the env on the way up, so there is
+      // nothing for anyone to confirm — offering a restart would be offering a second one.
+      const appInfo = await installExposed('cdstarting');
+      const platformHostname = 'cdstarting-test-core2-acme.ci.test';
+      const delivered = [{ id: 'cd_1', domain: 'starting.acme.com', targetHostname: platformHostname }];
+      await syncReporting(delivered);
+
+      await appsRepository.updateAppById(await rowIdOf(appInfo.urn), { status: 'starting' });
+      await syncReporting(delivered);
+
+      const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
+      expect(report).toContainEqual({ domain: 'starting.acme.com', targetHostname: platformHostname, state: 'pending-start', autoRestart: false });
+    });
+
+    it('says when a confirmed restart would not be carried out, rather than asking for one', async () => {
+      /*
+       * `pending-restart` is what Companion Portal puts a Restart button in front of,
+       * so it must mean exactly what the apply gate acts on. A restart can finish
+       * without rewriting the env (a skipped env write, say) and still clear
+       * `pendingRestart` — the gate then refuses every confirmation, and a button
+       * would accept clicks that do nothing.
+       */
+      const appInfo = await installExposed('cdblocked');
+      const platformHostname = 'cdblocked-test-core2-acme.ci.test';
+      const delivered = [{ id: 'cd_1', domain: 'blocked.acme.com', targetHostname: platformHostname }];
+      await syncReporting(delivered);
+
+      await appsRepository.updateAppById(await rowIdOf(appInfo.urn), { pendingRestart: false });
+      await syncReporting(delivered);
+
+      const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
+      expect(report).toContainEqual({ domain: 'blocked.acme.com', targetHostname: platformHostname, state: 'blocked', autoRestart: false });
+    });
+
+    it('names each app holding a domain by its own hostname', async () => {
+      /*
+       * A stopped app keeps the domain it had while another app is bound to it, so
+       * one domain can be reported twice. Keyed by domain alone, whichever entry
+       * Companion Portal wrote last decided the row — a stopped app's "picks it up
+       * when it starts" could hide the running app's pending restart. The hostname
+       * says which binding each entry is about.
+       */
+      const previous = await installExposed('cdoldapp');
+      await installExposed('cdnewapp');
+      const oldHost = 'cdoldapp-test-core2-acme.ci.test';
+      const newHost = 'cdnewapp-test-core2-acme.ci.test';
+
+      await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: oldHost }]);
+      await appsRepository.updateAppById(await rowIdOf(previous.urn), { status: 'stopped' });
+      // Pointed at the other app while the first is stopped: it binds, and the stopped one keeps it.
+      await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: newHost }]);
+      await syncReporting([{ id: 'cd_1', domain: 'moved.acme.com', targetHostname: newHost }]);
+
+      const report = cloudflareClientService.syncState.mock.calls.at(-1)?.[3];
+      expect(report).toContainEqual({ domain: 'moved.acme.com', targetHostname: oldHost, state: 'pending-start', autoRestart: false });
+      expect(report).toContainEqual({ domain: 'moved.acme.com', targetHostname: newHost, state: 'pending-restart', autoRestart: false });
+    });
+
     it('applies a binding the operator asked for, instead of waiting to be restarted by hand', async () => {
       /*
        * The whole point of the apply request: a first bind deliberately leaves a
        * running container alone, so the customer's domain stays dark until someone
-       * restarts the app — and nothing tells them to. When the operator answered
-       * "yes, start serving it" in the connect flow, Companion Portal carries that
-       * answer here and the Hub finishes the job itself.
+       * restarts the app. When a person confirms the restart in Companion Portal,
+       * the confirmation arrives here with the binding it was given for, and the
+       * Hub finishes the job itself.
        */
       const appInfo = await installExposed('cdapply');
       const platformHostname = 'cdapply-test-core2-acme.ci.test';

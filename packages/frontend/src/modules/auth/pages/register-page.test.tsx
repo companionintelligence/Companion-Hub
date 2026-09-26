@@ -60,8 +60,8 @@ vi.mock('@/lib/safe-redirect', () => ({
   followSafeRedirect: (url: string | null) => mockFollowSafeRedirect(url),
 }));
 
-vi.mock('react-hot-toast', () => ({
-  default: {
+vi.mock('sonner', () => ({
+  toast: {
     error: mockToastError,
     success: mockToastSuccess,
   },

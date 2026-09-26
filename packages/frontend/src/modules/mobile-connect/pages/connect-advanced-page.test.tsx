@@ -15,7 +15,7 @@ vi.mock('@/lib/mobile-connection', () => ({
 }));
 
 const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
-vi.mock('react-hot-toast', () => ({ default: { error: toastError, success: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { error: toastError, success: vi.fn() } }));
 
 const signInToPortal = vi.fn();
 vi.mock('../portal-client', async (orig) => ({

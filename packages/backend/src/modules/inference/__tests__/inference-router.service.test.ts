@@ -9,11 +9,7 @@ import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { MtplxBackend } from '../backends/mtplx.backend';
-import { DsparkBackend } from '../backends/dspark.backend';
-import { LuceboxBackend } from '../backends/lucebox.backend';
-import { LlamacppBackend } from '../backends/llamacpp.backend';
-import { LmStudioBackend } from '../backends/lmstudio.backend';
+import { OmlxBackend } from '../backends/omlx.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -32,11 +28,7 @@ describe('InferenceRouterService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
-  let mtplxBackend: MockProxy<MtplxBackend>;
-  let dsparkBackend: MockProxy<DsparkBackend>;
-  let luceboxBackend: MockProxy<LuceboxBackend>;
-  let llamacppBackend: MockProxy<LlamacppBackend>;
-  let lmstudioBackend: MockProxy<LmStudioBackend>;
+  let omlxBackend: MockProxy<OmlxBackend>;
   let configuration: MockProxy<ConfigurationService>;
 
   const defaultProfile: HardwareProfile = {
@@ -58,11 +50,7 @@ describe('InferenceRouterService', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
-    mtplxBackend = mock<MtplxBackend>();
-    dsparkBackend = mock<DsparkBackend>();
-    luceboxBackend = mock<LuceboxBackend>();
-    llamacppBackend = mock<LlamacppBackend>();
-    lmstudioBackend = mock<LmStudioBackend>();
+    omlxBackend = mock<OmlxBackend>();
     configuration = mock<ConfigurationService>();
     // No operator preference by default, so every existing case resolves exactly as before.
     configuration.getInferencePreferences.mockReturnValue({
@@ -72,8 +60,7 @@ describe('InferenceRouterService', () => {
       preferredVisionModel: null,
       preferredVllmApiKey: null,
       preferredVllmUrl: null,
-      preferredMtplxUrl: null,
-      preferredDsparkUrl: null,
+      preferredOmlxUrl: null,
     });
 
     hardwareInspector.getProfile.mockResolvedValue(defaultProfile);
@@ -90,18 +77,8 @@ describe('InferenceRouterService', () => {
     vllmBackend.getBaseUrl.mockReturnValue('http://ci-hub-vllm:8000');
     lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
-    mtplxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    mtplxBackend.getBaseUrl.mockReturnValue('http://ci-hub-mtplx:8000');
-    dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    dsparkBackend.getBaseUrl.mockReturnValue('http://127.0.0.1:8080');
-    luceboxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    luceboxBackend.getBaseUrl.mockReturnValue('http://ci-hub-lucebox:8000');
-    // Both host-run engines are down by default: the operator has not started one, which is the
-    // state every pre-existing case in this file was written against.
-    llamacppBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    llamacppBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
-    lmstudioBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    lmstudioBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:1234');
+    omlxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -115,11 +92,7 @@ describe('InferenceRouterService', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
-        { provide: MtplxBackend, useValue: mtplxBackend },
-        { provide: DsparkBackend, useValue: dsparkBackend },
-        { provide: LuceboxBackend, useValue: luceboxBackend },
-        { provide: LlamacppBackend, useValue: llamacppBackend },
-        { provide: LmStudioBackend, useValue: lmstudioBackend },
+        { provide: OmlxBackend, useValue: omlxBackend },
         { provide: ConfigurationService, useValue: configuration },
         InferenceBackendRegistry,
       ],
@@ -244,16 +217,7 @@ describe('InferenceRouterService', () => {
       const status = await service.getStatus();
 
       expect(status.backends).toHaveLength(INFERENCE_BACKEND_TYPES.length);
-      for (const backend of [
-        ollamaBackend,
-        vllmBackend,
-        lemonadeBackend,
-        mtplxBackend,
-        dsparkBackend,
-        luceboxBackend,
-        llamacppBackend,
-        lmstudioBackend,
-      ]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
         expect(backend.healthCheck).toHaveBeenCalledTimes(1);
       }
     });
@@ -262,16 +226,7 @@ describe('InferenceRouterService', () => {
       const STALL_MS = 40;
       let inFlight = 0;
       let peakInFlight = 0;
-      for (const backend of [
-        ollamaBackend,
-        vllmBackend,
-        lemonadeBackend,
-        mtplxBackend,
-        dsparkBackend,
-        luceboxBackend,
-        llamacppBackend,
-        lmstudioBackend,
-      ]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
         backend.healthCheck.mockImplementation(async () => {
           inFlight += 1;
           peakInFlight = Math.max(peakInFlight, inFlight);
@@ -304,22 +259,13 @@ describe('InferenceRouterService', () => {
       // routeChatCompletion returns before step 4 — one sweep happens either way and this test
       // passes whether or not the memo works. It did exactly that until this line was added.
       ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['resident-model'] });
-      for (const backend of [vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend, llamacppBackend, lmstudioBackend]) {
+      for (const backend of [vllmBackend, lemonadeBackend, omlxBackend]) {
         backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       }
 
       await service.routeChatCompletion({ model: 'auto', messages: [] }).catch(() => undefined);
 
-      for (const backend of [
-        ollamaBackend,
-        vllmBackend,
-        lemonadeBackend,
-        mtplxBackend,
-        dsparkBackend,
-        luceboxBackend,
-        llamacppBackend,
-        lmstudioBackend,
-      ]) {
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, omlxBackend]) {
         expect(backend.healthCheck.mock.calls.length).toBeLessThanOrEqual(1);
       }
     });
@@ -337,8 +283,7 @@ describe('InferenceRouterService', () => {
         preferredVisionModel: null,
         preferredVllmApiKey: null,
         preferredVllmUrl: null,
-        preferredMtplxUrl: null,
-        preferredDsparkUrl: null,
+        preferredOmlxUrl: null,
       });
     const curatedQwen36 = { catalogId: 'qwen3-6-27b', backend: 'ollama', backendModelId: 'qwen3.6:27b', modality: 'llm' } as unknown as CuratedModel;
 

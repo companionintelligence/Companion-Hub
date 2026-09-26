@@ -6,13 +6,14 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import { ResourceAllocatorService } from '@/modules/system/resource-allocator.service';
-import { parseComposeJson } from '@ci-hub/common/schemas';
+import { hostPortStaysOnLoopback, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import type { ModuleRef } from '@nestjs/core';
@@ -107,10 +108,19 @@ export async function prepareAppComposeDir(
           : undefined;
     }
 
-    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
     let cloudflareOriginHostname: string | undefined;
     let cloudflarePublicHostname: string | undefined;
-    if (effectiveExposureMode === 'cloudflare' && !form.openPort) {
+    /*
+     * Build the tunnel route for exactly the apps Companion Portal publishes. The sync applies this
+     * predicate to the same stored form (`publicRoutingSnapshotOf`), so neither can publish what the
+     * other does not. Whether the host port is also published does not matter, because Traefik
+     * reaches the container over the Docker network. A `!openPort` guard here (added in #678 from
+     * the env identity rule) left open-port apps on Traefik's 404 while the app page said "Public
+     * domain: Enabled", including every install that omitted the field, because the queue form
+     * defaults `openPort` to true. Those routes are new, so the compose builder puts the Hub login
+     * in front of them unless the form decided otherwise (`requiresHubLoginOnPublicRoute`).
+     */
+    if (publishesCloudflarePublicRoute(form)) {
       const registrationService = moduleRef.get(RegistrationService, { strict: false });
       const org = await registrationService.getDeviceRegistrationInfo();
       const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -165,7 +175,15 @@ export async function prepareAppComposeDir(
       logger.info(`[compose] ${appDataDir} cannot carry POSIX permissions; ownership-sensitive volumes will use named volumes`);
     }
 
-    const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported);
+    // Whether the host port stays on loopback is read from the manifest. Without one this keeps the
+    // all-interfaces default: binding an arbitrary app to loopback would cut its LAN access over a
+    // transient lookup failure.
+    if (!appInfo) {
+      logger.warn(`[compose] No manifest for ${appUrn}; publishing its host port on all interfaces`);
+    }
+    const loopbackHostPort = appInfo ? hostPortStaysOnLoopback(appInfo) : false;
+
+    const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, { loopbackHostPort });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
     const composeFile = await dockerComposeBuilder.getDockerCompose(

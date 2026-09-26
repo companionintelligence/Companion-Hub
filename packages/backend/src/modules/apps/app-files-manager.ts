@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
@@ -6,8 +7,29 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
-import { appInfoSchema } from '@ci-hub/common/schemas';
+import { appInfoSchema, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+
+/** Single-quote a path for `sh`. */
+function shellQuotePath(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * The shell that makes an app's data tree writable by every uid, minus the
+ * paths in `excluded` and everything under them. With nothing excluded it is
+ * the historical `chmod -Rf a+rwx`; otherwise `find` prunes each excluded
+ * path (so a private volume's whole subtree is skipped, not just its root)
+ * and chmods the rest. Exported for its tests.
+ */
+export function buildPermissionsCommand(appDataDir: string, excluded: readonly string[]): string {
+  const dir = shellQuotePath(appDataDir);
+  if (excluded.length === 0) {
+    return `chmod -Rf a+rwx ${dir}`;
+  }
+  const prune = excluded.map((target) => `-path ${shellQuotePath(target)}`).join(' -o ');
+  return `find ${dir} \\( ${prune} \\) -prune -o -exec chmod -f a+rwx {} +`;
+}
 
 @Injectable()
 export class AppFilesManager {
@@ -180,17 +202,87 @@ export class AppFilesManager {
   }
 
   /**
-   * Set the permissions for the app data directory
-   * @param appUrn - The app id
+   * Host paths of the app's volumes declared `private: true`, resolved to this
+   * process's view of the app data dir. Only paths INSIDE the app data dir
+   * count; anything else is ignored rather than trusted from the manifest.
+   * A manifest that cannot be read or parsed yields none.
+   */
+  public async getPrivateVolumePaths(appUrn: AppUrn): Promise<string[]> {
+    const { appDataDir } = this.getAppPaths(appUrn);
+    const { content } = await this.getDockerComposeJson(appUrn);
+    if (!content) {
+      return [];
+    }
+    let services: ReturnType<typeof parseComposeJson>['services'];
+    try {
+      ({ services } = parseComposeJson(content));
+    } catch (error) {
+      this.logger.debug(`Could not read private volumes for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+    const roots = new Set<string>();
+    for (const service of services) {
+      for (const volume of service.volumes ?? []) {
+        if (volume.private !== true || typeof volume.hostPath !== 'string') {
+          continue;
+        }
+        const resolved = path.resolve(volume.hostPath.replace(/\$\{APP_DATA_DIR\}/g, appDataDir));
+        if (resolved === appDataDir || !resolved.startsWith(`${appDataDir}${path.sep}`)) {
+          continue;
+        }
+        roots.add(resolved);
+      }
+    }
+    return [...roots].sort();
+  }
+
+  /**
+   * Set the permissions for the app data directory.
+   *
+   * App containers run as whatever user their image picks, the Hub cannot know
+   * the uid, and their bind-mounted data has to be writable by it — so the
+   * data tree is made writable by everyone. That is the standing debt this
+   * method carries (a real fix chowns each mount to its service's user, which
+   * few manifests declare). What it must NOT do is extend that to things no
+   * container reads from disk:
+   *
+   *  - `app.env`, which the Hub writes for compose and which carries the app's
+   *    credentials (for Memory: the Hub's own device key, the forward-auth
+   *    secret, database and object-store passwords). World-readable AND
+   *    world-writable let any local account read them or inject environment.
+   *  - volumes the manifest marks `private: true` — a directory only the app's
+   *    own root-running service writes (Memory's secrets). Left at 0700 so no
+   *    local account can read or replace what is under it. Bind mounts do not
+   *    need traversal permission on the host's ancestors, so a non-root
+   *    service can still mount and read a subdirectory the root service
+   *    created.
+   *
+   * See {@link buildPermissionsCommand} for the exact shell.
    */
   public async setAppDataDirPermissions(appUrn: AppUrn) {
     const { appDataDir } = this.getAppPaths(appUrn);
 
-    if (process.platform !== 'win32') {
-      const escapedPath = appDataDir.replace(/'/g, "'\\''");
-      const { stderr } = await execAsync(`chmod -Rf a+rwx '${escapedPath}'`);
-      if (stderr) {
-        this.logger.error(`Error setting permissions for app ${appUrn}: ${stderr}`);
+    if (process.platform === 'win32') {
+      return;
+    }
+
+    const privateRoots = await this.getPrivateVolumePaths(appUrn);
+    const appEnvPath = path.join(appDataDir, 'app.env');
+    const { stderr } = await execAsync(buildPermissionsCommand(appDataDir, [...privateRoots, appEnvPath]));
+    if (stderr) {
+      this.logger.error(`Error setting permissions for app ${appUrn}: ${stderr}`);
+    }
+
+    // Best effort, and only for what exists: a missing app.env is normal before
+    // the first env generation, and a mount that rejects chmod (drvfs) is the
+    // case `supportsPosixPermissions` already routes around.
+    for (const [target, mode] of [[appEnvPath, 0o600] as const, ...privateRoots.map((root) => [root, 0o700] as const)]) {
+      try {
+        await fs.promises.chmod(target, mode);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          this.logger.debug(`Could not set mode ${mode.toString(8)} on ${target}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
   }
@@ -214,6 +306,17 @@ export class AppFilesManager {
     const envPath = path.join(appDataDir, 'app.env');
 
     await this.filesystem.writeTextFile(envPath, env);
+    // Credentials, read by the Hub and compose only — never by a container.
+    // `setAppDataDirPermissions` keeps it out of the a+rwx sweep; this makes a
+    // freshly written file private from the start rather than after the next
+    // sweep.
+    if (process.platform !== 'win32') {
+      try {
+        await fs.promises.chmod(envPath, 0o600);
+      } catch (error) {
+        this.logger.debug(`Could not set mode 600 on ${envPath}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   /**

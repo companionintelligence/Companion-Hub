@@ -946,7 +946,7 @@ cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to ha
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--execute]  # Ollama's runtime env, one file, restart only on change
-cihub fleet backends --backends llamacpp [--llamacpp-model qwen3-coder:30b] [--ollama-parallel N] [--ollama-context N] [--execute]  # llama-server on :8081, serving the GGUF Ollama already holds
+cihub fleet backends --backends omlx|vllm|lemonade|ollama [--execute]  # install only an engine this machine can run
 cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
@@ -1039,7 +1039,11 @@ Two properties of the file are load-bearing:
   `tailnetName`, which is a fact about the network rather than a preference.
 
 A malformed row costs that row and names it, not the whole file: running against nineteen nodes
-while believing it was twenty is the worse failure.
+while believing it was twenty is the worse failure. A `"skip"` outside those three values is the
+exception — every fleet subcommand, `list` and `scan` included, refuses the whole roster on it,
+names each row and the value it holds, and exits 1. Unknown values used to read as "attempt it":
+on 2026-09-26 22 of 23 rows marked `"skip": "excluded-tmp"` to narrow an install to one node were
+all installed on. To act on some nodes only, pass `--nodes`.
 
 ### Flags
 
@@ -1056,7 +1060,7 @@ while believing it was twenty is the worse failure.
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
 | `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
 | `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
-| `--backends a,b` | `backends` only: from `ollama`, `vllm`, `lucebox`, `dspark`, `mtplx`, `lemonade`. Omit for all six |
+| `--backends a,b` | `backends` only: from `ollama`, `omlx`, `vllm`, `lemonade`. Omit to plan every engine this machine can run |
 | `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `all` — `0.0.0.0` behind `ollama-tailnet-guard.service`, which admits the tailnet, loopback and the Docker bridges the Hub container arrives on; `tailnet` is the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
@@ -1372,8 +1376,8 @@ after it is the only real conflict, and `--ollama-context` reports that one as `
 
 `--ollama-max-loaded` is the other half of `--ollama-keep-alive`. A 24h keep-alive with no cap on
 resident models is a slow leak: on 2026-09-21 three 27–30B models had piled up on batch-tier Strix
-Halo nodes next to vLLM, Lucebox and Lemonade — core-7 at 122/123 GB with swap full, core-17's
-kernel OOM-killing `llama-server` and dbus. `OLLAMA_MAX_LOADED_MODELS=2`, set by hand, freed
+Halo nodes next to the other engines that node was running — core-7 at 122/123 GB with swap full, core-17's
+kernel OOM-killing a model server and dbus. `OLLAMA_MAX_LOADED_MODELS=2`, set by hand, freed
 122 → 56 GB (core-7), 109 → 72 (core-17), 95 → 49 (core-14) and 102 → 56 (fzzy). Pass it on every
 run that manages it: a run with `--ollama-parallel` alone renders the file without the key, and
 Ollama's default (3 × GPU count) is back in force after the restart.
@@ -1455,190 +1459,22 @@ the flags on the line: a run that names only `--ollama-parallel` and `--ollama-c
 Hub that predates the slot count, the drop-in applies and then the `hub` line fails as above, which
 leaves that node's daemon at N slots with its Hub stating nothing.
 
-#### llama-server: the same GGUF Ollama holds, on `:8081`
+#### llama-server is not a Hub backend
 
-`--backends llamacpp` runs `llama-server` (the `ghcr.io/ggml-org/llama.cpp` server image, build
-b11065 pinned) on a node as a systemd unit, **serving the exact model file its Ollama already has**.
-Measured 2026-09-21 on core-6 (Strix Halo, gfx1151) against the blob Ollama loads for
-`qwen3-coder:30b`, four slots of 32k each: prefill 1096 tok/s on a 16.3k prompt against 529 for
-GPU-Ollama, decode 70.7 against 75, 146.5 tok/s aggregate over four streams at 0.86 s to first
-token, 9 of 9 well-formed tool calls where Ollama managed 2 of 3 (ollama/ollama#18563), and a
-follow-up turn on a cached 16k prefix in 0.11 s. Agent traffic on this fleet is prefill-bound, so
-that first number is the one that matters. Speculative decoding was measured too, and was a net
-loss: the CLI never enables it.
-
-**Only when named.** Every other backend here is planned by a run that names none; this one is not,
-because a llama-server holds a whole model in memory beside Ollama's copy, and a run that did not
-ask must not double a node's residency. `cihub fleet backends` without `--backends llamacpp` still
-*reports* what is on the port and installs nothing: a server that names itself `llamacpp` on
-`/v1/models` reads `adopt` (with this CLI's own unit named when it is the one serving), a listener
-that names nothing reads `skip — something answers on :8081 but does not name itself llamacpp … —
-not adopted`, and neither touches the Hub. The `hub` steps below — `LLAMACPP_URL`, the `ci-hub`
-recreate, the slot count and cap, the `:8081` firewall rule — run only on a run that named the
-backend, so a plain `fleet backends` never re-adds a `LLAMACPP_URL` an operator removed. The gates
-are Lucebox's: Linux, a usable Docker.
-
-**The model is Ollama's blob, mounted read-only — never a second download.** The node resolves its
-own store (`OLLAMA_MODELS` from the daemon's merged environment, then the account's, then
-`/usr/share/ollama/.ollama/models`), reads the tag's manifest, and mounts the store into the
-container at `/models:ro` with `--model /models/blobs/sha256-<digest>`. `--alias <tag>` makes
-`/v1/models` report the Ollama tag, so an app that asks for `qwen3-coder:30b` reaches the same
-model by the same name on either engine. A tag Ollama has not pulled is refused by name, before
-the image is pulled or the unit written:
-
-```
-llamacpp: would skip — qwen3-coder:30b — no manifest at /mnt/cache/ollama/manifests/registry.ollama.ai/library/qwen3-coder/30b (ollama pull qwen3-coder:30b on this node first)
-```
-
-**Which model.** `--llamacpp-model <ollama-tag>` names it for every node in the run. Without the
-flag each node's **own Hub** is asked what it hands out for `auto` — the pinned `preferredModel`
-mapped to its Ollama tag through the onboarding profile, or the first recommended Ollama LLM the
-Hub reports installed — so a fleet whose nodes pin different models gets each node's own. A Hub
-that pins a vLLM row, or one the catalog cannot map, or nothing installed, is a skip that names the
-flag; the CLI never invents a tag. The tag is validated before any machine is dialled: it lands in
-a unit file's `ExecStart` and in a manifest path.
-
-**Which image.** Decided per node from the hardware facts the run already read: an AMD `gfx11xx`
-target → `server-rocm`, measured — ROCm loaded fine on gfx1151 at 33 GB of GTT, with none of the
-NO_VMM trouble that [forces Ollama onto Vulkan there](#strix-halo-vulkan-and-the-igpu-key-in-the-bind-file);
-any other AMD part → `server-vulkan`, the fallback that loads everywhere (604 prefill, 81 decode,
-a three-minute cold start on the same node); NVIDIA with a live driver → `server-cuda`; nothing →
-`server`, the CPU image. The unit passes each image what it needs — ROCm `/dev/kfd` and `/dev/dri`
-with the host's `video` and `render` group **ids** (resolved with `getent` on the node, because
-`--group-add video` is looked up in the container's `/etc/group`, where the id differs), Vulkan
-`/dev/dri` and the same groups, CUDA `--gpus all`, CPU nothing.
-
-**The flags** are the measured set and are not knobs: `-ngl 999 -fa on -ub 2048 -b 2048
---cache-reuse 256 --jinja --metrics`, with `-np` from `--ollama-parallel` and `-c` from
-`--ollama-parallel × --ollama-context` — four slots of 32768 (`-np 4 -c 131072`) when neither flag
-is given. llama-server divides `-c` across its slots, which is why the product is what it is
-passed; `/props` reads back `total_slots` and the per-slot `n_ctx`, and the install is not called
-done until both match what was asked. Pass the same two flags you pass Ollama and the two engines
-run the same shape.
-
-**Port 8081, not llama-server's own 8080.** 8080 is mlx-dspark's default *and* the Traefik
-dashboard on every appliance — `ss` shows it taken on a node that runs no llama-server at all. The
-container listens on 8080 inside and the unit publishes it on `:8081`; the Hub's `LLAMACPP_URL` is
-opt-in for the same reason, and this step writes it explicitly (below).
-
-**Published on three addresses, never on 0.0.0.0.** llama-server has no authentication, and a bare
-`-p 8081:8080` is a `0.0.0.0` (and `[::]`) bind whose traffic Docker DNATs in PREROUTING — it never
-reaches ufw's INPUT chain, so the port guard that keeps the LAN out of Ollama would not keep it out
-of this. The unit carries three `-p` entries, resolved on the node when it is rendered: `127.0.0.1`,
-the node's tailnet address (`tailscale ip -4`, kept only when it looks like an address — a stopped
-tailscaled prints a sentence), and the docker0 gateway (`ip -4 addr show docker0`, falling back to
-`docker network inspect bridge`), which is what `host.docker.internal` resolves to inside `ci-hub`.
-Peers reach the server through the node's Hub, never directly, so the tailnet entry is for the
-operator's own `curl`; a LAN host gets a refused connection. The dry run prints the three and warns
-in yellow when the docker0 gateway could not be found, because the Hub would then reach nothing at
-`LLAMACPP_URL`. A tailnet address that changes rewrites the unit and restarts it, the same as any
-other change to its bytes. The firewall step admits the Docker bridge to `:8081` **on this node
-only** — see [Firewall rules](#firewall-rules-for-the-hubs-engine-probes).
-
-The ROCm image alone also runs `--security-opt seccomp=unconfined`, copied from the Lucebox runner
-for the reason recorded there: ROCm's userspace queues issue ioctls the default seccomp profile
-blocks. The core-6 measurement ran with it; whether llama-server's ROCm build needs it has not been
-tested on a node without it, so the measured configuration stands until it is. Vulkan, CUDA and the
-CPU image keep the default profile.
-
-**One unit, restarted only when its bytes change.** The unit is `cihub-llamacpp.service`, rendered
-on the node from what the node knows — the store, the digest, the group ids, the docker binary —
-into a temp file and compared with `/etc/systemd/system/cihub-llamacpp.service`. Identical bytes on
-an active unit run nothing: a restart unloads the model, and a fleet command will be re-run. A
-changed model, image or flag rewrites it, `daemon-reload`s and restarts; matching bytes on a unit
-that is not running start it. The dry run runs the same resolution unprivileged and prints the
-exact `docker run` it would install, and whether the installed unit already carries it:
-
-```
-core-6  linux/x86_64 · amd/gfx1151 · load 0.4
-  llamacpp  would install — AMD gfx1151 — ROCm image (measured on gfx1151) — installing cihub-llamacpp.service: ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 serving Ollama's qwen3-coder:30b (this node's Hub pins qwen3-coder-30b for auto) as 4 × 32768 (-np 4 -c 131072) on :8081
-            llamacpp: model sha256-1194…006a under /mnt/cache/ollama, mounted read-only
-            llamacpp: /usr/bin/docker run --rm --name cihub-llamacpp -p 127.0.0.1:8081:8080 -p 100.64.0.6:8081:8080 -p 172.17.0.1:8081:8080 --device /dev/kfd --device /dev/dri --group-add 44 --group-add 992 --security-opt seccomp=unconfined -v /mnt/cache/ollama:/models:ro ghcr.io/ggml-org/llama.cpp:server-rocm-b11065 --model /models/blobs/sha256-1194…006a --alias qwen3-coder:30b --host 0.0.0.0 --port 8080 -ngl 999 -fa on -np 4 -ub 2048 -b 2048 --cache-reuse 256 --jinja --metrics -c 131072
-            llamacpp: published on 127.0.0.1, 100.64.0.6 (tailnet), 172.17.0.1 (docker0 — host.docker.internal inside ci-hub); never on 0.0.0.0 — Docker's DNAT would bypass ufw and the port guard
-            llamacpp: would write cihub-llamacpp.service, then daemon-reload and restart it (the model reloads)
-            hub: would set LLAMACPP_URL=http://host.docker.internal:8081 in the env file compose reads and recreate ci-hub, unless the running Hub already carries it
-```
-
-**What is on the port decides the plan**, three ways, because the host probe can ask: `:8081`
-answering `/v1/models` with `owned_by: llamacpp` from **this CLI's own unit** is converged (the
-apply above, which restarts only on change); a llama-server there that the unit did not start — a
-hand-run one — is **adopted** with nothing installed, the way a hand-started Ollama is; a server
-naming any other engine is **refused**, since the port is not ours to fight for. A listener that
-names nothing yet (a llama-server still mapping its GGUF answers 503) is adopted on port evidence
-rather than restarted from under itself.
-
-**On `--execute`** the unit step pulls the image if absent, writes and restarts as above, then polls
-`/health` for up to ten minutes — 503 while the GGUF is still being mapped, and a port that
-accepts a connection and then makes the first request wait minutes is not up — and reads back
-`/v1/models` and `/props`. The node is reported `installed` only when the server answers 200,
-names itself `llamacpp` under the requested alias, and reads back the requested slots × context;
-`adopted` when the unit already carried all of it and nothing restarted. A server that came up as
-somebody else, or a shape that does not match, fails the node with the difference in the sentence.
-A container that dies at start is a **crash loop**, not a slow load: the unit is `docker run --rm`
-under `Restart=always`/`RestartSec=5`, so systemd starts it again every five seconds, `is-active`
-never reads `failed`, and `docker logs` answers "No such container" because `--rm` already removed
-it. The wait watches `systemctl show -p NRestarts` and stops after the third automatic restart —
-seconds, not ten minutes per node — and the failure line names it (`llama-server is crash-looping:
-systemd restarted cihub-llamacpp.service 3 times in 15 s …`) with the last twenty lines of
-`journalctl -u cihub-llamacpp.service` beneath it, which is where a ROCm allocation failure or a
-bad flag shows.
-
-**Then the Hub's half.** A llama-server the Hub cannot see is a candidate the pool never offers —
-the case [Hub Pool spends a section on](./hub-pool.md#when-a-node-runs-the-model-and-the-hub-cannot-see-the-engine)
-— so after an install or an adoption the same run writes `LLAMACPP_URL=http://host.docker.internal:8081`
-into the node's env file and recreates `ci-hub` with it, the way `LEMONADE_URL` and `DSPARK_URL` are
-set for the other out-of-band engines. The file is the one the running container's
-`com.docker.compose.project.environment_file` label names (`~/.local/share/companion-hub/.env.dev`
-on this fleet — a guess of `.env` lands in a file compose never opens), the line is replaced in
-place when present and appended otherwise (after terminating a file with no trailing newline, the
-shape that produced `TRAEFIK_DASHBOARD_PORT=8080LEMONADE_URL=…` on two nodes), and the recreate is
-`docker compose up -d --no-build --no-deps ci-hub` with the project, working directory and compose
-files the container's own labels record — never a guessed project name. "Nothing to do" is judged
-on the **running** container's environment, not the file: a line written by a cut-off run and
-never applied is exactly the state that leaves. Unprivileged, like the cap step; a `hub` line per
-node reports `applied` (with the seconds until `/api/health/live` answered again), `unchanged`, or
-`failed` with the fix — `cihub up` on the node when the container carries no compose labels.
-
-**And the slot count and cap**, only when Ollama's runtime step is not in the run to state them and
-only from a server that read back the requested shape: `--ollama-parallel` and `--ollama-context`
-on a llamacpp-only run write `inferenceOllamaSlots` and `inferenceMaxNumCtx` to the node's Hub
-exactly as the Ollama path does, so peers — which see only the statement — rank the node by the
-slots llama-server actually runs. With both `ollama` and `llamacpp` named, the halves follow the
-Ollama runtime step and are written once. The Hub itself reads the local llama-server's `/props`
-directly and believes it over the statement; see
-[Slot-aware placement](./hub-pool.md#slot-aware-placement).
-
-```bash
-cihub fleet backends --backends llamacpp --nodes core-6                                   # plan: each node's Hub names the model, the blob resolves, nothing runs
-cihub fleet backends --backends llamacpp --llamacpp-model qwen3-coder:30b --execute       # install on every node whose Ollama has the tag; write LLAMACPP_URL; recreate ci-hub
-cihub fleet backends --backends llamacpp --ollama-parallel 2 --ollama-context 32768 --execute   # 2 × 32k (-np 2 -c 65536), and each Hub's slot count and cap to match
-cihub fleet backends --backends llamacpp --execute                                        # again: unit unchanged, nothing restarted, Hub already pointed at it
-```
-
-The `llamacpp` backend in the Hub is still a URL and a health check — it cannot tell a fleet-run
-server from a hand-run one and does not need to. On a node that is not in the fleet roster, run
-`llama-server` yourself and set `LLAMACPP_URL`; see
-[Three backends on one port](./hub-pool.md#three-backends-on-one-port) for how the Hub tells whose
-server it reached.
+The fleet does not install a separate llama-server. Ollama is how that engine ships. `--backends` accepts `ollama`, `omlx`, `vllm`, and `lemonade`. oMLX is Apple Silicon (`brew install jundot/omlx/omlx`, then `omlx start`). vLLM is NVIDIA only. Lemonade is AMD or NPU and stays operator-managed.
 
 #### Firewall rules for the Hub's engine probes
 
 Every pooled request runs a live health probe against each local engine port before it ranks
-candidates — six probes, each with a 5 s timeout. On a node whose `ufw` silently **drops** the
+candidates — one probe per engine Hub still offers, each with a 5 s timeout. On a node whose `ufw` silently **drops** the
 Docker-bridge SYN to an engine port, the probe cannot get a reset and waits out the whole timeout:
 measured 2026-09-20 as a flat 5.0 s pool TTFT on beta-nas, beta-1, core-6 and core-5, against
 22–100 ms once the port answered. Only `:11434` had ever been allowed through.
 
 So `backends` also plans, for every node where ufw is active,
-`ufw allow from 172.16.0.0/12 to any port <p> proto tcp` for each port the Hub probes — **8000**
-(vllm/mtplx/lucebox), **8080** (dspark), **13305** (lemonade) and **8216** (the lucebox-hub stack) —
-next to the existing bridge → `:11434` rule, plus **8081** (the fleet's llama-server) **only on a
-node where the Hub will probe it**: one where `--backends llamacpp` was named in the run, or where
-`cihub-llamacpp.service` already runs. The Hub probes `LLAMACPP_URL` only when it is set, and the
-llamacpp step is what sets it, so fleet-wide the rule would match nothing and read "would add 1
-rule" on every node. Where it is set, the rule matters exactly when the server is down — a running
-unit's published port is DNATed before ufw sees it, but with nothing published the probe hits
-INPUT and a silent DROP costs 5 s per pooled request. `172.16.0.0/12` is Docker's whole default
+`ufw allow from 172.16.0.0/12 to any port <p> proto tcp` for each port the Hub probes — **11434**
+(Ollama), **8000** (oMLX or vLLM), and **13305** (Lemonade) —
+next to the existing bridge rule. A silent DROP costs 5 s per pooled request. `172.16.0.0/12` is Docker's whole default
 address pool, so compose networks are covered without enumerating them. It reads `ufw status` the way ufw
 does — top down, first match wins, and `ufw allow` appends — so a port the table already decides
 for the bridge gets nothing added: an `ALLOW` (from that CIDR or wider, or from `Anywhere`, alone
@@ -1691,6 +1527,22 @@ sent — Portal honours only the newest (see `fleet devices` below). A `409` on 
 things it can mean — an orphan from an earlier attempt, or a node registered under another org —
 because only a person in Portal can tell which; when this machine re-registered the device, the
 `409` says that instead, and to pass the code with `--code`.
+
+A kept code is reused for a day, and every reuse says how old it is. One kept longer than 24 hours
+is replaced before anything is sent: a fresh mint, or — when that `409`s because the device row
+outlived its code — a re-register of that row with a `device:manage` login. Portal's own lifetime
+for a code is seven days, which its source calls a guess to be shortened; a code a day old belongs
+to an attempt nobody retried, and the only other test of it is a twenty-minute `hub up` ending at
+`register` (core-6 on 2026-09-26 went out "reusing the code minted 2026-09-23T03:14", three days on,
+with nothing to say so). The old code stays kept until its replacement is in hand, so a mint or
+re-register that fails leaves it for the next run to replace — it holds the device id a re-register
+needs. A `device:pair` login cannot re-register, so when the row still exists it sends the old code
+anyway while it is inside Portal's seven days, saying so on the node's line, and past them stops the
+node, keeps the code, and names the scope. `fleet devices release` forgets the released device's
+kept code, since its row is gone. The dry run lists the nodes it would install on as a table led by
+`Would install on N of M rostered node(s)`, says per node whether it would mint, reuse or replace a
+kept code (`replace or reuse` / `replace or refuse` under `device:pair`), and lists the rows the
+roster holds back with their reasons.
 
 A code Portal *refuses* is a different failure, and until 2026-09-22 it was the one with no way out:
 fifteen nodes failed with `410 PAIRING_CODE_INVALID`, and the two retries that followed re-sent every
@@ -1916,13 +1768,15 @@ IPMI host, `physical`) or you pass `--i-have-console`. The refusal says which in
 ## Maintenance
 
 ```bash
-cihub doctor [env]         # validate env files, Docker access, bind mounts, and registration health
-cihub clean [env] [--yes]  # remove generated host-state files for one environment
-cihub reset [env] [--yes]  # remove runtime state for one environment
-cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
+cihub doctor [env]                     # validate env files, Docker access, bind mounts, and registration health
+cihub clean [env] [--yes]              # remove generated host-state files for one environment
+cihub reset [env] [--yes] [--dry-run]  # remove runtime state for one environment; --dry-run only lists it
+cihub uninstall [--yes]                # full machine cleanup of CI-Hub runtime state
 ```
 
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
+`reset` prints the apps and containers it will remove before it asks; `reset --dry-run` prints
+that list and the host data it would delete, then stops. See [RESET_RUNBOOK.md](RESET_RUNBOOK.md).
 
 `doctor` also fails on a `DEVICE_ID` copied from another machine: a machine-ID-shaped value in the env
 file that is not this host's `/etc/machine-id`. The Hub refuses to pair with Portal under such an ID,

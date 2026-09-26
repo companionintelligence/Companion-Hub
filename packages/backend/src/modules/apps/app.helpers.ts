@@ -13,7 +13,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
-import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
@@ -34,31 +34,83 @@ import { ProxyTrustService } from '../network/proxy-trust.service';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
 /**
- * Companion Hub secrets that must never reach an app container.
+ * The ONLY keys an app's env may inherit from the Hub's own `.env`.
  *
- * `generateEnvFile` starts each app environment from the Hub's `.env`. Without
- * this filter, every `app.env` and container `env_file` would receive these
- * values, including apps from third-party stores.
+ * `generateEnvFile` starts from the Hub's `/data/.env` — the file that also
+ * holds the Hub's Postgres and RabbitMQ passwords, its JWT secret, its Portal
+ * device key and whatever else the operator or installer put there — and
+ * writes the result to `app.env`, which is `env_file` for every service of the
+ * app. It used to copy that file whole and strip a short denylist, so each new
+ * Hub secret reached every installed app by default (the broker password did,
+ * and with it the ability to drive the Hub's lifecycle queue). This is the
+ * allowlist that replaces it: an app inherits these and nothing else. Every
+ * other value the Hub wants an app to have — its identity, its keys, its
+ * inference and Memory credentials — is set explicitly further down, from the
+ * Hub's own state, not inherited.
  *
- * - `CI_HUB_FORWARD_AUTH_SECRET` signs connect exchange, rotation, and revocation
- *   calls, as well as the forward-auth identity header. The memory provider
- *   receives the Hub-wide value below. First-party consumers receive separate
- *   per-app secrets so the provider gate remains effective.
- * - `JWT_SECRET` is the Hub's signing key. `MCP_API_KEY` remains blocked even
- *   though the Hub no longer creates it (SEC-MCP-8), because upgraded appliances
- *   can retain the obsolete value.
- * - `POSTGRES_PASSWORD` is the Hub database password. The stock `postgres` image
- *   reads this value from its environment, so a leak could also configure another
- *   database with the same password.
+ * Two groups:
  *
- * Apps can still use these variable names through their own `form_fields`. The
- * form-field loop runs after this filter and restores the app-owned value or
- * generates a new one. This filter removes only values inherited from the Hub.
+ * - Hub identity a manifest may reference (`DOMAIN`, `ROOT_FOLDER_HOST`,
+ *   `LOCAL_DOMAIN` are in the marketplace's `HUB_PROVIDED_VARS` contract;
+ *   `TZ` is used by dozens of manifests) and the values this function itself
+ *   reads back from the seeded map (`CI_HUB_APP_DATA_PATH`, `LOCAL_DOMAIN`).
+ * - Operator pins: the Hub honours a value the operator set in its `.env` for
+ *   these instead of its own default (`setUnlessOperatorSet`, the maps-key
+ *   gate). They stay operator-overridable, which is the documented behaviour.
  *
- * A denylist exposes each new Hub secret by default. A future allowlist can use
- * the marketplace's `HUB_PROVIDED_VARS` inventory as its source.
+ * An app-specific pass-through — the Memory `url_env`/`token_env` names a
+ * manifest declares, which an operator may pin the same way — is added per app
+ * by {@link appInheritableHubEnvKeys}. Add a key here only if an app must read
+ * it from the Hub's `.env` specifically; if the Hub knows the value, set it.
  */
-const HUB_ONLY_SECRET_ENV_VARS = ['CI_HUB_FORWARD_AUTH_SECRET', 'JWT_SECRET', 'MCP_API_KEY', 'POSTGRES_PASSWORD'] as const;
+const HUB_ENV_KEYS_INHERITED_BY_APPS: ReadonlySet<string> = new Set([
+  'DOMAIN',
+  'LOCAL_DOMAIN',
+  'ROOT_FOLDER_HOST',
+  'CI_HUB_APP_DATA_PATH',
+  'INTERNAL_IP',
+  'ARCHITECTURE',
+  'TZ',
+  'LOG_LEVEL',
+  'NODE_ENV',
+  'CI_HUB_VERSION',
+  'DEMO_MODE',
+  'CI_CLOUD_URL',
+  'PORTAL_OIDC_ENABLED',
+  'PORTAL_OIDC_ISSUER',
+  'PORTAL_OIDC_JWKS_URI',
+  'GOOGLE_MAPS_KEY',
+  'GEOCODING_API_KEY',
+]);
+
+/**
+ * Secrets that must never reach an app even if someone adds them to the
+ * allowlist above by mistake: the guard is a static check at module load, so a
+ * bad edit fails the process at startup rather than shipping.
+ */
+const HUB_ONLY_SECRET_ENV_VARS = [
+  'CI_HUB_FORWARD_AUTH_SECRET',
+  'JWT_SECRET',
+  'MCP_API_KEY',
+  'POSTGRES_PASSWORD',
+  'RABBITMQ_PASSWORD',
+  'HUB_API_KEY',
+] as const;
+
+for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
+  if (HUB_ENV_KEYS_INHERITED_BY_APPS.has(secret)) {
+    throw new Error(`${secret} is a Hub-only secret and must not be inheritable by apps`);
+  }
+}
+
+/** The allowlist for one app: the shared keys plus the Memory env names its manifest declares. */
+export function appInheritableHubEnvKeys(config: Pick<AppInfo, 'hub_integration'>): ReadonlySet<string> {
+  const keys = new Set(HUB_ENV_KEYS_INHERITED_BY_APPS);
+  const memory = config.hub_integration?.memory;
+  if (memory?.url_env) keys.add(memory.url_env);
+  if (memory?.token_env) keys.add(memory.token_env);
+  return keys;
+}
 
 /**
  * Formats the brokered Companion Memory address as the consuming app declares.
@@ -195,6 +247,73 @@ function deriveAppBaseWsOrigin(parsed: URL): string {
   return `${wsScheme}://${parsed.host}`;
 }
 
+/** What an earlier platform address of this app looks like. See {@link isPlatformIdentityUrlFor}. */
+export interface PlatformIdentityShape {
+  /** `<appName>-<appStoreSlug>`, the subdomain an app routes on when none was chosen. */
+  defaultSubdomain: string;
+  /** The operator's `localSubdomain`, when one is set. */
+  routingSubdomain?: string | null;
+  /** This Hub's device slug, which stays the same when the Hub moves to another organization. */
+  deviceSlug?: string | null;
+  /** The LAN domain root (`LOCAL_DOMAIN`). */
+  localDomainRoot?: string | null;
+}
+
+/**
+ * Whether `url` is a platform address the Hub derived for this app under an earlier
+ * organization, Hub registration, or public domain. A match is replaced with the current
+ * address, so this recognises only what the Hub itself writes.
+ *
+ * With an organization, `buildPublicWebIdentity` yields a bare HTTPS origin whose first label
+ * is `<subdomain>-<device>-<org>` or `<subdomain>-<org>`. The Hub keeps no record of earlier
+ * registrations, so the shape is all it has, and it is read narrowly:
+ *
+ * - The store-qualified default (`ci-hermes-ci-marketplace-…`) may be followed by any org. An
+ *   operator's own hostname carries it only by deliberately reusing it.
+ * - A chosen subdomain counts only when this Hub's device slug follows it. The install dialog
+ *   sets it to the bare app name, so `n8n-<anything>` would also take an operator's
+ *   `https://n8n-team.acme.io`.
+ * - Nothing under the local domain, which is a LAN name the operator chose.
+ * - A path, a port, or plain HTTP was typed by a person.
+ */
+export function isPlatformIdentityUrlFor(url: string, shape: PlatformIdentityShape): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== 'https:' || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') {
+    return false;
+  }
+
+  const hostname = parsed.hostname;
+  const localDomainRoot = shape.localDomainRoot
+    ?.trim()
+    .toLowerCase()
+    .replace(/^\.+|\.+$/g, '');
+  if (localDomainRoot && (hostname === localDomainRoot || hostname.endsWith(`.${localDomainRoot}`))) {
+    return false;
+  }
+
+  const [firstLabel, ...zone] = hostname.split('.');
+  if (!firstLabel || zone.length < 2) {
+    return false;
+  }
+
+  const continuesPast = (prefix: string): boolean => firstLabel.length > prefix.length && firstLabel.startsWith(prefix);
+
+  const defaultSubdomain = sanitizeAppSubdomain(shape.defaultSubdomain);
+  if (defaultSubdomain && continuesPast(`${defaultSubdomain}-`)) {
+    return true;
+  }
+
+  const routingSubdomain = shape.routingSubdomain ? sanitizeAppSubdomain(shape.routingSubdomain) : '';
+  const deviceSlug = shape.deviceSlug ? sanitizeAppSubdomain(shape.deviceSlug) : '';
+  return Boolean(routingSubdomain && deviceSlug && continuesPast(`${routingSubdomain}-${deviceSlug}-`));
+}
+
 @Injectable()
 export class AppHelpers {
   constructor(
@@ -321,16 +440,20 @@ export class AppHelpers {
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
 
-    // Each app environment inherits the Hub's `.env`, including for third-party
-    // apps. Remove Hub secrets before any inherited value reaches the container.
-    //
-    // Default installs put these values in `.env.resolved`, not the source `.env`.
-    // Operators can pin `CI_HUB_FORWARD_AUTH_SECRET` in `.env` across rebuilds.
-    // Without this filter, pinning would expose the credential that signs connect
-    // exchange, rotation, revocation, and identity headers, defeating the
-    // provider-only gate that isolates Companion Memory keys.
-    for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
-      envMap.delete(secret);
+    // Allowlist, applied in place so the map object stays the one the rest of
+    // this function (and its tests) mutate: the Hub's .env is the seed, but only
+    // the keys an app is documented to inherit survive — see
+    // HUB_ENV_KEYS_INHERITED_BY_APPS for what and why.
+    const inheritable = appInheritableHubEnvKeys(config);
+    let withheld = 0;
+    for (const key of [...envMap.keys()]) {
+      if (!inheritable.has(key)) {
+        envMap.delete(key);
+        withheld += 1;
+      }
+    }
+    if (withheld > 0) {
+      this.logger.debug(`[AppHelpers] withheld ${withheld} Hub .env key(s) that ${appUrn} is not entitled to inherit`);
     }
 
     // App containers always use production mode. Inheriting the Hub's development
@@ -676,6 +799,28 @@ export class AppHelpers {
     );
 
     /*
+     * A Hub that changed organization or public domain leaves a base URL that is
+     * neither value above: an app that was never exposed has no `APP_PUBLIC_URL`,
+     * so core-2's Hermes kept `…-bill-co.companionintelligence.com` across restarts
+     * after moving to `demopool1`/ci.computer. A value with this app's platform
+     * shape is automatic whichever registration wrote it. The shape is read
+     * narrowly (`isPlatformIdentityUrlFor`), because a match overwrites the value.
+     * The rule waits for a current platform identity, because an unregistered Hub
+     * falls back to the LAN `APP_URL`, which is kept once written and would strand
+     * the app there.
+     */
+    const deviceSlug = org?.slug ? extractDeviceSlug(org.hubSubdomain, org.slug) : null;
+    const platformIdentityShape: PlatformIdentityShape = {
+      defaultSubdomain: `${appName}-${appStoreId}`,
+      routingSubdomain: typeof form.localSubdomain === 'string' ? form.localSubdomain : null,
+      // `buildFqdnSubdomain` leaves out a device slug equal to the org slug, so no address carries it.
+      deviceSlug: deviceSlug && deviceSlug !== org?.slug ? deviceSlug : null,
+      localDomainRoot: envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain,
+    };
+    const isAutoBaseUrl = (baseUrl: string): boolean =>
+      supersededAutoBaseUrls.has(baseUrl) || (Boolean(platformPublicUrl) && isPlatformIdentityUrlFor(baseUrl, platformIdentityShape));
+
+    /*
      * Apply the identity update to both the form value and existing environment.
      *
      * The install dialog prefills each `app_base_url` field with
@@ -686,11 +831,10 @@ export class AppHelpers {
      * domain.
      *
      * An automatically derived value follows the exposed identity regardless of
-     * its source. A value entered by the operator matches neither superseded URL
-     * and remains unchanged.
+     * its source. A value entered by the operator fails `isAutoBaseUrl` and
+     * remains unchanged.
      */
-    const followExposedIdentity = (baseUrl: string): string =>
-      defaultAppBaseUrl && supersededAutoBaseUrls.has(baseUrl) ? defaultAppBaseUrl : baseUrl;
+    const followExposedIdentity = (baseUrl: string): string => (defaultAppBaseUrl && isAutoBaseUrl(baseUrl) ? defaultAppBaseUrl : baseUrl);
 
     for (const field of config.form_fields) {
       if (field.type !== 'app_base_url') {

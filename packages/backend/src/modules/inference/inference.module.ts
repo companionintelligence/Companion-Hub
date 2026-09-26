@@ -17,6 +17,7 @@ import { InferenceRouterService } from './inference-router.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
+import { AppContainerOriginGuard } from './app-container-origin.guard';
 import { AppCredentialsService } from './app-credentials.service';
 import { InferenceEnvResolver } from './inference-env-resolver';
 import { InferenceEndpointService } from './inference-endpoint.service';
@@ -24,11 +25,7 @@ import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
-import { MtplxBackend } from './backends/mtplx.backend';
-import { DsparkBackend } from './backends/dspark.backend';
-import { LuceboxBackend } from './backends/lucebox.backend';
-import { LlamacppBackend } from './backends/llamacpp.backend';
-import { LmStudioBackend } from './backends/lmstudio.backend';
+import { OmlxBackend } from './backends/omlx.backend';
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { InferenceController } from './inference.controller';
 
@@ -57,14 +54,11 @@ import { InferenceController } from './inference.controller';
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
-    MtplxBackend,
-    DsparkBackend,
-    LuceboxBackend,
-    LlamacppBackend,
-    LmStudioBackend,
+    OmlxBackend,
     InferenceBackendRegistry,
     BackendObserverService,
     InternalOriginGuard,
+    AppContainerOriginGuard,
   ],
   exports: [
     HardwareInspectorService,
@@ -83,11 +77,7 @@ import { InferenceController } from './inference.controller';
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
-    MtplxBackend,
-    DsparkBackend,
-    LuceboxBackend,
-    LlamacppBackend,
-    LmStudioBackend,
+    OmlxBackend,
     InferenceBackendRegistry,
     BackendObserverService,
   ],

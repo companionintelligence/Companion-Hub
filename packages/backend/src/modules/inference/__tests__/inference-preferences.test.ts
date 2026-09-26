@@ -33,13 +33,10 @@ import { BackendObserverService } from '../supervision/backend-observer.service'
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { MtplxBackend } from '../backends/mtplx.backend';
-import { DsparkBackend } from '../backends/dspark.backend';
-import { LuceboxBackend } from '../backends/lucebox.backend';
-import { LlamacppBackend } from '../backends/llamacpp.backend';
-import { LmStudioBackend } from '../backends/lmstudio.backend';
+import { OmlxBackend } from '../backends/omlx.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 
 describe('InferenceController — preferences', () => {
   let controller: InferenceController;
@@ -64,16 +61,14 @@ describe('InferenceController — preferences', () => {
         { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
         { provide: RocmInstallerService, useValue: mock<RocmInstallerService>() },
         { provide: AppCredentialsService, useValue: appCredentials },
+        // AppContainerOriginGuard (on the bootstrap-handout routes) is built with the controller.
+        { provide: DockerReadFacade, useValue: mock<DockerReadFacade>() },
         { provide: HostMetricsService, useValue: mock<HostMetricsService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
-        { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
-        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
-        { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
-        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
-        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
+        { provide: OmlxBackend, useValue: mock<OmlxBackend>() },
         InferenceBackendRegistry,
         // The controller exposes GET inference/models/resident, which reads this service's
         // report. Mocked here: nothing in these suites exercises residency.
@@ -153,6 +148,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'lemonade',
@@ -204,6 +200,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'ollama',
@@ -240,25 +237,26 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
   }, 30_000);
 
-  it('passes the MTPLX endpoint URL through when provided', async () => {
+  it('passes the oMLX endpoint URL through when provided', async () => {
     configService.setInferencePreferences.mockResolvedValue({
-      preferredBackend: 'mtplx',
+      preferredBackend: 'omlx',
       preferredModel: null,
       preferredEmbeddingModel: null,
       preferredVisionModel: null,
-      preferredMtplxUrl: 'http://192.168.1.50:8000',
+      preferredOmlxUrl: 'http://192.168.1.50:8000',
     } as never);
 
     await controller.updatePreferences({
-      backend: 'mtplx',
-      mtplxUrl: 'http://192.168.1.50:8000',
+      backend: 'omlx',
+      omlxUrl: 'http://192.168.1.50:8000',
     });
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'mtplx',
+      'omlx',
       undefined,
       undefined,
       undefined,
@@ -267,33 +265,6 @@ describe('InferenceController — preferences', () => {
       'http://192.168.1.50:8000',
       undefined,
       undefined,
-      undefined,
-    );
-  }, 30_000);
-
-  it('passes the mlx-dspark endpoint URL through when provided', async () => {
-    configService.setInferencePreferences.mockResolvedValue({
-      preferredBackend: 'dspark',
-      preferredModel: null,
-      preferredEmbeddingModel: null,
-      preferredVisionModel: null,
-      preferredDsparkUrl: 'http://192.168.1.50:8080',
-    } as never);
-
-    await controller.updatePreferences({
-      backend: 'dspark',
-      dsparkUrl: 'http://192.168.1.50:8080',
-    });
-
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
-      'dspark',
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      'http://192.168.1.50:8080',
       undefined,
       undefined,
     );
@@ -339,11 +310,11 @@ describe('InferenceController — preferences', () => {
     );
   });
 
-  it('accepts the mtplx backend and a valid mtplxUrl in the preferences schema', () => {
-    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx' }).success).toBe(true);
-    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'http://host.docker.internal:8000' }).success).toBe(true);
-    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: null }).success).toBe(true);
-    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'not-a-url' }).success).toBe(false);
+  it('accepts the omlx backend and a valid omlxUrl in the preferences schema', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'omlx' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'omlx', omlxUrl: 'http://host.docker.internal:8000' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'omlx', omlxUrl: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'omlx', omlxUrl: 'not-a-url' }).success).toBe(false);
   });
 
   it('passes the context cap through, and a null to clear it', async () => {
@@ -362,12 +333,14 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
       16_384,
       undefined,
     );
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       2,
       'ollama',
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -408,6 +381,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
       4,
     );
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
@@ -421,11 +395,13 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
       null,
     );
     expect(configService.setInferencePreferences).toHaveBeenNthCalledWith(
       3,
       'ollama',
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -452,10 +428,8 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', ollamaSlots: '4' }).success).toBe(false);
   });
 
-  it('accepts the dspark backend and a valid dsparkUrl in the preferences schema', () => {
-    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark' }).success).toBe(true);
-    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark', dsparkUrl: 'http://host.docker.internal:8080' }).success).toBe(true);
-    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark', dsparkUrl: null }).success).toBe(true);
-    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark', dsparkUrl: 'not-a-url' }).success).toBe(false);
+  it('rejects a retired backend name', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark' }).success).toBe(false);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx' }).success).toBe(false);
   });
 });

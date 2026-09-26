@@ -1,10 +1,10 @@
 import {
   checkForUpdates as checkHubForUpdates,
+  factoryReset,
   getAutoUpdates,
   restartOnboarding,
   setAutoUpdates as updateAutoUpdatesSetting,
 } from '@/api-client/sdk.gen';
-import { factoryReset } from '@/api-client/sdk.gen';
 import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { Markdown } from '@/components/markdown/markdown';
 import { Button } from '@/components/ui/Button';
@@ -26,7 +26,7 @@ import {
   markStackUpdatePending,
   subscribeStackUpdate,
 } from '@/lib/desktop-stack-session';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import {
   checkForUpdates,
   fetchHostListenerStatus,
@@ -40,11 +40,10 @@ import {
   type UpdateInfo,
 } from '@/lib/update-service';
 
-const FACTORY_RESET_CONFIRMATION = 'factory-reset';
-
 export const GeneralActionsContainer = () => {
   const { t } = useTranslation();
-  const { version, refreshAppContext } = useAppContext();
+  const { version, refreshAppContext, userSettings } = useAppContext();
+  const deviceName = userSettings?.ciHubDeviceSlug?.trim() ?? '';
   const demoMode = useDemoMode();
 
   // A stack update outlives this component: the request returns in a second, the Hub is
@@ -94,14 +93,15 @@ export const GeneralActionsContainer = () => {
       toast.error(t('SERVER_ERROR_NOT_ALLOWED_IN_DEMO'));
       return;
     }
-    if (factoryResetPhrase.trim() !== FACTORY_RESET_CONFIRMATION) {
+    const typedName = factoryResetPhrase.trim();
+    if (!deviceName || typedName !== deviceName) {
       toast.error(t('SETTINGS_FACTORY_RESET_CONFIRMATION_MISMATCH'));
       return;
     }
 
     setFactoryResetting(true);
     try {
-      const result = await factoryReset({ body: { confirmation: FACTORY_RESET_CONFIRMATION } });
+      const result = await factoryReset({ body: { confirmation: typedName } });
       if (result.error) {
         throw result.error instanceof Error ? result.error : new Error(String(result.error));
       }
@@ -112,7 +112,7 @@ export const GeneralActionsContainer = () => {
       setFactoryResetting(false);
       toast.error(t('SETTINGS_FACTORY_RESET_ERROR'));
     }
-  }, [demoMode, factoryResetPhrase, t]);
+  }, [demoMode, deviceName, factoryResetPhrase, t]);
 
   const refreshShellUpdateState = useCallback(async () => {
     const installedVersion = desktop ? await getInstalledDesktopVersion() : null;
@@ -527,16 +527,22 @@ export const GeneralActionsContainer = () => {
           <DialogDescription className="space-y-4 py-2">
             <p>{t('SETTINGS_FACTORY_RESET_DIALOG_BODY')}</p>
             <div className="space-y-3 text-left">
-              <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
-                {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: FACTORY_RESET_CONFIRMATION })}
-              </label>
-              <Input
-                id="factory-reset-confirmation"
-                value={factoryResetPhrase}
-                onChange={(event) => setFactoryResetPhrase(event.target.value)}
-                autoComplete="off"
-                data-testid="factory-reset-confirmation-input"
-              />
+              {deviceName ? (
+                <>
+                  <label htmlFor="factory-reset-confirmation" className="block text-sm font-medium">
+                    {t('SETTINGS_FACTORY_RESET_CONFIRMATION_LABEL', { phrase: deviceName })}
+                  </label>
+                  <Input
+                    id="factory-reset-confirmation"
+                    value={factoryResetPhrase}
+                    onChange={(event) => setFactoryResetPhrase(event.target.value)}
+                    autoComplete="off"
+                    data-testid="factory-reset-confirmation-input"
+                  />
+                </>
+              ) : (
+                <p data-testid="factory-reset-no-device-name">{t('SETTINGS_FACTORY_RESET_NO_DEVICE_NAME')}</p>
+              )}
             </div>
           </DialogDescription>
           <DialogFooter>
@@ -546,7 +552,7 @@ export const GeneralActionsContainer = () => {
             <Button
               intent="danger"
               loading={factoryResetting}
-              disabled={factoryResetPhrase.trim() !== FACTORY_RESET_CONFIRMATION}
+              disabled={!deviceName || factoryResetPhrase.trim() !== deviceName}
               onClick={handleFactoryReset}
               data-testid="factory-reset-confirm-btn"
             >

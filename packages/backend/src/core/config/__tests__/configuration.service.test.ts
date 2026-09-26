@@ -380,13 +380,15 @@ describe('ConfigurationService inference preferences — context cap', () => {
 
     // Set.
     expect(
-      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 32_768)).maxNumCtx,
+      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 32_768))
+        .maxNumCtx,
     ).toBe(32_768);
     expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceMaxNumCtx: 32_768 });
 
     // Cleared: the key is removed rather than stored as null, like the pool prompt ceiling.
     expect(
-      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, null)).maxNumCtx,
+      (await svc.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, null))
+        .maxNumCtx,
     ).toBeNull();
     expect(svc.mergeSettingsToDisk).toHaveBeenLastCalledWith({ inferenceBackend: 'ollama', inferenceMaxNumCtx: undefined });
   });
@@ -431,7 +433,7 @@ describe('ConfigurationService inference preferences — Ollama slots', () => {
 
   it('sets, leaves alone, and clears the count through setInferencePreferences', async () => {
     const svc = makeService({ inferenceOllamaSlots: 4 });
-    const untouched = [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined];
+    const untouched = [undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined];
 
     // Omitted: unchanged.
     expect((await svc.setInferencePreferences('ollama')).ollamaSlots).toBe(4);

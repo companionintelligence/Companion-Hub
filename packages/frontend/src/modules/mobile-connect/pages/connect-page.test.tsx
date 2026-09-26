@@ -27,7 +27,7 @@ vi.mock('@/lib/hub-runtime-mode', () => ({
   isTauriDesktopApp: () => false,
 }));
 
-vi.mock('react-hot-toast', () => ({ default: { error: toastError, success: vi.fn() } }));
+vi.mock('sonner', () => ({ toast: { error: toastError, success: vi.fn() } }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async () => () => {}),
 }));

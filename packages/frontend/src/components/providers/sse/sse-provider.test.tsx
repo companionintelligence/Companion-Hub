@@ -6,10 +6,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { isStackUpdatePending, markStackUpdatePending, subscribeStackUpdate } from '@/lib/desktop-stack-session';
 import { SSEProvider } from './sse-provider';
 
-const { mockUseSSE, mockHandleAppSseEvent, mockToast, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
+const { mockUseSSE, mockHandleAppSseEvent, mockToastWarning, mockToastError, mockToastDismiss, mockToastSuccess } = vi.hoisted(() => ({
   mockUseSSE: vi.fn(),
   mockHandleAppSseEvent: vi.fn(),
-  mockToast: vi.fn(),
+  mockToastWarning: vi.fn(),
   mockToastError: vi.fn(),
   mockToastDismiss: vi.fn(),
   mockToastSuccess: vi.fn(),
@@ -23,17 +23,14 @@ vi.mock('@/modules/app/helpers/app-sse-cache', () => ({
   handleAppSseEvent: (...args: unknown[]) => mockHandleAppSseEvent(...args),
 }));
 
-vi.mock('react-hot-toast', () => {
-  // The default export is itself callable (plain warning toast) AND carries
-  // .success/.error/.dismiss — mirror that shape via Object.assign so the callable
-  // and its methods stay type-safe, and so `toast(...)` is exercised too.
-  const toast = Object.assign((...args: unknown[]) => mockToast(...args), {
+vi.mock('sonner', () => ({
+  toast: {
     error: (...args: unknown[]) => mockToastError(...args),
     success: (...args: unknown[]) => mockToastSuccess(...args),
+    warning: (...args: unknown[]) => mockToastWarning(...args),
     dismiss: (...args: unknown[]) => mockToastDismiss(...args),
-  });
-  return { default: toast };
-});
+  },
+}));
 
 describe('SSEProvider', () => {
   beforeEach(() => {
@@ -58,16 +55,17 @@ describe('SSEProvider', () => {
       </QueryClientProvider>,
     );
 
+    // Sonner hands back the new toast's id; the "see logs" link closes the toast by it.
+    mockToastError.mockReturnValueOnce('install-error-toast');
     act(() => {
       onEvent?.({ event: 'install_error', appUrn: 'excalidraw:community' });
     });
 
     expect(mockToastError).toHaveBeenCalledTimes(1);
 
-    const toastMessage = mockToastError.mock.calls[0]?.[0] as ((toast: { id: string }) => ReactNode) | undefined;
-    expect(toastMessage).toBeTypeOf('function');
+    const toastMessage = mockToastError.mock.calls[0]?.[0] as ReactNode;
 
-    render(<MemoryRouter>{toastMessage?.({ id: 'install-error-toast' })}</MemoryRouter>);
+    render(<MemoryRouter>{toastMessage}</MemoryRouter>);
 
     const logsLink = screen.getByRole('link', { name: 'see logs' });
 
@@ -97,16 +95,17 @@ describe('SSEProvider', () => {
       </QueryClientProvider>,
     );
 
+    // Sonner hands back the new toast's id; the "see logs" link closes the toast by it.
+    mockToastError.mockReturnValueOnce('start-error-toast');
     act(() => {
       onEvent?.({ event: 'start_error', appUrn: 'excalidraw:community' });
     });
 
     expect(mockToastError).toHaveBeenCalledTimes(1);
 
-    const toastMessage = mockToastError.mock.calls[0]?.[0] as ((toast: { id: string }) => ReactNode) | undefined;
-    expect(toastMessage).toBeTypeOf('function');
+    const toastMessage = mockToastError.mock.calls[0]?.[0] as ReactNode;
 
-    render(<MemoryRouter>{toastMessage?.({ id: 'start-error-toast' })}</MemoryRouter>);
+    render(<MemoryRouter>{toastMessage}</MemoryRouter>);
 
     const logsLink = screen.getByRole('link', { name: 'see logs' });
 
@@ -143,8 +142,8 @@ describe('SSEProvider', () => {
     });
 
     expect(mockToastSuccess).not.toHaveBeenCalled();
-    expect(mockToast).toHaveBeenCalledTimes(1);
-    expect(mockToast).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'), expect.objectContaining({ icon: '⚠️' }));
+    expect(mockToastWarning).toHaveBeenCalledTimes(1);
+    expect(mockToastWarning).toHaveBeenCalledWith(expect.stringContaining('could not be fully removed'), expect.anything());
   });
 
   it('shows the plain success toast when uninstall_success has no warningCode', () => {
@@ -154,7 +153,7 @@ describe('SSEProvider', () => {
       getOnEvent()?.({ event: 'uninstall_success', appUrn: 'excalidraw:community' });
     });
 
-    expect(mockToast).not.toHaveBeenCalled();
+    expect(mockToastWarning).not.toHaveBeenCalled();
     expect(mockToastSuccess).toHaveBeenCalledTimes(1);
     expect(mockToastSuccess).toHaveBeenCalledWith(expect.stringContaining('uninstalled successfully'));
   });
@@ -172,13 +171,12 @@ describe('SSEProvider', () => {
     });
 
     expect(mockToastSuccess).not.toHaveBeenCalled();
-    expect(mockToast).toHaveBeenCalledTimes(1);
-    const [message, opts] = mockToast.mock.calls[0] as [() => ReactNode, { icon?: string }];
-    expect(opts).toEqual(expect.objectContaining({ icon: '⚠️' }));
+    expect(mockToastWarning).toHaveBeenCalledTimes(1);
+    const [message] = mockToastWarning.mock.calls[0] as [ReactNode];
 
     // The toast body must render the exact host path in a runnable, shell-safe command
     // (single-quoted + `--` so a path with spaces/metacharacters can't misfire on paste).
-    render(<MemoryRouter>{message()}</MemoryRouter>);
+    render(<MemoryRouter>{message}</MemoryRouter>);
     expect(screen.getByText("sudo rm -rf -- '/srv/app-data/community/excalidraw'")).toBeInTheDocument();
   });
 
@@ -220,6 +218,33 @@ describe('SSEProvider', () => {
       expect(firePublicDnsError('not_yet_invented')).toBe(
         "Couldn't create a public address for n8n. Verify the selected domain is available for this device.",
       );
+    });
+  });
+
+  describe('public_domain_changed', () => {
+    it('says where the app is published now, as a warning rather than an error', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'public_domain_changed', appUrn: 'n8n:ci-marketplace', hostname: 'n8n-core-2-acme.ci.computer' });
+      });
+
+      expect(mockToastError).not.toHaveBeenCalled();
+      expect(mockToastWarning).toHaveBeenCalledTimes(1);
+      expect(mockToastWarning.mock.calls[0]?.[0]).toBe(
+        "n8n is now published at n8n-core-2-acme.ci.computer. The domain it used isn't available for this device, so its old address never worked. n8n restarts to use the new one.",
+      );
+    });
+
+    it('shows nothing when the event names no hostname', () => {
+      const getOnEvent = renderProvider();
+
+      act(() => {
+        getOnEvent()?.({ event: 'public_domain_changed', appUrn: 'n8n:ci-marketplace' });
+      });
+
+      expect(mockToastWarning).not.toHaveBeenCalled();
+      expect(mockToastError).not.toHaveBeenCalled();
     });
   });
 

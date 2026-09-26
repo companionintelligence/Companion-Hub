@@ -25,6 +25,7 @@ export type {
 } from './domains.js';
 export type { PublicWebIdentity, BuildOriginServerNameInput, BuildPublicWebIdentityInput } from '../public-web/identity.js';
 export type { AvailableCustomDomain, TunnelCustomDomain, ParsedTunnelCustomDomains } from '../public-web/custom-domains.js';
+export type { AppExposureFields, AppExposureMode } from '../public-web/exposure.js';
 export type { BuildTailscalePortUrlInput, BuildTailscaleWebIdentityInput, TailscaleWebIdentity } from '../tailscale/identity.js';
 // biome-ignore lint/performance/noBarrelFile: Re-export public-web helpers through @ci-hub/common/types
 export {
@@ -34,6 +35,7 @@ export {
   deriveAppSlug,
   extractDeviceSlug,
   resolvePublicDomainRoot,
+  resolveRoutingSubdomain,
   RESERVED_APP_NAMES,
   sanitizeAppSubdomain,
 } from '../public-web/identity.js';
@@ -49,6 +51,7 @@ export {
   parseTunnelCustomDomains,
   selectCustomDomain,
 } from '../public-web/custom-domains.js';
+export { publishesPublicWebRoute, storedExposureForm } from '../public-web/exposure.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export { INFERENCE_BACKEND_TYPES } from './inference.js';
 export { OPERATOR_MINTABLE_SCOPES } from './api-key-scopes.js';

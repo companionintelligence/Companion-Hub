@@ -10,7 +10,7 @@ import { useAppContext } from '@/context/app-context';
 import { fetchAppRuntimeHealth } from '@/lib/app-runtime-monitor';
 import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { useTranslation } from 'react-i18next';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import type { TranslatableError } from '@/types/error.types';
 import { useState } from 'react';
 import { AppRuntimeDegradedBanner } from '../components/app-runtime-degraded-banner';

@@ -23,13 +23,10 @@ import { BackendObserverService } from '../supervision/backend-observer.service'
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { MtplxBackend } from '../backends/mtplx.backend';
-import { DsparkBackend } from '../backends/dspark.backend';
-import { LuceboxBackend } from '../backends/lucebox.backend';
-import { LlamacppBackend } from '../backends/llamacpp.backend';
-import { LmStudioBackend } from '../backends/lmstudio.backend';
+import { OmlxBackend } from '../backends/omlx.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 
 describe('InferenceController — onboarding-profile', () => {
   let controller: InferenceController;
@@ -40,10 +37,8 @@ describe('InferenceController — onboarding-profile', () => {
   let hostMetrics: MockProxy<HostMetricsService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
-  let mtplxBackend: MockProxy<MtplxBackend>;
-  let dsparkBackend: MockProxy<DsparkBackend>;
+  let omlxBackend: MockProxy<OmlxBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
-  let luceboxBackend: MockProxy<LuceboxBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -99,16 +94,14 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: OllamaInstallerService, useValue: mock<OllamaInstallerService>() },
         { provide: RocmInstallerService, useValue: mock<RocmInstallerService>() },
         { provide: AppCredentialsService, useValue: mock<AppCredentialsService>() },
+        // AppContainerOriginGuard (on the bootstrap-handout routes) is built with the controller.
+        { provide: DockerReadFacade, useValue: mock<DockerReadFacade>() },
         { provide: HostMetricsService, useValue: mock<HostMetricsService>() },
         { provide: ConfigurationService, useValue: mock<ConfigurationService>() },
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
-        { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
-        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
-        { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
-        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
-        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
+        { provide: OmlxBackend, useValue: mock<OmlxBackend>() },
         InferenceBackendRegistry,
         // The controller exposes GET inference/models/resident, which reads this service's
         // report. Mocked here: nothing in these suites exercises residency.
@@ -135,14 +128,10 @@ describe('InferenceController — onboarding-profile', () => {
     ollamaBackend = moduleRef.get(OllamaBackend);
     vllmBackend = moduleRef.get(VllmBackend);
     lemonadeBackend = moduleRef.get(LemonadeBackend);
-    mtplxBackend = moduleRef.get(MtplxBackend);
-    dsparkBackend = moduleRef.get(DsparkBackend);
-    luceboxBackend = moduleRef.get(LuceboxBackend);
+    omlxBackend = moduleRef.get(OmlxBackend);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
     vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    mtplxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
-    luceboxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    omlxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
     modelRegistry.getModelsForHardware.mockImplementation((tier) => modelRegistry.getModelsForTier(tier));
@@ -202,23 +191,23 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.installedCatalogIds).toEqual(expect.arrayContaining(['qwen-vllm', 'nomic-embed-text']));
   });
 
-  it('maps MTPLX served models and Ollama embeddings when backend=mtplx', async () => {
+  it('maps oMLX served models when backend=omlx', async () => {
     hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
     modelRegistry.getModelsForTier.mockReturnValue([]);
     memoryManager.calculateBudget.mockResolvedValue(fakeStatus.memoryBudget);
     router.getStatus.mockResolvedValue(fakeStatus);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text:latest'] });
-    mtplxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed'] });
+    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['mlx-community/Qwen3-8B-4bit'] });
     modelRegistry.getCatalog.mockReturnValue([
       { id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama', modality: 'llm' },
       { id: 'nomic-embed-text', backendModelId: 'nomic-embed-text', backend: 'ollama', modality: 'embedding' },
-      { id: 'qwen3-8-27b-mtplx-speed', backendModelId: 'Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed', backend: 'mtplx', modality: 'llm' },
+      { id: 'qwen3-8b-mlx', backendModelId: 'mlx-community/Qwen3-8B-4bit', backend: 'omlx', modality: 'llm' },
     ] as any);
 
-    const result = await controller.getOnboardingProfile({ backend: 'mtplx' });
+    const result = await controller.getOnboardingProfile({ backend: 'omlx' });
 
-    expect(result.installedCatalogIds).toEqual(expect.arrayContaining(['qwen3-8-27b-mtplx-speed', 'nomic-embed-text']));
+    expect(result.installedCatalogIds).toEqual(expect.arrayContaining(['qwen3-8b-mlx']));
   });
 
   it('maps Lemonade models served through its Hub-managed API when backend=lemonade', async () => {
@@ -262,7 +251,7 @@ describe('InferenceController — onboarding-profile', () => {
     expect(result.backends.recommended).toBe('ollama');
   });
 
-  it('should recommend mlx-dspark for Apple Silicon — real hot-swap via /admin/load, unlike vLLM-Metal', async () => {
+  it('should recommend oMLX for Apple Silicon', async () => {
     const appleProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, vendor: 'apple' as const, unifiedMemory: true, runtimeAvailable: false } };
     hardwareInspector.getProfile.mockResolvedValue(appleProfile);
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
@@ -271,7 +260,7 @@ describe('InferenceController — onboarding-profile', () => {
     router.getStatus.mockResolvedValue(fakeStatus);
 
     const result = await controller.getOnboardingProfile();
-    expect(result.backends.recommended).toBe('dspark');
+    expect(result.backends.recommended).toBe('omlx');
   });
 
   it('should recommend ollama for nvidia without runtime', async () => {

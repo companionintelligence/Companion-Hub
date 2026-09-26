@@ -22,7 +22,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, ChevronRight, Network } from 'lucide-react';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import toast from 'react-hot-toast';
+import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import {
   Detail,
