@@ -1455,9 +1455,11 @@ the flags on the line: a run that names only `--ollama-parallel` and `--ollama-c
 Hub that predates the slot count, the drop-in applies and then the `hub` line fails as above, which
 leaves that node's daemon at N slots with its Hub stating nothing.
 
-#### llama-server: the same GGUF Ollama holds, on `:8081`
+#### llama-server is not a Hub backend
 
-`--backends llamacpp` runs `llama-server` (the `ghcr.io/ggml-org/llama.cpp` server image, build
+The fleet does not install a separate `llama-server`. Ollama is how that engine ships. `--backends` accepts `ollama`, `omlx`, `vllm`, and `lemonade`. oMLX is Apple Silicon and uses `brew install jundot/omlx/omlx` then `omlx start`. The historical `llamacpp` recipe below is not part of the product surface.
+
+`--backends llamacpp` used to run `llama-server` (the `ghcr.io/ggml-org/llama.cpp` server image, build
 b11065 pinned) on a node as a systemd unit, **serving the exact model file its Ollama already has**.
 Measured 2026-09-21 on core-6 (Strix Halo, gfx1151) against the blob Ollama loads for
 `qwen3-coder:30b`, four slots of 32k each: prefill 1096 tok/s on a 16.3k prompt against 529 for
