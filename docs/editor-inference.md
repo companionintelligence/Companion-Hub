@@ -134,7 +134,7 @@ than asking you to switch. Point it at one and the pool places work on it like a
 
 | Engine | Variable | Notes |
 |---|---|---|
-| oMLX | `OMLX_URL` | Apple Silicon. Default `http://host.docker.internal:8000`. `owned_by` is `omlx`. |
+| oMLX | `OMLX_URL` | Apple Silicon. Default `http://host.docker.internal:8000`, probed only when the Hub's host is Apple Silicon; set `OMLX_URL` to use an oMLX on another machine. The Hub counts it as running only if `owned_by` is `omlx` or `/health` is oMLX's. |
 | vLLM | `VLLM_URL` | Also settable in **Settings → AI**. |
 | Manual endpoints | decode and encode fields in Settings | Either URL may be set alone. Re-check probes the typed URL. |
 
