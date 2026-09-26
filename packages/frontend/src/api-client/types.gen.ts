@@ -288,7 +288,7 @@ export type HostEventLogDto = {
 };
 
 export type FactoryResetDto = {
-    confirmation: 'factory-reset';
+    confirmation: string;
 };
 
 export type LoginBody = {
