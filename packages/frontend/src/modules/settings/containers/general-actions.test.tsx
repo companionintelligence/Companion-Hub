@@ -1,6 +1,7 @@
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
 import { checkForUpdates, fetchHostListenerStatus, getInstalledDesktopVersion, isTauri, performUpdate } from '@/lib/update-service';
+import { factoryReset } from '@/api-client/sdk.gen';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
 import { toast } from 'sonner';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
@@ -66,6 +67,7 @@ const mockIsTauri = vi.mocked(isTauri);
 const mockPerformUpdate = vi.mocked(performUpdate);
 const mockFetchHostListenerStatus = vi.mocked(fetchHostListenerStatus);
 const mockToastSuccess = vi.mocked(toast.success);
+const mockFactoryReset = vi.mocked(factoryReset);
 
 describe('GeneralActionsContainer', () => {
   beforeEach(() => {
@@ -279,5 +281,35 @@ describe('GeneralActionsContainer', () => {
     expect(screen.getByText('Version 0.2.46')).toBeInTheDocument();
     expect(screen.queryByText('Version 0.2.45')).not.toBeInTheDocument();
     expect(screen.queryByText('Release 0.2.46')).not.toBeInTheDocument();
+  });
+
+  it('asks for this device name before factory reset', async () => {
+    mockUseAppContext.mockReturnValue({
+      version: { current: '4.7.0', latest: '4.7.0', body: '', releases: [] },
+      refreshAppContext: vi.fn(),
+      userSettings: { ciHubDeviceSlug: 'core' },
+    } as unknown as ReturnType<typeof useAppContext>);
+    mockFactoryReset.mockResolvedValue({ data: { success: true } } as Awaited<ReturnType<typeof factoryReset>>);
+
+    render(<GeneralActionsContainer />);
+
+    await userEvent.click(await screen.findByTestId('factory-reset-btn'));
+    expect(screen.getByLabelText('Type "core" to confirm')).toBeInTheDocument();
+    expect(screen.queryByText('Type "factory-reset" to confirm')).not.toBeInTheDocument();
+
+    const confirm = screen.getByTestId('factory-reset-confirm-btn');
+    expect(confirm).toBeDisabled();
+
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'factory-reset');
+    expect(confirm).toBeDisabled();
+
+    await userEvent.clear(screen.getByTestId('factory-reset-confirmation-input'));
+    await userEvent.type(screen.getByTestId('factory-reset-confirmation-input'), 'core');
+    expect(confirm).toBeEnabled();
+
+    await userEvent.click(confirm);
+    await waitFor(() => {
+      expect(mockFactoryReset).toHaveBeenCalledWith({ body: { confirmation: 'core' } });
+    });
   });
 });
