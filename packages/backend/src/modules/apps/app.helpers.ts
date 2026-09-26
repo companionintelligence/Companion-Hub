@@ -398,18 +398,6 @@ export class AppHelpers {
   }
 
   /**
-   * Generates the environment file for an installed app.
-   *
-   * The generated values reflect the app manifest, submitted form values, and
-   * current exposure identity. Exposed apps receive their confirmed public
-   * hostname; other apps receive their browser-reachable internal address. The
-   * app data path resolves to a host volume-mount location.
-   *
-   * @param appUrn App URN to configure.
-   * @param form Submitted app configuration.
-   * @throws If the manifest is invalid or a required variable is missing.
-   */
-  /**
    * `ProxyTrustService` lives in the network module and is looked up lazily
    * rather than injected: this helper is constructed in many tests with a
    * mocked module, and an app's env generation must never fail because the
@@ -426,6 +414,18 @@ export class AppHelpers {
     }
   }
 
+  /**
+   * Generates the environment file for an installed app.
+   *
+   * The generated values reflect the app manifest, submitted form values, and
+   * current exposure identity. Exposed apps receive their confirmed public
+   * hostname; other apps receive their browser-reachable internal address. The
+   * app data path resolves to a host volume-mount location.
+   *
+   * @param appUrn App URN to configure.
+   * @param form Submitted app configuration.
+   * @throws If the manifest is invalid or a required variable is missing.
+   */
   public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput) => {
     const { internalIp, envFilePath, rootFolderHost, userSettings } = this.config.getConfig();
 
