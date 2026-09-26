@@ -3,8 +3,8 @@ import type { ZodDto } from '@/common/zod-dto';
 import { SearchAppsQueryDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { GetAppBackupsQueryDto } from '@/modules/backups/dto/backups.dto';
 import {
-  DsparkStatusQueryDto,
-  MtplxStatusQueryDto,
+  ManualEndpointStatusQueryDto,
+  OmlxStatusQueryDto,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
   VllmStatusQueryDto,
@@ -84,8 +84,8 @@ export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   deletePoolPin: DeletePoolPinQuery,
   getOnboardingProfile: OnboardingProfileQueryDto,
   getVllmStatus: VllmStatusQueryDto,
-  getMtplxStatus: MtplxStatusQueryDto,
-  getDsparkStatus: DsparkStatusQueryDto,
+  getOmlxStatus: OmlxStatusQueryDto,
+  getManualEndpointStatus: ManualEndpointStatusQueryDto,
   getAppBackups: GetAppBackupsQueryDto,
   appLogsEvents: StreamAppLogsQueryDto,
   hubLogsEvents: StreamHubLogsQueryDto,

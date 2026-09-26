@@ -305,8 +305,8 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private needsGpuVendor(backend: InferenceBackendType, container: SupervisionContainerState | null): boolean {
-    return backend === 'lucebox' && container !== null && container.image.includes('lucebox-hub:rocm');
+  private needsGpuVendor(_backend: InferenceBackendType, _container: SupervisionContainerState | null): boolean {
+    return false;
   }
 
   private async readGpuVendor(): Promise<string | null> {

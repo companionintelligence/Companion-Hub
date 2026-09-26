@@ -76,7 +76,7 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
@@ -185,7 +185,7 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
@@ -1394,7 +1394,7 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
@@ -2144,14 +2144,14 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     vllmUrl?: string;
     mtplxUrl?: string;
     dsparkUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
 };
 
 export type RoutingLogQueryDto = {
@@ -4060,7 +4060,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     };
     url: '/api/inference/models/runtime';
 };
@@ -4266,7 +4266,7 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
         vllmUrl?: string;
         mtplxUrl?: string;
         dsparkUrl?: string;

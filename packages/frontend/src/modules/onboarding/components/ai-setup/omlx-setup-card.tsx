@@ -2,51 +2,48 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { openExternal } from '@/lib/helpers/open-external';
-import type { MtplxStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import type { OmlxStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { AutoInstallRunnerButton } from './auto-install-runner-button';
 
-const MTPLX_DOCS_URL = 'https://github.com/youssofal/MTPLX';
+const OMLX_DOCS_URL = 'https://github.com/jundot/omlx';
 
-const MtplxProbeError = ({ error }: { error: string }) => {
+const OmlxProbeError = ({ error }: { error: string }) => {
   const { t } = useTranslation();
 
   return (
     <div
       className="mb-3 flex items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3"
-      data-testid="mtplx-probe-error"
+      data-testid="omlx-probe-error"
       role="alert"
     >
       <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
       <div className="min-w-0">
-        <p className="text-sm font-semibold text-destructive">{t('ONBOARDING_MTPLX_PROBE_ERROR_TITLE')}</p>
+        <p className="text-sm font-semibold text-destructive">{t('ONBOARDING_OMLX_PROBE_ERROR_TITLE')}</p>
         <p className="mt-1 break-all font-mono text-xs text-destructive/90">{error}</p>
       </div>
     </div>
   );
 };
 
-interface MtplxSetupCardProps {
-  status: MtplxStatus | null;
+interface OmlxSetupCardProps {
+  status: OmlxStatus | null;
   checking: boolean;
   onRecheck: () => Promise<void>;
-  /** Operator-configured MTPLX base URL; empty string means "use the Hub default". */
   endpointUrl?: string;
   onEndpointUrlChange?: (value: string) => void;
   onAutoInstall?: () => Promise<void>;
 }
 
-/** Endpoint URL field shared by the ready and not-ready branches. MTPLX has no API key concept —
- *  its server is local-only with no auth, unlike vLLM's optional --api-key. */
-const MtplxConnectionFields = ({
+const OmlxConnectionFields = ({
   endpointUrl,
   onEndpointUrlChange,
   labelClass,
   hintClass,
   defaultEndpointUrl,
   idSuffix,
-}: Pick<MtplxSetupCardProps, 'endpointUrl' | 'onEndpointUrlChange'> & {
+}: Pick<OmlxSetupCardProps, 'endpointUrl' | 'onEndpointUrlChange'> & {
   labelClass: string;
   hintClass: string;
   defaultEndpointUrl?: string;
@@ -56,25 +53,25 @@ const MtplxConnectionFields = ({
   if (!onEndpointUrlChange) return null;
   return (
     <div className="min-w-0">
-      <label htmlFor={`mtplx-endpoint-url-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
-        {t('ONBOARDING_MTPLX_ENDPOINT_URL_LABEL')}
+      <label htmlFor={`omlx-endpoint-url-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
+        {t('ONBOARDING_OMLX_ENDPOINT_URL_LABEL')}
       </label>
       <Input
-        id={`mtplx-endpoint-url-${idSuffix}`}
+        id={`omlx-endpoint-url-${idSuffix}`}
         type="text"
         autoComplete="off"
         value={endpointUrl ?? ''}
         onChange={(e) => onEndpointUrlChange(e.target.value)}
-        placeholder={defaultEndpointUrl || t('ONBOARDING_MTPLX_ENDPOINT_URL_PLACEHOLDER')}
-        data-testid="mtplx-endpoint-url-input"
+        placeholder={defaultEndpointUrl || t('ONBOARDING_OMLX_ENDPOINT_URL_PLACEHOLDER')}
+        data-testid="omlx-endpoint-url-input"
         className="w-full max-w-full"
       />
-      <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_MTPLX_ENDPOINT_URL_HINT')}</p>
+      <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_OMLX_ENDPOINT_URL_HINT')}</p>
     </div>
   );
 };
 
-export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndpointUrlChange, onAutoInstall }: MtplxSetupCardProps) => {
+export const OmlxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndpointUrlChange, onAutoInstall }: OmlxSetupCardProps) => {
   const { t } = useTranslation();
 
   if (!status) {
@@ -84,8 +81,8 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
           <div className="flex items-center gap-3">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             <div>
-              <div className="text-sm font-medium">{t('ONBOARDING_MTPLX_CHECKING')}</div>
-              <div className="text-xs text-muted-foreground">{t('ONBOARDING_MTPLX_LOOKING_HOST')}</div>
+              <div className="text-sm font-medium">{t('ONBOARDING_OMLX_CHECKING')}</div>
+              <div className="text-xs text-muted-foreground">{t('ONBOARDING_OMLX_LOOKING_HOST')}</div>
             </div>
           </div>
         </CardContent>
@@ -94,7 +91,7 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
   }
 
   if (status.ready) {
-    const endpoint = status.displayEndpoint ?? `${status.endpointUrl}/v1`;
+    const endpoint = status.displayEndpoint ?? status.endpointUrl;
 
     return (
       <Card className="border-success/30 bg-success/10">
@@ -103,7 +100,7 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
             <div className="flex min-w-0 items-center gap-3">
               <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
               <div className="min-w-0">
-                <div className="text-sm font-medium text-success">{t('ONBOARDING_MTPLX_DETECTED')}</div>
+                <div className="text-sm font-medium text-success">{t('ONBOARDING_OMLX_DETECTED')}</div>
                 <div className="text-xs text-success">{endpoint}</div>
               </div>
             </div>
@@ -112,14 +109,14 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
               size="icon"
               onClick={onRecheck}
               loading={checking}
-              aria-label={t('ONBOARDING_MTPLX_RECHECK')}
-              data-testid="mtplx-recheck-btn"
+              aria-label={t('ONBOARDING_OMLX_RECHECK')}
+              data-testid="omlx-recheck-btn"
               className="shrink-0"
             >
               {!checking && <RefreshCw className="h-3.5 w-3.5" />}
             </Button>
           </div>
-          <MtplxConnectionFields
+          <OmlxConnectionFields
             endpointUrl={endpointUrl}
             onEndpointUrlChange={onEndpointUrlChange}
             labelClass="text-success"
@@ -138,11 +135,11 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
         <div className="flex min-w-0 items-start gap-3">
           <Download className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
           <div className="min-w-0 flex-1">
-            <div className="mb-1 text-sm font-medium text-warning">{t('ONBOARDING_MTPLX_NOT_DETECTED')}</div>
-            <div className="mb-3 text-xs text-warning">{status.hint ?? t('ONBOARDING_MTPLX_NOT_DETECTED_DESC')}</div>
-            {status.error && <MtplxProbeError error={status.error} />}
+            <div className="mb-1 text-sm font-medium text-warning">{t('ONBOARDING_OMLX_NOT_DETECTED')}</div>
+            <div className="mb-3 text-xs text-warning">{status.hint ?? t('ONBOARDING_OMLX_NOT_DETECTED_DESC')}</div>
+            {status.error && <OmlxProbeError error={status.error} />}
             {status.remediationCommand && (
-              <div className="mb-3 min-w-0" data-testid="mtplx-remediation-command">
+              <div className="mb-3 min-w-0" data-testid="omlx-remediation-command">
                 <div className="mb-1 text-xs font-medium text-warning">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
                 <code className="block w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded bg-warning/10 px-2 py-1.5 text-xs text-warning">
                   {status.remediationCommand}
@@ -150,7 +147,7 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
               </div>
             )}
             <div className="mb-3">
-              <MtplxConnectionFields
+              <OmlxConnectionFields
                 endpointUrl={endpointUrl}
                 onEndpointUrlChange={onEndpointUrlChange}
                 labelClass="text-warning"
@@ -161,12 +158,12 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
             </div>
             <div className="flex gap-2 flex-wrap">
               {onAutoInstall && <AutoInstallRunnerButton onRun={onAutoInstall} />}
-              <Button size="sm" variant="ghost" onClick={() => openExternal(MTPLX_DOCS_URL)}>
-                {t('ONBOARDING_MTPLX_DOCS')}
+              <Button size="sm" variant="ghost" onClick={() => openExternal(OMLX_DOCS_URL)}>
+                {t('ONBOARDING_OMLX_DOCS')}
               </Button>
-              <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="mtplx-recheck-btn">
+              <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="omlx-recheck-btn">
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                {t('ONBOARDING_MTPLX_RECHECK')}
+                {t('ONBOARDING_OMLX_RECHECK')}
               </Button>
             </div>
           </div>

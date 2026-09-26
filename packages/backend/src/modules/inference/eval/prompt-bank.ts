@@ -28,9 +28,9 @@
  */
 
 /** The inference backends CI-Hub can front. See CI-Hub packages/backend/src/modules/inference/backends/. */
-export type LlmBackend = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox' | 'llamacpp' | 'lmstudio';
+export type LlmBackend = 'ollama' | 'vllm' | 'lemonade' | 'omlx';
 
-export const LLM_BACKENDS: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'];
+export const LLM_BACKENDS: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'omlx'];
 
 /**
  * Wire dialect. Base URLs never carry `/v1` — the dialect supplies the whole path, exactly the way
@@ -479,7 +479,7 @@ const COMPLETION_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade'];
  * Backends that actually serve embeddings. mtplx/lucebox front chat models only; dspark's absence of
  * `/v1/embeddings` is stated in CI-Hub's own dspark.backend.ts and has a regression test there.
  */
-const EMBEDDING_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade'];
+const EMBEDDING_CAPABLE: LlmBackend[] = ['ollama', 'vllm', 'lemonade', 'omlx'];
 /** Ollama's own routes — nothing else in the fleet exposes `/api/*`. */
 const OLLAMA_ONLY: LlmBackend[] = ['ollama'];
 /**
@@ -604,7 +604,7 @@ const NO_THINK_NATIVE = { think: false };
  * as a verdict — an entry that leans on one of those says so per backend: a clean 4xx is a fact
  * about the build, a 200 is still graded against the entry's real expectation.
  */
-const CHAT_ONLY_UNVERIFIED: LlmBackend[] = ['mtplx', 'dspark', 'lucebox'];
+const CHAT_ONLY_UNVERIFIED: LlmBackend[] = ['omlx'];
 
 function unverifiedParamOverrides(what: string, statuses: number[] = [200, 400, 422]): Partial<Record<LlmBackend, LlmBackendOverride>> {
   const entry: LlmBackendOverride = {

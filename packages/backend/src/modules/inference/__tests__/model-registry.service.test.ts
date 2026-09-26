@@ -163,9 +163,9 @@ describe('ModelRegistryService', () => {
 
         expect(linux.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(true);
         expect(windows.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(true);
-        expect(linux.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
-        expect(windows.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
-        expect(macos.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(true);
+        expect(linux.some((m) => m.backend === 'omlx')).toBe(false);
+        expect(windows.some((m) => m.backend === 'omlx')).toBe(false);
+        expect(macos.some((m) => m.backend === 'omlx')).toBe(true);
         expect(macos.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(false);
       });
 
@@ -174,10 +174,8 @@ describe('ModelRegistryService', () => {
         const local = service.getModelsForHardware('high', linux);
         const remoteSetup = service.getModelsForHardware('high', linux, { includeRemoteHostBackends: true });
 
-        expect(local.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
-        expect(remoteSetup.some((m) => m.backend === 'dspark')).toBe(true);
-        expect(remoteSetup.some((m) => m.backend === 'mtplx')).toBe(true);
-        expect(remoteSetup.some((m) => m.id.endsWith('-mlx'))).toBe(true);
+        expect(local.some((m) => m.backend === 'omlx')).toBe(false);
+        expect(remoteSetup.some((m) => m.backend === 'omlx')).toBe(true);
       });
 
       it('picks a runnable, size-capped LLM for CPU-only machines (regression: previously returned none)', () => {
@@ -366,10 +364,10 @@ describe('ModelRegistryService', () => {
 
       // vLLM-Metal (the catalog's `-mlx` rows) is the only vLLM path on Apple Silicon — see
       // VllmBackend.getComposeConfig's `apple` branch, which declines the CUDA/Docker path outright.
-      it('recommends vLLM-Metal (MLX) models on Apple Silicon, sized to unified memory', () => {
+      it('recommends oMLX models on Apple Silicon, sized to unified memory', () => {
         const smallMac = service
           .getRecommendedModelsForHardware('medium', profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb: 16 * GB, tier: 'medium' }))
-          .filter((m) => m.backend === 'vllm');
+          .filter((m) => m.backend === 'omlx');
         for (const m of smallMac) {
           expect(m.id, `${m.id} must be an MLX row`).toMatch(/-mlx$/);
           expect(m.runtime.memoryFootprintMb).toBeLessThanOrEqual(16 * GB * 0.7);
@@ -378,7 +376,7 @@ describe('ModelRegistryService', () => {
         // A large-unified-memory Mac (M-series Max/Ultra) can fit the 70B MLX row too.
         const bigMac = service
           .getRecommendedModelsForHardware('high', profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb: 64 * GB, tier: 'high' }))
-          .filter((m) => m.backend === 'vllm');
+          .filter((m) => m.backend === 'omlx');
         expect(bigMac.length).toBeGreaterThan(0);
         expect(bigMac.some((m) => m.id === 'llama3-3-70b-mlx')).toBe(true);
         for (const m of bigMac) {
@@ -394,11 +392,11 @@ describe('ModelRegistryService', () => {
       // touch smaller than Ollama's own smallest, gemma3-270m's q4_K_M build), so no *real* Mac RAM
       // size leaves every MLX row too big while Ollama still has a fit; this uses a synthetic
       // sub-real RAM purely to exercise the fallback-rejection path itself, not plausible hardware.
-      it('never recommends a vLLM-Metal model that exceeds the unified-memory budget (no CPU-RAM fallback for vLLM)', () => {
-        const ramMb = 256; // below every MLX row's footprint (smallest is gemma3-270m-mlx at ~0.2GB) at the 0.7 budget fraction
+      it('never recommends an oMLX model that exceeds the unified-memory budget', () => {
+        const ramMb = 256;
         const hw = profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb, tier: 'low' });
-        const vllmPicks = service.getRecommendedModelsForHardware('low', hw).filter((m) => m.backend === 'vllm');
-        expect(vllmPicks).toEqual([]);
+        const omlxPicks = service.getRecommendedModelsForHardware('low', hw).filter((m) => m.backend === 'omlx');
+        expect(omlxPicks).toEqual([]);
       });
 
       it('recommends the real default (q4_K_M) build and never overflows the VRAM budget', () => {
