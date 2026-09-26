@@ -223,6 +223,20 @@ services:
       # Runtime marker: if absent, a new image detects the pre-rename compose
       # from its legacy queue host and keeps writing ci-os-hub DNS/network names.
       HUB_CONTAINER_NAME: ci-hub
+      # The two edge hops' fixed addresses, for Traefik's trusted-forwarders
+      # list (written into traefik.yml at config-copy time) and the Hub's own
+      # (ProxyTrustService). By address, never the edge subnet: its gateway is
+      # where every connection that reaches Traefik through the host comes
+      # from. Must match the cloudflared and hub-tailscale addresses below.
+      HUB_EDGE_CLOUDFLARED_IP: ${HUB_EDGE_CLOUDFLARED_IP:-10.128.0.3}
+      HUB_EDGE_TAILSCALE_IP: ${HUB_EDGE_TAILSCALE_IP:-10.128.0.4}
+      # `tailscale serve` upstream for the sidecar: Traefik's fixed edge
+      # address rather than the name `traefik`, which the sidecar (on three
+      # networks) could resolve to an address Traefik does not trust. Must
+      # match HUB_EDGE_TRAEFIK_IP. Only a fallback: the Private VPN sync names
+      # each app's container and the Hub itself as the upstream, so no
+      # current publish goes through Traefik.
+      TAILSCALE_SERVE_UPSTREAM: ${TAILSCALE_SERVE_UPSTREAM:-10.128.0.2:80}
       OLLAMA_URL: http://host.docker.internal:11434
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
       MTPLX_URL: ${MTPLX_URL:-http://host.docker.internal:8000}
@@ -333,6 +347,10 @@ services:
     networks:
       ci_hub_network:
       ci_os_hub_network:
+      # Fixed address on the edge network, where cloudflared and the Tailscale
+      # sidecar reach it by this address alone. See `ci_hub_edge` below.
+      ci_hub_edge:
+        ipv4_address: ${HUB_EDGE_TRAEFIK_IP:-10.128.0.2}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -353,9 +371,20 @@ services:
     volumes:
       # Sibling tunnel/ dir (see ci-hub /app/tunnel mount above) — where the Hub writes the token.
       - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/home/nonroot/.cloudflared:ro
+    # The edge network ONLY, at a fixed address. Every app's tunnel ingress
+    # targets `traefik:80`, and Docker DNS resolves that to the one address the
+    # two share, so every tunnelled app request reaches Traefik from this
+    # address — the one Traefik trusts forwarded headers from. A second shared
+    # network would let DNS answer with an address Traefik does not trust.
     networks:
-      - ci_hub_network
-      - ci_os_hub_network
+      ci_hub_edge:
+        ipv4_address: ${HUB_EDGE_CLOUDFLARED_IP:-10.128.0.3}
+    # Load-bearing: Portal routes the Hub's OWN hostname to
+    # http://host.docker.internal:{hub port} (rebuilt from its database, not
+    # from the Hub's sync), which reaches the Hub's published port through the
+    # host. That works from a bridge the Hub is not on (checked on the fleet's
+    # Docker 29.8); the Hub sees it from a bridge gateway and ignores its
+    # forwarded headers, as before this network existed.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -411,8 +440,13 @@ services:
     volumes:
       - hub_tailscale_state:/var/lib/tailscale
     networks:
-      - ci_hub_network
-      - ci_os_hub_network
+      ci_hub_network:
+      ci_os_hub_network:
+      # Fixed address on the edge network: `tailscale serve` is pointed at
+      # Traefik's edge address (TAILSCALE_SERVE_UPSTREAM on the ci-hub service),
+      # so tailnet visitors reach Traefik from an address it trusts.
+      ci_hub_edge:
+        ipv4_address: ${HUB_EDGE_TAILSCALE_IP:-10.128.0.4}
     healthcheck:
       # Passes as soon as tailscaled is accepting commands (any BackendState).
       # grep for "BackendState" in the JSON output — present whenever the daemon
@@ -439,6 +473,26 @@ networks:
   ci_hub_internal:
     driver: bridge
     name: ci-hub_internal
+  # The edge: Traefik plus the two proxies that carry public traffic to it,
+  # cloudflared and the Tailscale sidecar, on a bridge with a FIXED subnet and
+  # fixed addresses. That is what lets Traefik trust the client address those
+  # two forward (traefik.yml `forwardedHeaders.trustedIPs`) while stripping it
+  # from everything else, and what lets the Hub and each app trust Traefik's
+  # hop in turn (ProxyTrustService). Apps never join it. Trust is by those two
+  # addresses, never the subnet: this network sorts first among Traefik's, so
+  # Docker makes it Traefik's gateway network and publishes Traefik's ports
+  # here, and anything reaching those ports through the host (docker-proxy,
+  # or another container via the host's address) arrives from its .1 gateway.
+  # The subnet is inside the 10.128.0.0–10.128.9.0 range reserved for Hub
+  # infrastructure, so the app allocator never hands it out; override
+  # HUB_EDGE_SUBNET and the three HUB_EDGE_*_IP values together if it collides
+  # with something on your LAN.
+  ci_hub_edge:
+    driver: bridge
+    name: ci-hub_edge
+    ipam:
+      config:
+        - subnet: ${HUB_EDGE_SUBNET:-10.128.0.0/29}
   # Keep the retired network so already-installed apps stay attached and can
   # still resolve the Hub via the ci-os-hub alias on this network.
   ci_os_hub_network:
