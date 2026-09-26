@@ -124,3 +124,28 @@ The Hub's own restarts skip the check. Each of them updates an app that is alrea
 | `402` | Refused | Refused |
 | `401`: device key rejected | Refused, because the bundle download and registry token that follow need the same key | Allowed, unless a check in the last 24 hours returned `402` |
 | Portal unreachable or `5xx` | Allowed only with an entitled answer cached in the last 24 hours | Allowed, unless a check in the last 24 hours returned `402` |
+
+## The push key
+
+Portal pushes to a Hub — an app install brokered through the store — used to authenticate with the
+Hub's own Portal device key. That key is also what first-party Companion Memory holds to call
+Portal as the device, so accepting it as a Hub operator credential made a compromised Memory
+container a Hub operator. The check-in now carries a key the Hub mints for Portal instead
+(`PortalPushKeyService`, an ordinary hashed and revocable row in Settings → Security named
+"Companion Portal (push)"):
+
+| Field | Direction | Meaning |
+| --- | --- | --- |
+| `hub_push_key_prefix` | Hub → Portal | Fingerprint of the key this Hub expects Portal to hold. Sent on every check-in. |
+| `hub_push_key` | Hub → Portal | The key itself. Sent only until Portal has confirmed holding it. |
+| `hub_push_key_prefix` | Portal → Hub | In the `2xx` body: the fingerprint of the key Portal holds for this device, `null` for none, absent from a Portal that predates the exchange. |
+
+Once Portal answers with the Hub's own fingerprint, the Hub records the delivery
+(`portalPushKeyDeliveredAt` in `state/settings.json`) and **stops accepting the device key as a
+bearer**. Until then it keeps accepting it, so a Hub talking to an older Portal keeps working
+exactly as before; the change lands on each Hub the first time its Portal confirms. A revoked row
+or a Portal that has lost the key leads to a fresh key on the next check-in, and a registration
+reset forgets it entirely.
+
+The host side changed with it: `cihub` on the box (`claim`, `doctor`, `pool`) now presents the
+`hubLocalKey` the Hub mints into `state/settings.json` at boot, not the device key.

@@ -114,6 +114,11 @@ type PersistedSettingsValues = {
    */
   ciHubMoveKey: string | null;
   ciHubOrganizationId: string | null;
+  /** See `fileOnlySettingsSchema` in app.dto.ts for these four. */
+  hubLocalKey: string | null;
+  portalPushKeyPrefix: string | null;
+  portalPushKeyPending: string | null;
+  portalPushKeyDeliveredAt: string | null;
   allowErrorMonitoring?: boolean;
   defaultAppCpuLimit?: string;
   defaultAppMemoryLimit?: string;
@@ -152,6 +157,10 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   ciHubApiKey: null,
   ciHubMoveKey: null,
   ciHubOrganizationId: null,
+  hubLocalKey: null,
+  portalPushKeyPrefix: null,
+  portalPushKeyPending: null,
+  portalPushKeyDeliveredAt: null,
   allowErrorMonitoring: undefined,
   defaultAppCpuLimit: undefined,
   defaultAppMemoryLimit: undefined,
@@ -248,6 +257,10 @@ export class ConfigurationService {
       ciHubApiKey: settings.ciHubApiKey || null,
       ciHubMoveKey: settings.ciHubMoveKey || null,
       ciHubOrganizationId: settings.ciHubOrganizationId || null,
+      hubLocalKey: settings.hubLocalKey || null,
+      portalPushKeyPrefix: settings.portalPushKeyPrefix || null,
+      portalPushKeyPending: settings.portalPushKeyPending || null,
+      portalPushKeyDeliveredAt: settings.portalPushKeyDeliveredAt || null,
       allowErrorMonitoring: settings.allowErrorMonitoring,
       defaultAppCpuLimit: settings.defaultAppCpuLimit?.trim() || undefined,
       defaultAppMemoryLimit: settings.defaultAppMemoryLimit?.trim() || undefined,
@@ -397,6 +410,10 @@ export class ConfigurationService {
       ciHubOrganizationId: settingsValues.ciHubOrganizationId,
       ciHubApiKey: settingsValues.ciHubApiKey,
       ciHubMoveKey: settingsValues.ciHubMoveKey,
+      hubLocalKey: settingsValues.hubLocalKey,
+      portalPushKeyPrefix: settingsValues.portalPushKeyPrefix,
+      portalPushKeyPending: settingsValues.portalPushKeyPending,
+      portalPushKeyDeliveredAt: settingsValues.portalPushKeyDeliveredAt,
       architecture: env.data.ARCHITECTURE,
       demoMode: env.data.DEMO_MODE,
       rootFolderHost: env.data.ROOT_FOLDER_HOST,
@@ -476,6 +493,14 @@ export class ConfigurationService {
   public async setFileOnlySettings(settings: FileOnlySettings): Promise<void> {
     try {
       await this.mergeSettingsToDisk(settings);
+      // Mirror the disk into the running config the way `setUserSettings` does, so the middleware
+      // and the push-key service read the value just written. An empty string is how a caller
+      // clears one of these (the schema trims and accepts it); it reads back as null.
+      for (const key of ['hubLocalKey', 'portalPushKeyPrefix', 'portalPushKeyPending', 'portalPushKeyDeliveredAt'] as const) {
+        if (settings[key] !== undefined) {
+          (this.config as Record<string, unknown>)[key] = settings[key] || null;
+        }
+      }
     } catch (error) {
       this.logger.error(`Failed to save settings: ${describeSettingsError(error)}; attemptedKeys=${Object.keys(settings).join(',') || '(none)'}`);
       throw new InternalServerErrorException('Failed to save settings');

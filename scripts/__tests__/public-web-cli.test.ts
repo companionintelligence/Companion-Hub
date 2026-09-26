@@ -108,6 +108,18 @@ describe('readHubApiKeySource', () => {
     expect(source.found).toBe(join(canonical, 'state', 'settings.json'));
   });
 
+  it('prefers the host-local key over the Portal device key in the same file', () => {
+    // The Hub accepts the host-local key from the box; the device key only until Portal holds the
+    // push key. A settings.json written by a current Hub carries both.
+    const tmp = mkdtempSync(join(tmpdir(), 'cihub-key-'));
+    const dir = join(tmp, 'root');
+    mkdirSync(join(dir, 'state'), { recursive: true });
+    writeFileSync(join(dir, 'state', 'settings.json'), JSON.stringify({ ciHubApiKey: 'device-key', hubLocalKey: 'local-key' }));
+    writeFileSync(join(tmp, 'hub.env'), `ROOT_FOLDER_HOST=${dir}\n`);
+
+    expect(readHubApiKeySource(join(tmp, 'hub.env')).key).toBe('local-key');
+  });
+
   it('prefers ROOT_FOLDER_HOST when it does hold a key', () => {
     tmp = mkdtempSync(join(tmpdir(), 'hubkey-'));
     const rootFolder = join(tmp, 'checkout', '.internal');
