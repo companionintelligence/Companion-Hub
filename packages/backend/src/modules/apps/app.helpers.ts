@@ -30,6 +30,7 @@ import { isOfficialStoreApp } from './official-store.predicate';
 import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
 import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
+import { ProxyTrustService } from '../network/proxy-trust.service';
 import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
 
 /**
@@ -397,6 +398,23 @@ export class AppHelpers {
   }
 
   /**
+   * `ProxyTrustService` lives in the network module and is looked up lazily
+   * rather than injected: this helper is constructed in many tests with a
+   * mocked module, and an app's env generation must never fail because the
+   * Docker lookup behind the trust list did. No service, or a bad answer,
+   * simply means no hops are vouched for.
+   */
+  private resolveTrustedProxyCidrs(): string[] {
+    try {
+      const service = this.moduleRef.get(ProxyTrustService, { strict: false });
+      const cidrs = service?.trustedProxyCidrs?.();
+      return Array.isArray(cidrs) ? cidrs.filter((cidr): cidr is string => typeof cidr === 'string' && cidr.length > 0) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
    * Generates the environment file for an installed app.
    *
    * The generated values reflect the app manifest, submitted form values, and
@@ -542,6 +560,19 @@ export class AppHelpers {
     envMap.set('APP_DATA_DIR', finalAppDataDir);
     this.logger.info(`Set APP_DATA_DIR for ${appUrn}: ${finalAppDataDir}`);
     envMap.set('APP_IMAGE_TAG', config.version);
+
+    // The reverse-proxy hops this Hub can vouch for (see ProxyTrustService),
+    // so an app that reads the client address can walk X-Forwarded-For back
+    // past Traefik and the tunnel to the real visitor instead of seeing
+    // Traefik for everyone. Re-derived on every generation and REMOVED when
+    // nothing can be vouched for: a stale value would be a trusted address
+    // some other container could later be given.
+    const trustedProxies = this.resolveTrustedProxyCidrs();
+    if (trustedProxies.length > 0) {
+      envMap.set('HUB_TRUSTED_PROXY_CIDRS', trustedProxies.join(','));
+    } else {
+      envMap.delete('HUB_TRUSTED_PROXY_CIDRS');
+    }
 
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const existingAppEnvMap = this.envUtils.envStringToMap(appEnv.content);

@@ -7,6 +7,7 @@ import { PortManagerService } from './port-manager.service';
 import { PortAllocationRepository } from './port-allocation.repository';
 import { PortController } from './port.controller';
 import { NetworkDiagnosticsService } from './network-diagnostics.service';
+import { ProxyTrustService } from './proxy-trust.service';
 import { NetworkController } from './network.controller';
 
 @Module({
@@ -17,12 +18,13 @@ import { NetworkController } from './network.controller';
     PortManagerService,
     PortAllocationRepository,
     NetworkDiagnosticsService,
+    ProxyTrustService,
     {
       provide: DOCKERODE,
       useFactory: (): Dockerode => new Dockerode(),
       inject: [],
     },
   ],
-  exports: [SubnetManagerService, PortManagerService, PortAllocationRepository, NetworkDiagnosticsService],
+  exports: [SubnetManagerService, PortManagerService, PortAllocationRepository, NetworkDiagnosticsService, ProxyTrustService],
 })
 export class NetworkModule {}

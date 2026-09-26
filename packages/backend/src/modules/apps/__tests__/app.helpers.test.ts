@@ -3,6 +3,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { ModuleRef } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -17,6 +18,7 @@ import { DeviceRegistrationRepository } from '@/modules/registration/device-regi
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
+import { ProxyTrustService } from '@/modules/network/proxy-trust.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
 // `\` on Windows. Normalize to POSIX separators before asserting so these path tests
@@ -25,6 +27,7 @@ const toPosix = (p: string) => p.replace(/\\/g, '/');
 
 describe('AppHelpers', () => {
   let appHelpers: AppHelpers;
+  let moduleRefForHelpers: ModuleRef;
   let appFilesManager = mock<AppFilesManager>();
   let config = mock<ConfigurationService>();
   let filesystem = mock<FilesystemService>();
@@ -50,6 +53,9 @@ describe('AppHelpers', () => {
       .compile();
 
     appHelpers = moduleRef.get(AppHelpers);
+    // The real ModuleRef Nest injected into the helper — the lazy lookups
+    // (`resolveTrustedProxyCidrs`) go through it, so tests spy on this one.
+    moduleRefForHelpers = (appHelpers as unknown as { moduleRef: ModuleRef }).moduleRef;
     appFilesManager = moduleRef.get(AppFilesManager);
     config = moduleRef.get(ConfigurationService);
     filesystem = moduleRef.get(FilesystemService);
@@ -642,6 +648,44 @@ describe('AppHelpers', () => {
       // Third-party / unmarked apps never get `ciHubApiKey`. It authenticates as the
       // operator on AuthGuard routes; only first-party Memory gets it back later.
       expect(envMap.has('HUB_API_KEY')).toBe(false);
+    });
+
+    it('passes the hops the Hub can vouch for as HUB_TRUSTED_PROXY_CIDRS, and removes a stale value when there are none', async () => {
+      const proxyTrust = { trustedProxyCidrs: vi.fn() };
+      const moduleRefGet = vi
+        .spyOn(moduleRefForHelpers, 'get')
+        .mockImplementation((token: unknown) => (token === ProxyTrustService ? proxyTrust : undefined));
+      try {
+        proxyTrust.trustedProxyCidrs.mockReturnValue(['10.128.0.0/29', '172.19.0.7/32']);
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        await appHelpers.generateEnvFile(testAppUrn, {});
+        expect(envMap.get('HUB_TRUSTED_PROXY_CIDRS')).toBe('10.128.0.0/29,172.19.0.7/32');
+
+        // Traefik gone, edge network gone: the app must not keep trusting an
+        // address Docker may hand to another container next.
+        proxyTrust.trustedProxyCidrs.mockReturnValue([]);
+        const stale = new Map<string, string>([['HUB_TRUSTED_PROXY_CIDRS', '172.19.0.7/32']]);
+        envUtils.envStringToMap.mockReturnValue(stale);
+        await appHelpers.generateEnvFile(testAppUrn, {});
+        expect(stale.has('HUB_TRUSTED_PROXY_CIDRS')).toBe(false);
+      } finally {
+        moduleRefGet.mockRestore();
+      }
+    });
+
+    it('omits HUB_TRUSTED_PROXY_CIDRS when the trust service is unavailable, without failing generation', async () => {
+      const moduleRefGet = vi.spyOn(moduleRefForHelpers, 'get').mockImplementation(() => {
+        throw new Error('no such provider');
+      });
+      try {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        await appHelpers.generateEnvFile(testAppUrn, {});
+        expect(envMap.has('HUB_TRUSTED_PROXY_CIDRS')).toBe(false);
+      } finally {
+        moduleRefGet.mockRestore();
+      }
     });
 
     it('never issues HUB_API_KEY to a third-party app, even when the Hub has a device key configured', async () => {
