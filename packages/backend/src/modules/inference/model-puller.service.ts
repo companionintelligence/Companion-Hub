@@ -91,12 +91,12 @@ export class ModelPullerService {
       };
     }
 
-    if (curated.backend === 'lucebox') {
+    if (curated.backend === 'omlx' || curated.backend === 'vllm') {
       return {
         catalogId,
         alreadyInstalled: false,
         canPull: false,
-        reason: 'Speculative inference models are loaded when the server starts; start it with this model, then re-check.',
+        reason: 'This engine loads weights on the host. Download them there, then re-check.',
         requiredDiskMb,
         requiredMemoryMb,
         availableDiskMb,

@@ -2,20 +2,11 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
-const {
-  fetchOllamaInstallStatus,
-  fetchVllmInstallStatus,
-  fetchDsparkInstallStatus,
-  fetchLemonadeInstallStatus,
-  fetchMtplxInstallStatus,
-  fetchSpeculativeInferenceStatus,
-} = vi.hoisted(() => ({
+const { fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchOmlxInstallStatus, fetchLemonadeInstallStatus } = vi.hoisted(() => ({
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
-  fetchDsparkInstallStatus: vi.fn(),
+  fetchOmlxInstallStatus: vi.fn(),
   fetchLemonadeInstallStatus: vi.fn(),
-  fetchMtplxInstallStatus: vi.fn(),
-  fetchSpeculativeInferenceStatus: vi.fn(),
 }));
 
 const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
@@ -26,10 +17,8 @@ const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
-  fetchDsparkInstallStatus,
+  fetchOmlxInstallStatus,
   fetchLemonadeInstallStatus,
-  fetchMtplxInstallStatus,
-  fetchSpeculativeInferenceStatus,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -46,9 +35,8 @@ describe('useModelPullOrchestrator', () => {
     vi.clearAllMocks();
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true });
     fetchVllmInstallStatus.mockResolvedValue({ ready: false, running: false });
-    fetchDsparkInstallStatus.mockResolvedValue({ ready: true, running: true });
+    fetchOmlxInstallStatus.mockResolvedValue({ ready: true, running: true });
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true });
-    fetchSpeculativeInferenceStatus.mockResolvedValue({ ready: true, running: true });
     ensurePullStarted.mockResolvedValue(undefined);
     fetchTrackedModels.mockResolvedValue([{ catalogId: 'phi-4-mini', state: 'pulling', pullProgress: 42 }] as never);
   });
@@ -116,14 +104,14 @@ describe('useModelPullOrchestrator', () => {
   // silently never load.
   it('gates readiness on mlx-dspark, not Ollama, when dspark is the selected backend', async () => {
     fetchOllamaInstallStatus.mockResolvedValue({ ready: false, running: false });
-    fetchDsparkInstallStatus.mockResolvedValue({ ready: true, running: true });
+    fetchOmlxInstallStatus.mockResolvedValue({ ready: true, running: true });
 
     renderHook(() =>
       useModelPullOrchestrator({
         selectedModelIds: ['qwen3-8b-dspark'],
         installedCatalogIds: [],
         enabled: true,
-        inferenceBackend: 'dspark',
+        inferenceBackend: 'omlx',
         backendUrl: 'http://192.168.1.50:8080',
       }),
     );
@@ -131,19 +119,19 @@ describe('useModelPullOrchestrator', () => {
     await waitFor(() => expect(ensurePullStarted).toHaveBeenCalledWith('qwen3-8b-dspark', expect.anything()));
     // The operator's unsaved endpoint must reach the probe — onboarding collects it before
     // install-step persists it, so the Hub default would be the wrong server to ask.
-    expect(fetchDsparkInstallStatus).toHaveBeenCalledWith('http://192.168.1.50:8080');
+    expect(fetchOmlxInstallStatus).toHaveBeenCalledWith('http://192.168.1.50:8080');
   });
 
   it('does not start pulls when the selected backend is down, even if Ollama is up', async () => {
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true });
-    fetchDsparkInstallStatus.mockResolvedValue({ ready: false, running: false });
+    fetchOmlxInstallStatus.mockResolvedValue({ ready: false, running: false });
 
     renderHook(() =>
       useModelPullOrchestrator({
         selectedModelIds: ['qwen3-8b-dspark'],
         installedCatalogIds: [],
         enabled: true,
-        inferenceBackend: 'dspark',
+        inferenceBackend: 'omlx',
       }),
     );
 
@@ -154,18 +142,18 @@ describe('useModelPullOrchestrator', () => {
   });
 
   it('passes the selected MTPLX endpoint to the readiness probe', async () => {
-    fetchMtplxInstallStatus.mockResolvedValue({ ready: true, running: true });
+    fetchOmlxInstallStatus.mockResolvedValue({ ready: true, running: true });
 
     renderHook(() =>
       useModelPullOrchestrator({
         selectedModelIds: ['qwen3-8b-mtplx'],
         installedCatalogIds: [],
         enabled: true,
-        inferenceBackend: 'mtplx',
+        inferenceBackend: 'omlx',
         backendUrl: 'http://192.168.1.50:8001',
       }),
     );
 
-    await waitFor(() => expect(fetchMtplxInstallStatus).toHaveBeenCalledWith('http://192.168.1.50:8001'));
+    await waitFor(() => expect(fetchOmlxInstallStatus).toHaveBeenCalledWith('http://192.168.1.50:8001'));
   });
 });

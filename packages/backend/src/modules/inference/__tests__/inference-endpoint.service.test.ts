@@ -4,12 +4,8 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
-import type { DsparkBackend } from '../backends/dspark.backend';
+import type { OmlxBackend } from '../backends/omlx.backend';
 import type { LemonadeBackend } from '../backends/lemonade.backend';
-import type { LuceboxBackend } from '../backends/lucebox.backend';
-import type { LlamacppBackend } from '../backends/llamacpp.backend';
-import type { LmStudioBackend } from '../backends/lmstudio.backend';
-import type { MtplxBackend } from '../backends/mtplx.backend';
 import type { OllamaBackend } from '../backends/ollama.backend';
 import type { VllmBackend } from '../backends/vllm.backend';
 import { InferenceEndpointService, isPoolProxyUrl } from '../inference-endpoint.service';
@@ -43,27 +39,12 @@ describe('InferenceEndpointService — pool inventory and membership', () => {
     peers = mock<HubPoolPeerService>();
     ollama = mock<OllamaBackend>();
     vllm = mock<VllmBackend>();
-    const others = [
-      mock<LemonadeBackend>(),
-      mock<MtplxBackend>(),
-      mock<DsparkBackend>(),
-      mock<LuceboxBackend>(),
-      mock<LlamacppBackend>(),
-      mock<LmStudioBackend>(),
-    ];
-    for (const backend of others) backend.healthCheck.mockResolvedValue(DOWN);
+    const lemonade = mock<LemonadeBackend>();
+    const omlx = mock<OmlxBackend>();
+    for (const backend of [lemonade, omlx]) backend.healthCheck.mockResolvedValue(DOWN);
     ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['gemma3:1b'] });
     vllm.healthCheck.mockResolvedValue(DOWN);
-    const registry = new InferenceBackendRegistry(
-      ollama,
-      vllm,
-      others[0] as LemonadeBackend,
-      others[1] as MtplxBackend,
-      others[2] as DsparkBackend,
-      others[3] as LuceboxBackend,
-      others[4] as LlamacppBackend,
-      others[5] as LmStudioBackend,
-    );
+    const registry = new InferenceBackendRegistry(ollama, vllm, lemonade, omlx);
     service = new InferenceEndpointService(logger, registry, ollama, peers, config);
 
     // `poolRouteAppsAlways` defaults on; the one case that needs it off turns it off itself.

@@ -41,7 +41,7 @@ describe('runtime model state vocabulary', () => {
   it('every backend still hardcodes `loaded`, which is why the word may not be forwarded', () => {
     // If a backend ever derives `loaded` from a real residency probe, this test should
     // fail and the mapping above can be revisited — that is the point of pinning it.
-    const backends = ['ollama.backend.ts', 'mtplx.backend.ts', 'dspark.backend.ts'];
+    const backends = ['ollama.backend.ts', 'openai-compatible.client.ts'];
     const hardcoded = backends.filter((file) => readFileSync(resolve(HERE, '../backends', file), 'utf-8').includes('loaded: true'));
 
     expect(hardcoded).toEqual(backends);
@@ -49,23 +49,21 @@ describe('runtime model state vocabulary', () => {
 });
 
 /**
- * Four backends deliberately do not implement `listResident()`, each for a checked reason
- * recorded above their `isModelLoaded`. This pins that decision.
- *
+ * vLLM deliberately does not implement `listResident()`. oMLX has no residency probe either.
  * The failure mode being guarded against is someone satisfying the method from
- * `healthCheck().modelsLoaded` because it is right there and sounds correct. That field is
- * the on-disk inventory on every backend, so doing so would report a crashed engine's
- * catalogue as resident — the exact bug this whole area exists to end. If a backend gains a
- * REAL residency probe, delete its entry here on purpose rather than letting the guard rot.
+ * `healthCheck().modelsLoaded` because it is right there and sounds correct.
  */
 describe('backends that cannot report residency', () => {
-  const CANNOT_REPORT = ['vllm.backend.ts', 'lucebox.backend.ts', 'mtplx.backend.ts', 'dspark.backend.ts'];
-
-  it.each(CANNOT_REPORT)('%s implements no listResident, and says why', (file) => {
-    const source = readFileSync(resolve(HERE, '../backends', file), 'utf-8');
+  it('vllm.backend.ts implements no listResident, and says why', () => {
+    const source = readFileSync(resolve(HERE, '../backends/vllm.backend.ts'), 'utf-8');
 
     expect(source).not.toMatch(/async listResident\s*\(/);
     expect(source).toContain("reports `source: 'unsupported'`");
+  });
+
+  it('omlx.backend.ts implements no listResident', () => {
+    const source = readFileSync(resolve(HERE, '../backends/omlx.backend.ts'), 'utf-8');
+    expect(source).not.toMatch(/async listResident\s*\(/);
   });
 
   it('the backends that DO implement it never read the inventory to do so', () => {

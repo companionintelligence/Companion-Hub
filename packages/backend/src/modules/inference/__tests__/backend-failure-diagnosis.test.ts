@@ -1,18 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import {
-  assertLuceboxImageSupportsArch,
-  LUCEBOX_ROCM_IMAGE,
-  LUCEBOX_ROCM_LEGACY_IMAGE,
-  luceboxRocmLegacyImageMessage,
-} from '../backends/lucebox.backend';
 import { diagnoseBackendFailure, looksLikeSegfault, type DiagnosisInput } from '../supervision/backend-failure-diagnosis';
 import type { SupervisionContainerState } from '../supervision/supervision.types';
 
 function container(overrides: Partial<SupervisionContainerState> = {}): SupervisionContainerState {
   return {
     id: 'abc123',
-    name: 'ci-hub-inference-lucebox',
-    image: LUCEBOX_ROCM_LEGACY_IMAGE,
+    name: 'ci-hub-ollama',
+    image: 'ollama/ollama:latest',
     state: 'exited',
     status: 'exited',
     running: false,
@@ -32,7 +26,7 @@ function container(overrides: Partial<SupervisionContainerState> = {}): Supervis
 
 function input(overrides: Partial<DiagnosisInput> = {}): DiagnosisInput {
   return {
-    backend: 'lucebox',
+    backend: 'ollama',
     container: container(),
     gpuVendor: 'amd',
     segfaultObservations: 2,
@@ -42,64 +36,6 @@ function input(overrides: Partial<DiagnosisInput> = {}): DiagnosisInput {
     ...overrides,
   };
 }
-
-describe('lucebox ROCm legacy image diagnosis', () => {
-  it('fires on image + AMD vendor + repeated SIGSEGV, with no architecture string involved', () => {
-    // Deliberately NOT matched on a `gfx*` architecture: nothing in this repo produces one at
-    // runtime. `HardwareProfile.gpu` has no arch field and `LuceboxComposeOptions.gpuArch` is an
-    // input nothing ever fills, so an arch-based rule would never fire on the fleet it targets.
-    const diagnoses = diagnoseBackendFailure(input());
-
-    expect(diagnoses.map((diagnosis) => diagnosis.code)).toContain('lucebox_rocm_legacy_image');
-  });
-
-  it('reuses the guard’s own message verbatim, so the two cannot drift', () => {
-    const diagnosis = diagnoseBackendFailure(input()).find((entry) => entry.code === 'lucebox_rocm_legacy_image');
-
-    // The guard needs a concrete LLVM target (its predicate is /^gfx115\d$/); the diagnosis has
-    // only the family, because nothing in this repo produces a gfx string at runtime. Both go
-    // through the same builder, which is what stops the two wordings drifting apart.
-    const guardMessage = (() => {
-      try {
-        assertLuceboxImageSupportsArch(LUCEBOX_ROCM_LEGACY_IMAGE, 'gfx1151');
-        return '';
-      } catch (error) {
-        return error instanceof Error ? error.message : '';
-      }
-    })();
-
-    expect(guardMessage).toBe(luceboxRocmLegacyImageMessage('gfx1151'));
-    expect(diagnosis?.remediation).toContain(luceboxRocmLegacyImageMessage('gfx115x'));
-    expect(diagnosis?.remediation).toContain(LUCEBOX_ROCM_IMAGE);
-  });
-
-  it('says the container has to be recreated, not restarted', () => {
-    // Starting the existing container reuses the image it was created with, so "restart it" would
-    // be advice that cannot work. The Hub does not restart anything either way.
-    const diagnosis = diagnoseBackendFailure(input()).find((entry) => entry.code === 'lucebox_rocm_legacy_image');
-    expect(diagnosis?.remediation).toContain('docker rm -f ci-hub-inference-lucebox');
-  });
-
-  it('does not fire on a single segfault', () => {
-    const diagnoses = diagnoseBackendFailure(input({ segfaultObservations: 1 }));
-    expect(diagnoses.map((entry) => entry.code)).not.toContain('lucebox_rocm_legacy_image');
-  });
-
-  it('does not fire on the supported ROCm 7.2 tag', () => {
-    const diagnoses = diagnoseBackendFailure(input({ container: container({ image: LUCEBOX_ROCM_IMAGE }) }));
-    expect(diagnoses.map((entry) => entry.code)).not.toContain('lucebox_rocm_legacy_image');
-  });
-
-  it('does not fire on a non-AMD GPU', () => {
-    const diagnoses = diagnoseBackendFailure(input({ gpuVendor: 'nvidia' }));
-    expect(diagnoses.map((entry) => entry.code)).not.toContain('lucebox_rocm_legacy_image');
-  });
-
-  it('still matches when the image carries a digest suffix', () => {
-    const diagnoses = diagnoseBackendFailure(input({ container: container({ image: `${LUCEBOX_ROCM_LEGACY_IMAGE}@sha256:deadbeef` }) }));
-    expect(diagnoses.map((entry) => entry.code)).toContain('lucebox_rocm_legacy_image');
-  });
-});
 
 describe('looksLikeSegfault', () => {
   it('recognises the 128+SIGSEGV exit code', () => {
@@ -150,19 +86,6 @@ describe('other diagnoses', () => {
     // Their parent is the in-container supervisor, not init, so a "parent is PID 1" test finds none.
     expect(diagnosis?.summary).toContain('not init');
     expect(diagnosis?.remediation).toContain('the Hub will not restart it');
-  });
-
-  it('reports Lucebox running without weights, and says restarting never helps', () => {
-    const diagnoses = diagnoseBackendFailure(
-      input({
-        container: null,
-        segfaultObservations: 0,
-        healthError: 'Lucebox answered /health but reports no loaded model — the server is running without weights.',
-      }),
-    );
-
-    const diagnosis = diagnoses.find((entry) => entry.code === 'no_weights');
-    expect(diagnosis?.remediation).toContain('Restarting never helps here');
   });
 
   it('says nothing about a healthy backend', () => {

@@ -76,8 +76,9 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   inferenceVisionModel: 'qwen2.5vl:7b',
   inferenceVllmApiKey: 'vllm-key',
   inferenceVllmUrl: 'http://vllm:8000',
-  inferenceMtplxUrl: 'http://mtplx:8080',
-  inferenceDsparkUrl: 'http://dspark:8080',
+  inferenceOmlxUrl: 'http://omlx:8000',
+  inferenceDecodeEndpoint: 'http://decode.example:8000/v1',
+  inferenceEncodeEndpoint: 'http://encode.example:11434',
   // The handout context cap (core-2, 2026-09-20). Non-default: the default is no cap.
   inferenceMaxNumCtx: 16384,
   // The node's Ollama slot count (fleet-qa B5, 2026-09-21). Non-default: the default is not stated.
@@ -156,7 +157,18 @@ const WRITERS: Array<{ name: string; write: (w: Writers) => Promise<unknown>; wr
   {
     name: 'a context-cap save',
     write: (w) =>
-      w.configuration.setInferencePreferences('ollama', undefined, undefined, undefined, undefined, undefined, undefined, undefined, 32768),
+      w.configuration.setInferencePreferences(
+        'ollama',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        32768,
+      ),
     writes: { inferenceBackend: 'ollama', inferenceMaxNumCtx: 32768 },
   },
   {

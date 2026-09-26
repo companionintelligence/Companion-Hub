@@ -1,10 +1,8 @@
 import {
   fetchInferenceOnboardingProfile,
   fetchLemonadeInstallStatus,
-  fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
-  fetchDsparkInstallStatus,
-  fetchSpeculativeInferenceStatus,
+  fetchOmlxInstallStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
 } from '@/lib/inference/inference-api';
@@ -20,12 +18,10 @@ import {
   type CloudProviderInput,
   type ExposureMode,
   type HardwareProfileResponse,
-  type MtplxStatus,
+  type OmlxStatus,
   type LemonadeStatus,
   type OllamaStatus,
   type VllmStatus,
-  type DsparkStatus,
-  type SpeculativeInferenceStatus,
   type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
@@ -40,10 +36,9 @@ import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
-import { MtplxSetupCard } from './ai-setup/mtplx-setup-card';
-import { DsparkSetupCard } from './ai-setup/dspark-setup-card';
+import { OmlxSetupCard } from './ai-setup/omlx-setup-card';
+import { ManualEndpointsCard } from './ai-setup/manual-endpoints-card';
 import { LemonadeSetupCard } from './ai-setup/lemonade-setup-card';
-import { SpeculativeInferenceSetupCard } from './ai-setup/speculative-inference-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import {
@@ -130,20 +125,17 @@ export const AiSetupStep = ({
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
-  const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
-  const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
-  const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
+  const [omlxStatus, setOmlxStatus] = useState<OmlxStatus | null>(null);
   const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
-  const [checkingMtplx, setCheckingMtplx] = useState(false);
-  const [checkingDspark, setCheckingDspark] = useState(false);
-  const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
+  const [checkingOmlx, setCheckingOmlx] = useState(false);
   const [checkingLemonade, setCheckingLemonade] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
-  const [mtplxUrl, setMtplxUrl] = useState('');
-  const [dsparkUrl, setDsparkUrl] = useState('');
+  const [omlxUrl, setOmlxUrl] = useState('');
+  const [decodeEndpoint, setDecodeEndpoint] = useState('');
+  const [encodeEndpoint, setEncodeEndpoint] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
   // Stamp profile requests so slower responses cannot overwrite newer operator choices.
@@ -202,7 +194,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
       // Ignore superseded rescans so they cannot restore an earlier backend and its defaults.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
@@ -261,36 +253,6 @@ export const AiSetupStep = ({
     }
   };
 
-  const checkDsparkStatus = async (): Promise<DsparkStatus> => {
-    setCheckingDspark(true);
-    try {
-      const data = await fetchDsparkInstallStatus(dsparkUrl);
-      setDsparkStatus(data);
-      return data;
-    } catch {
-      const unreachable: DsparkStatus = { ready: false, running: false, endpointUrl: '' };
-      setDsparkStatus(unreachable);
-      return unreachable;
-    } finally {
-      setCheckingDspark(false);
-    }
-  };
-
-  const checkSpeculativeInferenceStatus = async (): Promise<SpeculativeInferenceStatus> => {
-    setCheckingSpeculativeInference(true);
-    try {
-      const data = await fetchSpeculativeInferenceStatus();
-      setSpeculativeInferenceStatus(data);
-      return data;
-    } catch {
-      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
-      setSpeculativeInferenceStatus(unreachable);
-      return unreachable;
-    } finally {
-      setCheckingSpeculativeInference(false);
-    }
-  };
-
   const checkVllmStatus = async (): Promise<VllmStatus> => {
     setCheckingVllm(true);
     try {
@@ -306,18 +268,18 @@ export const AiSetupStep = ({
     }
   };
 
-  const checkMtplxStatus = async (): Promise<MtplxStatus> => {
-    setCheckingMtplx(true);
+  const checkOmlxStatus = async (): Promise<OmlxStatus> => {
+    setCheckingOmlx(true);
     try {
-      const data = (await fetchMtplxInstallStatus(mtplxUrl)) as MtplxStatus;
-      setMtplxStatus(data);
+      const data = (await fetchOmlxInstallStatus(omlxUrl)) as OmlxStatus;
+      setOmlxStatus(data);
       return data;
     } catch (_e) {
-      const unreachable: MtplxStatus = { ready: false, running: false, endpointUrl: '' };
-      setMtplxStatus(unreachable);
+      const unreachable: OmlxStatus = { ready: false, running: false, endpointUrl: '' };
+      setOmlxStatus(unreachable);
       return unreachable;
     } finally {
-      setCheckingMtplx(false);
+      setCheckingOmlx(false);
     }
   };
 
@@ -332,8 +294,7 @@ export const AiSetupStep = ({
         backend,
         backend === 'vllm' && endpointUrlOverride ? endpointUrlOverride : vllmUrl,
         backend === 'vllm' ? vllmApiKey : undefined,
-        backend === 'mtplx' && endpointUrlOverride ? endpointUrlOverride : mtplxUrl,
-        backend === 'dspark' && endpointUrlOverride ? endpointUrlOverride : dsparkUrl,
+        backend === 'omlx' && endpointUrlOverride ? endpointUrlOverride : omlxUrl,
       );
       // Drop superseded responses so refreshes cannot restore stale hardware or backend state.
       if (profileRequestId.current !== requestId) return;
@@ -381,13 +342,11 @@ export const AiSetupStep = ({
   };
 
   const handleVllmRecheck = () => handleRecheck(checkVllmStatus, setCheckingVllm);
-  const handleDsparkRecheck = () => handleRecheck(checkDsparkStatus, setCheckingDspark);
-  const handleSpeculativeInferenceRecheck = () => handleRecheck(checkSpeculativeInferenceStatus, setCheckingSpeculativeInference);
   const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
-  const handleMtplxRecheck = () => handleRecheck(checkMtplxStatus, setCheckingMtplx);
+  const handleOmlxRecheck = () => handleRecheck(checkOmlxStatus, setCheckingOmlx);
   const handleLemonadeRecheck = () => handleRecheck(checkLemonadeStatus, setCheckingLemonade);
 
-  const handleAutoInstallRunner = async (runner: Extract<AutomaticInferenceRunner, 'dspark' | 'mtplx' | 'vllm'>) => {
+  const handleAutoInstallRunner = async (runner: Extract<AutomaticInferenceRunner, 'omlx' | 'vllm'>) => {
     const results = await installAndStartInferenceRunners([runner]);
     const result = results.find((candidate) => candidate.runner === runner);
     if (!result || result.state === 'failed' || result.state === 'skipped') {
@@ -404,15 +363,10 @@ export const AiSetupStep = ({
       const status = (await fetchVllmInstallStatus(endpoint, vllmApiKey)) as VllmStatus;
       setVllmStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');
-    } else if (runner === 'mtplx') {
-      setMtplxUrl(endpoint);
-      const status = (await fetchMtplxInstallStatus(endpoint)) as MtplxStatus;
-      setMtplxStatus(status);
-      if (!status.ready) throw new Error('The local runner is still starting.');
     } else {
-      setDsparkUrl(endpoint);
-      const status = await fetchDsparkInstallStatus(endpoint);
-      setDsparkStatus(status);
+      setOmlxUrl(endpoint);
+      const status = (await fetchOmlxInstallStatus(endpoint)) as OmlxStatus;
+      setOmlxStatus(status);
       if (!status.ready) throw new Error('The local runner is still starting.');
     }
 
@@ -423,14 +377,7 @@ export const AiSetupStep = ({
   useEffect(() => {
     void (async () => {
       await fetchProfile(false);
-      await Promise.all([
-        checkOllamaStatus(),
-        checkVllmStatus(),
-        checkMtplxStatus(),
-        checkDsparkStatus(),
-        checkSpeculativeInferenceStatus(),
-        checkLemonadeStatus(),
-      ]);
+      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkOmlxStatus(), checkLemonadeStatus()]);
     })();
   }, []);
 
@@ -453,7 +400,7 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, omlxUrl);
       // Ignore a slower response from an earlier backend choice.
       if (profileRequestId.current === requestId) {
         setProfile(data);
@@ -466,15 +413,10 @@ export const AiSetupStep = ({
     }
     if (backend === 'vllm') {
       void checkVllmStatus();
-    } else if (backend === 'mtplx') {
-      void checkMtplxStatus();
+    } else if (backend === 'omlx') {
+      void checkOmlxStatus();
     } else if (backend === 'lemonade') {
       void checkLemonadeStatus();
-    }
-    if (backend === 'dspark') {
-      void checkDsparkStatus();
-    } else if (backend === 'lucebox') {
-      void checkSpeculativeInferenceStatus();
     }
   };
 
@@ -550,15 +492,14 @@ export const AiSetupStep = ({
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
         : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
-    const embeddingBackend = selectedBackend === 'lemonade' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+    const embeddingBackend = selectedBackend === 'omlx' || selectedBackend === 'ollama' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
     const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, embeddingBackend, isEmbeddingModel, selectedModels);
     const effectivePreferredVisionModelId = getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels);
 
     return {
       agentFrameworks,
       selectedModels,
-      // The historical field name represents every Hub-loadable model, including the one
-      // resident mlx-dspark model.
+      // The historical field name represents every Hub-loadable model.
       ollamaSelectedModelIds: hubLoadableSelection(
         selectedModels,
         (id) => profile.availableModels.find((m) => m.id === id)?.backend,
@@ -577,8 +518,9 @@ export const AiSetupStep = ({
       installBlockReason,
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
-      ...(selectedBackend === 'mtplx' && mtplxUrl.trim() ? { mtplxUrl: mtplxUrl.trim() } : {}),
-      ...(selectedBackend === 'dspark' && dsparkUrl.trim() ? { dsparkUrl: dsparkUrl.trim() } : {}),
+      ...(selectedBackend === 'omlx' && omlxUrl.trim() ? { omlxUrl: omlxUrl.trim() } : {}),
+      ...(decodeEndpoint.trim() ? { decodeEndpoint: decodeEndpoint.trim() } : {}),
+      ...(encodeEndpoint.trim() ? { encodeEndpoint: encodeEndpoint.trim() } : {}),
     };
   };
 
@@ -609,8 +551,9 @@ export const AiSetupStep = ({
     cloudProviders,
     vllmApiKey,
     vllmUrl,
-    mtplxUrl,
-    dsparkUrl,
+    omlxUrl,
+    decodeEndpoint,
+    encodeEndpoint,
     onConfigChange,
   ]);
 
@@ -683,10 +626,7 @@ export const AiSetupStep = ({
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllamaForContinue = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
   const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
-  const needsMtplxForContinue = selectedBackend === 'mtplx' && (mtplxStatus === null || !mtplxStatus.ready);
-  const needsDsparkForContinue = selectedBackend === 'dspark' && (dsparkStatus === null || !dsparkStatus.ready);
-  const needsSpeculativeInferenceForContinue =
-    selectedBackend === 'lucebox' && (speculativeInferenceStatus === null || !speculativeInferenceStatus.ready);
+  const needsOmlxForContinue = selectedBackend === 'omlx' && (omlxStatus === null || !omlxStatus.ready);
   const needsLemonadeForContinue = selectedBackend === 'lemonade' && (lemonadeStatus === null || !lemonadeStatus.ready);
   const canAutoInstallRunners = getTauriInvoke() !== null;
   // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
@@ -735,15 +675,7 @@ export const AiSetupStep = ({
               />
             </div>
 
-            {selectedBackend === 'lucebox' ? (
-              <BackendSetupGroup title={t('ONBOARDING_SPECULATIVE_SECTION_TITLE')} description={t('ONBOARDING_SPECULATIVE_SECTION_DESC')}>
-                <SpeculativeInferenceSetupCard
-                  status={speculativeInferenceStatus}
-                  checking={checkingSpeculativeInference}
-                  onRecheck={handleSpeculativeInferenceRecheck}
-                />
-              </BackendSetupGroup>
-            ) : selectedBackend === 'vllm' ? (
+            {selectedBackend === 'vllm' ? (
               <BackendSetupGroup title={t('ONBOARDING_VLLM_SECTION_TITLE')} description={t('ONBOARDING_VLLM_SECTION_DESC')}>
                 <VllmSetupCard
                   status={vllmStatus}
@@ -756,26 +688,15 @@ export const AiSetupStep = ({
                   onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('vllm') : undefined}
                 />
               </BackendSetupGroup>
-            ) : selectedBackend === 'mtplx' ? (
-              <BackendSetupGroup title={t('ONBOARDING_MTPLX_SECTION_TITLE')} description={t('ONBOARDING_MTPLX_SECTION_DESC')}>
-                <MtplxSetupCard
-                  status={mtplxStatus}
-                  checking={checkingMtplx}
-                  onRecheck={handleMtplxRecheck}
-                  endpointUrl={mtplxUrl}
-                  onEndpointUrlChange={setMtplxUrl}
-                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('mtplx') : undefined}
-                />
-              </BackendSetupGroup>
-            ) : selectedBackend === 'dspark' ? (
-              <BackendSetupGroup title={t('ONBOARDING_DSPARK_SECTION_TITLE')} description={t('ONBOARDING_DSPARK_SECTION_DESC')}>
-                <DsparkSetupCard
-                  status={dsparkStatus}
-                  checking={checkingDspark}
-                  onRecheck={handleDsparkRecheck}
-                  endpointUrl={dsparkUrl}
-                  onEndpointUrlChange={setDsparkUrl}
-                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('dspark') : undefined}
+            ) : selectedBackend === 'omlx' ? (
+              <BackendSetupGroup title={t('ONBOARDING_OMLX_SECTION_TITLE')} description={t('ONBOARDING_OMLX_SECTION_DESC')}>
+                <OmlxSetupCard
+                  status={omlxStatus}
+                  checking={checkingOmlx}
+                  onRecheck={handleOmlxRecheck}
+                  endpointUrl={omlxUrl}
+                  onEndpointUrlChange={setOmlxUrl}
+                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('omlx') : undefined}
                 />
               </BackendSetupGroup>
             ) : selectedBackend === 'lemonade' ? (
@@ -788,7 +709,7 @@ export const AiSetupStep = ({
               </BackendSetupGroup>
             )}
 
-            {isHostServedBackend(selectedBackend) && (
+            {(selectedBackend === 'vllm' || selectedBackend === 'lemonade') && (
               <div className="space-y-3 border-t border-border pt-5" data-testid="embeddings-inference-setup">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -797,9 +718,7 @@ export const AiSetupStep = ({
                       {t('ONBOARDING_BADGE_RECOMMENDED')}
                     </span>
                   </div>
-                  {selectedBackend !== 'dspark' && (
-                    <p className="mt-1 text-xs text-muted-foreground">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
-                  )}
+                  <p className="mt-1 text-xs text-muted-foreground">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
                 </div>
                 {ollamaEmbeddingsWarning && (
                   <div
@@ -812,6 +731,13 @@ export const AiSetupStep = ({
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
               </div>
             )}
+
+            <ManualEndpointsCard
+              decodeEndpoint={decodeEndpoint}
+              encodeEndpoint={encodeEndpoint}
+              onDecodeEndpointChange={setDecodeEndpoint}
+              onEncodeEndpointChange={setEncodeEndpoint}
+            />
           </StepSection>
 
           <ResourceSummaryBar
@@ -864,18 +790,11 @@ export const AiSetupStep = ({
               data-testid="ai-continue-btn"
               disabled={
                 !canAutoInstallRunners &&
-                (needsOllamaForContinue ||
-                  needsVllmForContinue ||
-                  needsMtplxForContinue ||
-                  needsDsparkForContinue ||
-                  needsSpeculativeInferenceForContinue ||
-                  needsLemonadeForContinue) &&
+                (needsOllamaForContinue || needsVllmForContinue || needsOmlxForContinue || needsLemonadeForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
                   (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
-                  (needsMtplxForContinue && (checkingMtplx || !mtplxStatus?.ready)) ||
-                  (needsDsparkForContinue && (checkingDspark || !dsparkStatus?.ready)) ||
-                  (needsSpeculativeInferenceForContinue && (checkingSpeculativeInference || !speculativeInferenceStatus?.ready)) ||
+                  (needsOmlxForContinue && (checkingOmlx || !omlxStatus?.ready)) ||
                   (needsLemonadeForContinue && (checkingLemonade || !lemonadeStatus?.ready)))
               }
             >
