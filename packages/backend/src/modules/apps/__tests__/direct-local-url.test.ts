@@ -110,3 +110,19 @@ describe('resolveDirectLocalUrl', () => {
     expect(makeService('::1').resolveDirectLocalUrl(APP, INFO)).toBeUndefined();
   });
 });
+
+describe('apps whose host port stays on loopback', () => {
+  it('offers no LAN address for an MCP client, whose port is not published there', () => {
+    const service = makeService();
+
+    expect(service.resolveDirectLocalUrl(APP, { ...INFO, exposable: true, hub_integration: { mcp_client: true } })).toBeUndefined();
+  });
+
+  it('offers none for an app that asks for edge auth, in either mode that binds a host port', () => {
+    const service = makeService();
+    const info = { ...INFO, exposable: true, hub_integration: { edge_auth: { default: true } } };
+
+    expect(service.resolveDirectLocalUrl(APP, info)).toBeUndefined();
+    expect(service.resolveDirectLocalUrl({ ...APP, exposureMode: 'cloudflare', exposedLocal: true }, info)).toBeUndefined();
+  });
+});

@@ -4,7 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { AppInfo } from '@ci-hub/common/schemas';
+import { type AppInfo, hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, normalizeStoredHostname } from '@ci-hub/common/types';
@@ -51,6 +51,14 @@ function buildTailscalePortUrl(nodeFqdn?: string | null, port?: number | null, s
   }
 
   return `https://${cleanNodeFqdn}:${port}${suffix}`;
+}
+
+/**
+ * Host for an app's direct `host:port` address. An app whose host port stays on loopback answers
+ * only there (see `hostPortStaysOnLoopback`), so its LAN address would refuse the connection.
+ */
+function directAccessHost(info: AppInfo, internalIp?: string | null): string {
+  return hostPortStaysOnLoopback(info) ? LOOPBACK_HOST_PORT_INTERFACE : resolveBrowserHost(internalIp);
 }
 
 @Injectable()
@@ -159,6 +167,12 @@ export class AppsService {
       return undefined;
     }
 
+    // Its host port is bound to loopback, so the LAN address refuses the connection and the
+    // loopback one is rejected below for pointing a remote browser at its own machine.
+    if (hostPortStaysOnLoopback(info)) {
+      return undefined;
+    }
+
     const mode = app.exposureMode;
     let hasDirectLocalAccess: boolean;
 
@@ -216,7 +230,7 @@ export class AppsService {
         return { available: false, appUrl: undefined, stage: 'error' };
       }
 
-      const host = resolveBrowserHost(userSettings.internalIp);
+      const host = directAccessHost(info, userSettings.internalIp);
       const scheme = info.https ? 'https' : 'http';
       appUrl = `${scheme}://${host}:${app.port}${urlSuffix}`;
       return { available: true, appUrl, stage: 'ready' };
@@ -246,7 +260,7 @@ export class AppsService {
         cloudflareClient && typeof cloudflareClient.getTunnelToken === 'function' ? cloudflareClient.getTunnelToken() : null,
       );
       if (!hasTunnelToken && app.port && hasDirectLocalAccess) {
-        const host = resolveBrowserHost(userSettings.internalIp);
+        const host = directAccessHost(info, userSettings.internalIp);
         const scheme = info.https ? 'https' : 'http';
         appUrl = `${scheme}://${host}:${app.port}${urlSuffix}`;
         return { available: true, appUrl, stage: 'ready' };
