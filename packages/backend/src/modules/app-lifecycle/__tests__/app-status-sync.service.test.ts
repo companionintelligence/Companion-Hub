@@ -20,8 +20,10 @@ describe('AppStatusSyncService', () => {
   let installPipelineTracker: InstallPipelineTracker;
   let operationRegistry: AppOperationRegistry;
   let dockerReadFacade: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
+  let logger: MockProxy<LoggerService>;
 
   beforeEach(() => {
+    logger = mock<LoggerService>();
     appRepository = mock<AppsRepository>();
     appRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     docker = mock<Dockerode>();
@@ -48,7 +50,7 @@ describe('AppStatusSyncService', () => {
     });
 
     service = new AppStatusSyncService(
-      mock<LoggerService>(),
+      logger,
       appRepository,
       sseService,
       systemEventsQueue,
@@ -321,6 +323,69 @@ describe('AppStatusSyncService', () => {
       phase: 'crash',
       message: expect.stringContaining('Error: out of memory'),
       containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+    });
+  });
+
+  describe('app containers without an app row', () => {
+    // A database wiped while its apps kept running: the containers still carry the Hub's labels,
+    // but no row names them, so nothing in the Hub can stop, expose, or uninstall them.
+    const hermes = [
+      {
+        Id: 'h1',
+        Names: ['/ci-hermes_ci-marketplace-ci-hermes-1'],
+        State: 'running',
+        Status: 'Up 4 days',
+        Labels: { 'ci-hub.managed': 'true', 'ci-hub.appurn': 'ci-hermes:ci-marketplace' },
+      },
+      {
+        Id: 'h2',
+        Names: ['/ci-hermes_ci-marketplace-ci-hermes-gateway-1'],
+        State: 'running',
+        Status: 'Up 4 days',
+        Labels: { 'ci-hub.appurn': 'ci-hermes:ci-marketplace' },
+      },
+    ];
+    const tracked = {
+      Id: 'f1',
+      Names: ['/flatnotes_ci-marketplace-flatnotes-1'],
+      State: 'running',
+      Status: 'Up',
+      Labels: { 'ci-hub.appurn': 'flatnotes:ci-marketplace' },
+    };
+    const warnings = () => logger.warn.mock.calls.map(([message]) => String(message)).filter((message) => message.includes('without an app record'));
+
+    beforeEach(() => {
+      appRepository.getApps.mockResolvedValue([
+        { id: 1, appName: 'flatnotes', appStoreSlug: 'ci-marketplace', status: 'running', updatedAt: new Date().toISOString() },
+      ] as never);
+    });
+
+    it('names them once per URN, reports to Sentry, and leaves tracked apps and the containers alone', async () => {
+      docker.listContainers.mockResolvedValue([...hermes, tracked] as never);
+
+      await service.syncAllAppStatuses();
+      await service.syncAllAppStatuses();
+
+      expect(warnings()).toEqual([expect.stringContaining('ci-hermes:ci-marketplace')]);
+      expect(warnings()[0]).toContain('ci-hermes_ci-marketplace-ci-hermes-1, ci-hermes_ci-marketplace-ci-hermes-gateway-1');
+      expect(warnings()[0]).not.toContain('flatnotes');
+      expect(errorReportingService.captureWarning).toHaveBeenCalledWith(
+        'Hub app containers without an app record',
+        { appUrn: 'ci-hermes:ci-marketplace', containers: ['ci-hermes_ci-marketplace-ci-hermes-1', 'ci-hermes_ci-marketplace-ci-hermes-gateway-1'] },
+        expect.objectContaining({ debounceKey: 'app-status-sync:untracked:ci-hermes:ci-marketplace' }),
+      );
+      expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('reports again when the containers come back after being cleared', async () => {
+      docker.listContainers.mockResolvedValue([...hermes, tracked] as never);
+      await service.syncAllAppStatuses();
+      docker.listContainers.mockResolvedValue([tracked] as never);
+      await service.syncAllAppStatuses();
+      docker.listContainers.mockResolvedValue([...hermes, tracked] as never);
+      await service.syncAllAppStatuses();
+
+      expect(warnings()).toHaveLength(2);
     });
   });
 });

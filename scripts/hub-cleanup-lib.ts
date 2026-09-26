@@ -147,44 +147,145 @@ export function managedAppProjectsFromLabelLines(lines: string[]): string[] {
 export type DockerCliRunner = (args: string[]) => { ok: boolean; stdout: string };
 
 /**
+ * Every network name the Hub stack has used. Each app's main service joins it, and so does
+ * anything else that talks to the Hub by container name.
+ */
+export const HUB_NETWORK_NAMES = ['ci-hub_network', 'ci_hub_network', 'ci-os-hub_network', 'ci_os_hub_network'] as const;
+
+/** Docker's container, network, and compose-project charset. Nothing else reaches a docker argv. */
+const DOCKER_OBJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+export type AppProjectTeardown = {
+  project: string;
+  containers: string[];
+  networks: string[];
+  /** Empty unless the plan was made with `removeVolumes`. */
+  volumes: string[];
+};
+
+export type AppTeardownPlan = {
+  /**
+   * False when Docker could not list containers. That is not "no apps": an app container with a
+   * restart policy comes back with the daemon, against whatever was deleted meanwhile.
+   */
+  listed: boolean;
+  /** Hub-installed apps, found by the managed labels, with everything of theirs that goes. */
+  projects: AppProjectTeardown[];
+  /**
+   * Containers attached to a Hub network that belong neither to the Hub stack nor to an installed
+   * app. The Hub cannot see or manage them, and a reset deletes the network and data they use.
+   */
+  unmanaged: string[];
+};
+
+function composeProjectOf(labels: string): string | undefined {
+  for (const pair of labels.split(',')) {
+    const trimmed = pair.trim();
+    if (trimmed.startsWith(COMPOSE_PROJECT_LABEL_PREFIX)) {
+      return trimmed.slice(COMPOSE_PROJECT_LABEL_PREFIX.length);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Lists what {@link executeAppTeardown} would remove, without changing anything.
+ *
+ * Apps are found by the managed labels, as before. Containers on a Hub network are found as well,
+ * because the labels only cover what the Hub created. On beta-max (2026-09-22) four containers
+ * named like Hub apps (`ci-hermes_ci-marketplace-ci-hermes-1`, …) had been started with
+ * `docker run` after a reset: no compose or managed labels, on `ci-hub_network`, bind-mounting
+ * `app-data/`. The fresh Hub had no rows for them and could not stop, expose, or uninstall them,
+ * and a label-only reset would leave them running. `cihub uninstall` already removes every
+ * container on these networks (runHubCleanup).
+ *
+ * This assumes one Hub per Docker daemon, as the managed labels carry no Hub identity.
+ */
+export function planAppTeardown(docker: DockerCliRunner, options: { removeVolumes: boolean }): AppTeardownPlan {
+  let listed = true;
+  const list = (args: string[]): string[] => {
+    const { ok, stdout } = docker(args);
+    if (!ok) listed = false;
+    return ok ? parseNames(stdout) : [];
+  };
+  const listIfOk = (args: string[]): string[] => {
+    const { ok, stdout } = docker(args);
+    return ok ? parseNames(stdout) : [];
+  };
+
+  const labelLines = ['ci-hub.managed=true', 'ci-os-hub.managed=true'].flatMap((label) =>
+    list(['ps', '-a', '--filter', `label=${label}`, '--format', '{{.Labels}}']),
+  );
+  const byProject = (project: string) => ['--filter', `label=com.docker.compose.project=${project}`];
+  const projects = managedAppProjectsFromLabelLines(labelLines).map((project) => ({
+    project,
+    containers: listIfOk(['ps', '-a', ...byProject(project), '--format', '{{.Names}}']).filter((name) => DOCKER_OBJECT_NAME.test(name)),
+    networks: listIfOk(['network', 'ls', ...byProject(project), '--format', '{{.Name}}']).filter((name) => DOCKER_OBJECT_NAME.test(name)),
+    volumes: options.removeVolumes ? listIfOk(['volume', 'ls', '-q', ...byProject(project)]).filter((name) => DOCKER_OBJECT_NAME.test(name)) : [],
+  }));
+
+  // Repeated `network` filters match a container on ANY of them. `{{.Labels}}` rather than a quoted
+  // `{{.Label "…"}}` template for the reason given at managedAppProjectsFromLabelLines. A container
+  // name has no spaces, so everything after the first one is its label list.
+  const onHubNetwork = list([
+    'ps',
+    '-a',
+    ...HUB_NETWORK_NAMES.flatMap((network) => ['--filter', `network=${network}`]),
+    '--format',
+    '{{.Names}} {{.Labels}}',
+  ]);
+  const owned = new Set<string>([...HUB_STACK_PROJECT_NAMES, ...projects.map((entry) => entry.project)]);
+  const unmanaged = new Set<string>();
+  for (const line of onHubNetwork) {
+    const space = line.indexOf(' ');
+    // `{{.Names}}` joins legacy link aliases with commas; the first entry is the container itself.
+    const name = (space === -1 ? line : line.slice(0, space)).split(',')[0];
+    const project = space === -1 ? undefined : composeProjectOf(line.slice(space + 1));
+    if (project !== undefined && owned.has(project)) continue;
+    if (DOCKER_OBJECT_NAME.test(name)) unmanaged.add(name);
+  }
+
+  return { listed, projects, unmanaged: [...unmanaged] };
+}
+
+/**
+ * Removes what {@link planAppTeardown} listed: each app's containers, networks, and (when planned)
+ * named volumes, then the unmanaged containers. Those lose only the container. No named volume can
+ * be traced to them, and their bind mounts live in the data directory the caller deletes, or keeps,
+ * by its own policy.
+ */
+export function executeAppTeardown(docker: DockerCliRunner, plan: AppTeardownPlan): void {
+  for (const { containers, networks, volumes } of plan.projects) {
+    if (containers.length > 0) {
+      docker(['rm', '-f', ...containers]);
+    }
+    for (const network of networks) {
+      docker(['network', 'rm', network]);
+    }
+    for (const volume of volumes) {
+      docker(['volume', 'rm', volume]);
+    }
+  }
+  if (plan.unmanaged.length > 0) {
+    docker(['rm', '-f', ...plan.unmanaged]);
+  }
+}
+
+/**
  * Removes every Hub-managed marketplace app: its containers, its project networks, and, when
- * `removeVolumes` is set, its named volumes. Returns the compose projects it found.
+ * `removeVolumes` is set, its named volumes. Also removes any other container on a Hub network
+ * (see {@link planAppTeardown}). Returns what it removed.
  *
  * Run this BEFORE deleting the Hub state the apps depend on. Each app is its own compose project
  * outside the Hub stack, with bind mounts under the Hub data directory and Hub-issued credentials
  * in its environment. On core-2 (2026-09-17) a wipe that removed only the Hub stack and its data
  * directory left ci-memory, OpenClaw, Hermes, and import-tools running against deleted bind
  * sources, and their Hub MCP calls to the fresh Hub returned 401.
- *
- * This assumes one Hub per Docker daemon, as the managed labels carry no Hub identity.
  */
-export function removeManagedAppProjects(docker: DockerCliRunner, options: { removeVolumes: boolean }): string[] {
-  const labelLines = ['ci-hub.managed=true', 'ci-os-hub.managed=true'].flatMap((label) => {
-    const { ok, stdout } = docker(['ps', '-a', '--filter', `label=${label}`, '--format', '{{.Labels}}']);
-    return ok ? parseNames(stdout) : [];
-  });
-  const projects = managedAppProjectsFromLabelLines(labelLines);
-  const byProject = (project: string) => ['--filter', `label=com.docker.compose.project=${project}`];
-
-  for (const project of projects) {
-    const containers = docker(['ps', '-aq', ...byProject(project)]);
-    const ids = containers.ok ? parseNames(containers.stdout) : [];
-    if (ids.length > 0) {
-      docker(['rm', '-f', ...ids]);
-    }
-    const networks = docker(['network', 'ls', '-q', ...byProject(project)]);
-    for (const network of networks.ok ? parseNames(networks.stdout) : []) {
-      docker(['network', 'rm', network]);
-    }
-    if (!options.removeVolumes) {
-      continue;
-    }
-    const volumes = docker(['volume', 'ls', '-q', ...byProject(project)]);
-    for (const volume of volumes.ok ? parseNames(volumes.stdout) : []) {
-      docker(['volume', 'rm', volume]);
-    }
-  }
-  return projects;
+export function removeManagedAppProjects(docker: DockerCliRunner, options: { removeVolumes: boolean }): AppTeardownPlan {
+  const plan = planAppTeardown(docker, options);
+  executeAppTeardown(docker, plan);
+  return plan;
 }
 
 /**

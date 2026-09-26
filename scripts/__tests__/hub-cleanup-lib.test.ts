@@ -11,6 +11,7 @@ import {
   isWithinPath,
   managedAppProjectsFromLabelLines,
   parseNames,
+  planAppTeardown,
   removeManagedAppProjects,
   runHubCleanup,
 } from '../hub-cleanup-lib';
@@ -74,8 +75,24 @@ describe('hub-cleanup-lib', () => {
     expect(managedAppProjectsFromLabelLines(lines)).toEqual(['ci-memory_ci-marketplace']);
   });
 
-  describe('removeManagedAppProjects (cihub reset)', () => {
-    const fakeDocker = () => {
+  describe('planAppTeardown and removeManagedAppProjects (cihub reset)', () => {
+    const HUB_NETWORK_FILTERS =
+      'ps -a --filter network=ci-hub_network --filter network=ci_hub_network --filter network=ci-os-hub_network --filter network=ci_os_hub_network --format {{.Names}} {{.Labels}}';
+
+    // What beta-max had attached to ci-hub_network on 2026-09-26: the Hub stack, and four
+    // containers named like Hub apps that `docker run` had started with no labels at all.
+    const BETA_MAX_HUB_NETWORK = [
+      'ci-hub ci-hub.managed=true,com.docker.compose.project=ci-hub,com.docker.compose.service=ci-hub',
+      'ci-hub-db com.docker.compose.project=ci-hub,com.docker.compose.service=ci-hub-db',
+      'traefik ci-hub.managed=true,com.docker.compose.project=ci-hub',
+      'cloudflared com.docker.compose.project=ci-hub',
+      'opencode-web_ci-marketplace-opencode-web-1 org.opencontainers.image.description=Docker image for OpenCode AI coding assistant,org.opencontainers.image.version=1.18.32',
+      'ci-openclaw_ci-marketplace-ci-openclaw-1 org.opencontainers.image.revision=abc',
+      'ci-hermes_ci-marketplace-ci-hermes-gateway-1 org.opencontainers.image.revision=345cd2b',
+      'ci-hermes_ci-marketplace-ci-hermes-1 org.opencontainers.image.revision=345cd2b',
+    ].join('\n');
+
+    const fakeDocker = (hubNetwork = '') => {
       const calls: string[] = [];
       const docker = (args: string[]) => {
         const command = args.join(' ');
@@ -89,17 +106,20 @@ describe('hub-cleanup-lib', () => {
         if (command === 'ps -a --filter label=ci-os-hub.managed=true --format {{.Labels}}') {
           return { ok: true, stdout: 'ci-os-hub.managed=true,com.docker.compose.project=ci-openclaw_ci-marketplace' };
         }
-        if (command === 'ps -aq --filter label=com.docker.compose.project=ci-hermes_ci-marketplace') {
-          return { ok: true, stdout: 'h1\nh2' };
+        if (command === 'ps -a --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --format {{.Names}}') {
+          return { ok: true, stdout: 'hermes-1\nhermes-gateway-1' };
         }
-        if (command === 'ps -aq --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace') {
-          return { ok: true, stdout: 'o1' };
+        if (command === 'ps -a --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace --format {{.Names}}') {
+          return { ok: true, stdout: 'openclaw-1' };
         }
-        if (command === 'network ls -q --filter label=com.docker.compose.project=ci-hermes_ci-marketplace') {
-          return { ok: true, stdout: 'n1' };
+        if (command === 'network ls --filter label=com.docker.compose.project=ci-hermes_ci-marketplace --format {{.Name}}') {
+          return { ok: true, stdout: 'ci-hermes_ci-marketplace_default' };
         }
         if (command === 'volume ls -q --filter label=com.docker.compose.project=ci-openclaw_ci-marketplace') {
-          return { ok: true, stdout: 'v1' };
+          return { ok: true, stdout: 'ci-openclaw_ci-marketplace_state' };
+        }
+        if (command === HUB_NETWORK_FILTERS) {
+          return { ok: true, stdout: hubNetwork };
         }
         return { ok: true, stdout: '' };
       };
@@ -111,29 +131,80 @@ describe('hub-cleanup-lib', () => {
 
       const removed = removeManagedAppProjects(docker, { removeVolumes: true });
 
-      expect(removed).toEqual(['ci-hermes_ci-marketplace', 'ci-openclaw_ci-marketplace']);
-      expect(calls).toContain('rm -f h1 h2');
-      expect(calls).toContain('rm -f o1');
-      expect(calls).toContain('network rm n1');
-      expect(calls).toContain('volume rm v1');
+      expect(removed.projects.map((entry) => entry.project)).toEqual(['ci-hermes_ci-marketplace', 'ci-openclaw_ci-marketplace']);
+      expect(calls).toContain('rm -f hermes-1 hermes-gateway-1');
+      expect(calls).toContain('rm -f openclaw-1');
+      expect(calls).toContain('network rm ci-hermes_ci-marketplace_default');
+      expect(calls).toContain('volume rm ci-openclaw_ci-marketplace_state');
       expect(calls.some((command) => command.includes('com.docker.compose.project=ci-hub'))).toBe(false);
     });
 
-    it('keeps app volumes when asked, and does nothing when docker cannot list containers', () => {
+    it('plans containers on the Hub network that no label ties to the Hub, and leaves the Hub stack out', () => {
+      const { calls, docker } = fakeDocker(BETA_MAX_HUB_NETWORK);
+
+      const plan = planAppTeardown(docker, { removeVolumes: true });
+
+      expect(plan.listed).toBe(true);
+      expect(plan.unmanaged).toEqual([
+        'opencode-web_ci-marketplace-opencode-web-1',
+        'ci-openclaw_ci-marketplace-ci-openclaw-1',
+        'ci-hermes_ci-marketplace-ci-hermes-gateway-1',
+        'ci-hermes_ci-marketplace-ci-hermes-1',
+      ]);
+      // Planning is read-only.
+      expect(calls.filter((command) => !command.startsWith('ps ') && !command.includes(' ls '))).toEqual([]);
+    });
+
+    it('removes the unlabelled containers by name, and no volume on their account', () => {
+      const { calls, docker } = fakeDocker(BETA_MAX_HUB_NETWORK);
+
+      removeManagedAppProjects(docker, { removeVolumes: true });
+
+      expect(calls).toContain(
+        'rm -f opencode-web_ci-marketplace-opencode-web-1 ci-openclaw_ci-marketplace-ci-openclaw-1 ci-hermes_ci-marketplace-ci-hermes-gateway-1 ci-hermes_ci-marketplace-ci-hermes-1',
+      );
+      expect(calls.filter((command) => command.startsWith('volume rm'))).toEqual(['volume rm ci-openclaw_ci-marketplace_state']);
+    });
+
+    it('does not list an installed app twice when its main service is also on the Hub network', () => {
+      const { docker } = fakeDocker(
+        [
+          'hermes-1 ci-hub.managed=true,com.docker.compose.project=ci-hermes_ci-marketplace',
+          'legacy-hub com.docker.compose.project=runtipi',
+          'stray-1,other/alias com.example=1',
+          '--privileged com.example=1',
+        ].join('\n'),
+      );
+
+      const plan = planAppTeardown(docker, { removeVolumes: false });
+
+      expect(plan.unmanaged).toEqual(['stray-1']);
+      expect(plan.projects.every((entry) => entry.volumes.length === 0)).toBe(true);
+    });
+
+    it('keeps app volumes when asked, and reports docker being unreachable instead of "no apps"', () => {
       const { calls, docker } = fakeDocker();
       removeManagedAppProjects(docker, { removeVolumes: false });
       expect(calls.some((command) => command.startsWith('volume'))).toBe(false);
 
       const unreachable: string[] = [];
-      const removed = removeManagedAppProjects(
+      const plan = removeManagedAppProjects(
         (args) => {
           unreachable.push(args.join(' '));
           return { ok: false, stdout: '' };
         },
         { removeVolumes: true },
       );
-      expect(removed).toEqual([]);
-      expect(unreachable.every((command) => command.startsWith('ps -a --filter label='))).toBe(true);
+      expect(plan).toEqual({ listed: false, projects: [], unmanaged: [] });
+      expect(unreachable.every((command) => command.startsWith('ps -a --filter '))).toBe(true);
+    });
+
+    it('is not "listed" when only the Hub network query fails', () => {
+      const { docker } = fakeDocker();
+      const plan = planAppTeardown((args) => (args.join(' ') === HUB_NETWORK_FILTERS ? { ok: false, stdout: '' } : docker(args)), {
+        removeVolumes: true,
+      });
+      expect(plan.listed).toBe(false);
     });
   });
 

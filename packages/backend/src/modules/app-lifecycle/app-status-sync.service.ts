@@ -35,6 +35,9 @@ const TRANSITIONAL_STATES: AppStatus[] = [
 
 @Injectable()
 export class AppStatusSyncService {
+  /** Untracked app URNs already warned about, so the five-minute sync does not repeat itself. */
+  private readonly reportedUntrackedApps = new Set<string>();
+
   constructor(
     private readonly logger: LoggerService,
     private readonly appRepository: AppsRepository,
@@ -243,6 +246,8 @@ export class AppStatusSyncService {
         }
       }
 
+      this.reportUntrackedAppContainers(containers, new Set(apps.map((app) => `${app.appName}:${app.appStoreSlug}`)));
+
       this.logger.debug(`App status sync completed: ${syncedCount} synced, ${skippedCount} skipped`);
 
       return {
@@ -265,6 +270,43 @@ export class AppStatusSyncService {
         skippedCount: 0,
         totalApps: 0,
       };
+    }
+  }
+
+  /**
+   * Warns about containers labelled as a Hub app whose app has no row. The Hub cannot restart,
+   * reconfigure, expose, or uninstall them, and the apps page does not list them. A database wiped
+   * or restored while its apps kept running leaves exactly this, for example a `cihub reset` from a
+   * CLI older than #1485, which did not remove apps. Reported, not removed: the containers may hold
+   * data the operator wants back.
+   *
+   * Containers with no Hub label at all, such as the four started with `docker run` on beta-max
+   * (2026-09-22), are not seen here; `cihub reset` removes those from the Hub network instead.
+   */
+  private reportUntrackedAppContainers(containers: Dockerode.ContainerInfo[], trackedUrns: Set<string>): void {
+    const untracked = new Map<string, string[]>();
+    for (const container of containers) {
+      const appUrn = appUrnFromLabels(container.Labels);
+      if (!appUrn || trackedUrns.has(appUrn)) continue;
+      const name = (container.Names?.[0] ?? container.Id ?? 'unnamed').replace(/^\//, '');
+      untracked.set(appUrn, [...(untracked.get(appUrn) ?? []), name]);
+    }
+    // Forget URNs that were fixed, so they are reported again if they come back.
+    for (const appUrn of this.reportedUntrackedApps) {
+      if (!untracked.has(appUrn)) this.reportedUntrackedApps.delete(appUrn);
+    }
+    for (const [appUrn, names] of untracked) {
+      if (this.reportedUntrackedApps.has(appUrn)) continue;
+      this.reportedUntrackedApps.add(appUrn);
+      this.logger.warn(
+        `Containers labelled as app ${appUrn} run without an app record, so this Hub cannot manage them: ${names.join(', ')}. ` +
+          'Remove them with `docker rm -f`, or install the app again.',
+      );
+      this.errorReportingService?.captureWarning(
+        'Hub app containers without an app record',
+        { appUrn, containers: names },
+        { debounceKey: `app-status-sync:untracked:${appUrn}`, debounceMs: 24 * 60 * 60_000 },
+      );
     }
   }
 

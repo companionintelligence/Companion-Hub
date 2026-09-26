@@ -10,7 +10,14 @@ import { existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { dockerBindMountPath } from '../heal-hub-bind-mounts.js';
-import { isRelatedVolume, parseNames, removeManagedAppProjects } from '../hub-cleanup-lib.js';
+import {
+  type AppTeardownPlan,
+  executeAppTeardown,
+  isRelatedVolume,
+  parseNames,
+  planAppTeardown,
+  removeManagedAppProjects,
+} from '../hub-cleanup-lib.js';
 import { buildEnvOverrides, getEnvFileOrExit } from './cli-compose-env.js';
 import { startHub } from './cli-lifecycle.js';
 import { run, runBestEffort, runCapture } from './cli-proc.js';
@@ -144,6 +151,8 @@ function cleanApplianceHub(ctx: HubContext, options: CleanHubOptions) {
   }
 }
 
+const dockerCapture = (args: string[]) => runCapture('docker', args);
+
 type CleanHubOptions = {
   /** `cihub reset` has already removed the apps, with their volumes, before `down`. */
   appsAlreadyRemoved?: boolean;
@@ -159,10 +168,54 @@ type CleanHubOptions = {
  * apps, survives it too.
  */
 function removeAppContainersBeforeDeletingData() {
-  const removedApps = removeManagedAppProjects((args) => runCapture('docker', args), { removeVolumes: false });
-  if (removedApps.length > 0) {
-    printMessageBox('Removed installed app containers', [...removedApps, dim('Their named volumes were kept.')], 'yellow');
+  const removed = describeAppTeardown(removeManagedAppProjects(dockerCapture, { removeVolumes: false }));
+  if (removed.length > 0) {
+    printMessageBox('Removed installed app containers', [...removed, dim('Their named volumes were kept.')], 'yellow');
   }
+}
+
+/** One line per app, plus its networks and volumes, then the containers the Hub never installed. */
+export function describeAppTeardown(plan: AppTeardownPlan): string[] {
+  const lines: string[] = [];
+  for (const { project, containers, networks, volumes } of plan.projects) {
+    lines.push(`${project}: ${containers.length > 0 ? containers.join(', ') : 'no containers'}`);
+    if (networks.length > 0) lines.push(dim(`  networks: ${networks.join(', ')}`));
+    if (volumes.length > 0) lines.push(dim(`  volumes: ${volumes.join(', ')}`));
+  }
+  if (plan.unmanaged.length > 0) {
+    lines.push('On the Hub network but not installed by the Hub (container only):');
+    for (const name of plan.unmanaged) lines.push(`  ${name}`);
+  }
+  return lines;
+}
+
+/** Where reset deletes host files: the whole canonical tree (appliance), or hub-data and tunnel (checkout). */
+function hostDataTargets(env: HubEnv): string[] {
+  if (isApplianceMode()) {
+    const { dataDir } = resolveHubContext(env);
+    return dataDir ? [dataDir] : [];
+  }
+  const rootFolderHost = resolveRootFolderHost(getEnvFileOrExit(env));
+  return [rootFolderHost, path.resolve(rootFolderHost, '..', 'tunnel')];
+}
+
+/**
+ * An unlisted app is not an absent one. Deleting the data dir while Docker is down leaves every app
+ * with a restart policy to come back with the daemon, against the deleted state; nuke.sh refuses for
+ * the same reason (managed-app-teardown.sh).
+ */
+function listedOrRefuse(plan: AppTeardownPlan): boolean {
+  if (plan.listed) return true;
+  printMessageBox(
+    'Reset stopped; nothing was removed',
+    [
+      'Docker did not list its containers, so reset cannot find the installed apps to remove first.',
+      'Start Docker, or give this user access to it, and run the reset again.',
+    ],
+    'red',
+  );
+  process.exitCode = 1;
+  return false;
 }
 
 export function cleanHub(env: HubEnv, options: CleanHubOptions = {}) {
@@ -185,7 +238,7 @@ export function cleanHub(env: HubEnv, options: CleanHubOptions = {}) {
   printMessageBox('Environment files cleaned', [...removed, ...skipped.map((line) => dim(`skipped ${line}`))], 'yellow');
 }
 
-export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
+export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Promise<boolean> {
   const appliance = isApplianceMode();
   if (appliance) {
     requireRepoOrApplianceContext('cihub reset', 'allow-missing');
@@ -193,6 +246,28 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
     requireRepoRoot('cihub reset');
   }
   const label = appliance ? 'prod (canonical install)' : env;
+  // Shown before the prompt, because the list can hold containers the Hub never installed and the
+  // operator should see those by name before agreeing to remove them. See planAppTeardown.
+  const plan = planAppTeardown(dockerCapture, { removeVolumes: true });
+  if (!listedOrRefuse(plan)) return false;
+  const planned = describeAppTeardown(plan);
+  printMessageBox(
+    `Apps and containers this reset ${dryRun ? 'would remove' : 'removes'}`,
+    planned.length > 0 ? planned : [dim('None: no installed apps, and nothing else on the Hub network.')],
+    'yellow',
+  );
+  if (dryRun) {
+    printMessageBox(
+      'Dry run: nothing was removed',
+      [
+        'After the apps, reset runs `docker compose down -v` for the ci-hub project (the Hub containers and volumes such as ci_hub_pgdata)',
+        'and deletes this host data:',
+        ...hostDataTargets(env).map((target) => `  ${target}`),
+      ],
+      'cyan',
+    );
+    return false;
+  }
   const confirmed = await confirmDestructiveAction(
     `Resetting ${label}`,
     force,
@@ -204,10 +279,14 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
   }
   // Apps go first. `down` below only knows the Hub's own project, and the data directory this reset
   // deletes holds every app's bind mounts; apps left running keep Hub credentials the reset Hub
-  // rejects. See removeManagedAppProjects.
-  const removedApps = removeManagedAppProjects((args) => runCapture('docker', args), { removeVolumes: true });
-  if (removedApps.length > 0) {
-    printMessageBox('Removed installed apps', removedApps, 'yellow');
+  // rejects, and a fresh Hub database has no row through which to stop them. Listed again because
+  // the prompt can stay open while something starts another container.
+  const current = planAppTeardown(dockerCapture, { removeVolumes: true });
+  if (!listedOrRefuse(current)) return false;
+  executeAppTeardown(dockerCapture, current);
+  const removed = describeAppTeardown(current);
+  if (removed.length > 0) {
+    printMessageBox('Removed installed apps', removed, 'yellow');
   }
   downHub(env, { volumes: true });
   verifyHubVolumesRemoved();
