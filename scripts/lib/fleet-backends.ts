@@ -52,12 +52,9 @@ import {
   LLAMACPP_DEFAULT_PARALLEL,
   LLAMACPP_FLEET_PORT,
   LLAMACPP_UNIT,
-  llamacppApplyShell,
   llamacppFlavour,
-  llamacppImage,
   type LlamacppServerIdentity,
   type LlamacppSpec,
-  isSafeOllamaTag,
 } from './fleet-llamacpp.js';
 import { classifyProbeFirewallOutput, HUB_PROBE_PORTS, probeFirewallApplyShell } from './fleet-probe-firewall.js';
 
@@ -135,7 +132,7 @@ const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['oll
  * it over llama-server's own 8080 (dspark's, and Traefik's dashboard on every appliance). Its
  * listener is still fingerprinted, because the host probe can: a server there that names another
  * engine on `/v1/models` is refused rather than adopted, and one whose unit is this CLI's own is
- * converged rather than adopted, so a changed model or flag reaches it. See {@link planLlamacpp}.
+ * converged rather than adopted, so a changed model or flag reaches it.
  */
 const PORTS: Record<InstallableBackend, number> = {
   ollama: 11434,
@@ -282,38 +279,9 @@ function vllmLinuxScript(dataDir: string): string {
   ].join('\n');
 }
 
-/**
- * lucebox: a Docker container, so "install" is a pull plus a run.
- *
- * Image choice mirrors the Rust: CUDA when nvidia-smi answers, ROCm when /dev/kfd and /dev/dri both
- * exist, and otherwise no supported GPU. The container's internal port is 8080 mapped to the host
- * port — a detail worth keeping exact, since getting it backwards produces a container that starts
- * and never answers.
- */
+/** oMLX on Apple Silicon, from the jundot Homebrew tap. */
 function omlxBrewScript(): string {
   return ['brew tap jundot/omlx https://github.com/jundot/omlx', 'brew install jundot/omlx/omlx', 'omlx start'].join('\n');
-}
-
-function luceboxScript(facts: HostFacts, dataDir: string, port: number): string {
-  const cuda = facts.gpus.some((g) => g.vendor === 'nvidia' && g.driverWorking);
-  const image = cuda ? 'ghcr.io/luce-org/lucebox-hub:cuda12' : 'ghcr.io/luce-org/lucebox-hub:rocm';
-  const gpuFlags = cuda ? '--gpus all' : '--device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined';
-  return [
-    'set -e',
-    `mkdir -p "${dataDir}/runners/lucebox/models"`,
-    `docker pull ${image}`,
-    // A stopped container keeps the host port it was created with, so reuse beats recreate.
-    'if [ -n "$(docker ps -a --filter name=^ci-hub-inference-lucebox$ --format "{{.Names}}")" ]; then',
-    '  docker start ci-hub-inference-lucebox',
-    'else',
-    '  docker run -d --name ci-hub-inference-lucebox --restart unless-stopped \\',
-    `    -p ${port}:8080 \\`,
-    `    -v "${dataDir}/runners/lucebox/models:/opt/lucebox-hub/server/models" \\`,
-    `    ${gpuFlags} \\`,
-    `    ${image}`,
-    'fi',
-    'echo "lucebox-install-complete"',
-  ].join('\n');
 }
 
 /**
@@ -411,111 +379,6 @@ export function llamacppSpecFor(facts: HostFacts, opts: LlamacppPlanOptions & { 
     model: opts.model,
     parallel: opts.parallel ?? LLAMACPP_DEFAULT_PARALLEL,
     contextLength: opts.contextLength ?? LLAMACPP_DEFAULT_CONTEXT,
-  };
-}
-
-/**
- * llama-server as a systemd-managed container on `:8081`, serving the GGUF Ollama already holds —
- * see `fleet-llamacpp.ts` for the measurements and the four decisions.
- *
- * Only when named. Unlike every other backend here, this one holds a whole model in memory beside
- * Ollama's copy, so a run that did not say `--backends llamacpp` reports what is there and installs
- * nothing — and adopts only a server that NAMED itself `llamacpp` on `/v1/models`, because a plan
- * line that reads "adopted" is read by the caller as "there is a llama-server here". An unnamed
- * listener on the port is reported as exactly that. (The Hub half — `LLAMACPP_URL` and a `ci-hub`
- * recreate — is gated in `cli-fleet.ts` on the backend being named in the run, whatever this
- * returns.) The gates are lucebox's (Linux, a usable Docker) plus the model: a tag Ollama has not
- * pulled, or a Hub that cannot name its auto model, is a skip that says which. The listener on the
- * port is read three ways — this CLI's own unit (converge: the apply shell rewrites the unit only if
- * its bytes differ, and restarts only then), a server that names itself `llamacpp` (adopt, nothing
- * installed), anything else that names itself (refuse: it is not ours to fight for the port).
- */
-function planLlamacpp(facts: HostFacts, opts: LlamacppPlanOptions | undefined): BackendPlan {
-  const backend = 'ollama' as const;
-  const port = LLAMACPP_FLEET_PORT;
-  const listening = facts.enginesListening.includes(port);
-  const owner = facts.engineOwners?.[port];
-  const unit = facts.managedUnits?.[LLAMACPP_UNIT];
-  const ours = unit === 'active' || unit === 'activating';
-
-  if (listening && owner && owner !== 'llamacpp') {
-    return {
-      backend,
-      action: 'skip',
-      why: `:${port} is in use by a server naming itself "${owner}" on /v1/models — not llama-server; free the port or run it elsewhere`,
-      port,
-    };
-  }
-  if (!opts) {
-    // Not named in this run: report, never install, and adopt only on the server's own word.
-    const converge = 'name it with --backends llamacpp to converge its model and flags';
-    if (listening && owner === 'llamacpp') {
-      return {
-        backend,
-        action: 'adopt',
-        why: ours
-          ? `${LLAMACPP_UNIT} is ${unit} and answers on :${port} (owned_by llamacpp) — left as it is; ${converge}`
-          : `already answering on :${port} (owned_by llamacpp) — adopted, nothing installed`,
-        port,
-      };
-    }
-    if (listening) {
-      return {
-        backend,
-        action: 'skip',
-        why: `something answers on :${port} but does not name itself llamacpp on /v1/models — not adopted${ours ? ` (${LLAMACPP_UNIT} is ${unit}; a llama-server still loading names nothing yet)` : ''}`,
-        port,
-      };
-    }
-    if (ours)
-      return { backend, action: 'skip', why: `${LLAMACPP_UNIT} is ${unit} but nothing answers on :${port} yet — not adopted; ${converge}`, port };
-    return { backend, action: 'skip', why: 'installed only when named: pass --backends llamacpp — it holds a model in memory beside Ollama', port };
-  }
-  if (facts.os !== 'linux') {
-    return { backend, action: 'skip', why: `the container path is Linux-only; on ${facts.os} run llama-server yourself and set LLAMACPP_URL`, port };
-  }
-  if (!facts.docker.usable) {
-    return {
-      backend,
-      action: 'skip',
-      why: facts.docker.present
-        ? 'docker is installed but `docker info` failed — daemon down, or this account lacks access'
-        : 'requires a working Docker engine; none present',
-      port,
-    };
-  }
-  if (listening && !ours) {
-    // Somebody else's llama-server (or one still loading, which names nothing yet). A managed unit
-    // would fight it for the port; adopting it is what the fleet does with a hand-started Ollama.
-    return {
-      backend,
-      action: 'adopt',
-      why: `already answering on :${port}${owner ? ' (owned_by llamacpp)' : ` (a llama-server not run by ${LLAMACPP_UNIT})`} — adopted, nothing installed`,
-      port,
-    };
-  }
-  if (!opts.model) {
-    return {
-      backend,
-      action: 'skip',
-      why: opts.modelError ?? 'no model named and none could be resolved — pass --llamacpp-model <ollama-tag>',
-      port,
-    };
-  }
-  if (!isSafeOllamaTag(opts.model)) {
-    return { backend, action: 'skip', why: `'${opts.model}' is not an Ollama tag this CLI will put in a unit file`, port };
-  }
-  const spec = llamacppSpecFor(facts, { ...opts, model: opts.model });
-  const gpu = llamacppFlavour(facts);
-  const verb = ours ? `converging ${LLAMACPP_UNIT} (restart only if its unit changes)` : `installing ${LLAMACPP_UNIT}`;
-  return {
-    backend,
-    action: 'install',
-    why: `${gpu.why} — ${verb}: ${llamacppImage(spec.flavour)} serving Ollama's ${spec.model}${opts.modelWhy ? ` (${opts.modelWhy})` : ''} as ${spec.parallel} × ${spec.contextLength} (-np ${spec.parallel} -c ${spec.parallel * spec.contextLength}) on :${port}`,
-    script: llamacppApplyShell(spec),
-    port,
-    needsSudo: true,
-    llamacpp: spec,
   };
 }
 

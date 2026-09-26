@@ -206,11 +206,7 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
         "Installing oMLX with Homebrew: brew tap jundot/omlx && brew install jundot/omlx/omlx && omlx start",
     );
     let status = Command::new("brew")
-        .args([
-            "tap",
-            "jundot/omlx",
-            "https://github.com/jundot/omlx",
-        ])
+        .args(["tap", "jundot/omlx", "https://github.com/jundot/omlx"])
         .status();
     if status.map(|code| !code.success()).unwrap_or(true) {
         return failed("omlx", "brew tap jundot/omlx failed.".to_string());
@@ -388,7 +384,11 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
             Ok(path) => path,
             Err(error) => return failed("vllm", error),
         };
-        (path, "Qwen/Qwen3-4B-Instruct-2507".to_string(), Vec::<String>::new())
+        (
+            path,
+            "Qwen/Qwen3-4B-Instruct-2507".to_string(),
+            Vec::<String>::new(),
+        )
     };
 
     let mut args = vec![
@@ -1701,17 +1701,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonicalizes_lunabox_without_exposing_it_as_a_second_runner() {
-        assert_eq!(canonical_runner_name("lunabox"), Some("lucebox"));
-        assert_eq!(canonical_runner_name("lucebox"), Some("lucebox"));
+    fn dropped_runner_names_are_not_installed() {
+        assert_eq!(canonical_runner_name("lunabox"), None);
+        assert_eq!(canonical_runner_name("lucebox"), None);
+        assert_eq!(canonical_runner_name("mlx-dspark"), None);
+        assert_eq!(canonical_runner_name("dspark"), None);
+        assert_eq!(canonical_runner_name("mtplx"), None);
+        assert_eq!(canonical_runner_name("llamacpp"), None);
+        assert_eq!(canonical_runner_name("lmstudio"), None);
         assert_eq!(
             automatic_runner_names(&[
                 "lunabox".to_string(),
-                "lucebox".to_string(),
-                "mlx-dspark".to_string(),
+                "omlx".to_string(),
+                "ollama".to_string(),
                 "dspark".to_string(),
             ]),
-            vec!["lucebox".to_string(), "dspark".to_string()]
+            vec!["omlx".to_string(), "ollama".to_string()]
         );
     }
 
