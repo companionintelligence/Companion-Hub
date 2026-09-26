@@ -18,14 +18,24 @@ providers:
     directory: /etc/traefik/dynamic
     watch: true
 
-# Which peers may vouch for a client's address. ONLY the edge network
-# (docker-compose.prod.yml: `ci_hub_edge`, a fixed subnet holding just
-# cloudflared and the Tailscale sidecar at fixed addresses). A request from
-# anywhere else — the LAN, an app container, the host — has its forwarded
-# headers stripped and is named as the client itself, so nothing outside that
-# subnet can choose the address it appears as. The placeholder is filled from
-# HUB_EDGE_SUBNET at config-copy time (AppService.copyAssets), the same value
-# the compose file gives the network.
+# Which peers may vouch for a client's address. ONLY the two edge hops,
+# cloudflared and the Tailscale sidecar, at the fixed addresses
+# docker-compose.prod.yml gives them on `ci_hub_edge`. A request from anywhere
+# else — the LAN, an app container, the host — has its forwarded headers
+# stripped and is named as the client itself, so nothing else can choose the
+# address it appears as.
+#
+# By address, NOT the edge subnet: the subnet's gateway (.1) is where every
+# connection that reaches Traefik through the host comes from (the edge network
+# is Traefik's gateway network, so its published ports live there), including
+# any app container dialling host.docker.internal:80. See `resolveEdgeHops`.
+#
+# The values are the compose defaults, real addresses rather than placeholders
+# because the CLI and the desktop app seed this file with nothing but the ACME
+# email filled in, and Traefik will not start on an entry that is not an
+# address. The Hub rewrites
+# each tagged line from HUB_EDGE_CLOUDFLARED_IP / HUB_EDGE_TAILSCALE_IP at
+# config-copy time (AppService.copyAssets). Keep the `# edge hop:` tags.
 entryPoints:
   web:
     address: ":80"
@@ -33,7 +43,8 @@ entryPoints:
     # Cloudflare Tunnel connects via plain HTTP
     forwardedHeaders:
       trustedIPs:
-        - {{EDGE_TRUSTED_CIDR}}
+        - 10.128.0.3/32 # edge hop: cloudflared
+        - 10.128.0.4/32 # edge hop: hub-tailscale
     transport:
       respondingTimeouts:
         readTimeout: 300s
@@ -46,7 +57,8 @@ entryPoints:
         certResolver: myresolver
     forwardedHeaders:
       trustedIPs:
-        - {{EDGE_TRUSTED_CIDR}}
+        - 10.128.0.3/32 # edge hop: cloudflared
+        - 10.128.0.4/32 # edge hop: hub-tailscale
     transport:
       respondingTimeouts:
         readTimeout: 300s

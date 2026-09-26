@@ -109,13 +109,15 @@ async function bootstrap() {
   // the InternalNetworkGuard IP allowlist, the pairing-PIN limiter and every
   // audit log otherwise see Traefik for every remote visitor.
   //
-  // By default the hops are RESOLVED, not configured: ProxyTrustService reads
-  // the edge network's subnet (cloudflared and the Tailscale sidecar, at fixed
-  // addresses) and Traefik's own address from Docker, and Express asks it per
-  // hop. A stack without the edge network trusts only Traefik; no Traefik and
-  // nothing is trusted, which is the old behaviour. Nothing on the LAN or in
-  // an app container is ever in that set, so a spoofed X-Forwarded-For from
-  // there is ignored.
+  // By default the hops are RESOLVED, not configured: ProxyTrustService trusts
+  // the two edge hops (cloudflared and the Tailscale sidecar, by their fixed
+  // addresses, while the edge network exists) and Traefik's own address, read
+  // from Docker, and Express asks it per hop. A stack without the edge network
+  // trusts only Traefik; no Traefik and nothing is trusted, which is the old
+  // behaviour. Nothing on the LAN, in an app container, or at a bridge gateway
+  // (which is where anything that reaches Traefik through the host comes
+  // from) is ever in that set, so a spoofed X-Forwarded-For from there is
+  // ignored.
   //
   // HUB_TRUST_PROXY still overrides it for an operator with their own proxy in
   // front — a hop count (e.g. "1") or a trusted subnet/IP list (e.g.

@@ -1,5 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { ProxyTrustService } from '../proxy-trust.service';
 
@@ -16,6 +16,12 @@ describe('ProxyTrustService', () => {
       getContainer: vi.fn(() => ({ inspect: containerInspect })),
     };
     service = new ProxyTrustService(docker as never, mock<LoggerService>());
+    vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '');
+    vi.stubEnv('HUB_EDGE_TAILSCALE_IP', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   const edgeNetwork = { IPAM: { Config: [{ Subnet: '10.128.0.0/29', Gateway: '10.128.0.1' }] } };
@@ -28,16 +34,22 @@ describe('ProxyTrustService', () => {
     expect(service.isTrustedProxy('172.19.0.7')).toBe(false);
   });
 
-  it('trusts exactly the edge subnet and Traefik as a /32 on the Hub network', async () => {
+  it('trusts exactly the two edge hops and Traefik, each as a /32', async () => {
     networkInspect.mockResolvedValue(edgeNetwork);
     containerInspect.mockResolvedValue(traefikOnHubNetwork('172.19.0.7'));
 
     await service.refresh();
 
-    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.0/29', '172.19.0.7/32']);
+    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.3/32', '10.128.0.4/32', '172.19.0.7/32']);
     // cloudflared and the Tailscale sidecar, at their fixed edge addresses.
     expect(service.isTrustedProxy('10.128.0.3')).toBe(true);
     expect(service.isTrustedProxy('10.128.0.4')).toBe(true);
+    // The edge bridge's gateway is where anything that reaches Traefik through
+    // the host arrives from (docker-proxy, or an app dialling
+    // host.docker.internal:80), so it must never vouch for anyone.
+    expect(service.isTrustedProxy('10.128.0.1')).toBe(false);
+    // Nor the rest of the subnet: nothing else on it is a hop.
+    expect(service.isTrustedProxy('10.128.0.5')).toBe(false);
     expect(service.isTrustedProxy('172.19.0.7')).toBe(true);
     // Express hands over the socket address IPv6-mapped; still Traefik.
     expect(service.isTrustedProxy('::ffff:172.19.0.7')).toBe(true);
@@ -78,6 +90,39 @@ describe('ProxyTrustService', () => {
 
     expect(service.isTrustedProxy('172.19.0.7')).toBe(false);
     expect(service.isTrustedProxy('172.19.0.12')).toBe(true);
+  });
+
+  it('refuses a configured hop that is the edge gateway or off the edge subnet', async () => {
+    vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '10.128.0.1');
+    vi.stubEnv('HUB_EDGE_TAILSCALE_IP', '10.200.0.4');
+    networkInspect.mockResolvedValue(edgeNetwork);
+    containerInspect.mockResolvedValue(traefikOnHubNetwork('172.19.0.7'));
+
+    await service.refresh();
+
+    expect(service.trustedProxyCidrs()).toEqual(['172.19.0.7/32']);
+  });
+
+  it('takes the first host as the gateway when the network does not name one', async () => {
+    vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '10.128.0.1');
+    networkInspect.mockResolvedValue({ IPAM: { Config: [{ Subnet: '10.128.0.0/29' }] } });
+    containerInspect.mockRejectedValue(new Error('no such container'));
+
+    await service.refresh();
+
+    expect(service.trustedProxyCidrs()).toEqual(['10.128.0.4/32']);
+  });
+
+  it('follows an operator-moved edge network and its hop addresses', async () => {
+    vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '10.200.0.3');
+    vi.stubEnv('HUB_EDGE_TAILSCALE_IP', '10.200.0.4');
+    networkInspect.mockResolvedValue({ IPAM: { Config: [{ Subnet: '10.200.0.0/29', Gateway: '10.200.0.1' }] } });
+    containerInspect.mockResolvedValue(traefikOnHubNetwork('172.19.0.7'));
+
+    await service.refresh();
+
+    expect(service.trustedProxyCidrs()).toEqual(['10.200.0.3/32', '10.200.0.4/32', '172.19.0.7/32']);
+    expect(service.isTrustedProxy('10.128.0.3')).toBe(false);
   });
 
   it('ignores anything that is not an IPv4 literal', async () => {
