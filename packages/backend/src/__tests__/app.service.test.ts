@@ -157,7 +157,8 @@ describe('AppService', () => {
       configurationService.getConfig.mockReturnValueOnce(fromPartial({ directories, userSettings: { persistTraefikConfig: false } }));
 
       (fs as unknown as FsMock).__applyMockFiles({
-        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]: 'certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: {{ACME_EMAIL}}',
+        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]:
+          'entryPoints:\n  web:\n    forwardedHeaders:\n      trustedIPs:\n        - 10.128.0.3/32 # edge hop: cloudflared\n        - 10.128.0.4/32 # edge hop: hub-tailscale\n  websecure:\n    forwardedHeaders:\n      trustedIPs:\n        - 10.128.0.3/32 # edge hop: cloudflared\n        - 10.128.0.4/32 # edge hop: hub-tailscale\ncertificatesResolvers:\n  letsencrypt:\n    acme:\n      email: {{ACME_EMAIL}}',
         [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]:
           'http:\n  middlewares:\n    ci-hub:\n      forwardAuth:\n        address: http://{{HUB_CONTAINER_NAME}}:5002/api/auth/traefik',
       });
@@ -172,6 +173,9 @@ describe('AppService', () => {
       const previousRabbitmqHost = process.env.RABBITMQ_HOST;
       delete process.env.HUB_CONTAINER_NAME;
       process.env.RABBITMQ_HOST = 'ci-os-hub-queue';
+      // An operator who moved the edge network: the tagged hop lines follow it.
+      vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '10.200.0.3');
+      vi.stubEnv('HUB_EDGE_TAILSCALE_IP', '10.200.0.4');
 
       try {
         await appService.copyAssets();
@@ -181,10 +185,17 @@ describe('AppService', () => {
         else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
         if (previousRabbitmqHost === undefined) delete process.env.RABBITMQ_HOST;
         else process.env.RABBITMQ_HOST = previousRabbitmqHost;
+        vi.unstubAllEnvs();
       }
 
       expect((await fs.promises.stat(traefikConfigPath)).isFile()).toBe(true);
-      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@localhost');
+      const traefikConfig = (await fs.promises.readFile(traefikConfigPath, 'utf8')).trim();
+      expect(traefikConfig).toContain('admin@localhost');
+      // Both entry points trust exactly the two edge hops, by address, and
+      // never the edge subnet (whose gateway is how the host reaches Traefik).
+      expect(traefikConfig.match(/- 10\.200\.0\.3\/32 # edge hop: cloudflared/g)).toHaveLength(2);
+      expect(traefikConfig.match(/- 10\.200\.0\.4\/32 # edge hop: hub-tailscale/g)).toHaveLength(2);
+      expect(traefikConfig).not.toContain('10.128.0.');
       expect((await fs.promises.stat(dynamicConfigPath)).isFile()).toBe(true);
       expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toContain('address: http://ci-os-hub:5002/api/auth/traefik');
     });

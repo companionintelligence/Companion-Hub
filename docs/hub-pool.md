@@ -645,13 +645,16 @@ even outstanding would make the space searchable in two steps. The digits are re
 by the mint call; `GET /pool/status` reports only `pairingPin: { active, expiresAt }`.
 
 **What "a source" means, precisely.** The 429 limiter is keyed on the claimed FQDN and, *when the
-Hub can honestly identify it*, on the caller's IP. It usually cannot: Express `trust proxy` is unset
-by default, so behind Traefik or the Cloudflare tunnel `request.ip` is the proxy's own private
-address, identical for every caller in the world. Keying on that would not be a stricter limit but a
-different one — a global lockout, which would let anyone who can reach the tunnel stop the operator
-pairing at all. So the IP key is used only when the request carries no reverse-proxy provenance
-(the LAN and tailnet case, which is how peers actually arrive) or when `HUB_TRUST_PROXY` is set and
-Express has resolved the real client. Otherwise the cooldown runs on the claimed FQDN alone — which
+Hub can honestly identify it*, on the caller's IP. Behind Traefik or the Cloudflare tunnel that
+takes work: without proxy trust `request.ip` is the proxy's own private address, identical for every
+caller in the world, and keying on that would not be a stricter limit but a different one — a global
+lockout, which would let anyone who can reach the tunnel stop the operator pairing at all. The Hub
+now resolves its trusted hops itself (`ProxyTrustService`: the two edge hops and Traefik's address),
+but that only names the real client for traffic that crosses Traefik, and pairing does not: Portal
+routes the Hub's own hostname straight to its published port, and a tailnet peer arrives through
+`tailscale serve`. So `callerSourceIp` is unchanged — the IP key is used only when `HUB_TRUST_PROXY`
+is set or the request carries no reverse-proxy provenance (the LAN and tailnet case, which is how
+peers actually arrive). Otherwise the cooldown runs on the claimed FQDN alone — which
 is trivially varied, and is why it was always the second layer. **The real bound on a PIN's exposure
 is the per-PIN ceiling: five wrong guesses destroy it, whoever makes them, so total exposure is
 5/10⁶ regardless of how many sources try.**
