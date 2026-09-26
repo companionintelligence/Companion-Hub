@@ -1193,6 +1193,9 @@
           "200": {
             "description": "Factory reset completed"
           },
+          "400": {
+            "description": "Confirmation does not match this device name"
+          },
           "403": {
             "description": "Operator authentication required"
           }
@@ -7870,9 +7873,7 @@
         "properties": {
           "confirmation": {
             "type": "string",
-            "enum": [
-              "factory-reset"
-            ]
+            "minLength": 1
           }
         },
         "required": [
