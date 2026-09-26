@@ -97,6 +97,7 @@ import {
 } from './portal-sso';
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 import { loadSessionUser, refuseRevokedSessionUser, sessionIdsFromRequest } from './auth.middleware';
+import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -119,8 +120,14 @@ interface EdgeSsoTicket {
 }
 
 /**
- * Phone Memory returns to a Capacitor webview without the Hub cookie, so its API routes must reach Nest for app-level authentication.
- * Browser HTML remains on cookie SSO.
+ * Paths Companion Memory authenticates itself, so edge auth lets them through
+ * without a Hub session: Phone Memory returns to a Capacitor webview without
+ * the Hub cookie, and its login exchange and API routes must reach Nest for
+ * app-level authentication. Browser HTML remains on cookie SSO.
+ *
+ * ONLY for the official Memory install — see `isMemoryProviderHost`. Every
+ * other edge-authenticated app relies on the Hub to authenticate for it, and
+ * these paths mean nothing to them.
  */
 const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys'] as const;
 
@@ -140,6 +147,14 @@ function translatableErrorKey(error: unknown): string {
   return typeof error.message === 'string' ? error.message : '';
 }
 
+/**
+ * Whether the request carries an `x-api-key` header at all. The VALUE is not
+ * checked here — it is Memory's key, and Memory verifies it — which is exactly
+ * why this exemption is scoped to the official Memory install by
+ * `isMemoryProviderHost`. Applied to every edge-authenticated app, as it once
+ * was, any non-empty header was an unauthenticated pass into apps that never
+ * look at it (2026-09-24 audit).
+ */
 function requestHasApiKey(req: Request): boolean {
   const raw = req.headers['x-api-key'];
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -1321,6 +1336,20 @@ export class AuthController {
     return (await refuseRevokedSessionUser(user, this.sessionManager, this.sessionUserCache, userId)) ? undefined : user;
   }
 
+  /**
+   * Whether the forwarded host belongs to the official Companion Memory install
+   * — the one app that authenticates its own API keys and public paths. Keyed on
+   * install provenance (`isMemoryProviderApp`), so a third-party app named
+   * `ci-memory` from another store does not qualify. Unknown host → false.
+   */
+  private async isMemoryProviderHost(forwardedHost: string): Promise<boolean> {
+    if (!forwardedHost) {
+      return false;
+    }
+    const appUrn = await this.forwardAuthSecrets.resolveAppUrnForHost(forwardedHost);
+    return appUrn != null && isMemoryProviderApp({ urn: appUrn });
+  }
+
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
@@ -1338,9 +1367,15 @@ export class AuthController {
     const forwardAuthUser = req.user ?? (await this.resolveAppSessionUser(req, forwardedHost));
 
     // Phone Memory returns to a cookie-less webview, so its API authentication must reach the app.
-    // Browser HTML remains on cookie or edge SSO.
+    // Browser HTML remains on cookie or edge SSO. Memory ONLY: for any other app behind edge auth
+    // the same request falls through to the Bearer / session checks below and is refused like
+    // any other anonymous one. Resolved from the forwarded host, which Traefik sets from the
+    // router that matched — not from anything the client sent.
     if (!forwardAuthUser && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
-      return res.status(200).send();
+      if (await this.isMemoryProviderHost(forwardedHost)) {
+        return res.status(200).send();
+      }
+      this.logger.debug(`Traefik forward auth: Memory-only exemption refused for ${forwardedHost || '(no host)'} ${cleanUri}`);
     }
 
     // Without a forwarded host `resolveForHost` falls back to the Hub-GLOBAL signing secret, which
