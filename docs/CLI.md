@@ -1768,13 +1768,15 @@ IPMI host, `physical`) or you pass `--i-have-console`. The refusal says which in
 ## Maintenance
 
 ```bash
-cihub doctor [env]         # validate env files, Docker access, bind mounts, and registration health
-cihub clean [env] [--yes]  # remove generated host-state files for one environment
-cihub reset [env] [--yes]  # remove runtime state for one environment
-cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
+cihub doctor [env]                     # validate env files, Docker access, bind mounts, and registration health
+cihub clean [env] [--yes]              # remove generated host-state files for one environment
+cihub reset [env] [--yes] [--dry-run]  # remove runtime state for one environment; --dry-run only lists it
+cihub uninstall [--yes]                # full machine cleanup of CI-Hub runtime state
 ```
 
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
+`reset` prints the apps and containers it will remove before it asks; `reset --dry-run` prints
+that list and the host data it would delete, then stops. See [RESET_RUNBOOK.md](RESET_RUNBOOK.md).
 
 `doctor` also fails on a `DEVICE_ID` copied from another machine: a machine-ID-shaped value in the env
 file that is not this host's `/etc/machine-id`. The Hub refuses to pair with Portal under such an ID,

@@ -170,8 +170,9 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'reset') {
     const force = args.includes('--yes');
-    const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--yes'));
-    await resetHub(env, force);
+    const dryRun = args.includes('--dry-run');
+    const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--yes' && arg !== '--dry-run'));
+    await resetHub(env, force, dryRun);
     return;
   }
 
