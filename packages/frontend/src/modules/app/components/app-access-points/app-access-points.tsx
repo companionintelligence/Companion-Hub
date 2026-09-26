@@ -7,6 +7,7 @@ import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
+import { hostPortStaysOnLoopback, LOOPBACK_HOST_PORT_INTERFACE } from '@ci-hub/common/schemas';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
@@ -232,7 +233,9 @@ export function buildAppAccessPoints(input: {
     ? resolveRoutingSubdomain(record.localSubdomain, urnAppName, urnAppStoreSlug)
     : record.localSubdomain || urnAppName;
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
-  const browserHost = resolveBrowserHost(internalIp);
+  // A `hostPortStaysOnLoopback` app refuses connections on the LAN address. Its loopback URL also
+  // keeps the card from offering a QR code another device could never open.
+  const browserHost = hostPortStaysOnLoopback(info) ? LOOPBACK_HOST_PORT_INTERFACE : resolveBrowserHost(internalIp);
   const directPort = app.port ?? info.port ?? null;
   const localEnabled = hasDirectLocalAccess(record, { hasHostPort: directPort != null, dynamicConfig: info.dynamic_config });
   const directScheme = info.https ? 'https' : 'http';

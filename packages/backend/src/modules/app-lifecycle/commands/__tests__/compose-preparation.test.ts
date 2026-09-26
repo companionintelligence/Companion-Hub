@@ -34,6 +34,7 @@ interface BuilderConstruction {
   domain: string;
   localDomain: string;
   posixPermissionsSupported: boolean;
+  options?: { loopbackHostPort?: boolean };
 }
 
 const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
@@ -58,8 +59,8 @@ const { builderSpy, posixProbe, schemaSpy } = vi.hoisted(() => ({
  */
 vi.mock('@/modules/docker/builders/compose.builder', () => ({
   DockerComposeBuilder: class {
-    constructor(domain: string, localDomain: string, posixPermissionsSupported = true) {
-      builderSpy.constructions.push({ domain, localDomain, posixPermissionsSupported });
+    constructor(domain: string, localDomain: string, posixPermissionsSupported = true, options?: { loopbackHostPort?: boolean }) {
+      builderSpy.constructions.push({ domain, localDomain, posixPermissionsSupported, options });
     }
 
     async getDockerCompose(
@@ -637,6 +638,55 @@ describe('prepareAppComposeDir', () => {
       expect(services.map((service) => service.name)).toEqual(['nextcloud', 'redis']);
       // An offline appstore must not block a rebuild of an app that is already installed.
       expect(stubs.appFilesManager.writeDockerComposeYml).toHaveBeenCalledWith(APP_URN, builderSpy.output);
+    });
+  });
+
+  describe('host port interface', () => {
+    it('keeps the host port on loopback for an app holding a Hub MCP key', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      // CI-OpenClaw's and CI-Hermes' shape: an MCP client with no edge_auth block.
+      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+        id: 'ci-openclaw',
+        exposable: true,
+        hub_integration: { mcp_client: true },
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local' }));
+
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true });
+    });
+
+    it('keeps the host port on loopback for an app that asks for edge auth', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+        id: 'opencode',
+        exposable: true,
+        hub_integration: { edge_auth: { default: true } },
+      });
+
+      // The stored enableAuth is no opt-out: an install that never decided also reads `false`.
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: false }));
+
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true });
+    });
+
+    it('publishes on every interface for an app with neither', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'nextcloud', exposable: true, hub_integration: {} });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: true }));
+
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false });
+    });
+
+    it('keeps the all-interfaces default and says so when the listing cannot be resolved', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockRejectedValue(new Error('appstore offline'));
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false });
+      expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`No manifest for ${APP_URN}`));
     });
   });
 
