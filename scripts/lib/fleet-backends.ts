@@ -61,7 +61,7 @@ import {
 } from './fleet-llamacpp.js';
 import { classifyProbeFirewallOutput, HUB_PROBE_PORTS, probeFirewallApplyShell } from './fleet-probe-firewall.js';
 
-export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade', 'llamacpp'] as const;
+export const INSTALLABLE_BACKENDS = ['ollama', 'omlx', 'vllm', 'lemonade'] as const;
 export type InstallableBackend = (typeof INSTALLABLE_BACKENDS)[number];
 
 export interface BackendPlan {
@@ -128,7 +128,7 @@ export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'all';
  * a visibly wrong plan on the first live run: every node running lucebox on :8000 was reported as
  * "adopt mtplx", a backend not installed anywhere on this fleet.
  */
-const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['ollama', 'lemonade', 'dspark', 'llamacpp']);
+const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['ollama', 'lemonade', 'omlx']);
 
 /**
  * llamacpp's :8081 is unambiguous too — nothing else defaults there, which is why the fleet chose
@@ -140,11 +140,8 @@ const UNAMBIGUOUS_PORT_BACKENDS: ReadonlySet<InstallableBackend> = new Set(['oll
 const PORTS: Record<InstallableBackend, number> = {
   ollama: 11434,
   lemonade: 13305,
-  dspark: 8080,
-  mtplx: 8000,
+  omlx: 8000,
   vllm: 8002,
-  lucebox: 8000,
-  llamacpp: LLAMACPP_FLEET_PORT,
 };
 
 /**
@@ -293,6 +290,10 @@ function vllmLinuxScript(dataDir: string): string {
  * port — a detail worth keeping exact, since getting it backwards produces a container that starts
  * and never answers.
  */
+function omlxBrewScript(): string {
+  return ['brew tap jundot/omlx https://github.com/jundot/omlx', 'brew install jundot/omlx/omlx', 'omlx start'].join('\n');
+}
+
 function luceboxScript(facts: HostFacts, dataDir: string, port: number): string {
   const cuda = facts.gpus.some((g) => g.vendor === 'nvidia' && g.driverWorking);
   const image = cuda ? 'ghcr.io/luce-org/lucebox-hub:cuda12' : 'ghcr.io/luce-org/lucebox-hub:rocm';
@@ -327,8 +328,6 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
 
   // Its listener is fingerprinted and its own unit converged, neither of which the port-only
   // adoption below can express.
-  if (backend === 'llamacpp') return planLlamacpp(facts, opts.llamacpp);
-
   // Adoption first, where the evidence actually supports it. Cheap, and makes re-running safe.
   if (facts.enginesListening.includes(port)) {
     if (UNAMBIGUOUS_PORT_BACKENDS.has(backend)) {
@@ -368,12 +367,7 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
     case 'vllm': {
       if (facts.os === 'windows') return { backend, action: 'skip', why: 'no native Windows path; use the WSL2/Linux GPU path', port };
       if (facts.os === 'darwin') {
-        return {
-          backend,
-          action: 'skip',
-          why: 'the Apple-Silicon vLLM-Metal installer runs an interactive upstream script; not attempted headlessly',
-          port,
-        };
+        return { backend, action: 'skip', why: 'Apple Silicon uses oMLX. vLLM is the NVIDIA path.', port };
       }
       const nvidia = facts.gpus.find((g) => g.vendor === 'nvidia');
       if (!nvidia) return { backend, action: 'skip', why: 'requires an NVIDIA GPU; none detected', port };
@@ -388,39 +382,13 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
       return { backend, action: 'install', why: 'NVIDIA GPU present — installing vLLM into a managed venv', script: vllmLinuxScript(dataDir), port };
     }
 
-    case 'lucebox': {
-      if (facts.os === 'darwin') return { backend, action: 'skip', why: 'Docker cannot pass Apple Silicon Metal through to this runner', port };
-      if (!facts.docker.usable) {
-        return {
-          backend,
-          action: 'skip',
-          why: facts.docker.present
-            ? 'docker is installed but `docker info` failed — daemon down, or this account lacks access'
-            : 'requires a working Docker engine; none present',
-          port,
-        };
-      }
-      const cuda = facts.gpus.some((g) => g.vendor === 'nvidia' && g.driverWorking);
-      const rocm = facts.gpus.some((g) => g.vendor === 'amd' && g.driverWorking);
-      if (!cuda && !rocm) return { backend, action: 'skip', why: 'requires a supported NVIDIA or AMD GPU; none detected', port };
+    case 'omlx':
+      if (!facts.appleSilicon) return { backend, action: 'skip', why: 'oMLX runs only on Apple Silicon', port };
       return {
         backend,
         action: 'install',
-        why: `${cuda ? 'NVIDIA' : 'AMD'} GPU present — pulling the ${cuda ? 'CUDA' : 'ROCm'} image`,
-        script: luceboxScript(facts, dataDir, port),
-        port,
-      };
-    }
-
-    case 'dspark':
-    case 'mtplx':
-      if (!facts.appleSilicon) return { backend, action: 'skip', why: 'this native MLX runner is supported only on Apple Silicon', port };
-      // The recipes exist (venv + pip, then a LaunchAgent), but every node on this fleet is Linux, so
-      // shipping an untested Apple-Silicon path would be a claim nothing has ever exercised.
-      return {
-        backend,
-        action: 'skip',
-        why: 'Apple Silicon host: install from the desktop app — the headless path for MLX runners is not implemented yet',
+        why: 'Apple Silicon — brew tap jundot/omlx https://github.com/jundot/omlx && brew install jundot/omlx/omlx && omlx start',
+        script: omlxBrewScript(),
         port,
       };
 
@@ -463,7 +431,7 @@ export function llamacppSpecFor(facts: HostFacts, opts: LlamacppPlanOptions & { 
  * installed), anything else that names itself (refuse: it is not ours to fight for the port).
  */
 function planLlamacpp(facts: HostFacts, opts: LlamacppPlanOptions | undefined): BackendPlan {
-  const backend = 'llamacpp' as const;
+  const backend = 'ollama' as const;
   const port = LLAMACPP_FLEET_PORT;
   const listening = facts.enginesListening.includes(port);
   const owner = facts.engineOwners?.[port];
