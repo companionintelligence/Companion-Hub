@@ -124,8 +124,9 @@ type PersistedSettingsValues = {
   inferenceVisionModel: string | undefined;
   inferenceVllmApiKey: string | undefined;
   inferenceVllmUrl: string | undefined;
-  inferenceMtplxUrl: string | undefined;
-  inferenceDsparkUrl: string | undefined;
+  inferenceOmlxUrl: string | undefined;
+  inferenceDecodeEndpoint: string | undefined;
+  inferenceEncodeEndpoint: string | undefined;
   inferenceMaxNumCtx: number | undefined;
   inferenceOllamaSlots: number | undefined;
   inferenceCloudProviders: CloudProviderConfig[] | undefined;
@@ -161,8 +162,9 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceVisionModel: undefined,
   inferenceVllmApiKey: undefined,
   inferenceVllmUrl: undefined,
-  inferenceMtplxUrl: undefined,
-  inferenceDsparkUrl: undefined,
+  inferenceOmlxUrl: undefined,
+  inferenceDecodeEndpoint: undefined,
+  inferenceEncodeEndpoint: undefined,
   inferenceMaxNumCtx: undefined,
   inferenceOllamaSlots: undefined,
   inferenceCloudProviders: undefined,
@@ -256,8 +258,9 @@ export class ConfigurationService {
       inferenceVisionModel: settings.inferenceVisionModel,
       inferenceVllmApiKey: settings.inferenceVllmApiKey,
       inferenceVllmUrl: settings.inferenceVllmUrl,
-      inferenceMtplxUrl: settings.inferenceMtplxUrl,
-      inferenceDsparkUrl: settings.inferenceDsparkUrl,
+      inferenceOmlxUrl: settings.inferenceOmlxUrl,
+      inferenceDecodeEndpoint: settings.inferenceDecodeEndpoint,
+      inferenceEncodeEndpoint: settings.inferenceEncodeEndpoint,
       inferenceMaxNumCtx: settings.inferenceMaxNumCtx,
       inferenceOllamaSlots: settings.inferenceOllamaSlots,
       inferenceCloudProviders: settings.inferenceCloudProviders,
@@ -359,8 +362,9 @@ export class ConfigurationService {
         inferenceVisionModel: settingsValues.inferenceVisionModel,
         inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
         inferenceVllmUrl: settingsValues.inferenceVllmUrl,
-        inferenceMtplxUrl: settingsValues.inferenceMtplxUrl,
-        inferenceDsparkUrl: settingsValues.inferenceDsparkUrl,
+        inferenceOmlxUrl: settingsValues.inferenceOmlxUrl,
+        inferenceDecodeEndpoint: settingsValues.inferenceDecodeEndpoint,
+        inferenceEncodeEndpoint: settingsValues.inferenceEncodeEndpoint,
         inferenceMaxNumCtx: settingsValues.inferenceMaxNumCtx,
         inferenceOllamaSlots: settingsValues.inferenceOllamaSlots,
         inferenceCloudProviders: settingsValues.inferenceCloudProviders,
@@ -516,8 +520,9 @@ export class ConfigurationService {
       preferredVisionModel: this.config.userSettings.inferenceVisionModel ?? null,
       preferredVllmApiKey: this.config.userSettings.inferenceVllmApiKey ?? null,
       preferredVllmUrl: this.config.userSettings.inferenceVllmUrl ?? null,
-      preferredMtplxUrl: this.config.userSettings.inferenceMtplxUrl ?? null,
-      preferredDsparkUrl: this.config.userSettings.inferenceDsparkUrl ?? null,
+      preferredOmlxUrl: this.config.userSettings.inferenceOmlxUrl ?? null,
+      preferredDecodeEndpoint: this.config.userSettings.inferenceDecodeEndpoint ?? null,
+      preferredEncodeEndpoint: this.config.userSettings.inferenceEncodeEndpoint ?? null,
       // `null` is no cap: the handout is sized from the model window and this node's memory alone,
       // as before the cap existed. Clamped on read, so a value an older build persisted out of this
       // build's bounds reads as no cap instead of starving an app. See `inference-context-cap.ts`.
@@ -542,8 +547,9 @@ export class ConfigurationService {
     visionModel?: string | null,
     vllmApiKey?: string | null,
     vllmUrl?: string | null,
-    mtplxUrl?: string | null,
-    dsparkUrl?: string | null,
+    omlxUrl?: string | null,
+    decodeEndpoint?: string | null,
+    encodeEndpoint?: string | null,
     maxNumCtx?: number | null,
     ollamaSlots?: number | null,
   ) {
@@ -554,8 +560,9 @@ export class ConfigurationService {
       inferenceVisionModel?: string;
       inferenceVllmApiKey?: string;
       inferenceVllmUrl?: string;
-      inferenceMtplxUrl?: string;
-      inferenceDsparkUrl?: string;
+      inferenceOmlxUrl?: string;
+      inferenceDecodeEndpoint?: string;
+      inferenceEncodeEndpoint?: string;
       inferenceMaxNumCtx?: number;
       inferenceOllamaSlots?: number;
     } = { inferenceBackend: backend };
@@ -574,11 +581,14 @@ export class ConfigurationService {
     if (vllmUrl !== undefined) {
       settings.inferenceVllmUrl = vllmUrl?.trim() ? vllmUrl.trim() : undefined;
     }
-    if (mtplxUrl !== undefined) {
-      settings.inferenceMtplxUrl = mtplxUrl?.trim() ? mtplxUrl.trim() : undefined;
+    if (omlxUrl !== undefined) {
+      settings.inferenceOmlxUrl = omlxUrl?.trim() ? omlxUrl.trim() : undefined;
     }
-    if (dsparkUrl !== undefined) {
-      settings.inferenceDsparkUrl = dsparkUrl?.trim() ? dsparkUrl.trim() : undefined;
+    if (decodeEndpoint !== undefined) {
+      settings.inferenceDecodeEndpoint = decodeEndpoint?.trim() ? decodeEndpoint.trim() : undefined;
+    }
+    if (encodeEndpoint !== undefined) {
+      settings.inferenceEncodeEndpoint = encodeEndpoint?.trim() ? encodeEndpoint.trim() : undefined;
     }
     if (maxNumCtx !== undefined) {
       settings.inferenceMaxNumCtx = maxNumCtx ?? undefined;

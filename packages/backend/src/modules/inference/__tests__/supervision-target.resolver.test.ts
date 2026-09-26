@@ -40,42 +40,25 @@ describe('resolveSupervisionTarget', () => {
 
   it('matches a container only when its published port is the one the health check probes', () => {
     const target = resolveSupervisionTarget({
-      backend: 'lucebox',
-      baseUrl: 'http://host.docker.internal:8000',
-      containers: [container({ name: 'ci-hub-inference-lucebox', ports: [{ hostPort: 8000, containerPort: 8080 }] })],
+      backend: 'ollama',
+      baseUrl: 'http://host.docker.internal:11434',
+      containers: [container({ name: 'ci-hub-ollama', ports: [{ hostPort: 11434, containerPort: 11434 }] })],
       reachable: true,
     });
 
-    expect(target).toMatchObject({ kind: 'container', ref: 'ci-hub-inference-lucebox' });
+    expect(target).toMatchObject({ kind: 'container', ref: 'ci-hub-ollama' });
   });
 
   it('downgrades a name match with the wrong port to host-process, never to container', () => {
-    // The desktop publishes Lucebox on a DYNAMIC host port (`available_host_port(LUCEBOX_PORT)`),
-    // so the container named `ci-hub-inference-lucebox` routinely has nothing to do with whatever
-    // answers SPECULATIVE_INFERENCE_URL. Reporting on a stranger is the failure to avoid.
     const target = resolveSupervisionTarget({
-      backend: 'lucebox',
-      baseUrl: 'http://host.docker.internal:8000',
-      containers: [container({ name: 'ci-hub-inference-lucebox', ports: [{ hostPort: 8113, containerPort: 8080 }] })],
+      backend: 'ollama',
+      baseUrl: 'http://host.docker.internal:11434',
+      containers: [container({ name: 'ci-hub-ollama', ports: [{ hostPort: 8113, containerPort: 11434 }] })],
       reachable: true,
     });
 
     expect(target.kind).toBe('host-process');
-    expect(target.reason).toContain('does not publish port 8000');
-  });
-
-  it('breaks the two-name Lucebox tie on the port, not on list order', () => {
-    const target = resolveSupervisionTarget({
-      backend: 'lucebox',
-      baseUrl: 'http://host.docker.internal:8000',
-      containers: [
-        container({ name: 'ci-hub-lucebox', ports: [{ hostPort: 9999, containerPort: 8080 }] }),
-        container({ name: 'ci-hub-inference-lucebox', ports: [{ hostPort: 8000, containerPort: 8080 }] }),
-      ],
-      reachable: true,
-    });
-
-    expect(target.ref).toBe('ci-hub-inference-lucebox');
+    expect(target.reason).toContain('does not publish port 11434');
   });
 
   it('matches the container port when the URL addresses the container by name on a Docker network', () => {
@@ -89,22 +72,17 @@ describe('resolveSupervisionTarget', () => {
     expect(target).toMatchObject({ kind: 'container', ref: 'ci-hub-vllm' });
   });
 
-  it('calls mtplx and dspark host processes, because neither has any Docker path at all', () => {
-    // Both `getDockerImage()` and `getComposeConfig()` throw unconditionally in those backends.
-    // They run as launchd LaunchAgents, which is already a correct supervisor for them.
-    expect(SUPERVISION_CONTAINER_CANDIDATES.mtplx).toEqual([]);
-    expect(SUPERVISION_CONTAINER_CANDIDATES.dspark).toEqual([]);
+  it('calls oMLX a host process, because it has no Docker path', () => {
+    expect(SUPERVISION_CONTAINER_CANDIDATES.omlx).toEqual([]);
 
-    for (const backend of ['mtplx', 'dspark'] as const) {
-      const target = resolveSupervisionTarget({
-        backend,
-        baseUrl: 'http://host.docker.internal:8080',
-        containers: [],
-        reachable: true,
-      });
-      expect(target.kind).toBe('host-process');
-      expect(target.reason).toContain('no Docker deployment path');
-    }
+    const target = resolveSupervisionTarget({
+      backend: 'omlx',
+      baseUrl: 'http://host.docker.internal:8000',
+      containers: [],
+      reachable: true,
+    });
+    expect(target.kind).toBe('host-process');
+    expect(target.reason).toContain('no Docker deployment path');
   });
 
   it('calls a reachable loopback engine with no container a host process', () => {

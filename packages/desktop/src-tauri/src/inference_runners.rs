@@ -56,7 +56,7 @@ const VLLM_METAL_INSTALL_URL: &str =
 
 /// The complete automatic setup set. The frontend sends this list explicitly,
 /// but the native layer also has a safe default for future callers.
-pub const DEFAULT_AUTOMATIC_RUNNERS: &[&str] = &["dspark", "mtplx", "lucebox", "vllm", "ollama"];
+pub const DEFAULT_AUTOMATIC_RUNNERS: &[&str] = &["ollama", "omlx", "vllm"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -83,9 +83,7 @@ pub struct InferenceRunnerResult {
 /// internal container runner name in UI copy.
 pub fn canonical_runner_name(name: &str) -> Option<&'static str> {
     match name.trim().to_ascii_lowercase().as_str() {
-        "dspark" | "mlx-dspark" => Some("dspark"),
-        "mtplx" => Some("mtplx"),
-        "lucebox" | "lunabox" => Some("lucebox"),
+        "omlx" => Some("omlx"),
         "vllm" => Some("vllm"),
         "ollama" => Some("ollama"),
         _ => None,
@@ -145,9 +143,7 @@ pub fn install_and_start_inference_runners(
 
 fn run_runner(data_dir: &Path, runner: &str) -> InferenceRunnerResult {
     match runner {
-        "dspark" => install_and_start_dspark(data_dir),
-        "mtplx" => install_and_start_mtplx(data_dir),
-        "lucebox" => install_and_start_lucebox(data_dir),
+        "omlx" => install_and_start_omlx(data_dir),
         "vllm" => install_and_start_vllm(data_dir),
         "ollama" => install_and_start_ollama(data_dir),
         _ => failed(runner, "Unknown inference runner.".to_string()),
@@ -194,6 +190,55 @@ fn platform_is_apple_silicon() -> bool {
     cfg!(all(target_os = "macos", target_arch = "aarch64"))
 }
 
+const OMLX_PORT: u16 = 8000;
+const OMLX_ENDPOINT: &str = "http://host.docker.internal:8000";
+
+fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
+    if !platform_is_apple_silicon() {
+        return skipped("omlx", "oMLX runs only on Apple Silicon.");
+    }
+    if probe_http(OMLX_PORT, "/v1/models") {
+        return already_running("omlx", OMLX_ENDPOINT);
+    }
+    append_runner_log(
+        data_dir,
+        "omlx",
+        "Installing oMLX with Homebrew: brew tap jundot/omlx && brew install jundot/omlx/omlx && omlx start",
+    );
+    let status = Command::new("brew")
+        .args(["tap", "jundot/omlx", "https://github.com/jundot/omlx"])
+        .status();
+    if status.map(|code| !code.success()).unwrap_or(true) {
+        return failed("omlx", "brew tap jundot/omlx failed.".to_string());
+    }
+    let install = Command::new("brew")
+        .args(["install", "jundot/omlx/omlx"])
+        .status();
+    if install.map(|code| !code.success()).unwrap_or(true) {
+        return failed(
+            "omlx",
+            "brew install jundot/omlx/omlx failed. See https://github.com/jundot/omlx.".to_string(),
+        );
+    }
+    let _ = Command::new("omlx").arg("start").status();
+    if wait_for_http(OMLX_PORT, "/v1/models", STARTUP_WAIT) {
+        success(
+            "omlx",
+            InferenceRunnerState::InstalledAndStarted,
+            Some(OMLX_ENDPOINT.to_string()),
+            Some("oMLX was installed and started.".to_string()),
+        )
+    } else {
+        success(
+            "omlx",
+            InferenceRunnerState::Installed,
+            Some(OMLX_ENDPOINT.to_string()),
+            Some("oMLX was installed; its API is still starting. Foreground form: omlx serve --model-dir ~/models".to_string()),
+        )
+    }
+}
+
+#[allow(dead_code)]
 fn install_and_start_dspark(data_dir: &Path) -> InferenceRunnerResult {
     if !platform_is_apple_silicon() {
         return skipped(
@@ -239,6 +284,7 @@ fn install_and_start_dspark(data_dir: &Path) -> InferenceRunnerResult {
     )
 }
 
+#[allow(dead_code)]
 fn install_and_start_mtplx(data_dir: &Path) -> InferenceRunnerResult {
     if !platform_is_apple_silicon() {
         return skipped(
@@ -323,16 +369,11 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
     };
     let endpoint = host_endpoint(port);
 
-    let (executable, model, extra_args) = if platform_is_apple_silicon() {
-        match ensure_vllm_metal(data_dir) {
-            Ok(path) => (
-                path,
-                "mlx-community/Qwen3-8B-4bit".to_string(),
-                vec!["--max-model-len".to_string(), "8192".to_string()],
-            ),
-            Err(error) => return failed("vllm", error),
-        }
-    } else {
+    if platform_is_apple_silicon() {
+        return skipped("vllm", "Apple Silicon uses oMLX. vLLM is the NVIDIA path.");
+    }
+
+    let (executable, model, extra_args) = {
         if !nvidia_smi_works() {
             return skipped(
                 "vllm",
@@ -346,14 +387,7 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
         (
             path,
             "Qwen/Qwen3-4B-Instruct-2507".to_string(),
-            vec![
-                "--quantization".to_string(),
-                "bitsandbytes".to_string(),
-                "--max-model-len".to_string(),
-                "8192".to_string(),
-                "--gpu-memory-utilization".to_string(),
-                "0.85".to_string(),
-            ],
+            Vec::<String>::new(),
         )
     };
 
@@ -409,6 +443,7 @@ fn install_and_start_ollama(data_dir: &Path) -> InferenceRunnerResult {
     }
 }
 
+#[allow(dead_code)]
 fn install_and_start_lucebox(data_dir: &Path) -> InferenceRunnerResult {
     if cfg!(target_os = "macos") {
         return skipped(
@@ -1666,17 +1701,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonicalizes_lunabox_without_exposing_it_as_a_second_runner() {
-        assert_eq!(canonical_runner_name("lunabox"), Some("lucebox"));
-        assert_eq!(canonical_runner_name("lucebox"), Some("lucebox"));
+    fn dropped_runner_names_are_not_installed() {
+        assert_eq!(canonical_runner_name("lunabox"), None);
+        assert_eq!(canonical_runner_name("lucebox"), None);
+        assert_eq!(canonical_runner_name("mlx-dspark"), None);
+        assert_eq!(canonical_runner_name("dspark"), None);
+        assert_eq!(canonical_runner_name("mtplx"), None);
+        assert_eq!(canonical_runner_name("llamacpp"), None);
+        assert_eq!(canonical_runner_name("lmstudio"), None);
         assert_eq!(
             automatic_runner_names(&[
                 "lunabox".to_string(),
-                "lucebox".to_string(),
-                "mlx-dspark".to_string(),
+                "omlx".to_string(),
+                "ollama".to_string(),
                 "dspark".to_string(),
             ]),
-            vec!["lucebox".to_string(), "dspark".to_string()]
+            vec!["omlx".to_string(), "ollama".to_string()]
         );
     }
 

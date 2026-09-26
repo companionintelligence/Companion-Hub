@@ -1,5 +1,4 @@
 import type { InferenceBackendType } from '@ci-hub/common/types';
-import { LUCEBOX_ROCM_IMAGE, LUCEBOX_ROCM_LEGACY_IMAGE, luceboxRocmLegacyImageMessage } from '../backends/lucebox.backend';
 import type { BackendDiagnosis, SupervisionContainerState } from './supervision.types';
 
 /**
@@ -13,8 +12,6 @@ import type { BackendDiagnosis, SupervisionContainerState } from './supervision.
  * SIGSEGV, which is the signature `LUCEBOX_ROCM_LEGACY_IMAGE`'s own contract describes, and names
  * the family the contract names.
  */
-const RDNA_35_FAMILY = 'gfx115x';
-
 /**
  * A SIGSEGV-shaped exit. 139 is the shell's `128 + SIGSEGV(11)`, which is what dockerd reports in
  * `State.ExitCode` for a segfaulting entrypoint.
@@ -61,32 +58,6 @@ export function diagnoseBackendFailure(input: DiagnosisInput): BackendDiagnosis[
   const diagnoses: BackendDiagnosis[] = [];
   const logTail = input.logTail ?? '';
 
-  // ── Lucebox on the ROCm 6.4.1 tag ────────────────────────────────────────
-  //
-  // Matched on the image tag + an AMD GPU + a repeated SIGSEGV, exactly as the critique of the
-  // original design required: the arch-string branch it replaced was unimplementable, because
-  // nothing in this repo produces one. The remediation is `assertLuceboxImageSupportsArch`'s own
-  // message, shared through `luceboxRocmLegacyImageMessage` so the two cannot drift.
-  if (
-    input.backend === 'lucebox' &&
-    input.container !== null &&
-    normalizeImage(input.container.image) === LUCEBOX_ROCM_LEGACY_IMAGE &&
-    input.gpuVendor === 'amd' &&
-    input.segfaultObservations >= 2
-  ) {
-    diagnoses.push({
-      code: 'lucebox_rocm_legacy_image',
-      summary:
-        `${input.container.name} is running ${LUCEBOX_ROCM_LEGACY_IMAGE} on an AMD GPU and has died with a segmentation ` +
-        `fault ${input.segfaultObservations} times. That is the documented signature of this image tag on RDNA 3.5: the ` +
-        'runtime loads, enumerates the device and allocates fine, then SIGSEGVs on the first host-to-device hipMemcpy.',
-      remediation:
-        `${luceboxRocmLegacyImageMessage(RDNA_35_FAMILY)} The container was created with the old tag and starting it again ` +
-        `reuses that image, so it has to be recreated: docker rm -f ${input.container.name} and start Lucebox again from the ` +
-        `desktop app, which will pull ${LUCEBOX_ROCM_IMAGE}.`,
-    });
-  }
-
   // ── Startup dependency / JIT compile failure ─────────────────────────────
   if (input.container !== null && !input.container.running && STARTUP_DEPENDENCY_LOG_PATTERN.test(logTail)) {
     diagnoses.push({
@@ -119,17 +90,6 @@ export function diagnoseBackendFailure(input: DiagnosisInput): BackendDiagnosis[
     });
   }
 
-  // ── Lucebox with no weights ──────────────────────────────────────────────
-  if (input.backend === 'lucebox' && input.healthError !== null && /no loaded model|without weights/i.test(input.healthError)) {
-    diagnoses.push({
-      code: 'no_weights',
-      summary: 'Lucebox answers /health but reports no loaded model, so it will accept a completion and then fail it.',
-      remediation:
-        'Check DFLASH_TARGET and DFLASH_DRAFT, and that the models directory is bind-mounted. Restarting never helps here — ' +
-        'the server starts fine without weights, which is the whole problem.',
-    });
-  }
-
   return diagnoses;
 }
 
@@ -140,9 +100,4 @@ export function diagnoseBackendFailure(input: DiagnosisInput): BackendDiagnosis[
 export function looksLikeSegfault(container: SupervisionContainerState, logTail: string | null): boolean {
   if (container.exitCode === SIGSEGV_EXIT_CODE) return true;
   return logTail !== null && SEGFAULT_LOG_PATTERN.test(logTail);
-}
-
-/** Strip a digest suffix so `image@sha256:…` still compares equal to the tag it was pulled from. */
-function normalizeImage(image: string): string {
-  return image.trim().split('@')[0] ?? image.trim();
 }

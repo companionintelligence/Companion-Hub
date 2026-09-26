@@ -3,7 +3,6 @@ import {
   automaticRunnersForBackend,
   DEFAULT_AUTOMATIC_INFERENCE_RUNNERS,
   DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,
-  DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS,
   installAndStartInferenceRunners,
 } from './auto-inference-runners';
 
@@ -16,24 +15,18 @@ afterEach(() => {
 });
 
 describe('installAndStartInferenceRunners', () => {
-  it('keeps the Apple Silicon FTUE set focused on mlx-dspark and Ollama', () => {
-    expect(DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['dspark', 'ollama']);
+  it('keeps the Apple Silicon set on oMLX', () => {
+    expect(DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['omlx']);
+    expect(automaticRunnersForBackend('omlx')).toEqual(['omlx']);
   });
 
-  it('keeps the MTPLX alternative focused on MTPLX and Ollama', () => {
-    expect(DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['mtplx', 'ollama']);
-    expect(automaticRunnersForBackend('mtplx')).toEqual(['mtplx', 'ollama']);
-    expect(automaticRunnersForBackend('dspark')).toEqual(['dspark', 'ollama']);
-  });
-
-  it('installs only the selected chat runner plus the shared Ollama embedder', () => {
+  it('installs vLLM with Ollama for embeddings, and Ollama alone for Lemonade', () => {
     expect(automaticRunnersForBackend('vllm')).toEqual(['vllm', 'ollama']);
-    expect(automaticRunnersForBackend('lucebox')).toEqual(['lucebox', 'ollama']);
     expect(automaticRunnersForBackend('ollama')).toEqual(['ollama']);
     expect(automaticRunnersForBackend('lemonade')).toEqual(['ollama']);
   });
 
-  it('keeps the complete set only as a defensive fallback for an unknown backend', () => {
+  it('falls back to Ollama for an unknown backend', () => {
     expect(automaticRunnersForBackend('future-backend')).toEqual(DEFAULT_AUTOMATIC_INFERENCE_RUNNERS);
   });
 
@@ -41,11 +34,11 @@ describe('installAndStartInferenceRunners', () => {
     await expect(installAndStartInferenceRunners()).resolves.toEqual([]);
   });
 
-  it('passes the complete automatic runner set to the desktop command', async () => {
-    const invoke = vi.fn().mockResolvedValue([{ runner: 'dspark', state: 'installed_and_started' }]);
+  it('passes the automatic runner set to the desktop command', async () => {
+    const invoke = vi.fn().mockResolvedValue([{ runner: 'ollama', state: 'installed_and_started' }]);
     (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
 
-    await expect(installAndStartInferenceRunners()).resolves.toEqual([{ runner: 'dspark', state: 'installed_and_started' }]);
+    await expect(installAndStartInferenceRunners()).resolves.toEqual([{ runner: 'ollama', state: 'installed_and_started' }]);
     expect(invoke).toHaveBeenCalledWith('install_and_start_inference_runners_command', {
       backends: DEFAULT_AUTOMATIC_INFERENCE_RUNNERS,
     });

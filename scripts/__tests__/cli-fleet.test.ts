@@ -50,8 +50,8 @@ describe('parseFleetArgs', () => {
     expect(() => parseFleetArgs(['backends', '--bind', 'everywhere'])).toThrow(/--bind must be one of tailnet, all, local/);
   });
 
-  it('takes --llamacpp-model on backends only, as an Ollama tag, and --backends llamacpp by name', () => {
-    expect(parseFleetArgs(['backends', '--backends', 'llamacpp']).backends).toEqual(['llamacpp']);
+  it('rejects a separate llama-server backend, and still validates a leftover model flag as an Ollama tag', () => {
+    expect(() => parseFleetArgs(['backends', '--backends', 'llamacpp'])).toThrow(/Unknown backend 'llamacpp'/);
     expect(parseFleetArgs(['backends']).llamacppModel).toBeUndefined();
     expect(parseFleetArgs(['backends', '--llamacpp-model', 'qwen3-coder:30b']).llamacppModel).toBe('qwen3-coder:30b');
     expect(parseFleetArgs(['backends', '--llamacpp-model=hf.co/org/repo:Q4_K_M']).llamacppModel).toBe('hf.co/org/repo:Q4_K_M');

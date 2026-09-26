@@ -101,7 +101,7 @@ describe('ModelMemory', () => {
         sampledAt: '2026-09-20T00:00:00Z',
         backends: [
           { backend: 'ollama', models: ['qwen3:9b'], pool: 'ram', usedMb: 7319, source: 'engine' },
-          { backend: 'lucebox', models: ['qwen3.6-27b'], pool: 'ram', usedMb: 17_788, source: 'process' },
+          { backend: 'omlx', models: ['qwen3.6-27b'], pool: 'ram', usedMb: 17_788, source: 'process' },
         ],
       },
     };
@@ -110,7 +110,7 @@ describe('ModelMemory', () => {
 
     expect(container.querySelector('[data-testid="model-memory-vram"]')).toBeNull();
     const ram = container.querySelector('[data-testid="model-memory-ram"]') as HTMLElement;
-    expect(ram.textContent).toContain('lucebox');
+    expect(ram.textContent).toContain('omlx');
     expect(ram.textContent).toContain('17G · rocm-smi');
   });
 

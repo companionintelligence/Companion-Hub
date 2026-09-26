@@ -103,7 +103,7 @@ export type { RecordedHandout } from './app-handout-record';
  * goes through `isServedModelForCatalog` rather than the Ollama-style pulled-tag comparison.
  */
 function isHostServedBackend(backendType: InferenceBackendType): boolean {
-  return backendType === 'vllm' || backendType === 'dspark' || backendType === 'mtplx' || backendType === 'lucebox';
+  return backendType === 'vllm' || backendType === 'omlx';
 }
 
 interface LocalChatSelection {

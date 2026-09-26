@@ -3000,11 +3000,7 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "mtplx",
-                "dspark",
-                "lucebox",
-                "llamacpp",
-                "lmstudio"
+                "omlx"
               ]
             }
           }
@@ -3319,11 +3315,7 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "mtplx",
-                "dspark",
-                "lucebox",
-                "llamacpp",
-                "lmstudio"
+                "omlx"
               ]
             }
           },
@@ -3337,7 +3329,7 @@
             }
           },
           {
-            "name": "mtplxUrl",
+            "name": "omlxUrl",
             "in": "query",
             "required": false,
             "schema": {
@@ -3346,7 +3338,16 @@
             }
           },
           {
-            "name": "dsparkUrl",
+            "name": "decodeEndpoint",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          {
+            "name": "encodeEndpoint",
             "in": "query",
             "required": false,
             "schema": {
@@ -3435,9 +3436,9 @@
         ]
       }
     },
-    "/api/inference/dspark/status": {
+    "/api/inference/omlx/status": {
       "get": {
-        "operationId": "getDsparkStatus",
+        "operationId": "getOmlxStatus",
         "parameters": [
           {
             "name": "url",
@@ -3459,62 +3460,20 @@
         ]
       }
     },
-    "/api/inference/mtplx/status": {
+    "/api/inference/manual-endpoint/status": {
       "get": {
-        "operationId": "getMtplxStatus",
+        "operationId": "getManualEndpointStatus",
         "parameters": [
           {
             "name": "url",
             "in": "query",
-            "required": false,
+            "required": true,
             "schema": {
               "type": "string",
               "format": "uri"
             }
           }
         ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/llamacpp/status": {
-      "get": {
-        "operationId": "getLlamacppStatus",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/lmstudio/status": {
-      "get": {
-        "operationId": "getLmStudioStatus",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Inference"
-        ]
-      }
-    },
-    "/api/inference/lucebox/status": {
-      "get": {
-        "operationId": "getLuceboxStatus",
-        "parameters": [],
         "responses": {
           "200": {
             "description": ""
@@ -6964,11 +6923,7 @@
                   "ollama",
                   "vllm",
                   "lemonade",
-                  "mtplx",
-                  "dspark",
-                  "lucebox",
-                  "llamacpp",
-                  "lmstudio"
+                  "omlx"
                 ]
               },
               "inferenceModel": {
@@ -6986,10 +6941,13 @@
               "inferenceVllmUrl": {
                 "type": "string"
               },
-              "inferenceMtplxUrl": {
+              "inferenceOmlxUrl": {
                 "type": "string"
               },
-              "inferenceDsparkUrl": {
+              "inferenceDecodeEndpoint": {
+                "type": "string"
+              },
+              "inferenceEncodeEndpoint": {
                 "type": "string"
               },
               "inferenceMaxNumCtx": {
@@ -7499,11 +7457,7 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx",
-              "dspark",
-              "lucebox",
-              "llamacpp",
-              "lmstudio"
+              "omlx"
             ]
           },
           "inferenceModel": {
@@ -7521,10 +7475,13 @@
           "inferenceVllmUrl": {
             "type": "string"
           },
-          "inferenceMtplxUrl": {
+          "inferenceOmlxUrl": {
             "type": "string"
           },
-          "inferenceDsparkUrl": {
+          "inferenceDecodeEndpoint": {
+            "type": "string"
+          },
+          "inferenceEncodeEndpoint": {
             "type": "string"
           },
           "inferenceMaxNumCtx": {
@@ -12965,11 +12922,7 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx",
-              "dspark",
-              "lucebox",
-              "llamacpp",
-              "lmstudio"
+              "omlx"
             ]
           },
           "model": {
@@ -12996,12 +12949,17 @@
             "type": "string",
             "format": "uri"
           },
-          "mtplxUrl": {
+          "omlxUrl": {
             "nullable": true,
             "type": "string",
             "format": "uri"
           },
-          "dsparkUrl": {
+          "decodeEndpoint": {
+            "nullable": true,
+            "type": "string",
+            "format": "uri"
+          },
+          "encodeEndpoint": {
             "nullable": true,
             "type": "string",
             "format": "uri"
@@ -16399,22 +16357,22 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx",
-              "dspark",
-              "lucebox",
-              "llamacpp",
-              "lmstudio"
+              "omlx"
             ]
           },
           "vllmUrl": {
             "type": "string",
             "format": "uri"
           },
-          "mtplxUrl": {
+          "omlxUrl": {
             "type": "string",
             "format": "uri"
           },
-          "dsparkUrl": {
+          "decodeEndpoint": {
+            "type": "string",
+            "format": "uri"
+          },
+          "encodeEndpoint": {
             "type": "string",
             "format": "uri"
           }
@@ -16430,11 +16388,7 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx",
-              "dspark",
-              "lucebox",
-              "llamacpp",
-              "lmstudio"
+              "omlx"
             ]
           }
         },
