@@ -16,11 +16,7 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   ollama: 'ollama',
   vllm: 'vllm',
   lemonade: 'lemonade',
-  mtplx: 'mtplx',
-  dspark: 'dspark',
-  lucebox: 'lucebox',
-  llamacpp: 'llamacpp',
-  lmstudio: 'lmstudio',
+  omlx: 'omlx',
 };
 
 /**
@@ -162,7 +158,9 @@ export class InferenceEnvResolver {
     const profile = await this.hardwareInspector.getProfile();
 
     // ── Base URL + API key ────────────────────────────────────────────────
-    const baseUrl = `${backendBaseUrl}/v1`;
+    const decodeOverride = preferences.preferredDecodeEndpoint?.trim();
+    const decodeOrigin = decodeOverride?.replace(/\/$/, '').replace(/\/v1$/, '');
+    const baseUrl = decodeOrigin ? `${decodeOrigin}/v1` : `${backendBaseUrl}/v1`;
     const configuredVllmKey = preferences.preferredVllmApiKey?.trim();
     const managedBackendKey = backend.getApiKey?.()?.trim();
     const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : managedBackendKey || BACKEND_API_KEY[backendType];
@@ -210,9 +208,11 @@ export class InferenceEnvResolver {
       return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type, profile)?.backendModelId;
     };
 
+    const encodeOverride = preferences.preferredEncodeEndpoint?.trim();
+    const decoderEmbeds = backendType === 'ollama' || backendType === 'omlx';
     let embeddingModel = resolveEmbedding(backendType);
-    let embedHost = backendType === 'ollama' ? backendBaseUrl : undefined;
-    if (backendType !== 'ollama') {
+    let embedHost = decoderEmbeds ? backendBaseUrl : undefined;
+    if (!decoderEmbeds) {
       const ollamaHealth = await this.ollamaBackend.healthCheck().catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.warn(`[InferenceEnvResolver] ollama (embeddings fallback) health check failed: ${message}`);
@@ -222,6 +222,9 @@ export class InferenceEnvResolver {
         embedHost = this.ollamaBackend.getBaseUrl();
         if (!embeddingModel) embeddingModel = resolveEmbedding('ollama');
       }
+    }
+    if (encodeOverride) {
+      embedHost = encodeOverride.replace(/\/$/, '').replace(/\/v1$/, '');
     }
 
     // ── Vision model ──────────────────────────────────────────────────────
@@ -403,7 +406,7 @@ export class InferenceEnvResolver {
   private isInstalled(model: CuratedModel, modelsLoaded: string[]): boolean {
     const tracked = this.modelRegistry.getTrackedModel(model.id);
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
-    if (model.backend === 'vllm' || model.backend === 'mtplx' || model.backend === 'dspark' || model.backend === 'lucebox') {
+    if (model.backend === 'vllm' || model.backend === 'omlx') {
       return trackedPulled || isServedModelForCatalog(model, modelsLoaded);
     }
     return isCatalogModelInstalled(model, modelsLoaded, trackedPulled, this.modelRegistry.getCatalogBackendModelIds());

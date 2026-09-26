@@ -276,31 +276,6 @@ export const SPEC_DECODE: Record<InferenceBackendType, SpecDecodeCapability> = {
     evidence:
       "Confirmed from runner argv on four nodes spanning 0.30.8 through 0.33.3. draft_num_predict verified behaviourally (six requested depths appear one-for-one in the runner argv) and against a negative control (a bogus option name logs `invalid option provided`; draft_num_predict does not). The mechanism is the model's own MTP/NextN head, not a paired drafter. On 0.33.3 all 11 option syntaxes were silently discarded — the version gate is necessary, not sufficient.",
   },
-  mtplx: {
-    backend: 'mtplx',
-    capable: true,
-    reach: 'request-param',
-    toggleOn: 'generation_mode: "mtp" in the request body',
-    offArm: 'generation_mode: "ar"',
-    falseOffArm: null,
-    observable:
-      'BOTH: GET /health reports generation_mode and default_generation_mode, and every response carries mtplx_stats with mode (`mtpk` / `ar`) and mtp_forward_calls. The engine self-reports which arm actually ran — the only one of the six that does.',
-    evidence:
-      'Paired arms measured live: generation_mode "ar" returned mtplx_stats.mode "ar" with mtp_forward_calls 0 and forward_ar_plain_calls 18; generation_mode "mtp" returned mode "mtpk" with mtp_forward_calls 12 and forward_ar_plain_calls 0. The echo is what makes this the one engine where a control arm can be proven rather than assumed.',
-  },
-  dspark: {
-    backend: 'dspark',
-    capable: true,
-    reach: 'write-endpoint',
-    toggleOn: 'mode on POST /admin/load — one of dspark | dflash | lookup | baseline',
-    offArm: 'mode: "baseline"',
-    falseOffArm:
-      'max_draft: 0 — it is SILENTLY COERCED TO auto. Used as the off arm it compares speculation against speculation and reports a bogus 1.0x.',
-    observable:
-      'GET /health, which is exempt from the API key and reports mode, target, drafter and max_draft. So the STATE is read-only; only the CHANGE is not.',
-    evidence:
-      'The max_draft:0 coercion was measured, not read from docs — it is the reason a whole set of "no speedup" results had to be withdrawn. /admin/load is a write endpoint and stays off any read-only allowlist by design, so a conformance walk reports the state and never changes it. Health shape re-verified live: mode "dspark", a drafter checkpoint id, max_draft "6".',
-  },
   lemonade: {
     backend: 'lemonade',
     capable: true,
@@ -325,39 +300,15 @@ export const SPEC_DECODE: Record<InferenceBackendType, SpecDecodeCapability> = {
     evidence:
       'Measured at k=3 with a draft model: 42.8% acceptance, ~1.4x, both arms byte-identical in parsed flags except speculative_config. No read-only route reports it — /v1/models carries the model id, max_model_len and permissions, and nothing about drafting.',
   },
-  lucebox: {
-    backend: 'lucebox',
-    capable: true,
-    reach: 'launch-flag',
-    toggleOn: "the drafter is chosen when the container starts; the build's arch capability table decides whether it is used at all",
-    offArm: 'a container started without a drafter',
-    falseOffArm: null,
-    observable:
-      'EVERY completion. `usage.spec_decode_ran` (boolean) and `usage.accept_rate` ride on the ordinary /v1/chat/completions response — so the engine self-reports whether the drafter ran on THIS request, which is a stronger read than any health route. `usage.timings.decode_ms` is there too, and a server-reported decode time is the cross-check immune to client-side timing noise. WHICH FIELDS APPEAR IS BUILD-DEPENDENT: a gfx1100 build sends both spec_decode_ran and accept_rate; a gfx1151 build sends accept_rate and no spec_decode_ran — measured in the same minute. Do NOT compare accept_rate across nodes: those two builds returned 19 and 0.1375 for the same kind of request, a denominator mismatch that once produced a withdrawn "acceptance collapse" finding.',
-    evidence:
-      'The capability table is compiled into the binary (one model family at speculation level 2, another at level 0), drafters must come from the vendor\'s own model org, and the container entrypoint ends with an exec that has NO argument passthrough, so appended docker run flags are dropped with no error. The response fields were found by running a plain completion against a live build: GET /health returns {"status":"ok"} and nothing else, but the completion returned usage {accept_rate, spec_decode_ran: true, timings: {decode_ms}}. That CORRECTS an earlier claim that nothing read-only reports this engine\'s speculative state — /health does not, the inference response does.',
-  },
-  llamacpp: {
-    backend: 'llamacpp',
+  omlx: {
+    backend: 'omlx',
     capable: 'unmeasured',
     reach: 'launch-flag',
     toggleOn: null,
     offArm: null,
     falseOffArm: null,
     observable: null,
-    evidence:
-      "Not measured. No bare llama-server has been driven on this fleet — every llama.cpp measurement in this table was taken THROUGH lemonade, which loads it over its own write endpoint, so what those rows establish is lemonade's control surface and not this one's. `reach` is the one field stated, and only because it follows from the backend rather than from the engine: the Hub never starts llama-server, so whatever this engine does about speculation was decided by the operator's command line before the Hub saw it.",
-  },
-  lmstudio: {
-    backend: 'lmstudio',
-    capable: 'unmeasured',
-    reach: 'launch-flag',
-    toggleOn: null,
-    offArm: null,
-    falseOffArm: null,
-    observable: null,
-    evidence:
-      "Not measured. No LM Studio instance has been driven on this fleet. `reach` is stated for the same reason as llamacpp's and with the same weakness: the Hub does not start LM Studio, so any speculative configuration is made in its UI before the Hub connects. Nothing about what its API accepts, reports, or silently ignores is asserted here.",
+    evidence: 'Hub does not offer speculative decoding on oMLX. Chat and embeddings are the supported surface.',
   },
 };
 
@@ -405,20 +356,6 @@ export const THINKING_SUPPRESSION: Record<InferenceBackendType, ThinkingSuppress
     evidence:
       'Verified on three nodes running llama-server b10707 behind lemonade, serving a 0.6B hybrid-reasoning GGUF. As shipped, a short chat at max_tokens 16 returned content:"" with finish_reason:length while reasoning_content held the chain of thought; with the override, HTTP 200 and a two-token answer.',
   },
-  mtplx: {
-    backend: 'mtplx',
-    works: 'chat_template_kwargs: {enable_thinking: false}',
-    silentNoOp: "reasoning_effort: 'none' — accepted with HTTP 200, changes nothing",
-    evidence:
-      'Measured on a 4B hybrid-reasoning build. With reasoning_effort:"none" at max_tokens 64: content "", finish_reason "length", completion_tokens_details.reasoning_tokens 64. With chat_template_kwargs:{enable_thinking:false}: a one-word answer, finish_reason "stop", no reasoning_content. This is why every mtplx chat row in a conformance walk can score 0 chars — the harness is asking for something the budget cannot deliver, not measuring a broken node.',
-  },
-  dspark: {
-    backend: 'dspark',
-    works: null,
-    silentNoOp: "reasoning_effort — GET /health reports supports_reasoning_effort: false, so sending it is a no-op by the engine's own account",
-    evidence:
-      'GET /health reports supports_reasoning_effort:false and thinking_default:"on". The model measured was not a hybrid-reasoning build and needed no suppression, so no working spelling has been established — a thinking model on this engine would hit the same wall and reasoning_effort would not move it.',
-  },
   vllm: {
     backend: 'vllm',
     works: null,
@@ -426,26 +363,11 @@ export const THINKING_SUPPRESSION: Record<InferenceBackendType, ThinkingSuppress
     evidence:
       'Not established. The model measured was an Instruct build that does not think, so nothing has exercised the question. vLLM does emit reasoning_content when a reasoning parser is configured at launch, which is a launch-time property rather than a request one.',
   },
-  lucebox: {
-    backend: 'lucebox',
+  omlx: {
+    backend: 'omlx',
     works: null,
     silentNoOp: null,
-    evidence:
-      'Not established. The build measured returned usage.completion_tokens_details.reasoning_tokens 0 on every conformance row, so no suppression was needed and none has been tested.',
-  },
-  llamacpp: {
-    backend: 'llamacpp',
-    works: "reasoning_effort: 'none', accepted natively by llama-server; chat_template_kwargs: {enable_thinking: false} also works",
-    silentNoOp: null,
-    evidence:
-      'Inherited from the lemonade row above, which is the same engine: those three nodes ran llama-server b10707 and lemonade only passed the request through. What lemonade adds is its load endpoint, which this dimension does not touch — the two overrides were sent on an ordinary /v1/chat/completions. A bare llama-server has not been driven directly on this fleet, so the claim is as strong as that indirection and no stronger.',
-  },
-  lmstudio: {
-    backend: 'lmstudio',
-    works: null,
-    silentNoOp: null,
-    evidence:
-      'Not established. No LM Studio instance has been driven on this fleet. It fronts llama.cpp and MLX runtimes, so the llamacpp row above is a reasonable first thing to try — but which of the two is serving is an LM Studio decision the Hub does not see, and an untested spelling copied between engines is exactly what the mtplx row of this table exists to warn about.',
+    evidence: 'Not measured on this fleet. oMLX is the Apple Silicon server; thinking suppression is not asserted here.',
   },
 };
 
@@ -508,11 +430,7 @@ export const DIMENSION_PROBES: Partial<Record<ConformanceDimensionId, Partial<Re
   ),
   'spec-decode-capability': {
     ollama: 'GET /api/version — the 0.30.8 build gate from SPEC_DECODE.ollama, reported as a gate and never as an activation proof',
-    mtplx: 'GET /health for generation_mode, then the paired generation_mode ar/mtp arms whose mtplx_stats echo which one actually ran',
-    dspark: "GET /health — mode, target, drafter and max_draft, the engine's own account of its speculative state",
     lemonade: 'GET /v1/models — whether a draft checkpoint is configured, reported WITH the false-ON caveat attached (configured is not active)',
-    lucebox:
-      'an ordinary /v1/chat/completions completion, read for usage.spec_decode_ran and usage.accept_rate — the engine says whether the drafter ran on THAT request. accept_rate is reported verbatim and never compared across nodes (the denominators differ by build).',
   },
 };
 
@@ -530,17 +448,7 @@ export const DIMENSION_SKIPS: Partial<Record<ConformanceDimensionId, Partial<Rec
   'openai-completions': chatOnly(
     'no verified /v1/completions route — this engine is chat-shaped. Only ollama/vllm/lemonade have been seen answering it, and asserting a route nobody has seen answer would print a guess as a verdict.',
   ),
-  'openai-embeddings': {
-    mtplx:
-      'fronts chat models only — its own /v1/models tags its single entry capability:"chat". An embeddings request here would measure the absence of a model rather than the absence of a route.',
-    dspark:
-      "has no /v1/embeddings at all. Stated in CI-Hub's own dspark.backend.ts and covered by a regression test there, so this is a documented absence rather than an untested one.",
-    lucebox: 'fronts one chat GGUF and exposes no embedding route — its /v1/models advertises a single chat entry and no embedding model.',
-    llamacpp:
-      "Not verified. llama-server can be started with an embedding model and then answers /v1/embeddings, but WHETHER it was is a property of the operator's command line that the Hub cannot read, and no instance has been driven here. An embeddings request would measure that command line rather than the route.",
-    lmstudio:
-      'Not verified. LM Studio serves embedding models and tags them in its native listing, but no instance has been driven on this fleet, and whether one is loaded is a choice made in its UI.',
-  },
+  'openai-embeddings': {},
   'native-chat': nonOllama(),
   'native-generate': nonOllama(),
   'native-tags': nonOllama(),
@@ -553,11 +461,7 @@ export const DIMENSION_SKIPS: Partial<Record<ConformanceDimensionId, Partial<Rec
     'response_format is unverified on this engine — only ollama/vllm/lemonade have been seen implementing it. Ollama maps the field onto its native `format`, vLLM implements guided decoding and lemonade is model/runtime dependent; for these three nobody has seen it accepted or refused, and a guessed red row means nothing.',
   ),
   'spec-decode-capability': {
-    llamacpp:
-      "Not measured, which is a weaker claim than vLLM's below: vLLM was driven and reports nothing read-only, whereas no bare llama-server has been driven on this fleet at all. Every llama.cpp figure in SPEC_DECODE was taken THROUGH lemonade and describes lemonade's control surface. Filling this in means running the engine, not reading its flags.",
-    lmstudio:
-      'Not measured. No LM Studio instance has been driven on this fleet, so nothing is asserted about what its API accepts, reports, or silently ignores.',
-    vllm: 'speculative decoding is configured with --speculative-config at server launch and no read-only route reports it — /v1/models carries the model id, max_model_len and permissions and nothing about drafting. Reading the state needs the launch argv from the host, which is outside a read-only HTTP surface. It has been measured (~1.4x, 42.8% acceptance) by reading that argv, not by asking the server.',
+    vllm: 'speculative decoding is configured with --speculative-config at server launch and no read-only route reports it — /v1/models carries the model id, max_model_len and permissions and nothing about drafting. Reading the state needs the launch argv from the host, which is outside a read-only HTTP surface.',
   },
 };
 
@@ -579,7 +483,7 @@ function nonOllama(): Partial<Record<InferenceBackendType, string>> {
  * out of this list rather than widen the prose.
  */
 function chatOnly(reason: string): Partial<Record<InferenceBackendType, string>> {
-  const unverified: InferenceBackendType[] = ['mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'];
+  const unverified: InferenceBackendType[] = ['omlx'];
   return Object.fromEntries(unverified.map((b) => [b, reason])) as Partial<Record<InferenceBackendType, string>>;
 }
 

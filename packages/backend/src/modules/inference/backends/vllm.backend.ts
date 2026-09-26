@@ -28,23 +28,13 @@ export interface VllmRemediation {
  * instead, so the suggested model is one of the catalog's `-mlx` rows (see curated-models.ts) rather
  * than the CUDA-only bitsandbytes quantization suggested elsewhere.
  */
-export function buildVllmRemediation(isAppleSilicon: boolean): VllmRemediation {
-  if (isAppleSilicon) {
-    return {
-      command: 'vllm serve mlx-community/Qwen3-8B-4bit --host 0.0.0.0 --port 8000 --max-model-len 8192',
-      hint:
-        'Run vLLM on the host via vLLM-Metal (Apple Silicon has no Docker/CUDA path for vLLM): install with ' +
-        '`curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash`, then ' +
-        '`source ~/.venv-vllm-metal/bin/activate` and run the command above.',
-    };
-  }
+export function buildVllmRemediation(): VllmRemediation {
   return {
-    // The suggested model must be a catalog `backendModelId` (so the served model is recognized
-    // as installed) and must fit common consumer VRAM — Qwen3-4B-Instruct-2507 with bitsandbytes
-    // quantization runs on an 8 GB card, unlike the old Qwen2.5-7B bf16 suggestion (#1103).
-    command:
-      'vllm serve Qwen/Qwen3-4B-Instruct-2507 --host 0.0.0.0 --port 8000 --quantization bitsandbytes --max-model-len 8192 --gpu-memory-utilization 0.85',
-    hint: 'Run vLLM on the host (not inside Docker).',
+    // `vllm serve <model>` is the quickstart at
+    // https://docs.vllm.ai/en/latest/getting_started/quickstart.html
+    // `--host` and `--port` are that CLI's bind flags, so a Hub in Docker can probe the host.
+    command: 'vllm serve Qwen/Qwen3-4B-Instruct-2507 --host 0.0.0.0 --port 8000',
+    hint: 'Run vLLM on an NVIDIA host, not inside Docker. Apple Silicon uses oMLX.',
   };
 }
 

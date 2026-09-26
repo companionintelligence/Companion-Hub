@@ -752,7 +752,7 @@ export interface SlotOccupancy {
  * node's `ollamaSlots`, which `cihub fleet backends --backends llamacpp` writes from the same
  * number. Every other engine keeps its place, as before slots existed.
  */
-export const SLOT_STATED_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama', 'llamacpp']);
+export const SLOT_STATED_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama']);
 
 /**
  * Judge each Ollama or llama-server candidate's known queue depth against the slot count its node
