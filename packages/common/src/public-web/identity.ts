@@ -46,6 +46,21 @@ export function sanitizeAppSubdomain(subdomain: string): string {
     .replace(/^-|-$/g, '');
 }
 
+/**
+ * The subdomain an app routes on: the operator's `localSubdomain` when one is
+ * set, otherwise `<appName>-<appStoreSlug>`.
+ *
+ * This is the label Companion Portal publishes and the one every public
+ * hostname for the app is built from, so anything that shows or compares an
+ * app's public address must start here. The bare app name is NOT a fallback:
+ * an app installed without a `localSubdomain` (API, MCP, fleet and restore
+ * installs) is served at `ci-hermes-ci-marketplace-…`, and a UI that dropped
+ * the store slug linked to `ci-hermes-…`, a name that does not resolve.
+ */
+export function resolveRoutingSubdomain(subdomain: string | null | undefined, appName: string, appStoreSlug: string): string {
+  return subdomain?.trim() || `${appName}-${appStoreSlug}`;
+}
+
 /** App names/slugs that collide with reserved UI routes and must be rejected. */
 export const RESERVED_APP_NAMES = ['create', 'expose'];
 
