@@ -13,7 +13,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname } from '@ci-hub/common/types';
-import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildFqdnSubdomain, buildPublicWebIdentity, extractDeviceSlug, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
@@ -244,6 +244,73 @@ function parseAppBaseUrl(url: string): URL {
 function deriveAppBaseWsOrigin(parsed: URL): string {
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws';
   return `${wsScheme}://${parsed.host}`;
+}
+
+/** What an earlier platform address of this app looks like. See {@link isPlatformIdentityUrlFor}. */
+export interface PlatformIdentityShape {
+  /** `<appName>-<appStoreSlug>`, the subdomain an app routes on when none was chosen. */
+  defaultSubdomain: string;
+  /** The operator's `localSubdomain`, when one is set. */
+  routingSubdomain?: string | null;
+  /** This Hub's device slug, which stays the same when the Hub moves to another organization. */
+  deviceSlug?: string | null;
+  /** The LAN domain root (`LOCAL_DOMAIN`). */
+  localDomainRoot?: string | null;
+}
+
+/**
+ * Whether `url` is a platform address the Hub derived for this app under an earlier
+ * organization, Hub registration, or public domain. A match is replaced with the current
+ * address, so this recognises only what the Hub itself writes.
+ *
+ * With an organization, `buildPublicWebIdentity` yields a bare HTTPS origin whose first label
+ * is `<subdomain>-<device>-<org>` or `<subdomain>-<org>`. The Hub keeps no record of earlier
+ * registrations, so the shape is all it has, and it is read narrowly:
+ *
+ * - The store-qualified default (`ci-hermes-ci-marketplace-…`) may be followed by any org. An
+ *   operator's own hostname carries it only by deliberately reusing it.
+ * - A chosen subdomain counts only when this Hub's device slug follows it. The install dialog
+ *   sets it to the bare app name, so `n8n-<anything>` would also take an operator's
+ *   `https://n8n-team.acme.io`.
+ * - Nothing under the local domain, which is a LAN name the operator chose.
+ * - A path, a port, or plain HTTP was typed by a person.
+ */
+export function isPlatformIdentityUrlFor(url: string, shape: PlatformIdentityShape): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+
+  if (parsed.protocol !== 'https:' || parsed.port || parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') {
+    return false;
+  }
+
+  const hostname = parsed.hostname;
+  const localDomainRoot = shape.localDomainRoot
+    ?.trim()
+    .toLowerCase()
+    .replace(/^\.+|\.+$/g, '');
+  if (localDomainRoot && (hostname === localDomainRoot || hostname.endsWith(`.${localDomainRoot}`))) {
+    return false;
+  }
+
+  const [firstLabel, ...zone] = hostname.split('.');
+  if (!firstLabel || zone.length < 2) {
+    return false;
+  }
+
+  const continuesPast = (prefix: string): boolean => firstLabel.length > prefix.length && firstLabel.startsWith(prefix);
+
+  const defaultSubdomain = sanitizeAppSubdomain(shape.defaultSubdomain);
+  if (defaultSubdomain && continuesPast(`${defaultSubdomain}-`)) {
+    return true;
+  }
+
+  const routingSubdomain = shape.routingSubdomain ? sanitizeAppSubdomain(shape.routingSubdomain) : '';
+  const deviceSlug = shape.deviceSlug ? sanitizeAppSubdomain(shape.deviceSlug) : '';
+  return Boolean(routingSubdomain && deviceSlug && continuesPast(`${routingSubdomain}-${deviceSlug}-`));
 }
 
 @Injectable()
@@ -701,6 +768,28 @@ export class AppHelpers {
     );
 
     /*
+     * A Hub that changed organization or public domain leaves a base URL that is
+     * neither value above: an app that was never exposed has no `APP_PUBLIC_URL`,
+     * so core-2's Hermes kept `…-bill-co.companionintelligence.com` across restarts
+     * after moving to `demopool1`/ci.computer. A value with this app's platform
+     * shape is automatic whichever registration wrote it. The shape is read
+     * narrowly (`isPlatformIdentityUrlFor`), because a match overwrites the value.
+     * The rule waits for a current platform identity, because an unregistered Hub
+     * falls back to the LAN `APP_URL`, which is kept once written and would strand
+     * the app there.
+     */
+    const deviceSlug = org?.slug ? extractDeviceSlug(org.hubSubdomain, org.slug) : null;
+    const platformIdentityShape: PlatformIdentityShape = {
+      defaultSubdomain: `${appName}-${appStoreId}`,
+      routingSubdomain: typeof form.localSubdomain === 'string' ? form.localSubdomain : null,
+      // `buildFqdnSubdomain` leaves out a device slug equal to the org slug, so no address carries it.
+      deviceSlug: deviceSlug && deviceSlug !== org?.slug ? deviceSlug : null,
+      localDomainRoot: envMap.get('LOCAL_DOMAIN') || this.config.getConfig().localDomain,
+    };
+    const isAutoBaseUrl = (baseUrl: string): boolean =>
+      supersededAutoBaseUrls.has(baseUrl) || (Boolean(platformPublicUrl) && isPlatformIdentityUrlFor(baseUrl, platformIdentityShape));
+
+    /*
      * Apply the identity update to both the form value and existing environment.
      *
      * The install dialog prefills each `app_base_url` field with
@@ -711,11 +800,10 @@ export class AppHelpers {
      * domain.
      *
      * An automatically derived value follows the exposed identity regardless of
-     * its source. A value entered by the operator matches neither superseded URL
-     * and remains unchanged.
+     * its source. A value entered by the operator fails `isAutoBaseUrl` and
+     * remains unchanged.
      */
-    const followExposedIdentity = (baseUrl: string): string =>
-      defaultAppBaseUrl && supersededAutoBaseUrls.has(baseUrl) ? defaultAppBaseUrl : baseUrl;
+    const followExposedIdentity = (baseUrl: string): string => (defaultAppBaseUrl && isAutoBaseUrl(baseUrl) ? defaultAppBaseUrl : baseUrl);
 
     for (const field of config.form_fields) {
       if (field.type !== 'app_base_url') {

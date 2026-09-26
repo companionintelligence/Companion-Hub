@@ -5,8 +5,20 @@ import {
   buildPublicWebIdentity,
   deriveAppSlug,
   resolvePublicDomainRoot,
+  resolveRoutingSubdomain,
   sanitizeAppSubdomain,
 } from '../identity.js';
+
+describe('resolveRoutingSubdomain', () => {
+  it('falls back to <app>-<store>, not the bare app name', () => {
+    expect(resolveRoutingSubdomain(null, 'ci-hermes', 'ci-marketplace')).toBe('ci-hermes-ci-marketplace');
+    expect(resolveRoutingSubdomain('  ', 'ci-hermes', 'ci-marketplace')).toBe('ci-hermes-ci-marketplace');
+  });
+
+  it('uses a chosen subdomain as given', () => {
+    expect(resolveRoutingSubdomain(' hermes ', 'ci-hermes', 'ci-marketplace')).toBe('hermes');
+  });
+});
 
 describe('deriveAppSlug', () => {
   it('hyphenates dots instead of truncating (unlike sanitizeAppSubdomain)', () => {

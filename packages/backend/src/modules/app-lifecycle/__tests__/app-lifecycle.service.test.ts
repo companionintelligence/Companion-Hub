@@ -307,6 +307,44 @@ describe('AppLifecycleService', () => {
       expect(apps[1]).toMatchObject({ name: 'n8n', subdomain: 'n8n-abc' });
     });
 
+    it('publishes an app by its stored install form, not by its row columns', async () => {
+      /*
+       * An install that sent no exposure settings (`hub_install_app` with `{}`) writes
+       * `exposed_local = true` for any exposable app while its stored form resolves to local, so
+       * compose builds no route. Publishing it gave Portal a hostname that ended at Traefik's 404.
+       */
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({
+        id: 'org-id',
+        tunnelId: 'tunnel-id',
+        slug: 'demopool1',
+        hubSubdomain: 'hub-core-2-demopool1',
+      } as any);
+      const row = (appName: string, config: Record<string, unknown>) => ({
+        appName,
+        appStoreSlug: 'ci-marketplace',
+        status: 'running',
+        exposureMode: 'local',
+        exposedLocal: true,
+        config,
+      });
+      appsRepository.getApps.mockResolvedValue([
+        row('ci-hermes', { openPort: true }),
+        // A legacy API form that carried only the Public web flag: compose routes it.
+        row('n8n', { exposedLocal: true }),
+        { ...row('nextcloud', { exposureMode: 'cloudflare', openPort: true }), exposureMode: 'cloudflare' },
+      ] as any);
+      configService.getConfig.mockReturnValue({
+        userSettings: { domain: 'ci.computer', localDomain: 'lan' },
+        domain: 'ci.computer',
+      } as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2 });
+
+      await service.triggerCloudflareSync();
+
+      const syncedApps = cloudflareClientService.syncState.mock.calls[0]?.[1] as any[];
+      expect(syncedApps.filter((entry) => entry.privilegedKind !== 'hub').map((entry) => entry.name)).toEqual(['n8n', 'nextcloud']);
+    });
+
     it('should not include Hub route when hubSubdomain is not set', async () => {
       const data = { appUrn: 'test-app', action: 'install', form: {} } as any;
       const reply = vi.fn();
@@ -4574,6 +4612,38 @@ describe('AppLifecycleService', () => {
         skipAutoRestartAppUrns: ['myapp:ci-marketplace'],
       });
       expect(syncSpy).toHaveBeenNthCalledWith(2, { skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
+    });
+
+    it('judges the saved row by its stored form, as the sync published it', async () => {
+      // A legacy Public web install: the row says `local` + `exposed_local`, the form says
+      // `exposedLocal`. Saving the same public settings moves no hostname, so nothing is released.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'running',
+        appName: 'myapp',
+        appStoreSlug: 'ci-marketplace',
+        config: { exposedLocal: true, localSubdomain: 'sub', port: 8080 },
+        exposureMode: 'local',
+        exposedLocal: true,
+        localSubdomain: 'sub',
+        port: 8080,
+      } as any);
+      configService.getConfig.mockReturnValue({
+        isProduction: false,
+        userSettings: { domain: 'example.com', localDomain: 'ci.lan' },
+        domain: 'example.com',
+      } as any);
+      vi.spyOn(service, 'restartApp').mockResolvedValue({ requestId: crypto.randomUUID() });
+      const syncSpy = vi.spyOn(exposureSyncService, 'triggerCloudflareSync').mockResolvedValue(undefined);
+
+      await service.updateAppConfig({
+        actor: TEST_ACTOR,
+        appUrn,
+        form: { exposureMode: 'cloudflare', exposedLocal: true, localSubdomain: 'sub', port: 8080 },
+      });
+
+      expect(syncSpy).toHaveBeenCalledTimes(1);
+      expect(syncSpy).toHaveBeenCalledWith({ skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
     });
   });
 

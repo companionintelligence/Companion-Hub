@@ -13,6 +13,7 @@ import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
+import { requiresHubLoginOnPublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
 import { z } from 'zod';
 
@@ -473,7 +474,7 @@ export class DockerComposeBuilder {
         appId: appName,
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
-        enableAuth: form.enableAuth,
+        enableAuth: requiresHubLoginOnPublicRoute(form),
         cloudflareOriginHostname: this.cloudflareOriginHostname,
         cloudflarePublicHostname: this.cloudflarePublicHostname,
         localDomain: this.localDomain,
