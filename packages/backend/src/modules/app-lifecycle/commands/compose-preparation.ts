@@ -6,6 +6,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { publishesCloudflarePublicRoute } from '@/modules/apps/app-public-routing.helpers';
 import { DockerComposeBuilder } from '@/modules/docker/builders/compose.builder';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
@@ -107,10 +108,19 @@ export async function prepareAppComposeDir(
           : undefined;
     }
 
-    const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
     let cloudflareOriginHostname: string | undefined;
     let cloudflarePublicHostname: string | undefined;
-    if (effectiveExposureMode === 'cloudflare' && !form.openPort) {
+    /*
+     * Build the tunnel route for exactly the apps Companion Portal publishes. The sync applies this
+     * predicate to the same stored form (`publicRoutingSnapshotOf`), so neither can publish what the
+     * other does not. Whether the host port is also published does not matter, because Traefik
+     * reaches the container over the Docker network. A `!openPort` guard here (added in #678 from
+     * the env identity rule) left open-port apps on Traefik's 404 while the app page said "Public
+     * domain: Enabled", including every install that omitted the field, because the queue form
+     * defaults `openPort` to true. Those routes are new, so the compose builder puts the Hub login
+     * in front of them unless the form decided otherwise (`requiresHubLoginOnPublicRoute`).
+     */
+    if (publishesCloudflarePublicRoute(form)) {
       const registrationService = moduleRef.get(RegistrationService, { strict: false });
       const org = await registrationService.getDeviceRegistrationInfo();
       const { appName, appStoreId } = extractAppUrn(appUrn);

@@ -8,6 +8,7 @@ import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -87,6 +88,49 @@ export function isMalformedAccessUrl(url: string | null): boolean {
   return url ? parseAccessUrl(url) === null : false;
 }
 
+function isLoopbackHost(host: string): boolean {
+  const lower = host.toLowerCase();
+  // `*.localhost` resolves to loopback in browsers (RFC 6761), and the Tauri desktop
+  // shell serves from `tauri.localhost` on Windows.
+  return LOOPBACK_HOSTS.has(lower) || lower.startsWith('127.') || lower === 'localhost' || lower.endsWith('.localhost');
+}
+
+function currentViewerHostname(): string | undefined {
+  return typeof window === 'undefined' ? undefined : window.location.hostname;
+}
+
+/**
+ * The Hub address a Local access link should name, as seen from the browser showing it.
+ *
+ * When the Hub reports no LAN address, or a listen-all or loopback one, `127.0.0.1` is
+ * right only for a browser on the Hub. From another machine (a tailnet name, a LAN IP)
+ * it is the viewer's own computer, while the hostname that browser used to reach the
+ * dashboard is one it can reach. A browser on the public hostname keeps the reported
+ * value: the Cloudflare tunnel carries 443 only, so `<that name>:<port>` cannot connect.
+ */
+export function resolveReachableHubHost(input: {
+  internalIp?: string | null;
+  viewerHostname?: string | null;
+  publicDomain?: string | null;
+}): string | undefined {
+  const reported = input.internalIp?.trim() || undefined;
+  if (reported && !isLoopbackHost(reported) && reported !== '0.0.0.0' && reported !== '::') {
+    return reported;
+  }
+
+  const viewer = input.viewerHostname?.trim().toLowerCase().replace(/\.+$/, '');
+  if (!viewer || isLoopbackHost(viewer)) {
+    return reported;
+  }
+
+  const publicDomain = input.publicDomain?.trim().toLowerCase().replace(/\.+$/, '');
+  if (publicDomain && (viewer === publicDomain || viewer.endsWith(`.${publicDomain}`))) {
+    return reported;
+  }
+
+  return viewer;
+}
+
 function buildHttpsUrl(hostname: string, sslPort: number, suffix: string): string {
   return `https://${hostname}${sslPort === 443 ? '' : `:${sslPort}`}${suffix}`;
 }
@@ -129,23 +173,13 @@ function hasDirectLocalAccess(
   return Boolean(record.openPort) || Boolean(record.exposedLocal) || !options.dynamicConfig;
 }
 
-function getEffectiveExposureMode(record: { exposureMode?: string | null; exposedLocal?: boolean }): 'local' | 'cloudflare' | 'tailscale' {
-  if (record.exposureMode === 'local' || record.exposureMode === 'cloudflare' || record.exposureMode === 'tailscale') {
-    return record.exposureMode;
-  }
-
-  return record.exposedLocal ? 'cloudflare' : 'local';
-}
-
-function publishesPublicWebAccess(record: { exposureMode?: string | null; exposedLocal?: boolean }): boolean {
-  return getEffectiveExposureMode(record) === 'cloudflare' || Boolean(record.exposedLocal);
-}
-
 export function buildAppAccessPoints(input: {
   app?: AppDetails | null;
   info: AppInfo;
   sslPort: number;
   internalIp?: string;
+  /** Hostname the browser reached the Hub on; defaults to `window.location.hostname`. */
+  viewerHostname?: string | null;
   publicDomain?: string;
   cloudflareAvailable: boolean;
   tailscaleAvailable: boolean;
@@ -160,7 +194,8 @@ export function buildAppAccessPoints(input: {
     app,
     info,
     sslPort,
-    internalIp,
+    internalIp: reportedInternalIp,
+    viewerHostname = currentViewerHostname(),
     publicDomain,
     cloudflareAvailable,
     tailscaleAvailable,
@@ -176,6 +211,8 @@ export function buildAppAccessPoints(input: {
     return [];
   }
 
+  const internalIp = resolveReachableHubHost({ internalIp: reportedInternalIp, viewerHostname, publicDomain });
+
   const record = app as AppDetails &
     Record<string, unknown> & {
       domain?: string | null;
@@ -188,7 +225,12 @@ export function buildAppAccessPoints(input: {
     };
 
   const urlSuffix = info.url_suffix || '';
-  const baseSubdomain = record.localSubdomain || info.urn.split(':')[0];
+  const [urnAppName = '', urnAppStoreSlug = ''] = info.urn.split(':');
+  // The label Portal serves: `<app>-<store>` when no subdomain was chosen. The bare app name
+  // linked every app installed without one (API, MCP, restore) to a hostname that does not resolve.
+  const baseSubdomain = urnAppStoreSlug
+    ? resolveRoutingSubdomain(record.localSubdomain, urnAppName, urnAppStoreSlug)
+    : record.localSubdomain || urnAppName;
   const cleanSubdomain = baseSubdomain ? sanitizeAppSubdomain(baseSubdomain) : '';
   const browserHost = resolveBrowserHost(internalIp);
   const directPort = app.port ?? info.port ?? null;
@@ -234,7 +276,10 @@ export function buildAppAccessPoints(input: {
         ? 'available'
         : 'unavailable'
     : 'unavailable';
-  const publicWebConfigured = publishesPublicWebAccess(record) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
+  // Judged by the stored install form, as Portal sync and compose judge it. The row's
+  // `exposedLocal` defaults to true for an exposable app installed without exposure settings,
+  // and reading it showed "Enabled" for a route nothing served.
+  const publicWebConfigured = publishesPublicWebRoute(storedExposureForm(record)) || Boolean(configuredPublicDomain) || Boolean(record.exposed);
   const publicActive = Boolean(publicUrl && publicWebConfigured);
   const publicState: AccessPointState = publicActive ? 'active' : cloudflareAvailable && publicUrl && info.exposable ? 'available' : 'unavailable';
 
