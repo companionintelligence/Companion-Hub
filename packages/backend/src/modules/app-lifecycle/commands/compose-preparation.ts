@@ -111,25 +111,12 @@ export async function prepareAppComposeDir(
     let cloudflareOriginHostname: string | undefined;
     let cloudflarePublicHostname: string | undefined;
     /*
-     * The tunnel route does not depend on `openPort`.
-     *
-     * Companion Portal publishes a route for every Public web app regardless of
-     * `openPort` (`publishesCloudflarePublicRoute`). It sends `<app>.<domain>` to
-     * `http://traefik:80` with this origin Host, and the app page reports it as
-     * "Enabled". Traefik reaches the container over the Docker network on its
-     * internal port. It never uses the published host port, so an open host port
-     * is an additional LAN path, not a replacement for this route.
-     *
-     * The `!openPort` guard came from #678, which copied the Runtipi-era env rule
-     * ("an app on an open port is identified by IP:port") into this builder.
-     * Before #678, this router was built for every Cloudflare app. The guard also
-     * caught every install that omitted `openPort`, because the queue form
-     * defaults it to `true`. Those apps received `traefik.enable=false`, and the
-     * tunnel reached Traefik's 404 while the UI reported "Public domain: Enabled".
-     *
-     * The env identity (`generateEnvFile`) still requires `!openPort`. That
-     * change moves `APP_URL` for apps on an open port and is not needed to serve
-     * the route.
+     * Build the tunnel route whether or not the host port is also published. Companion Portal
+     * publishes a route for every Public web app (`publishesCloudflarePublicRoute`), and Traefik
+     * reaches the container over the Docker network, never through the host port. A `!openPort`
+     * guard here (added in #678 from the env identity rule) left open-port apps on Traefik's 404
+     * while the app page said "Public domain: Enabled", including every install that omitted the
+     * field, because the queue form defaults `openPort` to true.
      */
     if (effectiveExposureMode === 'cloudflare') {
       const registrationService = moduleRef.get(RegistrationService, { strict: false });

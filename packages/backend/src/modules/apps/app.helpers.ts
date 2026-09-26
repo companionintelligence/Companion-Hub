@@ -247,21 +247,15 @@ function deriveAppBaseWsOrigin(parsed: URL): string {
 }
 
 /**
- * Whether `url` is a platform address the Hub derived for this app, under any
- * organization, Hub or public domain rather than only the current ones.
+ * Whether `url` is a platform address the Hub derived for this app under any
+ * organization, Hub, or public domain, not only the current ones.
  *
- * With an organization, `buildPublicWebIdentity` always produces a bare HTTPS
- * origin whose first label is `<app subdomain>-<device>-<org>` or
- * `<app subdomain>-<org>`, under a zone of at least two labels. Matching that
- * shape recognises the address this Hub wrote before it was re-registered to
- * another org, renamed, or moved to another public domain, none of which it
- * keeps a record of.
- *
- * The shape is narrow on purpose. A value with a path, a port, plain HTTP, or a
- * first label that is not this app's subdomain followed by `-` is something an
- * operator typed, and stays. The default app subdomain carries the store slug
- * (`ci-hermes-ci-marketplace-…`), so an operator's own hostname matches only by
- * deliberately reusing it.
+ * With an organization, `buildPublicWebIdentity` yields a bare HTTPS origin whose
+ * first label is `<app subdomain>-<device>-<org>` or `<app subdomain>-<org>`. The
+ * Hub keeps no record of earlier registrations, so this shape is how it recognises
+ * its own old address. Anything with a path, a port, or plain HTTP was typed by an
+ * operator. The default subdomain carries the store slug (`ci-hermes-ci-marketplace-…`),
+ * so an operator's hostname matches only by deliberately reusing it.
  */
 export function isPlatformIdentityUrlFor(url: string, appSubdomains: readonly string[]): boolean {
   let parsed: URL;
@@ -741,21 +735,13 @@ export class AppHelpers {
     );
 
     /*
-     * The two values above miss a Hub that changed organization or domain.
-     *
-     * An app that was never exposed has no `APP_PUBLIC_URL`, so its base URL is
-     * the platform URL from the previous registration, which is neither value.
-     * After core-2 moved from `bill-co`/companionintelligence.com to
-     * `demopool1`/ci.computer, Hermes (whose Public URL field is replayed from
-     * the stored install form) kept `APP_BASE_URL` on
-     * `…-bill-co.companionintelligence.com` across restarts, a hostname that no
-     * longer exists. A value with this app's platform shape is automatic no
-     * matter which registration produced it.
-     *
-     * This rule applies only while the Hub has a platform identity for the app.
-     * During a brief unregistered window, the fallback is the LAN `APP_URL`,
-     * which is kept once written. Moving onto it would therefore strand the
-     * app on the LAN after the Hub registered again.
+     * A Hub that changed organization or public domain leaves a base URL that is
+     * neither value above: an app that was never exposed has no `APP_PUBLIC_URL`,
+     * so core-2's Hermes kept `…-bill-co.companionintelligence.com` across restarts
+     * after moving to `demopool1`/ci.computer. A value with this app's platform
+     * shape is automatic whichever registration wrote it. The rule waits for a
+     * current platform identity, because an unregistered Hub falls back to the LAN
+     * `APP_URL`, which is kept once written and would strand the app there.
      */
     const platformIdentitySubdomains = [form.localSubdomain, `${appName}-${appStoreId}`].filter(
       (subdomain): subdomain is string => typeof subdomain === 'string' && subdomain.trim().length > 0,

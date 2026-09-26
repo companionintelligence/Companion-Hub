@@ -102,17 +102,11 @@ function currentViewerHostname(): string | undefined {
 /**
  * The Hub address a Local access link should name, as seen from the browser showing it.
  *
- * Many appliances report no LAN address, or a listen-all or loopback one, and the card
- * turned every one of those into `127.0.0.1`. That is right only for a browser running
- * on the Hub. From another machine (`https://core-2.<tailnet>.ts.net`, a LAN IP, an
- * mDNS name) `127.0.0.1` is the viewer's own computer. The hostname that browser used to
- * reach the Hub dashboard is one it can demonstrably reach, and the app's host port is
- * published on the same interfaces, so it is the better address.
- *
- * Two viewers keep the reported value. A browser on the Hub (loopback or `*.localhost`)
- * already reaches `127.0.0.1`. A browser on a hostname under the public domain came
- * through the Cloudflare tunnel, which carries 443 only, so `<that name>:<port>` would
- * not connect either; it is never a Local address.
+ * When the Hub reports no LAN address, or a listen-all or loopback one, `127.0.0.1` is
+ * right only for a browser on the Hub. From another machine (a tailnet name, a LAN IP)
+ * it is the viewer's own computer, while the hostname that browser used to reach the
+ * dashboard is one it can reach. A browser on the public hostname keeps the reported
+ * value: the Cloudflare tunnel carries 443 only, so `<that name>:<port>` cannot connect.
  */
 export function resolveReachableHubHost(input: {
   internalIp?: string | null;
