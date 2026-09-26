@@ -266,8 +266,10 @@ describe('runCli command routing', () => {
       argv: ['doctor', '--repair-networks', 'dev'],
       expected: [{ handler: 'doctorHub', args: ['dev', { repairNetworks: true }] }],
     },
-    { argv: ['reset', 'dev', '--yes'], expected: [{ handler: 'resetHub', args: ['dev', true] }] },
-    { argv: ['reset'], expected: [{ handler: 'resetHub', args: ['local', false] }] },
+    { argv: ['reset', 'dev', '--yes'], expected: [{ handler: 'resetHub', args: ['dev', true, false] }] },
+    { argv: ['reset'], expected: [{ handler: 'resetHub', args: ['local', false, false] }] },
+    // A dry run must never arrive as `--yes`, and must not be read as the env name.
+    { argv: ['reset', '--dry-run', 'prod'], expected: [{ handler: 'resetHub', args: ['prod', false, true] }] },
     { argv: ['uninstall'], expected: [{ handler: 'uninstallHub', args: [false] }] },
     { argv: ['uninstall', '--yes'], expected: [{ handler: 'uninstallHub', args: [true] }] },
     { argv: ['app', 'list', '--json'], expected: [{ handler: 'runAppCommand', args: [['list', '--json']] }] },
