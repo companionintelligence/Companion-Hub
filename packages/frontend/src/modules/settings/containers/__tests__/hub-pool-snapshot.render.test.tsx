@@ -122,7 +122,7 @@ describe.skipIf(!OUT)('Hub Pool visual snapshot', () => {
         backends: [
           { type: 'ollama', healthy: true, modelsLoaded: Array.from({ length: 11 }, (_, i) => `m${i}`) },
           { type: 'vllm', healthy: true, modelsLoaded: ['Qwen/Qwen3.5-9B'] },
-          { type: 'lucebox', healthy: true, modelsLoaded: ['lb'] },
+          { type: 'omlx', healthy: true, modelsLoaded: ['mlx-community/Qwen3-8B-4bit'] },
         ],
       },
       peers: [peer('core-2', ['gemma3:27b']), peer('beta-red', ['qwen2.5-coder:7b']), peer('core-7', ['ornith-1.5:9b'])],

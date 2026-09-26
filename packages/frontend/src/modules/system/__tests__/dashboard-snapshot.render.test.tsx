@@ -107,7 +107,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
             modelsLoaded: ['gemma3:1b', 'gemma4:26b', 'gemma4:e4b', 'nomic-embed-text:latest', 'ornith-1.5:35b', 'qwen3-coder:30b', 'qwen3-vl:32b'],
           },
           { type: 'vllm', healthy: true, modelsLoaded: ['Qwen/Qwen3.5-9B'] },
-          { type: 'lucebox', healthy: true, modelsLoaded: ['lucebox-default'] },
+          { type: 'omlx', healthy: true, modelsLoaded: ['mlx-community/Qwen3-8B-4bit'] },
           { type: 'lemonade', healthy: false, modelsLoaded: [] },
         ],
       },
@@ -261,7 +261,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
         { type: 'ollama', running: true, healthy: true, modelsLoaded: 7 },
         { type: 'vllm', running: true, healthy: true, modelsLoaded: 1 },
         { type: 'lemonade', running: false, healthy: false, modelsLoaded: 0 },
-        { type: 'lucebox', running: true, healthy: true, modelsLoaded: 1 },
+        { type: 'omlx', running: true, healthy: true, modelsLoaded: 1 },
       ],
     };
     const mkApp = (name: string, cpu: number, mem: number, containers: number, degraded = false) => ({

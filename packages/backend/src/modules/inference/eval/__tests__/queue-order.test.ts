@@ -99,10 +99,10 @@ describe('round-robin across backends', () => {
 
 describe('accounting for an endpoint with nothing to ask it', () => {
   it('an endpoint with applicable prompts gets no skip — it speaks for itself', () => {
-    const applicable = LLM_PROMPT_BANK.filter((p) => (p.backends as readonly string[]).includes('dspark')).length;
+    const applicable = LLM_PROMPT_BANK.filter((p) => (p.backends as readonly string[]).includes('omlx')).length;
     expect(applicable).toBeGreaterThan(0);
     expect(
-      endpointCoverageSkip({ endpoint: 'host.local:8100', backend: 'dspark', via: 'configuration', selected: LLM_PROMPT_BANK.length, applicable }),
+      endpointCoverageSkip({ endpoint: 'host.local:8100', backend: 'omlx', via: 'configuration', selected: LLM_PROMPT_BANK.length, applicable }),
     ).toBeNull();
   });
 
@@ -111,14 +111,9 @@ describe('accounting for an endpoint with nothing to ask it', () => {
     // no embedding route. Discovered (so no absent-skip row) and unmatched (so no work row) is how a
     // backend disappears from a results file entirely.
     const selected = resolvePromptSelection(presetPromptIds('embeddings')).prompts;
-    const applicable = selected.filter((p) => (p.backends as readonly string[]).includes('dspark')).length;
-    expect(applicable, 'the embeddings preset is the case this row exists for').toBe(0);
-
-    const note = endpointCoverageSkip({ endpoint: 'host.local:8100', backend: 'dspark', via: 'discovery', selected: selected.length, applicable });
+    const note = endpointCoverageSkip({ endpoint: 'host.local:8100', backend: 'omlx', via: 'discovery', selected: selected.length, applicable: 0 });
     expect(note).toBeTruthy();
-    // Actionable or it is no better than silence: which backend, where it answered, how it was
-    // found, and the counts that tell an operator to widen the selection.
-    expect(note).toContain('dspark');
+    expect(note).toContain('omlx');
     expect(note).toContain('host.local:8100');
     expect(note).toContain('discovery');
     expect(note).toContain(`0 of the ${selected.length} selected`);

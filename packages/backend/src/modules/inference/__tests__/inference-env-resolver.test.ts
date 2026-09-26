@@ -10,11 +10,7 @@ import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import { MtplxBackend } from '../backends/mtplx.backend';
-import { DsparkBackend } from '../backends/dspark.backend';
-import { LuceboxBackend } from '../backends/lucebox.backend';
-import { LlamacppBackend } from '../backends/llamacpp.backend';
-import { LmStudioBackend } from '../backends/lmstudio.backend';
+import { OmlxBackend } from '../backends/omlx.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
@@ -127,9 +123,7 @@ describe('InferenceEnvResolver', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
-  let mtplxBackend: MockProxy<MtplxBackend>;
-  let dsparkBackend: MockProxy<DsparkBackend>;
-  let luceboxBackend: MockProxy<LuceboxBackend>;
+  let omlxBackend: MockProxy<OmlxBackend>;
   let cloudFallback: MockProxy<CloudFallbackService>;
   let hubPoolPeerService: MockProxy<HubPoolPeerService>;
 
@@ -141,9 +135,7 @@ describe('InferenceEnvResolver', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
-    mtplxBackend = mock<MtplxBackend>();
-    dsparkBackend = mock<DsparkBackend>();
-    luceboxBackend = mock<LuceboxBackend>();
+    omlxBackend = mock<OmlxBackend>();
     cloudFallback = mock<CloudFallbackService>();
     hubPoolPeerService = mock<HubPoolPeerService>();
     // No connected peers by default — every existing test asserts the pre-pooling env shape, so
@@ -185,11 +177,7 @@ describe('InferenceEnvResolver', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
-        { provide: MtplxBackend, useValue: mtplxBackend },
-        { provide: DsparkBackend, useValue: dsparkBackend },
-        { provide: LuceboxBackend, useValue: luceboxBackend },
-        { provide: LlamacppBackend, useValue: mock<LlamacppBackend>() },
-        { provide: LmStudioBackend, useValue: mock<LmStudioBackend>() },
+        { provide: OmlxBackend, useValue: omlxBackend },
         InferenceBackendRegistry,
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: HubPoolPeerService, useValue: hubPoolPeerService },
@@ -357,23 +345,23 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
   });
 
-  it('passes the desktop-managed key to apps using mlx-dspark', async () => {
-    const dsparkModel = makeLlm('qwen-dspark', 'mlx-community/Qwen3-8B-8bit', false, 'dspark');
+  it('passes the host key to apps using oMLX', async () => {
+    const omlxModel = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', false, 'omlx');
     config.getInferencePreferences.mockReturnValue({
-      preferredBackend: 'dspark',
+      preferredBackend: 'omlx',
       preferredModel: null,
       preferredEmbeddingModel: null,
       preferredVisionModel: null,
     });
-    dsparkBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
-    dsparkBackend.getApiKey.mockReturnValue('managed-dspark-key');
-    dsparkBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [dsparkModel.backendModelId] });
-    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([dsparkModel]);
+    omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+    omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
+    omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [omlxModel.backendModelId] });
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([omlxModel]);
     modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
 
     const env = await service.resolve();
 
-    expect(env.CI_LLM_API_KEY).toBe('managed-dspark-key');
+    expect(env.CI_LLM_API_KEY).toBe('managed-omlx-key');
   });
 
   it('falls back to Ollama when the stored preference names a backend that does not exist', async () => {
