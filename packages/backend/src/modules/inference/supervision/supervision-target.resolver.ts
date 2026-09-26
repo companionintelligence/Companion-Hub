@@ -18,11 +18,7 @@ export const SUPERVISION_CONTAINER_CANDIDATES: Record<InferenceBackendType, read
   ollama: ['ci-hub-ollama'],
   vllm: ['ci-hub-vllm'],
   lemonade: ['ci-hub-lemonade'],
-  mtplx: [],
-  dspark: [],
-  lucebox: ['ci-hub-lucebox', 'ci-hub-inference-lucebox'],
-  llamacpp: [],
-  lmstudio: [],
+  omlx: [],
 };
 
 /** Hostnames that mean "this machine" from inside or outside the Hub container. */

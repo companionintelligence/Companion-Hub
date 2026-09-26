@@ -3,13 +3,9 @@ import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/comm
 import type { InferenceBackend } from './backend.interface';
 // Value imports, not `import type`: Nest resolves these constructor params through
 // emitDecoratorMetadata's design:paramtypes, and a type-only import erases them to undefined.
-import { DsparkBackend } from './dspark.backend';
 import { LemonadeBackend } from './lemonade.backend';
-import { LlamacppBackend } from './llamacpp.backend';
-import { LmStudioBackend } from './lmstudio.backend';
-import { LuceboxBackend } from './lucebox.backend';
-import { MtplxBackend } from './mtplx.backend';
 import { OllamaBackend } from './ollama.backend';
+import { OmlxBackend } from './omlx.backend';
 import { VllmBackend } from './vllm.backend';
 
 /**
@@ -54,25 +50,12 @@ export class UnknownInferenceBackendError extends Error {
 export class InferenceBackendRegistry {
   private readonly byType: Record<InferenceBackendType, InferenceBackend>;
 
-  constructor(
-    ollama: OllamaBackend,
-    vllm: VllmBackend,
-    lemonade: LemonadeBackend,
-    mtplx: MtplxBackend,
-    dspark: DsparkBackend,
-    lucebox: LuceboxBackend,
-    llamacpp: LlamacppBackend,
-    lmstudio: LmStudioBackend,
-  ) {
+  constructor(ollama: OllamaBackend, vllm: VllmBackend, lemonade: LemonadeBackend, omlx: OmlxBackend) {
     this.byType = {
       ollama,
       vllm,
       lemonade,
-      mtplx,
-      dspark,
-      lucebox,
-      llamacpp,
-      lmstudio,
+      omlx,
     };
   }
 

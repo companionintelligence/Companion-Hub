@@ -158,7 +158,7 @@ export interface ModelMemoryUsage {
  * `getStatus().backends`, the discovered-model list, `hub_list_inference_backends`, and pool
  * candidate selection with no compile error anywhere.
  */
-export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox', 'llamacpp', 'lmstudio'] as const;
+export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'omlx'] as const;
 
 export type InferenceBackendType = (typeof INFERENCE_BACKEND_TYPES)[number];
 

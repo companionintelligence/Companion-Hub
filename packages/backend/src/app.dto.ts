@@ -162,14 +162,18 @@ export const settingsSchema = z.object({
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
   ciHubHubSubdomain: z.string().trim().optional(),
-  inferenceBackend: z.enum(INFERENCE_BACKEND_TYPES).optional(),
+  inferenceBackend: z.preprocess(
+    (value) => (value === 'mtplx' || value === 'dspark' || value === 'lucebox' || value === 'llamacpp' || value === 'lmstudio' ? 'ollama' : value),
+    z.enum(INFERENCE_BACKEND_TYPES).optional(),
+  ),
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
   inferenceVllmApiKey: z.string().trim().optional(),
   inferenceVllmUrl: z.string().trim().optional(),
-  inferenceMtplxUrl: z.string().trim().optional(),
-  inferenceDsparkUrl: z.string().trim().optional(),
+  inferenceOmlxUrl: z.string().trim().optional(),
+  inferenceDecodeEndpoint: z.string().trim().optional(),
+  inferenceEncodeEndpoint: z.string().trim().optional(),
   // Ceiling on the `num_ctx` handed to apps, matched to the engine's own context
   // (`OLLAMA_CONTEXT_LENGTH`). Absent means no cap, which sizes exactly as the build before it.
   // `.catch(undefined)` on the read path for the reason the pool knobs below give.

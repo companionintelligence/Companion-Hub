@@ -101,7 +101,7 @@ export function fingerprintSharedPort(probe: SharedPortProbe): SharedPortVerdict
 
   if (health?.status === 200) {
     if (hasOpenAiModelRoute(models)) {
-      return { kind: 'match', backend: 'lucebox', via: 'GET /health + /v1/models' };
+      return { kind: 'match', backend: 'omlx', via: 'GET /health + /v1/models' };
     }
     // The interesting negative: something IS listening and healthy, it just isn't one of ours.
     return {
@@ -116,7 +116,7 @@ export function fingerprintSharedPort(probe: SharedPortProbe): SharedPortVerdict
   // Same rule for the fallback: a bare 200 is not evidence, only an OpenAI-shaped 200 is. Without
   // this, any web app on a swept port becomes "mtplx with 0 models".
   if (hasOpenAiModelRoute(models)) {
-    return { kind: 'match', backend: 'mtplx', via: 'GET /v1/models (fingerprint ambiguous)' };
+    return { kind: 'match', backend: 'omlx', via: 'GET /v1/models (fingerprint ambiguous)' };
   }
 
   return { kind: 'none', reason: null };
