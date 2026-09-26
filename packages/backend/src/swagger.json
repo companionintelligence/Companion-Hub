@@ -622,6 +622,110 @@
         ]
       }
     },
+    "/api/api-keys": {
+      "get": {
+        "operationId": "listKeys",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "createKey",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/grantable": {
+      "get": {
+        "operationId": "grantableCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
+    "/api/api-keys/{id}": {
+      "patch": {
+        "operationId": "updateKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateApiKeyBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      },
+      "delete": {
+        "operationId": "revokeKey",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "ApiKeyAdmin"
+        ]
+      }
+    },
     "/api/portal/config": {
       "get": {
         "operationId": "getPortalConfig",
@@ -3567,110 +3671,6 @@
         },
         "tags": [
           "Inference"
-        ]
-      }
-    },
-    "/api/api-keys": {
-      "get": {
-        "operationId": "listKeys",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      },
-      "post": {
-        "operationId": "createKey",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateApiKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      }
-    },
-    "/api/api-keys/grantable": {
-      "get": {
-        "operationId": "grantableCapabilities",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      }
-    },
-    "/api/api-keys/{id}": {
-      "patch": {
-        "operationId": "updateKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateApiKeyBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
-        ]
-      },
-      "delete": {
-        "operationId": "revokeKey",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "ApiKeyAdmin"
         ]
       }
     },
@@ -7653,6 +7653,56 @@
         },
         "required": [
           "allowErrorMonitoring"
+        ],
+        "additionalProperties": false
+      },
+      "CreateApiKeyBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "capability": {
+            "default": "write",
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "full"
+            ]
+          },
+          "scope": {
+            "default": "mcp",
+            "type": "string",
+            "enum": [
+              "mcp",
+              "inference"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "capability",
+          "scope"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateApiKeyBody": {
+        "type": "object",
+        "properties": {
+          "capability": {
+            "type": "string",
+            "enum": [
+              "read",
+              "write",
+              "full"
+            ]
+          }
+        },
+        "required": [
+          "capability"
         ],
         "additionalProperties": false
       },
@@ -13003,56 +13053,6 @@
         },
         "required": [
           "phase"
-        ],
-        "additionalProperties": false
-      },
-      "CreateApiKeyBody": {
-        "type": "object",
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 100
-          },
-          "capability": {
-            "default": "write",
-            "type": "string",
-            "enum": [
-              "read",
-              "write",
-              "full"
-            ]
-          },
-          "scope": {
-            "default": "mcp",
-            "type": "string",
-            "enum": [
-              "mcp",
-              "inference"
-            ]
-          }
-        },
-        "required": [
-          "name",
-          "capability",
-          "scope"
-        ],
-        "additionalProperties": false
-      },
-      "UpdateApiKeyBody": {
-        "type": "object",
-        "properties": {
-          "capability": {
-            "type": "string",
-            "enum": [
-              "read",
-              "write",
-              "full"
-            ]
-          }
-        },
-        "required": [
-          "capability"
         ],
         "additionalProperties": false
       },
