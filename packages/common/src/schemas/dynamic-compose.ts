@@ -571,6 +571,14 @@ const serviceSchemaV2Object = z.object({
            */
           requiresPosixPermissions: z.boolean().optional(),
           shared: z.boolean().optional(),
+          /**
+           * A bind mount only the app's own root-running service writes, holding material other
+           * local accounts must not read — Memory's generated secrets. The Hub creates it 0700 and
+           * keeps it out of the a+rwx sweep it applies to the rest of the app's data
+           * (AppFilesManager.setAppDataDirPermissions). A service running as a non-root user can
+           * still bind-mount a subdirectory its root sibling created inside it: bind mounts do not
+           * need traversal permission on the host's ancestors.
+           */
           private: z.boolean().optional(),
           bind: z
             .object({
