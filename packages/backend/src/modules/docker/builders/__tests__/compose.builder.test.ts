@@ -303,6 +303,27 @@ describe('DockerComposeBuilder', () => {
       await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
     });
 
+    // `network_mode: <name>` joins that network. The edge network holds the two hops Traefik trusts
+    // to vouch for a client's address, so an app there could choose the address it appears as.
+    it('refuses a network mode that names a Hub network, even for an app with the host-network grant', async () => {
+      const homeAssistantUrn = createAppUrn('home-assistant', CI_MARKETPLACE_STORE_SLUG);
+      for (const [appUrn, networkMode] of [
+        [urn, 'ci-hub_edge'],
+        [urn, 'ci-hub_internal'],
+        [homeAssistantUrn, 'ci-hub_edge'],
+      ] as const) {
+        const service: ServiceInput = { name: 'svc', image: 'image', internalPort: 80, networkMode };
+        const refusal = composeBuilder.getDockerCompose([service], {}, appUrn, subnet);
+        await expect(refusal).rejects.toThrow('CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED');
+        // Not grantable, so the operator is not sent to the allowlist.
+        await expect(refusal).rejects.not.toThrow(/TRUSTED_APP_SECURITY_ALLOWLIST/);
+      }
+
+      const sidecar: ServiceInput = { name: 'sidecar', image: 'image', networkMode: 'service:svc' };
+      const main: ServiceInput = { name: 'svc', image: 'image', internalPort: 80, isMain: true };
+      await expect(composeBuilder.getDockerCompose([main, sidecar], {}, urn, subnet)).resolves.toContain('network_mode: service:svc');
+    });
+
     it('still allows a legitimate named volume', async () => {
       const service: ServiceInput = {
         name: 'svc',
@@ -721,7 +742,9 @@ describe('DockerComposeBuilder', () => {
       );
 
       expect(loopback.services.service.labels).toEqual(plain.services.service.labels);
-      expect(loopback.services.service.labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe('ci-hub@file');
+      expect(loopback.services.service.labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe(
+        'ci-hub-edge-headers@file,ci-hub@file',
+      );
     });
 
     it('binds every interface when the option is absent, as it always has', async () => {
@@ -851,7 +874,9 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
     expect(labels['traefik.http.middlewares.nginx-store-id-public-host.headers.customrequestheaders.X-Forwarded-Host']).toBe(
       'myapp-dev1-org.example.com',
     );
-    expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe('ci-hub@file,nginx-store-id-public-host@docker');
+    expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker',
+    );
   });
 
   describe('the Hub login on an open-port route', () => {
@@ -880,19 +905,28 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
     it('requires it when the form never decided', async () => {
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true });
 
-      expect(middlewares).toEqual(['ci-hub@file,nginx-store-id-public-host@docker', 'ci-hub@file,nginx-store-id-public-host@docker']);
+      expect(middlewares).toEqual([
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker',
+        'ci-hub-edge-headers@file,ci-hub@file,nginx-store-id-public-host@docker',
+      ]);
     });
 
     it('leaves it off when the operator turned it off', async () => {
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: true, enableAuth: false });
 
-      expect(middlewares).toEqual(['nginx-store-id-public-host@docker', 'nginx-store-id-public-host@docker']);
+      expect(middlewares).toEqual([
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
+      ]);
     });
 
     it('does not change a route that served without a host port before', async () => {
       const middlewares = await routeMiddlewares({ exposureMode: 'cloudflare', openPort: false });
 
-      expect(middlewares).toEqual(['nginx-store-id-public-host@docker', 'nginx-store-id-public-host@docker']);
+      expect(middlewares).toEqual([
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
+        'ci-hub-edge-headers@file,nginx-store-id-public-host@docker',
+      ]);
     });
   });
 

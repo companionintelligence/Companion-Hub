@@ -22,6 +22,7 @@ import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
 import { APP_SESSION_KEY_PREFIX, SESSION_KEY_PREFIX } from './modules/auth/session.manager';
 import { fillEdgeHopAddresses } from './modules/network/edge-hops';
+import { TRAEFIK_CONTAINER_NAME } from './modules/network/network-constants';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -313,24 +314,35 @@ export class AppService implements OnApplicationShutdown {
       // Ensure config directory exists
       await this.filesystem.createDirectory(traefikConfigDest);
 
-      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
-        // Prefer operator email; avoid example.com (LetsEncrypt rejects it). localhost is for local ACME only.
-        let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@localhost');
-        // The edge hops Traefik trusts forwarded headers from: the same
-        // HUB_EDGE_CLOUDFLARED_IP / HUB_EDGE_TAILSCALE_IP the compose file pins
-        // those containers to, so the two cannot disagree. By address, never
-        // the edge subnet, whose gateway is how the host reaches Traefik. See
-        // `resolveEdgeHops` and ProxyTrustService.
-        next = fillEdgeHopAddresses(next);
-        // SECURITY: the Traefik dashboard/API is shipped fail-closed (`insecure: false`
-        // in assets/traefik/traefik.yml). Only opt back into the unauthenticated
-        // dashboard for explicit local development — never in production/staging/test,
-        // where the prod compose publishes :8080 to the host.
-        if (process.env.NODE_ENV === 'development') {
-          next = next.replace(/^(\s*)insecure:\s*false\s*$/m, '$1insecure: true');
-        }
-        return next;
-      });
+      const staticConfig = await this.copyTraefikConfigFile(
+        path.join(assetsTraefikDir, 'traefik.yml'),
+        path.join(traefikConfigDest, 'traefik.yml'),
+        (content) => {
+          // Prefer operator email; avoid example.com (LetsEncrypt rejects it). localhost is for local ACME only.
+          let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@localhost');
+          // The edge hops Traefik trusts forwarded headers from: the same
+          // HUB_EDGE_CLOUDFLARED_IP / HUB_EDGE_TAILSCALE_IP the compose file pins
+          // those containers to, so the two cannot disagree. By address, never
+          // the edge subnet, whose gateway is how the host reaches Traefik. See
+          // `resolveEdgeHops` and ProxyTrustService.
+          next = fillEdgeHopAddresses(next);
+          // SECURITY: the Traefik dashboard/API is shipped fail-closed (`insecure: false`
+          // in assets/traefik/traefik.yml). Only opt back into the unauthenticated
+          // dashboard for explicit local development — never in production/staging/test,
+          // where the prod compose publishes :8080 to the host.
+          if (process.env.NODE_ENV === 'development') {
+            next = next.replace(/^(\s*)insecure:\s*false\s*$/m, '$1insecure: true');
+          }
+          return next;
+        },
+      );
+      // Traefik reads traefik.yml only when it starts, and on an upgrade it has usually started
+      // already, from the file the previous Hub wrote: compose recreates it as soon as this
+      // container has started, well before bootstrap reaches here. Without this, a change here (the
+      // edge hops' `trustedIPs`, say) waited for Traefik's next restart for some other reason.
+      if (staticConfig === 'replaced') {
+        await this.restartTraefikForStaticConfig();
+      }
 
       // Copy dynamic config
       const dynamicDestDir = path.join(dataDir, 'state', 'traefik', 'dynamic');
@@ -375,27 +387,41 @@ export class AppService implements OnApplicationShutdown {
     }
   }
 
-  private async copyTraefikConfigFile(src: string, dest: string, transform?: (content: string) => string): Promise<void> {
+  /**
+   * Writes `dest` from the asset at `src`. Returns `replaced` when a previous file with different
+   * content was overwritten, `unchanged` when it already matched, `created` when there was no file
+   * before, and `failed` when nothing was written.
+   */
+  private async copyTraefikConfigFile(
+    src: string,
+    dest: string,
+    transform?: (content: string) => string,
+  ): Promise<'created' | 'replaced' | 'unchanged' | 'failed'> {
     const fileName = path.basename(dest);
 
     if (!(await this.filesystem.pathExists(src))) {
       this.logger.warn(`Traefik config file not found at ${src}`);
-      return;
+      return 'failed';
     }
 
-    if ((await this.filesystem.pathExists(dest)) && (await this.filesystem.isDirectory(dest))) {
-      this.logger.warn(`Traefik config destination is a directory, removing it before rewriting ${fileName}: ${dest}`);
-      const removed = await this.filesystem.removeDirectory(dest);
-      if (!removed) {
-        this.logger.warn(`Failed to remove directory at Traefik config destination ${dest}. ${fileName} was not restored.`);
-        return;
+    let previous: string | null = null;
+    if (await this.filesystem.pathExists(dest)) {
+      if (await this.filesystem.isDirectory(dest)) {
+        this.logger.warn(`Traefik config destination is a directory, removing it before rewriting ${fileName}: ${dest}`);
+        const removed = await this.filesystem.removeDirectory(dest);
+        if (!removed) {
+          this.logger.warn(`Failed to remove directory at Traefik config destination ${dest}. ${fileName} was not restored.`);
+          return 'failed';
+        }
+      } else {
+        previous = await this.filesystem.readTextFile(dest);
       }
     }
 
     const rawContent = await this.filesystem.readTextFile(src);
     if (rawContent == null) {
       this.logger.warn(`Failed to read Traefik config source file at ${src}`);
-      return;
+      return 'failed';
     }
 
     const content = transform ? transform(rawContent) : rawContent;
@@ -403,10 +429,39 @@ export class AppService implements OnApplicationShutdown {
 
     if (wrote) {
       this.logger.info(`Copied ${fileName}`);
-      return;
+      if (previous == null) {
+        return 'created';
+      }
+      // Trailing whitespace aside: the write appends a newline, and the CLI seeds the file without one.
+      return previous.trimEnd() === content.trimEnd() ? 'unchanged' : 'replaced';
     }
 
     this.logger.warn(`Failed to copy ${fileName} to ${dest}`);
+    return 'failed';
+  }
+
+  /**
+   * Restarts a running Traefik so it reads the traefik.yml just written. Only after a real change,
+   * so an ordinary boot leaves it alone. A Traefik that is not running reads the new file when it
+   * starts, and one that cannot be restarted keeps its old static config until it next restarts,
+   * which is what always happened before; neither stops the boot.
+   */
+  private async restartTraefikForStaticConfig(): Promise<void> {
+    try {
+      const traefik = this.docker.getContainer(TRAEFIK_CONTAINER_NAME);
+      const info = await traefik.inspect();
+      if (!info?.State?.Running) {
+        this.logger.debug('traefik.yml changed and Traefik is not running; it reads the new file when it starts');
+        return;
+      }
+      this.logger.info('traefik.yml changed; restarting Traefik, which reads it only at startup');
+      await traefik.restart();
+    } catch (error) {
+      this.logger.warn(
+        `Could not restart Traefik after rewriting traefik.yml: ${error instanceof Error ? error.message : String(error)}. ` +
+          'It keeps its previous static config until it next restarts.',
+      );
+    }
   }
 
   /**

@@ -230,6 +230,10 @@ services:
       # from. Must match the cloudflared and hub-tailscale addresses below.
       HUB_EDGE_CLOUDFLARED_IP: ${HUB_EDGE_CLOUDFLARED_IP:-10.128.0.3}
       HUB_EDGE_TAILSCALE_IP: ${HUB_EDGE_TAILSCALE_IP:-10.128.0.4}
+      # Traefik's own edge address, for the Hub to attach a Traefik created
+      # before the edge network existed when it starts cloudflared (which is on
+      # the edge network only). Must match the traefik address below.
+      HUB_EDGE_TRAEFIK_IP: ${HUB_EDGE_TRAEFIK_IP:-10.128.0.2}
       # `tailscale serve` upstream for the sidecar: Traefik's fixed edge
       # address rather than the name `traefik`, which the sidecar (on three
       # networks) could resolve to an address Traefik does not trust. Must
@@ -296,7 +300,9 @@ services:
       # Docker provider choose an arbitrary network/first exposed port.
       traefik.docker.network: "ci-hub_network"
       traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-hub:5002/api/auth/traefik"
-      traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "true"
+      # false: decide from the request the router matched, never from forwarded
+      # headers that arrived with it (see assets/traefik/dynamic/dynamic.yml).
+      traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "false"
       # All three signed identity headers must ride through — Traefik copies ONLY the headers
       # listed here onto the forwarded request, and consumers verifying the signature fail
       # closed on a missing timestamp/signature (CI-Engineering#74).
@@ -345,7 +351,14 @@ services:
           create_host_path: false
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
+      # The gateway network, as it was before the edge network existed: the
+      # edge sorts first by name and would otherwise take the default route, so
+      # Traefik's own connections to the host (a port-expose app's
+      # host.docker.internal upstream) would leave from 10.128.0.2 — outside
+      # the 172.16.0.0/12 that fleet ufw rules admit from Docker bridges.
+      # `gw_priority` needs Compose 2.33+ and Engine 28+; Docker 29 ships both.
       ci_hub_network:
+        gw_priority: 1
       ci_os_hub_network:
       # Fixed address on the edge network, where cloudflared and the Tailscale
       # sidecar reach it by this address alone. See `ci_hub_edge` below.
@@ -440,7 +453,9 @@ services:
     volumes:
       - hub_tailscale_state:/var/lib/tailscale
     networks:
+      # The gateway network, as for traefik: not the edge, which sorts first.
       ci_hub_network:
+        gw_priority: 1
       ci_os_hub_network:
       # Fixed address on the edge network: `tailscale serve` is pointed at
       # Traefik's edge address (TAILSCALE_SERVE_UPSTREAM on the ci-hub service),
@@ -478,21 +493,32 @@ networks:
   # fixed addresses. That is what lets Traefik trust the client address those
   # two forward (traefik.yml `forwardedHeaders.trustedIPs`) while stripping it
   # from everything else, and what lets the Hub and each app trust Traefik's
-  # hop in turn (ProxyTrustService). Apps never join it. Trust is by those two
-  # addresses, never the subnet: this network sorts first among Traefik's, so
-  # Docker makes it Traefik's gateway network and publishes Traefik's ports
-  # here, and anything reaching those ports through the host (docker-proxy,
-  # or another container via the host's address) arrives from its .1 gateway.
+  # hop in turn (ProxyTrustService). Trust is by those two addresses, never
+  # the subnet: its .1 is the bridge gateway, the host's own address on it, so
+  # anything the host sends or routes onto the bridge arrives from there.
+  #
+  # Nothing may join it at an address Docker picks. `ip_range` is the pool
+  # Docker allocates from, and this one holds only the network address and the
+  # gateway, so every member needs a fixed address outside it and anything
+  # else — a container started with `--network ci-hub_edge`, or an app whose
+  # `network_mode` names this network (which the Hub also refuses) — fails to
+  # start with "no available IPv4 addresses" instead of taking a hop's address.
+  # Measured on Docker 29.8: fixed members start; a dynamic one is refused.
+  #
   # The subnet is inside the 10.128.0.0–10.128.9.0 range reserved for Hub
   # infrastructure, so the app allocator never hands it out; override
-  # HUB_EDGE_SUBNET and the three HUB_EDGE_*_IP values together if it collides
-  # with something on your LAN.
+  # HUB_EDGE_SUBNET, HUB_EDGE_IP_RANGE and the three HUB_EDGE_*_IP values
+  # together if it collides with something on your LAN. Compose recreates the
+  # network when these change, but reconnects running members WITHOUT their
+  # fixed addresses (Compose 5.5.1), so they then fail to start: follow such a
+  # change with `up -d --force-recreate traefik cloudflared hub-tailscale`.
   ci_hub_edge:
     driver: bridge
     name: ci-hub_edge
     ipam:
       config:
         - subnet: ${HUB_EDGE_SUBNET:-10.128.0.0/29}
+          ip_range: ${HUB_EDGE_IP_RANGE:-10.128.0.0/31}
   # Keep the retired network so already-installed apps stay attached and can
   # still resolve the Hub via the ci-os-hub alias on this network.
   ci_os_hub_network:

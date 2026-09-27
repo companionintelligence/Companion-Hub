@@ -105,6 +105,12 @@ describe('CloudflareClientService', () => {
         profile: 'cloudflare',
         forceRecreate: true,
       });
+      // cloudflared is on the edge network only, which compose may just have created for it
+      // alone: a Traefik from before it is attached after, or `traefik:80` does not resolve.
+      expect(dockerService.ensureTraefikOnEdgeNetwork).toHaveBeenCalledTimes(1);
+      expect(dockerService.ensureTraefikOnEdgeNetwork.mock.invocationCallOrder[0]).toBeGreaterThan(
+        dockerService.ensureContainerRunning.mock.invocationCallOrder[0] as number,
+      );
       expect(result).toEqual({ tunnelId: 'tun-id', token: 'tok' });
     });
 
@@ -633,6 +639,7 @@ describe('CloudflareClientService', () => {
         profile: 'cloudflare',
         forceRecreate: false,
       });
+      expect(dockerService.ensureTraefikOnEdgeNetwork).toHaveBeenCalledTimes(1);
       expect(dockerService.restartContainer).not.toHaveBeenCalled();
     });
 

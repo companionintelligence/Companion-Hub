@@ -338,6 +338,31 @@ function normalizeSecurityOpt(opt: string): string {
 const CONFINEMENT_DISABLING_SECURITY_OPTS = [/^apparmor=unconfined$/, /^systempaths=unconfined$/, /^seccomp=/, /^label=/];
 
 /**
+ * Whether `networkMode` is one of the modes the compose spec defines.
+ *
+ * Anything else is not rejected by Compose: it is passed to the Engine as `NetworkMode`, and the
+ * Engine reads an unknown mode as a NETWORK NAME and attaches the container to that network. So
+ * `networkMode: ci-hub_edge` put an app on the edge network, beside cloudflared and the Tailscale
+ * sidecar, whose addresses Traefik and the Hub trust to vouch for a client's address; and
+ * `ci-hub_internal` would put it beside Postgres and RabbitMQ (#1597). Reproduced on Docker 29.8 /
+ * Compose 5.5.1: the service came up on the named network at its lowest free address.
+ *
+ * An allow-list, because the networks worth refusing are named by the operator's stack and by
+ * every other installed app, and cannot be listed here. `host` and `container:<name>` are known
+ * modes, and are held to their grant separately.
+ */
+function isKnownNetworkMode(networkMode: string): boolean {
+  return (
+    networkMode === 'bridge' ||
+    networkMode === 'none' ||
+    networkMode === 'default' ||
+    networkMode === 'host' ||
+    /^service:\S+$/.test(networkMode) ||
+    /^container:\S+$/.test(networkMode)
+  );
+}
+
+/**
  * Host devices no app may pass through without a grant.
  *
  * Deliberately narrower than the host-path reject-list. `/dev` is on that list, but passing a single
@@ -388,6 +413,11 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
   // host namespace needs. (`service:<name>` stays inside the app's own project and is left alone.)
   if ((service.networkMode === 'host' || service.networkMode?.startsWith('container:')) && !grants?.networkModeHost) {
     violations.push({ path: ['networkMode'], message: 'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED' });
+  }
+  // Any other value names a network to join, and no grant permits that: see `isKnownNetworkMode`.
+  // An empty value is no value: the compose builder ignores it.
+  if (service.networkMode && !isKnownNetworkMode(service.networkMode)) {
+    violations.push({ path: ['networkMode'], message: 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED', hostPath: service.networkMode });
   }
   if ((service.pid === 'host' || service.pid?.startsWith('container:')) && !grants?.pidHost) {
     violations.push({ path: ['pid'], message: 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED' });

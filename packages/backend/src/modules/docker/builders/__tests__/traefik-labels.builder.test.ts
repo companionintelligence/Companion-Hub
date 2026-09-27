@@ -19,8 +19,8 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
     // The `web` entrypoint is the one the Cloudflare tunnel connects to. Leaving it unguarded
     // let every remote request reach the app unauthenticated while the TLS entrypoint — the
     // one an operator would curl from the appliance — looked correctly gated.
-    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares']).toBe('ci-hub@file');
-    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBe('ci-hub@file');
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file');
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBe('ci-hub-edge-headers@file,ci-hub@file');
   });
 
   it('guards every router it creates, so no entrypoint is left open', () => {
@@ -34,15 +34,15 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
         .filter((name): name is string => Boolean(name)),
     );
     for (const router of routers) {
-      expect(labels[`traefik.http.routers.${router}.middlewares`], `router ${router} is unguarded`).toBe('ci-hub@file');
+      expect(labels[`traefik.http.routers.${router}.middlewares`], `router ${router} is unguarded`).toBe('ci-hub-edge-headers@file,ci-hub@file');
     }
   });
 
-  it('attaches no middleware to either router when auth is disabled', () => {
+  it('attaches no login to either router when auth is disabled, only the edge-header strip', () => {
     const labels = build({ enableAuth: false });
 
-    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBeUndefined();
-    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares']).toBeUndefined();
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBe('ci-hub-edge-headers@file');
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares']).toBe('ci-hub-edge-headers@file');
   });
 
   it('forwards public host headers to the app after edge auth', () => {
@@ -53,17 +53,23 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
     );
     expect(labels['traefik.http.middlewares.ci-planning-ci-marketplace-public-host.headers.customrequestheaders.X-Forwarded-Proto']).toBe('https');
     expect(labels['traefik.http.middlewares.ci-planning-ci-marketplace-public-host.headers.customrequestheaders.X-Forwarded-Port']).toBe('443');
-    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBe('ci-hub@file,ci-planning-ci-marketplace-public-host@docker');
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker',
+    );
     expect(labels['traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares']).toBe(
-      'ci-hub@file,ci-planning-ci-marketplace-public-host@docker',
+      'ci-hub-edge-headers@file,ci-hub@file,ci-planning-ci-marketplace-public-host@docker',
     );
   });
 
   it('still forwards public host headers when app-level auth is disabled', () => {
     const labels = build({ enableAuth: false, cloudflarePublicHostname: 'ci-planning-core-2.example.com' });
 
-    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBe('ci-planning-ci-marketplace-public-host@docker');
-    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares']).toBe('ci-planning-ci-marketplace-public-host@docker');
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-planning-ci-marketplace-public-host@docker',
+    );
+    expect(labels['traefik.http.routers.ci-planning-ci-marketplace-insecure.middlewares']).toBe(
+      'ci-hub-edge-headers@file,ci-planning-ci-marketplace-public-host@docker',
+    );
   });
 
   it('creates no routers at all outside cloudflare exposure', () => {

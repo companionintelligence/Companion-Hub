@@ -25,17 +25,26 @@ providers:
 # stripped and is named as the client itself, so nothing else can choose the
 # address it appears as.
 #
-# By address, NOT the edge subnet: the subnet's gateway (.1) is where every
-# connection that reaches Traefik through the host comes from (the edge network
-# is Traefik's gateway network, so its published ports live there), including
-# any app container dialling host.docker.internal:80. See `resolveEdgeHops`.
+# By address, NOT the edge subnet: the subnet's gateway (.1) is the host's own
+# address on the bridge, so anything the host sends or routes onto it arrives
+# from there — every connection to Traefik's published ports, whenever the edge
+# is Traefik's gateway network, including an app dialling
+# host.docker.internal:80. See `resolveEdgeHops`.
 #
 # The values are the compose defaults, real addresses rather than placeholders
 # because the CLI and the desktop app seed this file with nothing but the ACME
 # email filled in, and Traefik will not start on an entry that is not an
-# address. The Hub rewrites
-# each tagged line from HUB_EDGE_CLOUDFLARED_IP / HUB_EDGE_TAILSCALE_IP at
-# config-copy time (AppService.copyAssets). Keep the `# edge hop:` tags.
+# address. The Hub rewrites each tagged line from HUB_EDGE_CLOUDFLARED_IP /
+# HUB_EDGE_TAILSCALE_IP at config-copy time (AppService.copyAssets), and
+# restarts Traefik when that changes the file, since Traefik reads this file
+# only at startup. Keep the `# edge hop:` tags.
+#
+# Trusting a hop keeps EVERY forwarded header it sends, and Traefik fills in
+# only those left empty. Cloudflare rewrites X-Forwarded-For and
+# X-Forwarded-Proto but passes the visitor's own X-Real-Ip, X-Forwarded-Uri
+# and the like through, so tunnel routes strip those first
+# (`ci-hub-edge-headers` in dynamic/dynamic.yml), and the Hub's forward auth
+# reads the request the router matched, not the forwarded headers.
 entryPoints:
   web:
     address: ":80"

@@ -15,6 +15,9 @@ interface TraefikLabelsArgs {
   httpsBackend?: boolean;
 }
 
+/** The file-provider middleware that strips visitor-set forwarded headers from tunnel requests. */
+export const EDGE_HEADERS_MIDDLEWARE = 'ci-hub-edge-headers@file';
+
 export class TraefikLabelsBuilder {
   private labels: Record<string, string | boolean> = {};
   private effectiveMode: ExposureMode;
@@ -42,7 +45,10 @@ export class TraefikLabelsBuilder {
 
     const hostRule = `Host(\`${this.params.cloudflareOriginHostname}\`)`;
     const publicHostMiddleware = `${this.params.appId}-${this.params.storeId}-public-host`;
-    const middlewares: string[] = [];
+    // First, auth or not: drops the forwarded headers a tunnel visitor can set and no edge hop
+    // replaces (X-Real-Ip and the rest), which Traefik keeps because it trusts cloudflared's
+    // forwarded headers. See `ci-hub-edge-headers` in assets/traefik/dynamic/dynamic.yml.
+    const middlewares: string[] = [EDGE_HEADERS_MIDDLEWARE];
 
     if (this.params.enableAuth) {
       // BOTH routers, not just the TLS one. The `-insecure` router below serves the same host
