@@ -63,9 +63,7 @@ describe('AppContainerOriginGuard', () => {
   });
 
   it('admits a ci-mentra container for the ci-mentra slug, and refuses it for hermes-agent', async () => {
-    addresses.mockImplementation(async (names: readonly string[]) =>
-      names.includes('ci-mentra') ? new Set(['172.19.0.20']) : new Set<string>(),
-    );
+    addresses.mockImplementation(async (names: readonly string[]) => (names.includes('ci-mentra') ? new Set(['172.19.0.20']) : new Set<string>()));
     await expect(guard.canActivate(createContext({ ip: '172.19.0.20', params: { slug: 'ci-mentra' } }))).resolves.toBe(true);
     expect(addresses).toHaveBeenCalledWith(['ci-mentra', 'mentra']);
     await expect(guard.canActivate(createContext({ ip: '172.19.0.20', params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(
