@@ -1,12 +1,23 @@
 import { checkDnsAvailability as checkDnsAvailabilitySdk, getDiagnostics2, repair as repairPublicWebSdk } from '@/api-client/sdk.gen';
+import type { CheckDnsAvailabilityResponse } from '@/api-client/types.gen';
 import { sdkResult } from '@/lib/sdk-unwrap';
 
-/** Minimal Response shape for legacy DNS check callers. */
-function asResponse(result: { ok: boolean; status: number; data?: unknown }): Pick<Response, 'ok' | 'status' | 'json'> {
+/**
+ * Minimal Response shape for legacy DNS check callers.
+ *
+ * `json()` is typed from the API contract rather than `any`, so a form that keys
+ * on a field the Hub does not send fails to compile instead of never firing. The
+ * forms' `zone_unreachable` branch never fired while the Hub dropped Portal's
+ * `reason`, and nothing flagged it.
+ */
+export type DnsAvailabilityResponse = Pick<Response, 'ok' | 'status'> & { json: () => Promise<CheckDnsAvailabilityResponse> };
+
+function asResponse(result: { ok: boolean; status: number; data?: CheckDnsAvailabilityResponse }): DnsAvailabilityResponse {
   return {
     ok: result.ok,
     status: result.status,
-    json: async () => result.data,
+    // Callers read the body only when `ok`, which is when the client parsed one.
+    json: async () => result.data as CheckDnsAvailabilityResponse,
   };
 }
 

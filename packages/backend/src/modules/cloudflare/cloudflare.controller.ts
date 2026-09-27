@@ -4,6 +4,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { assertSafeOutboundUrl } from '@/common/helpers/ssrf-url';
 import { CloudflareClientService } from './cloudflare-client.service';
 import { CloudflareHostnameService } from './cloudflare-hostname.service';
+import type { DnsAvailability } from './dns-availability';
 import { ApiResponse } from '@nestjs/swagger';
 import axios from 'axios';
 import * as https from 'node:https';
@@ -26,7 +27,11 @@ export class CloudflareController {
 
   @Get('check-dns-availability')
   @ApiResponse({ type: Object })
-  async checkDnsAvailability(@Query('subdomain') subdomain: string, @Query('domain') domain?: string, @Query('appUrn') appUrn?: string) {
+  async checkDnsAvailability(
+    @Query('subdomain') subdomain: string,
+    @Query('domain') domain?: string,
+    @Query('appUrn') appUrn?: string,
+  ): Promise<DnsAvailability> {
     if (!subdomain) {
       return { available: true };
     }

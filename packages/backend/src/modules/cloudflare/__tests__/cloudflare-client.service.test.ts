@@ -420,6 +420,43 @@ describe('CloudflareClientService', () => {
       expect(result).toEqual({ available: true, message: 'ok' });
     });
 
+    /*
+     * CI-Portal#846 answers with a `reason`, and the install and port-expose forms
+     * (#1627) key on it: `zone_unreachable` is an error on the domain picker, not on
+     * the subdomain. Dropping it here left the forms telling the user to change a
+     * subdomain when no subdomain in that domain could ever work.
+     */
+    it.each([
+      ['zone_unreachable', "We can't serve any more apps from this domain. Pick another domain name to host this app."],
+      ['hostname_taken', 'DNS record already exists for n8n-core-2-acme.ci3.pw'],
+    ] as const)("hands on Portal's %s reason", async (reason, message) => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { available: false, reason, message } });
+
+      const result = await service.checkDnsAvailability('n8n', 'ci3.pw');
+
+      expect(result).toEqual({ available: false, reason, message });
+    });
+
+    it.each([
+      ['a reason this Hub does not know', 'quota_exceeded'],
+      ['a reason that is not a string', 42],
+      ['a reason in another case', 'ZONE_UNREACHABLE'],
+    ])('drops %s rather than forwarding it', async (_label, reason) => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { available: false, reason, message: 'not available' } });
+
+      const result = await service.checkDnsAvailability('n8n', 'ci3.pw');
+
+      expect(result).toEqual({ available: false, message: 'not available' });
+    });
+
+    it('carries no reason on an available answer', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { available: true, reason: 'zone_unreachable' } });
+
+      const result = await service.checkDnsAvailability('n8n', 'ci3.pw');
+
+      expect(result).toEqual({ available: true });
+    });
+
     it('should fail open when CI-Cloud availability check times out before a response', async () => {
       mockAxiosInstance.get.mockRejectedValue({
         code: 'ETIMEDOUT',
