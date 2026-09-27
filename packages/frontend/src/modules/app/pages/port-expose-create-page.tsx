@@ -88,7 +88,7 @@ export default function PortExposeCreatePage() {
     async (subdomain: string, selectedDomain?: string) =>
       fetchDnsAvailability(subdomain, {
         domain: selectedDomain,
-      }) as Promise<Response>,
+      }),
     [],
   );
 

@@ -2246,6 +2246,12 @@ export type AvailableCustomDomainsResponseDto = {
     }>;
 };
 
+export type DnsAvailabilityResponseDto = {
+    available: boolean;
+    reason?: 'zone_unreachable' | 'hostname_taken';
+    message?: string;
+};
+
 export type FeaturedStoreBundleDto = {
     firstParty: Array<unknown>;
     featured: Array<unknown>;
@@ -2733,9 +2739,7 @@ export type CheckDnsAvailabilityData = {
 };
 
 export type CheckDnsAvailabilityResponses = {
-    default: {
-        [key: string]: unknown;
-    };
+    default: DnsAvailabilityResponseDto;
 };
 
 export type CheckDnsAvailabilityResponse = CheckDnsAvailabilityResponses[keyof CheckDnsAvailabilityResponses];

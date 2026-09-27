@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import type { FieldValues, Path, UseFormClearErrors, UseFormSetError } from 'react-hook-form';
+import type { DnsAvailabilityResponse } from '@/lib/cloudflare-api';
 
 interface UseDnsAvailabilityParams<TFormValues extends FieldValues> {
   enabled: boolean;
   subdomain: string;
   selectedDomain?: string;
-  checkDnsAvailability: (subdomain: string, selectedDomain?: string) => Promise<Response>;
+  checkDnsAvailability: (subdomain: string, selectedDomain?: string) => Promise<DnsAvailabilityResponse>;
   setError: UseFormSetError<TFormValues>;
   clearErrors: UseFormClearErrors<TFormValues>;
   t: (key: string, params?: Record<string, unknown>) => string;
