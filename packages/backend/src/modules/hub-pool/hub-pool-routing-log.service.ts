@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { PoolPinMode, PoolPinScope, PoolPinTargetKind } from '@/common/helpers/hub-pool';
+import type { PoolRequestErrorSignature } from './hub-pool-request-error';
 
 /**
  * The default ring size, and the default page `GET routing-log` returns when no `limit` is given.
@@ -157,6 +158,17 @@ export interface PoolRoutingRecord {
    * the first. `node` now names the candidate that was still working — this says why it stopped.
    */
   clientClosed: boolean;
+  /**
+   * Why the walk stopped at a candidate that answered with an error: its body proved the REQUEST
+   * was bad, so the caller got that answer instead of the next candidate getting the request. `null`
+   * on every other row, including a 4xx passed through on its status alone, as it always was.
+   *
+   * The row is `failed` with the engine's status and the node that said it, which on its own reads
+   * like that node failing. core-2, 2026-09-26: one turn with no user message was walked across nine
+   * nodes for 307 s, because each one's `500 no user query found in messages` was taken for the node
+   * breaking. This says which it was. Always `null` on `inbound` rows: the walk is the entry node's.
+   */
+  requestError: PoolRoutingRequestError | null;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
   /**
@@ -209,8 +221,24 @@ export interface PoolRoutingPin {
  * given; the request-shape fields default to `null`, so a path that has no body to describe (a
  * refusal, an unresolvable alias) does not have to invent one.
  */
-export type PoolRoutingRecordInput = Omit<PoolRoutingRecord, 'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed'> &
-  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed'>>;
+export type PoolRoutingRecordInput = Omit<
+  PoolRoutingRecord,
+  'id' | 'updatedAt' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError'
+> &
+  Partial<Pick<PoolRoutingRecord, 'id' | 'stream' | 'bodyBytes' | 'budgetMs' | 'clientClosed' | 'requestError'>>;
+
+/** The request-error half of a routing decision. A label for the engine's message, never the message: some quote the prompt. */
+export interface PoolRoutingRequestError {
+  signature: PoolRequestErrorSignature;
+  /**
+   * `definitive`: returned from the first candidate that said it, because no node could have
+   * answered the request otherwise. `confirmed`: a verdict one candidate could not vouch for,
+   * returned once a second candidate answered the same.
+   */
+  basis: 'definitive' | 'confirmed';
+  /** For `confirmed`, the node whose answer this one agreed with (`'local'` for this node); `null` for `definitive`. */
+  confirms: string | null;
+}
 
 /** The prompt-ceiling half of a routing decision. Sizes and node names only — never any of the prompt it measured. */
 export interface PoolRoutingPromptCeiling {
@@ -356,6 +384,12 @@ export interface PoolRoutingSummary {
    * patience against this fleet's prefill, not a pool that cannot place work.
    */
   clientClosed: number;
+  /**
+   * The subset of `failed` an engine refused as a bad request — see `PoolRoutingRecord.requestError`.
+   * Inside `failed` and beside it, for `clientClosed`'s reason: "3 failed" reads as a pool that cannot
+   * place work, when these are an app sending something no node will run.
+   */
+  requestErrors: number;
   /** Placed on a candidate and still waiting for its first byte. */
   pending: number;
   /** Records with a non-empty `failedOverFrom`, i.e. requests that a candidate rejected before one answered. */
@@ -442,6 +476,8 @@ export class HubPoolRoutingLogService {
       // Defaulted rather than required of every caller: a request ends this way at exactly one
       // place in the proxy, and the other dozen record sites should not have to say "not that".
       clientClosed: false,
+      // Likewise: set only where the proxy settles a row on an engine's verdict about the request.
+      requestError: null,
       ...entry,
       id: entry.id ?? randomUUID(),
       updatedAt: new Date().toISOString(),
@@ -528,11 +564,13 @@ export class HubPoolRoutingLogService {
     let pending = 0;
     let failovers = 0;
     let clientClosed = 0;
+    let requestErrors = 0;
     for (const entry of this.entries) {
       if (entry.outcome === 'served') served += 1;
       if (entry.outcome === 'pending') pending += 1;
       if (entry.failedOverFrom.length > 0) failovers += 1;
       if (entry.clientClosed) clientClosed += 1;
+      if (entry.requestError) requestErrors += 1;
     }
     return {
       recorded: this.entries.length,
@@ -540,6 +578,7 @@ export class HubPoolRoutingLogService {
       served,
       failed: this.entries.length - served - pending,
       clientClosed,
+      requestErrors,
       pending,
       failovers,
       lastAt: this.entries[this.entries.length - 1]?.at ?? null,
