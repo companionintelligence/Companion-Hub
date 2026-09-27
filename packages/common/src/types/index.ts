@@ -19,15 +19,13 @@ export {
   type RegistrationPhaseReport,
   type RegistrationStatus,
 };
-export type {
-  AvailableDomain,
-  AvailableDomainsResponse,
-} from './domains.js';
+export type { AvailableDomain, AvailableDomainsResponse } from './domains.js';
+// biome-ignore lint/performance/noBarrelFile: install and port-expose pickers filter through @ci-hub/common/types
+export { selectOfferedDomains } from './domains.js';
 export type { PublicWebIdentity, BuildOriginServerNameInput, BuildPublicWebIdentityInput } from '../public-web/identity.js';
 export type { AvailableCustomDomain, TunnelCustomDomain, ParsedTunnelCustomDomains } from '../public-web/custom-domains.js';
 export type { AppExposureFields, AppExposureMode } from '../public-web/exposure.js';
 export type { BuildTailscalePortUrlInput, BuildTailscaleWebIdentityInput, TailscaleWebIdentity } from '../tailscale/identity.js';
-// biome-ignore lint/performance/noBarrelFile: Re-export public-web helpers through @ci-hub/common/types
 export {
   buildPublicWebIdentity,
   buildFqdnSubdomain,
