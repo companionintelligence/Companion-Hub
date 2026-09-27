@@ -2229,6 +2229,7 @@ export type AvailableDomainsResponseDto = {
         domain: string;
         isDefault: boolean;
         scope?: string;
+        offered?: boolean;
     }>;
 };
 

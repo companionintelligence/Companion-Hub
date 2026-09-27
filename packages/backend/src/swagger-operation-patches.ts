@@ -17,6 +17,7 @@ const availableDomainSchema = z.object({
   domain: z.string(),
   isDefault: z.boolean(),
   scope: z.string().optional(),
+  offered: z.boolean().optional(),
 });
 
 export const availableDomainsResponseSchema = z.object({
