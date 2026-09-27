@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PORTAL_REJECTION_CONFIRM_MS, RegistrationService } from '../registration.service';
+import { PORTAL_REJECTION_CONFIRM_MS, PUBLIC_UNREACHABLE_CONFIRM_MS, RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
@@ -610,27 +610,85 @@ describe('RegistrationService', () => {
       expect(status.registered).toBe(true);
     });
 
-    it("reaches publicly_ready during registration when only the zone's nameservers have the re-created name yet", async () => {
-      // A re-pair re-creates a hostname the release deleted minutes earlier; this host's resolver
-      // chain still answers NXDOMAIN for it for the zone's negative TTL, 30 minutes on ci.computer.
-      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
-      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-new' } as any);
-      cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
-      configService.setDomain.mockResolvedValue(undefined);
-      mockedProbe.mockResolvedValue({ reachable: true, via: 'zone_nameservers', status: 200 });
-      await service.setPhase('paired');
-
-      await (service as any).setupOrganizationInfrastructure('org-new', {
+    describe('the registration probe', () => {
+      const activation = {
         organization_name: 'New Org',
         tunnel_id: 't1',
         tunnel_token: 'tok1',
         subdomain: 'hub-core-2-demopool1',
         slug: 'demopool1',
         domain: 'ci.computer',
+      };
+
+      beforeEach(async () => {
+        deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-new' } as any);
+        cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+        configService.setDomain.mockResolvedValue(undefined);
+        await service.setPhase('paired');
       });
 
-      expect(mockedProbe).toHaveBeenCalledWith('hub-core-2-demopool1.ci.computer', { timeoutMs: 2_000 });
-      expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      it("promotes on the shared probe's 2xx, asked with the registration's per-step budget", async () => {
+        // Which resolver the probe went through is its own business, tested with the production
+        // wiring in public-reachability.test.ts; here it only has to be the probe, with 2 s steps.
+        mockedProbe.mockResolvedValue({ reachable: true, via: 'zone_nameservers', status: 200 });
+
+        await (service as any).setupOrganizationInfrastructure('org-new', activation);
+
+        expect(mockedProbe).toHaveBeenCalledWith('hub-core-2-demopool1.ci.computer', { timeoutMs: 2_000 });
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      });
+
+      it('does not promote a Hub that turned degraded while the probe ran, which would erase the reason', async () => {
+        // `degraded` → `publicly_ready` is legal, so only this guard keeps three failed check-ins
+        // during the minute-long loop from being overwritten by its late success.
+        mockedProbe.mockImplementation(async () => {
+          await service.setPhase('degraded', ['cloud_validation_failed']);
+          return { reachable: true, via: 'system', status: 200 };
+        });
+
+        await (service as any).setupOrganizationInfrastructure('org-new', activation);
+
+        expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['cloud_validation_failed'], registered: true });
+      });
+
+      it('does not promote for a registration the Hub replaced while the probe ran', async () => {
+        mockedProbe.mockImplementation(async () => {
+          (service as any).registrationGeneration++;
+          return { reachable: true, via: 'system', status: 200 };
+        });
+
+        await (service as any).setupOrganizationInfrastructure('org-new', activation);
+
+        expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      });
+
+      it('gives up after a minute of wall-clock time, however long each attempt takes', async () => {
+        // An attempt that goes around a cached NXDOMAIN to a hung origin takes three 2 s steps, and
+        // `register` waits for this loop: sixty of those were six minutes, not one.
+        vi.useFakeTimers();
+        try {
+          mockedProbe.mockImplementation(async () => {
+            vi.setSystemTime(Date.now() + 6_000);
+            return { reachable: false, via: 'zone_nameservers', detail: 'no response within 2000 ms' };
+          });
+
+          let finished = false;
+          const setup = (service as any).setupOrganizationInfrastructure('org-new', activation).then(() => (finished = true));
+          for (let tick = 0; tick < 120 && !finished; tick++) {
+            await vi.advanceTimersByTimeAsync(1_000);
+          }
+          await setup;
+
+          expect(mockedProbe.mock.calls.length).toBeLessThanOrEqual(10);
+          expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+          expect(loggerService.warn).toHaveBeenCalledWith(
+            expect.stringContaining('Tunnel not yet reachable at https://hub-core-2-demopool1.ci.computer after 60s'),
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
 
     it('clears portal_rejected when a re-pair into the same organization lands, instead of waiting for the next check-in', async () => {
@@ -657,6 +715,36 @@ describe('RegistrationService', () => {
 
       expect(service.getRegistrationStatus()).toEqual({ phase: 'locally_ready', degradedReasons: [], registered: true });
       expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
+    });
+
+    it('probes the public URL after a re-pair into the same organization, which skips the registration loop', async () => {
+      // Without this, nothing probed until the next accepted check-in, up to 15 minutes later.
+      const row = {
+        id: 'org-existing',
+        slug: 'existing',
+        name: 'Existing Org',
+        tunnelId: 't-old',
+        tunnelToken: 'tok-old',
+        hubSubdomain: 'hub-core-2-demopool1',
+      } as any;
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'ci.computer' } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(row);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(row);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['portal_rejected']);
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
+
+      await (service as any).setupOrganizationInfrastructure('org-existing', {
+        organization_name: 'Existing Org',
+        tunnel_id: 't-new',
+        tunnel_token: 'tok-new',
+        subdomain: 'hub-core-2-demopool1',
+        slug: 'existing',
+      });
+
+      await vi.waitFor(() => expect(service.getRegistrationStatus().phase).toBe('publicly_ready'));
+      expect(mockedProbe).toHaveBeenCalledWith('hub-core-2-demopool1.ci.computer');
     });
 
     it("replaces the previous organization's row on a re-pair into another, so boot recovery cannot restore the old tunnel token", async () => {
@@ -2246,7 +2334,7 @@ describe('RegistrationService', () => {
 
       await vi.waitFor(() =>
         expect(loggerService.warn).toHaveBeenCalledWith(
-          expect.stringContaining(`${HUB_HOSTNAME} not yet reachable (resolved by this host's resolver; no response`),
+          expect.stringContaining(`${HUB_HOSTNAME} not yet reachable (through this host's resolver; no response`),
         ),
       );
       expect(service.getRegistrationStatus().phase).toBe('locally_ready');
@@ -2293,6 +2381,85 @@ describe('RegistrationService', () => {
 
       expect(probesOfThisHub()).toBe(1);
       expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+    });
+
+    describe('once publicly_ready', () => {
+      const UNREACHABLE = { reachable: false, via: 'system', detail: 'HTTP 530' } as const;
+      const REACHABLE = { reachable: true, via: 'system', status: 200 } as const;
+
+      beforeEach(async () => {
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+          id: 'org-1',
+          hubSubdomain: 'hub-core-2-demopool1',
+          provisioningPhase: 'publicly_ready',
+          degradedReasons: null,
+        } as any);
+        await (service as any).syncPhaseFromDb();
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      });
+
+      it('goes on probing the public URL on every accepted check-in', async () => {
+        // This used to stop at promotion, so a tunnel that broke afterwards was never noticed.
+        mockedProbe.mockResolvedValue(REACHABLE);
+
+        await (service as any).validateRegistrationWithCloud();
+
+        await vi.waitFor(() => expect(mockedProbe).toHaveBeenCalledWith(HUB_HOSTNAME));
+      });
+
+      it('reports tunnel_unreachable once the public URL has failed for ten minutes, and not on the first failure', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+
+        await (service as any).checkPublicReachability();
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining(`${HUB_HOSTNAME} stopped answering`));
+
+        await later(PUBLIC_UNREACHABLE_CONFIRM_MS, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['tunnel_unreachable'], registered: true });
+        expect(deviceRegistrationRepository.updateProvisioningState).toHaveBeenCalledWith('org-1', 'degraded', ['tunnel_unreachable']);
+      });
+
+      it('starts the ten minutes again after any 2xx', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await (service as any).checkPublicReachability();
+        mockedProbe.mockResolvedValue(REACHABLE);
+        await later(5 * 60_000, () => (service as any).checkPublicReachability());
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await later(11 * 60_000, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+
+        await later(22 * 60_000, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus().phase).toBe('degraded');
+      });
+
+      it('is promoted again by the check-in after the URL answers once more', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await (service as any).checkPublicReachability();
+        await later(PUBLIC_UNREACHABLE_CONFIRM_MS, () => (service as any).checkPublicReachability());
+        expect(service.getRegistrationStatus().phase).toBe('degraded');
+
+        // An accepted check-in takes `degraded` back to `locally_ready`, and its probe promotes.
+        mockedProbe.mockResolvedValue(REACHABLE);
+        await (service as any).validateRegistrationWithCloud();
+
+        await vi.waitFor(() => expect(service.getRegistrationStatus()).toEqual({ phase: 'publicly_ready', degradedReasons: [], registered: true }));
+      });
+
+      it('does not demote on a probe that started before the Hub was paired again', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await (service as any).checkPublicReachability();
+        mockedProbe.mockImplementation(async () => {
+          (service as any).registrationGeneration++;
+          return UNREACHABLE;
+        });
+
+        await later(PUBLIC_UNREACHABLE_CONFIRM_MS, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      });
     });
   });
 

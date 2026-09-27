@@ -1,4 +1,4 @@
-import { type LookupAddress, promises as dnsPromises } from 'node:dns';
+import dns, { type LookupAddress, promises as dnsPromises } from 'node:dns';
 import https from 'node:https';
 import net from 'node:net';
 import { withTimeout } from '@/common/helpers/with-timeout';
@@ -19,16 +19,19 @@ import { withTimeout } from '@/common/helpers/with-timeout';
  * up to half an hour, far past the one minute registration spends probing. After the 2026-09-26
  * fleet rebuild, 16 of 17 Hubs came out of registration `locally_ready`.
  *
- * So when this host's resolver has no address for the name, and only then, the probe asks the
- * zone's own nameservers, which hold no cache, and requests the URL at the address they publish
- * with the certificate still checked against the name. Any other failure (a timeout, a TLS error,
- * Cloudflare's 530 for a tunnel with no connector) is not about DNS, and is the answer.
+ * So the probe asks the zone's own nameservers first, which hold no cache. A name they do not
+ * publish is not ready, and this host's resolver is never asked about it: asking is what plants
+ * the NXDOMAIN, in systemd-resolved and in the LAN resolver every browser on that network shares.
+ * Once they publish it, the request goes through this host's resolver, and only if that still has
+ * no address does it go to the address the zone publishes, with the certificate still checked
+ * against the name. Any other failure (a timeout, a TLS error, Cloudflare's 530 for a tunnel with
+ * no connector) is not about DNS, and is the answer.
  */
 
 /** The liveness route: it answers without RabbitMQ or any other dependency, so a 2xx means the request reached this Hub. */
 export const PUBLIC_PROBE_PATH = '/api/health/live';
 
-/** Budget for each step of a probe; a probe that asks the zone's nameservers takes three. */
+/** Budget for each step of a probe; a probe that goes around this host's resolver takes three. */
 export const PUBLIC_PROBE_TIMEOUT_MS = 5_000;
 
 /**
@@ -44,76 +47,116 @@ const NO_RECORDS_CODES = new Set(['ENOTFOUND', 'ENODATA']);
 export type PublicReachability = {
   reachable: boolean;
   /**
-   * Whose addresses the deciding request went to: `system` is this host's resolver chain, and
-   * `zone_nameservers` the zone's authoritative servers, asked only after `system` had no address.
+   * Which resolver decided: `system` is this host's resolver chain, and `zone_nameservers` the
+   * zone's authoritative servers, which decide when they do not publish the name or when the
+   * request went to their address because `system` had none.
    */
   via: 'system' | 'zone_nameservers';
   /** The HTTP status that decided, when a response came back. */
   status?: number;
-  /** Why no 2xx came back, when there is more to say than the status. */
+  /** Why no 2xx came back, or how the 2xx was reached, when there is more to say than the status. */
   detail?: string;
 };
 
-export type PublicReachabilityDeps = {
-  /** GETs `url` and resolves with its status. With `addresses`, connects there instead of resolving the host. */
-  get(url: string, options: { addresses?: string[]; timeoutMs: number }): Promise<number>;
-  /** The addresses the zone's own nameservers publish for `hostname`; empty when they publish none. */
-  resolveAtZoneNameservers(hostname: string, timeoutMs: number): Promise<string[]>;
+/**
+ * What the zone's own nameservers say about a name.
+ *
+ * Only `nxdomain` means "not published". `no_address` is a name that exists there without an A or
+ * AAAA record: a CNAME to a name outside the zone looks like that from an authoritative server, and
+ * so does a DNSSEC "black lie" for a name that does not exist. It decides nothing, so the probe
+ * asks this host's resolver, which follows the CNAME.
+ */
+export type ZoneAnswer = { kind: 'addresses'; addresses: string[] } | { kind: 'nxdomain' } | { kind: 'no_address' };
+
+/** Rejects an address the probe must not connect to or send queries to. */
+export type AddressFilter = (address: string) => boolean;
+
+export type PublicProbeOptions = {
+  timeoutMs?: number;
+  /**
+   * Count only a request this host's resolver routed. For a caller that sends a browser to the URL
+   * next: the browser usually shares this host's upstream resolver and its cached NXDOMAIN, so an
+   * answer that went around that cache would send it to a name it cannot resolve.
+   */
+  requireSystemResolver?: boolean;
+  /** For a caller probing a hostname it was handed: refuse private addresses from either resolver (SSRF). */
+  isAllowedAddress?: AddressFilter;
 };
 
-/** Probes `https://<hostname>/api/health/live`, asking the zone's nameservers when this host cannot resolve the name. */
+export type PublicReachabilityDeps = {
+  /**
+   * GETs `url` and resolves with its status. With `addresses`, connects there instead of resolving
+   * the host; with `isAllowedAddress`, refuses a host that resolves to an address it rejects.
+   */
+  get(url: string, options: { addresses?: string[]; isAllowedAddress?: AddressFilter; timeoutMs: number }): Promise<number>;
+  /** What the zone's own nameservers publish for `hostname`. */
+  resolveAtZoneNameservers(hostname: string, options: { timeoutMs: number; isAllowedAddress?: AddressFilter }): Promise<ZoneAnswer>;
+};
+
+/** Probes `https://<hostname>/api/health/live`, asking the zone's nameservers before this host's resolver. */
 export async function probePublicHostname(
   hostname: string,
-  options: { timeoutMs?: number } = {},
+  options: PublicProbeOptions = {},
   deps: PublicReachabilityDeps = defaultPublicReachabilityDeps,
 ): Promise<PublicReachability> {
   const timeoutMs = options.timeoutMs ?? PUBLIC_PROBE_TIMEOUT_MS;
+  const { isAllowedAddress } = options;
   const url = `https://${hostname}${PUBLIC_PROBE_PATH}`;
 
-  let systemError: unknown;
+  let zone: ZoneAnswer | undefined;
+  let zoneError: unknown;
   try {
-    return verdict(await deps.get(url, { timeoutMs }), 'system');
-  } catch (error) {
-    if (!isNameNotResolved(error)) {
-      return { reachable: false, via: 'system', detail: describeProbeError(error, timeoutMs) };
-    }
-    systemError = error;
-  }
-
-  let addresses: string[];
-  try {
-    addresses = await withTimeout(
-      deps.resolveAtZoneNameservers(hostname, timeoutMs),
+    zone = await withTimeout(
+      deps.resolveAtZoneNameservers(hostname, { timeoutMs, ...(isAllowedAddress ? { isAllowedAddress } : {}) }),
       timeoutMs,
       `the zone's nameservers did not answer within ${timeoutMs} ms`,
     );
   } catch (error) {
-    return {
-      reachable: false,
-      via: 'zone_nameservers',
-      detail: `this host has no address for it (${describeProbeError(systemError, timeoutMs)}), and the zone's nameservers could not be asked: ${describeProbeError(error, timeoutMs)}`,
-    };
+    // A network that blocks DNS to arbitrary servers ends up here on every probe. This host's
+    // resolver is then the only one there is, so ask it, as the probe did before the zone came first.
+    zoneError = error;
   }
 
-  if (addresses.length === 0) {
+  if (zone?.kind === 'nxdomain') {
     return { reachable: false, via: 'zone_nameservers', detail: "the zone's nameservers do not publish it yet" };
+  }
+  const refused = zone?.kind === 'addresses' && isAllowedAddress ? zone.addresses.find((address) => !isAllowedAddress(address)) : undefined;
+  if (refused) {
+    return { reachable: false, via: 'zone_nameservers', detail: `the zone's nameservers publish ${refused}, which this probe may not connect to` };
+  }
+
+  let systemMiss: string;
+  try {
+    return verdict(await deps.get(url, { timeoutMs, ...(isAllowedAddress ? { isAllowedAddress } : {}) }), 'system');
+  } catch (error) {
+    if (!isNameNotResolved(error)) {
+      return { reachable: false, via: 'system', detail: describeProbeError(error, timeoutMs) };
+    }
+    systemMiss = `this host's resolver has no address for it (${describeProbeError(error, timeoutMs)}), which a cached NXDOMAIN keeps for up to the zone's negative TTL`;
+  }
+
+  if (zone?.kind !== 'addresses') {
+    const zoneSays = zoneError
+      ? `the zone's nameservers could not be asked: ${describeProbeError(zoneError, timeoutMs)}`
+      : "the zone's nameservers publish no address for it";
+    return { reachable: false, via: 'system', detail: `${systemMiss}, and ${zoneSays}` };
+  }
+  if (options.requireSystemResolver) {
+    return { reachable: false, via: 'system', detail: `${systemMiss}, though the zone's nameservers publish it` };
   }
 
   try {
-    return verdict(await deps.get(url, { addresses, timeoutMs }), 'zone_nameservers');
+    return { ...verdict(await deps.get(url, { addresses: zone.addresses, timeoutMs }), 'zone_nameservers'), detail: systemMiss };
   } catch (error) {
-    return { reachable: false, via: 'zone_nameservers', detail: describeProbeError(error, timeoutMs) };
+    return { reachable: false, via: 'zone_nameservers', detail: `${systemMiss}; ${describeProbeError(error, timeoutMs)}` };
   }
 }
 
 /** One line for a log: which resolver decided, and what came back. */
 export function describePublicReachability(probe: PublicReachability): string {
-  const path =
-    probe.via === 'system'
-      ? "resolved by this host's resolver"
-      : "this host's resolver has no address for it, which a cached NXDOMAIN keeps up to the zone's negative TTL; asked the zone's nameservers";
+  const path = probe.via === 'system' ? "through this host's resolver" : "through the zone's nameservers";
   const outcome = probe.status === undefined ? undefined : `HTTP ${probe.status}`;
-  return [path, outcome, probe.detail].filter(Boolean).join('; ');
+  return [path, probe.detail, outcome].filter(Boolean).join('; ');
 }
 
 function verdict(status: number, via: PublicReachability['via']): PublicReachability {
@@ -164,12 +207,40 @@ export function pinnedLookup(addresses: string[]): net.LookupFunction {
 }
 
 /**
+ * This host's `lookup`, refusing a name that resolves to any address `isAllowedAddress` rejects.
+ *
+ * The check runs on the addresses the socket then connects to, so a name cannot pass it and
+ * resolve somewhere else a moment later.
+ */
+export function allowedAddressLookup(isAllowedAddress: AddressFilter): net.LookupFunction {
+  return (hostname, options, callback) => {
+    dns.lookup(hostname, { family: options.family, hints: options.hints, all: true }, (error, entries) => {
+      if (error) {
+        callback(error, '');
+        return;
+      }
+      const refused = entries.find((entry) => !isAllowedAddress(entry.address));
+      if (refused) {
+        callback(new Error(`${hostname} resolves to ${refused.address}, which this probe may not connect to`), '');
+        return;
+      }
+      pinnedLookup(entries.map((entry) => entry.address))(hostname, options, callback);
+    });
+  };
+}
+
+/**
  * GETs `url` over HTTPS and resolves with the status, without reading the body.
  *
  * With `addresses`, the connection goes there while the Host header, SNI, and certificate check all
  * keep the URL's name, so a pinned request proves exactly what an unpinned one would.
  */
-export function httpsGetStatus(url: string, options: { addresses?: string[]; timeoutMs: number }): Promise<number> {
+export function httpsGetStatus(url: string, options: { addresses?: string[]; isAllowedAddress?: AddressFilter; timeoutMs: number }): Promise<number> {
+  const lookup = options.addresses?.length
+    ? pinnedLookup(options.addresses)
+    : options.isAllowedAddress
+      ? allowedAddressLookup(options.isAllowedAddress)
+      : undefined;
   return new Promise((resolve, reject) => {
     const request = https.get(
       url,
@@ -178,7 +249,7 @@ export function httpsGetStatus(url: string, options: { addresses?: string[]; tim
         agent: false,
         signal: AbortSignal.timeout(options.timeoutMs),
         headers: { 'user-agent': 'ci-hub-public-reachability' },
-        ...(options.addresses?.length ? { lookup: pinnedLookup(options.addresses) } : {}),
+        ...(lookup ? { lookup } : {}),
       },
       (response) => {
         response.resume();
@@ -191,30 +262,59 @@ export function httpsGetStatus(url: string, options: { addresses?: string[]; tim
 
 type ZoneResolver = Pick<dnsPromises.Resolver, 'resolveNs' | 'resolve4' | 'resolve6' | 'setServers'>;
 
+type AskResult = { addresses: string[] } | { code: string } | { error: unknown };
+
+async function ask(query: Promise<string[]>): Promise<AskResult> {
+  try {
+    return { addresses: await query };
+  } catch (error) {
+    const code = errorCode(error);
+    return code !== undefined && NO_RECORDS_CODES.has(code) ? { code } : { error };
+  }
+}
+
 /**
- * The addresses the zone's authoritative nameservers publish for `hostname`.
+ * What the zone's authoritative nameservers publish for `hostname`.
  *
  * The zone is found by walking up from the name's parent until a name has NS records, which this
  * host's resolver answers from a positive cache: the zone existed all along, only the one name did
- * not. IPv4 first, because a container network commonly has no IPv6 route even where the zone
- * publishes AAAA. `createResolver` is for tests; each call must return a fresh resolver.
+ * not. Both address families, IPv4 first, for the nameservers and for the name: a container network
+ * commonly has no IPv6 route even where the zone publishes AAAA, and an IPv6-only host has no IPv4
+ * one. `createResolver` is for tests; each call must return a fresh resolver.
  */
 export async function resolveAtZoneNameservers(
   hostname: string,
-  timeoutMs: number,
-  createResolver: () => ZoneResolver = () => new dnsPromises.Resolver({ timeout: timeoutMs, tries: 1 }),
-): Promise<string[]> {
+  options: { timeoutMs: number; isAllowedAddress?: AddressFilter; createResolver?: () => ZoneResolver },
+): Promise<ZoneAnswer> {
+  const createResolver = options.createResolver ?? (() => new dnsPromises.Resolver({ timeout: options.timeoutMs, tries: 1 }));
   const local = createResolver();
   const nameservers = await findZoneNameservers(local, hostname);
-  const serverAddresses = [...new Set((await Promise.all(nameservers.map((ns) => local.resolve4(ns).catch((): string[] => [])))).flat())];
+  const addressesOf = async (family: 'resolve4' | 'resolve6') =>
+    (await Promise.all(nameservers.map((ns) => local[family](ns).catch((): string[] => [])))).flat();
+  const [v4, v6] = await Promise.all([addressesOf('resolve4'), addressesOf('resolve6')]);
+  // A hostname someone else chose can name its own nameservers, so they get the same address check as the request.
+  const serverAddresses = [...new Set([...v4, ...v6])].filter((address) => options.isAllowedAddress?.(address) ?? true);
   if (serverAddresses.length === 0) {
-    throw new Error(`no address for the zone's nameservers (${nameservers.join(', ')})`);
+    throw new Error(`no usable address for the zone's nameservers (${nameservers.join(', ')})`);
   }
 
   const authoritative = createResolver();
   authoritative.setServers(serverAddresses);
-  const v4 = await authoritative.resolve4(hostname).catch(noRecords);
-  return v4.length > 0 ? v4 : authoritative.resolve6(hostname).catch(noRecords);
+  const answers = await Promise.all([ask(authoritative.resolve4(hostname)), ask(authoritative.resolve6(hostname))]);
+
+  const addresses = answers.flatMap((answer) => ('addresses' in answer ? answer.addresses : []));
+  if (addresses.length > 0) {
+    return { kind: 'addresses', addresses };
+  }
+  // NXDOMAIN is about the name, not a record type, so one family saying it is enough.
+  if (answers.some((answer) => 'code' in answer && answer.code === 'ENOTFOUND')) {
+    return { kind: 'nxdomain' };
+  }
+  const failed = answers.find((answer): answer is { error: unknown } => 'error' in answer);
+  if (failed) {
+    throw failed.error;
+  }
+  return { kind: 'no_address' };
 }
 
 async function findZoneNameservers(resolver: ZoneResolver, hostname: string): Promise<string[]> {
@@ -240,5 +340,5 @@ function noRecords(error: unknown): string[] {
 
 const defaultPublicReachabilityDeps: PublicReachabilityDeps = {
   get: httpsGetStatus,
-  resolveAtZoneNameservers: (hostname, timeoutMs) => resolveAtZoneNameservers(hostname, timeoutMs),
+  resolveAtZoneNameservers: (hostname, options) => resolveAtZoneNameservers(hostname, options),
 };

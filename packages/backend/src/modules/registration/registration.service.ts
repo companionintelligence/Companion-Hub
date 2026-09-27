@@ -76,6 +76,19 @@ const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
 /** Per step of each registration-time probe, which retries every second for a minute. */
 const REGISTRATION_PROBE_TIMEOUT_MS = 2 * 1000;
+/**
+ * How long registration probes the public URL before leaving the Hub `locally_ready` for check-ins
+ * to promote. A clock, not a count of attempts: one attempt that goes around this host's resolver
+ * takes up to three steps of `REGISTRATION_PROBE_TIMEOUT_MS`, and `register` waits for this loop.
+ */
+const REGISTRATION_PROBE_WINDOW_MS = 60 * 1000;
+/**
+ * How long a `publicly_ready` Hub's public URL must go on failing its probe before the Hub reports
+ * `degraded` (`tunnel_unreachable`). One failed probe is not a verdict: `cloudflared` reconnecting
+ * or an edge blip fails one too. Ten minutes matches `PORTAL_REJECTION_CONFIRM_MS`, and on the
+ * fleet's 15-minute check-in cadence it confirms on the second failed probe.
+ */
+export const PUBLIC_UNREACHABLE_CONFIRM_MS = 10 * 60 * 1000;
 
 /**
  * How long to wait for `POST /api/devices/pair`.
@@ -289,6 +302,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private tunnelStopPending = false;
   /** The public-URL probe in flight, shared so status polling every 30 s never stacks them. */
   private publicReachabilityInFlight: Promise<void> | null = null;
+  /** When a `publicly_ready` Hub's public URL first failed its probe in the current run of failures. */
+  private publicUnreachableSince: number | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -1114,8 +1129,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       // Probe the public URL without delaying validation. This is what moves a Hub out of
-      // `locally_ready` once registration's own one-minute probe has given up.
-      if (this._currentPhase === 'locally_ready') {
+      // `locally_ready` once registration's own one-minute probe has given up, and what notices a
+      // `publicly_ready` Hub whose public URL has stopped answering.
+      if (this._currentPhase === 'locally_ready' || this._currentPhase === 'publicly_ready') {
         void this.checkPublicReachability().catch((error) => {
           this.logger.debug(`Registration validation: public hostname probe failed: ${error instanceof Error ? error.message : String(error)}`);
         });
@@ -1196,12 +1212,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Probes the Hub's public URL and moves `locally_ready` to `publicly_ready` once it answers.
+   * Probes the Hub's public URL: `locally_ready` becomes `publicly_ready` once it answers, and
+   * `publicly_ready` becomes `degraded` (`tunnel_unreachable`) once it has stopped answering for
+   * `PUBLIC_UNREACHABLE_CONFIRM_MS`.
    *
    * Registration probes for one minute and then leaves the Hub `locally_ready`, so every check-in
    * after that has to ask again. This used to only log. Eighteen hours after the 2026-09-26 fleet
    * rebuild, 16 of 17 Hubs still said `locally_ready` while 13 of them answered 200 at their public
    * URL, and a restart could not help: the phase is persisted and restored as it was.
+   *
+   * The demotion is what keeps `publicly_ready` true afterwards. Without it a Hub whose tunnel broke
+   * after promotion said `publicly_ready` for as long as it ran. The next accepted check-in takes
+   * `degraded` back to `locally_ready`, and this probe promotes it again once the URL answers.
    */
   private checkPublicReachability(): Promise<void> {
     this.publicReachabilityInFlight ??= this.runPublicReachabilityCheck().finally(() => {
@@ -1222,22 +1244,51 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     const generation = this.registrationGeneration;
     const probe = await probePublicHostname(hostname);
 
-    if (!probe.reachable) {
+    // The probe takes seconds, and a check-in or a re-pair can move the phase meanwhile. An answer
+    // about a registration this Hub has since replaced is about nothing.
+    if (this.registrationGeneration !== generation) {
+      return;
+    }
+
+    if (probe.reachable) {
+      this.publicUnreachableSince = null;
+      // Only `locally_ready` is promoted: `degraded` → `publicly_ready` is a legal transition, and
+      // taking it here would erase a degraded reason that a public URL answering does nothing to clear.
+      if (this._currentPhase !== 'locally_ready') {
+        return;
+      }
+      this.logger.info(
+        `Registration validation: public hostname ${hostname} answered (${describePublicReachability(probe)}) — Hub is publicly ready`,
+      );
+      await this.setPhase('publicly_ready', [], org.id);
+      return;
+    }
+
+    if (this._currentPhase !== 'publicly_ready') {
+      this.publicUnreachableSince = null;
       this.logger.warn(
         `Registration validation: public hostname ${hostname} not yet reachable (${describePublicReachability(probe)}) — tunnel may still be stabilising`,
       );
       return;
     }
 
-    // The probe takes seconds, and a check-in or a re-pair can move the phase meanwhile. Only
-    // `locally_ready` is promoted: `degraded` → `publicly_ready` is a legal transition, and taking
-    // it here would erase a degraded reason that a public URL answering does nothing to clear.
-    if (this._currentPhase !== 'locally_ready' || this.registrationGeneration !== generation) {
+    const now = Date.now();
+    this.publicUnreachableSince ??= now;
+    const unreachableForMs = now - this.publicUnreachableSince;
+    if (unreachableForMs < PUBLIC_UNREACHABLE_CONFIRM_MS) {
+      this.logger.warn(
+        `Registration validation: public hostname ${hostname} stopped answering (${describePublicReachability(probe)}); ` +
+          `the Hub reports tunnel_unreachable if that lasts ${PUBLIC_UNREACHABLE_CONFIRM_MS / 60_000} min`,
+      );
       return;
     }
 
-    this.logger.info(`Registration validation: public hostname ${hostname} answered (${describePublicReachability(probe)}) — Hub is publicly ready`);
-    await this.setPhase('publicly_ready', [], org.id);
+    this.publicUnreachableSince = null;
+    this.logger.warn(
+      `Registration validation: public hostname ${hostname} has not answered for ${Math.round(unreachableForMs / 60_000)} min ` +
+        `(${describePublicReachability(probe)}) — Hub is no longer publicly ready`,
+    );
+    await this.setPhase('degraded', ['tunnel_unreachable'], org.id);
   }
 
   /** The device key a check-in sends now, and which registration holds it. */
@@ -1917,6 +1968,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.consecutiveValidationFailures = 0;
         this.portalRejectedSince = null;
         await this.setPhase('locally_ready', [], organizationId);
+        // This path skips the registration loop below, and nothing else probes until the next
+        // accepted check-in, up to 15 minutes away. A re-pair into the same organization keeps a
+        // hostname that usually answers already.
+        void this.checkPublicReachability().catch((error) => {
+          this.logger.debug(`Registration: public hostname probe failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
       }
       return;
     }
@@ -2058,13 +2115,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         await this.setPhase('publicly_ready', [], organizationId);
       } else {
         this.logger.info(`Checking tunnel connectivity at https://${domain}...`);
-        const maxRetries = 60; // 1 minute
+        const generation = this.registrationGeneration;
+        const deadline = Date.now() + REGISTRATION_PROBE_WINDOW_MS;
         let tunnelReachable = false;
-        for (let i = 0; i < maxRetries; i++) {
+        for (let i = 0; Date.now() < deadline; i++) {
           /*
-           * The same probe the check-in runs, including its fallback to the zone's nameservers: a
-           * Hub paired again under a hostname that was just deleted and re-created sees a cached
-           * NXDOMAIN from its own resolver for longer than this loop lasts.
+           * The same probe the check-in runs. It asks the zone's nameservers first, so polling a name
+           * Portal has not published yet never plants the NXDOMAIN this Hub's resolver would then
+           * repeat for 30 minutes, and it goes around a cached NXDOMAIN something else planted, which
+           * a Hub paired again under a just-deleted, re-created hostname sees for that long.
            */
           const probe = await probePublicHostname(domain, { timeoutMs: REGISTRATION_PROBE_TIMEOUT_MS });
           if (probe.reachable) {
@@ -2076,15 +2135,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
             this.logger.debug(`Waiting for DNS/SSL propagation... ${describePublicReachability(probe)}`);
           }
           await new Promise((resolve) => setTimeout(resolve, 1000));
-          if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
+          if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}`);
         }
-        if (tunnelReachable) {
-          await this.setPhase('publicly_ready', [], organizationId);
-        } else {
+        if (!tunnelReachable) {
           this.logger.warn(
-            `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
+            `Tunnel not yet reachable at https://${domain} after ${REGISTRATION_PROBE_WINDOW_MS / 1000}s — DNS may still be propagating. This is normal for first-time setup.`,
           );
           // Keep `locally_ready`; every passing check-in probes again (`checkPublicReachability`).
+        } else if (this._currentPhase === 'locally_ready' && this.registrationGeneration === generation) {
+          // The loop runs for a minute and a check-in can move the phase meanwhile: three failed
+          // ones make it `degraded`, and a re-pair starts another registration. Promote only what
+          // the loop started with, for the same reason `runPublicReachabilityCheck` does.
+          await this.setPhase('publicly_ready', [], organizationId);
+        } else if (this._currentPhase !== 'publicly_ready') {
+          this.logger.info(`Hub is reachable at https://${domain}, but the registration is ${this._currentPhase} now; leaving it to the check-in`);
         }
       }
     } catch (error) {
