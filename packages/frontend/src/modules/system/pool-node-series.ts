@@ -450,6 +450,8 @@ export interface RoutingBucket {
   failovers: number;
   /** The subset of `failed` that ended because the caller hung up, not because routing failed. */
   clientClosed: number;
+  /** The subset of `failed` that took at least a first-byte budget to fail — see {@link isOverBudgetFailure}. */
+  overBudget: number;
   /** Engine-reported prompt tokens on rows placed in this minute. Rows with no usage frame add nothing. */
   promptTokens: number;
   /** Engine-reported output tokens, likewise. */
@@ -463,6 +465,7 @@ const EMPTY_BUCKET: Omit<RoutingBucket, 'at'> = {
   unplaced: 0,
   failovers: 0,
   clientClosed: 0,
+  overBudget: 0,
   promptTokens: 0,
   completionTokens: 0,
 };
@@ -475,6 +478,37 @@ export function emptyRoutingBucket(at: number): RoutingBucket {
 /** Every decision placed in a bucket, whatever became of it. */
 export function bucketTotal(bucket: RoutingBucket): number {
   return bucket.served + bucket.failed + bucket.pending;
+}
+
+/**
+ * The share of `budgetMs` a failed row's duration must reach to count as past it. Not 1.0: a row
+ * that died on its node's timer settles a few ms over the budget, but one clock read either side of
+ * a GC pause should not decide which bucket it falls in.
+ */
+const OVER_BUDGET_SHARE = 0.95;
+
+/**
+ * `true` for a settled failure that took at least one first-byte budget to fail — how an agent turn
+ * placed on a node too slow for its prompt fails on this fleet, and something "Failed" alone did not
+ * separate from nodes refusing the work outright.
+ *
+ * The proxy gives each candidate `budgetMs` to send headers and aborts at exactly that ("No response
+ * headers within 329000ms"), so a failure that waited on a deadline carries `status: null` and a
+ * `durationMs` at or past the budget. Excluded: a caller hanging up (`clientClosed`), and failures
+ * that were over sooner — core-2's nine refusals at 23:51, 307 s against a 780 s budget.
+ *
+ * Named "past budget", not "timed out", on purpose. `durationMs` is the whole request's, and the row
+ * does not say how each candidate failed, so nine slow refusals can add up past one budget with no
+ * node timing out — rare against the 300 s floor, but possible, and this must not claim a deadline
+ * it cannot see. What it does say is true either way: the caller waited longer than any one node was
+ * allowed to take, and got nothing.
+ */
+export function isOverBudgetFailure(entry: RoutingLogEntry): boolean {
+  if (entry.outcome === 'served' || entry.outcome === 'pending' || entry.clientClosed === true) return false;
+  if (entry.status !== null && entry.status !== undefined) return false;
+  if (typeof entry.budgetMs !== 'number' || entry.budgetMs <= 0 || typeof entry.durationMs !== 'number') return false;
+
+  return entry.durationMs >= OVER_BUDGET_SHARE * entry.budgetMs;
 }
 
 /** A finite, positive usage figure or 0. `null` is the common case (no usage frame) and contributes nothing. */
@@ -522,6 +556,7 @@ export function routingBuckets(entries: RoutingLogEntry[], options: { now: numbe
     if (isUnplaced(entry)) slot.unplaced += 1;
     if ((entry.failedOverFrom?.length ?? 0) > 0) slot.failovers += 1;
     if (entry.clientClosed === true && entry.outcome !== 'served' && entry.outcome !== 'pending') slot.clientClosed += 1;
+    if (isOverBudgetFailure(entry)) slot.overBudget += 1;
     slot.promptTokens += usageCount(entry.usage?.promptTokens);
     slot.completionTokens += usageCount(entry.usage?.completionTokens);
     counts.set(bucket, slot);
@@ -644,7 +679,34 @@ function servingNodeKey(entry: RoutingLogEntry): string | null {
 /** The request waiting longest for its first byte, and how many are waiting. */
 export interface WaitingNow {
   count: number;
-  oldest: { ageMs: number; node: string | null; budgetMs: number | null; estTokens: number | null } | null;
+  oldest: {
+    /** How long the node now holding it has had it — the current ATTEMPT, not the request. See {@link waitingNow}. */
+    ageMs: number;
+    node: string | null;
+    budgetMs: number | null;
+    estTokens: number | null;
+    /** Nodes that had it and gave up before this one. Their waits are not in `ageMs`. */
+    failovers: number;
+  } | null;
+}
+
+/**
+ * When the node now holding a pending row started on it: the row's last failover hop, or its
+ * placement when it has never failed over.
+ *
+ * `updatedAt` is that hop because nothing else moves it while a row is pending: the proxy's
+ * `routingLog.update` bumps it when it hands the row to the next candidate, and the next writes
+ * are the settle and the usage frame, which take it out of `pending`. It is read only for a row
+ * that HAS failed over, so a future write that bumps it for some other reason on a first attempt
+ * cannot reset that attempt's clock; and never earlier than `at`, so a Hub predating the field (or
+ * a skewed one) falls back to timing from placement, which is what this page did before.
+ */
+function attemptStartedAt(entry: RoutingLogEntry): number {
+  const placed = parseHubTimestamp(entry.at);
+  if ((entry.failedOverFrom?.length ?? 0) === 0) return placed;
+  const hop = parseHubTimestamp(entry.updatedAt);
+
+  return Number.isFinite(hop) && hop > placed ? hop : placed;
 }
 
 /**
@@ -653,6 +715,20 @@ export interface WaitingNow {
  * The question an operator watching an agent turn actually has — "is anything stuck, where, and for
  * how long against what deadline" — and until this it was answerable only by finding the one amber
  * row in the feed. The oldest wait is the one that matters: it is the one closest to its budget.
+ *
+ * ⚠ The age is the CURRENT ATTEMPT's, not the request's. The proxy gives every candidate a fresh
+ * header deadline (`fetchWithConnectTimeout` starts its own `setTimeout(budget)` per forward) and
+ * moves the pending row to the next node without touching `at`. Timed from `at`, a request that
+ * failed over read as the new node's wait plus every earlier node's: core-2, 2026-09-26, a turn core-7
+ * held for its whole 329 s budget went to core-14 at 23:55:50, and 39 seconds later this said
+ * "waiting 6m 8s of 5m 29s on core-14" — past the budget, on the node that had only just taken it.
+ * That is the trap `firstByteByNode` avoids by excluding failed-over rows; here the row cannot be
+ * excluded (it is the one still waiting), so it is timed from its last hop instead.
+ *
+ * What it still includes: for a LOCAL candidate the Hub runs residency arbitration before the
+ * engine's timer starts (a 27B reload measured ~168 s on core-6), so a request waiting on this Hub
+ * behind a reload reads that much older than its deadline does. Nothing on the row marks where
+ * the reload ended; the error is on the side of warning early, never late.
  *
  * `node` is the short key (`'local'` for this Hub) — the caller translates it for display.
  */
@@ -664,15 +740,16 @@ export function waitingNow(entries: RoutingLogEntry[], now: number): WaitingNow 
     if (entry.outcome !== 'pending') continue;
     count += 1;
 
-    const at = parseHubTimestamp(entry.at);
-    if (!Number.isFinite(at)) continue;
-    const ageMs = Math.max(0, now - at);
+    const started = attemptStartedAt(entry);
+    if (!Number.isFinite(started)) continue;
+    const ageMs = Math.max(0, now - started);
     if (oldest === null || ageMs > oldest.ageMs) {
       oldest = {
         ageMs,
         node: servingNodeKey(entry),
         budgetMs: typeof entry.budgetMs === 'number' && entry.budgetMs > 0 ? entry.budgetMs : null,
         estTokens: estimatedPromptTokens(entry),
+        failovers: entry.failedOverFrom?.length ?? 0,
       };
     }
   }
