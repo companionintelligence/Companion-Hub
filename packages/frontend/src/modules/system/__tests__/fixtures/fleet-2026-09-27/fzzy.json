@@ -1,0 +1,837 @@
+{
+  "node": "fzzy",
+  "now": "2026-09-27T18:00:52Z",
+  "apps_resource-monitor": {
+    "sampledAt": "2026-09-27T18:00:50.560Z",
+    "apps": [
+      {
+        "appUrn": "ci-hub:system",
+        "appName": "CI Hub",
+        "status": "running",
+        "cpuPercent": 5.3,
+        "memoryUsageBytes": 857370624,
+        "memoryLimitBytes": 659454218240,
+        "highCpu": false,
+        "sustainedHighCpu": false,
+        "responsive": true,
+        "degraded": false,
+        "forceStopEligible": false,
+        "reason": null,
+        "cpuLimit": null,
+        "usesDefaultCpuLimit": false,
+        "sampledAt": "2026-09-27T18:00:50.560Z",
+        "containers": [
+          {
+            "containerId": "cbdc3405de13",
+            "name": "ci-hub",
+            "state": "running",
+            "status": "Up 11 minutes (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 4.34,
+            "memoryUsageBytes": 436801536,
+            "memoryLimitBytes": 131890843648
+          },
+          {
+            "containerId": "1accac867ba9",
+            "name": "cloudflared",
+            "state": "running",
+            "status": "Up 11 minutes",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0.65,
+            "memoryUsageBytes": 58167296,
+            "memoryLimitBytes": 131890843648
+          },
+          {
+            "containerId": "a4a13d93ca84",
+            "name": "traefik",
+            "state": "running",
+            "status": "Up 11 minutes",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0,
+            "memoryUsageBytes": 120422400,
+            "memoryLimitBytes": 131890843648
+          },
+          {
+            "containerId": "08a9bf335f79",
+            "name": "ci-hub-db",
+            "state": "running",
+            "status": "Up 11 minutes (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 0,
+            "memoryUsageBytes": 71286784,
+            "memoryLimitBytes": 131890843648
+          },
+          {
+            "containerId": "79f77a35ba1a",
+            "name": "ci-hub-queue",
+            "state": "running",
+            "status": "Up 11 minutes (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 0.31,
+            "memoryUsageBytes": 170692608,
+            "memoryLimitBytes": 131890843648
+          }
+        ],
+        "gpuVramMb": null,
+        "readiness": null
+      }
+    ],
+    "history": [
+      {
+        "sampledAt": "2026-09-27 10:22:22.896",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 132.13,
+            "memoryUsageBytes": 458289152,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:23:22.895",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 4.21,
+            "memoryUsageBytes": 455892992,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:24:22.895",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 4.6,
+            "memoryUsageBytes": 459214848,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:25:22.895",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 10.06,
+            "memoryUsageBytes": 461991936,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:26:22.896",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.73,
+            "memoryUsageBytes": 462217216,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:27:22.896",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 306.65,
+            "memoryUsageBytes": 457527296,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:28:22.897",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 9.84,
+            "memoryUsageBytes": 459395072,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:29:22.898",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.77,
+            "memoryUsageBytes": 460771328,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:30:22.897",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 16.15,
+            "memoryUsageBytes": 473026560,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:31:22.899",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.42,
+            "memoryUsageBytes": 472231936,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27 10:32:22.899",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 172.45,
+            "memoryUsageBytes": 476450816,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:48:54.882Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 56.7,
+            "memoryUsageBytes": 872771584,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:49:54.823Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 19.49,
+            "memoryUsageBytes": 809566208,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:50:54.822Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 16.04,
+            "memoryUsageBytes": 812679168,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:51:54.822Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.1,
+            "memoryUsageBytes": 818679808,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:52:54.823Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 9.42,
+            "memoryUsageBytes": 815325184,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:53:54.824Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5.99,
+            "memoryUsageBytes": 818909184,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:54:54.825Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.85,
+            "memoryUsageBytes": 820191232,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:55:54.825Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.47,
+            "memoryUsageBytes": 814075904,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:56:54.826Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.23,
+            "memoryUsageBytes": 818319360,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:57:54.827Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.06,
+            "memoryUsageBytes": 821719040,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:58:54.827Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 17.22,
+            "memoryUsageBytes": 831447040,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:59:54.827Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 9.25,
+            "memoryUsageBytes": 828932096,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T18:00:50.560Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5.3,
+            "memoryUsageBytes": 857370624,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      }
+    ],
+    "unattributedGpu": [
+      {
+        "processName": "VLLM::EngineCor",
+        "vramMb": 314
+      },
+      {
+        "processName": "dflash_server",
+        "vramMb": 17788
+      }
+    ],
+    "gpuVramSource": "host-file"
+  },
+  "inference_pool_status": {
+    "enabled": true,
+    "disabledBy": null,
+    "directions": {
+      "outbound": {
+        "enabled": true,
+        "disabledBy": null
+      },
+      "inbound": {
+        "enabled": true,
+        "disabledBy": null
+      }
+    },
+    "reason": "active",
+    "routingActive": true,
+    "settings": {
+      "poolEnabled": true,
+      "poolOutboundEnabled": true,
+      "poolInboundEnabled": true,
+      "poolLocalAffinity": 1,
+      "poolHealthPollSeconds": 30,
+      "poolRequireSignedPeers": false,
+      "poolShareContainerStats": true,
+      "poolPressureWeight": 0,
+      "poolMaxPromptTokens": null,
+      "poolProbeSnapshotTtlMs": 0,
+      "poolPrefixAffinityMaxInFlight": 0,
+      "poolSlotAwareness": 0,
+      "poolPins": [],
+      "poolRouteAppsAlways": true
+    },
+    "localNode": {
+      "inFlightRequests": 0,
+      "hardwareTier": "high",
+      "backends": [
+        {
+          "type": "ollama",
+          "healthy": true,
+          "modelsLoaded": [
+            "ornith-1.5:35b",
+            "gemma4:26b",
+            "qwen3-coder:30b",
+            "llava:latest",
+            "gemma3n:e4b",
+            "qwen2.5:0.5b",
+            "nemotron3:33b",
+            "qwen3.6:35b",
+            "llama3.2:latest",
+            "nomic-embed-text:latest",
+            "moondream:latest",
+            "gemma4:31b",
+            "qwen3-vl:32b",
+            "gemma3:1b",
+            "qwen3.5:9b",
+            "qwen3.6:27b",
+            "qwen3.5:4b",
+            "gabegoodhart/minimax-m2:230b",
+            "nemotron-3-super:120b",
+            "deepseek-coder-v2:16b",
+            "deepseek-r1:70b",
+            "deepseek-r1:32b",
+            "gpt-oss:120b"
+          ]
+        },
+        {
+          "type": "vllm",
+          "healthy": true,
+          "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+        },
+        {
+          "type": "lemonade",
+          "healthy": false,
+          "modelsLoaded": []
+        },
+        {
+          "type": "omlx",
+          "healthy": false,
+          "modelsLoaded": []
+        }
+      ],
+      "capabilitiesError": null,
+      "gpuPressure": null,
+      "gpuPressureSource": null,
+      "nodeFqdn": "fzzy.capybara-ulmer.ts.net",
+      "tailnet": "capybara-ulmer.ts.net",
+      "tailscaleConnected": true,
+      "maxPromptTokens": null,
+      "maxPromptTokensSetBy": null,
+      "maxNumCtx": null,
+      "ollamaSlots": null,
+      "throughput": []
+    },
+    "peers": [
+      {
+        "id": "peer-core-2",
+        "nodeFqdn": "core-2.capybara-ulmer.ts.net",
+        "displayName": null,
+        "direction": "outbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:26.131",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 9,
+          "stopped": 0,
+          "total": 9,
+          "cpuPercent": 324.4,
+          "memoryBytes": 1813643264
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.6:35b",
+                "ornith-1.5:35b",
+                "gemma4:e4b",
+                "ornith-1.5:9b",
+                "qwen2.5-coder:14b",
+                "qwen2.5-coder:32b",
+                "qwen3-coder:30b",
+                "nomic-embed-text:latest",
+                "gemma3:1b",
+                "gemma3:27b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 9,
+            "running": 9,
+            "stopped": 0,
+            "cpuPercent": 324.4,
+            "memoryBytes": 1813643264
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:26.114Z"
+        }
+      },
+      {
+        "id": "peer-core-1",
+        "nodeFqdn": "core-1.capybara-ulmer.ts.net",
+        "displayName": null,
+        "direction": "outbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:26.125",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.45,
+          "memoryBytes": 489779200
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "gemma3:1b",
+                "ornith-1.5:9b",
+                "gemma4:26b",
+                "qwen3-coder:30b",
+                "qwen3.6:27b",
+                "qwen3:8b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.45,
+            "memoryBytes": 489779200
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:26.090Z"
+        }
+      }
+    ],
+    "peerCounts": {
+      "total": 2,
+      "connected": 2,
+      "pending": 0,
+      "unreachable": 0,
+      "disabled": 0
+    },
+    "pins": [],
+    "routing": {
+      "recorded": 0,
+      "capacity": 200,
+      "served": 0,
+      "failed": 0,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 0,
+      "lastAt": null,
+      "oldestAt": null,
+      "totalRecorded": 0,
+      "bootId": "0c689b70-34af-4eec-bef6-d21d3bdd2c5c",
+      "startedAt": "2026-09-27T17:48:54.598Z"
+    }
+  },
+  "inference_pool_routing-log": {
+    "entries": [],
+    "summary": {
+      "recorded": 0,
+      "capacity": 200,
+      "served": 0,
+      "failed": 0,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 0,
+      "lastAt": null,
+      "oldestAt": null,
+      "totalRecorded": 0,
+      "startedAt": "2026-09-27T17:48:54.598Z"
+    },
+    "matched": 0
+  },
+  "inference_status": {
+    "backends": [
+      {
+        "type": "ollama",
+        "running": true,
+        "healthy": true,
+        "modelsLoaded": 23
+      },
+      {
+        "type": "vllm",
+        "running": true,
+        "healthy": true,
+        "modelsLoaded": 1
+      },
+      {
+        "type": "lemonade",
+        "running": false,
+        "healthy": false,
+        "modelsLoaded": 0
+      },
+      {
+        "type": "omlx",
+        "running": false,
+        "healthy": false,
+        "modelsLoaded": 0
+      }
+    ]
+  },
+  "inference_memory": {
+    "totalVramMb": 0,
+    "totalRamMb": 125781,
+    "systemReservedRamMb": 2048,
+    "dockerOverheadMb": 0,
+    "appContainerBudgetMb": 0,
+    "modelBudgetVramMb": 0,
+    "modelBudgetRamMb": 123733,
+    "modelUsedVramMb": 0,
+    "modelUsedRamMb": 314,
+    "pinnedVramMb": 0,
+    "pinnedRamMb": 0,
+    "usage": {
+      "sampledAt": "2026-09-27T18:00:52.692Z",
+      "backends": [
+        {
+          "backend": "vllm",
+          "models": ["Qwen/Qwen3.5-9B"],
+          "pool": "ram",
+          "usedMb": 314,
+          "source": "process"
+        }
+      ]
+    }
+  },
+  "inference_models_resident": {
+    "backends": [
+      {
+        "backend": "ollama",
+        "source": "measured",
+        "models": []
+      },
+      {
+        "backend": "vllm",
+        "source": "unsupported",
+        "models": null
+      },
+      {
+        "backend": "lemonade",
+        "source": "unreachable",
+        "models": null,
+        "error": "connect ECONNREFUSED 172.17.0.1:13305"
+      },
+      {
+        "backend": "omlx",
+        "source": "unsupported",
+        "models": null
+      }
+    ],
+    "residentCount": 0,
+    "sampledAt": "2026-09-27T18:00:52.806Z"
+  },
+  "inference_hardware": {
+    "gpu": {
+      "available": true,
+      "vendor": "amd",
+      "model": "Radeon 8060S",
+      "vramMb": 125781,
+      "unifiedMemory": true,
+      "driverVersion": "",
+      "runtimeAvailable": false,
+      "containerHostKind": "native-linux",
+      "hostRocmAvailable": true,
+      "hostRocmKfdAvailable": true
+    },
+    "npu": {
+      "available": false,
+      "model": ""
+    },
+    "ram": {
+      "totalMb": 125781,
+      "availableMb": 75209,
+      "usedMb": 50572,
+      "sampledAt": "2026-09-27T18:00:52.602Z"
+    },
+    "cpu": {
+      "arch": "x86_64",
+      "cores": 32,
+      "model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S"
+    },
+    "os": {
+      "platform": "linux",
+      "name": "Alpine Linux",
+      "version": "v3.21"
+    },
+    "effectiveInferenceMemoryMb": 75209,
+    "tier": "high"
+  },
+  "inference_cloud-providers": [],
+  "system_load": {
+    "diskUsed": 1306,
+    "diskSize": 1832,
+    "percentUsed": 71,
+    "cpuLoad": 1.1774967291757523,
+    "cpuCores": 32,
+    "memoryTotal": 123,
+    "memoryUsed": 57,
+    "percentUsedMemory": 47,
+    "hasVmWedge": false,
+    "runtimeKind": "linux-native",
+    "platformGuidance": "Resources reflect this machine directly. No Docker Desktop VM limits apply."
+  }
+}

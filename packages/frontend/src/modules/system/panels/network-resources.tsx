@@ -43,8 +43,10 @@ export function NetworkOverview({
             hint={t('DASHBOARD_EXCLUSIVE_MODELS_HINT')}
             hintId="dashboard-exclusive-models"
           />
-          {/* Dash, not 0: no peer reporting the counter means unknown, not idle. */}
-          <StatChip value={reach.peerInFlight ?? DASH} label={t('DASHBOARD_PEER_IN_FLIGHT')} tone="muted" />
+          {/* Dash, not 0: no peer reporting the counter means unknown, not idle. Labelled with the
+              rail's own word for it: this used to say "Peer load", which is a different claim — the
+              number is OUR requests still open at peers, not how loaded they are. */}
+          <StatChip value={reach.peerInFlight ?? DASH} label={t('DASHBOARD_RAIL_FORWARDED')} tone="muted" />
         </StatChipRow>
       </PanelBody>
     </Panel>

@@ -1,8 +1,8 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import type { MemoryBudgetSummary } from '@/modules/system/use-dashboard-data';
-import { ModelMemory } from './local-resources';
+import type { MemoryBudgetSummary, ResidencyReportSummary } from '@/modules/system/use-dashboard-data';
+import { HostCapacity, LocalModels, ModelMemory } from './local-resources';
 
 /*
  * The model-memory budget, as beta-red produced it on 2026-09-20: the Hub's router had loaded
@@ -133,5 +133,138 @@ describe('ModelMemory', () => {
     const { container } = render(<ModelMemory memory={budget} hardware={discrete} state={ready} />);
 
     expect(container.textContent).toContain('4.9G · Hub bookkeeping, engine not reachable');
+  });
+});
+
+/*
+ * The unified-memory machines the budget cannot describe, rendered. The arithmetic is pinned in
+ * `use-dashboard-data.test.ts`; this pins that the panel SAYS it, in warning colour, beside the
+ * figures it contradicts — and that the "holds back an estimated 0G" line, which read a field
+ * nothing ever feeds, is gone.
+ */
+describe('ModelMemory on a Strix Halo APU', () => {
+  const core1: MemoryBudgetSummary = {
+    totalVramMb: 0,
+    totalRamMb: 31_357,
+    systemReservedRamMb: 2048,
+    dockerOverheadMb: 0,
+    appContainerBudgetMb: 0,
+    modelBudgetVramMb: 0,
+    modelBudgetRamMb: 29_309,
+    modelUsedVramMb: 0,
+    modelUsedRamMb: 16_902,
+    pinnedVramMb: 0,
+    pinnedRamMb: 0,
+    usage: {
+      sampledAt: '2026-09-27T18:00:50.476Z',
+      backends: [{ backend: 'ollama', models: ['qwen3.8:27b', 'nomic-embed-text:latest'], pool: 'ram', usedMb: 16_902, source: 'engine' }],
+    },
+  };
+  const unified = { gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 31_357, unifiedMemory: true } };
+
+  it("says the engines' memory is outside what the host counts on core-1, and why the budget cannot describe it", () => {
+    const { container } = render(
+      <ModelMemory memory={core1} hardware={unified} reconciliation={{ kind: 'outside-host', sizeMb: 10_949 }} state={ready} />,
+    );
+
+    const note = container.querySelector('[data-testid="model-memory-outside-host"]');
+    expect(note?.textContent).toContain('Engines report 11G more than this host has in use');
+    expect(note?.textContent).toContain('BIOS VRAM carve-out');
+  });
+
+  it('says what host RAM nothing accounts for on fzzy', () => {
+    const { container } = render(
+      <ModelMemory memory={core1} hardware={unified} reconciliation={{ kind: 'unaccounted', sizeMb: 49_440 }} state={ready} />,
+    );
+
+    expect(container.querySelector('[data-testid="model-memory-unaccounted"]')?.textContent).toContain(
+      '48G of host RAM in use is held by nothing the engines report',
+    );
+  });
+
+  it('no longer prints an app-container reserve that is always zero', () => {
+    const { container } = render(<ModelMemory memory={core1} hardware={unified} state={ready} />);
+
+    expect(container.textContent).not.toContain('Holds back an estimated');
+  });
+});
+
+describe('HostCapacity', () => {
+  it('shows no GPU memory figure on a unified-memory machine, and no pool in-flight count at all', () => {
+    const { container } = render(
+      <HostCapacity
+        hardware={{
+          gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 31_357, unifiedMemory: true },
+          ram: { totalMb: 31_357, usedMb: 6445, availableMb: 24_912 },
+          cpu: { cores: 32, arch: 'x86_64' },
+        }}
+        state={ready}
+      />,
+    );
+
+    expect(container.textContent).toContain('Unified');
+    expect(container.textContent).not.toContain('In flight');
+  });
+});
+
+describe('LocalModels residency', () => {
+  const node = { backends: [{ type: 'ollama', healthy: true, modelsLoaded: ['gemma3:1b', 'nomic-embed-text:latest', 'qwen3.6:35b'] }] };
+  const residency: ResidencyReportSummary = {
+    backends: [
+      {
+        backend: 'ollama',
+        source: 'measured',
+        models: [
+          {
+            id: 'qwen3.6:35b',
+            engineGpuBytes: 22_419_246_939,
+            totalBytes: 22_419_246_939,
+            expiresAt: null,
+            contextLength: 65_536,
+            quantization: 'Q4_K_M',
+          },
+          {
+            id: 'nomic-embed-text:latest',
+            engineGpuBytes: 100_000_000,
+            totalBytes: 314_730_086,
+            expiresAt: null,
+            contextLength: 2048,
+            quantization: 'F16',
+          },
+        ],
+      },
+      { backend: 'vllm', source: 'unsupported', models: null },
+    ],
+    residentCount: 2,
+    sampledAt: '2026-09-27T18:00:53.989Z',
+  };
+
+  it('puts what is in memory first, with its size, and leaves an on-disk model blank rather than unknown', () => {
+    const { container } = render(<LocalModels node={node} inference={undefined} residency={residency} residencyState={ready} state={ready} />);
+
+    const rows = [...container.querySelectorAll('tbody tr')];
+    expect(rows.map((row) => row.getAttribute('data-resident'))).toEqual(['yes', 'yes', 'no']);
+    expect(rows[1]?.textContent).toContain('qwen3.6:35b');
+    expect(rows[1]?.textContent).toContain('21 GB');
+    expect(rows[2]?.textContent).toContain('gemma3:1b');
+    expect(rows[2]?.textContent).not.toContain('—');
+  });
+
+  it('says in words when part of a model is on the CPU', () => {
+    const { container } = render(<LocalModels node={node} inference={undefined} residency={residency} residencyState={ready} state={ready} />);
+
+    expect(container.textContent).toContain('Part of nomic-embed-text:latest is on the CPU, not the GPU.');
+    expect(container.textContent).not.toContain('Part of qwen3.6:35b');
+  });
+
+  it('keeps the on-disk list when residency could not be read, and says so in one line', () => {
+    const { container } = render(
+      <LocalModels node={node} inference={undefined} residency={undefined} residencyState={{ pending: false, failed: true }} state={ready} />,
+    );
+
+    expect(container.textContent).toContain('Residency could not be read');
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(3);
+    // Not asked is not "not in memory": every row says unknown.
+    expect([...container.querySelectorAll('tbody tr')].every((row) => row.getAttribute('data-resident') === 'unknown')).toBe(true);
   });
 });
