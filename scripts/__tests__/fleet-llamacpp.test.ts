@@ -870,8 +870,8 @@ describe.skipIf(!bash)('hubLlamacppUrlShell (sandboxed bash)', () => {
 
   it('replaces a stale value in place and terminates a file with no trailing newline before appending', () => {
     const stale = node({ envInitial: 'LLAMACPP_URL=http://100.1.2.3:8081\nAPI_PORT=5002' });
-    // The fleet's `.env.dev` is 0600 because it carries the Hub's secrets; a rewrite that swaps in a
-    // fresh file would leave it at the umask's mode instead.
+    // The fleet's `.env.dev` is 0600 because it carries the Hub's secrets; a rewrite that moves a plain
+    // `sed > tmp` over it would leave it at the umask's mode instead.
     chmodSync(stale.envFile, 0o600);
     expect(classifyHubLlamacppUrlOutput(stale.run().stdout, '')).toMatchObject({
       outcome: 'applied',
@@ -893,6 +893,13 @@ describe.skipIf(!bash)('hubLlamacppUrlShell (sandboxed bash)', () => {
     expect(outcome.outcome).toBe('applied');
     expect(outcome.why).toContain('LLAMACPP_URL already in');
     expect(box.calls()).toContain('docker compose');
+  });
+
+  it('clears the temp a rewrite killed before its `mv` left beside the env file, even with nothing to write', () => {
+    const box = node({ envInitial: `API_PORT=5002\nLLAMACPP_URL=${HUB_LLAMACPP_URL}\n`, running: HUB_LLAMACPP_URL });
+    writeFileSync(`${box.envFile}.cihub-tmp`, 'API_PORT=5002\nLLAMACPP_URL=http://100.1.2.3:8081\n', { mode: 0o600 });
+    expect(classifyHubLlamacppUrlOutput(box.run().stdout, '').outcome).toBe('unchanged');
+    expect(readdirSync(path.dirname(box.envFile))).toEqual(['.env.dev']);
   });
 
   it('writes the file but reports a failure with the fix when the container records no compose identity', () => {

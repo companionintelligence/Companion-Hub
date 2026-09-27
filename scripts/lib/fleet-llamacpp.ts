@@ -680,6 +680,9 @@ export function hubLlamacppUrlShell(url: string = HUB_LLAMACPP_URL): string {
     `echo "${m.file} $cihub_lu_env"`,
     `if [ ! -f "$cihub_lu_env" ]; then echo "${m.write} no-env-file"; echo "${m.complete}"; exit 0; fi`,
     `if [ ! -w "$cihub_lu_env" ]; then echo "${m.write} unwritable"; echo "${m.complete}"; exit 0; fi`,
+    // A run killed between the rewrite's `cp` and `mv` leaves a 0600 copy of the Hub's secrets here,
+    // and the next run may have nothing to write, so clear it before any branch.
+    'cihub_lu_tmp="$cihub_lu_env.cihub-tmp"; rm -f "$cihub_lu_tmp"',
     `cihub_lu_now="$(grep -h '^LLAMACPP_URL=' "$cihub_lu_env" 2>/dev/null | tail -1 | cut -d= -f2-)"`,
     `echo "${m.now} \${cihub_lu_now:-none}"`,
     `cihub_lu_running="$(docker inspect ci-hub --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^LLAMACPP_URL=//p' | head -1)"`,
@@ -694,11 +697,12 @@ export function hubLlamacppUrlShell(url: string = HUB_LLAMACPP_URL): string {
     // is there, so the file keeps its order and its comments.
     `  [ -z "$(tail -c1 "$cihub_lu_env")" ] || printf '\\n' >>"$cihub_lu_env"`,
     '  if grep -q \'^LLAMACPP_URL=\' "$cihub_lu_env"; then',
-    // An attached suffix, never a bare `-i`: BSD sed (macOS) reads the argument after `-i` as its
-    // backup suffix, so the bare form takes the script as the suffix and leaves the file untouched.
-    // Not `sed > tmp && mv` either — that swaps in a file at the umask's mode, and this one is 0600.
-    `    sed -i.cihub-bak "s|^LLAMACPP_URL=.*|LLAMACPP_URL=$cihub_lu_url|" "$cihub_lu_env"`,
-    `    rm -f "$cihub_lu_env.cihub-bak"`,
+    // No `sed -i` in any spelling. BSD sed (macOS) takes the script after a bare `-i` as its backup
+    // suffix and leaves the file untouched. GNU sed renames the file to the `-i.SUFFIX` backup before
+    // it moves the new one in, so for that moment the Hub has no env file. `cp -p` creates the temp
+    // with this file's 0600 and owner, the redirect keeps them, and `mv` swaps it in with one rename.
+    `    cp -p "$cihub_lu_env" "$cihub_lu_tmp" && sed "s|^LLAMACPP_URL=.*|LLAMACPP_URL=$cihub_lu_url|" "$cihub_lu_env" >"$cihub_lu_tmp" && mv -f "$cihub_lu_tmp" "$cihub_lu_env"`,
+    `    rm -f "$cihub_lu_tmp"`,
     '  else',
     `    printf 'LLAMACPP_URL=%s\\n' "$cihub_lu_url" >>"$cihub_lu_env"`,
     '  fi',
