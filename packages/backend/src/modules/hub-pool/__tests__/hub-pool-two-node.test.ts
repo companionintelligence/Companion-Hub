@@ -1464,6 +1464,10 @@ describe('Hub Pool across two nodes', () => {
     let betaController: HubPoolController;
     /** Bodies beta's engine received, to prove the work really ran there. */
     let betaEngineCalls: string[];
+    /** What beta's engine answers; a test that needs it to refuse the request replaces it. */
+    let betaEngineReply: () => Response;
+    /** Beta's own Ollama, so a test can see what beta's serving record was told. */
+    let betaOllama: MockProxy<OllamaBackend>;
 
     /** Ollama present and serving `models` at `host`; every other engine absent. */
     function registryServing(host: string, models: string[]): InferenceBackendRegistry {
@@ -1518,7 +1522,9 @@ describe('Hub Pool across two nodes', () => {
       betaLog = new HubPoolRoutingLogService();
       // Core has the shared model only, so a request for beta's model has exactly one candidate: beta.
       coreProxy = realProxy(core, registryServing(CORE_ENGINE, [SHARED_MODEL]), coreLog);
-      const betaProxy = realProxy(beta, registryServing(BETA_ENGINE, [SHARED_MODEL, BETA_ONLY_MODEL]), betaLog);
+      const betaRegistry = registryServing(BETA_ENGINE, [SHARED_MODEL, BETA_ONLY_MODEL]);
+      betaOllama = betaRegistry.get('ollama') as unknown as MockProxy<OllamaBackend>;
+      const betaProxy = realProxy(beta, betaRegistry, betaLog);
       betaController = new HubPoolController(
         beta.service,
         betaProxy,
@@ -1529,6 +1535,11 @@ describe('Hub Pool across two nodes', () => {
         mock<HubPoolPinService>(),
       );
       betaEngineCalls = [];
+      betaEngineReply = () =>
+        new Response(JSON.stringify({ message: { role: 'assistant', content: 'ok' }, done: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
 
       // Layered over the pairing router: beta's engine, and beta's `local/*` route through its real
       // guard and the real-proxy controller above. Everything else goes to the router as before.
@@ -1537,10 +1548,7 @@ describe('Hub Pool across two nodes', () => {
         const url = new URL(String(input));
         if (url.host === BETA_ENGINE) {
           betaEngineCalls.push(String(init?.body ?? ''));
-          return new Response(JSON.stringify({ message: { role: 'assistant', content: 'ok' }, done: true }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          });
+          return betaEngineReply();
         }
         if (url.hostname === BETA_FQDN && url.pathname === '/api/inference/pool/local/api/chat') {
           const request = {
@@ -1626,6 +1634,47 @@ describe('Hub Pool across two nodes', () => {
       expect(coreLog.list()[0]).toMatchObject({ id, outcome: 'failed', failedOverFrom: [BETA_FQDN] });
       expect(betaLog.list()[0]).toMatchObject({ id, direction: 'inbound', outcome: 'failed', status: 503 });
       expect(betaEngineCalls).toHaveLength(0);
+    });
+
+    /**
+     * The entry node can only judge a peer's 500 by its body, so the claim is that beta relays its
+     * engine's error intact across the hop — the path core-14, core-17, core-7 and beta-max all took
+     * on 2026-09-26 — and that neither node reads it as the model failing.
+     */
+    it('carries the engine’s refusal of a turn with no user message back to the caller, and charges no model for it', async () => {
+      await pairNodes();
+      await core.poll();
+      betaEngineReply = () =>
+        new Response(JSON.stringify({ error: 'no user query found in messages' }), {
+          status: 500,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
+
+      const captured = capturingResponse();
+      await coreProxy.proxyRequest({
+        path: '/api/chat',
+        method: 'POST',
+        body: { model: BETA_ONLY_MODEL, messages: [{ role: 'system', content: 'You are an agent.' }] },
+        model: BETA_ONLY_MODEL,
+        res: captured.res,
+      });
+
+      // Beta relays its engine's 500 as it is, and core, whose walk it was, is what calls it a 400.
+      expect(captured.status()).toBe(400);
+      expect(captured.headers['x-hub-pool-upstream-status']).toBe('500');
+      expect(JSON.parse(captured.body())).toEqual({ error: 'no user query found in messages' });
+      expect(captured.headers[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe(BETA_FQDN);
+      const id = captured.headers[POOL_REQUEST_ID_HEADER.toLowerCase()];
+      expect(coreLog.list()[0]).toMatchObject({
+        id,
+        node: BETA_FQDN,
+        outcome: 'failed',
+        status: 500,
+        failedOverFrom: [],
+        requestError: { signature: 'no-user-query', basis: 'definitive', confirms: null },
+      });
+      expect(betaLog.list()[0]).toMatchObject({ id, direction: 'inbound', outcome: 'failed', status: 500, requestError: null });
+      expect(betaOllama.noteServingFailure).not.toHaveBeenCalled();
     });
   });
 
