@@ -280,6 +280,8 @@ export class CloudflareClientService {
           profile: 'cloudflare',
           forceRecreate: true,
         });
+        // cloudflared is on the edge network only; a Traefik from before it must join it too.
+        await dockerService.ensureTraefikOnEdgeNetwork();
         this.logger.log('Cloudflared container is running.');
 
         this.logger.log(`Tunnel configured successfully: ${this.tunnelId}`);
@@ -918,6 +920,8 @@ export class CloudflareClientService {
         profile: 'cloudflare',
         forceRecreate: options.forceRestart === true,
       });
+      // cloudflared is on the edge network only; a Traefik from before it must join it too.
+      await dockerService.ensureTraefikOnEdgeNetwork();
       this.logger.log('Cloudflared container is up to date with the compose file and running.');
       return true;
     } catch (error) {
