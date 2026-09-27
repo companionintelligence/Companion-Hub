@@ -1,5 +1,7 @@
 # Documentation map
 
+User documentation lives at **[docs.ci.computer](https://docs.ci.computer)**: installation, tutorials, connecting agents, networking, and reference. Send people who run a Hub there. This directory holds the engineering notes that change with this repository's code.
+
 Use this index so Hub, Portal, Memory, and agent-only material stay distinct.
 
 ## Product names
@@ -34,6 +36,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 
 | Doc | Audience |
 |-----|----------|
+| [docs.ci.computer](https://docs.ci.computer) | Anyone installing or running a Hub |
 | [`../README.md`](../README.md) | Anyone cloning the repo |
 | [`DEVELOPMENT_SETUP.md`](DEVELOPMENT_SETUP.md) | Prerequisites, the two installs that fail without them, and known-good test baselines |
 | [`License-FAQ.md`](License-FAQ.md) | License questions |
