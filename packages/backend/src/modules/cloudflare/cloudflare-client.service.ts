@@ -223,7 +223,8 @@ export class CloudflareClientService {
       (typeof candidate.id === 'string' || typeof candidate.id === 'number') &&
       typeof candidate.domain === 'string' &&
       typeof candidate.isDefault === 'boolean' &&
-      (typeof candidate.scope === 'string' || typeof candidate.scope === 'undefined')
+      (typeof candidate.scope === 'string' || typeof candidate.scope === 'undefined') &&
+      (typeof candidate.offered === 'boolean' || typeof candidate.offered === 'undefined')
     );
   }
 
