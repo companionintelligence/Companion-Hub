@@ -223,6 +223,12 @@ export interface PoolStatusSummary {
 
 export interface RoutingLogEntry {
   at: string;
+  /**
+   * When anything on the row last changed. While a row is `pending` that is its last failover hop —
+   * the moment the node now holding it started on it, and started its own header deadline — which
+   * is why `waitingNow` reads it. Absent on a Hub predating the field.
+   */
+  updatedAt?: string;
   direction: string;
   path?: string;
   model?: string | null;
@@ -855,6 +861,70 @@ export function memoryReconciliation(
   }
 
   return null;
+}
+
+/**
+ * Whose a GPU process row is, when no workload's container holds it.
+ *
+ *   `{ engine, inModelMemory }`  an inference engine the Hub manages. `inModelMemory` is `true` when
+ *                                the Model memory panel's figure for that engine IS this row's memory
+ *                                (its `source` is `process`, i.e. the sum of rows like this one).
+ *   `'unmanaged'`                a process no managed engine accounts for — fzzy's `dflash_server`.
+ *                                The only memory on the page that nothing else shows.
+ *   `null`                       cannot say: a bare `llama-server` when both llama.cpp-hosting
+ *                                engines (or neither) hold a model, or when `/inference/memory` has
+ *                                not answered.
+ */
+export type GpuProcessOwner = { engine: string; inModelMemory: boolean } | 'unmanaged' | null;
+
+/*
+ * MIRRORS `memory-manager.service.ts` (`ENGINE_PROCESS_PATTERNS`, `LLAMA_SERVER_ENGINES`,
+ * `llamaServerOwner`) on purpose. The backend already decides which vendor-tool rows are an engine's
+ * and sums them into `/inference/memory`; the container sampler reports the SAME rows as
+ * `unattributedGpu`, because no workload's container holds them. Without applying the same rule here
+ * the page showed one runner twice under two owners: core-2, 2026-09-27, Model memory read "ollama ·
+ * 24,824 MB (process)" while the GPU tile listed "llama-server 24 GB / 493 MB" as held outside any
+ * workload — 24,331 + 493 = 24,824, Ollama's qwen3.6:35b and nomic-embed runners, which rocm-smi
+ * names by their bare `comm`. An operator either hunts for an unmanaged llama-server that does not
+ * exist or adds the two panels up to ~49 GB.
+ */
+const ENGINE_PROCESS_PATTERNS: Record<string, RegExp> = {
+  ollama: /ollama/,
+  vllm: /vllm/,
+  lemonade: /lemonade|lemond/,
+  omlx: /omlx/,
+};
+const LLAMA_SERVER_COMM = 'llama-server';
+const LLAMA_SERVER_ENGINES = ['ollama', 'lemonade'];
+
+/**
+ * Attribute one unattributed GPU process row to the engine that owns it, by the backend's rule.
+ *
+ * `engines` is `/inference/memory`'s `usage.backends`. A bare `llama-server` belongs to whichever of
+ * Ollama and Lemonade is the ONLY one holding a model — "holding" read the way the backend reads it:
+ * an entry sized by its process, its own accounting, or not at all (`unmeasured`), but not `registry`,
+ * which is the Hub's bookkeeping for an engine it could not ask. The two readings are not taken
+ * together — the container sample is cached for up to a minute and a half, the memory reading for
+ * five seconds — so across a model load or unload a bare `llama-server` can read as nobody's, or as
+ * the engine holding a model NOW, for a poll. Rows named for their engine by process name cannot.
+ */
+export function gpuProcessOwner(processName: string, engines: ModelMemoryUsageEntrySummary[] | undefined): GpuProcessOwner {
+  const name = processName.toLowerCase();
+  const entryFor = (engine: string) => engines?.find((entry) => entry.backend === engine);
+  const owned = (engine: string) => ({ engine, inModelMemory: entryFor(engine)?.source === 'process' });
+
+  for (const [engine, pattern] of Object.entries(ENGINE_PROCESS_PATTERNS)) {
+    if (pattern.test(name)) return owned(engine);
+  }
+  if (name !== LLAMA_SERVER_COMM) return 'unmanaged';
+  if (!engines) return null;
+
+  const holding = LLAMA_SERVER_ENGINES.filter((engine) => {
+    const entry = entryFor(engine);
+    return entry !== undefined && entry.source !== 'registry';
+  });
+
+  return holding.length === 1 && holding[0] ? owned(holding[0]) : null;
 }
 
 /** Share of a budget that is in use, 0-100, or `null` when there is no budget to be a share of. */

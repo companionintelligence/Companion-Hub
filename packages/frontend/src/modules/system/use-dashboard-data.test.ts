@@ -3,6 +3,7 @@ import {
   budgetPercent,
   combineLoadState,
   estimatedPromptTokens,
+  gpuProcessOwner,
   type HardwareSummary,
   hostRamUsedMb,
   isExhausted,
@@ -359,6 +360,51 @@ describe('memoryReconciliation', () => {
     });
 
     expect(memoryReconciliation(unified(50_572, 125_781), { memoryBytes: 818 * MB }, unsized)).toBeNull();
+  });
+});
+
+/*
+ * The backend's own rule (`memory-manager.service.ts`), applied to the rows the container sampler
+ * could not give to a workload. Each case is one the backend decides the same way, so the GPU tile
+ * and Model memory can never disagree about whose memory a process holds.
+ */
+describe('gpuProcessOwner', () => {
+  const ollama = { backend: 'ollama', pool: 'ram' as const, usedMb: 24_824, source: 'process' as const };
+
+  it("gives core-2's bare llama-server to Ollama, the only llama.cpp engine holding a model, and says Model memory counts it", () => {
+    expect(gpuProcessOwner('llama-server', [ollama])).toEqual({ engine: 'ollama', inModelMemory: true });
+  });
+
+  it('names an engine by its process wherever the vendor tool spells it, and marks it counted only when Model memory was sized from it', () => {
+    expect(gpuProcessOwner('VLLM::EngineCor', [{ backend: 'vllm', usedMb: 314, source: 'process' }])).toEqual({
+      engine: 'vllm',
+      inModelMemory: true,
+    });
+    // Ollama sized from `/api/ps` instead: the process is still Ollama's, but this is not the figure shown.
+    expect(gpuProcessOwner('/usr/local/lib/ollama/llama-server', [{ ...ollama, source: 'engine' }])).toEqual({
+      engine: 'ollama',
+      inModelMemory: false,
+    });
+    expect(gpuProcessOwner('lemond', [])).toEqual({ engine: 'lemonade', inModelMemory: false });
+  });
+
+  it("calls a process no engine pattern matches unmanaged — fzzy's dflash_server", () => {
+    expect(gpuProcessOwner('dflash_server', [{ backend: 'vllm', usedMb: 314, source: 'process' }])).toBe('unmanaged');
+    expect(gpuProcessOwner('dflash_server', undefined)).toBe('unmanaged');
+  });
+
+  it('leaves a bare llama-server unnamed when it could be either engine, or when Model memory has not answered', () => {
+    const lemonade = { backend: 'lemonade', usedMb: null, source: 'unmeasured' as const };
+
+    expect(gpuProcessOwner('llama-server', [ollama, lemonade])).toBeNull();
+    expect(gpuProcessOwner('llama-server', [])).toBeNull();
+    expect(gpuProcessOwner('llama-server', undefined)).toBeNull();
+  });
+
+  it("does not count an engine the Hub could not ask as holding — its entry is the router's bookkeeping", () => {
+    const lemonadeBookkept = { backend: 'lemonade', usedMb: 4_000, source: 'registry' as const };
+
+    expect(gpuProcessOwner('llama-server', [ollama, lemonadeBookkept])).toEqual({ engine: 'ollama', inModelMemory: true });
   });
 });
 
