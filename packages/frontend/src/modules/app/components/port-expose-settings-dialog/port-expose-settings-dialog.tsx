@@ -99,7 +99,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       fetchDnsAvailability(subdomain, {
         domain: selectedDomain,
         appUrn: info.urn,
-      }) as Promise<Response>,
+      }),
     [info.urn],
   );
 

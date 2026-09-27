@@ -14,6 +14,7 @@ import * as path from 'node:path';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { PortalClientService } from '@/core/portal/portal-client.service';
+import { type DnsAvailability, readDnsAvailability } from './dns-availability';
 
 /** How long `getDeviceApplications` waits for the Portal before it counts as no answer. */
 const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
@@ -720,7 +721,7 @@ export class CloudflareClientService {
     }
   }
 
-  async checkDnsAvailability(subdomain: string, domain?: string): Promise<{ available: boolean; message?: string }> {
+  async checkDnsAvailability(subdomain: string, domain?: string): Promise<DnsAvailability> {
     try {
       const response = await this.client.get('cloudflare/check-dns-availability', {
         ...this.getRequestConfig(),
@@ -730,11 +731,11 @@ export class CloudflareClientService {
         },
       });
 
-      if (typeof response.data?.available === 'boolean') {
-        return {
-          available: response.data.available,
-          message: typeof response.data?.message === 'string' ? response.data.message : undefined,
-        };
+      // Keep Portal's `reason`: the forms put `zone_unreachable` on the domain
+      // picker, and without it they blame a subdomain no rename can fix.
+      const availability = readDnsAvailability(response.data);
+      if (availability) {
+        return availability;
       }
 
       return {
