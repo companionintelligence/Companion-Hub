@@ -25,6 +25,7 @@ export function useDnsAvailability<TFormValues extends FieldValues>({
   const lastDnsToastRef = useRef<string | null>(null);
   const [isCheckingDns, setIsCheckingDns] = useState(false);
   const [dnsAvailabilityError, setDnsAvailabilityError] = useState<string | null>(null);
+  const [domainAvailabilityError, setDomainAvailabilityError] = useState<string | null>(null);
 
   useEffect(() => {
     if (dnsCheckTimeoutRef.current) {
@@ -33,18 +34,21 @@ export function useDnsAvailability<TFormValues extends FieldValues>({
 
     if (!enabled) {
       setDnsAvailabilityError(null);
+      setDomainAvailabilityError(null);
       setIsCheckingDns(false);
       return;
     }
 
     if (!subdomain) {
       setDnsAvailabilityError(null);
+      setDomainAvailabilityError(null);
       setIsCheckingDns(false);
       return;
     }
 
     setIsCheckingDns(true);
     setDnsAvailabilityError(null);
+    setDomainAvailabilityError(null);
 
     dnsCheckTimeoutRef.current = setTimeout(async () => {
       try {
@@ -54,16 +58,33 @@ export function useDnsAvailability<TFormValues extends FieldValues>({
           const data = await response.json();
           if (data.available) {
             setDnsAvailabilityError(null);
+            setDomainAvailabilityError(null);
             lastDnsToastRef.current = null;
             clearErrors('localSubdomain' as Path<TFormValues>);
+            clearErrors('publicDomain' as Path<TFormValues>);
+          } else if (data.reason === 'zone_unreachable') {
+            const errorMessage = typeof data.message === 'string' && data.message ? data.message : t('APP_INSTALL_FORM_ERROR_DOMAIN_UNAVAILABLE');
+            setDnsAvailabilityError(null);
+            setDomainAvailabilityError(errorMessage);
+            if (lastDnsToastRef.current !== errorMessage) {
+              lastDnsToastRef.current = errorMessage;
+              toast.error(errorMessage);
+            }
+            clearErrors('localSubdomain' as Path<TFormValues>);
+            setError('publicDomain' as Path<TFormValues>, {
+              type: 'manual',
+              message: errorMessage,
+            });
           } else {
             const errorMessage =
               typeof data.message === 'string' && data.message ? data.message : t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomain });
+            setDomainAvailabilityError(null);
             setDnsAvailabilityError(errorMessage);
             if (lastDnsToastRef.current !== errorMessage) {
               lastDnsToastRef.current = errorMessage;
               toast.error(errorMessage);
             }
+            clearErrors('publicDomain' as Path<TFormValues>);
             setError('localSubdomain' as Path<TFormValues>, {
               type: 'manual',
               message: errorMessage,
@@ -89,5 +110,6 @@ export function useDnsAvailability<TFormValues extends FieldValues>({
   return {
     isCheckingDns,
     dnsAvailabilityError,
+    domainAvailabilityError,
   };
 }
