@@ -1,5 +1,7 @@
 import {
+  compactTokens,
   DASH,
+  humanDuration,
   KpiTable,
   Panel,
   PanelBody,
@@ -15,8 +17,16 @@ import {
   Tr,
 } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
-import { type RoutingBucket, routingActivity } from '@/modules/system/pool-node-series';
-import { type LoadState, type RoutingLogEntry, routingByNode, routingLogKeys, tokensByModel } from '@/modules/system/use-dashboard-data';
+import { bucketTotal, type RoutingBucket, routingActivity } from '@/modules/system/pool-node-series';
+import {
+  estimatedPromptTokens,
+  isExhausted,
+  type LoadState,
+  type RoutingLogEntry,
+  routingByNode,
+  routingLogKeys,
+  tokensByModel,
+} from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
 
 /*
@@ -31,7 +41,9 @@ import { useTranslation } from 'react-i18next';
  *     when a request finishes or is abandoned. There is no job id, no start/end pair, no state;
  *   - `durationMs` is time to response HEADERS including failed attempts, not generation time.
  *     Labelled "first byte" here for exactly that reason — as "duration" it would recreate the
- *     fake queue by the back door, with a four-minute job reading 200ms;
+ *     fake queue by the back door, with a four-minute job reading 200ms. It is printed in the unit
+ *     a person reads (`6m 40s`, not `399710ms`): on this fleet a cold 40k-token prompt takes
+ *     minutes to prefill, and a seven-digit millisecond count hid which rows were slow;
  *   - `inFlightRequests` is a COUNT per node, never a list, so nothing links a live request to a
  *     row in this table.
  *
@@ -45,14 +57,20 @@ const NODE_TONES = ['ok', 'plain', 'warn', 'muted'] as const;
 
 function DecisionBars({ buckets }: { buckets: RoutingBucket[] }) {
   const { t } = useTranslation();
-  const max = Math.max(1, ...buckets.map((bucket) => bucket.served + bucket.failed));
-  const busiest = buckets.reduce((sum, bucket) => sum + bucket.served + bucket.failed, 0);
+  const peak = Math.max(0, ...buckets.map(bucketTotal));
+  const total = buckets.reduce((sum, bucket) => sum + bucketTotal(bucket), 0);
+  /*
+   * The floor of 1 is for the AXIS ONLY — a bar needs a non-zero denominator. It used to be printed
+   * too, as "0 in window · busiest minute 1": a measurement of a minute that did not happen, on every
+   * idle Hub, directly under an empty chart.
+   */
+  const axis = Math.max(1, peak);
 
   return (
     <div className="space-y-1.5">
       <div className="flex h-24 w-full items-end gap-[2px] rounded-md border border-border/60 bg-muted/20 p-2">
         {buckets.map((bucket) => {
-          const total = bucket.served + bucket.failed;
+          const placed = bucketTotal(bucket);
 
           return (
             <div
@@ -62,23 +80,32 @@ function DecisionBars({ buckets }: { buckets: RoutingBucket[] }) {
                 time: new Date(bucket.at).toLocaleTimeString(),
                 served: bucket.served,
                 failed: bucket.failed,
+                pending: bucket.pending,
               })}
             >
-              {bucket.failed > 0 ? (
-                <div className="w-full rounded-t-[1px] bg-destructive" style={{ height: `${(bucket.failed / max) * 100}%` }} />
+              {/* Waiting on top, in amber: it is the newest state a request can be in, and it is not
+                  a failure yet — an agent turn waits minutes for its first byte here and then
+                  succeeds. It used to be drawn red, as part of `failed`, for that whole wait. */}
+              {bucket.pending > 0 ? (
+                <div className="w-full rounded-t-[1px] bg-warning" style={{ height: `${(bucket.pending / axis) * 100}%` }} />
               ) : null}
-              {bucket.served > 0 ? <div className="w-full bg-success" style={{ height: `${(bucket.served / max) * 100}%` }} /> : null}
+              {bucket.failed > 0 ? (
+                <div className="w-full rounded-t-[1px] bg-destructive" style={{ height: `${(bucket.failed / axis) * 100}%` }} />
+              ) : null}
+              {bucket.served > 0 ? <div className="w-full bg-success" style={{ height: `${(bucket.served / axis) * 100}%` }} /> : null}
               {/* An interval the log covers in which nothing was routed is a measured zero, so it
                   gets a baseline tick rather than nothing — an empty column and a column off the
                   end of the log must not look the same. */}
-              {total === 0 ? <div className="h-[2px] w-full rounded-sm bg-muted-foreground/25" /> : null}
+              {placed === 0 ? <div className="h-[2px] w-full rounded-sm bg-muted-foreground/25" /> : null}
             </div>
           );
         })}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-x-3 text-[11px] text-muted-foreground">
         <span>{t('DASHBOARD_ACTIVITY_WINDOW', { minutes: buckets.length })}</span>
-        <span className="tabular-nums">{t('DASHBOARD_ACTIVITY_WINDOW_TOTAL', { total: busiest, peak: max })}</span>
+        <span className="tabular-nums" data-testid="decision-bars-total">
+          {total === 0 ? t('DASHBOARD_ACTIVITY_WINDOW_EMPTY', { minutes: buckets.length }) : t('DASHBOARD_ACTIVITY_WINDOW_TOTAL', { total, peak })}
+        </span>
       </div>
     </div>
   );
@@ -111,7 +138,16 @@ export function PoolActivity({
 
   // Reused, never re-derived: `entry.node` means the SERVER on an outbound row and the SENDER on
   // an inbound one, and collapsing that distinction is the regression #1366 fixed.
-  const byNode = routingByNode(entries, t('DASHBOARD_ROUTING_UNPLACED'));
+  const byNode = routingByNode(entries, t('DASHBOARD_ROUTING_UNPLACED'), t('DASHBOARD_ROUTING_EXHAUSTED_LABEL'));
+
+  /*
+   * Tokens over the SAME window as the bars beside them, split into what the engines read and what
+   * they wrote. One whole-ring "Tokens" sum mixed the two — and on this fleet they differ by two
+   * orders of magnitude (an agent turn is ~16k prompt tokens for ~300 out) — over a span that was
+   * eighteen hours on one Hub and twenty minutes on another. The ring figure is kept, in the hint.
+   */
+  const promptTokens = buckets.reduce((sum, bucket) => sum + bucket.promptTokens, 0);
+  const completionTokens = buckets.reduce((sum, bucket) => sum + bucket.completionTokens, 0);
   const segments = [...byNode.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([label, value], index) => ({ label, value, tone: NODE_TONES[index % NODE_TONES.length] as Tone }));
@@ -142,11 +178,18 @@ export function PoolActivity({
               <StatChip value={activity.total} label={t('DASHBOARD_ACTIVITY_DECISIONS')} tone={activity.total > 0 ? 'plain' : 'muted'} />
               <StatChip value={activity.served} label={t('DASHBOARD_SERVED')} tone={activity.served > 0 ? 'ok' : 'muted'} />
               <StatChip
-                value={activity.tokensServed > 0 ? activity.tokensServed.toLocaleString() : 0}
-                label={t('DASHBOARD_ACTIVITY_TOKENS')}
-                tone={activity.tokensServed > 0 ? 'plain' : 'muted'}
-                hint={t('DASHBOARD_ACTIVITY_TOKENS_HINT')}
-                hintId="dashboard-activity-tokens"
+                value={promptTokens.toLocaleString()}
+                label={t('DASHBOARD_ACTIVITY_PROMPT_TOKENS', { minutes: buckets.length })}
+                tone={promptTokens > 0 ? 'plain' : 'muted'}
+                hint={t('DASHBOARD_ACTIVITY_TOKENS_WINDOW_HINT', { total: activity.tokensServed.toLocaleString() })}
+                hintId="dashboard-activity-prompt-tokens"
+              />
+              <StatChip
+                value={completionTokens.toLocaleString()}
+                label={t('DASHBOARD_ACTIVITY_OUTPUT_TOKENS', { minutes: buckets.length })}
+                tone={completionTokens > 0 ? 'plain' : 'muted'}
+                hint={t('DASHBOARD_ACTIVITY_TOKENS_WINDOW_HINT', { total: activity.tokensServed.toLocaleString() })}
+                hintId="dashboard-activity-output-tokens"
               />
               <StatChip value={activity.pending} label={t('DASHBOARD_ACTIVITY_IN_FLIGHT')} tone={activity.pending > 0 ? 'warn' : 'muted'} />
               <StatChip value={activity.failed} label={t('DASHBOARD_FAILED')} tone={activity.failed > 0 ? 'bad' : 'muted'} />
@@ -226,6 +269,9 @@ export function PoolActivity({
                   <Th>{t('DASHBOARD_COL_NODE')}</Th>
                   <Th>{t('DASHBOARD_COL_MODEL')}</Th>
                   <Th className="hidden @2xl:table-cell">{t('DASHBOARD_COL_ENGINE')}</Th>
+                  <Th align="right" className="hidden @xl:table-cell">
+                    {t('DASHBOARD_COL_PROMPT')}
+                  </Th>
                   <Th align="right" className="hidden @sm:table-cell">
                     {t('DASHBOARD_COL_FIRST_BYTE')}
                   </Th>
@@ -234,7 +280,7 @@ export function PoolActivity({
               }
             >
               {entries.length === 0 ? (
-                <TableEmpty colSpan={6}>{t('DASHBOARD_ROUTING_LOG_EMPTY')}</TableEmpty>
+                <TableEmpty colSpan={7}>{t('DASHBOARD_ROUTING_LOG_EMPTY')}</TableEmpty>
               ) : (
                 entries.map((entry, index) => {
                   const inbound = entry.direction === 'inbound';
@@ -242,9 +288,14 @@ export function PoolActivity({
                   // Placed on a node and still waiting for headers. The row is the placement itself,
                   // so the node column names where it is waiting and the first-byte column counts up.
                   const pending = entry.outcome === 'pending';
-                  // An outbound row with no node is an attempt nothing took — a real outcome, and the
-                  // one most worth seeing. It must not read as the local node having served it.
-                  const unplaced = !inbound && !entry.node && !pending;
+                  // A nodeless outbound row is one of two outcomes, and they are named apart: every
+                  // candidate tried and failed, or none existed. Either way it must not read as the
+                  // local node having served it. The first used to render "Unplaced · +9 tried",
+                  // which says nothing was tried and that nine nodes were, in one row.
+                  const exhausted = isExhausted(entry);
+                  const unplaced = !inbound && !entry.node && !pending && !exhausted;
+                  const triedCount = typeof entry.candidates === 'number' && entry.candidates > 0 ? entry.candidates : failedOver.length;
+                  const promptEstimate = estimatedPromptTokens(entry);
 
                   return (
                     <Tr key={keys[index]}>
@@ -258,7 +309,11 @@ export function PoolActivity({
                         >
                           {inbound ? '↓' : '↑'}
                         </span>
-                        {unplaced ? (
+                        {exhausted ? (
+                          <span className="italic text-destructive" title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failedOver.join(', ') })}>
+                            {t('DASHBOARD_ROUTING_EXHAUSTED', { count: triedCount })}
+                          </span>
+                        ) : unplaced ? (
                           <span className="italic text-destructive">{t('DASHBOARD_ROUTING_UNPLACED')}</span>
                         ) : (
                           (entry.node ?? DASH).split('.')[0]
@@ -273,18 +328,34 @@ export function PoolActivity({
                         {entry.model ?? DASH}
                       </Td>
                       <Td className="hidden text-muted-foreground @2xl:table-cell">{entry.backend ?? DASH}</Td>
-                      <Td align="right" className="hidden @sm:table-cell">
+                      {/* The prompt's size is what a first-byte time has to be read against: 6 minutes
+                          for ~39k tokens on a CPU-served node is the machine working, and for ~2k it is
+                          a fault. An estimate (`bytes / 4`), so it carries a tilde. */}
+                      <Td align="right" className="hidden text-muted-foreground @xl:table-cell">
+                        {promptEstimate === null ? DASH : t('DASHBOARD_PROMPT_TOKENS', { tokens: compactTokens(promptEstimate) })}
+                      </Td>
+                      <Td
+                        align="right"
+                        className="hidden whitespace-nowrap @sm:table-cell"
+                        title={
+                          promptEstimate !== null || typeof entry.budgetMs === 'number'
+                            ? t('DASHBOARD_FIRST_BYTE_HINT', {
+                                tokens: promptEstimate === null ? DASH : compactTokens(promptEstimate),
+                                budget: humanDuration(entry.budgetMs),
+                              })
+                            : undefined
+                        }
+                      >
                         {pending ? (
                           <span className="text-warning">{t('DASHBOARD_ACTIVITY_WAITING', { elapsed: relativeAge(entry.at, now) })}</span>
-                        ) : typeof entry.durationMs === 'number' ? (
-                          `${Math.round(entry.durationMs)}ms`
                         ) : (
-                          DASH
+                          humanDuration(entry.durationMs)
                         )}
                       </Td>
                       <Td align="right" title={entry.outcome}>
                         <span className="inline-flex items-center justify-end gap-1.5">
-                          {failedOver.length > 0 ? (
+                          {/* Not on an exhausted row: its node cell already says how many were tried. */}
+                          {failedOver.length > 0 && !exhausted ? (
                             <span
                               className="text-[11px] text-warning"
                               title={t('DASHBOARD_ACTIVITY_FAILOVER_FROM', { nodes: failedOver.join(', ') })}

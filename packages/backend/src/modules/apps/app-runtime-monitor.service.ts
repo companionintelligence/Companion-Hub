@@ -157,6 +157,8 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
   private latestSnapshot: AppRuntimeMonitorSnapshot | null = null;
   private latestSnapshotAtMs = 0;
   private summaryInFlight = false;
+  /** The collection currently running, which every concurrent caller joins — see {@link collectRuntimeMonitorSnapshot}. */
+  private collectionInFlight: Promise<AppRuntimeMonitorSnapshot> | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -288,11 +290,36 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
     };
   }
 
-  private async collectRuntimeMonitorSnapshot(force = false): Promise<AppRuntimeMonitorSnapshot> {
+  /**
+   * The cached snapshot, or a fresh one — and ONE fresh one however many callers ask at once.
+   *
+   * The 60s timer and a dashboard GET both land here, and a cold collection is seconds of Docker
+   * fan-out (3.4s measured on core-2). With nothing coalescing them, a GET arriving while the timer's
+   * collection was still running found the cache stale and started its own, and each appended a
+   * history sample: core-2 served samples at 18:00:49.803 and 18:00:50.491. The page charts history
+   * by index, so those two were drawn a full slot apart, and with a dashboard open the history filled
+   * with irregular near-duplicates that shortened its 24-sample window. Joining the running collection
+   * also halves the Docker load at exactly the moment it is already busy.
+   *
+   * `force` still joins: a forced caller wants a sample newer than the cache, and one already being
+   * taken is exactly that.
+   */
+  private collectRuntimeMonitorSnapshot(force = false): Promise<AppRuntimeMonitorSnapshot> {
     if (!force && this.latestSnapshot && Date.now() - this.latestSnapshotAtMs < SNAPSHOT_CACHE_TTL_MS) {
-      return this.latestSnapshot;
+      return Promise.resolve(this.latestSnapshot);
+    }
+    if (this.collectionInFlight) {
+      return this.collectionInFlight;
     }
 
+    const collection = this.collectWithDeadline().finally(() => {
+      this.collectionInFlight = null;
+    });
+    this.collectionInFlight = collection;
+    return collection;
+  }
+
+  private async collectWithDeadline(): Promise<AppRuntimeMonitorSnapshot> {
     try {
       return await withTimeout(
         this.collectRuntimeMonitorSnapshotInner(),

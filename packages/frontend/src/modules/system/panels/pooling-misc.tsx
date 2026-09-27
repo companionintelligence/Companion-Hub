@@ -1,4 +1,4 @@
-import { DASH, KpiTable, Panel, PanelBody, StatChip, StatChipRow, StatusDot, Td, Th, type Tone, Tr } from '@/components/ui/dense/dense';
+import { DASH, KpiTable, Panel, PanelBody, StatChip, StatChipRow, StatusDot, Td, Th, TONE_TEXT, type Tone, Tr } from '@/components/ui/dense/dense';
 import type { CloudProviderSummary, HardwareSummary, LoadState, PoolDirectionState, PoolStatusSummary } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
 
@@ -228,11 +228,28 @@ export function MiscPanel({
       value: hardware?.gpu?.available ? `${hardware.gpu.vendor ?? ''} ${hardware.gpu.model ?? ''}`.trim() || DASH : t('DASHBOARD_NONE'),
       tone: hardware?.gpu?.available ? 'ok' : 'muted',
     },
+    /*
+     * `runtimeAvailable` is whether the GPU runtime works from INSIDE the Hub container. On this fleet
+     * it is false on every node, because no engine runs in that container — Ollama and llama-server
+     * are host processes. Labelled "GPU runtime" in warning colour, it put a fault-looking row on all
+     * seventeen nodes while their engines were using the GPU. The label now says whose runtime it is,
+     * in a muted tone, and the HOST's own stack — what the engines actually use — has its own row.
+     */
     {
-      label: t('DASHBOARD_MISC_GPU_RUNTIME'),
+      label: t('DASHBOARD_MISC_GPU_CONTAINER'),
       value: hardware?.gpu?.runtimeAvailable ? t('DASHBOARD_AVAILABLE') : t('DASHBOARD_UNAVAILABLE'),
-      tone: hardware?.gpu?.runtimeAvailable ? 'ok' : 'warn',
+      tone: hardware?.gpu?.runtimeAvailable ? 'ok' : 'muted',
     },
+    // Only when reported: absent off AMD and on a Hub predating the field, neither of which is "no".
+    ...(typeof hardware?.gpu?.hostRocmAvailable === 'boolean'
+      ? [
+          {
+            label: t('DASHBOARD_MISC_HOST_ROCM'),
+            value: hardware.gpu.hostRocmAvailable ? t('DASHBOARD_AVAILABLE') : t('DASHBOARD_UNAVAILABLE'),
+            tone: (hardware.gpu.hostRocmAvailable ? 'ok' : 'muted') as Tone,
+          },
+        ]
+      : []),
     {
       label: t('DASHBOARD_MISC_NPU'),
       value: hardware?.npu?.available ? (hardware.npu.model ?? t('DASHBOARD_AVAILABLE')) : t('DASHBOARD_NONE'),
@@ -254,9 +271,7 @@ export function MiscPanel({
           {rows.map((row) => (
             <Tr key={row.label}>
               <Td className="w-[42%] text-[11px] uppercase tracking-[0.5px] text-muted-foreground">{row.label}</Td>
-              <Td
-                className={row.tone === 'ok' ? 'text-success' : row.tone === 'bad' ? 'text-destructive' : row.tone === 'warn' ? 'text-warning' : ''}
-              >
+              <Td className={TONE_TEXT[row.tone ?? 'plain']}>
                 <span className="font-mono text-[12px]">{row.value}</span>
               </Td>
             </Tr>

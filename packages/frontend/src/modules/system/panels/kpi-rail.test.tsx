@@ -1,40 +1,43 @@
 import { render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import type { RoutingActivity, RoutingBucket } from '@/modules/system/pool-node-series';
+import { emptyRoutingBucket, type FirstByteStats, type RoutingBucket, type WaitingNow } from '@/modules/system/pool-node-series';
+import type { InferenceBackendStatus, ResidencyReportSummary } from '@/modules/system/use-dashboard-data';
 import { DashboardRail } from './kpi-rail';
 
 /*
- * THE WINDOW EACH RAIL FIGURE ACTUALLY COVERS.
+ * THE WINDOW EACH RAIL FIGURE ACTUALLY COVERS, and what it counts.
  *
- * Three of the twelve stats are counts of routing decisions, and they do not share a window. Two
- * are summed from 30 one-minute buckets; the third is the whole 200-entry ring, which spans days on
- * a quiet Hub and twenty minutes on a busy one. Sitting side by side with no qualifier, adjacency
- * alone made the ring count read as another half-hour figure.
+ * Every routing figure on the rail is a 30-minute figure summed from the same buckets the activity
+ * panel draws. Failovers used to be the exception — a whole-ring count that spanned eighteen hours on
+ * core-2 — and was labelled "whole log, not 30m" to excuse it; it is windowed now, and so is the
+ * verdict's unplaced count.
  *
- * The windowed pair has its own trap: the ring EVICTS SILENTLY at `ROUTING_LOG_CAPACITY`, so on a
- * Hub that turned over 200 requests inside the window the bucket sum is a floor, not a total —
- * precisely the busiest Hubs understating themselves with nothing near the number to say so.
+ * The windowed figures have their own trap: the ring EVICTS SILENTLY, so on a Hub that turned over
+ * more rows than it holds inside the window the bucket sum is a floor, not a total. Whether that has
+ * happened is decided from the server's own summary (`routingWindowPartial`); the rail only has to
+ * say so beside the numbers it qualifies.
  */
 
 const READY = { pending: false, failed: false };
+const NOW = Date.parse('2026-09-27T18:00:54Z');
 
-const activity = (over: Partial<RoutingActivity> = {}): RoutingActivity => ({
-  total: 12,
-  served: 10,
-  failed: 2,
-  pending: 0,
-  failovers: 3,
-  inbound: 4,
-  outbound: 8,
-  unplaced: 0,
-  tokensServed: 0,
-  ...over,
-});
+const bucket = (over: Partial<RoutingBucket> = {}): RoutingBucket => ({ ...emptyRoutingBucket(NOW - 60_000), ...over });
 
-const buckets: RoutingBucket[] = [{ at: 1_700_000_000_000, served: 5, failed: 1 }];
+const NOTHING_WAITING: WaitingNow = { count: 0, oldest: null };
 
-function renderRail(over: { activity?: RoutingActivity } = {}) {
+function renderRail(
+  over: {
+    buckets?: RoutingBucket[];
+    windowPartial?: boolean;
+    logHeld?: number;
+    waiting?: WaitingNow;
+    firstByte?: Map<string, FirstByteStats>;
+    residency?: ResidencyReportSummary;
+    inferenceBackends?: InferenceBackendStatus[];
+    hostCpu?: { cpuLoad?: number; cpuCores?: number };
+  } = {},
+) {
   return render(
     <DashboardRail
       verdict={{ kind: 'clear', faults: [], unavailable: 0 }}
@@ -42,39 +45,168 @@ function renderRail(over: { activity?: RoutingActivity } = {}) {
       poolState={READY}
       reach={{ connected: 1, unreachable: 0, reachableModels: 2, exclusiveModels: 1, peerInFlight: 0 }}
       localNode={undefined}
+      localLabel="This Hub"
       workloads={2}
       degraded={0}
-      rollup={null}
       containerState={READY}
       sampledAt={undefined}
       hardware={undefined}
       hardwareState={READY}
-      residency={undefined}
+      hostCpu={over.hostCpu}
+      hostCpuState={READY}
+      residency={over.residency}
       residencyState={READY}
-      buckets={buckets}
-      activity={over.activity ?? activity()}
+      inferenceBackends={over.inferenceBackends}
+      buckets={over.buckets ?? [bucket({ served: 5, failed: 1, failovers: 3 })]}
+      windowPartial={over.windowPartial ?? false}
+      logHeld={over.logHeld ?? 12}
+      waiting={over.waiting ?? NOTHING_WAITING}
+      firstByte={over.firstByte ?? new Map()}
+      startedAt={undefined}
       routingState={READY}
+      now={NOW}
     />,
   );
 }
 
+/** A rail stat's rendered text, found by its label. */
+function stat(container: HTMLElement, label: string): string {
+  const cell = [...container.querySelectorAll('span')].find((span) => span.textContent === label)?.parentElement;
+  expect(cell, `no rail stat labelled ${label}`).toBeTruthy();
+
+  return cell?.textContent ?? '';
+}
+
 describe('KpiRail routing windows', () => {
-  it('marks the failover count as covering the whole log, not the 30-minute window', () => {
+  it('counts failovers over the 30-minute window, and no longer excuses a whole-log figure', () => {
+    const { container } = renderRail({ buckets: [bucket({ served: 4, failovers: 2 }), bucket({ served: 1, failovers: 1 })] });
+
+    expect(stat(container, 'Failover 30m')).toContain('3');
+    expect(container.textContent).not.toContain('whole log');
+  });
+
+  it('qualifies the 30-minute counts as a floor when the log held may be missing rows from the window', () => {
+    const { container } = renderRail({ windowPartial: true, logHeld: 200 });
+
+    expect(stat(container, 'Routed 30m')).toContain('at least — last 200 held');
+    expect(stat(container, 'Failed 30m')).toContain('at least — last 200 held');
+  });
+
+  it('leaves the caveat off when the window is covered, where the count is exact', () => {
+    const { container } = renderRail({ windowPartial: false, logHeld: 200 });
+
+    expect(container.textContent).not.toContain('at least');
+  });
+
+  it('never counts a request still waiting for its first byte as failed', () => {
+    // A 40k-token agent turn waits minutes for prefill; it is waiting, not failing.
+    const { container } = renderRail({ buckets: [bucket({ served: 2, pending: 1 })] });
+
+    expect(stat(container, 'Failed 30m')).toMatch(/^0/);
+    expect(stat(container, 'Routed 30m')).toMatch(/^3/);
+  });
+
+  it('names callers that hung up under the failed count, since that is a different fix from a dead node', () => {
+    const { container } = renderRail({ buckets: [bucket({ failed: 3, clientClosed: 2 })] });
+
+    expect(stat(container, 'Failed 30m')).toContain('2 callers left');
+  });
+});
+
+describe('KpiRail live figures', () => {
+  it('shows what is waiting for a first byte, the oldest wait and where', () => {
+    const { container } = renderRail({
+      waiting: { count: 2, oldest: { ageMs: 370_941, node: 'local', budgetMs: 780_000, estTokens: 38_979 } },
+    });
+
+    const waiting = stat(container, 'Waiting');
+    expect(waiting).toMatch(/^2/);
+    expect(waiting).toContain('oldest 6m 11s · This Hub');
+  });
+
+  it('reads an empty queue as a real zero, not as unknown', () => {
     const { container } = renderRail();
 
-    expect(container.textContent).toContain('whole log, not 30m');
+    expect(stat(container, 'Waiting')).toMatch(/^0/);
   });
 
-  it('qualifies the 30-minute counts as a floor once the ring buffer is full', () => {
-    // 200 is ROUTING_LOG_CAPACITY: at capacity the log has evicted, so the bucket sum understates.
-    const { container } = renderRail({ activity: activity({ total: 200 }) });
+  it('gives the slowest first byte in the window, the node and the prompt size that explain it', () => {
+    const firstByte = new Map<string, FirstByteStats>([
+      ['core-6', { count: 1, p50Ms: 91_716, maxMs: 91_716, maxEstTokens: 38_693 }],
+      ['local', { count: 4, p50Ms: 361, maxMs: 27_027, maxEstTokens: 7_748 }],
+    ]);
+    const { container } = renderRail({ firstByte });
 
-    expect(container.textContent).toContain('at least — log full');
+    const cell = stat(container, '1st byte 30m');
+    expect(cell).toContain('1m 32s');
+    expect(cell).toContain('core-6 · ~39k tok');
   });
 
-  it('leaves the caveat off while the log is still short of capacity, where the count is exact', () => {
-    const { container } = renderRail({ activity: activity({ total: 199 }) });
+  it('says there is no evidence rather than implying a fast pool when nothing streamed was served', () => {
+    const { container } = renderRail({ firstByte: new Map() });
 
-    expect(container.textContent).not.toContain('at least — log full');
+    expect(stat(container, '1st byte 30m')).toContain('none measured');
+  });
+
+  it('shows host CPU as a share of the machine with its core count', () => {
+    const { container } = renderRail({ hostCpu: { cpuLoad: 91.4, cpuCores: 32 } });
+
+    expect(stat(container, 'Host CPU')).toContain('91%');
+    expect(stat(container, 'Host CPU')).toContain('32 cores');
+  });
+
+  it('no longer shows per-core container CPU as a bare percentage beside host shares', () => {
+    const { container } = renderRail();
+
+    expect(container.textContent).not.toContain('Workload CPU');
+    expect(container.textContent).not.toContain('Workload RAM');
+  });
+});
+
+describe('KpiRail residency blind spots', () => {
+  const residency: ResidencyReportSummary = {
+    backends: [
+      { backend: 'ollama', source: 'measured', models: [] },
+      { backend: 'vllm', source: 'unsupported', models: null },
+      { backend: 'lemonade', source: 'unreachable', models: null, error: 'connect ECONNREFUSED 172.17.0.1:13305' },
+      { backend: 'omlx', source: 'unsupported', models: null },
+    ],
+    residentCount: 0,
+    sampledAt: '2026-09-27T18:00:52.806Z',
+  };
+
+  it('does not list engines that are not running as residency it could not read (core-2)', () => {
+    const { container } = renderRail({
+      residency,
+      inferenceBackends: [
+        { type: 'ollama', running: true, healthy: true },
+        { type: 'vllm', running: false, healthy: false },
+        { type: 'lemonade', running: false, healthy: false },
+        { type: 'omlx', running: false, healthy: false },
+      ],
+    });
+
+    expect(container.textContent).not.toContain('Residency unknown');
+  });
+
+  it('names a running engine whose residency cannot be read (fzzy, vLLM holding a model)', () => {
+    const { container } = renderRail({
+      residency,
+      inferenceBackends: [
+        { type: 'ollama', running: true, healthy: true },
+        { type: 'vllm', running: true, healthy: true },
+        { type: 'lemonade', running: false, healthy: false },
+        { type: 'omlx', running: false, healthy: false },
+      ],
+    });
+
+    expect(stat(container, 'Resident')).toContain('Residency unknown for: vllm');
+    expect(stat(container, 'Resident')).not.toContain('lemonade');
+  });
+
+  it('keeps naming every unasked engine while engine status has not arrived, since off and unknown cannot be told apart', () => {
+    const { container } = renderRail({ residency });
+
+    expect(stat(container, 'Resident')).toContain('vllm, lemonade, omlx');
   });
 });
