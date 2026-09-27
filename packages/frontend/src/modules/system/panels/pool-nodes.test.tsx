@@ -215,6 +215,20 @@ describe('PoolNodes speed columns', () => {
     expect(idle).not.toContain('0 ms');
   });
 
+  /*
+   * Measured in the app shell (fixed header, `dashboard-column` gutter, 17px root), not on a bare
+   * page: this panel's container is 481 px at a 1280 window and 515 px at 1440, and only ~590 px at
+   * 1536. `@lg` is 32rem = 544 px there, so "1st byte" on `@lg` and "Gen" on `@2xl` (714 px) were never
+   * on screen on a laptop — the two per-node speed figures an agent turn is placed by. They take `@md`
+   * (476 px); tier and the container count, which the expanded card already carries, give way to them.
+   */
+  it('shows the speed columns at the width the panel actually gets on a laptop, ahead of tier and containers', () => {
+    render(<PoolNodes cards={[card({ key: 'core-6', label: 'core-6' })]} window={EMPTY_SAMPLE_WINDOW} state={READY} />);
+
+    const at = Object.fromEntries([...document.querySelectorAll('thead th')].map((th) => [(th.textContent ?? '').trim(), breakpointOf(th)]));
+    expect(at).toMatchObject({ '1st byte': '@md:table-cell', Gen: '@md:table-cell', Tier: '@lg:table-cell', Ctr: '@lg:table-cell' });
+  });
+
   it('spells out the median, the worst case and what was excluded on the expanded card', async () => {
     const user = userEvent.setup();
     render(

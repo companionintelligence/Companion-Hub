@@ -479,6 +479,29 @@ describe('routingBuckets', () => {
     expect(bucket).toMatchObject({ pending: 1, failed: 0, served: 0 });
   });
 
+  /*
+   * Failed rows split by what each points at. Shapes from the 2026-09-26 fleet logs: core-2's nine
+   * refusals (307 s of a 780 s budget), beta-max's caller hanging up after 10.8 s, core-1's peer
+   * answering 500 — and a turn whose one node ran out its 329 s budget, as core-7 did for core-2 at
+   * 23:55:50 before core-14 took that one over.
+   */
+  it('counts the failures that took a whole first-byte budget, and only those', () => {
+    const failed = (over: Record<string, unknown>) =>
+      ({ at: '2026-01-01T00:10:05Z', direction: 'outbound', outcome: 'failed', status: null, clientClosed: false, ...over }) as never;
+    const [bucket] = routingBuckets(
+      [
+        failed({ node: 'core-7', durationMs: 329_012, budgetMs: 329_000 }),
+        failed({ node: null, candidates: 9, durationMs: 307_336, budgetMs: 780_000 }),
+        failed({ node: 'core-1', durationMs: 10_843, budgetMs: 784_000, clientClosed: true }),
+        failed({ node: 'core-2', status: 500, durationMs: 800_000, budgetMs: 780_000 }),
+        failed({ node: 'core-7', durationMs: 329_012, budgetMs: null }),
+      ],
+      { now, bucketMs: 60_000, buckets: 1 },
+    );
+
+    expect(bucket).toMatchObject({ failed: 5, overBudget: 1, clientClosed: 1 });
+  });
+
   it('counts unplaced requests only inside the window, so one old row cannot hold the page red', () => {
     const unplaced = (iso: string) => ({ at: iso, direction: 'outbound', node: null, candidates: 0, outcome: 'failed' }) as never;
     const buckets = routingBuckets([unplaced('2026-01-01T00:10:05Z'), unplaced('2025-12-31T18:00:00Z')], { now, bucketMs: 60_000, buckets: 30 });
@@ -562,14 +585,52 @@ describe('waitingNow', () => {
   it('counts what is waiting for a first byte and reports the oldest wait, its node and its budget', () => {
     const rows: RoutingLogEntry[] = [
       { at: '2026-09-26T23:49:59.317Z', direction: 'outbound', node: 'local', outcome: 'pending', budgetMs: 780_000, bodyBytes: 155_982 },
-      { at: '2026-09-26T23:54:00Z', direction: 'outbound', node: 'core-2.capybara-ulmer.ts.net', outcome: 'pending', budgetMs: 300_000 },
-      { at: '2026-09-26T23:50:00Z', direction: 'outbound', node: 'core-7.capybara-ulmer.ts.net', outcome: 'served' },
+      { at: '2026-09-26T23:54:00Z', direction: 'outbound', node: 'core-2.tailnet-example.ts.net', outcome: 'pending', budgetMs: 300_000 },
+      { at: '2026-09-26T23:50:00Z', direction: 'outbound', node: 'core-7.tailnet-example.ts.net', outcome: 'served' },
     ];
 
     expect(waitingNow(rows, now)).toEqual({
       count: 2,
-      oldest: { ageMs: now - Date.parse('2026-09-26T23:49:59.317Z'), node: 'local', budgetMs: 780_000, estTokens: 38_996 },
+      oldest: { ageMs: now - Date.parse('2026-09-26T23:49:59.317Z'), node: 'local', budgetMs: 780_000, estTokens: 38_996, failovers: 0 },
     });
+  });
+
+  /*
+   * core-2, 2026-09-26: placed on core-7 at 23:50:21.867, core-7 hit its 329 s deadline at 23:55:50.870
+   * ("No response headers within 329000ms" in the Hub's log), and core-14 took it. The proxy gave
+   * core-14 a fresh 329 s. Timed from `at`, this row read 6m 8s "on core-14" at 23:56:30 — past the
+   * budget, on a node that had held it for 39 s.
+   */
+  it("times a failed-over request from its last hop, not from placement — the earlier node's wait is not the new node's", () => {
+    const at = Date.parse('2026-09-26T23:56:30Z');
+    const rows: RoutingLogEntry[] = [
+      {
+        at: '2026-09-26T23:50:21.867Z',
+        updatedAt: '2026-09-26T23:55:50.870Z',
+        direction: 'outbound',
+        node: 'core-14.tailnet-example.ts.net',
+        outcome: 'pending',
+        failedOverFrom: ['core-7.tailnet-example.ts.net'],
+        attempt: 2,
+        budgetMs: 329_000,
+      },
+    ];
+
+    expect(waitingNow(rows, at).oldest).toEqual({ ageMs: 39_130, node: 'core-14', budgetMs: 329_000, estTokens: null, failovers: 1 });
+  });
+
+  it('times a first attempt from placement, whatever updatedAt says, and falls back to placement on a Hub without the field', () => {
+    const placed = '2026-09-26T23:50:00Z';
+    // Never failed over: a bump to `updatedAt` for any other reason must not reset the only attempt's clock.
+    const firstAttempt = waitingNow(
+      [{ at: placed, updatedAt: '2026-09-26T23:54:00Z', direction: 'outbound', node: 'local', outcome: 'pending' }],
+      now,
+    );
+    // Failed over, on a Hub predating `updatedAt`: nothing better than placement to time it by.
+    const noField = waitingNow([{ at: placed, direction: 'outbound', node: 'local', outcome: 'pending', failedOverFrom: ['core-7'] }], now);
+
+    expect(firstAttempt.oldest?.ageMs).toBe(5 * 60_000);
+    expect(noField.oldest?.ageMs).toBe(5 * 60_000);
   });
 
   it('is a real zero when nothing is waiting', () => {
@@ -586,7 +647,7 @@ describe('firstByteByNode', () => {
   const served = (over: Partial<RoutingLogEntry>): RoutingLogEntry => ({
     at: '2026-09-26T23:50:00Z',
     direction: 'outbound',
-    node: 'core-6.capybara-ulmer.ts.net',
+    node: 'core-6.tailnet-example.ts.net',
     outcome: 'served',
     stream: true,
     failedOverFrom: [],
@@ -609,7 +670,7 @@ describe('firstByteByNode', () => {
    */
   it('leaves out a failed-over row, whose duration includes the node that failed first', () => {
     const stats = firstByteByNode(
-      [served({ node: 'core-14.capybara-ulmer.ts.net', durationMs: 399_710, failedOverFrom: ['core-7.capybara-ulmer.ts.net'] })],
+      [served({ node: 'core-14.tailnet-example.ts.net', durationMs: 399_710, failedOverFrom: ['core-7.tailnet-example.ts.net'] })],
       { now, windowMs },
     );
 
@@ -631,7 +692,7 @@ describe('firstByteByNode', () => {
 
   it("files this Hub's engines under 'local' from both directions — our own placements and peers' forwards", () => {
     const stats = firstByteByNode(
-      [served({ node: 'local', durationMs: 361 }), served({ direction: 'inbound', node: 'beta-max.capybara-ulmer.ts.net', durationMs: 32_227 })],
+      [served({ node: 'local', durationMs: 361 }), served({ direction: 'inbound', node: 'beta-max.tailnet-example.ts.net', durationMs: 32_227 })],
       { now, windowMs },
     );
 
