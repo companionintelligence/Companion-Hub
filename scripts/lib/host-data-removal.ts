@@ -3,8 +3,8 @@
  *
  * App and Hub containers write into the data folder as root, or as a container user that is not
  * the login user, so `cihub reset` and `cihub clean` often cannot delete all of it. The recursive
- * delete then throws one error that names the top folder, not the entry that failed: on 15 of 17
- * fleet nodes (2026-09-26) the Bun-compiled `cihub` reported
+ * delete then throws one error that names the top folder, not the entry that failed: on 3 of 17
+ * fleet nodes (core-2, core-3, fzzy; 2026-09-26) the Bun-compiled `cihub` reported
  * `EACCES: permission denied, rm '/home/ci/.local/share/companion-hub'` while the files it could
  * not delete were several levels down (`app-data/ci-marketplace/opencode/data/opencode/share/log`,
  * owned by root). That error was printed and the reset still said the host data had been removed.
@@ -230,9 +230,20 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+/** PowerShell escapes a single quote inside '…' by doubling it; the POSIX `'\''` is a syntax error there. */
+function powerShellQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** One argument for the operator's shell: bare when it needs no quoting, else quoted for sh or PowerShell. */
+export function shellArgument(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (/^[\w./:=+-]+$/.test(value)) return value;
+  return platform === 'win32' ? powerShellQuote(value) : shellQuote(value);
+}
+
 /** The command that finishes the delete as an administrator. */
 export function rootRemovalCommand(target: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform === 'win32') return `Remove-Item -Recurse -Force -LiteralPath ${shellQuote(target)}   (in an administrator PowerShell)`;
+  if (platform === 'win32') return `Remove-Item -Recurse -Force -LiteralPath ${powerShellQuote(target)}   (in an administrator PowerShell)`;
   return `sudo rm -rf -- ${shellQuote(target)}`;
 }
 
@@ -242,7 +253,7 @@ export function rootRemovalCommand(target: string, platform: NodeJS.Platform = p
  */
 export function rootEntryRemovalCommand(files: string[], folders: string[], platform: NodeJS.Platform = process.platform): string {
   if (platform === 'win32') {
-    return `Remove-Item -Force -LiteralPath ${[...files, ...folders].map(shellQuote).join(', ')}   (in an administrator PowerShell)`;
+    return `Remove-Item -Force -LiteralPath ${[...files, ...folders].map(powerShellQuote).join(', ')}   (in an administrator PowerShell)`;
   }
   const steps: string[] = [];
   if (files.length > 0) steps.push(`sudo rm -f -- ${files.map(shellQuote).join(' ')}`);

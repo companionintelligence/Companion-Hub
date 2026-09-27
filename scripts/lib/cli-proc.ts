@@ -80,8 +80,8 @@ export async function runScript<T>(
   }
 }
 
-export function runCapture(cmd: string, args: string[]): { stdout: string; ok: boolean } {
-  const result = spawnSync(cmd, args, { encoding: 'utf-8', stdio: 'pipe' });
+export function runCapture(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}): { stdout: string; ok: boolean } {
+  const result = spawnSync(cmd, args, { encoding: 'utf-8', stdio: 'pipe', env: { ...process.env, ...extraEnv } });
   return { stdout: (result.stdout || '').trim(), ok: result.status === 0 };
 }
 
