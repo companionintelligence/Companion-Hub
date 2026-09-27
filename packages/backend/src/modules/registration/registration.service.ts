@@ -68,11 +68,14 @@ import {
 import { ModuleRef } from '@nestjs/core';
 import { AuthService } from '@/modules/auth/auth.service';
 import { PortalPushKeyService } from './portal-push-key.service';
+import { describePublicReachability, probePublicHostname } from './public-reachability';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
 const BOOTSTRAP_VALIDATION_TIMEOUT_MS = 10 * 1000;
 const PHASE_READ_CACHE_TTL_MS = 30 * 1000;
+/** Per step of each registration-time probe, which retries every second for a minute. */
+const REGISTRATION_PROBE_TIMEOUT_MS = 2 * 1000;
 
 /**
  * How long to wait for `POST /api/devices/pair`.
@@ -284,6 +287,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   private tunnelCheckPending = false;
   /** An unregistered Hub still needs its `cloudflared` container removed. */
   private tunnelStopPending = false;
+  /** The public-URL probe in flight, shared so status polling every 30 s never stacks them. */
+  private publicReachabilityInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly config: ConfigurationService,
@@ -1108,9 +1113,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.info('Registration validation passed: device is active in CI Portal');
       }
 
-      // Probe tunnel reachability for diagnostics without delaying validation.
+      // Probe the public URL without delaying validation. This is what moves a Hub out of
+      // `locally_ready` once registration's own one-minute probe has given up.
       if (this._currentPhase === 'locally_ready') {
-        void this.logPublicHostnameReachability().catch((error) => {
+        void this.checkPublicReachability().catch((error) => {
           this.logger.debug(`Registration validation: public hostname probe failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
@@ -1189,8 +1195,22 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     return { nodeFqdn, tailscaleConnected, tunnelHealth };
   }
 
-  /** Probes tunnel DNS and HTTPS for logging without blocking request handlers. */
-  private async logPublicHostnameReachability(): Promise<void> {
+  /**
+   * Probes the Hub's public URL and moves `locally_ready` to `publicly_ready` once it answers.
+   *
+   * Registration probes for one minute and then leaves the Hub `locally_ready`, so every check-in
+   * after that has to ask again. This used to only log. Eighteen hours after the 2026-09-26 fleet
+   * rebuild, 16 of 17 Hubs still said `locally_ready` while 13 of them answered 200 at their public
+   * URL, and a restart could not help: the phase is persisted and restored as it was.
+   */
+  private checkPublicReachability(): Promise<void> {
+    this.publicReachabilityInFlight ??= this.runPublicReachabilityCheck().finally(() => {
+      this.publicReachabilityInFlight = null;
+    });
+    return this.publicReachabilityInFlight;
+  }
+
+  private async runPublicReachabilityCheck(): Promise<void> {
     const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
     const { domain } = this.config.getConfig();
 
@@ -1199,17 +1219,25 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     const hostname = `${org.hubSubdomain}.${domain}`;
-    try {
-      const dnsCheck = await axios.head(`https://${hostname}`, {
-        timeout: 2_000,
-        validateStatus: () => true,
-      });
-      if (dnsCheck.status >= 400 && dnsCheck.status !== 401 && dnsCheck.status !== 403) {
-        this.logger.warn(`Registration validation: public hostname ${hostname} returned ${dnsCheck.status} — tunnel may still be stabilising`);
-      }
-    } catch {
-      this.logger.warn(`Registration validation: public hostname ${hostname} not yet reachable — tunnel may still be stabilising`);
+    const generation = this.registrationGeneration;
+    const probe = await probePublicHostname(hostname);
+
+    if (!probe.reachable) {
+      this.logger.warn(
+        `Registration validation: public hostname ${hostname} not yet reachable (${describePublicReachability(probe)}) — tunnel may still be stabilising`,
+      );
+      return;
     }
+
+    // The probe takes seconds, and a check-in or a re-pair can move the phase meanwhile. Only
+    // `locally_ready` is promoted: `degraded` → `publicly_ready` is a legal transition, and taking
+    // it here would erase a degraded reason that a public URL answering does nothing to clear.
+    if (this._currentPhase !== 'locally_ready' || this.registrationGeneration !== generation) {
+      return;
+    }
+
+    this.logger.info(`Registration validation: public hostname ${hostname} answered (${describePublicReachability(probe)}) — Hub is publicly ready`);
+    await this.setPhase('publicly_ready', [], org.id);
   }
 
   /** The device key a check-in sends now, and which registration holds it. */
@@ -2033,29 +2061,19 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         const maxRetries = 60; // 1 minute
         let tunnelReachable = false;
         for (let i = 0; i < maxRetries; i++) {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 2000);
-            /*
-             * Request `/api/health` with GET because routes that do not support
-             * HEAD can return 404 even when the Hub is reachable.
-             */
-            const response = await fetch(`https://${domain}/api/health`, {
-              method: 'GET',
-              signal: controller.signal,
-            });
-            clearTimeout(timeoutId);
-
-            if (response.ok) {
-              this.logger.info(`DNS resolved and Hub is reachable at https://${domain}`);
-              tunnelReachable = true;
-              break;
-            }
-            this.logger.debug(`Hub reachable but returned status ${response.status}`);
-          } catch (e) {
-            if (i % 10 === 0) {
-              this.logger.debug(`Waiting for DNS/SSL propagation... Error: ${e instanceof Error ? e.message : String(e)}`);
-            }
+          /*
+           * The same probe the check-in runs, including its fallback to the zone's nameservers: a
+           * Hub paired again under a hostname that was just deleted and re-created sees a cached
+           * NXDOMAIN from its own resolver for longer than this loop lasts.
+           */
+          const probe = await probePublicHostname(domain, { timeoutMs: REGISTRATION_PROBE_TIMEOUT_MS });
+          if (probe.reachable) {
+            this.logger.info(`Hub is reachable at https://${domain} (${describePublicReachability(probe)})`);
+            tunnelReachable = true;
+            break;
+          }
+          if (i % 10 === 0) {
+            this.logger.debug(`Waiting for DNS/SSL propagation... ${describePublicReachability(probe)}`);
           }
           await new Promise((resolve) => setTimeout(resolve, 1000));
           if (i > 0 && i % 10 === 0) this.logger.info(`Still waiting for DNS resolution... attempt ${i}/${maxRetries}`);
@@ -2066,7 +2084,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           this.logger.warn(
             `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
           );
-          // Keep `locally_ready`; periodic validation probes the tunnel again.
+          // Keep `locally_ready`; every passing check-in probes again (`checkPublicReachability`).
         }
       }
     } catch (error) {
