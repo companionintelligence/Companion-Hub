@@ -776,6 +776,8 @@ describe('envOverridesForContext', () => {
 /** Values the real seeder cannot produce, so seeing one proves it came from the call under test. */
 const SEED_PASSWORD = 'sentinel-pw-8f3a2c';
 const SEED_IMAGE = 'ghcr.io/example-invalid/not-a-real-hub:sentinel-42';
+const SEED_IMAGE_FROM = 'sentinel-source-5c1e';
+const SEED_COMPOSE_FROM = 'sentinel-compose-9b27';
 
 describe('ensureApplianceInstall', () => {
   let exitSpy: ReturnType<typeof spyOnExit>;
@@ -812,6 +814,9 @@ describe('ensureApplianceInstall', () => {
       envFilePath: join(dataDir, PRIMARY_ENV_NAME),
       composePath: join(dataDir, 'docker-compose.prod.yml'),
       hubImage: SEED_IMAGE,
+      hubImageFrom: SEED_IMAGE_FROM,
+      composeFrom: SEED_COMPOSE_FROM,
+      warnings: [],
     });
     const { ensureApplianceInstall } = await loadFreshHubContext();
 
@@ -822,6 +827,35 @@ describe('ensureApplianceInstall', () => {
     expect(boxText()).toContain(`Creating a fresh install at ${dataDir}`);
     expect(boxText()).toContain('Fresh Hub install created');
     expect(boxText()).toContain(SEED_IMAGE);
+    expect(boxText()).toContain(`from ${SEED_IMAGE_FROM}`);
+    expect(boxText()).toContain(`Compose: from ${SEED_COMPOSE_FROM}`);
+    // Nothing disagreed with the seed, so there is nothing to shout about.
+    expect(boxText()).not.toContain('Check this Hub install');
+  });
+
+  it('prints what the seed warned about in its own box after the seed report, so a pin it did not take cannot pass unseen', async () => {
+    // 2026-09-26: core-6 and fzzy were seeded from leftover desktop packages (0.2.70, 0.2.61) and
+    // nothing on screen said so. Whatever the seed has to say now reaches the operator verbatim.
+    const { dataDir } = makeApplianceHost();
+    const warnings = ['sentinel-warning-line-1 a0d4', 'sentinel-warning-line-2 77be'];
+    seedAppliance.seedApplianceInstall.mockReturnValue({
+      dataDir,
+      envFilePath: join(dataDir, PRIMARY_ENV_NAME),
+      composePath: join(dataDir, 'docker-compose.prod.yml'),
+      hubImage: SEED_IMAGE,
+      hubImageFrom: SEED_IMAGE_FROM,
+      composeFrom: SEED_COMPOSE_FROM,
+      warnings,
+    });
+    const { ensureApplianceInstall } = await loadFreshHubContext();
+
+    await ensureApplianceInstall();
+
+    const text = boxText();
+    expect(text).toContain('Check this Hub install');
+    for (const line of warnings) expect(text).toContain(line);
+    expect(text.lastIndexOf('Check this Hub install')).toBeGreaterThan(text.lastIndexOf('Fresh Hub install created'));
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 
   /**
@@ -843,6 +877,9 @@ describe('ensureApplianceInstall', () => {
       envFilePath: join(dataDir, PRIMARY_ENV_NAME),
       composePath: join(dataDir, 'docker-compose.prod.yml'),
       hubImage: SEED_IMAGE,
+      hubImageFrom: SEED_IMAGE_FROM,
+      composeFrom: SEED_COMPOSE_FROM,
+      warnings: [],
     });
     const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
     const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
