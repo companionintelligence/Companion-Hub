@@ -714,6 +714,16 @@ describe.skipIf(!bash)('hubContextCapShell (sandboxed bash)', () => {
       chmodSync(p, 0o755);
     };
     stub('docker', 'exit 1');
+    // The same in-place-refusing `sed` as the hubLlamacppUrlShell sandbox, so the fake `curl` below
+    // cannot slip back to `sed -i` and stay green on Linux CI, whose GNU sed runs the bare form.
+    stub(
+      'sed',
+      [
+        'for a in "$@"; do case "$a" in -i*|--in-place*|-[Enrsuz]*i*) echo "sed: in-place edit refused by the test sandbox: $a" >&2; exit 1;; esac; done',
+        'for s in /usr/bin/sed /bin/sed; do [ -x "$s" ] && exec "$s" "$@"; done',
+        'exit 127',
+      ].join('\n'),
+    );
     stub(
       'curl',
       [
@@ -723,11 +733,15 @@ describe.skipIf(!bash)('hubContextCapShell (sandboxed bash)', () => {
         '  -w|--max-time|-H) shift 2;; -s) shift;; *) url="$1"; shift;;',
         'esac; done',
         `echo "$method $url $data" >> '${log}'`,
+        // `sed > tmp && mv`, never `sed -i`: BSD sed (macOS) reads the next argument as a mandatory
+        // backup suffix, so a bare `sed -i 's/…/…/' file` there takes the script as the suffix and the
+        // file name as the script, exits non-zero, and leaves the state file untouched — this whole
+        // case then reports `failed` on a developer's Mac while passing on Linux CI.
         'case "$method $url" in',
         `  "GET "*inference/preferences) cat '${state}' > "$out"; printf 200;;`,
         // The Hub's user-settings route writes the key and answers with no body.
-        `  "PATCH "*user-settings) n=$(echo "$data" | sed -n 's/.*"inferenceMaxNumCtx":\\([0-9]*\\).*/\\1/p'); sed -i "s/\\"maxNumCtx\\":[^,}]*/\\"maxNumCtx\\":$n/" '${state}'; : > "$out"; printf 200;;`,
-        `  "PATCH "*inference/preferences) sed -i 's/"maxNumCtx":[^,}]*/"maxNumCtx":null/' '${state}'; cat '${state}' > "$out"; printf 200;;`,
+        `  "PATCH "*user-settings) n=$(echo "$data" | sed -n 's/.*"inferenceMaxNumCtx":\\([0-9]*\\).*/\\1/p'); sed "s/\\"maxNumCtx\\":[^,}]*/\\"maxNumCtx\\":$n/" '${state}' > '${state}.tmp' && mv '${state}.tmp' '${state}'; : > "$out"; printf 200;;`,
+        `  "PATCH "*inference/preferences) sed 's/"maxNumCtx":[^,}]*/"maxNumCtx":null/' '${state}' > '${state}.tmp' && mv '${state}.tmp' '${state}'; cat '${state}' > "$out"; printf 200;;`,
         '  *) printf 404;;',
         'esac',
       ].join('\n'),
