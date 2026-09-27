@@ -31,7 +31,7 @@
  * answers from a string. No real container, image, or socket is touched, and nothing leaves the box.
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,6 +47,12 @@ const { buildStandaloneCli } = require('../build-standalone-cli.cjs') as {
 /** Anything here in the output means the binary died on a symbol, not on the situation under test. */
 const CRASH_PATTERNS = [/ReferenceError/, /is not defined/, /is not a function/, /ci-hub cli failed/];
 
+/**
+ * The password sync scripts prefix every line with their own name. None of the commands below runs
+ * them, so seeing the prefix means a script's own entry block fired on import — see is-direct-run.ts.
+ */
+const SCRIPT_ENTRY_OUTPUT = /sync-(?:rabbitmq|postgres)-password:/;
+
 const hasBun = spawnSync('bun', ['--version'], { encoding: 'utf-8' }).status === 0;
 
 /**
@@ -61,8 +67,13 @@ let workspace = '';
 let stubBin = '';
 let fakeHome = '';
 let fakeDataDir = '';
+let queueStubBin = '';
+let queueDockerLog = '';
 
-function runCli(args: string[]): { stdout: string; stderr: string; output: string; status: number | null } {
+function runCli(
+  args: string[],
+  options: { stubDir?: string; env?: NodeJS.ProcessEnv } = {},
+): { stdout: string; stderr: string; output: string; status: number | null } {
   const result = spawnSync(binary, args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -71,12 +82,13 @@ function runCli(args: string[]): { stdout: string; stderr: string; output: strin
     // behave as they do in the field.
     env: {
       ...process.env,
-      PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+      PATH: `${options.stubDir ?? stubBin}:${process.env.PATH ?? ''}`,
       HOME: fakeHome,
       CI_HUB_DATA_DIR: fakeDataDir,
       CI: '1',
       TERM: 'dumb',
       NO_COLOR: '1',
+      ...options.env,
     },
     cwd: workspace,
     timeout: 60_000,
@@ -138,6 +150,29 @@ describe('compiled cihub binary', () => {
     chmodSync(join(stubBin, 'docker'), 0o755);
     chmodSync(join(stubBin, 'git'), 0o755);
 
+    // A second docker for the entry-block test: it reports a running, healthy queue — the state a
+    // live node is in — and records every call, so a script that reaches for the broker gets far
+    // enough to show what it would have done instead of stopping at "not running".
+    queueStubBin = join(workspace, 'queue-bin');
+    queueDockerLog = join(workspace, 'queue-docker-calls.log');
+    mkdirSync(queueStubBin, { recursive: true });
+    writeFileSync(
+      join(queueStubBin, 'docker'),
+      [
+        '#!/bin/sh',
+        `echo "$*" >> '${queueDockerLog}'`,
+        'case "$*" in',
+        "  *'{{.State.Running}}'*) echo true; exit 0 ;;",
+        "  *'{{.State.Health'*) echo healthy; exit 0 ;;",
+        'esac',
+        'exit 1',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(join(queueStubBin, 'git'), ['#!/bin/sh', 'exit 1', ''].join('\n'));
+    chmodSync(join(queueStubBin, 'docker'), 0o755);
+    chmodSync(join(queueStubBin, 'git'), 0o755);
+
     binary = buildStandaloneCli({ outdir: join(workspace, 'dist') }).outfile;
   }, 180_000);
 
@@ -160,6 +195,27 @@ describe('compiled cihub binary', () => {
     // loosely because whether the CLI reaches for `docker pull` or `docker compose ... pull`
     // depends on the pull-image overlay, which is not what this test is about.
     expect(output).toMatch(/\[stub docker\].*pull/);
+  });
+
+  /**
+   * `cihub --version` on a node whose operator exported the broker and database passwords, with a
+   * healthy queue up. While sync-rabbitmq-password.ts called the guard without import.meta.main,
+   * merely importing it ran its entry block here: no version line, a `rabbitmqctl change_password`,
+   * then `docker compose up --force-recreate ci-hub-queue`, and exit 1. A read-only command reaches
+   * no docker verb and writes nothing under HOME.
+   */
+  it.skipIf(skipSuite)('runs `cihub --version` without firing any script entry block', () => {
+    const before = readdirSync(fakeHome, { recursive: true, encoding: 'utf-8' }).sort();
+    const { output, status } = runCli(['--version'], {
+      stubDir: queueStubBin,
+      env: { RABBITMQ_PASSWORD: 'smoke-rabbitmq', POSTGRES_PASSWORD: 'smoke-postgres' },
+    });
+
+    expect(output).not.toMatch(SCRIPT_ENTRY_OUTPUT);
+    expect(output).toMatch(/^cihub \S+/m);
+    expect(status).toBe(0);
+    expect(existsSync(queueDockerLog) ? readFileSync(queueDockerLog, 'utf-8') : '').toBe('');
+    expect(readdirSync(fakeHome, { recursive: true, encoding: 'utf-8' }).sort()).toEqual(before);
   });
 
   /**
@@ -204,11 +260,12 @@ describe('compiled cihub binary', () => {
   ];
 
   it.skipIf(skipSuite).each(commands.map((args) => [args.join(' '), args] as const))(
-    'runs `cihub %s` without a missing-symbol crash',
+    'runs `cihub %s` without a missing-symbol crash or a script entry block',
     (_label, args) => {
       const { output } = runCli([...args]);
 
       expectNoCrash(args, output);
+      expect(`cihub ${args.join(' ')} ->\n${output}`).not.toMatch(SCRIPT_ENTRY_OUTPUT);
       // A command that printed nothing at all did not reach its handler, so the assertion above proved
       // nothing about it.
       expect(output.trim().length).toBeGreaterThan(0);
