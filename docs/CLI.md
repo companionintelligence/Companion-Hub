@@ -291,6 +291,7 @@ cihub config [env]           # show resolved config values only
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
+- The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which: `CI_HUB_IMAGE` in the environment; the installed `companion-hub` desktop package, only when it is the same release as this `cihub`; otherwise `ghcr.io/companionintelligence/ci-hub:latest`. It never reads a CI-Hub checkout or an env file left by an earlier install. If a desktop package at another release is installed, or a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. Remove a desktop package nothing uses with `sudo apt remove companion-hub`.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
 ![Screenshot of cihub status local](./images/cli/status.svg)

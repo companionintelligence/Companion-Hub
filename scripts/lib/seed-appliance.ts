@@ -13,6 +13,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { stdin as input, stdout as output } from 'node:process';
 import { dockerBindMountPath } from '../heal-hub-bind-mounts';
+import { packageVersion } from './cli-compose-env.js';
+import { BASE_COMMAND } from './cli-types.js';
+import { isVersionTag, normalizeVersion, parseImageTag } from './cli-version-skew.js';
+import { compareCihubVersions } from './fleet-cihub-binary.js';
 
 export const HUB_COMPOSE_FILENAME = 'docker-compose.prod.yml';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
@@ -39,6 +43,10 @@ export type SeedApplianceOptions = {
   execPath?: string;
   /** Tests only: stand in for the on-disk search, e.g. `() => undefined` for a headless box. */
   findCompose?: (execPath?: string) => string | undefined;
+  /** Tests only: the environment the image is resolved from (default `process.env`). */
+  env?: NodeJS.ProcessEnv;
+  /** Tests only: stand in for this machine's desktop package, desktop app, and cihub build. */
+  imageHost?: ApplianceImageHost;
 };
 
 export type SeedApplianceResult = {
@@ -46,6 +54,10 @@ export type SeedApplianceResult = {
   envFilePath: string;
   composePath: string;
   hubImage: string;
+  /** Where `hubImage` came from, in words, for the line that reports the seed. */
+  hubImageFrom: string;
+  /** What the operator has to read before trusting `hubImage`; empty when nothing here disagrees with it. */
+  warnings: string[];
 };
 
 export function validateSeedPassword(password: string, confirm?: string): string | null {
@@ -193,6 +205,7 @@ export function findBundledCompose(execPath: string = process.execPath): string 
   return composeResourceCandidates(execPath).find((candidate) => existsSync(candidate));
 }
 
+/** The installed `companion-hub` desktop package's version (dpkg only). It describes the package, not this cihub. */
 function installedCompanionHubVersion(): string | undefined {
   try {
     const dpkgVersionFormat = ['$', '{Version}'].join('');
@@ -203,21 +216,128 @@ function installedCompanionHubVersion(): string | undefined {
   }
 }
 
-export function resolveApplianceHubImage(env: NodeJS.ProcessEnv = process.env): { image: string; version: string } {
+/** True while a `companion-hub` desktop app runs on this machine, under any user. False wherever `pgrep` is missing. */
+function companionHubDesktopRunning(): boolean {
+  try {
+    execFileSync('pgrep', ['-x', 'companion-hub'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the seed may learn about this machine when it picks an image. Injectable so a test never
+ * reads the dpkg database or process table of whichever machine runs it.
+ */
+export type ApplianceImageHost = {
+  /** Version of the installed `companion-hub` desktop package, or undefined when there is none. */
+  desktopPackageVersion: () => string | undefined;
+  /** True while the desktop app is running. */
+  desktopAppRunning: () => boolean;
+  /** The release this `cihub` was built as. */
+  cliVersion: () => string;
+};
+
+export const LIVE_APPLIANCE_IMAGE_HOST: ApplianceImageHost = {
+  desktopPackageVersion: installedCompanionHubVersion,
+  desktopAppRunning: companionHubDesktopRunning,
+  cliVersion: packageVersion,
+};
+
+/** `environment`: CI_HUB_IMAGE was set on purpose. `desktop-package`: this cihub's own release, installed as the desktop app. */
+export type HubImageSource = 'environment' | 'desktop-package' | 'default';
+
+export type ResolvedApplianceHubImage = {
+  image: string;
+  version: string;
+  source: HubImageSource;
+  /** Lines the operator has to read before trusting `image`; empty when nothing here disagrees with it. */
+  warnings: string[];
+};
+
+/** `repo@sha256:<64 hex>` is a pin, not a version: the 64 hex characters after the last colon ended up as CI_HUB_VERSION on every digest-pinned node. */
+function versionForPinnedImage(pinned: string): string {
+  const at = pinned.indexOf('@sha256:');
+  if (at >= 0) return `digest-${pinned.slice(at + '@sha256:'.length, at + '@sha256:'.length + 12)}`;
+  const tag = pinned.includes(':') ? pinned.slice(pinned.lastIndexOf(':') + 1) : 'latest';
+  return tag || 'latest';
+}
+
+/**
+ * Whether a desktop app built as `desktopVersion` keeps `image` when it next starts the Hub.
+ *
+ * Mirrors `resolve_runtime_hub_image_for` in the desktop's `hub_env.rs`: every start it makes
+ * re-renders the env file, and the only pin it carries forward is a release tag of the public repo
+ * newer than its own build. `:latest`, `:dev`, a digest, or an older release all become the
+ * desktop's own `ci-hub:<desktopVersion>`.
+ */
+function desktopAppKeepsImage(image: string, desktopVersion: string): boolean {
+  const { repository, tag, digest } = parseImageTag(image);
+  if (repository !== HUB_STACK_IMAGE_REPO || digest || !tag || !isVersionTag(tag)) return false;
+  // Its own build is not "kept" but re-rendered as the same reference, which comes to the same thing.
+  return normalizeVersion(tag) === normalizeVersion(desktopVersion) || compareCihubVersions(tag, desktopVersion) > 0;
+}
+
+/** Where a seeded image came from, for the line that reports the seed. */
+export function describeHubImageSource(resolved: Pick<ResolvedApplianceHubImage, 'source' | 'version'>): string {
+  if (resolved.source === 'environment') return 'set by CI_HUB_IMAGE';
+  if (resolved.source === 'desktop-package') return `the companion-hub ${resolved.version} desktop package here, which is this cihub's release`;
+  return 'the public release channel (CI_HUB_IMAGE is not set)';
+}
+
+/**
+ * The Hub image a fresh install pins, where it came from, and what on this machine disagrees.
+ *
+ * In order: CI_HUB_IMAGE in the environment (a fleet roll, or an operator pinning on purpose); the
+ * installed `companion-hub` desktop package, only when it is this cihub's own release; the public
+ * `:latest`. Nothing else is read — not a CI-Hub checkout under the home directory, not an env file
+ * left from an earlier install.
+ *
+ * The package is consulted because the CLI ships inside it (#1162), and the desktop app rewrites
+ * CI_HUB_IMAGE to its own build on every start it makes; seeding that same build keeps the two from
+ * fighting. But dpkg describes the package, not this binary, and following any installed package
+ * pinned whatever release a node once had: the 2026-09-26 fleet rebuild, run with cihub 0.2.76,
+ * started core-6 on ci-hub:0.2.70 and fzzy on ci-hub:0.2.61 — both older than the
+ * /api/registration/phase route fleet install checks (#1484) — and said nothing about why. A package
+ * at another release is now named and not followed.
+ */
+export function resolveApplianceHubImage(
+  env: NodeJS.ProcessEnv = process.env,
+  host: ApplianceImageHost = LIVE_APPLIANCE_IMAGE_HOST,
+): ResolvedApplianceHubImage {
+  const desktop = host.desktopPackageVersion()?.trim() || undefined;
+  const cli = normalizeVersion(host.cliVersion());
   const pinned = env.CI_HUB_IMAGE?.trim();
+
+  let resolved: Omit<ResolvedApplianceHubImage, 'warnings'>;
+  const warnings: string[] = [];
   if (pinned) {
-    // `repo@sha256:<64 hex>` is a pin, not a version: the 64 hex characters after the last colon
-    // ended up as CI_HUB_VERSION on every digest-pinned node. Name it for what it is.
-    const at = pinned.indexOf('@sha256:');
-    if (at >= 0) return { image: pinned, version: `digest-${pinned.slice(at + '@sha256:'.length, at + '@sha256:'.length + 12)}` };
-    const tag = pinned.includes(':') ? pinned.slice(pinned.lastIndexOf(':') + 1) : 'latest';
-    return { image: pinned, version: tag || 'latest' };
+    resolved = { image: pinned, version: versionForPinnedImage(pinned), source: 'environment' };
+  } else if (desktop && normalizeVersion(desktop) === cli) {
+    resolved = { image: `${HUB_STACK_IMAGE_REPO}:${desktop}`, version: desktop, source: 'desktop-package' };
+  } else {
+    resolved = { image: `${HUB_STACK_IMAGE_REPO}:latest`, version: 'latest', source: 'default' };
+    if (desktop) {
+      warnings.push(
+        `A companion-hub ${desktop} desktop package is installed here, but this cihub is ${cli}.`,
+        `This install does not take the package's image (${HUB_STACK_IMAGE_REPO}:${desktop}); it pins ${resolved.image}.`,
+        `To pin a release on purpose: CI_HUB_IMAGE=<ref> ${BASE_COMMAND} up. If nothing here uses the desktop app: sudo apt remove companion-hub`,
+      );
+    }
   }
-  const installed = installedCompanionHubVersion();
-  if (installed) {
-    return { image: `${HUB_STACK_IMAGE_REPO}:${installed}`, version: installed };
+
+  // A running desktop app is a second writer of the same env file, and it wins every start it makes:
+  // on core-6 its watchdog saw the freshly seeded Hub down and started it itself eight seconds later.
+  if (desktop && host.desktopAppRunning() && !desktopAppKeepsImage(resolved.image, desktop)) {
+    warnings.push(
+      `The companion-hub ${desktop} desktop app is running on this machine. When it finds the Hub down it starts the Hub itself,`,
+      `and that start rewrites CI_HUB_IMAGE to ${HUB_STACK_IMAGE_REPO}:${desktop}, replacing ${resolved.image}.`,
+      'Quit the desktop app, or update it to this release, before you rely on this install.',
+    );
   }
-  return { image: `${HUB_STACK_IMAGE_REPO}:latest`, version: 'latest' };
+
+  return { ...resolved, warnings };
 }
 
 export function renderApplianceEnvContent(input: {
@@ -274,9 +394,12 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     writeFileSync(composePath, BUNDLED_HUB_COMPOSE, 'utf8');
   }
 
-  const resolvedImage = options.hubImage
-    ? { image: options.hubImage, version: options.hubVersion || options.hubImage.split(':').pop() || 'latest' }
-    : resolveApplianceHubImage();
+  // An explicit `hubImage` is a pin like CI_HUB_IMAGE, and goes through the same resolver so the
+  // desktop-app check still applies to it.
+  const resolvedImage = resolveApplianceHubImage(
+    options.hubImage ? { ...(options.env ?? process.env), CI_HUB_IMAGE: options.hubImage } : (options.env ?? process.env),
+    options.imageHost,
+  );
   const jwtSecret = options.jwtSecret || randomBytes(64).toString('hex');
   const rabbitmqPassword = options.rabbitmqPassword || randomBytes(32).toString('hex');
   const envContent = renderApplianceEnvContent({
@@ -294,5 +417,12 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
   writeFileSync(envFilePath, envContent, { encoding: 'utf8', mode: 0o600 });
   writeFileSync(path.join(dataDir, compatName), envContent, { encoding: 'utf8', mode: 0o600 });
 
-  return { dataDir, envFilePath, composePath, hubImage: resolvedImage.image };
+  return {
+    dataDir,
+    envFilePath,
+    composePath,
+    hubImage: resolvedImage.image,
+    hubImageFrom: describeHubImageSource(resolvedImage),
+    warnings: resolvedImage.warnings,
+  };
 }

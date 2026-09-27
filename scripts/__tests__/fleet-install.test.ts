@@ -6,7 +6,11 @@
  * seen.
  */
 
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   bringUpScript,
   claimHubScript,
@@ -113,6 +117,71 @@ describe('bringUpScript', () => {
     const script = bringUpScript("pass'word12", "AB'123");
     expect(script).toContain("'pass'\\''word12'");
     expect(script).toContain("'AB'\\''123'");
+  });
+});
+
+/**
+ * The script run for real in bash, with `cihub` and `curl` stubbed on PATH and a node's env file in a
+ * temporary HOME. On 2026-09-26 core-6 and fzzy said only "nothing answered …/registration/phase";
+ * the ci-hub:0.2.70 and ci-hub:0.2.61 their fresh installs had been seeded with were the whole story
+ * and appeared nowhere in the run.
+ */
+describe('bringUpScript on a node', () => {
+  const tempDirs: string[] = [];
+  afterEach(() => {
+    for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function runOnNode(opts: { image?: string; phase: string; desktopRunning?: boolean }) {
+    const home = mkdtempSync(join(tmpdir(), 'bringup-home-'));
+    const bin = mkdtempSync(join(tmpdir(), 'bringup-bin-'));
+    tempDirs.push(home, bin);
+    const dataDir = join(home, '.local', 'share', 'companion-hub');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(join(dataDir, '.env.dev'), `API_PORT=5002\n${opts.image ? `CI_HUB_IMAGE=${opts.image}\n` : ''}`);
+    writeFileSync(join(bin, 'cihub'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(bin, 'curl'), `#!/bin/sh\nprintf '%s' '${opts.phase}'\n`, { mode: 0o755 });
+    // Stubbed either way, so whatever runs on the machine running the test cannot answer for the node.
+    writeFileSync(join(bin, 'pgrep'), `#!/bin/sh\nexit ${opts.desktopRunning ? 0 : 1}\n`, { mode: 0o755 });
+    const res = spawnSync('bash', ['-c', bringUpScript('pw12345678', 'ABC123')], {
+      encoding: 'utf8',
+      env: { PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: home },
+    });
+    return { code: res.status, out: res.stdout, err: res.stderr };
+  }
+
+  it('names the image on the failure line when the Hub never answers — the 0.2.70 core-6 was seeded with', () => {
+    const image = 'ghcr.io/companionintelligence/ci-hub:0.2.70';
+    const res = runOnNode({ image, phase: '' });
+    expect(res.code).toBe(1);
+    const line = describeStepFailure(res.out, res.err, { code: res.code, marker: 'hub-up-complete' });
+    expect(line).toContain('nothing answered');
+    expect(line).toContain(`CI_HUB_IMAGE=${image}`);
+  });
+
+  it('names the image on the success line, which is the last line of the output', () => {
+    const image = 'ghcr.io/companionintelligence/ci-hub:latest';
+    const res = runOnNode({ image, phase: '{"registered":true}' });
+    expect(res.code).toBe(0);
+    expect(res.out.trim().split('\n').at(-1)).toBe(`hub-up-complete (CI_HUB_IMAGE=${image})`);
+  });
+
+  it('says unset rather than printing an empty pin', () => {
+    const res = runOnNode({ phase: '{"registered":true}' });
+    expect(res.out.trim().split('\n').at(-1)).toBe('hub-up-complete (CI_HUB_IMAGE=unset)');
+  });
+
+  it('names a running desktop app on either line, since it rewrites the pin on its next Hub start', () => {
+    // core-6: the 0.2.70 app's watchdog started the Hub eight seconds after the seed, from its own build.
+    const image = 'ghcr.io/companionintelligence/ci-hub:0.2.70';
+    const failed = runOnNode({ image, phase: '', desktopRunning: true });
+    const line = describeStepFailure(failed.out, failed.err, { code: failed.code, marker: 'hub-up-complete' });
+    expect(line).toContain('companion-hub desktop app is running');
+    expect(line).toContain(`CI_HUB_IMAGE=${image}`);
+
+    const ok = runOnNode({ image, phase: '{"registered":true}', desktopRunning: true });
+    const last = ok.out.trim().split('\n').at(-1) ?? '';
+    expect(last.startsWith(`hub-up-complete (CI_HUB_IMAGE=${image}; a companion-hub desktop app is running`)).toBe(true);
   });
 });
 

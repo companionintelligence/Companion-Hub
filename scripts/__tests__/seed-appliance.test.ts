@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  type ApplianceImageHost,
   composeResourceCandidates,
+  describeHubImageSource,
   envPasswordFrom,
   findBundledCompose,
   findTraefikAssets,
@@ -68,24 +70,56 @@ describe('envPasswordFrom', () => {
 });
 
 describe('resolveApplianceHubImage', () => {
+  /** A machine with no desktop package: a headless node, or a Mac or CI runner without dpkg. */
+  const bareHost: ApplianceImageHost = { desktopPackageVersion: () => undefined, desktopAppRunning: () => false, cliVersion: () => '0.2.76' };
+
   it('honours CI_HUB_IMAGE', () => {
-    expect(resolveApplianceHubImage({ CI_HUB_IMAGE: 'ghcr.io/companionintelligence/ci-hub:0.2.58' })).toEqual({
+    expect(resolveApplianceHubImage({ CI_HUB_IMAGE: 'ghcr.io/companionintelligence/ci-hub:0.2.58' }, bareHost)).toEqual({
       image: 'ghcr.io/companionintelligence/ci-hub:0.2.58',
       version: '0.2.58',
+      source: 'environment',
+      warnings: [],
     });
   });
 
   it('names a digest pin as a digest, not as the 64 hex characters after the last colon', () => {
     const digest = 'sha256:90f8eda420682b7c2879d50de1b8f589c963deb6b116f1d3536564f8b7bf8166';
-    expect(resolveApplianceHubImage({ CI_HUB_IMAGE: `${HUB_STACK_IMAGE_REPO}@${digest}` })).toEqual({
+    expect(resolveApplianceHubImage({ CI_HUB_IMAGE: `${HUB_STACK_IMAGE_REPO}@${digest}` }, bareHost)).toEqual({
       image: `${HUB_STACK_IMAGE_REPO}@${digest}`,
       version: 'digest-90f8eda42068',
+      source: 'environment',
+      warnings: [],
     });
   });
 
   it('falls back to the public latest tag when nothing is pinned', () => {
-    const resolved = resolveApplianceHubImage({ CI_HUB_IMAGE: undefined });
-    expect(resolved.image.startsWith(`${HUB_STACK_IMAGE_REPO}:`)).toBe(true);
+    // Exact now: the host is injected, so the answer no longer depends on the machine running the test.
+    expect(resolveApplianceHubImage({ CI_HUB_IMAGE: undefined }, bareHost)).toEqual({
+      image: `${HUB_STACK_IMAGE_REPO}:latest`,
+      version: 'latest',
+      source: 'default',
+      warnings: [],
+    });
+  });
+
+  it('pins a desktop package only when it is the same release as this cihub, `v` or not', () => {
+    const host = (desktop: string, cli: string): ApplianceImageHost => ({ ...bareHost, desktopPackageVersion: () => desktop, cliVersion: () => cli });
+    expect(resolveApplianceHubImage({}, host('0.2.76', 'v0.2.76'))).toMatchObject({
+      image: `${HUB_STACK_IMAGE_REPO}:0.2.76`,
+      source: 'desktop-package',
+    });
+    // Newer is not "this cihub" either: it is the desktop app's build, not the one driving this install.
+    expect(resolveApplianceHubImage({}, host('0.2.80', '0.2.76'))).toMatchObject({ image: `${HUB_STACK_IMAGE_REPO}:latest`, source: 'default' });
+    // A source run reports 0.0.0-dev, which no package is.
+    expect(resolveApplianceHubImage({}, host('0.2.76', '0.0.0-dev'))).toMatchObject({ image: `${HUB_STACK_IMAGE_REPO}:latest`, source: 'default' });
+  });
+});
+
+describe('describeHubImageSource', () => {
+  it('says where each kind of pin came from', () => {
+    expect(describeHubImageSource({ source: 'environment', version: '0.2.75' })).toBe('set by CI_HUB_IMAGE');
+    expect(describeHubImageSource({ source: 'desktop-package', version: '0.2.76' })).toContain('companion-hub 0.2.76 desktop package');
+    expect(describeHubImageSource({ source: 'default', version: 'latest' })).toBe('the public release channel (CI_HUB_IMAGE is not set)');
   });
 });
 
