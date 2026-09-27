@@ -67,8 +67,13 @@ pnpm install
 pnpm run local
 ```
 
-`pnpm install` needs a `NODE_AUTH_TOKEN` for the private `@companionintelligence` scope, and the
-desktop app needs GTK/WebKit headers. Both failures and their fixes are in
-[`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
+`pnpm install` needs no registry token. The desktop app needs GTK/WebKit headers; that failure and
+its fix are in [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
 
 See [`CLAUDE.md`](CLAUDE.md) for day-to-day development commands.
+
+## Contributing
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for issue, pull request, and code-structure conventions,
+and [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md) for setting up a clone. Run
+`pnpm run check:pr` before you ask for review; CI does not run it on push.

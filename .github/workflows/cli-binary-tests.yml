@@ -37,8 +37,6 @@ jobs:
 
       - name: Install dependencies
         uses: "./.github/actions/install-dependencies"
-        with:
-          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
 
       # The smoke tests compile the binary with the same `scripts/build-standalone-cli.cjs` the
       # release uses, so bun has to be here. It must never be optional: the suite hard-fails rather

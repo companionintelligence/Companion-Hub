@@ -1,8 +1,10 @@
 /*
  * CI-Hub global styles.
  *
- * Canonical design tokens are consumed from @companionintelligence/tokens v0.3
- * (phthalo-mist palette, Manrope, WCAG-tuned muted text, --ci-* surfaces).
+ * Canonical design tokens come from @companionintelligence/tokens (phthalo-mist
+ * palette, Manrope, WCAG-tuned muted text, --ci-* surfaces). ./ci-tokens.css is a
+ * byte-for-byte copy of that package's globals.css, committed so a clone builds
+ * without a GitHub Packages token; `pnpm --filter frontend brand:check` verifies it.
  * Hub-only extensions: titlebar offset, radius scale, safe-area utility.
  */
 @import 'tailwindcss';
@@ -11,7 +13,7 @@
 @plugin '@tailwindcss/typography';
 @config '../../tailwind.config.ts';
 
-@import '@companionintelligence/tokens/globals.css';
+@import './ci-tokens.css';
 
 /*
  * Short desktop windows. The window opens 800px tall and can be dragged down to 600px

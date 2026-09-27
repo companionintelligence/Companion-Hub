@@ -1,0 +1,534 @@
+/*
+ * @companionintelligence/tokens — globals.css
+ * ==========================================================================
+ * Tailwind v4 / shadcn TOKEN layer for the Companion Intelligence canonical
+ * design system. This file ships ONLY design tokens — the @theme inline color
+ * mappings, the :root/.dark custom properties, the dark @custom-variant, and a
+ * base layer. It deliberately does NOT `@import "tailwindcss"` or declare any
+ * `@plugin`, so importing it never forces a consumer's build to re-import
+ * Tailwind or to have specific Tailwind plugins installed.
+ *
+ * Import it AFTER your own Tailwind entry, from any app that runs Tailwind v4:
+ *
+ *   @import "tailwindcss";                 // your app owns this
+ *   @import "@companionintelligence/tokens/globals.css";
+ *
+ * (or, from a JS entry, `import '@companionintelligence/tokens/globals.css';`
+ * after your own Tailwind entry import). Any Tailwind plugins your app needs —
+ * e.g. `@plugin "tailwindcss-animate";` for animation utilities, or
+ * `@plugin "@tailwindcss/typography";` for `prose` — are the consumer's to
+ * declare; this token layer no longer bundles them.
+ *
+ * The token blocks below (:root, .dark, @theme inline, @custom-variant dark,
+ * and the @layer base) carry the values in ./tokens.json — the one hand-edited
+ * source — and are contract-tested against it (tokens.contract.test.ts). Every
+ * repo, CI-Hub included, consumes this package; none of them is a source.
+ *
+ * Consumers that do NOT run Tailwind (static HTML, vanilla CSS) should import
+ * ./tokens.css (raw hex custom properties) or read ./tokens.json instead.
+ * ==========================================================================
+ */
+@custom-variant dark (&:is(.dark *));
+
+/* Titlebar offset — set to 40px by the Tauri Titlebar component, 0px otherwise */
+:root {
+  --titlebar-height: 0px;
+}
+
+@theme inline {
+  --font-sans: "Manrope", system-ui, sans-serif;
+  --font-display: "Archivo Black", "Manrope", system-ui, sans-serif;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 10px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-heat: var(--heat);
+  --color-heat-foreground: var(--heat-foreground);
+  --color-heat-deep: var(--heat-deep);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* CI enriched palette v0.2.0 — status + brand teal ramp + accents */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-teal-50: var(--teal-50);
+  --color-teal-100: var(--teal-100);
+  --color-teal-200: var(--teal-200);
+  --color-teal-300: var(--teal-300);
+  --color-teal-400: var(--teal-400);
+  --color-teal-500: var(--teal-500);
+  --color-teal-600: var(--teal-600);
+  --color-teal-700: var(--teal-700);
+  --color-teal-800: var(--teal-800);
+  --color-teal-900: var(--teal-900);
+  --color-teal-950: var(--teal-950);
+  --color-aqua: var(--aqua);
+  --color-aqua-light: var(--aqua-light);
+
+  /* Level scale (ordinal rank) + category scale (unrelated-group differentiation) */
+  --color-level-red: var(--level-red);
+  --color-level-orange: var(--level-orange);
+  --color-level-gold: var(--level-gold);
+  --color-level-green: var(--level-green);
+  --color-level-blue: var(--level-blue);
+  --color-category-ai: var(--category-ai);
+  --color-category-automation: var(--category-automation);
+  --color-category-data: var(--category-data);
+  --color-category-development: var(--category-development);
+  --color-category-finance: var(--category-finance);
+  --color-category-media: var(--category-media);
+  --color-category-photography: var(--category-photography);
+  --color-category-security: var(--category-security);
+  --color-category-social: var(--category-social);
+  --color-category-utilities: var(--category-utilities);
+
+  /* QR code surfaces — mode-INDEPENDENT, see the :root block below */
+  --color-qr-plate: var(--qr-plate);
+  --color-qr-module: var(--qr-module);
+
+  /* CI extension tokens — shared app surfaces (Portal, Hub, etc.) */
+  --color-ci-bg: var(--ci-bg);
+  --color-ci-surface: var(--ci-surface);
+  --color-ci-card: var(--ci-card);
+  --color-ci-accent: var(--ci-accent);
+  --color-ci-accent-2: var(--ci-accent-2);
+  --color-ci-success: var(--ci-success);
+  --color-ci-warning: var(--ci-warning);
+  --color-ci-danger: var(--ci-danger);
+  --color-ci-offline: var(--ci-offline);
+  --color-ci-text: var(--ci-text);
+  --color-ci-text-muted: var(--ci-text-muted);
+  --color-ci-text-soft: var(--ci-text-soft);
+
+  /* Brand elevation — map the teal-tinted --shadow-* vars into the Tailwind v4
+   * shadow namespace so shadow-sm/md/lg use the CI brand shadows instead of
+   * Tailwind's built-in gray defaults. `@theme inline` keeps the var()
+   * reference live so the .dark overrides still take effect at runtime. */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+/*
+ * Companion Intelligence theme — phthalo-mist palette (workshop-validated).
+ * Light: white-green mist surfaces, phthalo primary (#0a6358), navy copy.
+ * Dark: navy shell with teal → phthalo → sage surface stack.
+ */
+:root {
+  --radius: 0.625rem;
+  --font-letter-spacing: 0.2pt;
+  --font-word-spacing: 0.4pt;
+  --font-sans: "Manrope", system-ui, sans-serif;
+  --font-display: "Archivo Black", "Manrope", system-ui, sans-serif;
+
+  /* Heat — theme-stable burned orange. Rare: orb, one CTA, marks. Not --primary. */
+  --heat: #ff3f00;
+  --heat-foreground: #070707;
+  --heat-deep: #c43000;
+  --heat-glow: color-mix(in srgb, var(--heat) 42%, transparent);
+
+  --background: #f3faf7;
+  --foreground: #0a222e;
+  --card: #f0f9f5;
+  --card-foreground: #0a222e;
+  --popover: #f4fdfa;
+  --popover-foreground: #0a222e;
+  --primary: #0a6358;
+  --primary-foreground: #f0fdf4;
+  --secondary: #e8f2ec;
+  --secondary-foreground: #0a222e;
+  --muted: #e8f2ec;
+  --muted-foreground: #3a524b;
+  --accent: #edf6f0;
+  --accent-foreground: #0a222e;
+  --destructive: #ee3533;
+  --destructive-foreground: #f8fafc;
+  --border: #dfece6;
+  --input: #dfece6;
+  --ring: #0a6358;
+  --chart-1: var(--heat);
+  --chart-2: #0a6358;
+  --chart-3: #066c80;
+  --chart-4: #ffb900;
+  --chart-5: #00a9a7;
+  --sidebar: #f3faf7;
+  --sidebar-foreground: #0a222e;
+  --sidebar-primary: #0a6358;
+  --sidebar-primary-foreground: #f0fdf4;
+  --sidebar-accent: #e8f2ec;
+  --sidebar-accent-foreground: #0a222e;
+  --sidebar-border: #dfece6;
+  --sidebar-ring: #0a6358;
+
+  /* CI enriched palette v0.2.0 — brand teal ramp + accent hues + radius scale (mode-independent) */
+  --teal-50: #eef7f8;
+  --teal-100: #d3e9ec;
+  --teal-200: #abd4d8;
+  --teal-300: #7fbcc2;
+  --teal-400: #4c9aa3;
+  --teal-500: #1c8791;
+  --teal-600: #0f717a;
+  --teal-700: #0d5f67;
+  --teal-800: #0e4a52;
+  --teal-900: #0a222e;
+  --teal-950: #041620;
+  --aqua: #00a9a7;
+  --aqua-light: #72ddd4;
+  --teal-accent: #2c676d;
+  --teal-mid: #409b9b;
+  --phthalo: #0a6358;
+  --phthalo-deep: #022c2b;
+  --phthalo-hover: #0d7a6e;
+  --mist: #f3faf7;
+  --mist-deep: #e8f2ec;
+
+  /* Level scale — ordinal rank (red = worst/heaviest .. blue = best/coolest). Not semantic
+   * status; see tokens.json "level" for the full explanation. */
+  --level-red: #ef4444;
+  --level-orange: #f97316;
+  --level-gold: #f59e0b;
+  --level-green: #10b981;
+  --level-blue: #0ea5e9;
+
+  /* Category scale — tells unrelated groups apart, carries no meaning of its own. Add keys
+   * as categories are added; see tokens.json "category". */
+  --category-ai: #22d3ee;
+  --category-automation: #818cf8;
+  --category-data: #34d399;
+  --category-development: #fb7185;
+  --category-finance: #fbbf24;
+  --category-media: #a78bfa;
+  --category-photography: #e879f9;
+  --category-security: #fbbf24;
+  --category-social: #38bdf8;
+  --category-utilities: #94a3b8;
+
+  /*
+   * QR code surfaces — the one place the CI palette deliberately does NOT
+   * follow the theme. Decoders expect dark modules on a light ground, so a QR
+   * is never inverted for dark mode and its modules are never tinted with the
+   * brand teal; both changes cost contrast a camera needs. These two values
+   * are therefore declared ONLY here, in :root, and are intentionally absent
+   * from the `.dark` block below — do not add them there. Brand color belongs
+   * on the QR's frame, border and caption instead.
+   */
+  --qr-plate: #ffffff;
+  --qr-module: #041620;
+
+  /* enriched — semantic status + gradients + elevation (light) */
+  --success: #0f5132;
+  --success-foreground: #ffffff;
+  --warning: #855500;
+  --warning-foreground: #ffffff;
+  --info: #0284c7;
+  --info-foreground: #ffffff;
+  --gradient-brand: linear-gradient(135deg, #0a6358, #00a9a7);
+  --gradient-hero: linear-gradient(135deg, #f3faf7, #abd4d8);
+  --gradient-button: linear-gradient(135deg, #0e766a, #064741);
+  --gradient-aurora: radial-gradient(1200px circle at 50% -20%, rgba(232, 242, 236, 0.65), transparent 52%),
+    radial-gradient(900px circle at 80% 0%, rgba(10, 99, 88, 0.04), transparent 45%);
+  --shadow-sm: 0 1px 2px rgba(4, 22, 32, 0.04), 0 4px 12px -4px rgba(10, 99, 88, 0.05);
+  --shadow-md: 0 1px 3px rgba(4, 22, 32, 0.05), 0 6px 18px -6px rgba(10, 99, 88, 0.07);
+  --shadow-lg: 0 2px 4px rgba(4, 22, 32, 0.05), 0 10px 24px -8px rgba(10, 99, 88, 0.08);
+
+  /* CI extension tokens — app surfaces (Portal home, device groups, cards) */
+  --ci-bg: var(--mist);
+  --ci-bg-deep: #e8f2ec;
+  --ci-surface: #f4fdfa;
+  --ci-surface-recess: #e8f2ec;
+  --ci-surface-1: #dfece6;
+  --ci-surface-1-raised: #e8f3ed;
+  --ci-surface-2: #f0f9f5;
+  --ci-surface-2-hover: #e8f5ef;
+  --ci-surface-3: #f4fdfa;
+  --ci-card: var(--ci-surface-2);
+  --ci-card-hover: var(--ci-surface-2-hover);
+  --ci-border-0: rgba(10, 99, 88, 0.08);
+  --ci-border-1: rgba(6, 108, 128, 0.12);
+  --ci-border-2: rgba(10, 99, 88, 0.16);
+  --ci-border-3: rgba(0, 169, 167, 0.2);
+  --ci-border: var(--ci-border-1);
+  --ci-border-strong: var(--ci-border-2);
+  --ci-text: #0a222e;
+  --ci-text-muted: #3a524b;
+  --ci-text-soft: #0e4a52;
+  --ci-accent: #0a6358;
+  --ci-accent-2: #0d7a6e;
+  --ci-accent-glow: rgba(226, 239, 232, 0.95);
+  --ci-success: #0f5132;
+  --ci-success-bg: #dceee4;
+  --ci-success-border: #b8dcc8;
+  --ci-warning: #855500;
+  --ci-warning-bg: #f5e6cc;
+  --ci-warning-border: #e0c99a;
+  --ci-danger: #ea7260;
+  --ci-danger-bg: rgba(234, 114, 96, 0.12);
+  --ci-danger-border: rgba(234, 114, 96, 0.22);
+  --ci-offline: #4a5c62;
+  --ci-offline-bg: #e5eaec;
+  --ci-offline-border: #c8d2d6;
+  --ci-control-bg: #f7fbf9;
+  --ci-control-bg-hover: #edf6f0;
+  --ci-panel-muted-bg: var(--ci-surface-1-raised);
+  --ci-panel-bg: var(--ci-surface-3);
+  --ci-icon-bg: radial-gradient(circle at 30% 20%, rgba(10, 99, 88, 0.1), transparent 62%),
+    rgba(232, 242, 236, 0.85);
+  --ci-icon-border: rgba(10, 99, 88, 0.14);
+  --ci-button-start: #0e766a;
+  --ci-button-end: #064741;
+  --ci-button-border: rgba(6, 71, 65, 0.32);
+  --ci-button-foreground: #f0fdf4;
+  --ci-button-shadow:
+    0 1px 4px rgba(4, 22, 32, 0.12),
+    0 0 0 1px rgba(10, 99, 88, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --ci-button-shadow-hover:
+    0 2px 8px rgba(4, 22, 32, 0.16),
+    0 0 0 1px rgba(10, 99, 88, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --ci-link: #085952;
+  --ci-phthalo-green: var(--phthalo);
+  --ci-phthalo-green-deep: var(--phthalo-deep);
+  --ci-shadow-color: rgba(4, 22, 32, 0.08);
+  --ci-background-lift: var(--gradient-aurora);
+  --shadow-elev-1: var(--shadow-sm);
+  --shadow-elev-2: var(--shadow-md);
+  --shadow-elev-3: var(--shadow-lg);
+}
+
+/*
+ * Companion Intelligence brand palette — dark theme
+ * Navy shell #041620; surface stack grows teal → phthalo → sage in opacity.
+ */
+.dark {
+  --background: #041620;
+  --foreground: #e8f2f4;
+
+  --card: #0c323c;
+  --card-foreground: #e8f2f4;
+  --popover: #143e48;
+  --popover-foreground: #e8f2f4;
+
+  --primary: #c5e8dc;
+  --primary-foreground: #041620;
+
+  --secondary: #073038;
+  --secondary-foreground: #e8f2f4;
+
+  --muted: #073038;
+  --muted-foreground: #a3babf;
+
+  --accent: #0a2e38;
+  --accent-foreground: #e8f2f4;
+
+  --destructive: #ef7070;
+  --destructive-foreground: #f5f8fa;
+
+  --border: #073038;
+  --input: #0a2e38;
+  --ring: #c5e8dc;
+
+  --chart-1: #c5e8dc;
+  --chart-2: #409b9b;
+  --chart-3: #079d99;
+  --chart-4: #70a6af;
+  --chart-5: #066c80;
+
+  --sidebar: #041620;
+  --sidebar-foreground: #e8f2f4;
+  --sidebar-primary: #c5e8dc;
+  --sidebar-primary-foreground: #041620;
+  --sidebar-accent: #0a2e38;
+  --sidebar-accent-foreground: #e8f2f4;
+  --sidebar-border: #073038;
+  --sidebar-ring: #c5e8dc;
+
+  /* enriched — semantic status + gradients + elevation (dark) */
+  --success: #34d399;
+  --success-foreground: #052e16;
+  --warning: #fbbf24;
+  --warning-foreground: #422006;
+  --info: #38bdf8;
+  --info-foreground: #082f49;
+  --gradient-aurora: radial-gradient(1200px circle at 50% -20%, rgba(200, 230, 217, 0.08), transparent 55%),
+    radial-gradient(800px circle at 15% 10%, rgba(4, 22, 32, 0.5), transparent 50%);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22), 0 4px 12px -6px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.24), 0 6px 18px -8px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 2px 4px rgba(0, 0, 0, 0.26), 0 10px 24px -10px rgba(0, 0, 0, 0.36);
+
+  /* CI extension tokens (dark) */
+  --ci-bg: #041620;
+  --ci-bg-deep: #021018;
+  --ci-surface: #143e48;
+  --ci-surface-recess: #021018;
+  --ci-surface-1: #073038;
+  --ci-surface-1-raised: #0a2e38;
+  --ci-surface-2: #0c323c;
+  --ci-surface-2-hover: #103a44;
+  --ci-surface-3: #143e48;
+  --ci-card: var(--ci-surface-2);
+  --ci-card-hover: var(--ci-surface-2-hover);
+  --ci-border-0: rgba(6, 108, 128, 0.1);
+  --ci-border-1: rgba(6, 108, 128, 0.16);
+  --ci-border-2: rgba(10, 99, 88, 0.22);
+  --ci-border-3: rgba(184, 221, 208, 0.28);
+  --ci-border: var(--ci-border-1);
+  --ci-border-strong: var(--ci-border-2);
+  --ci-text: #e8f2f4;
+  --ci-text-muted: #a3babf;
+  --ci-text-soft: #b5cdc2;
+  --ci-accent: #c5e8dc;
+  --ci-accent-2: #c5e8dc;
+  --ci-accent-glow: rgba(200, 230, 217, 0.14);
+  --ci-success: #34d399;
+  --ci-success-bg: #0f3d32;
+  --ci-success-border: #1a5248;
+  --ci-warning: #fbbf24;
+  --ci-warning-bg: #3d3010;
+  --ci-warning-border: #5c4818;
+  --ci-danger: #ea7260;
+  --ci-danger-bg: rgba(234, 114, 96, 0.12);
+  --ci-danger-border: rgba(234, 114, 96, 0.22);
+  --ci-offline: #a8bcc4;
+  --ci-offline-bg: #1a2a30;
+  --ci-offline-border: #2a3c42;
+  --ci-control-bg: rgba(8, 29, 40, 0.92);
+  --ci-control-bg-hover: rgba(12, 40, 51, 0.96);
+  --ci-panel-muted-bg: var(--ci-surface-1-raised);
+  --ci-panel-bg: var(--ci-surface-3);
+  --ci-icon-bg: radial-gradient(circle at 30% 20%, rgba(197, 232, 220, 0.1), transparent 62%),
+    rgba(6, 108, 128, 0.1);
+  --ci-icon-border: rgba(184, 221, 208, 0.18);
+  --ci-button-start: #0e766a;
+  --ci-button-end: #064741;
+  --ci-button-border: rgba(184, 221, 208, 0.26);
+  --ci-button-foreground: #f0fdf4;
+  --ci-button-shadow:
+    0 1px 6px rgba(0, 0, 0, 0.24),
+    0 0 0 1px rgba(14, 118, 106, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --ci-button-shadow-hover:
+    0 2px 10px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(184, 221, 208, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --ci-link: #dceee4;
+  --ci-phthalo-green: var(--phthalo);
+  --ci-phthalo-green-deep: var(--phthalo-deep);
+  --ci-shadow-color: rgba(0, 0, 0, 0.45);
+  --ci-background-lift: var(--gradient-aurora);
+  --shadow-elev-1: var(--shadow-sm);
+  --shadow-elev-2: var(--shadow-md);
+  --shadow-elev-3:
+    var(--shadow-lg),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+
+  --tblr-bg-surface: #1d293d;
+  --tblr-border-color: #2c676d;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) var(--muted);
+  }
+
+  *::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: var(--muted);
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: var(--accent);
+    border: 2px solid var(--muted);
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: var(--primary);
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: var(--muted);
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  html {
+    @apply bg-background;
+    font-size: 17px;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    min-height: 100vh;
+    font-family: var(--font-sans);
+    letter-spacing: var(--font-letter-spacing);
+    word-spacing: var(--font-word-spacing);
+  }
+
+  .dark body {
+    background-image: var(--ci-background-lift);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+  }
+
+  html:not(.dark) body {
+    background-image: var(--ci-background-lift);
+    background-attachment: fixed;
+    background-repeat: no-repeat;
+  }
+}
