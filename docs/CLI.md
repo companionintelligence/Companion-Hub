@@ -947,7 +947,7 @@ cihub fleet backends [--backends a,b] [--execute]      # what each node can run 
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet backends --backends omlx|vllm|lemonade|ollama [--execute]  # install only an engine this machine can run
-cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
+cihub fleet install [--user <acct>] [--cihub-binary <path>] [--pairing-gap <s>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
@@ -1065,6 +1065,7 @@ all installed on. To act on some nodes only, pass `--nodes`.
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
 | `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
+| `--pairing-gap <seconds>` | `install` only: how far apart the run sends its Portal pairings (`CIHUB_PAIRING_GAP`; default 65, `0` turns the spacing off, at most 3600). Portal allows 10 pairings per 10 minutes from one network address — see [Portal's pairing rate limit](#portals-pairing-rate-limit) |
 | `--join-pool <node>` | `install` only: pair each installed node into that Hub's pool |
 | `--pool-pin <digits>` | `install` only: the PIN minted on the Hub being joined, for pairing by address |
 | `--hub` | `update` only: update the Hub image |
@@ -1592,6 +1593,35 @@ Pairing codes are covered under
 `device:pair` login mints one per node, `--code` enrolls a single node, and any other combination is
 refused before anything is dialled. `--join-pool` leaves the pairing **pending** — the receiving Hub
 still has to approve it, and the step output says so.
+
+#### Portal's pairing rate limit
+
+Portal meters `POST /api/devices/pair` at 10 per 10 minutes per caller address, a fixed window
+keyed on the address Cloudflare sees (`DEVICE_PAIR_RATE_LIMIT` in CI-Portal). The caller is each
+node's Hub, not this machine, so a fleet behind one NAT shares one budget. On 2026-09-26 a rebuild
+paired ten nodes back to back, and the next ones came back `Too many attempts. Try again in 51
+seconds.`, which the node's line reduced to `Pairing failed`.
+
+`fleet install` stays under the limit, and waits it out when it is refused anyway:
+
+- **Spacing.** Consecutive pairings go out at least `--pairing-gap` seconds apart, measured from the
+  end of one node's `hub up + register` to the start of the next. The default, 65, is Portal's window
+  over its budget plus five seconds, so a run cannot fill the window on its own. The wait comes
+  just before `hub up + register`, after the node's probe, preflight, binary and mint. It prints live
+  as `… waiting 47s before pairing` and lands on the node's report as `pairing pace`. The dry run
+  says how much waiting the spacing can add.
+- **A refusal for rate.** Portal's limiter answers before its handler, so a `429` means the code was
+  never looked at. The run waits what `Retry-After` asked plus five seconds, or the default gap when
+  the Hub relayed no delay, and then sends the **same** code again, up to three times. The code is
+  neither replaced nor dropped, and the next node is held for the same wait, because it shares the
+  address. A wait longer than Portal's own ten-minute window is not taken: the node stops and says
+  its code is still good.
+- **Minting.** `POST /api/devices` has a limit of its own, 20 per 10 minutes per address. A refusal
+  there created no device and took no name, so the mint is waited out and sent again on the same
+  terms.
+
+Other pairing from the same network, such as a second operator or a run a few minutes earlier,
+spends the same budget. The first node of a run can still be refused, and the retry covers that.
 
 ### `cihub fleet update`
 

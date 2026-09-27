@@ -37,6 +37,19 @@ import {
 import { tailscaleCertStep } from './fleet-tailscale-cert.js';
 import { gatePreflight, preflightNode } from './fleet-preflight.js';
 import { classifyPairingFailure, type PairingCodeOutcome } from './fleet-pairing-codes.js';
+import {
+  describePairingPace,
+  describeWait,
+  detectPairingRateLimit,
+  MAX_RATE_LIMIT_RETRIES,
+  MAX_RATE_LIMIT_WAIT_MS,
+  PairingPacer,
+  PORTAL_DEVICE_CREATE_RATE_LIMIT,
+  type PortalRateLimit,
+  portalRateLimitOf,
+  RATE_LIMIT_MARGIN_MS,
+  rateLimitWaitMs,
+} from './portal-rate-limit.js';
 
 export interface InstallStep {
   name: string;
@@ -291,8 +304,10 @@ export function describeStepFailure(out: string, err: string, outcome?: { code: 
     .split('\n')
     .map((line) => line.replace(/[│┌┐└┘─]+/g, ' ').trim())
     .filter(Boolean);
+  // `too many` is Portal's rate limit, relayed by the Hub. Without it the node's line kept the box
+  // title, "Pairing failed", and dropped the one line saying the fix was to wait 51 seconds.
   const telling = lines.filter((line) =>
-    /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out/i.test(line),
+    /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out|too many/i.test(line),
   );
   const chosen = telling.length > 0 ? telling.slice(-3) : lines.slice(-3);
   const quoted = chosen.join(' | ');
@@ -355,6 +370,17 @@ export interface InstallOptions {
    * `hub up` that died before `register` leaves the code unspent and never reaches here.
    */
   replacePairingCode?: (outcome: PairingCodeOutcome) => Promise<{ code: string; detail: string } | undefined>;
+  /**
+   * Spaces the run's pairings and holds them while Portal says to wait — one per run, shared by
+   * every node, since Portal counts pairings per network address. Absent: no spacing, though a
+   * refusal for rate is still waited out and the same code sent again.
+   */
+  pairingPacer?: PairingPacer;
+  /**
+   * Said as it happens rather than with the node's report, which prints once the node is done: a
+   * minute's wait with nothing on screen reads as a hang.
+   */
+  onProgress?: (line: string) => void;
   /** Where the `cihub` binary comes from when the node needs one. Absent: adopt or fail. */
   cihubBinary?: CihubBinarySource;
   /** Per-run cache of downloaded assets, keyed by asset name, shared across nodes. */
@@ -432,6 +458,11 @@ export function offeredCihubVersion(source: CihubBinarySource | undefined, binar
   if (source.kind === 'local') return { why: `${source.path} would not run here, so its version could not be read` };
   if (source.version !== 'latest') return { version: source.version, why: '' };
   return { why: binary && 'why' in binary ? binary.why : "release 'latest' was not resolved to a tag" };
+}
+
+/** A refusal whose `Retry-After` is longer than any limit of Portal's own would ask for. */
+function tooLongToWait(limit: PortalRateLimit): string {
+  return `Portal asked for ${limit.retryAfterSeconds}s, more than the ${describeWait(MAX_RATE_LIMIT_WAIT_MS - RATE_LIMIT_MARGIN_MS)} window its own limits run on, so the run does not wait on it`;
 }
 
 /**
@@ -526,14 +557,33 @@ export async function installNode(
       return { node: node.name, ok: false, steps };
     }
   }
+  const pacer = opts.pairingPacer ?? new PairingPacer(0);
   if (opts.mintPairingCode) {
-    try {
-      const minted = await opts.mintPairingCode();
-      pairingCode = minted.code;
-      steps.push({ name: 'portal device', ok: true, detail: minted.detail });
-    } catch (error) {
-      steps.push({ name: 'portal device', ok: false, detail: error instanceof Error ? error.message : String(error) });
-      return { node: node.name, ok: false, steps };
+    // A mint Portal refused for rate created no device and took no name, so asking again is safe —
+    // the one mint failure that is. Everything else still ends the node here, as it always has.
+    for (let retry = 0; ; retry++) {
+      try {
+        const minted = await opts.mintPairingCode();
+        pairingCode = minted.code;
+        steps.push({ name: 'portal device', ok: true, detail: minted.detail });
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const limit = portalRateLimitOf(error);
+        const waitMs = limit ? rateLimitWaitMs(limit) : undefined;
+        if (!limit || waitMs === undefined || retry >= MAX_RATE_LIMIT_RETRIES) {
+          const { windowMs, max } = PORTAL_DEVICE_CREATE_RATE_LIMIT;
+          const gaveUp = limit
+            ? ` — ${waitMs === undefined ? tooLongToWait(limit) : `still refused after ${retry} wait(s)`}. Portal allows ${max} new devices per ${windowMs / 60_000} minutes from one address and created none here, so rerun this node later`
+            : '';
+          steps.push({ name: 'portal device', ok: false, detail: `${message}${gaveUp}` });
+          return { node: node.name, ok: false, steps };
+        }
+        const why = `Portal refused the mint for rate ("${limit.said}") and created no device, so it is sent again (retry ${retry + 1} of ${MAX_RATE_LIMIT_RETRIES})`;
+        opts.onProgress?.(`waiting ${describeWait(waitMs)} before minting again — ${why}`);
+        await pacer.pause(waitMs);
+        steps.push({ name: 'portal rate limit', ok: true, skipped: true, ms: waitMs, detail: `waited ${describeWait(waitMs)}: ${why}` });
+      }
     }
   }
   if (!pairingCode) {
@@ -541,14 +591,57 @@ export async function installNode(
     return { node: node.name, ok: false, steps };
   }
 
-  // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
-  let up = await stepWithOutput(
-    'hub up + register',
-    target,
-    bringUpScript(opts.postgresPassword, pairingCode, opts.mintPairingCode ? opts.portalOrigin : undefined),
-    'hub-up-complete',
-    20 * 60_000,
-  );
+  /**
+   * `hub up + register` with one code: waits its turn on the pacer, runs, and — when Portal refused
+   * the pair for rate — waits what Portal asked and sends the SAME code again. The limiter answers
+   * before Portal's handler, so the code was never looked at; a replacement would solve a problem
+   * the code does not have, and `classifyPairingFailure` never sees this answer as one about it.
+   *
+   * The refused attempt is reported as the wait it caused, not as a failed step: a node whose retry
+   * registered is an installed node, and a `✗` on its first attempt would count it failed.
+   */
+  const redeem = async (name: string, code: string) => {
+    let waitingFor: string | undefined;
+    for (let retry = 0; ; retry++) {
+      const dueMs = pacer.dueInMs();
+      if (dueMs > 0) {
+        const why = waitingFor ?? describePairingPace(pacer.gapMs);
+        opts.onProgress?.(`waiting ${describeWait(dueMs)} before pairing — ${why}`);
+        await pacer.waitTurn();
+        steps.push({
+          name: waitingFor ? 'pairing rate limit' : 'pairing pace',
+          ok: true,
+          skipped: true,
+          ms: dueMs,
+          detail: `waited ${describeWait(dueMs)}: ${why}`,
+        });
+      }
+      // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
+      const up = await stepWithOutput(
+        name,
+        target,
+        bringUpScript(opts.postgresPassword, code, opts.mintPairingCode ? opts.portalOrigin : undefined),
+        'hub-up-complete',
+        20 * 60_000,
+      );
+      const limit = up.step.ok ? undefined : detectPairingRateLimit(`${up.err}\n${up.out}`);
+      if (!limit) {
+        pacer.redeemed();
+        return up;
+      }
+      const waitMs = rateLimitWaitMs(limit);
+      // Held even when this node gives up: the next node shares the address, and Portal's answer is for it too.
+      if (waitMs !== undefined) pacer.holdFor(waitMs);
+      if (waitMs === undefined || retry >= MAX_RATE_LIMIT_RETRIES) {
+        const why = waitMs === undefined ? tooLongToWait(limit) : `still refused for rate after ${retry} wait(s)`;
+        up.step.detail = `${up.step.detail} — ${why}. Portal refused before it looked at the code, so the code is still good: rerun this node (--nodes ${node.name}) once nothing else on this network is pairing`;
+        return up;
+      }
+      waitingFor = `Portal refused the pairing for rate before it looked at the code ("${limit.said}"), so the same code goes again (retry ${retry + 1} of ${MAX_RATE_LIMIT_RETRIES})`;
+    }
+  };
+
+  let up = await redeem('hub up + register', pairingCode);
 
   // A code Portal has refused is dead for good, and a run that keeps handing the same one back can
   // never finish: on 2026-09-22 fifteen nodes failed on one 410 apiece, three runs in a row, because
@@ -570,14 +663,9 @@ export async function installNode(
         return { node: node.name, ok: false, steps };
       }
       steps.push({ name: 'replacement code', ok: true, detail: `${outcome.why}; ${replacement.detail}` });
-      // The image and every infra container are on the node by now, so this is the register alone.
-      up = await stepWithOutput(
-        'hub up + register (retry)',
-        target,
-        bringUpScript(opts.postgresPassword, replacement.code, opts.mintPairingCode ? opts.portalOrigin : undefined),
-        'hub-up-complete',
-        20 * 60_000,
-      );
+      // The image and every infra container are on the node by now, so this is the register alone —
+      // paced like any other, since Portal counted the refusal that led here.
+      up = await redeem('hub up + register (retry)', replacement.code);
     }
   }
 

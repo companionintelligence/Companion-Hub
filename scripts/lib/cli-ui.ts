@@ -136,7 +136,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: "What Portal knows about the org's devices; release (delete) or re-register one without a browser",
       },
       {
-        command: `${BASE_COMMAND} fleet install [--user <account>] [--claim-email <addr>] [--cihub-binary <path>] [--execute]`,
+        command: `${BASE_COMMAND} fleet install [--user <account>] [--claim-email <addr>] [--cihub-binary <path>] [--pairing-gap <seconds>] [--execute]`,
         description: 'Stand a Hub up on each node, register it, and claim it; prints the plan unless --execute',
       },
       {

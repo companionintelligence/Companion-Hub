@@ -128,6 +128,7 @@ import {
   recordReRegisteredPairingCode,
   savePendingPairingCode,
 } from './fleet-pairing-codes.js';
+import { DEFAULT_PAIRING_GAP_MS, describeWait, PairingPacer, PORTAL_PAIR_RATE_LIMIT, portalRateLimitOf } from './portal-rate-limit.js';
 import {
   deletePortalDevice,
   findPortalDevice,
@@ -266,6 +267,12 @@ export interface FleetArgs {
   claimEmail?: string;
   /** Postgres password for the appliance seed. Never logged. */
   postgresPassword?: string;
+  /**
+   * `install` only: how far apart the run sends its pairings (`--pairing-gap <seconds>`,
+   * `CIHUB_PAIRING_GAP`). Default `DEFAULT_PAIRING_GAP_MS`, from Portal's own pairing limit; 0 turns
+   * the spacing off, and a refusal for rate is still waited out either way.
+   */
+  pairingGapMs: number;
   /** Pair each installed node into this Hub's pool. */
   joinPool?: string;
   poolPin?: string;
@@ -372,6 +379,21 @@ function hubHalvesOf(args: FleetArgs): HubHalf[] {
 
 export class FleetArgError extends Error {}
 
+/**
+ * `--pairing-gap` / `CIHUB_PAIRING_GAP`, in whole seconds, as milliseconds. An hour is the ceiling:
+ * Portal's own limit needs a minute, and a typo of `6500` for `65` should be refused rather than
+ * turn a seventeen-node install into a day.
+ */
+export function parsePairingGap(raw: string, source: string): number {
+  const seconds = Number(raw.trim());
+  if (raw.trim() === '' || !Number.isInteger(seconds) || seconds < 0 || seconds > 3600) {
+    throw new FleetArgError(
+      `${source} must be whole seconds between 0 and 3600 (got '${raw}'); the default, ${DEFAULT_PAIRING_GAP_MS / 1000}, keeps a fleet under Portal's ${PORTAL_PAIR_RATE_LIMIT.max} pairings per ${PORTAL_PAIR_RATE_LIMIT.windowMs / 60_000} minutes, and 0 turns the spacing off.`,
+    );
+  }
+  return seconds * 1000;
+}
+
 /** Parse `fleet` argv. Throws {@link FleetArgError} with an actionable message rather than exiting. */
 export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   const args: FleetArgs = {
@@ -401,6 +423,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     cihubVersion: undefined,
     claimEmail: process.env.CIHUB_CLAIM_EMAIL || undefined,
     postgresPassword: process.env.CIHUB_POSTGRES_PASSWORD || undefined,
+    pairingGapMs: process.env.CIHUB_PAIRING_GAP ? parsePairingGap(process.env.CIHUB_PAIRING_GAP, 'CIHUB_PAIRING_GAP') : DEFAULT_PAIRING_GAP_MS,
     joinPool: undefined,
     poolPin: undefined,
     models: [],
@@ -481,6 +504,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--cihub-binary')) args.cihubBinary = readValue('--cihub-binary');
     else if (isFlag('--cihub-version')) args.cihubVersion = readValue('--cihub-version');
     else if (isFlag('--claim-email')) args.claimEmail = readValue('--claim-email');
+    else if (isFlag('--pairing-gap')) args.pairingGapMs = parsePairingGap(readValue('--pairing-gap'), '--pairing-gap');
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
@@ -1952,6 +1976,24 @@ function printInstallTargets(
 }
 
 /**
+ * The line a multi-node install prints about how its pairings are spaced, in the dry run and the
+ * real one alike. The ceiling on waiting is said up front because a seventeen-node run that pauses a
+ * minute per node is otherwise indistinguishable from one that hangs.
+ */
+export function describePairingPacing(gapMs: number, nodeCount: number): string | undefined {
+  if (nodeCount < 2) return undefined;
+  const { windowMs, max } = PORTAL_PAIR_RATE_LIMIT;
+  const budget = `Portal allows ${max} pairings per ${windowMs / 60_000} minutes from one network address, and a fleet behind one NAT is one address`;
+  if (gapMs === 0) return `pairings go out back to back (--pairing-gap 0). ${budget}; a refusal for rate is waited out and the same code sent again`;
+  const floor = windowMs / max;
+  if (gapMs < floor) {
+    return `pairings go out ${describeWait(gapMs)} apart (--pairing-gap), closer than the ${describeWait(floor)} that keeps under Portal's limit — ${budget}; a refusal for rate is waited out and the same code sent again`;
+  }
+  const most = Math.ceil(((nodeCount - 1) * gapMs) / 60_000);
+  return `pairings go out ${describeWait(gapMs)} apart — ${budget} — which adds at most ~${most} min of waiting across ${nodeCount} nodes (--pairing-gap)`;
+}
+
+/**
  * `cihub fleet install` — stand a Hub up on every selected node.
  *
  * Serialised, and load-gated per node. Both because a fleet-wide pass on this fleet upgraded a
@@ -1994,6 +2036,8 @@ async function runInstall(args: FleetArgs): Promise<void> {
     }
     console.log('  each would then get a `sudo tailscale cert <its MagicDNS name>`, skipped with a reason where HTTPS is off or tailscale is absent');
     if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
+    const pacing = describePairingPacing(args.pairingGapMs, run.length);
+    if (pacing) console.log(colorize(`  ${pacing}`, 'dim'));
     if (canMint) {
       console.log(
         colorize(
@@ -2052,6 +2096,11 @@ async function runInstall(args: FleetArgs): Promise<void> {
   const binarySource = await resolveBinarySourceForRun(args);
   console.log(colorize(`  ${describeBinarySource(binarySource)}`, binarySource.kind === 'unavailable' ? 'yellow' : 'dim'));
   const binaryCache = new Map<string, { path: string; sha256: string; label: string }>();
+  const pacing = describePairingPacing(args.pairingGapMs, run.length);
+  if (pacing) console.log(colorize(`  ${pacing}`, 'dim'));
+  // One for the whole run: Portal counts pairings per network address, and every node's Hub calls
+  // it from the same one when the fleet sits behind one NAT.
+  const pairingPacer = new PairingPacer(args.pairingGapMs);
 
   const reports = [];
   for (const node of run) {
@@ -2100,6 +2149,9 @@ async function runInstall(args: FleetArgs): Promise<void> {
               });
               return { code: minted.pairingCode, detail: replaced(`registered as ${minted.slug}`) };
             } catch (error) {
+              // Refused for rate: Portal created nothing, so there is nothing to keep, drop or
+              // re-register. It goes back as it came, typed, and installNode waits and mints again.
+              if (portalRateLimitOf(error)) throw error;
               const message = error instanceof Error ? error.message : String(error);
               if (!/already exists/.test(message)) throw aged ? stillKept(`minting a replacement failed (${message})`) : new Error(message);
               if (!aged) throw new Error(describeDeviceNameConflict(node.name, findReRegistration(node.name, orgId)));
@@ -2187,6 +2239,8 @@ async function runInstall(args: FleetArgs): Promise<void> {
         portalOrigin: canMint ? storedLogin?.portalOrigin : undefined,
         replacePairingCode,
         onRegistered: () => clearPendingPairingCode(node.ip),
+        pairingPacer,
+        onProgress: (line) => console.log(colorize(`  … ${line}`, 'dim')),
         cihubBinary: binarySource,
         binaryCache,
         claimEmail: args.claimEmail,
