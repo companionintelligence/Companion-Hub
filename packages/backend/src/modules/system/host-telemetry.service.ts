@@ -63,6 +63,30 @@ export type HostEventRow = {
 
 type DockerInfoCache = { value: { available: boolean; info: SlimDockerInfo | null }; at: number };
 
+/** `2026-09-27 10:22:22.896` — date-time with no zone, as Postgres renders a `timestamp` column. */
+const ZONELESS_TIMESTAMP = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/;
+
+/**
+ * A stored timestamp as ISO-8601 UTC (`…Z`), which is what every other time this API serves looks like.
+ *
+ * `sampled_at` is `timestamp` WITHOUT time zone. Every value written to it is `toISOString()`, and
+ * Postgres silently drops the `Z` from a literal cast to that type, so what is stored is the UTC
+ * wall-clock — and what comes back is `2026-09-27 10:22:22.896`, with nothing saying it is UTC. A
+ * browser parses that as ITS OWN local time. The resource monitor serves these straight through
+ * after a restart (they hydrate its in-memory history), so on fzzy the first eleven points of the
+ * CPU chart were labelled seven hours off in a PDT browser, beside points from the live collector
+ * that were right. Normalising here, at the one place rows leave the table, fixes every reader.
+ *
+ * A value that already carries a zone is normalised through `Date` too, so the output is uniform;
+ * one that does not parse at all is returned untouched rather than turned into `Invalid Date`.
+ */
+export function toUtcIso(value: string): string {
+  const trimmed = value.trim();
+  const parsed = Date.parse(ZONELESS_TIMESTAMP.test(trimmed) ? `${trimmed.replace(' ', 'T')}Z` : trimmed);
+
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : value;
+}
+
 @Injectable()
 export class HostTelemetryService implements OnModuleInit, OnModuleDestroy {
   private intervalHandle: NodeJS.Timeout | null = null;
@@ -215,7 +239,7 @@ export class HostTelemetryService implements OnModuleInit, OnModuleDestroy {
 
   private toHistorySample(row: typeof hostTelemetrySample.$inferSelect): HostTelemetryHistorySample {
     return {
-      sampledAt: row.sampledAt,
+      sampledAt: toUtcIso(row.sampledAt),
       cpuLoad: row.cpuLoad,
       cpuCores: row.cpuCores,
       memoryUsed: row.memoryUsed,

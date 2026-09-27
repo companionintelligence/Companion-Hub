@@ -48,6 +48,8 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   // `useDashboardData` imports this too. Leaving it out threw on every run, which nothing
   // noticed because the suite is env-gated and CI never sets the variable.
   getResidentModelsOptions: () => ({ queryKey: ['residency'], queryFn: async () => fixtures.residency }),
+  // Host CPU for the rail. Shared with the layout's own poll in the real app; here it is just a fixture.
+  systemLoadOptions: () => ({ queryKey: ['system-load'], queryFn: async () => ({ cpuLoad: 12, cpuCores: 32 }) }),
 }));
 
 /** Ages are relative to the render so "last seen" and the per-minute bars read as they would live. */

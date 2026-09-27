@@ -37,6 +37,19 @@ import {
 import { tailscaleCertStep } from './fleet-tailscale-cert.js';
 import { gatePreflight, preflightNode } from './fleet-preflight.js';
 import { classifyPairingFailure, type PairingCodeOutcome } from './fleet-pairing-codes.js';
+import {
+  describePairingPace,
+  describeWait,
+  detectPairingRateLimit,
+  MAX_RATE_LIMIT_RETRIES,
+  MAX_RATE_LIMIT_WAIT_MS,
+  PairingPacer,
+  PORTAL_DEVICE_CREATE_RATE_LIMIT,
+  type PortalRateLimit,
+  portalRateLimitOf,
+  RATE_LIMIT_MARGIN_MS,
+  rateLimitWaitMs,
+} from './portal-rate-limit.js';
 
 export interface InstallStep {
   name: string;
@@ -157,25 +170,46 @@ export function bringUpScript(postgresPassword: string, pairingCode: string, exp
     `export CIHUB_POSTGRES_PASSWORD='${postgresPassword.replace(/'/g, "'\\''")}'`,
     'cihub up --detached',
     'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    // The image the node ended up pinning, on the node's line whichever way the step ends. Read after
+    // `up`, so a desktop app that rewrote the file first shows here too. On 2026-09-26 core-6 and fzzy
+    // failed with "nothing answered …/registration/phase" and nothing else: the ci-hub:0.2.70 and
+    // ci-hub:0.2.61 they had been seeded with sat in the env file until someone went and read it.
+    'img="$(grep -h \'^CI_HUB_IMAGE=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2-)"; [ -n "$img" ] || img=unset',
+    // A running desktop app is the other writer of that file, and whatever `up` seeded, the next Hub
+    // start it makes puts its own build back: core-6's 0.2.70 app did so eight seconds after the seed.
+    'desktop_note="a companion-hub desktop app is running on this node, and every Hub start it makes rewrites CI_HUB_IMAGE to its own build"',
+    'desk=""; if pgrep -x companion-hub >/dev/null 2>&1; then echo "hub-up-note: $desktop_note"; desk="; $desktop_note"; fi',
     // A fresh node's `cihub up` seeds CI_CLOUD_URL from its own build, which need not be the Portal the
     // code was minted on — and a code minted on one Portal is not in the other's database, so every
     // `register` answers 410 PAIRING_CODE_INVALID after first resetting the node's registration.
     // Checked here, after `up` wrote the file and before `register` touches anything.
     ...(expectedPortalOrigin ? portalOriginCheckLines(expectedPortalOrigin) : []),
+    // The port the Hub was actually given, not the one it usually gets: a heal that moved API_PORT
+    // to 5003 once left the probe below silent while the step reported success.
+    'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
+    // Before `register`, because Portal spends the code the moment it accepts it, whatever the Hub
+    // does next. On 2026-09-26 core-6 and fzzy spent theirs on 0.2.70 and 0.2.61 Hubs that could
+    // never report registered. `registration/phase` is the route that answers without a check-in, and
+    // a Hub without it (404) predates what this install needs. `up -d` returns before the Hub listens,
+    // so an unanswered probe is retried, 60 times 3 s apart; a 404 is an answer and ends the wait.
+    'probe=000; tries=0',
+    'while [ "$tries" -lt 60 ]; do',
+    '  probe="$(curl -s -o /dev/null -w \'%{http_code}\' --max-time 5 "http://127.0.0.1:$port/api/registration/phase" || true)"',
+    '  case "$probe" in 200|404) break ;; esac',
+    '  tries=$((tries + 1)); sleep 3',
+    'done',
+    'if [ "$probe" = 404 ]; then echo "hub-up-failed: the Hub on :$port has no /api/registration/phase, so it is older than this install needs; the pairing code was not sent (CI_HUB_IMAGE=$img$desk)" >&2; exit 1; fi',
+    '[ "$probe" = 200 ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase in 60 tries after cihub up (last HTTP status $probe); the pairing code was not sent (CI_HUB_IMAGE=$img$desk)" >&2; exit 1; }',
     // `register` now exits non-zero on failure, but the state check is what actually proves it —
     // an exit code says what the command believed, not what the Hub is.
     `cihub register --code '${pairingCode.replace(/'/g, "'\\''")}'`,
-    // The port the Hub was actually given, not the one it usually gets: a heal that moved API_PORT
-    // to 5003 once left this probe silent while the step reported success. An empty answer is a
-    // failure now, and so is an answer that does not say registered — `registration/phase` is the
-    // route that reports without sending a check-in.
-    'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
+    // An empty answer is a failure, and so is an answer that does not say registered.
     'phase="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/api/registration/phase" || true)"',
-    '[ -n "$phase" ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase after cihub up" >&2; exit 1; }',
+    '[ -n "$phase" ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase after cihub register (CI_HUB_IMAGE=$img$desk)" >&2; exit 1; }',
     'echo "$phase"',
     'echo "$phase" | grep -q \'"registered":true\' || { echo "hub-up-failed: the Hub is up but not registered: $phase" >&2; exit 1; }',
     '[ "$port" = 5002 ] || echo "hub-up-note: the Hub listens on :$port, not :5002 — tailscale serve and pool peers expect 5002"',
-    'echo "hub-up-complete"',
+    'echo "hub-up-complete (CI_HUB_IMAGE=$img$desk)"',
   ].join('\n');
 }
 
@@ -291,8 +325,13 @@ export function describeStepFailure(out: string, err: string, outcome?: { code: 
     .split('\n')
     .map((line) => line.replace(/[│┌┐└┘─]+/g, ' ').trim())
     .filter(Boolean);
+  // `too many` is Portal's rate limit, relayed by the Hub. Without it the node's line kept the box
+  // title, "Pairing failed", and dropped the one line saying the fix was to wait 51 seconds.
+  // `temporarily unavailable` is the same limiter failing closed, for the same reason.
   const telling = lines.filter((line) =>
-    /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out/i.test(line),
+    /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out|too many|temporarily unavailable/i.test(
+      line,
+    ),
   );
   const chosen = telling.length > 0 ? telling.slice(-3) : lines.slice(-3);
   const quoted = chosen.join(' | ');
@@ -355,6 +394,17 @@ export interface InstallOptions {
    * `hub up` that died before `register` leaves the code unspent and never reaches here.
    */
   replacePairingCode?: (outcome: PairingCodeOutcome) => Promise<{ code: string; detail: string } | undefined>;
+  /**
+   * Spaces the run's pairings and holds them while Portal says to wait — one per run, shared by
+   * every node, since Portal counts pairings per network address. Absent: no spacing, though a
+   * refusal for rate is still waited out and the same code sent again.
+   */
+  pairingPacer?: PairingPacer;
+  /**
+   * Said as it happens rather than with the node's report, which prints once the node is done: a
+   * minute's wait with nothing on screen reads as a hang.
+   */
+  onProgress?: (line: string) => void;
   /** Where the `cihub` binary comes from when the node needs one. Absent: adopt or fail. */
   cihubBinary?: CihubBinarySource;
   /** Per-run cache of downloaded assets, keyed by asset name, shared across nodes. */
@@ -432,6 +482,11 @@ export function offeredCihubVersion(source: CihubBinarySource | undefined, binar
   if (source.kind === 'local') return { why: `${source.path} would not run here, so its version could not be read` };
   if (source.version !== 'latest') return { version: source.version, why: '' };
   return { why: binary && 'why' in binary ? binary.why : "release 'latest' was not resolved to a tag" };
+}
+
+/** A refusal whose `Retry-After` is longer than any limit of Portal's own would ask for. */
+function tooLongToWait(limit: PortalRateLimit): string {
+  return `Portal asked for ${limit.retryAfterSeconds}s, more than the ${describeWait(MAX_RATE_LIMIT_WAIT_MS - RATE_LIMIT_MARGIN_MS)} window its own limits run on, so the run does not wait on it`;
 }
 
 /**
@@ -526,14 +581,35 @@ export async function installNode(
       return { node: node.name, ok: false, steps };
     }
   }
+  const pacer = opts.pairingPacer ?? new PairingPacer(0);
   if (opts.mintPairingCode) {
-    try {
-      const minted = await opts.mintPairingCode();
-      pairingCode = minted.code;
-      steps.push({ name: 'portal device', ok: true, detail: minted.detail });
-    } catch (error) {
-      steps.push({ name: 'portal device', ok: false, detail: error instanceof Error ? error.message : String(error) });
-      return { node: node.name, ok: false, steps };
+    // A mint Portal refused for rate created no device and took no name, so asking again is safe —
+    // the one mint failure that is. Everything else still ends the node here, as it always has.
+    for (let retry = 0; ; retry++) {
+      try {
+        const minted = await opts.mintPairingCode();
+        pairingCode = minted.code;
+        steps.push({ name: 'portal device', ok: true, detail: minted.detail });
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const limit = portalRateLimitOf(error);
+        const waitMs = limit ? rateLimitWaitMs(limit) : undefined;
+        if (!limit || waitMs === undefined || retry >= MAX_RATE_LIMIT_RETRIES) {
+          const { windowMs, max } = PORTAL_DEVICE_CREATE_RATE_LIMIT;
+          const gaveUp = limit
+            ? ` — ${waitMs === undefined ? tooLongToWait(limit) : `still refused after ${retry} wait(s)`}. Portal allows ${max} new devices per ${windowMs / 60_000} minutes from one address and created none here, so rerun this node later`
+            : '';
+          // The next node mints from the same address, so this counts towards the run stopping.
+          if (limit) pacer.gaveUp(node.name);
+          steps.push({ name: 'portal device', ok: false, detail: `${message}${gaveUp}` });
+          return { node: node.name, ok: false, steps };
+        }
+        const why = `Portal refused the mint for rate ("${limit.said}") and created no device, so it is sent again (retry ${retry + 1} of ${MAX_RATE_LIMIT_RETRIES})`;
+        opts.onProgress?.(`waiting ${describeWait(waitMs)} before minting again — ${why}`);
+        await pacer.pause(waitMs);
+        steps.push({ name: 'portal rate limit', ok: true, skipped: true, ms: waitMs, detail: `waited ${describeWait(waitMs)}: ${why}` });
+      }
     }
   }
   if (!pairingCode) {
@@ -541,14 +617,71 @@ export async function installNode(
     return { node: node.name, ok: false, steps };
   }
 
-  // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
-  let up = await stepWithOutput(
-    'hub up + register',
-    target,
-    bringUpScript(opts.postgresPassword, pairingCode, opts.mintPairingCode ? opts.portalOrigin : undefined),
-    'hub-up-complete',
-    20 * 60_000,
-  );
+  /**
+   * `hub up + register` with one code: waits its turn on the pacer, runs, and — when Portal refused
+   * the pair for rate — waits what Portal asked and sends the SAME code again. The limiter answers
+   * before Portal's handler, so the code was never looked at; a replacement would solve a problem
+   * the code does not have, and `classifyPairingFailure` never sees this answer as one about it.
+   *
+   * The refused attempt is reported as the wait it caused, not as a failed step: a node whose retry
+   * registered is an installed node, and a `✗` on its first attempt would count it failed.
+   *
+   * Portal's limiter failing closed — `Service temporarily unavailable`, its D1 counter unreachable —
+   * is the same answer from the same place with a five-second wait, and goes round the same loop.
+   */
+  const redeem = async (name: string, code: string) => {
+    let waitingFor: string | undefined;
+    for (let retry = 0; ; retry++) {
+      const why = waitingFor ?? describePairingPace(pacer.gapMs);
+      const waitedMs = await pacer.waitTurn((ms) => opts.onProgress?.(`waiting ${describeWait(ms)} before pairing — ${why}`));
+      if (waitedMs > 0) {
+        steps.push({
+          name: waitingFor ? 'pairing rate limit' : 'pairing pace',
+          ok: true,
+          skipped: true,
+          ms: waitedMs,
+          detail: `waited ${describeWait(waitedMs)}: ${why}`,
+        });
+      }
+      // The turn is this node's until Portal's answer is known; whatever happens, it is handed on,
+      // or every node after this one would wait on it for ever.
+      let limit: PortalRateLimit | undefined;
+      let waitMs: number | undefined;
+      let up: Awaited<ReturnType<typeof stepWithOutput>> | undefined;
+      try {
+        // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
+        up = await stepWithOutput(
+          name,
+          target,
+          bringUpScript(opts.postgresPassword, code, opts.mintPairingCode ? opts.portalOrigin : undefined),
+          'hub-up-complete',
+          20 * 60_000,
+        );
+        limit = up.step.ok ? undefined : detectPairingRateLimit(`${up.err}\n${up.out}`);
+        waitMs = limit ? rateLimitWaitMs(limit) : undefined;
+      } finally {
+        // Held even when this node gives up: the next node shares the address, and Portal's answer is for it too.
+        if (limit) pacer.notCounted(waitMs);
+        else pacer.redeemed({ registered: up?.step.ok === true });
+      }
+      if (!limit) return up;
+      const refusal = limit.limiterUnavailable
+        ? `Portal's rate limiter could not reach its counter and refused the pairing before it looked at the code ("${limit.said}")`
+        : `Portal refused the pairing for rate before it looked at the code ("${limit.said}")`;
+      if (waitMs === undefined || retry >= MAX_RATE_LIMIT_RETRIES) {
+        pacer.gaveUp(node.name);
+        const stillRefused = limit.limiterUnavailable
+          ? `Portal's rate limiter was still unavailable after ${retry} wait(s)`
+          : `still refused for rate after ${retry} wait(s)`;
+        const why = waitMs === undefined ? tooLongToWait(limit) : stillRefused;
+        up.step.detail = `${up.step.detail} — ${why}. Portal refused before it looked at the code, so the code is still good: rerun this node (--nodes ${node.name}) once nothing else on this network is pairing`;
+        return up;
+      }
+      waitingFor = `${refusal}, so the same code goes again (retry ${retry + 1} of ${MAX_RATE_LIMIT_RETRIES})`;
+    }
+  };
+
+  let up = await redeem('hub up + register', pairingCode);
 
   // A code Portal has refused is dead for good, and a run that keeps handing the same one back can
   // never finish: on 2026-09-22 fifteen nodes failed on one 410 apiece, three runs in a row, because
@@ -570,14 +703,9 @@ export async function installNode(
         return { node: node.name, ok: false, steps };
       }
       steps.push({ name: 'replacement code', ok: true, detail: `${outcome.why}; ${replacement.detail}` });
-      // The image and every infra container are on the node by now, so this is the register alone.
-      up = await stepWithOutput(
-        'hub up + register (retry)',
-        target,
-        bringUpScript(opts.postgresPassword, replacement.code, opts.mintPairingCode ? opts.portalOrigin : undefined),
-        'hub-up-complete',
-        20 * 60_000,
-      );
+      // The image and every infra container are on the node by now, so this is the register alone —
+      // paced like any other, since Portal counted the refusal that led here.
+      up = await redeem('hub up + register (retry)', replacement.code);
     }
   }
 

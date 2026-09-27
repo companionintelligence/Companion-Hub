@@ -1,10 +1,20 @@
-import { DASH, humanBytes, humanCount, KpiRail, type RailStatData, StatusBadge } from '@/components/ui/dense/dense';
+import {
+  compactTokens,
+  DASH,
+  humanCount,
+  humanDuration,
+  KpiRail,
+  parseHubTimestamp,
+  type RailStatData,
+  StatusBadge,
+} from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
-import type { NodeContainers, RoutingActivity, RoutingBucket } from '@/modules/system/pool-node-series';
+import { bucketTotal, type FirstByteStats, LOCAL_NODE_KEY, type RoutingBucket, type WaitingNow } from '@/modules/system/pool-node-series';
 import type { Verdict } from '@/modules/system/triage';
 import {
   type HardwareSummary,
   hostRamUsedMb,
+  type InferenceBackendStatus,
   type LoadState,
   type PoolNodeSummary,
   type PoolReach,
@@ -30,28 +40,31 @@ import { useTranslation } from 'react-i18next';
  *
  * ── Why every stat carries its own load state ────────────────────────────────────────────────
  *
- * These twelve figures come from five independently failing queries. Wrapping the rail in one
+ * These twelve figures come from six independently failing queries. Wrapping the rail in one
  * `PanelBody` would blank eleven healthy numbers because residency timed out; wrapping it in none
  * would print a confident dash from a FAILED fetch next to real pool counts. So `RailStatData`
  * takes the state of the query behind each figure, and `RailStat` renders a skeleton, an
  * "unavailable" dash, or the number — see `dense.tsx`.
  *
- * ── Why the 30-minute counts are not `routingActivity().total` ───────────────────────────────
+ * ── Why every routing figure is a 30-minute figure ───────────────────────────────────────────
  *
- * `routingActivity` counts the WHOLE 200-entry ring buffer, which carries no window at all: on a
- * quiet Hub it spans days, on a busy one twenty minutes, and either way "routed" beside it reads
- * as a rate. Keys 10 and 11 sum `routingBuckets`, the same buckets the activity panel draws, so
- * the rail and the chart below it can never disagree about the same half hour.
+ * `routingActivity` counts the WHOLE ring buffer, which carries no window at all: on a quiet Hub it
+ * spans days (core-2's held eighteen hours), on a busy one twenty minutes, and either way a count
+ * beside it reads as a rate. Routed, failed, failovers and first byte are all summed from
+ * `routingBuckets` / the same 30-minute window the activity panel draws, so the rail and the chart
+ * below it can never disagree about the same half hour — and one bad row can no longer hold a
+ * figure (or the verdict) up for as long as it survives in the ring.
+ *
+ * ── The twelve, and why these twelve ─────────────────────────────────────────────────────────
+ *
+ * What these Hubs run is agent turns through the pool: 7k-47k-token prompts, a first byte that takes
+ * minutes, spread over nodes some of which serve on CPU. So the rail answers, in order: is pooling
+ * on and are the peers there; is anything being served or WAITING right now, and for how long; is
+ * the host itself short of CPU or RAM; what is resident; how many workloads and whether any is
+ * degraded; and over the last half hour, how much was routed, how much failed, how much failed over,
+ * and the slowest first byte and where. "Workload CPU" and "Workload RAM" moved to the containers
+ * panel, beside the rows they sum; "Forwarded" is in Pool reach, where it was also shown.
  */
-
-/*
- * Mirrors `ROUTING_LOG_CAPACITY` in `packages/backend/src/modules/hub-pool/hub-pool-routing-log.service.ts`.
- * Duplicated rather than imported because the frontend does not depend on the backend package, and
- * it is not on the wire — `/pool/routing-log` returns entries, never the bound it kept them under.
- * A backend that raised the capacity without touching this would only make the caveat below fire
- * early, which is the safe direction: it over-qualifies a number instead of overstating one.
- */
-const ROUTING_LOG_CAPACITY = 200;
 
 function VerdictLine({ verdict }: { verdict: Verdict }) {
   const { t } = useTranslation();
@@ -102,76 +115,129 @@ function VerdictLine({ verdict }: { verdict: Verdict }) {
   );
 }
 
+/** Host CPU as `/system/load` reports it: a 0-100 share of the whole machine, and its core count. */
+export interface HostCpuSummary {
+  cpuLoad?: number;
+  cpuCores?: number;
+}
+
+/** Above this the host itself is the bottleneck, whatever the workloads on it are doing. */
+const HOST_CPU_WARN_PERCENT = 85;
+
+/** A request waiting longer than this for its first byte gets a warning tone — it is past "prefilling a big prompt". */
+const WAITING_WARN_MS = 60_000;
+
 export function DashboardRail({
   verdict,
   pool,
   poolState,
   reach,
   localNode,
+  localLabel,
   workloads,
   degraded,
-  rollup,
   containerState,
   sampledAt,
+  sampleStale = false,
   hardware,
   hardwareState,
+  hostCpu,
+  hostCpuState,
   residency,
   residencyState,
+  inferenceBackends,
   buckets,
-  activity,
+  windowPartial,
+  logHeld,
+  waiting,
+  firstByte,
+  startedAt,
   routingState,
+  now,
 }: {
   verdict: Verdict;
   pool: PoolStatusSummary | undefined;
   poolState: LoadState;
   reach: PoolReach;
   localNode: PoolNodeSummary | undefined;
+  /** What `'local'` reads as — "This Hub". */
+  localLabel: string;
   workloads: number;
   degraded: number;
-  /** The local container rollup, or `null` when `/apps/resource-monitor` reported nothing. */
-  rollup: NodeContainers | null;
   containerState: LoadState;
   sampledAt: string | undefined;
+  /** The container sample was already old when the Hub served it — see `STALE_SAMPLE_MS`. */
+  sampleStale?: boolean;
   hardware: HardwareSummary | undefined;
   hardwareState: LoadState;
+  hostCpu: HostCpuSummary | undefined;
+  hostCpuState: LoadState;
   residency: ResidencyReportSummary | undefined;
   residencyState: LoadState;
+  /** `/inference/status` backends, to tell an engine that is not running from one that could not say. */
+  inferenceBackends: InferenceBackendStatus[] | undefined;
   buckets: RoutingBucket[];
-  activity: RoutingActivity;
+  /** From `routingWindowPartial`: the log held may be missing rows from the window. */
+  windowPartial: boolean;
+  /** How many rows the log page held, for the caveat that says so. */
+  logHeld: number;
+  waiting: WaitingNow;
+  /** From `firstByteByNode` over the same window as `buckets`. */
+  firstByte: Map<string, FirstByteStats>;
+  /** The routing log's `startedAt` — this Hub process's start. */
+  startedAt: string | undefined;
   routingState: LoadState;
+  now: number;
 }) {
   const { t } = useTranslation();
+  const nodeName = (key: string | null) => (key === null ? DASH : key === LOCAL_NODE_KEY ? localLabel : key);
 
   const ramTotal = hardware?.ram?.totalMb ?? null;
   const ramUsed = hostRamUsedMb(hardware);
   const ramPercent = ramTotal !== null && ramUsed !== null && ramTotal > 0 ? Math.round((ramUsed / ramTotal) * 100) : null;
 
-  const routed = buckets.reduce((sum, bucket) => sum + bucket.served + bucket.failed, 0);
+  const routed = buckets.reduce((sum, bucket) => sum + bucketTotal(bucket), 0);
   const failed = buckets.reduce((sum, bucket) => sum + bucket.failed, 0);
+  const failovers = buckets.reduce((sum, bucket) => sum + bucket.failovers, 0);
+  const callersLeft = buckets.reduce((sum, bucket) => sum + bucket.clientClosed, 0);
 
   /*
-   * The 30-minute counts are a FLOOR, not a total, once the log is full.
-   *
-   * `/pool/routing-log` serves a ring buffer of `ROUTING_LOG_CAPACITY = 200` that evicts its oldest
-   * entry silently. Bucketing what survives is correct arithmetic on the wrong denominator: a Hub
-   * busy enough to turn over 200 requests inside half an hour has already dropped part of the
-   * window, and "Routed 30m · 200" then understates by however much was evicted — with nothing
-   * anywhere near the number to say so. Precisely the Hubs under real load report the most wrong.
-   *
-   * A full ring is the one signal available here that eviction is possible, so it qualifies the
-   * figure rather than silently rounding it down. Below capacity nothing was ever dropped and the
-   * count is exact, so the caveat stays off.
+   * The 30-minute counts are a FLOOR, not a total, when the log held may be missing part of the
+   * window — the ring evicted, or the page was cut, and the oldest row held is inside the half hour.
+   * `routingWindowPartial` decides from the server's own summary; this only says so beside the
+   * figures it qualifies.
    */
-  const windowPartial = activity.total >= ROUTING_LOG_CAPACITY;
+  const partial = windowPartial ? t('DASHBOARD_RAIL_WINDOW_PARTIAL', { capacity: logHeld }) : undefined;
+  const joinSubs = (...parts: (string | undefined)[]) => parts.filter(Boolean).join(' · ') || undefined;
 
   /*
    * An engine that was never asked holds no opinion about residency, so the count beside it is a
    * count of what the engines that COULD answer are holding. Naming the ones that could not is the
    * difference between "nothing is resident" and "we can see three of five engines".
+   *
+   * But only engines that are RUNNING: an engine that is not installed or not started holds nothing,
+   * and says so through `/inference/status`. Naming it here read "Residency unknown for: vllm,
+   * lemonade, omlx" on core-2, where all three were down and lemonade answered ECONNREFUSED — three
+   * engines listed as a blind spot that were simply off. fzzy, running vLLM with a model in it, is the
+   * node the line exists for. Without the status payload the old behaviour stands, since then we
+   * cannot tell off from unknown.
    */
+  const running = inferenceBackends ? new Set(inferenceBackends.filter((backend) => backend.running === true).map((backend) => backend.type)) : null;
   const residencyUnknown = (residency?.backends ?? [])
     .filter((backend) => backend.source === 'unsupported' || backend.source === 'unreachable')
+    .filter((backend) => running === null || running.has(backend.backend))
     .map((backend) => backend.backend);
+
+  // The slowest first byte any node gave in the window, and where. A dash when nothing streamed was
+  // served — which is not "fast", it is "no evidence".
+  const slowest = [...firstByte.entries()].reduce<[string, FirstByteStats] | null>(
+    (worst, entry) => (worst === null || entry[1].maxMs > worst[1].maxMs ? entry : worst),
+    null,
+  );
+
+  const cpuLoad = typeof hostCpu?.cpuLoad === 'number' && Number.isFinite(hostCpu.cpuLoad) ? Math.round(hostCpu.cpuLoad) : null;
+  const oldestWait = waiting.oldest;
+  const started = parseHubTimestamp(startedAt);
 
   const stats: RailStatData[] = [
     {
@@ -205,36 +271,30 @@ export function DashboardRail({
       mobile: true,
     },
     {
-      id: 'forwarded',
-      // `null` means no connected peer reported the counter — unknown, not zero forwarded.
-      value: reach.peerInFlight ?? DASH,
-      label: t('DASHBOARD_RAIL_FORWARDED'),
-      tone: (reach.peerInFlight ?? 0) > 0 ? 'ok' : 'muted',
-      state: poolState,
-    },
-    {
-      id: 'workloads',
-      value: workloads,
-      label: t('DASHBOARD_RAIL_WORKLOADS'),
-      sub: degraded > 0 ? t('DASHBOARD_RAIL_WORKLOADS_DEGRADED', { count: degraded }) : undefined,
-      tone: degraded > 0 ? 'bad' : workloads > 0 ? 'plain' : 'muted',
-      state: containerState,
+      /*
+       * Requests placed and still waiting for a first byte — the one live question about an agent
+       * turn that nothing on the page answered, short of finding the amber row in the feed. The
+       * oldest wait is named because it is the one nearest its budget; the verdict raises a chip
+       * once it passes 80% of it.
+       */
+      id: 'waiting',
+      value: waiting.count,
+      label: t('DASHBOARD_RAIL_WAITING'),
+      sub: oldestWait ? t('DASHBOARD_RAIL_WAITING_SUB', { age: humanDuration(oldestWait.ageMs), node: nodeName(oldestWait.node) }) : undefined,
+      tone: waiting.count === 0 ? 'muted' : (oldestWait?.ageMs ?? 0) > WAITING_WARN_MS ? 'warn' : 'plain',
+      state: routingState,
       mobile: true,
     },
     {
-      id: 'workload-cpu',
-      value: rollup ? `${Math.round(rollup.cpuPercent)}%` : DASH,
-      label: t('DASHBOARD_RAIL_WORKLOAD_CPU'),
-      tone: rollup ? 'plain' : 'muted',
-      state: containerState,
+      // A share of the whole machine, unlike Docker's per-core container CPU — which is why that one
+      // is shown as cores, in the containers panel, and never beside this.
+      id: 'host-cpu',
+      value: cpuLoad === null ? DASH : `${cpuLoad}%`,
+      label: t('DASHBOARD_RAIL_HOST_CPU'),
+      sub: typeof hostCpu?.cpuCores === 'number' && hostCpu.cpuCores > 0 ? t('DASHBOARD_RAIL_HOST_CPU_SUB', { cores: hostCpu.cpuCores }) : undefined,
+      tone: cpuLoad === null ? 'muted' : cpuLoad > HOST_CPU_WARN_PERCENT ? 'warn' : 'plain',
+      state: hostCpuState,
       mobile: true,
-    },
-    {
-      id: 'workload-mem',
-      value: humanBytes(rollup?.memoryBytes ?? null),
-      label: t('DASHBOARD_RAIL_WORKLOAD_MEM'),
-      tone: rollup ? 'plain' : 'muted',
-      state: containerState,
     },
     {
       id: 'ram',
@@ -253,32 +313,52 @@ export function DashboardRail({
       state: residencyState,
     },
     {
+      id: 'workloads',
+      value: workloads,
+      label: t('DASHBOARD_RAIL_WORKLOADS'),
+      sub: degraded > 0 ? t('DASHBOARD_RAIL_WORKLOADS_DEGRADED', { count: degraded }) : undefined,
+      tone: degraded > 0 ? 'bad' : workloads > 0 ? 'plain' : 'muted',
+      state: containerState,
+    },
+    {
       id: 'routed-30m',
       value: routed,
       label: t('DASHBOARD_RAIL_ROUTED_30M'),
-      sub: windowPartial ? t('DASHBOARD_RAIL_WINDOW_PARTIAL') : undefined,
+      sub: partial,
       tone: routed > 0 ? 'plain' : 'muted',
       state: routingState,
     },
     {
+      /*
+       * Settled failures only — a request still waiting is `waiting`, not failed, however long the
+       * wait. Callers who hung up are counted here (they got no answer) and named in the sub, since
+       * "3 failed" that were three impatient callers is a different fix from three dead nodes.
+       */
       id: 'failed-30m',
       value: failed,
       label: t('DASHBOARD_RAIL_FAILED_30M'),
-      sub: windowPartial ? t('DASHBOARD_RAIL_WINDOW_PARTIAL') : undefined,
+      sub: joinSubs(partial, callersLeft > 0 ? t('DASHBOARD_RAIL_CALLERS_LEFT', { count: callersLeft }) : undefined),
       tone: failed > 0 ? 'bad' : 'muted',
       state: routingState,
     },
     {
-      id: 'failovers',
-      value: activity.failovers,
-      label: t('DASHBOARD_RAIL_FAILOVERS'),
-      /* Sits between two figures that ARE windowed, and is not one: `activity` counts the whole ring.
-         Without saying so, adjacency alone makes it read as "failovers in the last 30 minutes" —
-         the same conflation the header comment above rejects for `routed`/`failed`. Buckets carry
-         served/failed only, so there is no windowed failover count to swap in; the honest move is to
-         label the window it actually has. */
-      sub: t('DASHBOARD_RAIL_FAILOVERS_SUB'),
-      tone: activity.failovers > 0 ? 'warn' : 'muted',
+      id: 'failovers-30m',
+      value: failovers,
+      label: t('DASHBOARD_RAIL_FAILOVERS_30M'),
+      sub: partial,
+      tone: failovers > 0 ? 'warn' : 'muted',
+      state: routingState,
+    },
+    {
+      id: 'first-byte-30m',
+      value: slowest ? humanDuration(slowest[1].maxMs) : DASH,
+      label: t('DASHBOARD_RAIL_FIRST_BYTE_30M'),
+      sub: slowest
+        ? slowest[1].maxEstTokens === null
+          ? nodeName(slowest[0])
+          : t('DASHBOARD_RAIL_FIRST_BYTE_SUB', { node: nodeName(slowest[0]), tokens: compactTokens(slowest[1].maxEstTokens) })
+        : t('DASHBOARD_RAIL_FIRST_BYTE_NONE'),
+      tone: slowest ? 'plain' : 'muted',
       state: routingState,
     },
   ];
@@ -297,11 +377,23 @@ export function DashboardRail({
           <StatusBadge connected={!!pool.routingActive} label={pool.routingActive ? t('DASHBOARD_POOLED') : t('DASHBOARD_LOCAL_ONLY')} />
         ) : null}
         <VerdictLine verdict={verdict} />
-        {sampledAt ? (
-          <span className="ml-auto text-[10px] uppercase tracking-[0.5px] text-muted-foreground">
-            {t('RESOURCE_MONITOR_LAST_SAMPLED', { time: new Date(sampledAt).toLocaleTimeString() })}
-          </span>
-        ) : null}
+        <span className="ml-auto flex flex-wrap items-center gap-x-2.5 text-[10px] uppercase tracking-[0.5px] text-muted-foreground">
+          {/* The Hub's own uptime, from the routing log's start: the one place a restart shows. Every
+              in-memory figure on this page — the ring, the watched series, the 24-sample history —
+              starts over at it, so "up 12m" is the reason a quiet page is quiet. */}
+          {Number.isFinite(started) ? (
+            <span title={t('DASHBOARD_UPTIME_HINT', { time: new Date(started).toLocaleString() })}>
+              {t('DASHBOARD_UPTIME', { age: humanDuration(Math.max(0, now - started)) })}
+            </span>
+          ) : null}
+          {/* Amber when the Hub handed over a sample that was already minutes old — its monitor
+              failing silently, which the verdict also raises. */}
+          {sampledAt ? (
+            <span className={cn(sampleStale && 'text-warning')} data-testid="last-sampled">
+              {t('RESOURCE_MONITOR_LAST_SAMPLED', { time: new Date(parseHubTimestamp(sampledAt)).toLocaleTimeString() })}
+            </span>
+          ) : null}
+        </span>
       </div>
 
       <KpiRail stats={stats} />

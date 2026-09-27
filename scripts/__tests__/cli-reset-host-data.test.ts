@@ -11,10 +11,10 @@
  * The EACCES here is real: a folder under the data dir loses its write permission, as a root-owned
  * one is for the login user. So these tests skip when run as root and on Windows. Docker is a fake
  * that records its calls and the engine each went to, and answers listings from `state.listings`;
- * its `docker run` either deletes what the script names as a rootful daemon's root container would,
- * or does nothing, as rootless Docker's does for files owned by root.
+ * its `docker run` either empties the bind-mounted folder as a rootful daemon's root container
+ * would, or does nothing, as rootless Docker's does for files owned by root.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -53,10 +53,7 @@ vi.mock('../lib/cli-proc.js', () => {
         for (const folder of state.lockedFolders) {
           if ((folder === hostPath || folder.startsWith(`${hostPath}${path.sep}`)) && existsSync(folder)) chmodSync(folder, 0o755);
         }
-        const script = args[args.indexOf('-c') + 1];
-        // `rm -rf -- "/d/$1"` deletes one named entry; the other script empties the folder.
-        const names = script.includes('"/d/$1"') ? [args[args.length - 1]] : readdirSync(hostPath);
-        for (const name of names) rmSync(path.join(hostPath, name), { recursive: true, force: true });
+        for (const name of readdirSync(hostPath)) rmSync(path.join(hostPath, name), { recursive: true, force: true });
       }
       return true;
     }),
@@ -103,8 +100,6 @@ const listed = (stdout: string) => ({ ok: true, stdout });
 /** What `cihub up` checks before it starts `cloudflared` (cli-compose-env.ts), unmocked. */
 const upWouldStartTheOldTunnel = async (dataDir: string) =>
   (await vi.importActual<typeof import('../lib/cli-compose-env.js')>('../lib/cli-compose-env.js')).hasRegisteredCloudflareTunnelAtDataDir(dataDir);
-/** base64 of {a, t, s}, the shape of a cloudflared tunnel token. */
-const CLOUDFLARED_TOKEN = Buffer.from(JSON.stringify({ a: 'account', t: 'tunnel-id', s: 'secret' })).toString('base64');
 
 describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub reset reports host data it could not delete', () => {
   const previousHome = process.env.HOME;
@@ -257,98 +252,6 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
     expect(process.exitCode).toBe(1);
   });
 
-  describe('the tunnel folder beside an appliance data dir', () => {
-    // `~/.local/share/tunnel`: compose mounts `${ROOT_FOLDER_HOST}/../tunnel`, and an appliance's
-    // ROOT_FOLDER_HOST is the data dir. On core-2 its certs/ dated from 2026-08-10, through every reset since.
-    let tunnel: string;
-
-    beforeEach(() => {
-      state.rootContainerDeletes = true;
-      tunnel = path.join(path.dirname(state.dataDir), 'tunnel');
-      mkdirSync(path.join(tunnel, 'certs'), { recursive: true });
-      writeFileSync(path.join(tunnel, 'token'), CLOUDFLARED_TOKEN);
-      writeFileSync(path.join(tunnel, 'registration.json'), '{"tunnelId":"tunnel-id","writtenAt":"2026-09-26T14:55:00.000Z"}\n');
-    });
-
-    it('reset deletes the token and registration.json, so the next `cihub up` cannot start the old tunnel', async () => {
-      expect(await upWouldStartTheOldTunnel(state.dataDir)).toBe(true);
-
-      await expect(resetHub('prod', true)).resolves.toBe(true);
-
-      expect(await upWouldStartTheOldTunnel(state.dataDir)).toBe(false);
-      expect(existsSync(tunnel)).toBe(false);
-      expect(box('Prod Hub data wiped')?.lines).toEqual(
-        expect.arrayContaining([
-          `removed: ${path.join(tunnel, 'token')}`,
-          `removed: ${path.join(tunnel, 'registration.json')}`,
-          `removed: ${path.join(tunnel, 'certs')}`,
-        ]),
-      );
-    });
-
-    it('leaves what is not the Hub’s: another program’s file keeps the folder, and a token that is not cloudflared’s stays', async () => {
-      writeFileSync(path.join(tunnel, 'token'), 'not-a-cloudflared-token');
-      writeFileSync(path.join(tunnel, 'other-program.conf'), 'x');
-
-      await expect(resetHub('prod', true)).resolves.toBe(true);
-
-      expect(existsSync(path.join(tunnel, 'other-program.conf'))).toBe(true);
-      expect(existsSync(path.join(tunnel, 'token'))).toBe(true);
-      expect(existsSync(path.join(tunnel, 'registration.json'))).toBe(false);
-    });
-
-    it('does not follow a symlinked tunnel folder', async () => {
-      const elsewhere = path.join(state.home, 'elsewhere');
-      rmSync(tunnel, { recursive: true });
-      mkdirSync(elsewhere);
-      writeFileSync(path.join(elsewhere, 'token'), CLOUDFLARED_TOKEN);
-      symlinkSync(elsewhere, tunnel);
-
-      await expect(resetHub('prod', true)).resolves.toBe(true);
-
-      expect(existsSync(path.join(elsewhere, 'token'))).toBe(true);
-    });
-
-    it('deletes a token in a folder the user cannot write through the root container, by name', async () => {
-      lock(tunnel);
-
-      await expect(resetHub('prod', true)).resolves.toBe(true);
-
-      expect(rootContainerRuns()).toEqual(
-        expect.arrayContaining([`run --rm -v ${tunnel}:/d alpine sh -c rm -rf -- "/d/$1" 2>/dev/null || true sh token`]),
-      );
-      expect(existsSync(path.join(tunnel, 'token'))).toBe(false);
-    });
-
-    it('reports a token it could not delete, and "Reset incomplete"', async () => {
-      state.rootContainerStarts = false;
-      // Only the tunnel folder is locked this time.
-      chmodSync(state.locked, 0o755);
-      rmSync(path.join(state.dataDir, 'app-data'), { recursive: true });
-      lock(tunnel);
-
-      await expect(resetHub('prod', true)).resolves.toBe(false);
-
-      expect(box('Host data left behind')?.lines).toEqual(
-        expect.arrayContaining([
-          expect.stringMatching(new RegExp(`^  EACCES ${escapeRegExp(tunnel)}: 1 entry in it cannot be deleted`)),
-          `Delete it as root: sudo rm -rf -- '${path.join(tunnel, 'token')}'`,
-        ]),
-      );
-      expect(box('Reset complete')).toBeUndefined();
-      expect(process.exitCode).toBe(1);
-    });
-
-    it('--dry-run lists the tunnel files among the host data it deletes', async () => {
-      await expect(resetHub('prod', false, true)).resolves.toBe(false);
-
-      expect(box('Dry run: nothing was removed')?.lines).toEqual(
-        expect.arrayContaining([`  ${path.join(tunnel, 'token')}`, `  ${path.join(tunnel, 'registration.json')}`]),
-      );
-      expect(existsSync(path.join(tunnel, 'token'))).toBe(true);
-    });
-  });
-
   it("sends every docker call to the Hub's pinned engine, including the final check and the root container", async () => {
     // The pin the desktop app and `cihub up` write. It lives in the data dir the reset deletes, so
     // it has to be read before that; the default engine here would be some other daemon.
@@ -482,6 +385,170 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
     });
   });
 });
+
+/**
+ * The tunnel folder sits beside an appliance's data dir: compose mounts `${ROOT_FOLDER_HOST}/../tunnel`
+ * and an appliance's ROOT_FOLDER_HOST is the data dir. Reset deleted only the data dir, so the
+ * Cloudflare token and `registration.json` survived it, and the next `cihub up` started cloudflared
+ * on the old tunnel. On core-2, `~/.local/share/tunnel/certs` from 2026-08-10 outlived every reset
+ * since. `tunnel` is a generic name, so only the Hub's files go, by `cihub uninstall`'s rules.
+ */
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  "appliance reset and clean delete the Hub's files in the tunnel folder",
+  () => {
+    const previousHome = process.env.HOME;
+    let share: string;
+    let tunnel: string;
+    const uid = process.getuid?.();
+
+    /** A tunnel folder the way a paired Hub leaves it: a cloudflared token, `registration.json`, and an empty `certs/`. */
+    const writeTunnel = (folder: string, extra: { token?: string; files?: string[]; certs?: string[] } = {}) => {
+      mkdirSync(path.join(folder, 'certs'), { recursive: true });
+      writeFileSync(path.join(folder, 'token'), extra.token ?? CLOUDFLARED_TOKEN);
+      writeFileSync(path.join(folder, 'registration.json'), '{"tunnelId":"6ff42ae2","writtenAt":"2026-09-26T16:47:00.000Z"}\n');
+      for (const name of extra.files ?? []) writeFileSync(path.join(folder, name), 'not the Hub');
+      for (const name of extra.certs ?? []) writeFileSync(path.join(folder, 'certs', name), 'PEM');
+    };
+    const list = (folder: string) => readdirSync(folder).sort();
+
+    beforeEach(() => {
+      state.home = mkdtempSync(path.join(tmpdir(), 'cli-reset-tunnel-'));
+      process.env.HOME = state.home;
+      // As above: nothing from the machine running the tests may choose the engine or the unit dir.
+      vi.stubEnv('DOCKER_HOST', '');
+      vi.stubEnv('CI_HUB_DOCKER_HOST', '');
+      vi.stubEnv('XDG_CONFIG_HOME', '');
+      state.appliance = true;
+      share = path.join(state.home, '.local', 'share');
+      state.dataDir = path.join(share, 'companion-hub');
+      tunnel = path.join(share, 'tunnel');
+      state.calls = [];
+      state.dockerHosts = [];
+      state.rootContainerDeletes = false;
+      state.rootContainerStarts = true;
+      state.listings = {};
+      vi.clearAllMocks();
+      mkdirSync(path.join(state.dataDir, 'state'), { recursive: true });
+      writeFileSync(path.join(state.dataDir, '.env'), 'X=1\n');
+      writeFileSync(path.join(state.dataDir, 'docker-compose.prod.yml'), 'services: {}\n');
+      mkdirSync(path.join(share, 'other-app'));
+      writeFileSync(path.join(share, 'other-app', 'data'), 'keep');
+    });
+
+    afterEach(() => {
+      process.env.HOME = previousHome;
+      vi.unstubAllEnvs();
+      process.exitCode = undefined;
+      for (const folder of state.lockedFolders.splice(0)) {
+        if (existsSync(folder)) chmodSync(folder, 0o755);
+      }
+      rmSync(state.home, { recursive: true, force: true });
+    });
+
+    it('deletes the token, registration.json, and the empty certs/, then the folder, and says "Reset complete"', async () => {
+      writeTunnel(tunnel);
+      expect(await upWouldStartTheOldTunnel(state.dataDir)).toBe(true);
+
+      await expect(resetHub('prod', true)).resolves.toBe(true);
+
+      // The check `cihub up` makes before it turns on the cloudflare profile, unmocked.
+      expect(await upWouldStartTheOldTunnel(state.dataDir)).toBe(false);
+      expect(existsSync(tunnel)).toBe(false);
+      expect(existsSync(state.dataDir)).toBe(false);
+      expect(list(path.join(share, 'other-app'))).toEqual(['data']);
+      expect(box('Prod Hub data wiped')?.lines).toEqual([`removed: ${state.dataDir}`, `removed: ${tunnel} (token, registration.json, certs)`]);
+      expect(box('Reset complete')).toBeDefined();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it("keeps what is not the Hub's: a token that is not a cloudflared token, other files, and anything in certs/", async () => {
+      writeTunnel(tunnel, { token: 'hello world', files: ['notes.txt'], certs: ['custom-ca.pem'] });
+
+      await expect(resetHub('prod', true)).resolves.toBe(true);
+
+      expect(list(tunnel)).toEqual(['certs', 'notes.txt', 'token']);
+      expect(list(path.join(tunnel, 'certs'))).toEqual(['custom-ca.pem']);
+      expect(box('Prod Hub data wiped')?.lines).toEqual([
+        `removed: ${state.dataDir}`,
+        `removed from ${tunnel}: registration.json; kept, not the Hub's: certs/custom-ca.pem, notes.txt, token`,
+      ]);
+      expect(box('Reset complete')).toBeDefined();
+    });
+
+    it('does not print "Reset complete" when the Hub\'s tunnel files cannot be deleted, and names a command for only those', async () => {
+      writeTunnel(tunnel);
+      lock(tunnel);
+
+      await expect(resetHub('prod', true)).resolves.toBe(false);
+
+      expect(list(tunnel)).toEqual(['certs', 'registration.json', 'token']);
+      const finish = `sudo rm -f -- '${tunnel}/token' '${tunnel}/registration.json' && sudo rmdir -- '${tunnel}/certs' '${tunnel}'`;
+      expect(box('Host data left behind')?.lines).toEqual([
+        `${tunnel} still holds the Hub's token, registration.json, certs; this user (uid ${uid}) cannot delete them.`,
+        expect.stringMatching(new RegExp(`^  EACCES ${escapeRegExp(tunnel)}: 3 entries in it cannot be deleted`)),
+        `Delete only those as root: ${finish}`,
+      ]);
+      expect(box('Reset incomplete')?.lines).toEqual(expect.arrayContaining([`  ${finish}`]));
+      expect(box('Prod Hub data partly wiped')?.lines).toEqual([`removed: ${state.dataDir}`, `left behind: the Hub's files in ${tunnel}`]);
+      // The root container empties a whole folder, and this one can hold another program's files.
+      expect(rootContainerRuns()).toEqual([]);
+      expect(box('Reset complete')).toBeUndefined();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("does not follow a symlinked tunnel folder, and exits 1 while the Hub's files are behind it", async () => {
+      const elsewhere = path.join(state.home, 'elsewhere', 'tunnel');
+      writeTunnel(elsewhere);
+      symlinkSync(elsewhere, tunnel);
+
+      await expect(resetHub('prod', true)).resolves.toBe(false);
+
+      expect(lstatSync(tunnel).isSymbolicLink()).toBe(true);
+      expect(list(elsewhere)).toEqual(['certs', 'registration.json', 'token']);
+      expect(box('Host data left behind')?.lines).toEqual([
+        `${tunnel}: it is a symlink, so it was not followed, and the Hub's files behind it are still there: token, registration.json.`,
+        `Delete them, if that folder is this Hub's: sudo rm -f -- '${tunnel}/token' '${tunnel}/registration.json'`,
+      ]);
+      expect(box('Reset complete')).toBeUndefined();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("--dry-run lists the tunnel folder with the Hub's files in it and what it keeps, and deletes nothing", async () => {
+      writeTunnel(tunnel, { files: ['notes.txt'] });
+
+      await expect(resetHub('prod', false, true)).resolves.toBe(false);
+
+      expect(list(tunnel)).toEqual(['certs', 'notes.txt', 'registration.json', 'token']);
+      expect(box('Dry run: nothing was removed')?.lines).toEqual(
+        expect.arrayContaining([
+          `  ${state.dataDir}`,
+          `  ${tunnel}`,
+          "    only the Hub's files: token, registration.json; then certs/ and the folder, once empty",
+          "    kept, not the Hub's: notes.txt",
+        ]),
+      );
+    });
+
+    it("cihub clean deletes the Hub's tunnel files too", () => {
+      writeTunnel(tunnel);
+
+      const results = cleanHub('prod');
+
+      expect(results.map((result) => [result.target, result.removed])).toEqual([
+        [state.dataDir, true],
+        [tunnel, true],
+      ]);
+      expect(existsSync(tunnel)).toBe(false);
+      expect(box('Prod Hub data wiped')).toBeDefined();
+      expect(process.exitCode).toBeUndefined();
+    });
+  },
+);
+
+/** base64 of {"a": account tag, "t": tunnel id, "s": secret}, the format cloudflared reads. */
+const CLOUDFLARED_TOKEN = Buffer.from(
+  JSON.stringify({ a: '0123456789abcdef0123456789abcdef', t: '6ff42ae2-765d-4adf-8112-31c55c1551ef', s: Buffer.alloc(32, 7).toString('base64') }),
+).toString('base64');
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

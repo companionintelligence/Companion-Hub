@@ -27,6 +27,7 @@ import {
   portalLoginFromEnv,
   type PortalLogin,
 } from '../lib/catalog-submit';
+import { PortalRateLimitedError } from '../lib/portal-rate-limit';
 import { renderHelp, stripAnsi } from '../cihub-cli';
 
 const dirs: string[] = [];
@@ -358,6 +359,24 @@ describe('minting a pairing code', () => {
         })) as unknown as typeof fetch,
       }),
     ).rejects.toThrow(/not a member/);
+  });
+
+  it("throws Portal's rate limit typed, with the Retry-After it sent, so a fleet install can wait it out", async () => {
+    // Portal's limiter answers before CreateDevice runs: no device, no name taken, safe to send again.
+    const refused = mintPairingCode({
+      name: 'core-9',
+      login: login(DEVICE_PAIR_SCOPE),
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ error: 'Too many requests' }), {
+          status: 429,
+          headers: { 'Content-Type': 'application/json', 'Retry-After': '42' },
+        })) as unknown as typeof fetch,
+    });
+    await expect(refused).rejects.toBeInstanceOf(PortalRateLimitedError);
+    await expect(refused).rejects.toMatchObject({
+      limit: { retryAfterSeconds: 42, said: 'Too many requests' },
+      message: expect.stringMatching(/rate-limiting device registration.*try again in 42s/),
+    });
   });
 });
 

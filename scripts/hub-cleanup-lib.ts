@@ -379,6 +379,7 @@ function lstatOrNull(targetPath: string) {
   }
 }
 
+/** True for a real (not symlinked) folder with nothing in it. */
 export function isEmptyRealDir(targetPath: string): boolean {
   const stat = lstatOrNull(targetPath);
   if (!stat?.isDirectory()) {
@@ -407,7 +408,7 @@ function readRegularFile(targetPath: string, maxBytes = Number.POSITIVE_INFINITY
  * Hub files in a tunnel folder beside a data folder. `tunnel` is a generic name another program
  * could also use, so this applies the package uninstallers' rules: the token only when it is a
  * cloudflared token, and the markers only when they carry a tunnelId. Symlinked files are skipped.
- * `cihub reset` and `cihub clean` on an appliance delete the same files (cli-teardown.ts).
+ * `cihub reset` and `cihub clean` use the same rules on an appliance (removeHubTunnelFiles).
  */
 export function hubFilesInTunnelDir(tunnelDir: string, pathLib: typeof path.posix = path): string[] {
   const files: string[] = [];

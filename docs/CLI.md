@@ -291,6 +291,13 @@ cihub config [env]           # show resolved config values only
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
+- The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:
+  1. `CI_HUB_IMAGE` in the environment.
+  2. The installed `companion-hub` desktop package, only when it is the same release as this `cihub`.
+  3. This `cihub`'s own release, `ghcr.io/companionintelligence/ci-hub:<version>`, when it is a plain `x.y.z` release, which the release pipeline publishes. An older desktop app keeps this pin on its next Hub start; it discards `:latest`.
+  4. `ghcr.io/companionintelligence/ci-hub:latest`. A dev or trial build lands here, and the report says the Hub is then the newest release, not that build.
+- The fresh install writes this `cihub`'s own compose. That is the one built into the binary, unless a compose of the same release is on disk: the desktop package's, when the package is this release, or the checkout a source run comes from. A compose or `traefik-assets` directory beside a standalone `cihub` is ignored, because nothing installs one there. The same goes for a desktop package at another release. On 2026-09-27, 16 of 17 fleet nodes had a v0.2.70 compose beside `/usr/local/bin/cihub`. Every rebuilt Hub ran on it, without the `ci_hub_internal` and `ci_hub_edge` networks and with Postgres and RabbitMQ published on `0.0.0.0`.
+- The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. Remove a desktop package nothing uses with `sudo apt remove companion-hub`.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
 ![Screenshot of cihub status local](./images/cli/status.svg)
@@ -947,7 +954,7 @@ cihub fleet backends [--backends a,b] [--execute]      # what each node can run 
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet backends --ollama-parallel 4 --ollama-keep-alive 24h [--ollama-context N] [--ollama-igpu on|off] [--ollama-max-loaded N] [--execute]  # Ollama's runtime env, one file, restart only on change
 cihub fleet backends --backends omlx|vllm|lemonade|ollama [--execute]  # install only an engine this machine can run
-cihub fleet install [--user <acct>] [--cihub-binary <path>] [--execute]   # stand a Hub up on each node and register it
+cihub fleet install [--user <acct>] [--cihub-binary <path>] [--pairing-gap <s>] [--execute]   # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--ollama] [--gpu-probe] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, install the GPU probe timer, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
@@ -1065,6 +1072,7 @@ all installed on. To act on some nodes only, pass `--nodes`.
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
 | `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
+| `--pairing-gap <seconds>` | `install` only: how far apart the run sends its Portal pairings (`CIHUB_PAIRING_GAP`; default 65, `0` turns the spacing off, at most 3600). Portal allows 10 pairings per 10 minutes from one network address — see [Portal's pairing rate limit](#portals-pairing-rate-limit) |
 | `--join-pool <node>` | `install` only: pair each installed node into that Hub's pool |
 | `--pool-pin <digits>` | `install` only: the PIN minted on the Hub being joined, for pairing by address |
 | `--hub` | `update` only: update the Hub image |
@@ -1495,6 +1503,11 @@ timer → install the GPU probe timer → **tailscale cert** → optionally join
 produced, because a step that trusts an exit code is how a fleet ends up believing it registered
 machines it never reached. `hub up` reads the port the Hub was actually given (`API_PORT`, which a
 port heal can move) and fails when nothing answers there or the answer does not say `registered`.
+It asks that port before `register` too, and waits for the Hub to answer `/api/registration/phase`
+(60 tries, 3 s apart). A Hub that never answers, or answers 404 because its build predates the
+route, fails the step with the pairing code unsent. The node's line names the `CI_HUB_IMAGE` the
+env file pins, and says when a desktop app on the node is running. On 2026-09-26, core-6 and fzzy
+ran `register` against 0.2.70 and 0.2.61 Hubs, and both codes were spent.
 
 The **`cihub` binary** comes from this machine, not from the node. The release assets live in a
 private repository, so a node cannot fetch them; the first installer had each node try and every
@@ -1592,6 +1605,51 @@ Pairing codes are covered under
 `device:pair` login mints one per node, `--code` enrolls a single node, and any other combination is
 refused before anything is dialled. `--join-pool` leaves the pairing **pending** — the receiving Hub
 still has to approve it, and the step output says so.
+
+#### Portal's pairing rate limit
+
+Portal meters `POST /api/devices/pair` at 10 per 10 minutes per caller address, a fixed window
+keyed on the address Cloudflare sees (`DEVICE_PAIR_RATE_LIMIT` in CI-Portal). The caller is each
+node's Hub, not this machine, so a fleet behind one NAT shares one budget. On 2026-09-26 a rebuild
+paired ten nodes back to back, and the next ones came back `Too many attempts. Try again in 51
+seconds.`, which the node's line reduced to `Pairing failed`.
+
+`fleet install` stays under the limit, and waits it out when it is refused anyway:
+
+- **Spacing.** Consecutive pairings go out at least `--pairing-gap` seconds apart, measured from the
+  end of one node's `hub up + register` to the start of the next. The default, 65, is Portal's window
+  over its budget plus five seconds, so a run cannot fill the window on its own. The wait comes
+  just before `hub up + register`, after the node's probe, preflight, binary and mint. It prints live
+  as `… waiting 47s before pairing` and lands on the node's report as `pairing pace`. The dry run
+  says how much waiting the spacing can add, and what the retries below can add on top.
+- **A refusal for rate.** Portal's limiter answers before its handler, so a `429` means the code was
+  never looked at. The run waits what `Retry-After` asked plus five seconds, or the default gap when
+  the Hub relayed no delay, and then sends the **same** code again, up to three times. The code is
+  neither replaced nor dropped, and the next node is held for the same wait, because it shares the
+  address. A wait longer than Portal's own ten-minute window is not taken: the node stops and says
+  its code is still good.
+- **The limiter itself down.** The pair route fails closed: when Portal's limiter cannot reach its
+  counter it answers `503 Service temporarily unavailable` with `Retry-After: 5`, again before the
+  handler. The run treats it like a refusal for rate with a ten-second wait, on the same terms.
+- **Minting.** `POST /api/devices` has a limit of its own, 20 per 10 minutes per address. A refusal
+  there created no device and took no name, so the mint is waited out and sent again on the same
+  terms.
+- **Stopping.** Once two nodes in a row have given up on those refusals, with no node registered in
+  between, the run stops pairing. The nodes left are not dialled and nothing is minted for them; each
+  reads `not attempted`, and the summary names them with the `--nodes` list to rerun. Without the
+  stop, a run whose every pairing is refused would wait about half an hour on each node before it
+  reported anything.
+
+Other pairing from the same network, such as a second operator or a run a few minutes earlier,
+spends the same budget. The first node of a run can still be refused, and the retry covers that.
+That includes a second `fleet install` against the same fleet: each run paces its own pairings and
+not the other's.
+
+The spacing is a trade. On a network where nothing else pairs, `--pairing-gap 0` finishes a large
+fleet sooner: it sends ten back to back, and the eleventh waits out the rest of Portal's window
+once. The default spends about a minute per node so that the run never fills the address's budget,
+which leaves room for anything else on that network, and does not rely on the node's Hub relaying
+how long to wait.
 
 ### `cihub fleet update`
 

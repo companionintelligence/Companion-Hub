@@ -289,3 +289,106 @@ describe('WorkloadTrend', () => {
     expect(container.textContent).not.toMatch(/TB/);
   });
 });
+
+/*
+ * History as fzzy served it on 2026-09-27, after a restart: eleven samples hydrated from Postgres —
+ * zoneless UTC, "2026-09-27 10:22:22.896" — then the live collector's ISO samples from 17:48Z. The
+ * Hub was down in between. The chart labelled the span "10:22 AM → 11:00 AM" in a PDT browser and
+ * drew the seven hours as one continuous minute.
+ */
+describe('WorkloadTrend across a Hub restart', () => {
+  const hub = { appUrn: 'ci-hub:system', appName: 'CI Hub', cpuPercent: 5.3 };
+  const at = (sampledAt: string): AppRuntimeHistorySample => ({
+    sampledAt,
+    apps: [{ ...hub, status: 'running', memoryUsageBytes: 857_370_624, containerCount: 5, gpuVramMb: null }],
+  });
+  const restored = Array.from({ length: 11 }, (_, i) => at(`2026-09-27 10:${String(22 + i).padStart(2, '0')}:22.896`));
+  const live = Array.from({ length: 12 }, (_, i) => at(new Date(Date.parse('2026-09-27T17:48:54.882Z') + i * 60_000).toISOString()));
+  const fzzy = [...restored, ...live, at('2026-09-27T18:00:50.560Z')];
+  const format = (iso: string) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
+
+  it('breaks the trace where the Hub was not sampling, and says for how long', () => {
+    const { container } = render(<WorkloadTrend metric="cpu" history={fzzy} apps={[app(hub.appUrn, hub.appName, 5.3)]} state={READY} />);
+
+    expect(lineRuns(container, 'CI Hub — CPU by workload')).toHaveLength(2);
+    expect(container.querySelector('[data-testid="workload-trend-gap"]')?.textContent).toBe('7h 17m gap — the Hub was not sampling');
+  });
+
+  it('labels the axis from the restored samples read as UTC, not as browser-local time', () => {
+    const { container } = render(<WorkloadTrend metric="cpu" history={fzzy} apps={[app(hub.appUrn, hub.appName, 5.3)]} state={READY} />);
+
+    const first = container.querySelector('.justify-between > span')?.textContent;
+    expect(first).toBe(format('2026-09-27T10:22:22.896Z'));
+    // In any zone but UTC, reading the same string as local time gives a different label.
+    const misread = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date('2026-09-27T10:22:22.896'));
+    if (misread !== format('2026-09-27T10:22:22.896Z')) expect(first).not.toBe(misread);
+  });
+
+  it('draws two samples taken 0.7 s apart as one observation, not as a minute of trace', () => {
+    // core-2: the timer and a page GET each collected, at 18:00:49.803 and 18:00:50.491.
+    const history = [at('2026-09-27T17:58:49.800Z'), at('2026-09-27T17:59:49.802Z'), at('2026-09-27T18:00:49.803Z'), at('2026-09-27T18:00:50.491Z')];
+    const { container } = render(<WorkloadTrend metric="cpu" history={history} apps={[app(hub.appUrn, hub.appName, 5.3)]} state={READY} />);
+
+    const [run] = lineRuns(container, 'CI Hub — CPU by workload');
+    // Three slots of 160px, not four of 120: the duplicate took no slot of its own.
+    expect(run?.startsWith('M 0,')).toBe(true);
+    expect(run).toContain('L 480,');
+    expect(run).not.toContain('L 360,');
+    expect(container.querySelector('[data-testid="workload-trend-gap"]')).toBeNull();
+  });
+});
+
+describe('WorkloadTrend GPU memory held outside any workload', () => {
+  const hub = { appUrn: 'ci-hub:system', appName: 'CI Hub', cpuPercent: 2, gpuVramMb: null };
+  const history = [sample(20, [hub]), sample(21, [hub])];
+
+  /*
+   * core-2, 2026-09-27: `unattributedGpu` held two `llama-server`s — 24,331 MB and 493 MB — while the
+   * tile showed rows of dashes under copy saying VRAM "is measured on this node". The engines are host
+   * processes, so no workload row can ever own that memory; this is the only place it can be shown.
+   */
+  it('lists what the sampler found holding VRAM outside every workload, largest first', () => {
+    const { container } = render(
+      <WorkloadTrend
+        metric="gpu"
+        history={history}
+        apps={[app(hub.appUrn, hub.appName, 2)]}
+        state={READY}
+        gpuVramSource="host-file"
+        unattributed={[
+          { processName: 'llama-server', vramMb: 493 },
+          { processName: 'llama-server', vramMb: 24_331 },
+        ]}
+      />,
+    );
+
+    const footer = container.querySelector('[data-testid="workload-trend-gpu-unattributed"]');
+    expect(footer?.textContent).toContain('Held outside any workload');
+    const lines = [...(footer?.querySelectorAll('li') ?? [])].map((li) => li.textContent);
+    expect(lines).toEqual(['llama-server24 GB', 'llama-server493 MB']);
+  });
+
+  it('prints nothing when the sampler found nothing unattributed, and never on the CPU or memory tiles', () => {
+    const none = render(<WorkloadTrend metric="gpu" history={history} apps={[app(hub.appUrn, hub.appName, 2)]} state={READY} unattributed={null} />);
+    expect(none.container.querySelector('[data-testid="workload-trend-gpu-unattributed"]')).toBeNull();
+
+    const cpu = render(
+      <WorkloadTrend
+        metric="cpu"
+        history={history}
+        apps={[app(hub.appUrn, hub.appName, 2)]}
+        state={READY}
+        unattributed={[{ processName: 'dflash_server', vramMb: 17_788 }]}
+      />,
+    );
+    expect(cpu.container.querySelector('[data-testid="workload-trend-gpu-unattributed"]')).toBeNull();
+  });
+
+  it('does not send an Apple Silicon operator to a Linux probe timer', () => {
+    const { container } = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="absent" gpuVendor="apple" />);
+
+    const note = container.querySelector('[data-testid="workload-trend-gpu-absent"]');
+    expect(note?.textContent).toContain('Apple GPUs expose no per-process memory');
+    expect(note?.textContent).not.toContain('cihub fleet update');
+  });
+});

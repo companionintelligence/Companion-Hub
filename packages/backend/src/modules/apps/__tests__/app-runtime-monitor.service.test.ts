@@ -192,6 +192,54 @@ describe('AppRuntimeMonitorService', () => {
     expect(dockerReadFacade.getAppRuntimeStats).toHaveBeenCalledTimes(1);
   });
 
+  /*
+   * core-2, 2026-09-27: history samples at 18:00:49.803 and 18:00:50.491. The 60s timer's collection
+   * was still fanning out over Docker when a dashboard GET found the cache stale and started a second
+   * one, and each appended a sample. Charted by index, a 0.7-second interval drew as wide as a minute.
+   */
+  it('joins a collection already in flight instead of taking a second sample beside it', async () => {
+    appsRepository.getApps.mockResolvedValue([
+      {
+        id: 1,
+        appName: 'test-app',
+        appStoreSlug: 'store',
+        status: 'running',
+        config: {},
+        updatedAt: new Date().toISOString(),
+      } as any,
+    ]);
+    let release: () => void = () => undefined;
+    const docker = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    dockerReadFacade.getAppRuntimeStats.mockImplementation(async () => {
+      await docker;
+      return [
+        {
+          containerId: 'abc',
+          name: 'svc',
+          state: 'running',
+          status: 'Up',
+          health: 'healthy',
+          exitCode: null,
+          cpuPercent: 12,
+          memoryUsageBytes: 100,
+          memoryLimitBytes: 1000,
+        },
+      ];
+    });
+
+    // The timer's path and a page's path, both arriving while Docker has not answered yet.
+    const first = service.getRuntimeMonitorSnapshot();
+    const second = service.getRuntimeMonitorSnapshot();
+    release();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(dockerReadFacade.getAppRuntimeStats).toHaveBeenCalledTimes(1);
+    expect(a).toBe(b);
+    expect(b.history).toHaveLength(1);
+  });
+
   it('includes rolling history gathered before the page is opened', async () => {
     vi.useFakeTimers();
     appsRepository.getApps.mockResolvedValue([

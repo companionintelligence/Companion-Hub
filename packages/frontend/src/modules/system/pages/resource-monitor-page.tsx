@@ -1,4 +1,4 @@
-import { BandHeader } from '@/components/ui/dense/dense';
+import { BandHeader, parseHubTimestamp } from '@/components/ui/dense/dense';
 import { DashboardRail } from '@/modules/system/panels/kpi-rail';
 import { HostCapacity, LocalContainers, LocalModels, ModelMemory } from '@/modules/system/panels/local-resources';
 import { NetworkModels, NetworkOverview } from '@/modules/system/panels/network-resources';
@@ -7,9 +7,17 @@ import { PoolNodes } from '@/modules/system/panels/pool-nodes';
 import { CloudProviders, MiscPanel, poolConfigWarnings, PoolSummary } from '@/modules/system/panels/pooling-misc';
 import { WorkloadCoverage } from '@/modules/system/panels/workload-coverage';
 import { WorkloadTrend } from '@/modules/system/panels/workload-trends';
-import { localContainerRollup, poolNodeCards, routingActivity, routingBuckets } from '@/modules/system/pool-node-series';
-import { pageVerdict } from '@/modules/system/triage';
-import { combineLoadState, loadState, poolReach, useDashboardData } from '@/modules/system/use-dashboard-data';
+import {
+  firstByteByNode,
+  LOCAL_NODE_KEY,
+  localContainerRollup,
+  poolNodeCards,
+  routingBuckets,
+  routingWindowPartial,
+  waitingNow,
+} from '@/modules/system/pool-node-series';
+import { pageVerdict, STALE_SAMPLE_MS } from '@/modules/system/triage';
+import { combineLoadState, loadState, memoryReconciliation, poolReach, useDashboardData } from '@/modules/system/use-dashboard-data';
 import { usePoolSamples } from '@/modules/system/use-pool-samples';
 import { ChevronDown } from 'lucide-react';
 import { useMemo } from 'react';
@@ -40,10 +48,12 @@ import { useTranslation } from 'react-i18next';
  *
  * ── Why everything derived is derived HERE ───────────────────────────────────────────────────
  *
- * `buckets`, `rollup`, `reach` and `activity` are computed once at page level and passed down.
- * The rail's "routed in the last 30 minutes" and the activity panel's per-minute bars are the
- * same measurement shown twice; deriving them separately is how two figures about the same half
- * hour come to disagree because a poll landed between two calls to `Date.now()`.
+ * `buckets`, `rollup`, `reach`, `waiting` and `firstByte` are computed once at page
+ * level and passed down. The rail's "routed in the last 30 minutes" and the activity panel's
+ * per-minute bars are the same measurement shown twice; deriving them separately is how two
+ * figures about the same half hour come to disagree because a poll landed between two calls to
+ * `Date.now()`. The verdict reads the same buckets, so a fault chip and the figure beside it
+ * always describe the same window.
  */
 
 /*
@@ -55,16 +65,18 @@ const HISTORY_LIMIT = 24;
 
 const BUCKET_MS = 60_000;
 const BUCKET_COUNT = 30;
+const WINDOW_MS = BUCKET_MS * BUCKET_COUNT;
 
 export default function ResourceMonitorPage() {
   const { t } = useTranslation();
-  const { containers, pool, routingLog, inference, memory, residency, hardware, cloudProviders } = useDashboardData();
+  const { containers, pool, routingLog, inference, memory, residency, hardware, cloudProviders, systemLoad } = useDashboardData();
 
   const containerState = loadState(containers);
   const poolState = loadState(pool);
   const hardwareState = loadState(hardware);
   const routingState = loadState(routingLog);
   const residencyState = loadState(residency);
+  const systemLoadState = loadState(systemLoad);
 
   const now = Date.now();
   const apps = containers.data?.apps ?? [];
@@ -80,11 +92,26 @@ export default function ResourceMonitorPage() {
   // `containers.data` being undefined is "not reported" and stays `null` all the way down.
   const rollup = localContainerRollup(containers.data?.apps);
 
+  /*
+   * How old the container sample was WHEN THE HUB SERVED IT — the query's own receive time, not this
+   * render's. The failure being caught is the backend handing back its last good snapshot on every
+   * poll after its collector has stopped; measured against `Date.now()` instead, a tab that was in
+   * the background (where this query deliberately does not poll) would flash a stale-sample fault
+   * for the second it takes to refetch on focus, about a Hub that is fine.
+   */
+  const sampledAtMs = parseHubTimestamp(containers.data?.sampledAt);
+  const sampleAgeMs = containers.data && Number.isFinite(sampledAtMs) ? Math.max(0, containers.dataUpdatedAt - sampledAtMs) : null;
+
+  // Served, streamed, never-failed-over rows over the rail's window — per node, for the rail, the
+  // node table and each card. See `firstByteByNode` for why each exclusion is there.
+  const firstByte = useMemo(() => firstByteByNode(entries, { now, windowMs: WINDOW_MS }), [entries, now]);
+
   const nodeCards = poolNodeCards(localNode, peerRows, {
     localLabel,
     localContainers: rollup,
     healthPollSeconds: pool.data?.settings?.poolHealthPollSeconds,
     now,
+    firstByte,
   });
 
   // Accumulated off the query's own fetch timestamp; a failed poll appends nothing so the series
@@ -92,15 +119,18 @@ export default function ResourceMonitorPage() {
   const samples = usePoolSamples(nodeCards, pool.dataUpdatedAt, pool.isError);
 
   const reach = poolReach(peerRows, localNode);
-  const activity = routingActivity(entries);
   const buckets = useMemo(() => routingBuckets(entries, { now, bucketMs: BUCKET_MS, buckets: BUCKET_COUNT }), [entries, now]);
+  const windowPartial = routingWindowPartial(routingLog.data, { now, windowMs: WINDOW_MS });
+  const waiting = waitingNow(entries, now);
+  const oldestWait = waiting.oldest;
+  const reconciliation = memoryReconciliation(hardware.data, rollup, memory.data);
 
   // One derivation of "is anything in the configuration quietly not doing what it says", read by
   // both the drawer's badge and the verdict, so the two can never disagree.
   const configWarnings = poolConfigWarnings(pool.data);
 
   const verdict = pageVerdict({
-    containers: { state: containerState, degraded: degradedApps.length },
+    containers: { state: containerState, degraded: degradedApps.length, sampleAgeMs },
     pool: {
       state: poolState,
       unreachablePeers: reach.unreachable,
@@ -109,10 +139,18 @@ export default function ResourceMonitorPage() {
       envDisabledDirections: configWarnings.envDisabledDirections,
       capabilitiesError: configWarnings.capabilitiesError,
     },
-    routing: { state: routingState, unplaced: activity.unplaced },
+    routing: {
+      state: routingState,
+      // Inside the window, never the whole ring: summed over the ring, one bad row kept core-2 red
+      // for the eighteen hours it survived there.
+      unplaced: buckets.reduce((sum, bucket) => sum + bucket.unplaced, 0),
+      waiting: oldestWait
+        ? { ageMs: oldestWait.ageMs, budgetMs: oldestWait.budgetMs, node: oldestWait.node === LOCAL_NODE_KEY ? localLabel : (oldestWait.node ?? '—') }
+        : null,
+    },
     // Queries with no fault of their own, but which still have to have RUN before the verdict is
     // allowed to say everything was checked.
-    otherStates: [loadState(inference), loadState(memory), hardwareState, loadState(cloudProviders), residencyState],
+    otherStates: [loadState(inference), loadState(memory), hardwareState, loadState(cloudProviders), residencyState, systemLoadState],
     t: (key: string, vars?: Record<string, unknown>) => t(key, vars),
   });
 
@@ -127,18 +165,27 @@ export default function ResourceMonitorPage() {
         poolState={poolState}
         reach={reach}
         localNode={localNode}
+        localLabel={localLabel}
         workloads={apps.length}
         degraded={degradedApps.length}
-        rollup={rollup}
         containerState={containerState}
         sampledAt={containers.data?.sampledAt}
+        sampleStale={sampleAgeMs !== null && sampleAgeMs > STALE_SAMPLE_MS}
         hardware={hardware.data}
         hardwareState={hardwareState}
+        hostCpu={systemLoad.data}
+        hostCpuState={systemLoadState}
         residency={residency.data}
         residencyState={residencyState}
+        inferenceBackends={inference.data?.backends}
         buckets={buckets}
-        activity={activity}
+        windowPartial={windowPartial}
+        logHeld={entries.length}
+        waiting={waiting}
+        firstByte={firstByte}
+        startedAt={routingLog.data?.summary?.startedAt}
         routingState={routingState}
+        now={now}
       />
 
       {/* ── A. Workloads on this machine ──────────────────────────────────── */}
@@ -168,6 +215,8 @@ export default function ResourceMonitorPage() {
         apps={apps}
         state={containerState}
         gpuVramSource={containers.data?.gpuVramSource}
+        gpuVendor={hardware.data?.gpu?.vendor}
+        unattributed={containers.data?.unattributedGpu}
         className="col-span-full md:col-span-1 xl:col-span-3"
       />
       <WorkloadCoverage
@@ -178,14 +227,15 @@ export default function ResourceMonitorPage() {
 
       {/* ── B. This machine ───────────────────────────────────────────────── */}
       <BandHeader title={t('DASHBOARD_BAND_MACHINE')} />
-      <HostCapacity hardware={hardware.data} node={localNode} state={hardwareState} className="col-span-full md:col-span-1 xl:col-span-3" />
+      <HostCapacity hardware={hardware.data} state={hardwareState} className="col-span-full md:col-span-1 xl:col-span-3" />
       <ModelMemory
         memory={memory.data}
         hardware={hardware.data}
+        reconciliation={reconciliation}
         state={combineLoadState(loadState(memory), hardwareState)}
         className="col-span-full md:col-span-1 xl:col-span-3"
       />
-      <LocalContainers apps={apps} history={history} state={containerState} className="col-span-full md:col-span-2 xl:col-span-6" />
+      <LocalContainers apps={apps} history={history} rollup={rollup} state={containerState} className="col-span-full md:col-span-2 xl:col-span-6" />
 
       {/* ── C. The pool in use ────────────────────────────────────────────── */}
       <BandHeader title={t('DASHBOARD_BAND_POOL')} />
@@ -198,7 +248,14 @@ export default function ResourceMonitorPage() {
           empty columns — the dead space this rebuild exists to remove. Ordered local → overview →
           index to match the band's own question: what do WE offer, then what does the pool. */}
       <BandHeader title={t('DASHBOARD_BAND_OFFERS')} />
-      <LocalModels node={localNode} inference={inference.data?.backends} state={poolState} className="col-span-full md:col-span-1 xl:col-span-4" />
+      <LocalModels
+        node={localNode}
+        inference={inference.data?.backends}
+        residency={residency.data}
+        residencyState={residencyState}
+        state={poolState}
+        className="col-span-full md:col-span-1 xl:col-span-4"
+      />
       <NetworkOverview peers={peerRows} node={localNode} state={poolState} className="col-span-full md:col-span-1 xl:col-span-4" />
       <NetworkModels
         peers={peerRows}

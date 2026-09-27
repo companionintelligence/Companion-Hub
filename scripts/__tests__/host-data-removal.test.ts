@@ -14,7 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   describeBlockedFolders,
   findFoldersBlockingRemoval,
+  finishRemovalCommand,
+  inspectTunnelDir,
   removeHostDataTarget,
+  removeHubTunnelFiles,
+  rootEntryRemovalCommand,
   rootRemovalCommand,
   summarizeFailures,
 } from '../lib/host-data-removal';
@@ -194,6 +198,77 @@ describe('rootRemovalCommand', () => {
     expect(rootRemovalCommand("C:\\Users\\O'Brien\\AppData\\Roaming\\companion-hub", 'win32')).toBe(
       "Remove-Item -Recurse -Force -LiteralPath 'C:\\Users\\O''Brien\\AppData\\Roaming\\companion-hub'   (in an administrator PowerShell)",
     );
+  });
+});
+
+describe('rootEntryRemovalCommand', () => {
+  it('deletes the files, then the folders once empty, and never recursively', () => {
+    expect(rootEntryRemovalCommand(["/t/o'k/token"], ['/t/certs', '/t'], 'linux')).toBe(
+      "sudo rm -f -- '/t/o'\\''k/token' && sudo rmdir -- '/t/certs' '/t'",
+    );
+    expect(rootEntryRemovalCommand([], ['/t'], 'linux')).toBe("sudo rmdir -- '/t'");
+    expect(rootEntryRemovalCommand(['C:\\t\\token'], ['C:\\t'], 'win32')).toBe(
+      "Remove-Item -Force -LiteralPath 'C:\\t\\token', 'C:\\t'   (in an administrator PowerShell)",
+    );
+  });
+
+  it('doubles a single quote for PowerShell here too', () => {
+    expect(rootEntryRemovalCommand(["C:\\Users\\O'Brien\\tunnel\\token"], ["C:\\Users\\O'Brien\\tunnel"], 'win32')).toBe(
+      "Remove-Item -Force -LiteralPath 'C:\\Users\\O''Brien\\tunnel\\token', 'C:\\Users\\O''Brien\\tunnel'   (in an administrator PowerShell)",
+    );
+  });
+});
+
+describe.skipIf(cannotSimulateEacces)('removeHubTunnelFiles', () => {
+  let root: string;
+  const lockedFolders: string[] = [];
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'hub-tunnel-files-'));
+  });
+
+  afterEach(() => {
+    for (const folder of lockedFolders.splice(0)) {
+      if (existsSync(folder)) chmodSync(folder, 0o755);
+    }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('leaves a file named tunnel alone', () => {
+    const tunnel = path.join(root, 'tunnel');
+    writeFileSync(tunnel, 'not a folder');
+
+    const result = removeHubTunnelFiles(tunnel);
+
+    expect(result).toMatchObject({ removed: true, existed: true, shared: { deleted: [], kept: [tunnel], left: [] } });
+    expect(existsSync(tunnel)).toBe(true);
+    expect(finishRemovalCommand(result)).toBeUndefined();
+  });
+
+  it('reports an empty tunnel folder it cannot delete, with rmdir and not rm -rf', () => {
+    const share = path.join(root, 'share');
+    const tunnel = path.join(share, 'tunnel');
+    mkdirSync(path.join(tunnel, 'certs'), { recursive: true });
+    chmodSync(share, 0o555);
+    lockedFolders.push(share);
+
+    const result = removeHubTunnelFiles(tunnel, 'linux');
+
+    // certs/ went; the folder itself needs write permission on the folder holding it.
+    expect(existsSync(path.join(tunnel, 'certs'))).toBe(false);
+    expect(result).toMatchObject({ removed: false, leftoverEntries: 1, shared: { left: [tunnel] } });
+    expect(result.blocked).toEqual([{ folder: share, code: 'EACCES', entries: 1, unlistable: false }]);
+    expect(finishRemovalCommand(result)).toBe(`sudo rmdir -- '${tunnel}'`);
+  });
+
+  it("counts only an empty certs/ as the Hub's", () => {
+    const tunnel = path.join(root, 'tunnel');
+    mkdirSync(path.join(tunnel, 'certs'), { recursive: true });
+    writeFileSync(path.join(tunnel, 'certs', 'custom-ca.pem'), 'PEM');
+
+    expect(inspectTunnelDir(tunnel)).toEqual({ kind: 'folder', hubFiles: [], kept: [path.join(tunnel, 'certs', 'custom-ca.pem')] });
+    expect(removeHubTunnelFiles(tunnel)).toMatchObject({ removed: true, shared: { deleted: [], left: [] } });
+    expect(existsSync(path.join(tunnel, 'certs', 'custom-ca.pem'))).toBe(true);
   });
 });
 

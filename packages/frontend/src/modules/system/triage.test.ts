@@ -116,3 +116,47 @@ describe('pageVerdict', () => {
     expect(verdict.faults[0]?.label).toBe('DASHBOARD_VERDICT_DEGRADED:2');
   });
 });
+
+describe('pageVerdict — silent staleness and waits near their deadline', () => {
+  it('warns when the Hub hands over a container sample minutes old, which is how its monitor fails', () => {
+    // A collection that throws returns the previous snapshot and resets the cache clock, so the same
+    // figures come back on every poll with nothing but `sampledAt` to say they have stopped moving.
+    const verdict = pageVerdict(input({ containers: { state: ok, degraded: 0, sampleAgeMs: 7 * 60_000 } }));
+
+    expect(verdict.kind).toBe('faults');
+    expect(verdict.faults).toEqual([{ id: 'stale-sample', tone: 'warn', label: 'DASHBOARD_VERDICT_STALE_SAMPLE' }]);
+  });
+
+  it('stays clear for a sample of normal age — the backend caches for 30s and samples every 60s', () => {
+    expect(pageVerdict(input({ containers: { state: ok, degraded: 0, sampleAgeMs: 95_000 } })).kind).toBe('clear');
+  });
+
+  it('never calls a failed container fetch stale — it is unavailable, not old', () => {
+    const verdict = pageVerdict(input({ containers: { state: failed, degraded: 0, sampleAgeMs: 7 * 60_000 } }));
+
+    expect(verdict.faults.map((fault) => fault.id)).not.toContain('stale-sample');
+  });
+
+  it('warns once a request has waited 80% of its first-byte budget, naming the wait, the budget and the node', () => {
+    const verdict = pageVerdict(
+      input({
+        routing: { state: ok, unplaced: 0, waiting: { ageMs: 640_000, budgetMs: 780_000, node: 'This Hub' } },
+        t: (key, vars) => `${key}|${vars?.age}|${vars?.budget}|${vars?.node}`,
+      }),
+    );
+
+    expect(verdict.faults).toEqual([{ id: 'near-budget', tone: 'warn', label: 'DASHBOARD_VERDICT_NEAR_BUDGET|10m 40s|13m 0s|This Hub' }]);
+  });
+
+  it('treats a long wait inside its budget as the normal cost of a big prompt, not a fault', () => {
+    const verdict = pageVerdict(input({ routing: { state: ok, unplaced: 0, waiting: { ageMs: 370_941, budgetMs: 780_000, node: 'This Hub' } } }));
+
+    expect(verdict.kind).toBe('clear');
+  });
+
+  it('cannot judge a wait with no budget recorded, so it does not guess', () => {
+    const verdict = pageVerdict(input({ routing: { state: ok, unplaced: 0, waiting: { ageMs: 9_999_999, budgetMs: null, node: 'core-7' } } }));
+
+    expect(verdict.kind).toBe('clear');
+  });
+});
