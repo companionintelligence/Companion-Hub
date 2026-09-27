@@ -157,25 +157,46 @@ export function bringUpScript(postgresPassword: string, pairingCode: string, exp
     `export CIHUB_POSTGRES_PASSWORD='${postgresPassword.replace(/'/g, "'\\''")}'`,
     'cihub up --detached',
     'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    // The image the node ended up pinning, on the node's line whichever way the step ends. Read after
+    // `up`, so a desktop app that rewrote the file first shows here too. On 2026-09-26 core-6 and fzzy
+    // failed with "nothing answered …/registration/phase" and nothing else: the ci-hub:0.2.70 and
+    // ci-hub:0.2.61 they had been seeded with sat in the env file until someone went and read it.
+    'img="$(grep -h \'^CI_HUB_IMAGE=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2-)"; [ -n "$img" ] || img=unset',
+    // A running desktop app is the other writer of that file, and whatever `up` seeded, the next Hub
+    // start it makes puts its own build back: core-6's 0.2.70 app did so eight seconds after the seed.
+    'desktop_note="a companion-hub desktop app is running on this node, and every Hub start it makes rewrites CI_HUB_IMAGE to its own build"',
+    'desk=""; if pgrep -x companion-hub >/dev/null 2>&1; then echo "hub-up-note: $desktop_note"; desk="; $desktop_note"; fi',
     // A fresh node's `cihub up` seeds CI_CLOUD_URL from its own build, which need not be the Portal the
     // code was minted on — and a code minted on one Portal is not in the other's database, so every
     // `register` answers 410 PAIRING_CODE_INVALID after first resetting the node's registration.
     // Checked here, after `up` wrote the file and before `register` touches anything.
     ...(expectedPortalOrigin ? portalOriginCheckLines(expectedPortalOrigin) : []),
+    // The port the Hub was actually given, not the one it usually gets: a heal that moved API_PORT
+    // to 5003 once left the probe below silent while the step reported success.
+    'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
+    // Before `register`, because Portal spends the code the moment it accepts it, whatever the Hub
+    // does next. On 2026-09-26 core-6 and fzzy spent theirs on 0.2.70 and 0.2.61 Hubs that could
+    // never report registered. `registration/phase` is the route that answers without a check-in, and
+    // a Hub without it (404) predates what this install needs. `up -d` returns before the Hub listens,
+    // so an unanswered probe is retried, 60 times 3 s apart; a 404 is an answer and ends the wait.
+    'probe=000; tries=0',
+    'while [ "$tries" -lt 60 ]; do',
+    '  probe="$(curl -s -o /dev/null -w \'%{http_code}\' --max-time 5 "http://127.0.0.1:$port/api/registration/phase" || true)"',
+    '  case "$probe" in 200|404) break ;; esac',
+    '  tries=$((tries + 1)); sleep 3',
+    'done',
+    'if [ "$probe" = 404 ]; then echo "hub-up-failed: the Hub on :$port has no /api/registration/phase, so it is older than this install needs; the pairing code was not sent (CI_HUB_IMAGE=$img$desk)" >&2; exit 1; fi',
+    '[ "$probe" = 200 ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase in 60 tries after cihub up (last HTTP status $probe); the pairing code was not sent (CI_HUB_IMAGE=$img$desk)" >&2; exit 1; }',
     // `register` now exits non-zero on failure, but the state check is what actually proves it —
     // an exit code says what the command believed, not what the Hub is.
     `cihub register --code '${pairingCode.replace(/'/g, "'\\''")}'`,
-    // The port the Hub was actually given, not the one it usually gets: a heal that moved API_PORT
-    // to 5003 once left this probe silent while the step reported success. An empty answer is a
-    // failure now, and so is an answer that does not say registered — `registration/phase` is the
-    // route that reports without sending a check-in.
-    'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
+    // An empty answer is a failure, and so is an answer that does not say registered.
     'phase="$(curl -fsS --max-time 10 "http://127.0.0.1:$port/api/registration/phase" || true)"',
-    '[ -n "$phase" ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase after cihub up" >&2; exit 1; }',
+    '[ -n "$phase" ] || { echo "hub-up-failed: nothing answered http://127.0.0.1:$port/api/registration/phase after cihub register (CI_HUB_IMAGE=$img$desk)" >&2; exit 1; }',
     'echo "$phase"',
     'echo "$phase" | grep -q \'"registered":true\' || { echo "hub-up-failed: the Hub is up but not registered: $phase" >&2; exit 1; }',
     '[ "$port" = 5002 ] || echo "hub-up-note: the Hub listens on :$port, not :5002 — tailscale serve and pool peers expect 5002"',
-    'echo "hub-up-complete"',
+    'echo "hub-up-complete (CI_HUB_IMAGE=$img$desk)"',
   ].join('\n');
 }
 

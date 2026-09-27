@@ -141,9 +141,19 @@ export async function ensureApplianceInstall(): Promise<void> {
     const seeded = seedApplianceInstall({ dataDir: ctx.dataDir, postgresPassword: password });
     printMessageBox(
       'Fresh Hub install created',
-      [`Data dir: ${seeded.dataDir}`, `Image: ${seeded.hubImage}`, `Next: ${BASE_COMMAND} up continues automatically.`],
+      [
+        `Data dir: ${seeded.dataDir}`,
+        `Image: ${seeded.hubImage}`,
+        `  from ${seeded.hubImageFrom}`,
+        `Compose: from ${seeded.composeFrom}`,
+        `Next: ${BASE_COMMAND} up continues automatically.`,
+      ],
       'green',
     );
+    // Red and in its own box: a pin this install did not take, one a desktop app is about to
+    // overwrite, or a leftover compose it passed over is invisible until the Hub it starts turns out
+    // to be the wrong one.
+    if (seeded.warnings.length > 0) printMessageBox('Check this Hub install', seeded.warnings, 'red');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     printMessageBox('Could not create Hub install', [message, `Expected prod data at: ${ctx.dataDir}`], 'red');
