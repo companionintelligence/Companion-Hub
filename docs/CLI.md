@@ -291,7 +291,13 @@ cihub config [env]           # show resolved config values only
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
 - After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
-- The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which: `CI_HUB_IMAGE` in the environment; the installed `companion-hub` desktop package, only when it is the same release as this `cihub`; otherwise `ghcr.io/companionintelligence/ci-hub:latest`. It never reads a CI-Hub checkout or an env file left by an earlier install. If a desktop package at another release is installed, or a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. Remove a desktop package nothing uses with `sudo apt remove companion-hub`.
+- The fresh install pins `CI_HUB_IMAGE` from exactly one of these, in order, and prints which:
+  1. `CI_HUB_IMAGE` in the environment.
+  2. The installed `companion-hub` desktop package, only when it is the same release as this `cihub`.
+  3. This `cihub`'s own release, `ghcr.io/companionintelligence/ci-hub:<version>`, when it is a plain `x.y.z` release, which the release pipeline publishes. An older desktop app keeps this pin on its next Hub start; it discards `:latest`.
+  4. `ghcr.io/companionintelligence/ci-hub:latest`. A dev or trial build lands here, and the report says the Hub is then the newest release, not that build.
+- The fresh install writes this `cihub`'s own compose. That is the one built into the binary, unless a compose of the same release is on disk: the desktop package's, when the package is this release, or the checkout a source run comes from. A compose or `traefik-assets` directory beside a standalone `cihub` is ignored, because nothing installs one there. The same goes for a desktop package at another release. On 2026-09-27, 16 of 17 fleet nodes had a v0.2.70 compose beside `/usr/local/bin/cihub`. Every rebuilt Hub ran on it, without the `ci_hub_internal` and `ci_hub_edge` networks and with Postgres and RabbitMQ published on `0.0.0.0`.
+- The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. Remove a desktop package nothing uses with `sudo apt remove companion-hub`.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
 ![Screenshot of cihub status local](./images/cli/status.svg)
@@ -1496,6 +1502,11 @@ timer → install the GPU probe timer → **tailscale cert** → optionally join
 produced, because a step that trusts an exit code is how a fleet ends up believing it registered
 machines it never reached. `hub up` reads the port the Hub was actually given (`API_PORT`, which a
 port heal can move) and fails when nothing answers there or the answer does not say `registered`.
+It asks that port before `register` too, and waits for the Hub to answer `/api/registration/phase`
+(60 tries, 3 s apart). A Hub that never answers, or answers 404 because its build predates the
+route, fails the step with the pairing code unsent. The node's line names the `CI_HUB_IMAGE` the
+env file pins, and says when a desktop app on the node is running. On 2026-09-26, core-6 and fzzy
+ran `register` against 0.2.70 and 0.2.61 Hubs, and both codes were spent.
 
 The **`cihub` binary** comes from this machine, not from the node. The release assets live in a
 private repository, so a node cannot fetch them; the first installer had each node try and every

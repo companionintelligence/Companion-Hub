@@ -14,7 +14,7 @@ import path from 'node:path';
 import { isDirectScriptRun } from './lib/is-direct-run';
 import { resolveRootFolderHostForRuntime } from './lib/paths';
 import { BUNDLED_TRAEFIK_DYNAMIC_YML, BUNDLED_TRAEFIK_YML } from './lib/bundled-hub-assets.generated';
-import { findTraefikAssets } from './lib/seed-appliance';
+import { describeIgnoredHubResources, pickTraefikAssets } from './lib/seed-appliance';
 
 /**
  * Resolved at call time, not import time. `cihub up` imports this module at startup and only later
@@ -46,8 +46,17 @@ export async function initTraefik(options: { assetsDir?: string | null } = {}) {
 
   // Copy config files. `process.cwd()` only resolves this inside a CI-Hub checkout — a
   // packaged/standalone `cihub` (no checkout, no desktop install) needs the same
-  // execPath-relative search `findBundledCompose` already does for docker-compose.prod.yml.
-  const assetsDir = options.assetsDir === undefined ? findTraefikAssets() : (options.assetsDir ?? undefined);
+  // execPath-relative search the compose gets, with the same rule: a directory on disk is used only
+  // when it is this cihub's release. On 2026-09-27, 16 of 17 fleet nodes had a v0.2.70
+  // `traefik-assets` beside /usr/local/bin/cihub, left there by hand, and a fresh install copied it.
+  let assetsDir: string | undefined;
+  if (options.assetsDir === undefined) {
+    const picked = pickTraefikAssets();
+    for (const line of describeIgnoredHubResources(picked, 'Traefik config')) console.warn(line);
+    assetsDir = picked.path;
+  } else {
+    assetsDir = options.assetsDir ?? undefined;
+  }
 
   // traefik.yml
   const traefikSrc = assetsDir ? path.join(assetsDir, 'traefik.yml') : undefined;

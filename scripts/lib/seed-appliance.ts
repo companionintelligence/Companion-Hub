@@ -7,7 +7,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { BUNDLED_HUB_COMPOSE } from './bundled-hub-assets.generated.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,7 @@ import { stdin as input, stdout as output } from 'node:process';
 import { dockerBindMountPath } from '../heal-hub-bind-mounts';
 import { packageVersion } from './cli-compose-env.js';
 import { BASE_COMMAND } from './cli-types.js';
-import { isVersionTag, normalizeVersion, parseImageTag } from './cli-version-skew.js';
+import { classifyCliInstall, isVersionTag, normalizeVersion, parseImageTag } from './cli-version-skew.js';
 import { compareCihubVersions } from './fleet-cihub-binary.js';
 
 export const HUB_COMPOSE_FILENAME = 'docker-compose.prod.yml';
@@ -41,8 +41,13 @@ export type SeedApplianceOptions = {
   hubVersion?: string;
   composeSource?: string;
   execPath?: string;
-  /** Tests only: stand in for the on-disk search, e.g. `() => undefined` for a headless box. */
+  /** Tests only: replace the whole on-disk search and its checks, e.g. `() => undefined` for a headless box. */
   findCompose?: (execPath?: string) => string | undefined;
+  /**
+   * Tests only: the places the compose search looks, checked as the live search checks them. The live
+   * list names the desktop package's directories under /usr/lib, which a test cannot write to.
+   */
+  composeCandidates?: HubResourceCandidate[];
   /** Tests only: the environment the image is resolved from (default `process.env`). */
   env?: NodeJS.ProcessEnv;
   /** Tests only: stand in for this machine's desktop package, desktop app, and cihub build. */
@@ -53,10 +58,12 @@ export type SeedApplianceResult = {
   dataDir: string;
   envFilePath: string;
   composePath: string;
+  /** Where the compose came from, in words, for the line that reports the seed. */
+  composeFrom: string;
   hubImage: string;
   /** Where `hubImage` came from, in words, for the line that reports the seed. */
   hubImageFrom: string;
-  /** What the operator has to read before trusting `hubImage`; empty when nothing here disagrees with it. */
+  /** What the operator has to read before trusting this install; empty when nothing here disagrees with it. */
   warnings: string[];
 };
 
@@ -146,65 +153,6 @@ export async function resolvePostgresPassword(options: ResolvePostgresPasswordOp
   throw new Error('Password confirmation failed.');
 }
 
-export function composeResourceCandidates(execPath: string = process.execPath): string[] {
-  const execDir = path.dirname(execPath);
-  const fromModule = (() => {
-    try {
-      return path.resolve(fileURLToPath(new URL('../../packages/desktop/src-tauri/resources/docker-compose.prod.yml', import.meta.url)));
-    } catch {
-      return undefined;
-    }
-  })();
-  return [
-    path.join(execDir, HUB_COMPOSE_FILENAME),
-    path.join(execDir, 'resources', HUB_COMPOSE_FILENAME),
-    path.join('/usr/lib/Companion Hub/resources', HUB_COMPOSE_FILENAME),
-    path.join('/usr/lib/companion-hub/resources', HUB_COMPOSE_FILENAME),
-    path.join('/usr/share/companion-hub', HUB_COMPOSE_FILENAME),
-    ...(fromModule ? [fromModule] : []),
-  ];
-}
-
-export const TRAEFIK_ASSETS_DIRNAME = 'traefik-assets';
-
-/**
- * Same shape as {@link composeResourceCandidates}: a fresh `cihub up`/`cihub setup` on a
- * headless box (no CI-Hub checkout, no desktop package) has no `process.cwd()`-relative
- * monorepo path to read `packages/backend/assets/traefik/` from, so `initTraefik()` silently
- * warned and skipped `traefik.yml` — and, because it never got that far, never reached the
- * unconditional `acme_storage.json` write either. `traefik.yml` and `acme_storage.json`
- * missing from `docker-compose.prod.yml`'s bind mounts is what makes the `traefik` container
- * fail with "invalid mount config for type bind: bind source path does not exist" on every
- * first boot outside a checkout.
- */
-export function traefikAssetsCandidates(execPath: string = process.execPath): string[] {
-  const execDir = path.dirname(execPath);
-  const fromModule = (() => {
-    try {
-      return path.resolve(fileURLToPath(new URL('../../packages/backend/assets/traefik', import.meta.url)));
-    } catch {
-      return undefined;
-    }
-  })();
-  return [
-    path.join(execDir, TRAEFIK_ASSETS_DIRNAME),
-    path.join(execDir, 'resources', TRAEFIK_ASSETS_DIRNAME),
-    path.join('/usr/lib/Companion Hub/resources', TRAEFIK_ASSETS_DIRNAME),
-    path.join('/usr/lib/companion-hub/resources', TRAEFIK_ASSETS_DIRNAME),
-    path.join('/usr/share/companion-hub', TRAEFIK_ASSETS_DIRNAME),
-    path.join(process.cwd(), 'packages/backend/assets/traefik'),
-    ...(fromModule ? [fromModule] : []),
-  ];
-}
-
-export function findTraefikAssets(execPath: string = process.execPath): string | undefined {
-  return traefikAssetsCandidates(execPath).find((candidate) => existsSync(candidate));
-}
-
-export function findBundledCompose(execPath: string = process.execPath): string | undefined {
-  return composeResourceCandidates(execPath).find((candidate) => existsSync(candidate));
-}
-
 /** The installed `companion-hub` desktop package's version (dpkg only). It describes the package, not this cihub. */
 function installedCompanionHubVersion(): string | undefined {
   try {
@@ -245,13 +193,190 @@ export const LIVE_APPLIANCE_IMAGE_HOST: ApplianceImageHost = {
   cliVersion: packageVersion,
 };
 
-/** `environment`: CI_HUB_IMAGE was set on purpose. `desktop-package`: this cihub's own release, installed as the desktop app. */
-export type HubImageSource = 'environment' | 'desktop-package' | 'default';
+/**
+ * Where a Hub resource found on disk sits, which decides whether this `cihub` may use it (see
+ * {@link untrustedHubResourceReason}).
+ *
+ * - `beside-binary`: next to the executable, or in its `resources/`. The desktop package ships its
+ *   own `cihub` among its resources, so there the two are one artifact. Nothing installs these files
+ *   beside a standalone `cihub`.
+ * - `desktop-package`: the Linux desktop package's resource directories.
+ * - `checkout`: the CI-Hub source this `cihub` runs from, or the checkout it is run inside.
+ */
+export type HubResourceOrigin = 'beside-binary' | 'desktop-package' | 'checkout';
+
+export type HubResourceCandidate = { path: string; origin: HubResourceOrigin };
+
+const DESKTOP_PACKAGE_RESOURCE_DIRS = ['/usr/lib/Companion Hub/resources', '/usr/lib/companion-hub/resources', '/usr/share/companion-hub'] as const;
+
+/** A path in the checkout this module was loaded from. Inside a Bun-compiled binary it names nothing on disk. */
+function checkoutPath(relative: string): string | undefined {
+  try {
+    return path.resolve(fileURLToPath(new URL(relative, import.meta.url)));
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every place a compose file for a fresh install may sit, in the order they are tried. */
+export function composeResourceCandidateList(execPath: string = process.execPath): HubResourceCandidate[] {
+  const execDir = path.dirname(execPath);
+  const fromModule = checkoutPath('../../packages/desktop/src-tauri/resources/docker-compose.prod.yml');
+  return [
+    { path: path.join(execDir, HUB_COMPOSE_FILENAME), origin: 'beside-binary' },
+    { path: path.join(execDir, 'resources', HUB_COMPOSE_FILENAME), origin: 'beside-binary' },
+    ...DESKTOP_PACKAGE_RESOURCE_DIRS.map((dir): HubResourceCandidate => ({ path: path.join(dir, HUB_COMPOSE_FILENAME), origin: 'desktop-package' })),
+    ...(fromModule ? [{ path: fromModule, origin: 'checkout' as const }] : []),
+  ];
+}
+
+export function composeResourceCandidates(execPath: string = process.execPath): string[] {
+  return composeResourceCandidateList(execPath).map((candidate) => candidate.path);
+}
+
+export const TRAEFIK_ASSETS_DIRNAME = 'traefik-assets';
+
+/**
+ * Same shape as {@link composeResourceCandidateList}: a fresh `cihub up`/`cihub setup` on a
+ * headless box (no CI-Hub checkout, no desktop package) has no `process.cwd()`-relative
+ * monorepo path to read `packages/backend/assets/traefik/` from, so `initTraefik()` silently
+ * warned and skipped `traefik.yml` — and, because it never got that far, never reached the
+ * unconditional `acme_storage.json` write either. `traefik.yml` and `acme_storage.json`
+ * missing from `docker-compose.prod.yml`'s bind mounts is what makes the `traefik` container
+ * fail with "invalid mount config for type bind: bind source path does not exist" on every
+ * first boot outside a checkout. That box now gets the copies baked into the CLI instead.
+ */
+export function traefikAssetsCandidateList(execPath: string = process.execPath): HubResourceCandidate[] {
+  const execDir = path.dirname(execPath);
+  const fromModule = checkoutPath('../../packages/backend/assets/traefik');
+  return [
+    { path: path.join(execDir, TRAEFIK_ASSETS_DIRNAME), origin: 'beside-binary' },
+    { path: path.join(execDir, 'resources', TRAEFIK_ASSETS_DIRNAME), origin: 'beside-binary' },
+    ...DESKTOP_PACKAGE_RESOURCE_DIRS.map(
+      (dir): HubResourceCandidate => ({ path: path.join(dir, TRAEFIK_ASSETS_DIRNAME), origin: 'desktop-package' }),
+    ),
+    { path: path.join(process.cwd(), 'packages/backend/assets/traefik'), origin: 'checkout' },
+    ...(fromModule ? [{ path: fromModule, origin: 'checkout' as const }] : []),
+  ];
+}
+
+export function traefikAssetsCandidates(execPath: string = process.execPath): string[] {
+  return traefikAssetsCandidateList(execPath).map((candidate) => candidate.path);
+}
+
+/**
+ * Why this `cihub` may not use a Hub resource found on disk, or null when it may.
+ *
+ * The same rule the image follows (see {@link resolveApplianceHubImage}): a file on disk is used only
+ * when it is provably this `cihub`'s release. Anything else loses to the copy baked into this binary
+ * (scripts/generate-bundled-hub-assets.ts), which is this release by construction. The search used to
+ * take the first file that existed. On 2026-09-27, 16 of 17 fleet nodes had a v0.2.70 compose that
+ * someone had left beside `/usr/local/bin/cihub` on 2026-09-18. Every rebuilt Hub came up on it,
+ * without the ci_hub_internal and ci_hub_edge networks and with Postgres and RabbitMQ published on
+ * 0.0.0.0. fzzy's 0.2.61 desktop package compose, next in line, also lacks the Tailscale mounts that
+ * pool pairing needs.
+ */
+export function untrustedHubResourceReason(candidate: HubResourceCandidate, execPath: string, host: ApplianceImageHost): string | null {
+  switch (candidate.origin) {
+    case 'checkout':
+      return null;
+    case 'beside-binary':
+      // The desktop package's `cihub` sits among the resources it shipped with, so the two are one release.
+      return classifyCliInstall(execPath).kind === 'desktop'
+        ? null
+        : `it sits beside a standalone ${BASE_COMMAND}, where nothing installs one, so it was left there by hand or by an earlier install`;
+    case 'desktop-package': {
+      const desktop = host.desktopPackageVersion()?.trim();
+      const cli = normalizeVersion(host.cliVersion());
+      if (desktop && normalizeVersion(desktop) === cli) return null;
+      return desktop
+        ? `it belongs to the companion-hub ${desktop} desktop package, and this ${BASE_COMMAND} is ${cli}`
+        : `no installed companion-hub package of this ${BASE_COMMAND}'s release (${cli}) owns it`;
+    }
+  }
+}
+
+export type PickedHubResource = {
+  /** The first candidate this `cihub` may use, or undefined when the copy baked into the binary should be used. */
+  path?: string;
+  /** Candidates that exist but were passed over, with the reason. */
+  ignored: (HubResourceCandidate & { why: string })[];
+};
+
+/**
+ * The first candidate on disk that is this `cihub`'s own, plus what was passed over on the way.
+ * `isHarmless` drops a passed-over file from `ignored` when it is the same as the baked-in copy.
+ */
+export function pickHubResource(
+  candidates: HubResourceCandidate[],
+  execPath: string,
+  host: ApplianceImageHost,
+  isHarmless?: (candidatePath: string) => boolean,
+): PickedHubResource {
+  const ignored: PickedHubResource['ignored'] = [];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate.path)) continue;
+    const why = untrustedHubResourceReason(candidate, execPath, host);
+    if (why === null) return { path: candidate.path, ignored };
+    if (!isHarmless?.(candidate.path)) ignored.push({ ...candidate, why });
+  }
+  return { ignored };
+}
+
+/**
+ * What the operator reads about a passed-over resource. A leftover beside the binary gets a removal
+ * line because an older `cihub` on the same machine still takes it first.
+ */
+export function describeIgnoredHubResources(picked: PickedHubResource, what: string): string[] {
+  if (picked.ignored.length === 0) return [];
+  return [
+    ...picked.ignored.map(({ path: ignoredPath, why }) => `Did not use ${ignoredPath}: ${why}.`),
+    picked.path ? `Used ${picked.path} instead.` : `Used the ${what} built into this ${BASE_COMMAND} instead.`,
+    ...picked.ignored
+      .filter((candidate) => candidate.origin === 'beside-binary')
+      .map(({ path: ignoredPath }) => `Nothing reads ${ignoredPath} now, but an older ${BASE_COMMAND} would. Remove it: sudo rm -r '${ignoredPath}'`),
+  ];
+}
+
+function isBundledCompose(candidatePath: string): boolean {
+  try {
+    return readFileSync(candidatePath, 'utf8') === BUNDLED_HUB_COMPOSE;
+  } catch {
+    return false;
+  }
+}
+
+/** The compose a fresh install copies, or undefined when it writes the one baked into this binary. */
+export function pickApplianceCompose(execPath: string = process.execPath, host: ApplianceImageHost = LIVE_APPLIANCE_IMAGE_HOST): PickedHubResource {
+  return pickHubResource(composeResourceCandidateList(execPath), execPath, host, isBundledCompose);
+}
+
+/** The Traefik assets directory `initTraefik` copies from, or undefined when it writes the ones baked into this binary. */
+export function pickTraefikAssets(execPath: string = process.execPath, host: ApplianceImageHost = LIVE_APPLIANCE_IMAGE_HOST): PickedHubResource {
+  return pickHubResource(traefikAssetsCandidateList(execPath), execPath, host);
+}
+
+export function findTraefikAssets(execPath: string = process.execPath, host: ApplianceImageHost = LIVE_APPLIANCE_IMAGE_HOST): string | undefined {
+  return pickTraefikAssets(execPath, host).path;
+}
+
+export function findBundledCompose(execPath: string = process.execPath, host: ApplianceImageHost = LIVE_APPLIANCE_IMAGE_HOST): string | undefined {
+  return pickApplianceCompose(execPath, host).path;
+}
+
+/**
+ * `environment`: CI_HUB_IMAGE was set on purpose. `desktop-package`: this cihub's own release, installed
+ * as the desktop app. `cli-release`: this cihub's own release, with no package. `default`: `:latest`,
+ * for a build that has no published image of its own.
+ */
+export type HubImageSource = 'environment' | 'desktop-package' | 'cli-release' | 'default';
 
 export type ResolvedApplianceHubImage = {
   image: string;
   version: string;
   source: HubImageSource;
+  /** This cihub's release, normalized, which is what `default` has to explain it is not. */
+  cli: string;
   /** Lines the operator has to read before trusting `image`; empty when nothing here disagrees with it. */
   warnings: string[];
 };
@@ -262,6 +387,19 @@ function versionForPinnedImage(pinned: string): string {
   if (at >= 0) return `digest-${pinned.slice(at + '@sha256:'.length, at + '@sha256:'.length + 12)}`;
   const tag = pinned.includes(':') ? pinned.slice(pinned.lastIndexOf(':') + 1) : 'latest';
   return tag || 'latest';
+}
+
+/**
+ * Whether `ci-hub:<version>` is an image the release pipeline publishes: a plain `x.y.z`, which a
+ * production Desktop Release pushes and its verify-anonymous-pull gate checks (build-container.yml).
+ *
+ * A pre-release suffix is left out on purpose. The fleet's `0.2.76-trial.1c9003d68` has that shape
+ * and no image, and nothing here can tell it from a published `-rc.1`. `0.0.0-dev` is a source run.
+ * No workflow publishes an image per commit, so builds like these have nothing of their own to pin.
+ */
+export function isPublishedReleaseVersion(version: string): boolean {
+  const normalized = normalizeVersion(version);
+  return isVersionTag(normalized) && !normalized.includes('-') && normalized !== '0.0.0';
 }
 
 /**
@@ -280,19 +418,26 @@ function desktopAppKeepsImage(image: string, desktopVersion: string): boolean {
 }
 
 /** Where a seeded image came from, for the line that reports the seed. */
-export function describeHubImageSource(resolved: Pick<ResolvedApplianceHubImage, 'source' | 'version'>): string {
+export function describeHubImageSource(resolved: Pick<ResolvedApplianceHubImage, 'source' | 'version'> & { cli?: string }): string {
   if (resolved.source === 'environment') return 'set by CI_HUB_IMAGE';
   if (resolved.source === 'desktop-package') return `the companion-hub ${resolved.version} desktop package here, which is this cihub's release`;
-  return 'the public release channel (CI_HUB_IMAGE is not set)';
+  if (resolved.source === 'cli-release') return `this ${BASE_COMMAND}'s own release (CI_HUB_IMAGE is not set)`;
+  if (!resolved.cli) return 'the public release channel (CI_HUB_IMAGE is not set)';
+  // Said in the report rather than warned about: every dev and trial build lands here, and the fleet
+  // hand-pinned each node after a trial-build install without the seed ever saying the Hub was not it.
+  return (
+    `the public release channel (CI_HUB_IMAGE is not set). This ${BASE_COMMAND} is ${resolved.cli}, which has no published image, ` +
+    `so the Hub runs the newest release and not this build. To run this build's image: CI_HUB_IMAGE=<ref> ${BASE_COMMAND} up`
+  );
 }
 
 /**
  * The Hub image a fresh install pins, where it came from, and what on this machine disagrees.
  *
  * In order: CI_HUB_IMAGE in the environment (a fleet roll, or an operator pinning on purpose); the
- * installed `companion-hub` desktop package, only when it is this cihub's own release; the public
- * `:latest`. Nothing else is read — not a CI-Hub checkout under the home directory, not an env file
- * left from an earlier install.
+ * installed `companion-hub` desktop package, only when it is this cihub's own release; this cihub's
+ * own release, when the pipeline publishes an image for it; the public `:latest`. Nothing else is
+ * read — not a CI-Hub checkout under the home directory, not an env file left from an earlier install.
  *
  * The package is consulted because the CLI ships inside it (#1162), and the desktop app rewrites
  * CI_HUB_IMAGE to its own build on every start it makes; seeding that same build keeps the two from
@@ -301,6 +446,11 @@ export function describeHubImageSource(resolved: Pick<ResolvedApplianceHubImage,
  * started core-6 on ci-hub:0.2.70 and fzzy on ci-hub:0.2.61 — both older than the
  * /api/registration/phase route fleet install checks (#1484) — and said nothing about why. A package
  * at another release is now named and not followed.
+ *
+ * A release cihub pins its own release rather than `:latest`, for two reasons. The compose this seed
+ * writes is that release's (see {@link pickApplianceCompose}), and a floating tag lets the image move
+ * away from it. And an older desktop app discards `:latest` on its next Hub start but keeps a newer
+ * release tag, so on core-6 only the exact pin survives the 0.2.70 app that is still running there.
  */
 export function resolveApplianceHubImage(
   env: NodeJS.ProcessEnv = process.env,
@@ -309,27 +459,41 @@ export function resolveApplianceHubImage(
   const desktop = host.desktopPackageVersion()?.trim() || undefined;
   const cli = normalizeVersion(host.cliVersion());
   const pinned = env.CI_HUB_IMAGE?.trim();
+  const desktopRunning = desktop ? host.desktopAppRunning() : false;
 
-  let resolved: Omit<ResolvedApplianceHubImage, 'warnings'>;
+  let resolved: Omit<ResolvedApplianceHubImage, 'warnings' | 'cli'>;
   const warnings: string[] = [];
   if (pinned) {
     resolved = { image: pinned, version: versionForPinnedImage(pinned), source: 'environment' };
   } else if (desktop && normalizeVersion(desktop) === cli) {
     resolved = { image: `${HUB_STACK_IMAGE_REPO}:${desktop}`, version: desktop, source: 'desktop-package' };
+  } else if (isPublishedReleaseVersion(cli)) {
+    resolved = { image: `${HUB_STACK_IMAGE_REPO}:${cli}`, version: cli, source: 'cli-release' };
   } else {
     resolved = { image: `${HUB_STACK_IMAGE_REPO}:latest`, version: 'latest', source: 'default' };
-    if (desktop) {
+  }
+
+  if (!pinned && desktop && resolved.source !== 'desktop-package') {
+    warnings.push(
+      `A companion-hub ${desktop} desktop package is installed here, but this ${BASE_COMMAND} is ${cli}.`,
+      `This install takes neither the package's image (${HUB_STACK_IMAGE_REPO}:${desktop}) nor its compose; it pins ${resolved.image}.`,
+    );
+    // Not running now is not the same as never running. fzzy's 0.2.61 app was idle, and the first Hub
+    // start it makes would swap in its own build on a database a newer Hub has already migrated.
+    if (!desktopRunning && !desktopAppKeepsImage(resolved.image, desktop)) {
       warnings.push(
-        `A companion-hub ${desktop} desktop package is installed here, but this cihub is ${cli}.`,
-        `This install does not take the package's image (${HUB_STACK_IMAGE_REPO}:${desktop}); it pins ${resolved.image}.`,
-        `To pin a release on purpose: CI_HUB_IMAGE=<ref> ${BASE_COMMAND} up. If nothing here uses the desktop app: sudo apt remove companion-hub`,
+        `If that desktop app is started, its first Hub start rewrites CI_HUB_IMAGE to ${HUB_STACK_IMAGE_REPO}:${desktop} and recreates the Hub on it.`,
+        'If that build is older than this one, it starts on a database the newer Hub may already have migrated.',
       );
     }
+    warnings.push(
+      `To pin a release on purpose: CI_HUB_IMAGE=<ref> ${BASE_COMMAND} up. If nothing here uses the desktop app: sudo apt remove companion-hub`,
+    );
   }
 
   // A running desktop app is a second writer of the same env file, and it wins every start it makes:
   // on core-6 its watchdog saw the freshly seeded Hub down and started it itself eight seconds later.
-  if (desktop && host.desktopAppRunning() && !desktopAppKeepsImage(resolved.image, desktop)) {
+  if (desktop && desktopRunning && !desktopAppKeepsImage(resolved.image, desktop)) {
     warnings.push(
       `The companion-hub ${desktop} desktop app is running on this machine. When it finds the Hub down it starts the Hub itself,`,
       `and that start rewrites CI_HUB_IMAGE to ${HUB_STACK_IMAGE_REPO}:${desktop}, replacing ${resolved.image}.`,
@@ -337,7 +501,7 @@ export function resolveApplianceHubImage(
     );
   }
 
-  return { ...resolved, warnings };
+  return { ...resolved, cli, warnings };
 }
 
 export function renderApplianceEnvContent(input: {
@@ -375,30 +539,42 @@ export function renderApplianceEnvContent(input: {
 
 export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplianceResult {
   const dataDir = path.resolve(options.dataDir);
-  const composeSource = options.composeSource || (options.findCompose ?? findBundledCompose)(options.execPath);
+  const execPath = options.execPath ?? process.execPath;
+  const host = options.imageHost ?? LIVE_APPLIANCE_IMAGE_HOST;
   if (options.composeSource && !existsSync(options.composeSource)) {
     throw new Error(`Could not find docker-compose.prod.yml at ${options.composeSource}.`);
   }
+  // An explicit source is the caller's choice and is taken as given. The search takes a file on disk
+  // only when it is this cihub's release; see untrustedHubResourceReason.
+  const compose: PickedHubResource = options.composeSource
+    ? { path: options.composeSource, ignored: [] }
+    : options.findCompose
+      ? { path: options.findCompose(options.execPath), ignored: [] }
+      : pickHubResource(options.composeCandidates ?? composeResourceCandidateList(execPath), execPath, host, isBundledCompose);
 
   for (const sub of APPLIANCE_SUBDIRS) {
     mkdirSync(path.join(dataDir, sub), { recursive: true });
   }
 
   const composePath = path.join(dataDir, HUB_COMPOSE_FILENAME);
-  if (composeSource && existsSync(composeSource)) {
-    copyFileSync(composeSource, composePath);
+  let composeFrom: string;
+  if (compose.path && existsSync(compose.path)) {
+    copyFileSync(compose.path, composePath);
+    composeFrom = compose.path;
   } else {
-    // No checkout, no desktop package, nothing next to the binary: a headless box. The compose is
-    // baked into the CLI at build time (scripts/generate-bundled-hub-assets.ts) for exactly this
-    // machine — which, on 2026-09-18, was twelve of fifteen fleet nodes.
+    // The compose baked into the CLI at build time (scripts/generate-bundled-hub-assets.ts): this
+    // release's by construction. First written for a headless box with nothing on disk — twelve of
+    // fifteen fleet nodes on 2026-09-18 — and now also what replaces a file on disk that is not this
+    // cihub's.
     writeFileSync(composePath, BUNDLED_HUB_COMPOSE, 'utf8');
+    composeFrom = `the compose built into this ${BASE_COMMAND}`;
   }
 
   // An explicit `hubImage` is a pin like CI_HUB_IMAGE, and goes through the same resolver so the
   // desktop-app check still applies to it.
   const resolvedImage = resolveApplianceHubImage(
     options.hubImage ? { ...(options.env ?? process.env), CI_HUB_IMAGE: options.hubImage } : (options.env ?? process.env),
-    options.imageHost,
+    host,
   );
   const jwtSecret = options.jwtSecret || randomBytes(64).toString('hex');
   const rabbitmqPassword = options.rabbitmqPassword || randomBytes(32).toString('hex');
@@ -421,8 +597,9 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     dataDir,
     envFilePath,
     composePath,
+    composeFrom,
     hubImage: resolvedImage.image,
     hubImageFrom: describeHubImageSource(resolvedImage),
-    warnings: resolvedImage.warnings,
+    warnings: [...resolvedImage.warnings, ...describeIgnoredHubResources(compose, 'compose')],
   };
 }

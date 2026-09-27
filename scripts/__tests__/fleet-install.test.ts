@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -132,31 +132,92 @@ describe('bringUpScript on a node', () => {
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function runOnNode(opts: { image?: string; phase: string; desktopRunning?: boolean }) {
+  /**
+   * `probes` is what the Hub answers the pre-register probe with, one HTTP status per try (the last
+   * one repeats): `000` is nothing listening yet, `404` a Hub without the route. `phase` is the body
+   * the check after `register` reads.
+   */
+  function runOnNode(opts: { image?: string; probes?: string[]; phase: string; desktopRunning?: boolean }) {
     const home = mkdtempSync(join(tmpdir(), 'bringup-home-'));
     const bin = mkdtempSync(join(tmpdir(), 'bringup-bin-'));
     tempDirs.push(home, bin);
     const dataDir = join(home, '.local', 'share', 'companion-hub');
     mkdirSync(dataDir, { recursive: true });
     writeFileSync(join(dataDir, '.env.dev'), `API_PORT=5002\n${opts.image ? `CI_HUB_IMAGE=${opts.image}\n` : ''}`);
-    writeFileSync(join(bin, 'cihub'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    writeFileSync(join(bin, 'curl'), `#!/bin/sh\nprintf '%s' '${opts.phase}'\n`, { mode: 0o755 });
+    writeFileSync(join(home, 'probes'), `${(opts.probes ?? ['200']).join('\n')}\n`);
+    // Every call is recorded, so a test can say whether `register` ever ran — that is the code spent.
+    writeFileSync(join(bin, 'cihub'), '#!/bin/sh\necho "$*" >> "$HOME/cihub-calls"\nexit 0\n', { mode: 0o755 });
+    writeFileSync(
+      join(bin, 'curl'),
+      [
+        '#!/bin/sh',
+        'case "$*" in',
+        // The probe: answer with the next status in the list, and keep repeating the last one.
+        '  *http_code*) n=$(cat "$HOME/probe-count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$HOME/probe-count"',
+        '    s=$(sed -n "${n}p" "$HOME/probes"); [ -n "$s" ] || s=$(tail -1 "$HOME/probes"); printf \'%s\' "$s" ;;',
+        `  *) printf '%s' '${opts.phase}' ;;`,
+        'esac',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     // Stubbed either way, so whatever runs on the machine running the test cannot answer for the node.
     writeFileSync(join(bin, 'pgrep'), `#!/bin/sh\nexit ${opts.desktopRunning ? 0 : 1}\n`, { mode: 0o755 });
     const res = spawnSync('bash', ['-c', bringUpScript('pw12345678', 'ABC123')], {
       encoding: 'utf8',
       env: { PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: home },
     });
-    return { code: res.status, out: res.stdout, err: res.stderr };
+    const calls = existsSync(join(home, 'cihub-calls')) ? readFileSync(join(home, 'cihub-calls'), 'utf8') : '';
+    const probeCount = existsSync(join(home, 'probe-count')) ? Number(readFileSync(join(home, 'probe-count'), 'utf8').trim()) : 0;
+    return { code: res.status, out: res.stdout, err: res.stderr, registered: calls.includes('register'), probeCount };
   }
 
   it('names the image on the failure line when the Hub never answers — the 0.2.70 core-6 was seeded with', () => {
     const image = 'ghcr.io/companionintelligence/ci-hub:0.2.70';
-    const res = runOnNode({ image, phase: '' });
+    const res = runOnNode({ image, probes: ['000'], phase: '' });
     expect(res.code).toBe(1);
     const line = describeStepFailure(res.out, res.err, { code: res.code, marker: 'hub-up-complete' });
     expect(line).toContain('nothing answered');
     expect(line).toContain(`CI_HUB_IMAGE=${image}`);
+    expect(res.probeCount).toBe(60);
+  });
+
+  it('core-6 and fzzy: a Hub without /api/registration/phase fails before register, so the code is not spent', () => {
+    // On 2026-09-26 both nodes ran `register` against 0.2.70 and 0.2.61 Hubs, Portal accepted the
+    // codes, and the check after it found nothing to read. Each code was gone, and each Portal device
+    // needed a replacement.
+    const image = 'ghcr.io/companionintelligence/ci-hub:0.2.61';
+    const res = runOnNode({ image, probes: ['404'], phase: '' });
+    expect(res.code).toBe(1);
+    expect(res.registered).toBe(false);
+    const line = describeStepFailure(res.out, res.err, { code: res.code, marker: 'hub-up-complete' });
+    expect(line).toContain('has no /api/registration/phase');
+    expect(line).toContain('the pairing code was not sent');
+    expect(line).toContain(`CI_HUB_IMAGE=${image}`);
+    // A 404 is an answer: the step does not sit out the rest of the wait.
+    expect(res.probeCount).toBe(1);
+  });
+
+  it('never sends the code to a Hub that has not answered, and says so', () => {
+    const res = runOnNode({ probes: ['000'], phase: '' });
+    expect(res.registered).toBe(false);
+    expect(res.err).toContain('the pairing code was not sent');
+  });
+
+  it('waits for a Hub that is still starting, then registers it once', () => {
+    // `cihub up --detached` returns before the Hub listens; the probe must not fail on that alone.
+    const res = runOnNode({ probes: ['000', '000', '200'], phase: '{"registered":true}' });
+    expect(res.code).toBe(0);
+    expect(res.probeCount).toBe(3);
+    expect(res.registered).toBe(true);
+  });
+
+  it('still fails a Hub that answered before register and not after it', () => {
+    const res = runOnNode({ probes: ['200'], phase: '' });
+    expect(res.code).toBe(1);
+    expect(res.registered).toBe(true);
+    expect(res.err).toContain('after cihub register');
   });
 
   it('names the image on the success line, which is the last line of the output', () => {
@@ -174,7 +235,7 @@ describe('bringUpScript on a node', () => {
   it('names a running desktop app on either line, since it rewrites the pin on its next Hub start', () => {
     // core-6: the 0.2.70 app's watchdog started the Hub eight seconds after the seed, from its own build.
     const image = 'ghcr.io/companionintelligence/ci-hub:0.2.70';
-    const failed = runOnNode({ image, phase: '', desktopRunning: true });
+    const failed = runOnNode({ image, probes: ['404'], phase: '', desktopRunning: true });
     const line = describeStepFailure(failed.out, failed.err, { code: failed.code, marker: 'hub-up-complete' });
     expect(line).toContain('companion-hub desktop app is running');
     expect(line).toContain(`CI_HUB_IMAGE=${image}`);
