@@ -12,8 +12,9 @@
  * This module deletes what it can, reports each folder that stopped it with the errno and the
  * folder owner, and gives the command that finishes the job.
  */
-import { accessSync, constants, type Dirent, existsSync, lstatSync, readdirSync, rmdirSync, rmSync, unlinkSync } from 'node:fs';
+import { accessSync, constants, type Dirent, existsSync, lstatSync, readdirSync, rmdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
+import { hubFilesInTunnelDir, isEmptyRealDir } from '../hub-cleanup-lib.js';
 
 /** One entry the login user could not delete, or one folder it could not list. */
 export type RemovalFailure = {
@@ -37,7 +38,10 @@ export type HostDataRemoval = {
   target: string;
   /** False when the target did not exist, so there was nothing to delete. */
   existed: boolean;
-  /** True only when the target is gone now. */
+  /**
+   * True only when the target is gone now. For a folder the Hub shares with other programs
+   * (`shared` is set), true when none of the Hub's entries are left in it.
+   */
   removed: boolean;
   /**
    * Whether the delete needed the root container, and whether Docker started it. The container
@@ -51,6 +55,20 @@ export type HostDataRemoval = {
   blocked: BlockedFolder[];
   /** Entries still present that the login user could not delete. */
   leftoverEntries: number;
+  /**
+   * Set for a folder only part of which is the Hub's: the tunnel folder beside an appliance data
+   * dir (removeHubTunnelFiles). Reset deletes the Hub's entries in it and leaves the rest.
+   */
+  shared?: {
+    /** The Hub's entries deleted, ending with `certs/` and the folder itself when they were empty. */
+    deleted: string[];
+    /** Entries that are not the Hub's, left in place. */
+    kept: string[];
+    /** The Hub's entries still there, ending with the folder itself when nothing else holds it. */
+    left: string[];
+    /** Deletes the Hub's entries that are left, and nothing else. Unset when none are left. */
+    finishCommand?: string;
+  };
 };
 
 function errnoCode(error: unknown): string {
@@ -171,7 +189,8 @@ export function findFoldersBlockingRemoval(target: string): BlockedFolder[] {
   return blocked;
 }
 
-function canModify(folder: string): boolean {
+/** Whether the login user can create and delete entries in `folder`. */
+export function canModify(folder: string): boolean {
   try {
     accessSync(folder, constants.W_OK | constants.X_OK);
     return true;
@@ -218,6 +237,26 @@ export function rootRemovalCommand(target: string, platform: NodeJS.Platform = p
 }
 
 /**
+ * Deletes these files, then these folders once they are empty, as an administrator. Never
+ * recursive: it is for a folder that also holds another program's files.
+ */
+export function rootEntryRemovalCommand(files: string[], folders: string[], platform: NodeJS.Platform = process.platform): string {
+  if (platform === 'win32') {
+    return `Remove-Item -Force -LiteralPath ${[...files, ...folders].map(shellQuote).join(', ')}   (in an administrator PowerShell)`;
+  }
+  const steps: string[] = [];
+  if (files.length > 0) steps.push(`sudo rm -f -- ${files.map(shellQuote).join(' ')}`);
+  if (folders.length > 0) steps.push(`sudo rmdir -- ${folders.map(shellQuote).join(' ')}`);
+  return steps.join(' && ');
+}
+
+/** The command that finishes a target left behind, or undefined when there is none to give. */
+export function finishRemovalCommand(result: HostDataRemoval): string | undefined {
+  if (result.shared) return result.shared.finishCommand;
+  return result.refused ? undefined : rootRemovalCommand(result.target);
+}
+
+/**
  * Deletes `target`. When the login user cannot delete all of it, `removeAsRoot` gets a turn (the
  * caller's throwaway root container), and whatever still survives is deleted entry by entry so the
  * report names the exact folders left and why. `removeAsRoot` returns whether it could start.
@@ -253,4 +292,125 @@ export function removeHostDataTarget(target: string, options: { removeAsRoot?: (
   const failures = removeTreeReportingFailures(target);
   if (!existsSync(target)) return outcome({ removed: true, rootContainer });
   return outcome({ rootContainer, blocked: summarizeFailures(failures), leftoverEntries: failures.length });
+}
+
+/** Created empty by the backend next to the token (cloudflare-client.service.ts). */
+const TUNNEL_CERTS_DIR = 'certs';
+
+export type TunnelDirContents = {
+  /** `symlink` and `other` (a file) are never reached into or deleted. */
+  kind: 'absent' | 'folder' | 'symlink' | 'other';
+  /** The Hub's files in it; for a symlink, the ones behind the link. */
+  hubFiles: string[];
+  /** Entries that are not the Hub's, including anything in `certs/`. */
+  kept: string[];
+};
+
+function listOrEmpty(folder: string): string[] {
+  try {
+    return readdirSync(folder);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * What in the tunnel folder beside a data dir is the Hub's. `tunnel` is a generic name, so this uses
+ * `cihub uninstall`'s rules (hubFilesInTunnelDir): the token only when it is a cloudflared token,
+ * the markers only when they hold a tunnelId, no symlinked file. `certs/` is the Hub's only while it
+ * is empty; everything else is kept.
+ */
+export function inspectTunnelDir(tunnelDir: string): TunnelDirContents {
+  const stat = lstatOrUndefined(tunnelDir);
+  if (!stat) return { kind: 'absent', hubFiles: [], kept: [] };
+  if (stat.isSymbolicLink()) {
+    // Read through the link to report what is behind it. Nothing is ever deleted through it.
+    let pointsToFolder = false;
+    try {
+      pointsToFolder = statSync(tunnelDir).isDirectory();
+    } catch {
+      // A dangling link holds nothing.
+    }
+    return { kind: 'symlink', hubFiles: pointsToFolder ? hubFilesInTunnelDir(tunnelDir) : [], kept: [tunnelDir] };
+  }
+  if (!stat.isDirectory()) return { kind: 'other', hubFiles: [], kept: [tunnelDir] };
+  const hubFiles = hubFilesInTunnelDir(tunnelDir);
+  const kept: string[] = [];
+  for (const name of listOrEmpty(tunnelDir)) {
+    const entry = path.join(tunnelDir, name);
+    if (hubFiles.includes(entry)) continue;
+    if (name === TUNNEL_CERTS_DIR && lstatOrUndefined(entry)?.isDirectory()) {
+      kept.push(...listOrEmpty(entry).map((child) => path.join(entry, child)));
+      continue;
+    }
+    kept.push(entry);
+  }
+  return { kind: 'folder', hubFiles, kept: kept.sort() };
+}
+
+/** The Hub's folders still there: `certs/` while empty, and the tunnel folder while it holds nothing else of anyone's. */
+function hubFoldersLeft(tunnelDir: string, contents: TunnelDirContents): string[] {
+  if (contents.kind !== 'folder') return [];
+  const certs = path.join(tunnelDir, TUNNEL_CERTS_DIR);
+  return [...(isEmptyRealDir(certs) ? [certs] : []), ...(contents.kept.length === 0 ? [tunnelDir] : [])];
+}
+
+/**
+ * Deletes the Hub's files from the tunnel folder beside an appliance data dir (see
+ * inspectTunnelDir), then `certs/` and the folder once each is empty, and reports what is left the
+ * way removeHostDataTarget does. There is no root-container retry: that deletes a folder's whole
+ * contents, and this folder can hold another program's files. A symlinked folder is not followed;
+ * when the Hub's files sit behind it, the result is refused and names them.
+ */
+export function removeHubTunnelFiles(tunnelDir: string, platform: NodeJS.Platform = process.platform): HostDataRemoval {
+  const before = inspectTunnelDir(tunnelDir);
+  const outcome = (fields: Partial<HostDataRemoval>, shared: NonNullable<HostDataRemoval['shared']>): HostDataRemoval => ({
+    target: tunnelDir,
+    existed: true,
+    removed: true,
+    rootContainer: 'not needed',
+    blocked: [],
+    leftoverEntries: 0,
+    ...fields,
+    shared,
+  });
+  if (before.kind === 'absent') return outcome({ existed: false }, { deleted: [], kept: [], left: [] });
+  if (before.kind !== 'folder') {
+    if (before.hubFiles.length === 0) return outcome({}, { deleted: [], kept: before.kept, left: [] });
+    const names = before.hubFiles.map((file) => path.basename(file)).join(', ');
+    return outcome(
+      {
+        removed: false,
+        refused: `it is a symlink, so it was not followed, and the Hub's files behind it are still there: ${names}`,
+        leftoverEntries: before.hubFiles.length,
+      },
+      { deleted: [], kept: before.kept, left: before.hubFiles, finishCommand: rootEntryRemovalCommand(before.hubFiles, [], platform) },
+    );
+  }
+
+  const failures: RemovalFailure[] = [];
+  const deleted: string[] = [];
+  const remove = (entry: string, folder: boolean) => {
+    try {
+      if (folder) rmdirSync(entry);
+      else unlinkSync(entry);
+      deleted.push(entry);
+    } catch (error) {
+      if (errnoCode(error) !== 'ENOENT') failures.push({ path: entry, code: errnoCode(error), op: 'remove' });
+    }
+  };
+  for (const file of before.hubFiles) remove(file, false);
+  for (const folder of [path.join(tunnelDir, TUNNEL_CERTS_DIR), tunnelDir]) {
+    if (isEmptyRealDir(folder)) remove(folder, true);
+  }
+
+  // The result is what a fresh look finds, not what the calls returned.
+  const after = inspectTunnelDir(tunnelDir);
+  const foldersLeft = hubFoldersLeft(tunnelDir, after);
+  const left = [...after.hubFiles, ...foldersLeft];
+  if (left.length === 0) return outcome({}, { deleted, kept: after.kept, left });
+  return outcome(
+    { removed: false, blocked: summarizeFailures(failures), leftoverEntries: left.length },
+    { deleted, kept: after.kept, left, finishCommand: rootEntryRemovalCommand(after.hubFiles, foldersLeft, platform) },
+  );
 }

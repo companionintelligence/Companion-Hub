@@ -9,7 +9,7 @@
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { dockerBindMountPath } from '../heal-hub-bind-mounts.js';
+import { dockerBindMountPath, resolveTunnelDir } from '../heal-hub-bind-mounts.js';
 import {
   type AppTeardownPlan,
   executeAppTeardown,
@@ -26,11 +26,14 @@ import { isApplianceMode, requireRepoRoot } from './cli-repo-context.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { dim, printMessageBox } from './cli-ui.js';
 import {
+  canModify,
   describeBlockedFolders,
+  finishRemovalCommand,
   findFoldersBlockingRemoval,
   type HostDataRemoval,
+  inspectTunnelDir,
   removeHostDataTarget,
-  rootRemovalCommand,
+  removeHubTunnelFiles,
 } from './host-data-removal.js';
 import { composeArgsForContext, envOverridesForContext, type HubContext, requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { CANONICAL_DATA_DIR_NAME, resolveRootFolderHost } from './paths.js';
@@ -172,6 +175,10 @@ function reportHostDataLeftovers(results: HostDataRemoval[]): boolean {
   if (survivors.length === 0) return true;
   const lines: string[] = [];
   for (const result of survivors) {
+    if (result.shared) {
+      lines.push(...sharedFolderLeftoverLines(result));
+      continue;
+    }
     if (result.refused) {
       lines.push(`${result.target}: ${result.refused}.`);
       continue;
@@ -194,18 +201,66 @@ function reportHostDataLeftovers(results: HostDataRemoval[]): boolean {
     if (result.blocked.some((folder) => folder.code === 'EBUSY')) {
       lines.push('EBUSY: a running container or a mount still holds that path. `docker ps` and `findmnt` show which; stop it first.');
     }
-    lines.push(`Delete it as root: ${rootRemovalCommand(result.target)}`);
+    lines.push(`Delete it as root: ${finishRemovalCommand(result)}`);
   }
   printMessageBox('Host data left behind', lines, 'red');
   process.exitCode = 1;
   return false;
 }
 
+/** The tunnel folder's part of "Host data left behind": only the Hub's entries, and the command for exactly those. */
+function sharedFolderLeftoverLines(result: HostDataRemoval): string[] {
+  const lines: string[] = [];
+  if (result.refused) {
+    lines.push(`${result.target}: ${result.refused}.`);
+  } else {
+    // The folder itself is left whenever something in it is; name it only when it is all that is left.
+    const inside = (result.shared?.left ?? []).filter((entry) => entry !== result.target).map((entry) => path.relative(result.target, entry));
+    lines.push(
+      inside.length > 0
+        ? `${result.target} still holds the Hub's ${inside.join(', ')}; ${currentUserLabel()} cannot delete ${inside.length === 1 ? 'it' : 'them'}.`
+        : `${result.target} is empty, but ${currentUserLabel()} cannot delete it.`,
+      ...describeBlockedFolders(result.blocked).map((line) => `  ${line}`),
+    );
+  }
+  const command = finishRemovalCommand(result);
+  if (command) lines.push(`${result.refused ? "Delete them, if that folder is this Hub's" : 'Delete only those as root'}: ${command}`);
+  // A symlinked folder is itself "kept"; the refusal above already says so.
+  const kept = (result.shared?.kept ?? []).filter((entry) => entry !== result.target);
+  if (kept.length > 0) lines.push(dim(`Not the Hub's, so left in place: ${describeKept(result.target, kept)}`));
+  return lines;
+}
+
+/** Entries of a shared folder, relative to it, capped like describeBlockedFolders. */
+function describeKept(folder: string, entries: string[], limit = 5): string {
+  const names = entries.map((entry) => path.relative(folder, entry) || entry);
+  const shown = names.slice(0, limit).join(', ');
+  return names.length > limit ? `${shown}, and ${names.length - limit} more` : shown;
+}
+
+/** One line for the tunnel folder in the wipe summary. */
+function tunnelWipeLine(result: HostDataRemoval): string {
+  const deleted = result.shared?.deleted ?? [];
+  const kept = result.shared?.kept ?? [];
+  if (!result.existed) return dim(`already absent: ${result.target}`);
+  if (!result.removed) return `left behind: the Hub's files in ${result.target}`;
+  if (kept.includes(result.target)) return dim(`left alone: ${result.target} is a symlink or a file, not a folder`);
+  const names = deleted.filter((entry) => entry !== result.target).map((entry) => path.relative(result.target, entry));
+  if (deleted.includes(result.target)) return `removed: ${result.target}${names.length > 0 ? ` (${names.join(', ')})` : ''}`;
+  const keptNote = kept.length > 0 ? `; kept, not the Hub's: ${describeKept(result.target, kept)}` : '';
+  if (names.length === 0) return dim(`nothing of the Hub's in ${result.target}${keptNote}`);
+  return `removed from ${result.target}: ${names.join(', ')}${keptNote}`;
+}
+
 /**
  * Full wipe of a canonical prod data dir (clean slate; re-registration required afterward).
  * Removes the entire `<data dir>/companion-hub` tree, which holds the seeded `.env`, compose file,
- * app/data mounts, and the Cloudflare tunnel token. Guarded so we only ever delete a folder named
- * `companion-hub` inside the user's data/home directory.
+ * and app/data mounts. Guarded so we only ever delete a folder named `companion-hub` inside the
+ * user's data/home directory.
+ *
+ * The Cloudflare token is not in that tree: compose mounts `${ROOT_FOLDER_HOST}/../tunnel`, beside
+ * the data dir. Left there, it outlived every reset (core-2's `tunnel/certs` dates from 2026-08-10),
+ * and the next `cihub up` started cloudflared on the old tunnel (applyCloudflareProfile).
  */
 function cleanApplianceHub(ctx: HubContext, options: CleanHubOptions): HostDataRemoval[] {
   const dataDir = ctx.dataDir as string;
@@ -223,12 +278,16 @@ function cleanApplianceHub(ctx: HubContext, options: CleanHubOptions): HostDataR
     removeAppContainersBeforeDeletingData();
   }
   const result = removeHostDataTarget(dataDir, { removeAsRoot: removeViaRootContainer });
-  if (result.removed) {
-    const via = result.rootContainer === 'ran' ? ' (the root-owned part through a root container)' : '';
-    printMessageBox('Prod Hub data wiped', [result.existed ? `removed: ${dataDir}${via}` : dim(`already absent: ${dataDir}`)], 'yellow');
-  }
-  reportHostDataLeftovers([result]);
-  return [result];
+  // Only the Hub's files: `tunnel` is a generic name, so this is `cihub uninstall`'s careful delete, not the tree delete above.
+  const tunnel = removeHubTunnelFiles(resolveTunnelDir(dataDir));
+  const results = [result, tunnel];
+  const via = result.rootContainer === 'ran' ? ' (the root-owned part through a root container)' : '';
+  let dataDirLine = result.removed ? `removed: ${dataDir}${via}` : `left behind: ${dataDir}`;
+  if (!result.existed) dataDirLine = dim(`already absent: ${dataDir}`);
+  const allRemoved = results.every((entry) => entry.removed);
+  printMessageBox(allRemoved ? 'Prod Hub data wiped' : 'Prod Hub data partly wiped', [dataDirLine, tunnelWipeLine(tunnel)], 'yellow');
+  reportHostDataLeftovers(results);
+  return results;
 }
 
 const dockerCapture = (args: string[]) => runCapture('docker', args);
@@ -269,17 +328,44 @@ export function describeAppTeardown(plan: AppTeardownPlan): string[] {
   return lines;
 }
 
-/** Where reset deletes host files: the whole canonical tree (appliance), or hub-data and tunnel (checkout). */
-function hostDataTargets(env: HubEnv): { path: string; label: string }[] {
+/**
+ * Where reset deletes host files: the whole canonical tree and the Hub's files in the tunnel folder
+ * beside it (appliance), or hub-data and tunnel (checkout, where both are the repo's).
+ */
+function hostDataTargets(env: HubEnv): { path: string; label: string; hubFilesOnly?: boolean }[] {
   if (isApplianceMode()) {
     const { dataDir } = resolveHubContext(env);
-    return dataDir ? [{ path: dataDir, label: 'data dir' }] : [];
+    return dataDir
+      ? [
+          { path: dataDir, label: 'data dir' },
+          { path: resolveTunnelDir(dataDir), label: 'tunnel dir', hubFilesOnly: true },
+        ]
+      : [];
   }
   const rootFolderHost = resolveRootFolderHost(getEnvFileOrExit(env));
   return [
     { path: rootFolderHost, label: 'root folder' },
     { path: path.resolve(rootFolderHost, '..', 'tunnel'), label: 'tunnel dir' },
   ];
+}
+
+/** For --dry-run: which of the tunnel folder's entries are the Hub's, and what reset leaves alone. */
+function dryRunTunnelNotes(tunnelDir: string): string[] {
+  const contents = inspectTunnelDir(tunnelDir);
+  if (contents.kind === 'absent') return [dim('    already absent')];
+  const names = contents.hubFiles.map((file) => path.basename(file)).join(', ');
+  if (contents.kind === 'symlink') {
+    return contents.hubFiles.length > 0
+      ? [`    a symlink, which is not followed, so the Hub's files behind it stay and reset exits 1: ${names}`]
+      : [dim("    a symlink with none of the Hub's files behind it; left alone")];
+  }
+  if (contents.kind === 'other') return [dim('    not a folder; left alone')];
+  const lines = [`    only the Hub's files: ${names || 'none there'}; then certs/ and the folder, once empty`];
+  if (contents.kept.length > 0) lines.push(dim(`    kept, not the Hub's: ${describeKept(tunnelDir, contents.kept)}`));
+  if (contents.hubFiles.length > 0 && !canModify(tunnelDir)) {
+    lines.push(`    ${currentUserLabel()} cannot delete files in it (EACCES); reset lists them with the command that deletes only those`);
+  }
+  return lines;
 }
 
 /** For --dry-run: whether a target is there, and which folders in it need the root container. */
@@ -359,7 +445,10 @@ export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Pro
       [
         'After the apps, reset runs `docker compose down -v` for the ci-hub project (the Hub containers and volumes such as ci_hub_pgdata)',
         'and deletes this host data:',
-        ...hostDataTargets(env).flatMap(({ path: target }) => [`  ${target}`, ...dryRunHostDataNotes(target)]),
+        ...hostDataTargets(env).flatMap(({ path: target, hubFilesOnly }) => [
+          `  ${target}`,
+          ...(hubFilesOnly ? dryRunTunnelNotes(target) : dryRunHostDataNotes(target)),
+        ]),
         'Then it checks that those containers, volumes, and folders are gone. Anything left is listed with the command that removes it, and reset exits 1.',
       ],
       'cyan',
@@ -473,7 +562,7 @@ function resetIncompleteLines(env: HubEnv, dockerLeft: DockerLeftovers, hostData
   if (hostDataLeft.length > 0) {
     lines.push('Host data was not fully deleted; "Host data left behind" above lists what is left and why.');
   }
-  const commands = [...dockerLeft.commands, ...hostDataLeft.filter((result) => !result.refused).map((result) => rootRemovalCommand(result.target))];
+  const commands = [...dockerLeft.commands, ...hostDataLeft.flatMap((result) => finishRemovalCommand(result) ?? [])];
   if (commands.length > 0) {
     lines.push('To finish:', ...commands.map((command) => `  ${command}`));
   }

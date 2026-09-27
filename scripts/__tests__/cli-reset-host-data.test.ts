@@ -12,7 +12,7 @@
  * that records its calls; its `docker run` either deletes the data dir as a rootful daemon's root
  * container would, or does nothing, as rootless Docker's does for files owned by root.
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -227,6 +227,161 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
     expect(process.exitCode).toBe(1);
   });
 });
+
+/**
+ * The tunnel folder sits beside an appliance's data dir: compose mounts `${ROOT_FOLDER_HOST}/../tunnel`
+ * and an appliance's ROOT_FOLDER_HOST is the data dir. Reset deleted only the data dir, so the
+ * Cloudflare token and `registration.json` survived it, and the next `cihub up` started cloudflared
+ * on the old tunnel. On core-2, `~/.local/share/tunnel/certs` from 2026-08-10 outlived every reset
+ * since. `tunnel` is a generic name, so only the Hub's files go, by `cihub uninstall`'s rules.
+ */
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+  "appliance reset and clean delete the Hub's files in the tunnel folder",
+  () => {
+    const previousHome = process.env.HOME;
+    let share: string;
+    let tunnel: string;
+    const uid = process.getuid?.();
+
+    /** A tunnel folder the way a paired Hub leaves it: a cloudflared token, `registration.json`, and an empty `certs/`. */
+    const writeTunnel = (folder: string, extra: { token?: string; files?: string[]; certs?: string[] } = {}) => {
+      mkdirSync(path.join(folder, 'certs'), { recursive: true });
+      writeFileSync(path.join(folder, 'token'), extra.token ?? CLOUDFLARED_TOKEN);
+      writeFileSync(path.join(folder, 'registration.json'), '{"tunnelId":"6ff42ae2","writtenAt":"2026-09-26T16:47:00.000Z"}\n');
+      for (const name of extra.files ?? []) writeFileSync(path.join(folder, name), 'not the Hub');
+      for (const name of extra.certs ?? []) writeFileSync(path.join(folder, 'certs', name), 'PEM');
+    };
+    const list = (folder: string) => readdirSync(folder).sort();
+
+    beforeEach(() => {
+      state.home = mkdtempSync(path.join(tmpdir(), 'cli-reset-tunnel-'));
+      process.env.HOME = state.home;
+      state.appliance = true;
+      share = path.join(state.home, '.local', 'share');
+      state.dataDir = path.join(share, 'companion-hub');
+      tunnel = path.join(share, 'tunnel');
+      state.calls = [];
+      state.rootContainerDeletes = false;
+      state.rootContainerStarts = true;
+      state.lingeringVolumes = [];
+      vi.clearAllMocks();
+      mkdirSync(path.join(state.dataDir, 'state'), { recursive: true });
+      writeFileSync(path.join(state.dataDir, '.env'), 'X=1\n');
+      writeFileSync(path.join(state.dataDir, 'docker-compose.prod.yml'), 'services: {}\n');
+      mkdirSync(path.join(share, 'other-app'));
+      writeFileSync(path.join(share, 'other-app', 'data'), 'keep');
+    });
+
+    afterEach(() => {
+      process.env.HOME = previousHome;
+      process.exitCode = undefined;
+      for (const folder of lockedFolders.splice(0)) {
+        if (existsSync(folder)) chmodSync(folder, 0o755);
+      }
+      rmSync(state.home, { recursive: true, force: true });
+    });
+
+    it('deletes the token, registration.json, and the empty certs/, then the folder, and says "Reset complete"', async () => {
+      writeTunnel(tunnel);
+
+      await expect(resetHub('prod', true)).resolves.toBe(true);
+
+      expect(existsSync(tunnel)).toBe(false);
+      expect(existsSync(state.dataDir)).toBe(false);
+      expect(list(path.join(share, 'other-app'))).toEqual(['data']);
+      expect(box('Prod Hub data wiped')?.lines).toEqual([`removed: ${state.dataDir}`, `removed: ${tunnel} (token, registration.json, certs)`]);
+      expect(box('Reset complete')).toBeDefined();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it("keeps what is not the Hub's: a token that is not a cloudflared token, other files, and anything in certs/", async () => {
+      writeTunnel(tunnel, { token: 'hello world', files: ['notes.txt'], certs: ['custom-ca.pem'] });
+
+      await expect(resetHub('prod', true)).resolves.toBe(true);
+
+      expect(list(tunnel)).toEqual(['certs', 'notes.txt', 'token']);
+      expect(list(path.join(tunnel, 'certs'))).toEqual(['custom-ca.pem']);
+      expect(box('Prod Hub data wiped')?.lines).toEqual([
+        `removed: ${state.dataDir}`,
+        `removed from ${tunnel}: registration.json; kept, not the Hub's: certs/custom-ca.pem, notes.txt, token`,
+      ]);
+      expect(box('Reset complete')).toBeDefined();
+    });
+
+    it('does not print "Reset complete" when the Hub\'s tunnel files cannot be deleted, and names a command for only those', async () => {
+      writeTunnel(tunnel);
+      lock(tunnel);
+
+      await expect(resetHub('prod', true)).resolves.toBe(false);
+
+      expect(list(tunnel)).toEqual(['certs', 'registration.json', 'token']);
+      const finish = `sudo rm -f -- '${tunnel}/token' '${tunnel}/registration.json' && sudo rmdir -- '${tunnel}/certs' '${tunnel}'`;
+      expect(box('Host data left behind')?.lines).toEqual([
+        `${tunnel} still holds the Hub's token, registration.json, certs; this user (uid ${uid}) cannot delete them.`,
+        expect.stringMatching(new RegExp(`^  EACCES ${escapeRegExp(tunnel)}: 3 entries in it cannot be deleted`)),
+        `Delete only those as root: ${finish}`,
+      ]);
+      expect(box('Reset incomplete')?.lines).toEqual(expect.arrayContaining([`  ${finish}`]));
+      expect(box('Prod Hub data partly wiped')?.lines).toEqual([`removed: ${state.dataDir}`, `left behind: the Hub's files in ${tunnel}`]);
+      // The root container empties a whole folder, and this one can hold another program's files.
+      expect(rootContainerRuns()).toEqual([]);
+      expect(box('Reset complete')).toBeUndefined();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("does not follow a symlinked tunnel folder, and exits 1 while the Hub's files are behind it", async () => {
+      const elsewhere = path.join(state.home, 'elsewhere', 'tunnel');
+      writeTunnel(elsewhere);
+      symlinkSync(elsewhere, tunnel);
+
+      await expect(resetHub('prod', true)).resolves.toBe(false);
+
+      expect(lstatSync(tunnel).isSymbolicLink()).toBe(true);
+      expect(list(elsewhere)).toEqual(['certs', 'registration.json', 'token']);
+      expect(box('Host data left behind')?.lines).toEqual([
+        `${tunnel}: it is a symlink, so it was not followed, and the Hub's files behind it are still there: token, registration.json.`,
+        `Delete them, if that folder is this Hub's: sudo rm -f -- '${tunnel}/token' '${tunnel}/registration.json'`,
+      ]);
+      expect(box('Reset complete')).toBeUndefined();
+      expect(process.exitCode).toBe(1);
+    });
+
+    it("--dry-run lists the tunnel folder with the Hub's files in it and what it keeps, and deletes nothing", async () => {
+      writeTunnel(tunnel, { files: ['notes.txt'] });
+
+      await expect(resetHub('prod', false, true)).resolves.toBe(false);
+
+      expect(list(tunnel)).toEqual(['certs', 'notes.txt', 'registration.json', 'token']);
+      expect(box('Dry run: nothing was removed')?.lines).toEqual(
+        expect.arrayContaining([
+          `  ${state.dataDir}`,
+          `  ${tunnel}`,
+          "    only the Hub's files: token, registration.json; then certs/ and the folder, once empty",
+          "    kept, not the Hub's: notes.txt",
+        ]),
+      );
+    });
+
+    it("cihub clean deletes the Hub's tunnel files too", () => {
+      writeTunnel(tunnel);
+
+      const results = cleanHub('prod');
+
+      expect(results.map((result) => [result.target, result.removed])).toEqual([
+        [state.dataDir, true],
+        [tunnel, true],
+      ]);
+      expect(existsSync(tunnel)).toBe(false);
+      expect(box('Prod Hub data wiped')).toBeDefined();
+      expect(process.exitCode).toBeUndefined();
+    });
+  },
+);
+
+/** base64 of {"a": account tag, "t": tunnel id, "s": secret}, the format cloudflared reads. */
+const CLOUDFLARED_TOKEN = Buffer.from(
+  JSON.stringify({ a: '0123456789abcdef0123456789abcdef', t: '6ff42ae2-765d-4adf-8112-31c55c1551ef', s: Buffer.alloc(32, 7).toString('base64') }),
+).toString('base64');
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
