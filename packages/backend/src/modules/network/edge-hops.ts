@@ -15,17 +15,20 @@ export interface EdgeHop {
  * The edge hops: cloudflared and the Tailscale sidecar, and NOT the edge
  * network's subnet.
  *
- * The subnet also holds the bridge's own gateway (.1), and that address is not
- * a hop. `ci-hub_edge` sorts first among Traefik's networks, so Docker makes it
- * Traefik's gateway network and programs Traefik's published ports there:
- * every connection that reaches Traefik through the host — docker-proxy for a
- * loopback client, masquerade for another container dialling the host's
- * address — arrives from that gateway. Measured on the fleet's Docker 29.8
- * (2026-09-26): a probe container on an unrelated bridge, the host loopback,
- * and a container on the listener's other network all reached a published
- * port as the gateway of the listener's first-by-name network. Trusting the
- * subnet therefore let any installed app send Traefik a forged
- * X-Forwarded-For through `host.docker.internal:80` and be believed.
+ * The subnet also holds the bridge's own gateway (.1), the host's address on
+ * the bridge, and that address is not a hop: whatever the host sends or routes
+ * onto the bridge arrives from it. Docker programs a container's published
+ * ports on its gateway network, and every connection that reaches them through
+ * the host — docker-proxy for a loopback client, masquerade for another
+ * container dialling the host's address — arrives from that network's gateway.
+ * Measured on Docker 29.8 (2026-09-26): a probe container on an unrelated
+ * bridge, the host loopback, and a container on the listener's other network
+ * all reached a published port as the gateway of the listener's gateway
+ * network. `ci-hub_edge` sorts first by name, so it was Traefik's until the
+ * compose file gave the Hub network `gw_priority`, and a Traefik created before
+ * that still has it; trusting the subnet there let any installed app send
+ * Traefik a forged X-Forwarded-For through `host.docker.internal:80` and be
+ * believed.
  *
  * Read from HUB_EDGE_CLOUDFLARED_IP / HUB_EDGE_TAILSCALE_IP, the same values
  * the compose file pins the two containers to, so the trusted list and the
