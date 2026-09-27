@@ -1275,6 +1275,34 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ networkMode: 'service:db' })).toHaveLength(0);
   });
 
+  // The Engine reads an unknown network mode as a network NAME and attaches the container to it, so
+  // `networkMode: ci-hub_edge` put an app beside the two proxies Traefik and the Hub trust to vouch
+  // for a client's address, and `ci-hub_internal` beside Postgres and RabbitMQ. No grant lifts it.
+  it('flags a network mode that names a network, whatever the grants', () => {
+    for (const networkMode of [
+      'ci-hub_edge',
+      'ci-hub_internal',
+      'ci-hub_network',
+      'ci-os-hub_network',
+      'other-app_1_network',
+      'bridge ',
+      'service:',
+    ]) {
+      const violations = collectServiceSecurityViolations({ networkMode }, { networkModeHost: true });
+      expect(violations, networkMode).toEqual([
+        { path: ['networkMode'], message: 'CUSTOM_APP_ERROR_NETWORK_MODE_NOT_ALLOWED', hostPath: networkMode },
+      ]);
+    }
+
+    for (const networkMode of ['bridge', 'none', 'default', 'service:bisq2-node', '']) {
+      expect(collectServiceSecurityViolations({ networkMode }), networkMode).toHaveLength(0);
+    }
+    // `host` and `container:` are known modes, refused only for the want of their grant.
+    expect(collectServiceSecurityViolations({ networkMode: 'container:ci-hub' }).map((v) => v.message)).toEqual([
+      'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED',
+    ]);
+  });
+
   it('flags host network and host pid namespaces', () => {
     expect(collectServiceSecurityViolations({ networkMode: 'host' }).map((v) => v.message)).toContain(
       'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED',

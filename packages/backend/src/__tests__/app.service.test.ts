@@ -201,6 +201,81 @@ describe('AppService', () => {
     });
   });
 
+  /*
+   * Traefik reads traefik.yml only at startup, and on an upgrade compose has recreated it from the
+   * previous Hub's file before this Hub's bootstrap rewrites it — so the edge hops' `trustedIPs`
+   * would wait for some unrelated Traefik restart unless the Hub restarts it.
+   */
+  describe('copyAssets restarts Traefik when its static config changed', () => {
+    const traefikConfigPath = path.join(DATA_DIR, 'state', 'traefik', 'config', 'traefik.yml');
+    const asset = 'entryPoints:\n  web:\n    forwardedHeaders:\n      trustedIPs:\n        - 10.128.0.3/32 # edge hop: cloudflared\n';
+    let traefik: { inspect: ReturnType<typeof vi.fn>; restart: ReturnType<typeof vi.fn> };
+
+    const copy = async () => {
+      const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(APP_DIR);
+      vi.stubEnv('HUB_EDGE_CLOUDFLARED_IP', '');
+      try {
+        await appService.copyAssets();
+      } finally {
+        cwdSpy.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    };
+
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue(
+        fromPartial({ directories: { appDir: APP_DIR, dataDir: DATA_DIR, appDataDir: APP_DATA_DIR }, userSettings: { persistTraefikConfig: false } }),
+      );
+      (fs as unknown as FsMock).__applyMockFiles({
+        [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]: asset,
+        [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]: 'http: {}\n',
+        // What an older Hub wrote: no forwardedHeaders at all.
+        [traefikConfigPath]: 'entryPoints:\n  web:\n    address: ":80"\n',
+      });
+      traefik = { inspect: vi.fn().mockResolvedValue({ State: { Running: true } }), restart: vi.fn().mockResolvedValue(undefined) };
+      dockerode.getContainer.mockReturnValue(traefik as never);
+    });
+
+    it('restarts a running Traefik once, when the file on disk predates the change', async () => {
+      await copy();
+
+      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trimEnd()).toBe(asset.trimEnd());
+      expect(dockerode.getContainer).toHaveBeenCalledWith('traefik');
+      expect(traefik.restart).toHaveBeenCalledTimes(1);
+
+      // The next boot writes the same file, so Traefik is left alone.
+      await copy();
+      expect(traefik.restart).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves Traefik alone when the CLI seeded the same file (trailing newline aside)', async () => {
+      await fs.promises.writeFile(traefikConfigPath, asset.trimEnd());
+
+      await copy();
+
+      expect(traefik.restart).not.toHaveBeenCalled();
+    });
+
+    it('leaves a stopped Traefik to read the file when it starts', async () => {
+      traefik.inspect.mockResolvedValue({ State: { Running: false } });
+
+      await copy();
+
+      expect(traefik.restart).not.toHaveBeenCalled();
+    });
+
+    it('does not restart on a first write, and a failed restart does not stop the boot', async () => {
+      await fs.promises.rm(traefikConfigPath);
+      await copy();
+      expect(traefik.restart).not.toHaveBeenCalled();
+
+      await fs.promises.writeFile(traefikConfigPath, 'entryPoints: {}\n');
+      traefik.restart.mockRejectedValue(new Error('container is restarting'));
+      await expect(copy()).resolves.toBeUndefined();
+      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trimEnd()).toBe(asset.trimEnd());
+    });
+  });
+
   describe('bootstrap', () => {
     it('continues bootstrap when docker socket access is denied during network prune', async () => {
       const error = Object.assign(new Error('connect EACCES /var/run/docker.sock'), { code: 'EACCES' });

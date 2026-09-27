@@ -245,7 +245,13 @@ Every app rule targets `traefik:80` — the Hub reports `hostname: 'traefik', lo
 each entry in `ExposureSyncService`, and `cloudflared` resolves that name through Docker DNS. Since
 the edge-network change, `cloudflared` sits on the `ci_hub_edge` network only, so the name
 resolves to Traefik's fixed edge address and Traefik trusts the forwarded client address from
-that hop (`forwardedHeaders.trustedIPs` in `assets/traefik/traefik.yml`). The `httpHostHeader`
+that hop (`forwardedHeaders.trustedIPs` in `assets/traefik/traefik.yml`). Trusting a hop keeps
+every forwarded header it sends, and Cloudflare passes a visitor's own `X-Real-Ip`,
+`X-Forwarded-Uri` and the like through, so each tunnel route strips those first
+(`ci-hub-edge-headers@file`) and the Hub's forward auth decides from the request the router
+matched (`trustForwardHeader: false`). Nothing can join the edge network at an address Docker
+picks (its `ip_range` holds none), and the Hub refuses an app whose `networkMode` names a network,
+so no app can hold a hop's address. The `httpHostHeader`
 carries the app's local hostname, which is what Traefik's routers match on; the public hostname
 the tunnel received is not what the router expects.
 

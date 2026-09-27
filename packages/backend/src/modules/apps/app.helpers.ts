@@ -565,8 +565,11 @@ export class AppHelpers {
     // so an app that reads the client address can walk X-Forwarded-For back
     // past Traefik and the tunnel to the real visitor instead of seeing
     // Traefik for everyone. Re-derived on every generation and REMOVED when
-    // nothing can be vouched for: a stale value would be a trusted address
-    // some other container could later be given.
+    // nothing can be vouched for. Traefik's address in it is Docker's to
+    // reassign, so a running app keeps a stale one until it is recreated:
+    // TrustedProxyRefreshService restarts the apps that read it within a
+    // minute of Traefik moving, which bounds how long another container that
+    // is given the address it left could be believed.
     const trustedProxies = this.resolveTrustedProxyCidrs();
     if (trustedProxies.length > 0) {
       envMap.set('HUB_TRUSTED_PROXY_CIDRS', trustedProxies.join(','));

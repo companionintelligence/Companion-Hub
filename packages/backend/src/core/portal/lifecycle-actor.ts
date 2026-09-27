@@ -64,6 +64,7 @@ export type SystemLifecycleReason =
   | 'public-domain-move' // CI-Cloud published the app on another domain than it asked for, so it is recreated onto that one
   | 'memory-connect' // a Companion Memory connection change reaches the app holding it
   | 'device-key-refresh' // pairing issued a new Portal device key; the app that calls Portal as this device picks it up
+  | 'trusted-proxy-refresh' // Traefik moved on the Hub network; an app still trusting its old address as a proxy is recreated
   // The debug routes:
   | 'debug-seed'
   | 'debug-start-all'
