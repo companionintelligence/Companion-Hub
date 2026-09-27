@@ -7,7 +7,7 @@
  * same EACCES for real by removing write permission from a folder, so they skip when run as root
  * (root ignores the mode) and on Windows (no POSIX modes).
  */
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -129,6 +129,23 @@ describe.skipIf(cannotSimulateEacces)('removeHostDataTarget with folders the use
     expect(describeBlockedFolders(result.blocked)[0]).toMatch(new RegExp(`^EACCES ${escapeRegExp(locked)}: cannot be listed, owned by uid \\d+$`));
   });
 
+  it('unlinks a symlink out of the tree rather than following it, even inside a folder it cannot empty', () => {
+    // The walk only runs once the plain delete has failed, so the link sits in the locked folder,
+    // where the plain delete cannot unlink it first. Followed, the walk would delete `outside/`.
+    const outside = path.join(root, 'outside');
+    mkdirSync(outside);
+    writeFileSync(path.join(outside, 'keep.txt'), 'keep');
+    symlinkSync(outside, path.join(locked, 'link'));
+    lock(locked);
+
+    const result = removeHostDataTarget(target, { removeAsRoot: () => true });
+
+    expect(existsSync(path.join(outside, 'keep.txt'))).toBe(true);
+    expect(result.removed).toBe(false);
+    expect(result.blocked).toEqual([{ folder: locked, code: 'EACCES', entries: 3, unlistable: false }]);
+    expect(findFoldersBlockingRemoval(target).map((folder) => folder.folder)).toEqual([locked]);
+  });
+
   it('finds the same folder for --dry-run without deleting anything', () => {
     lock(locked);
 
@@ -171,6 +188,12 @@ describe('rootRemovalCommand', () => {
   it('quotes the path for the shell, including a single quote in it', () => {
     expect(rootRemovalCommand('/home/ci/.local/share/companion-hub', 'linux')).toBe("sudo rm -rf -- '/home/ci/.local/share/companion-hub'");
     expect(rootRemovalCommand("/home/o'neil/companion-hub", 'linux')).toBe("sudo rm -rf -- '/home/o'\\''neil/companion-hub'");
+  });
+
+  it("doubles a single quote for PowerShell, where the POSIX '\\'' form is a syntax error", () => {
+    expect(rootRemovalCommand("C:\\Users\\O'Brien\\AppData\\Roaming\\companion-hub", 'win32')).toBe(
+      "Remove-Item -Recurse -Force -LiteralPath 'C:\\Users\\O''Brien\\AppData\\Roaming\\companion-hub'   (in an administrator PowerShell)",
+    );
   });
 });
 
