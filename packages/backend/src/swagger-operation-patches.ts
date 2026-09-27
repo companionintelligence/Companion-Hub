@@ -11,6 +11,7 @@ import {
 } from '@/modules/inference/inference.dto';
 import { DeletePoolPinQuery, RoutingLogQueryDto } from '@/modules/hub-pool/hub-pool.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from '@/core/sse/dto/sse.dto';
+import { dnsAvailabilitySchema } from '@/modules/cloudflare/dns-availability';
 
 const availableDomainSchema = z.object({
   id: z.string(),
@@ -126,5 +127,6 @@ export const OPERATION_PATH_PARAMS: Record<string, Array<Record<string, unknown>
 export const OPERATION_RESPONSE_SCHEMAS: Record<string, { schemaName: string; schema: z.ZodType }> = {
   getDomains: { schemaName: 'AvailableDomainsResponseDto', schema: availableDomainsResponseSchema },
   getCustomDomains: { schemaName: 'AvailableCustomDomainsResponseDto', schema: availableCustomDomainsResponseSchema },
+  checkDnsAvailability: { schemaName: 'DnsAvailabilityResponseDto', schema: dnsAvailabilitySchema },
   getStoreFeaturedBundle: { schemaName: 'FeaturedStoreBundleDto', schema: featuredStoreBundleSchema },
 };

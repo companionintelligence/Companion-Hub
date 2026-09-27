@@ -373,7 +373,7 @@ export const InstallForm: React.FC<IProps> = ({
       return fetchDnsAvailability(subdomain, {
         domain: selectedDomain,
         appUrn: editingAppUrn,
-      }) as Promise<Response>;
+      });
     },
     [editingAppUrn],
   );
