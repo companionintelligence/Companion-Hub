@@ -10,7 +10,7 @@ import {
 } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
 import { bucketTotal, type FirstByteStats, LOCAL_NODE_KEY, type RoutingBucket, type WaitingNow } from '@/modules/system/pool-node-series';
-import type { Verdict } from '@/modules/system/triage';
+import { NEAR_BUDGET_SHARE, type Verdict } from '@/modules/system/triage';
 import {
   type HardwareSummary,
   hostRamUsedMb,
@@ -119,13 +119,30 @@ function VerdictLine({ verdict }: { verdict: Verdict }) {
 export interface HostCpuSummary {
   cpuLoad?: number;
   cpuCores?: number;
+  /** Where the Hub runs. On `docker-desktop-vm` / `wsl2-vm`, `cpuLoad` is the VM's and `cpuCores` the host's. */
+  runtimeKind?: string;
 }
 
 /** Above this the host itself is the bottleneck, whatever the workloads on it are doing. */
 const HOST_CPU_WARN_PERCENT = 85;
 
-/** A request waiting longer than this for its first byte gets a warning tone — it is past "prefilling a big prompt". */
-const WAITING_WARN_MS = 60_000;
+/**
+ * The Waiting tile's tone, judged against the request's OWN deadline and at the verdict's threshold.
+ *
+ * It used to turn amber past a fixed 60 s, which on this fleet is every agent turn: the proxy's budget
+ * floor is 300 s (sized at 50 tok/s of prefill), a 40k-token prompt takes minutes to read even on a
+ * GPU node (~300 tok/s), and beta-max's first byte for 39,668 tokens was 370,941 ms. So the tile sat
+ * amber for most of every turn while the verdict beside it said "All clear" about the same row. Now
+ * both read `NEAR_BUDGET_SHARE` of `budgetMs`, and the tile is amber exactly when the chip is up. A
+ * row with no budget recorded cannot be judged, so it stays plain rather than guessing.
+ */
+function waitingTone(waiting: WaitingNow): RailStatData['tone'] {
+  const oldest = waiting.oldest;
+  if (waiting.count === 0) return 'muted';
+  if (!oldest || oldest.budgetMs === null) return 'plain';
+
+  return oldest.ageMs >= NEAR_BUDGET_SHARE * oldest.budgetMs ? 'warn' : 'plain';
+}
 
 export function DashboardRail({
   verdict,
@@ -200,6 +217,7 @@ export function DashboardRail({
   const failed = buckets.reduce((sum, bucket) => sum + bucket.failed, 0);
   const failovers = buckets.reduce((sum, bucket) => sum + bucket.failovers, 0);
   const callersLeft = buckets.reduce((sum, bucket) => sum + bucket.clientClosed, 0);
+  const overBudget = buckets.reduce((sum, bucket) => sum + bucket.overBudget, 0);
 
   /*
    * The 30-minute counts are a FLOOR, not a total, when the log held may be missing part of the
@@ -236,6 +254,17 @@ export function DashboardRail({
   );
 
   const cpuLoad = typeof hostCpu?.cpuLoad === 'number' && Number.isFinite(hostCpu.cpuLoad) ? Math.round(hostCpu.cpuLoad) : null;
+  /*
+   * `/system/load`'s `cpuLoad` is `si.currentLoad()` from INSIDE the Hub container, and its
+   * `cpuCores` prefers the host probe's count. On Linux those describe the same machine — a
+   * container reads the host's `/proc/stat`. On Docker Desktop and WSL2 the container's kernel is a
+   * VM's, so the tile printed the VM's load under "Host CPU" beside the HOST's core count — a
+   * 4-CPU Docker VM flat out on a 16-core Mac would read "100% · 16 cores" (from the code; no Docker
+   * Desktop Hub was exercised). The payload says which runtime it is (`runtimeKind`), so the tile
+   * says whose load it is and keeps the host's cores as the host's. `container-only` (no host probe)
+   * cannot tell a Linux host from a VM, and keeps "Host".
+   */
+  const vmCpu = hostCpu?.runtimeKind === 'docker-desktop-vm' || hostCpu?.runtimeKind === 'wsl2-vm' ? hostCpu.runtimeKind : null;
   const oldestWait = waiting.oldest;
   const started = parseHubTimestamp(startedAt);
 
@@ -275,23 +304,39 @@ export function DashboardRail({
        * Requests placed and still waiting for a first byte — the one live question about an agent
        * turn that nothing on the page answered, short of finding the amber row in the feed. The
        * oldest wait is named because it is the one nearest its budget; the verdict raises a chip
-       * once it passes 80% of it.
+       * once it passes 80% of it. The age is the node's current attempt (see `waitingNow`), so a
+       * request that failed over says so: "3s on core-14" alone would hide that it has been waiting
+       * five minutes longer than that somewhere else.
        */
       id: 'waiting',
       value: waiting.count,
       label: t('DASHBOARD_RAIL_WAITING'),
-      sub: oldestWait ? t('DASHBOARD_RAIL_WAITING_SUB', { age: humanDuration(oldestWait.ageMs), node: nodeName(oldestWait.node) }) : undefined,
-      tone: waiting.count === 0 ? 'muted' : (oldestWait?.ageMs ?? 0) > WAITING_WARN_MS ? 'warn' : 'plain',
+      sub: oldestWait
+        ? oldestWait.failovers > 0
+          ? t('DASHBOARD_RAIL_WAITING_SUB_FAILED_OVER', {
+              age: humanDuration(oldestWait.ageMs),
+              node: nodeName(oldestWait.node),
+              count: oldestWait.failovers,
+            })
+          : t('DASHBOARD_RAIL_WAITING_SUB', { age: humanDuration(oldestWait.ageMs), node: nodeName(oldestWait.node) })
+        : undefined,
+      tone: waitingTone(waiting),
       state: routingState,
       mobile: true,
     },
     {
       // A share of the whole machine, unlike Docker's per-core container CPU — which is why that one
-      // is shown as cores, in the containers panel, and never beside this.
+      // is shown as cores, in the containers panel, and never beside this. On Docker Desktop and
+      // WSL2 the "machine" is the VM the Hub runs in: see `vmCpu`.
       id: 'host-cpu',
       value: cpuLoad === null ? DASH : `${cpuLoad}%`,
-      label: t('DASHBOARD_RAIL_HOST_CPU'),
-      sub: typeof hostCpu?.cpuCores === 'number' && hostCpu.cpuCores > 0 ? t('DASHBOARD_RAIL_HOST_CPU_SUB', { cores: hostCpu.cpuCores }) : undefined,
+      label: vmCpu ? t('DASHBOARD_RAIL_VM_CPU') : t('DASHBOARD_RAIL_HOST_CPU'),
+      sub:
+        typeof hostCpu?.cpuCores === 'number' && hostCpu.cpuCores > 0
+          ? vmCpu
+            ? t(vmCpu === 'wsl2-vm' ? 'DASHBOARD_RAIL_VM_CPU_SUB_WSL' : 'DASHBOARD_RAIL_VM_CPU_SUB_DOCKER', { cores: hostCpu.cpuCores })
+            : t('DASHBOARD_RAIL_HOST_CPU_SUB', { cores: hostCpu.cpuCores })
+          : undefined,
       tone: cpuLoad === null ? 'muted' : cpuLoad > HOST_CPU_WARN_PERCENT ? 'warn' : 'plain',
       state: hostCpuState,
       mobile: true,
@@ -331,13 +376,19 @@ export function DashboardRail({
     {
       /*
        * Settled failures only — a request still waiting is `waiting`, not failed, however long the
-       * wait. Callers who hung up are counted here (they got no answer) and named in the sub, since
-       * "3 failed" that were three impatient callers is a different fix from three dead nodes.
+       * wait. The sub splits them by the fix each points at: callers who hung up (counted, since they
+       * got no answer — but three impatient callers are not three dead nodes), and failures that took
+       * a whole first-byte budget to happen, which on this fleet is a prompt placed on a node too slow
+       * to read it (fzzy and core-7 serve the 27B on CPU at 27-37 tok/s). Refusals are the rest.
        */
       id: 'failed-30m',
       value: failed,
       label: t('DASHBOARD_RAIL_FAILED_30M'),
-      sub: joinSubs(partial, callersLeft > 0 ? t('DASHBOARD_RAIL_CALLERS_LEFT', { count: callersLeft }) : undefined),
+      sub: joinSubs(
+        partial,
+        overBudget > 0 ? t('DASHBOARD_RAIL_PAST_BUDGET', { count: overBudget }) : undefined,
+        callersLeft > 0 ? t('DASHBOARD_RAIL_CALLERS_LEFT', { count: callersLeft }) : undefined,
+      ),
       tone: failed > 0 ? 'bad' : 'muted',
       state: routingState,
     },

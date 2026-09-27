@@ -254,6 +254,14 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
  * and there is exactly one source for the detail view at every width — so a column dropped below a
  * breakpoint is still reachable, not gone.
  *
+ * The drop ORDER is the workload's. In the app shell this panel's container is 481 px at a 1280
+ * window, 515 px at 1440 and ~590 px at 1536 (the 17px root makes `@md` 476 px, `@lg` 544, `@xl` 612,
+ * `@2xl` 714). The speed columns — slowest first byte and generation rate — are what an agent turn is
+ * placed by, so they come in at `@md` with the row's core; tier and the container count, both on the
+ * card, wait for `@lg`; the in-flight trend for `@xl`; GPU pressure, where anything measures it, for
+ * `@2xl`. They used to sit at `@lg` and `@2xl`, measured on a bare page with no gutter, and neither
+ * appeared on a laptop.
+ *
  * The WHOLE ROW toggles for pointer and touch, which is what makes this usable on a phone: the row
  * is ~33px tall at `Td`'s `py-1.5` with 13px text — well short of the 44px guideline, and the reason the
  * target is the entire row rather than the 20px chevron, which alone would be well under it. Raising
@@ -316,17 +324,17 @@ export function PoolNodes({
                 </Th>
                 <Th>{t('DASHBOARD_COL_STATE')}</Th>
                 <Th>{t('DASHBOARD_COL_NODE')}</Th>
-                <Th className="hidden @md:table-cell">{t('DASHBOARD_COL_TIER')}</Th>
+                <Th className="hidden @lg:table-cell">{t('DASHBOARD_COL_TIER')}</Th>
                 <Th align="right">{t('DASHBOARD_NODE_NOW')}</Th>
-                <Th align="right" className="hidden @lg:table-cell">
+                <Th align="right" className="hidden @md:table-cell">
                   {t('DASHBOARD_COL_FIRST_BYTE_MAX')}
                 </Th>
                 <Th className="hidden w-24 @xl:table-cell">{t('DASHBOARD_COL_TREND')}</Th>
                 {showPressure ? <Th className="hidden @2xl:table-cell">{t('DASHBOARD_NODE_PRESSURE')}</Th> : null}
-                <Th align="right" className="hidden @2xl:table-cell">
+                <Th align="right" className="hidden @md:table-cell">
                   {t('DASHBOARD_COL_DECODE')}
                 </Th>
-                <Th align="right" className="hidden @md:table-cell">
+                <Th align="right" className="hidden @lg:table-cell">
                   {t('DASHBOARD_COL_CONTAINERS')}
                 </Th>
               </>
@@ -372,7 +380,7 @@ export function PoolNodes({
                     <Td className="max-w-[160px] truncate font-medium" title={card.fqdn ?? card.label}>
                       {card.label}
                     </Td>
-                    <Td className="hidden text-muted-foreground @md:table-cell">{card.hardwareTier ?? DASH}</Td>
+                    <Td className="hidden text-muted-foreground @lg:table-cell">{card.hardwareTier ?? DASH}</Td>
                     {/* Dash, not 0: a node that reported no counter is unread, not idle. */}
                     <Td align="right" className={(card.inFlight ?? 0) > 0 ? 'font-medium text-success' : 'text-muted-foreground'}>
                       {humanCount(card.inFlight)}
@@ -382,7 +390,7 @@ export function PoolNodes({
                         streamed in 30 minutes", never "fast". */}
                     <Td
                       align="right"
-                      className="hidden whitespace-nowrap @lg:table-cell"
+                      className="hidden whitespace-nowrap @md:table-cell"
                       title={card.firstByte ? t('DASHBOARD_NODE_FIRST_BYTE_HINT', { count: card.firstByte.count }) : undefined}
                     >
                       {card.firstByte ? humanDuration(card.firstByte.maxMs) : <span className="text-muted-foreground">{DASH}</span>}
@@ -399,7 +407,7 @@ export function PoolNodes({
                     ) : null}
                     <Td
                       align="right"
-                      className="hidden whitespace-nowrap @2xl:table-cell"
+                      className="hidden whitespace-nowrap @md:table-cell"
                       title={
                         card.decode ? t('DASHBOARD_NODE_DECODE_HINT', { model: card.decode.model, age: humanDuration(card.decode.ageMs) }) : undefined
                       }
@@ -410,7 +418,7 @@ export function PoolNodes({
                         <span className="text-muted-foreground">{DASH}</span>
                       )}
                     </Td>
-                    <Td align="right" className="hidden @md:table-cell">
+                    <Td align="right" className="hidden @lg:table-cell">
                       {card.containers === null ? (
                         <span className="italic text-muted-foreground">{t('DASHBOARD_NODE_CONTAINERS_SHORT_UNREPORTED')}</span>
                       ) : (

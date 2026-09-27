@@ -35,7 +35,7 @@ function renderRail(
     firstByte?: Map<string, FirstByteStats>;
     residency?: ResidencyReportSummary;
     inferenceBackends?: InferenceBackendStatus[];
-    hostCpu?: { cpuLoad?: number; cpuCores?: number };
+    hostCpu?: { cpuLoad?: number; cpuCores?: number; runtimeKind?: string };
   } = {},
 ) {
   return render(
@@ -111,17 +111,54 @@ describe('KpiRail routing windows', () => {
 
     expect(stat(container, 'Failed 30m')).toContain('2 callers left');
   });
+
+  it('names failures that took a whole first-byte budget, the ones a too-slow node causes', () => {
+    const { container } = renderRail({ buckets: [bucket({ failed: 4, overBudget: 2, clientClosed: 1 })] });
+
+    expect(stat(container, 'Failed 30m')).toContain('2 past budget · 1 caller left');
+  });
 });
 
 describe('KpiRail live figures', () => {
   it('shows what is waiting for a first byte, the oldest wait and where', () => {
     const { container } = renderRail({
-      waiting: { count: 2, oldest: { ageMs: 370_941, node: 'local', budgetMs: 780_000, estTokens: 38_979 } },
+      waiting: { count: 2, oldest: { ageMs: 370_941, node: 'local', budgetMs: 780_000, estTokens: 38_979, failovers: 0 } },
     });
 
     const waiting = stat(container, 'Waiting');
     expect(waiting).toMatch(/^2/);
     expect(waiting).toContain('oldest 6m 11s · This Hub');
+  });
+
+  it('says a wait is on a node that took over, so its age is not read as the whole request', () => {
+    // core-2, 23:56:30: core-14 had held it 39 s after core-7 used its whole 329 s budget.
+    const { container } = renderRail({
+      waiting: { count: 1, oldest: { ageMs: 39_130, node: 'core-14', budgetMs: 329_000, estTokens: 16_462, failovers: 1 } },
+    });
+
+    expect(stat(container, 'Waiting')).toContain('oldest 39.1 s · core-14, after 1 failover');
+  });
+
+  /*
+   * The tile's amber is the verdict's chip, not a fixed minute. At 60 s it lit for nearly every agent
+   * turn on this fleet — the proxy's budget floor is 300 s, and beta-max's 39,668-token turn took
+   * 370,941 ms to its first byte, inside a 780 s budget — while the verdict beside it said "All clear".
+   */
+  it("turns amber only as a wait nears its own budget, where the verdict's chip appears", () => {
+    const tone = (ageMs: number, budgetMs: number | null) => {
+      const { container, unmount } = renderRail({ waiting: { count: 1, oldest: { ageMs, node: 'local', budgetMs, estTokens: null, failovers: 0 } } });
+      // The figure is the first line of the stat's cell, above its label.
+      const cell = [...container.querySelectorAll('span')].find((span) => span.textContent === 'Waiting')?.parentElement;
+      const amber = cell?.firstElementChild?.className.includes('text-warning');
+      unmount();
+
+      return amber;
+    };
+
+    expect(tone(370_941, 780_000)).toBe(false);
+    expect(tone(640_000, 780_000)).toBe(true);
+    // No budget recorded: nothing to judge the wait against, so no warning is guessed.
+    expect(tone(9_999_999, null)).toBe(false);
   });
 
   it('reads an empty queue as a real zero, not as unknown', () => {
@@ -153,6 +190,20 @@ describe('KpiRail live figures', () => {
 
     expect(stat(container, 'Host CPU')).toContain('91%');
     expect(stat(container, 'Host CPU')).toContain('32 cores');
+  });
+
+  it("calls the load a VM's on Docker Desktop, where it is the VM's and the core count is the host's", () => {
+    const docker = renderRail({ hostCpu: { cpuLoad: 100, cpuCores: 16, runtimeKind: 'docker-desktop-vm' } });
+
+    expect(docker.container.textContent).not.toContain('Host CPU');
+    expect(stat(docker.container, 'VM CPU')).toContain('100%');
+    expect(stat(docker.container, 'VM CPU')).toContain('Docker VM · host 16 cores');
+
+    const wsl = renderRail({ hostCpu: { cpuLoad: 40, cpuCores: 24, runtimeKind: 'wsl2-vm' } });
+    expect(stat(wsl.container, 'VM CPU')).toContain('WSL2 VM · host 24 cores');
+
+    const linux = renderRail({ hostCpu: { cpuLoad: 40, cpuCores: 24, runtimeKind: 'linux-native' } });
+    expect(stat(linux.container, 'Host CPU')).toContain('24 cores');
   });
 
   it('no longer shows per-core container CPU as a bare percentage beside host shares', () => {
