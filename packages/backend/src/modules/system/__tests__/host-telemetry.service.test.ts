@@ -4,7 +4,7 @@ import { DOCKERODE } from '@/modules/docker/constants';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { HostTelemetryService } from '../host-telemetry.service';
+import { HostTelemetryService, toUtcIso } from '../host-telemetry.service';
 import { SystemService } from '../system.service';
 
 describe('HostTelemetryService', () => {
@@ -134,5 +134,50 @@ describe('HostTelemetryService', () => {
         apps: [expect.objectContaining({ appUrn: 'ci-memory:ci-marketplace' })],
       },
     ]);
+  });
+
+  /*
+   * What the column really returns. `sampled_at` is `timestamp` without a zone, so Postgres hands
+   * back the UTC wall-clock with the zone dropped — this exact string came off fzzy on 2026-09-27,
+   * restored into the resource monitor's history after a restart. A browser reads a zoneless
+   * date-time as LOCAL time, which put the chart's first label seven hours off in a PDT browser.
+   */
+  it('serves a zoneless stored timestamp as ISO-8601 UTC, since that is what was written', async () => {
+    const row = {
+      sampledAt: '2026-09-27 10:22:22.896',
+      cpuLoad: 1,
+      cpuCores: 32,
+      memoryUsed: 49,
+      memoryTotal: 123,
+      diskUsed: 1,
+      diskTotal: 2,
+      percentUsedMemory: 40,
+      dockerAvailable: true,
+      dockerInfo: null,
+      apps: [
+        { appUrn: 'ci-hub:system', appName: 'CI Hub', status: 'running', cpuPercent: 5.3, memoryUsageBytes: 1, containerCount: 5, gpuVramMb: null },
+      ],
+      source: 'runtime-monitor',
+    };
+    db.query.hostTelemetrySample.findMany.mockResolvedValue([row]);
+
+    await expect(service.getRuntimeHistory(24)).resolves.toEqual([expect.objectContaining({ sampledAt: '2026-09-27T10:22:22.896Z' })]);
+    await expect(service.getRecentSamples()).resolves.toEqual([expect.objectContaining({ sampledAt: '2026-09-27T10:22:22.896Z' })]);
+  });
+});
+
+describe('toUtcIso', () => {
+  it('reads a zoneless date-time as UTC, with or without the T and the fraction', () => {
+    expect(toUtcIso('2026-09-27 10:22:22.896')).toBe('2026-09-27T10:22:22.896Z');
+    expect(toUtcIso('2026-09-27T10:22:22')).toBe('2026-09-27T10:22:22.000Z');
+  });
+
+  it('keeps a value that already names its zone at the instant it names', () => {
+    expect(toUtcIso('2026-09-27T10:22:22.896Z')).toBe('2026-09-27T10:22:22.896Z');
+    expect(toUtcIso('2026-09-27T03:22:22.896-07:00')).toBe('2026-09-27T10:22:22.896Z');
+  });
+
+  it('returns an unparseable value untouched rather than "Invalid Date"', () => {
+    expect(toUtcIso('not a time')).toBe('not a time');
   });
 });

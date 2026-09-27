@@ -1,0 +1,1951 @@
+{
+  "node": "core-1",
+  "now": "2026-09-27T18:00:50Z",
+  "apps_resource-monitor": {
+    "sampledAt": "2026-09-27T18:00:29.341Z",
+    "apps": [
+      {
+        "appUrn": "ci-hub:system",
+        "appName": "CI Hub",
+        "status": "running",
+        "cpuPercent": 1.29,
+        "memoryUsageBytes": 515891200,
+        "memoryLimitBytes": 164401029120,
+        "highCpu": false,
+        "sustainedHighCpu": false,
+        "responsive": true,
+        "degraded": false,
+        "forceStopEligible": false,
+        "reason": null,
+        "cpuLimit": null,
+        "usesDefaultCpuLimit": false,
+        "sampledAt": "2026-09-27T18:00:29.341Z",
+        "containers": [
+          {
+            "containerId": "54882cd3e97a",
+            "name": "ci-hub",
+            "state": "running",
+            "status": "Up 18 hours (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 0.42,
+            "memoryUsageBytes": 247865344,
+            "memoryLimitBytes": 32880205824
+          },
+          {
+            "containerId": "8ecc2699ba21",
+            "name": "cloudflared",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0.46,
+            "memoryUsageBytes": 19750912,
+            "memoryLimitBytes": 32880205824
+          },
+          {
+            "containerId": "df16f233d33d",
+            "name": "traefik",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0,
+            "memoryUsageBytes": 22528000,
+            "memoryLimitBytes": 32880205824
+          },
+          {
+            "containerId": "56fe6b5d7a88",
+            "name": "ci-hub-db",
+            "state": "running",
+            "status": "Up 20 hours (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 0.11,
+            "memoryUsageBytes": 96911360,
+            "memoryLimitBytes": 32880205824
+          },
+          {
+            "containerId": "c837447b91c8",
+            "name": "ci-hub-queue",
+            "state": "running",
+            "status": "Up 20 hours (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 0.3,
+            "memoryUsageBytes": 128835584,
+            "memoryLimitBytes": 32880205824
+          }
+        ],
+        "gpuVramMb": null,
+        "readiness": null
+      }
+    ],
+    "history": [
+      {
+        "sampledAt": "2026-09-27T17:37:29.325Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.93,
+            "memoryUsageBytes": 508104704,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:38:29.326Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.15,
+            "memoryUsageBytes": 512352256,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:39:29.327Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.97,
+            "memoryUsageBytes": 518164480,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:40:29.328Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 6.11,
+            "memoryUsageBytes": 516407296,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:41:29.328Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 7.06,
+            "memoryUsageBytes": 515690496,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:42:29.330Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5.56,
+            "memoryUsageBytes": 517361664,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:43:29.331Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 233.84,
+            "memoryUsageBytes": 523149312,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:44:29.330Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5,
+            "memoryUsageBytes": 515002368,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:45:29.330Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.44,
+            "memoryUsageBytes": 520114176,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:46:29.331Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.66,
+            "memoryUsageBytes": 514129920,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:47:29.332Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 33.93,
+            "memoryUsageBytes": 533729280,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:48:29.332Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.88,
+            "memoryUsageBytes": 470089728,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:49:29.332Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.49,
+            "memoryUsageBytes": 482873344,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:50:29.332Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3.19,
+            "memoryUsageBytes": 490422272,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:51:29.333Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.89,
+            "memoryUsageBytes": 489107456,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:52:29.333Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.29,
+            "memoryUsageBytes": 491622400,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:53:29.335Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5.02,
+            "memoryUsageBytes": 493568000,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:54:29.336Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 4.65,
+            "memoryUsageBytes": 493068288,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:55:29.337Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.57,
+            "memoryUsageBytes": 492908544,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:56:29.338Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 214.01,
+            "memoryUsageBytes": 493752320,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:57:29.339Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 3,
+            "memoryUsageBytes": 489943040,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:58:29.340Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.13,
+            "memoryUsageBytes": 484712448,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:59:29.341Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.45,
+            "memoryUsageBytes": 489779200,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T18:00:29.341Z",
+        "apps": [
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.29,
+            "memoryUsageBytes": 515891200,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      }
+    ],
+    "unattributedGpu": null,
+    "gpuVramSource": "host-file"
+  },
+  "inference_pool_status": {
+    "enabled": true,
+    "disabledBy": null,
+    "directions": {
+      "outbound": {
+        "enabled": true,
+        "disabledBy": null
+      },
+      "inbound": {
+        "enabled": true,
+        "disabledBy": null
+      }
+    },
+    "reason": "active",
+    "routingActive": true,
+    "settings": {
+      "poolEnabled": true,
+      "poolOutboundEnabled": true,
+      "poolInboundEnabled": true,
+      "poolLocalAffinity": 1,
+      "poolHealthPollSeconds": 30,
+      "poolRequireSignedPeers": false,
+      "poolShareContainerStats": true,
+      "poolPressureWeight": 0,
+      "poolMaxPromptTokens": null,
+      "poolProbeSnapshotTtlMs": 0,
+      "poolPrefixAffinityMaxInFlight": 0,
+      "poolSlotAwareness": 0,
+      "poolPins": [],
+      "poolRouteAppsAlways": true
+    },
+    "localNode": {
+      "inFlightRequests": 0,
+      "hardwareTier": "high",
+      "backends": [
+        {
+          "type": "ollama",
+          "healthy": true,
+          "modelsLoaded": [
+            "qwen3.8:27b",
+            "nomic-embed-text:latest",
+            "gemma3:1b",
+            "ornith-1.5:9b",
+            "gemma4:26b",
+            "qwen3-coder:30b",
+            "qwen3.6:27b",
+            "qwen3:8b"
+          ]
+        },
+        {
+          "type": "vllm",
+          "healthy": false,
+          "modelsLoaded": []
+        },
+        {
+          "type": "lemonade",
+          "healthy": true,
+          "modelsLoaded": []
+        },
+        {
+          "type": "omlx",
+          "healthy": false,
+          "modelsLoaded": []
+        }
+      ],
+      "capabilitiesError": null,
+      "gpuPressure": null,
+      "gpuPressureSource": null,
+      "nodeFqdn": "core-1.capybara-ulmer.ts.net",
+      "tailnet": "capybara-ulmer.ts.net",
+      "tailscaleConnected": true,
+      "maxPromptTokens": null,
+      "maxPromptTokensSetBy": null,
+      "maxNumCtx": null,
+      "ollamaSlots": null,
+      "throughput": []
+    },
+    "peers": [
+      {
+        "id": "peer-beta-nas",
+        "nodeFqdn": "beta-nas.capybara-ulmer.ts.net",
+        "displayName": "beta-nas",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.629",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.11,
+          "memoryBytes": 448184320
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3.5:4b", "nomic-embed-text:latest", "ornith-1.5:9b", "qwen2.5-coder:7b", "qwen3.6:27b"]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen2.5-3B-Instruct-AWQ"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.11,
+            "memoryBytes": 448184320
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.656Z"
+        }
+      },
+      {
+        "id": "peer-core-4",
+        "nodeFqdn": "core-4.capybara-ulmer.ts.net",
+        "displayName": "core-4",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.638",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 4.6,
+          "memoryBytes": 441790464
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3-coder:30b", "nomic-embed-text:cpu", "gemma3:1b-cpu", "gemma3:1b", "nomic-embed-text:latest"]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 4.6,
+            "memoryBytes": 441790464
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.662Z"
+        }
+      },
+      {
+        "id": "peer-beta-ms-a2",
+        "nodeFqdn": "beta-ms-a2.capybara-ulmer.ts.net",
+        "displayName": "beta-ms-a2",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.629",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 5.18,
+          "memoryBytes": 466657280
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:9b",
+                "qwen3.5:4b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 5.18,
+            "memoryBytes": 466657280
+          },
+          "hardwareTier": "cpu-only",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.658Z"
+        }
+      },
+      {
+        "id": "peer-core-14",
+        "nodeFqdn": "core-14.capybara-ulmer.ts.net",
+        "displayName": "core-14",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.643",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 2.14,
+          "memoryBytes": 451842048
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 2.14,
+            "memoryBytes": 451842048
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.673Z"
+        }
+      },
+      {
+        "id": "peer-beta-1",
+        "nodeFqdn": "beta-1.capybara-ulmer.ts.net",
+        "displayName": "beta-1",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.626",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 8.03,
+          "memoryBytes": 591183872
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "north-mini-code-1.0:latest",
+                "gemma4:31b",
+                "muse-glimmer:30b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gpt-oss:20b",
+                "qwen3.5:27b",
+                "qwen3.6:27b",
+                "qwen3-coder:30b",
+                "gemma4:e4b",
+                "gemma3:1b",
+                "nomic-embed-text:latest",
+                "qwen3.8:27b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 8.03,
+            "memoryBytes": 591183872
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.619Z"
+        }
+      },
+      {
+        "id": "peer-core-5",
+        "nodeFqdn": "core-5.capybara-ulmer.ts.net",
+        "displayName": "core-5",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.636",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 36.59,
+          "memoryBytes": 436211712
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:122b",
+                "muse-glimmer:30b",
+                "qwen3.5:27b",
+                "nomic-embed-text:latest",
+                "qwen3-coder:30b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3.6:27b",
+                "qwen3.6:35b",
+                "gemma3:27b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 36.59,
+            "memoryBytes": 436211712
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.649Z"
+        }
+      },
+      {
+        "id": "peer-fzzy",
+        "nodeFqdn": "fzzy.capybara-ulmer.ts.net",
+        "displayName": "fzzy",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.637",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 9.25,
+          "memoryBytes": 828932096
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3-coder:30b",
+                "llava:latest",
+                "gemma3n:e4b",
+                "qwen2.5:0.5b",
+                "nemotron3:33b",
+                "qwen3.6:35b",
+                "llama3.2:latest",
+                "nomic-embed-text:latest",
+                "moondream:latest",
+                "gemma3:1b",
+                "gemma4:31b",
+                "qwen3-vl:32b",
+                "qwen3.5:9b",
+                "qwen3.6:27b",
+                "qwen3.5:4b",
+                "gabegoodhart/minimax-m2:230b",
+                "nemotron-3-super:120b",
+                "deepseek-coder-v2:16b",
+                "deepseek-r1:70b",
+                "deepseek-r1:32b",
+                "gpt-oss:120b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 9.25,
+            "memoryBytes": 828932096
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.657Z"
+        }
+      },
+      {
+        "id": "peer-core-6",
+        "nodeFqdn": "core-6.capybara-ulmer.ts.net",
+        "displayName": "core-6",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.614",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 7.07,
+          "memoryBytes": 429596672
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:9b",
+                "qwen3.5:4b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 7.07,
+            "memoryBytes": 429596672
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.642Z"
+        }
+      },
+      {
+        "id": "peer-core-17",
+        "nodeFqdn": "core-17.capybara-ulmer.ts.net",
+        "displayName": "core-17",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.615",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 20.44,
+          "memoryBytes": 458010624
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "mxbai-embed-large:latest",
+                "qwen3.8:27b",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 20.44,
+            "memoryBytes": 458010624
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.643Z"
+        }
+      },
+      {
+        "id": "peer-beta-glass",
+        "nodeFqdn": "beta-glass.capybara-ulmer.ts.net",
+        "displayName": "beta-3-glass",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.638",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.11,
+          "memoryBytes": 518606848
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "mxbai-embed-large:latest",
+                "qwen3.8:27b",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.11,
+            "memoryBytes": 518606848
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.659Z"
+        }
+      },
+      {
+        "id": "peer-core-3",
+        "nodeFqdn": "core-3.capybara-ulmer.ts.net",
+        "displayName": "core-3",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.629",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 3.62,
+          "memoryBytes": 403582976
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3.6:35b", "qwen3:8b", "nomic-embed-text:latest"]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 3.62,
+            "memoryBytes": 403582976
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.677Z"
+        }
+      },
+      {
+        "id": "peer-beta-max",
+        "nodeFqdn": "beta-max.capybara-ulmer.ts.net",
+        "displayName": "beta-max",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.637",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 9,
+          "stopped": 0,
+          "total": 9,
+          "cpuPercent": 5.33,
+          "memoryBytes": 1847930880
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "gemma4:e4b",
+                "ornith-1.5:9b",
+                "qwen3.6:35b",
+                "qwen3-coder:30b",
+                "qwen3.6:27b",
+                "qwen3-vl:32b",
+                "gemma3:1b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 9,
+            "running": 9,
+            "stopped": 0,
+            "cpuPercent": 5.33,
+            "memoryBytes": 1847930880
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.648Z"
+        }
+      },
+      {
+        "id": "peer-core-10",
+        "nodeFqdn": "core-10.capybara-ulmer.ts.net",
+        "displayName": "ci",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.64",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 5.96,
+          "memoryBytes": 475316224
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.6:35b",
+                "nomic-embed-text:latest",
+                "qwen3-coder:30b",
+                "ornith-1.5:35b",
+                "qwen2.5-coder:14b",
+                "qwen2.5-coder:32b",
+                "qwen3:8b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 5.96,
+            "memoryBytes": 475316224
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.675Z"
+        }
+      },
+      {
+        "id": "peer-beta-red",
+        "nodeFqdn": "beta-red.capybara-ulmer.ts.net",
+        "displayName": "beta-red",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.644",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 99,
+          "memoryBytes": 532135936
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["nomic-embed-text:latest", "qwen2.5-coder:7b", "gemma4:e4b", "ornith-1.5:9b", "gemma3:4b", "gemma3:1b", "qwen3:8b"]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen2.5-3B-Instruct-AWQ"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 99,
+            "memoryBytes": 532135936
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.674Z"
+        }
+      },
+      {
+        "id": "peer-core-2",
+        "nodeFqdn": "core-2.capybara-ulmer.ts.net",
+        "displayName": "core-2",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.629",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 9,
+          "stopped": 0,
+          "total": 9,
+          "cpuPercent": 324.4,
+          "memoryBytes": 1813643264
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.6:35b",
+                "ornith-1.5:35b",
+                "gemma4:e4b",
+                "ornith-1.5:9b",
+                "qwen2.5-coder:14b",
+                "qwen2.5-coder:32b",
+                "qwen3-coder:30b",
+                "nomic-embed-text:latest",
+                "gemma3:1b",
+                "gemma3:27b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 9,
+            "running": 9,
+            "stopped": 0,
+            "cpuPercent": 324.4,
+            "memoryBytes": 1813643264
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.631Z"
+        }
+      },
+      {
+        "id": "peer-core-7",
+        "nodeFqdn": "core-7.capybara-ulmer.ts.net",
+        "displayName": "core-7",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:24.644",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 320.13,
+          "memoryBytes": 454344704
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3.6:27b",
+                "qwen3.6:35b",
+                "qwen3-coder:30b",
+                "gemma4:e4b",
+                "gabegoodhart/minimax-m2:230b",
+                "gemma4:31b",
+                "qwen3-vl:32b",
+                "gemma3:1b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 320.13,
+            "memoryBytes": 454344704
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:24.673Z"
+        }
+      }
+    ],
+    "peerCounts": {
+      "total": 16,
+      "connected": 16,
+      "pending": 0,
+      "unreachable": 0,
+      "disabled": 0
+    },
+    "pins": [],
+    "routing": {
+      "recorded": 5,
+      "capacity": 200,
+      "served": 3,
+      "failed": 2,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 0,
+      "lastAt": "2026-09-27T03:00:12.718Z",
+      "oldestAt": "2026-09-26T23:49:59.236Z",
+      "totalRecorded": 5,
+      "bootId": "dd99456b-bece-41ee-be2d-f060e7bca2d4",
+      "startedAt": "2026-09-26T23:47:28.565Z"
+    }
+  },
+  "inference_pool_routing-log": {
+    "entries": [
+      {
+        "at": "2026-09-27T03:00:12.718Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "core-2.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 11494,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 5997,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-27T03:00:07.834Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 5177,
+        "usage": null,
+        "stream": false,
+        "bodyBytes": 148,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:56:21.232Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "failed",
+        "status": null,
+        "durationMs": 10814,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 156704,
+        "budgetMs": 784000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:51:29.637Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "core-2.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "failed",
+        "status": 500,
+        "durationMs": 5800,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 155923,
+        "budgetMs": 780000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:49:59.236Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 17942,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 154773,
+        "budgetMs": 774000,
+        "clientClosed": false,
+        "throughput": null
+      }
+    ],
+    "summary": {
+      "recorded": 5,
+      "capacity": 200,
+      "served": 3,
+      "failed": 2,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 0,
+      "lastAt": "2026-09-27T03:00:12.718Z",
+      "oldestAt": "2026-09-26T23:49:59.236Z",
+      "totalRecorded": 5,
+      "startedAt": "2026-09-26T23:47:28.565Z"
+    },
+    "matched": 5
+  },
+  "inference_status": {
+    "backends": [
+      {
+        "type": "ollama",
+        "running": true,
+        "healthy": true,
+        "modelsLoaded": 8
+      },
+      {
+        "type": "vllm",
+        "running": false,
+        "healthy": false,
+        "modelsLoaded": 0
+      },
+      {
+        "type": "lemonade",
+        "running": true,
+        "healthy": true,
+        "modelsLoaded": 0
+      },
+      {
+        "type": "omlx",
+        "running": false,
+        "healthy": false,
+        "modelsLoaded": 0
+      }
+    ]
+  },
+  "inference_memory": {
+    "totalVramMb": 0,
+    "totalRamMb": 31357,
+    "systemReservedRamMb": 2048,
+    "dockerOverheadMb": 0,
+    "appContainerBudgetMb": 0,
+    "modelBudgetVramMb": 0,
+    "modelBudgetRamMb": 29309,
+    "modelUsedVramMb": 0,
+    "modelUsedRamMb": 16902,
+    "pinnedVramMb": 0,
+    "pinnedRamMb": 0,
+    "usage": {
+      "sampledAt": "2026-09-27T18:00:50.476Z",
+      "backends": [
+        {
+          "backend": "ollama",
+          "models": ["qwen3.8:27b", "nomic-embed-text:latest"],
+          "pool": "ram",
+          "usedMb": 16902,
+          "source": "engine"
+        }
+      ]
+    }
+  },
+  "inference_models_resident": {
+    "backends": [
+      {
+        "backend": "ollama",
+        "source": "measured",
+        "models": [
+          {
+            "id": "qwen3.8:27b",
+            "engineGpuBytes": 17399724112,
+            "totalBytes": 17399724112,
+            "expiresAt": "2026-09-27T20:01:00.95547155-07:00",
+            "contextLength": 32768,
+            "quantization": "Q4_K_M"
+          },
+          {
+            "id": "nomic-embed-text:latest",
+            "engineGpuBytes": 323150151,
+            "totalBytes": 323150151,
+            "expiresAt": "2026-09-27T20:00:07.833696851-07:00",
+            "contextLength": 2048,
+            "quantization": "F16"
+          }
+        ]
+      },
+      {
+        "backend": "vllm",
+        "source": "unsupported",
+        "models": null
+      },
+      {
+        "backend": "lemonade",
+        "source": "measured",
+        "models": []
+      },
+      {
+        "backend": "omlx",
+        "source": "unsupported",
+        "models": null
+      }
+    ],
+    "residentCount": 2,
+    "sampledAt": "2026-09-27T18:00:50.552Z"
+  },
+  "inference_hardware": {
+    "gpu": {
+      "available": true,
+      "vendor": "amd",
+      "model": "Radeon 8060S",
+      "vramMb": 31357,
+      "unifiedMemory": true,
+      "driverVersion": "",
+      "runtimeAvailable": false,
+      "containerHostKind": "native-linux",
+      "hostRocmAvailable": true,
+      "hostRocmKfdAvailable": true
+    },
+    "npu": {
+      "available": false,
+      "model": ""
+    },
+    "ram": {
+      "totalMb": 31357,
+      "availableMb": 24912,
+      "usedMb": 6445,
+      "sampledAt": "2026-09-27T18:00:50.475Z"
+    },
+    "cpu": {
+      "arch": "x86_64",
+      "cores": 32,
+      "model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S"
+    },
+    "os": {
+      "platform": "linux",
+      "name": "Alpine Linux",
+      "version": "v3.21"
+    },
+    "effectiveInferenceMemoryMb": 24912,
+    "tier": "high"
+  },
+  "inference_cloud-providers": [],
+  "system_load": {
+    "diskUsed": 714,
+    "diskSize": 1832,
+    "percentUsed": 39,
+    "cpuLoad": 0.5309297444128904,
+    "cpuCores": 32,
+    "memoryTotal": 31,
+    "memoryUsed": 5,
+    "percentUsedMemory": 17,
+    "hasVmWedge": false,
+    "runtimeKind": "linux-native",
+    "platformGuidance": "Resources reflect this machine directly. No Docker Desktop VM limits apply."
+  }
+}

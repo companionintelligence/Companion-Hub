@@ -2,10 +2,15 @@ import { describe, expect, it } from 'vitest';
 import {
   budgetPercent,
   combineLoadState,
+  estimatedPromptTokens,
+  type HardwareSummary,
   hostRamUsedMb,
+  isExhausted,
+  isUnplaced,
   loadState,
   memoryBudgetRows,
   type MemoryBudgetSummary,
+  memoryReconciliation,
   peerLabel,
   poolModelIndex,
   type PoolNodeSummary,
@@ -202,33 +207,158 @@ describe('routingByNode', () => {
       ...over,
     }) as never;
 
+  const byNode = (entries: never[]) => routingByNode(entries, 'Unplaced', 'All candidates failed');
+
   it('ignores inbound rows — their node SENT us work, it did not serve ours', () => {
-    const counts = routingByNode([row({ direction: 'inbound', node: 'core-7.tail.ts.net' })], 'Unplaced');
+    const counts = byNode([row({ direction: 'inbound', node: 'core-7.tail.ts.net' })]);
 
     expect(counts.size).toBe(0);
   });
 
   it('does not credit the local node with a request nothing served', () => {
-    const counts = routingByNode([row({ node: null, outcome: 'failed' })], 'Unplaced');
+    const counts = byNode([row({ node: null, candidates: 0, outcome: 'failed' })]);
 
     expect(counts.get('local')).toBeUndefined();
     expect(counts.get('Unplaced')).toBe(1);
   });
 
   it('counts outbound work under the node that served it, shortened to its hostname', () => {
-    const counts = routingByNode([row(), row(), row({ node: 'local' })], 'Unplaced');
+    const counts = byNode([row(), row(), row({ node: 'local' })]);
 
     expect(counts.get('core-2')).toBe(2);
     expect(counts.get('local')).toBe(1);
   });
 
-  it('keeps the three populations apart in one mixed log', () => {
-    const counts = routingByNode([row(), row({ direction: 'inbound', node: 'beta-red.tail.ts.net' }), row({ node: null })], 'Unplaced');
+  it('keeps the populations apart in one mixed log', () => {
+    const counts = byNode([
+      row(),
+      row({ direction: 'inbound', node: 'beta-red.tail.ts.net' }),
+      row({ node: null, candidates: 0, outcome: 'failed' }),
+      row({ node: null, candidates: 9, attempt: 9, outcome: 'failed', failedOverFrom: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'] }),
+    ]);
 
     expect([...counts.entries()].sort()).toEqual([
+      ['All candidates failed', 1],
       ['Unplaced', 1],
       ['core-2', 1],
     ]);
+  });
+
+  /*
+   * core-2, 2026-09-26T23:51:12Z: an agent turn nine nodes each tried and dropped. It was filed as
+   * "Unplaced" — "a request no node took" — beside a feed row reading "+9 tried".
+   */
+  it('files a request every candidate failed under its own label, not as one nobody took', () => {
+    const counts = byNode([
+      row({ node: null, candidates: 9, attempt: 9, outcome: 'failed', failedOverFrom: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'] }),
+    ]);
+
+    expect(counts.get('Unplaced')).toBeUndefined();
+    expect(counts.get('All candidates failed')).toBe(1);
+  });
+});
+
+describe('isUnplaced / isExhausted', () => {
+  const row = (over: Record<string, unknown> = {}) =>
+    ({ at: '2026-01-01T00:00:00Z', direction: 'outbound', node: null, outcome: 'failed', failedOverFrom: [], ...over }) as never;
+
+  it('calls a request unplaced only when there was no candidate to ask', () => {
+    expect(isUnplaced(row({ candidates: 0 }))).toBe(true);
+    expect(isUnplaced(row({ candidates: 9, failedOverFrom: ['a'] }))).toBe(false);
+    expect(isExhausted(row({ candidates: 9, failedOverFrom: ['a'] }))).toBe(true);
+    expect(isExhausted(row({ candidates: 0 }))).toBe(false);
+  });
+
+  it('never calls a caller who hung up exhausted — the pool did not fail it', () => {
+    expect(isExhausted(row({ candidates: 3, clientClosed: true }))).toBe(false);
+  });
+
+  it('never calls an inbound row either — its node is the sender', () => {
+    expect(isUnplaced(row({ direction: 'inbound', candidates: 0 }))).toBe(false);
+    expect(isExhausted(row({ direction: 'inbound', candidates: 1 }))).toBe(false);
+  });
+
+  it('falls back on a Hub too old to report candidates: tried-and-failed-over is exhausted, the rest unplaced', () => {
+    expect(isUnplaced(row())).toBe(true);
+    expect(isUnplaced(row({ failedOverFrom: ['a'] }))).toBe(false);
+    expect(isExhausted(row({ failedOverFrom: ['a'] }))).toBe(true);
+  });
+});
+
+describe('estimatedPromptTokens', () => {
+  it("prefers the routing decision's own estimate, then bytes / 4, then nothing", () => {
+    expect(estimatedPromptTokens({ at: '', direction: 'outbound', bodyBytes: 155_982, throughput: { estimatedTokens: 38_979 } })).toBe(38_979);
+    expect(estimatedPromptTokens({ at: '', direction: 'outbound', bodyBytes: 155_982 })).toBe(38_996);
+    expect(estimatedPromptTokens({ at: '', direction: 'outbound', bodyBytes: null })).toBeNull();
+  });
+});
+
+/*
+ * The three Strix Halo nodes the spec was measured on, 2026-09-27, as the dashboard received them:
+ * host RAM in use (`/inference/hardware`), what the workloads' containers held (the leaf rollup),
+ * and what the engines reported holding (`/inference/memory`). sysfs on the same hosts is in the
+ * comments — it is the truth this function cannot see, only infer.
+ */
+describe('memoryReconciliation', () => {
+  const MB = 1024 ** 2;
+  const unified = (usedMb: number, totalMb: number): HardwareSummary => ({
+    gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: totalMb, unifiedMemory: true },
+    ram: { totalMb, availableMb: totalMb - usedMb, usedMb, sampledAt: '2026-09-27T18:00:50.475Z' },
+  });
+  const budget = (modelUsedRamMb: number, over: Partial<MemoryBudgetSummary> = {}): MemoryBudgetSummary => ({
+    totalVramMb: 0,
+    totalRamMb: 0,
+    modelUsedVramMb: 0,
+    modelUsedRamMb,
+    usage: { sampledAt: '2026-09-27T18:00:50Z', backends: [{ backend: 'ollama', pool: 'ram', usedMb: modelUsedRamMb, source: 'engine' }] },
+    ...over,
+  });
+
+  it('says the models are outside what the host counts on core-1 (96 GiB BIOS carve-out; host sees 31G)', () => {
+    // Host: 6,445 MB in use. Workloads: 492 MB. Ollama: 16,902 MB of models "in 29G of budget".
+    const result = memoryReconciliation(unified(6445, 31_357), { memoryBytes: 492 * MB }, budget(16_902));
+
+    expect(result?.kind).toBe('outside-host');
+    expect(result?.sizeMb).toBe(16_902 - (6445 - 492));
+  });
+
+  it('finds host RAM nothing reports on fzzy (~42 GiB of GTT held by dflash_server and vLLM)', () => {
+    // Host: 50,572 MB in use. Workloads: 818 MB. Engines: 314 MB (vLLM's process read).
+    const result = memoryReconciliation(unified(50_572, 125_781), { memoryBytes: 818 * MB }, budget(314));
+
+    expect(result?.kind).toBe('unaccounted');
+    // ~48 GB — the GTT the budget cannot see, plus the engines' host-side overhead.
+    expect(Math.round((result?.sizeMb ?? 0) / 1024)).toBe(48);
+  });
+
+  it('stays quiet on core-2, where the figures add up', () => {
+    // Host: 32,702 MB in use. Workloads: ~1.7 GB. Ollama (rocm-smi): 24,824 MB.
+    expect(memoryReconciliation(unified(32_702, 128_085), { memoryBytes: 1_779_000_000 }, budget(24_824))).toBeNull();
+  });
+
+  it('says nothing about a discrete card, where engines holding more VRAM than the host has RAM in use is normal', () => {
+    const discrete: HardwareSummary = { ...unified(6445, 31_357), gpu: { available: true, vendor: 'nvidia', unifiedMemory: false } };
+
+    expect(memoryReconciliation(discrete, { memoryBytes: 492 * MB }, budget(16_902))).toBeNull();
+  });
+
+  it('reconciles nothing against RAM figures that are not a live reading', () => {
+    const snapshot = unified(6445, 31_357);
+    delete snapshot.ram?.sampledAt;
+
+    expect(memoryReconciliation(snapshot, { memoryBytes: 492 * MB }, budget(16_902))).toBeNull();
+  });
+
+  it('waits for the container rollup rather than calling every workload byte unaccounted', () => {
+    expect(memoryReconciliation(unified(50_572, 125_781), null, budget(314))).toBeNull();
+  });
+
+  it('withholds "unaccounted" when an engine holds a model nobody could size — that may be where it went', () => {
+    const unsized = budget(314, {
+      usage: { backends: [{ backend: 'vllm', pool: 'ram', usedMb: null, source: 'unmeasured' }] },
+    });
+
+    expect(memoryReconciliation(unified(50_572, 125_781), { memoryBytes: 818 * MB }, unsized)).toBeNull();
   });
 });
 

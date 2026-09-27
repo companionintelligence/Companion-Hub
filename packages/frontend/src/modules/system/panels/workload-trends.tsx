@@ -1,6 +1,12 @@
-import { DASH, humanBytes, Panel, PanelBody, StepAreaChart } from '@/components/ui/dense/dense';
-import type { AppRuntimeHealth, AppRuntimeHistorySample, GpuVramSource } from '@/lib/app-runtime-monitor';
-import { computeCpuChartScale, computeMemoryChartScale, computeVramChartScale } from '@/modules/system/resource-monitor-chart';
+import { DASH, humanBytes, humanDuration, Panel, PanelBody, StepAreaChart } from '@/components/ui/dense/dense';
+import type { AppRuntimeHealth, AppRuntimeHistorySample, GpuVramSource, UnattributedGpuProcess } from '@/lib/app-runtime-monitor';
+import {
+  computeCpuChartScale,
+  computeMemoryChartScale,
+  computeVramChartScale,
+  formatSampleTime,
+  sampleTimeline,
+} from '@/modules/system/resource-monitor-chart';
 import type { LoadState } from '@/modules/system/use-dashboard-data';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -102,18 +108,14 @@ function valueForApp(sample: AppRuntimeHistorySample, appUrn: string, metric: Me
   return point.memoryUsageBytes;
 }
 
-function formatSampleTime(value: string): string {
-  const date = new Date(value);
-
-  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(date);
-}
-
 export function WorkloadTrend({
   metric,
   history,
   apps,
   state,
   gpuVramSource,
+  gpuVendor,
+  unattributed,
   className,
 }: {
   metric: Metric;
@@ -126,10 +128,35 @@ export function WorkloadTrend({
    * — a collection that ran and found no source — earns the line.
    */
   gpuVramSource?: GpuVramSource | null;
+  /** Only read for `metric="gpu"`: `'apple'` changes what the absent line can tell the operator to do. */
+  gpuVendor?: string;
+  /**
+   * Only read for `metric="gpu"`: VRAM the sampler found held by a process no workload owns — see
+   * the footer below. `null`/absent renders nothing.
+   */
+  unattributed?: UnattributedGpuProcess[] | null;
   className?: string;
 }) {
   const { t } = useTranslation();
   const gpuAbsent = metric === 'gpu' && gpuVramSource === 'absent';
+  /*
+   * VRAM held OUTSIDE any workload, which on this fleet is almost all of it: the engines are host
+   * processes (Ollama, llama-server) or containers this Hub did not start, so no row above can ever
+   * own their memory. core-2 held 24 GB in `llama-server` while this tile showed five rows of dashes
+   * under copy saying VRAM "is measured on this node" — true, and it was, and none of it was drawn.
+   * Largest first, one line per process as the sampler reported it.
+   */
+  const outside =
+    metric === 'gpu' ? [...(unattributed ?? [])].filter((entry) => Number.isFinite(entry.vramMb)).sort((a, b) => b.vramMb - a.vramMb) : [];
+
+  /*
+   * Deduped and gap-marked once, and everything below reads the result: the ranking, the waiting
+   * check, the axis labels and every row's series. Reading `history` raw anywhere would let a
+   * duplicate count as a sample in one place and not in another.
+   */
+  const timeline = useMemo(() => sampleTimeline(history), [history]);
+  const samples = timeline.samples;
+  const longestGapMs = timeline.gapsMs.length > 0 ? Math.max(...timeline.gapsMs) : null;
   const title =
     metric === 'cpu' ? t('DASHBOARD_TRENDS_CPU_TITLE') : metric === 'gpu' ? t('DASHBOARD_TRENDS_GPU_TITLE') : t('DASHBOARD_TRENDS_MEM_TITLE');
   // Both byte-denominated metrics arrive here already in bytes — see `MIB` above. No unit
@@ -153,9 +180,9 @@ export function WorkloadTrend({
      * one that has been busy for twenty. Neither number is ever displayed — this is a ranking only.
      */
     const ranked =
-      history.length > 0
+      samples.length > 0
         ? [
-            ...history
+            ...samples
               .reduce((totals, sample) => {
                 for (const point of sample.apps) {
                   totals.set(point.appUrn, (totals.get(point.appUrn) ?? 0) + metricValue(point));
@@ -171,7 +198,8 @@ export function WorkloadTrend({
       .sort((a, b) => b[1] - a[1])
       .slice(0, CHART_SLOTS.length)
       .map(([appUrn], index) => {
-        const series = history.map((sample) => valueForApp(sample, appUrn, metric));
+        // A gap slot is `null` for every row: the break is in the Hub's sampling, not the workload.
+        const series = timeline.slots.map((slot) => (slot.kind === 'sample' ? valueForApp(slot.sample, appUrn, metric) : null));
         const observed = series.filter((value): value is number => value !== null && Number.isFinite(value));
 
         return {
@@ -185,7 +213,7 @@ export function WorkloadTrend({
           peak: observed.length > 0 ? Math.max(...observed) : null,
         };
       });
-  }, [apps, history, metric]);
+  }, [apps, samples, timeline, metric]);
 
   /*
    * ONE AXIS FOR THE WHOLE TILE. `StepAreaChart` takes its ceiling rather than deriving one,
@@ -205,22 +233,30 @@ export function WorkloadTrend({
       <PanelBody state={state} error={t('DASHBOARD_CONTAINERS_FAILED')} lines={6}>
         {rows.length === 0 ? (
           <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_NO_WORKLOADS')}</p>
-        ) : history.length < 2 ? (
-          <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_WAITING', { total: history.length })}</p>
+        ) : samples.length < 2 ? (
+          <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_WAITING', { total: samples.length })}</p>
         ) : (
           <div className="space-y-1.5">
             {/* Every axis label is HTML and lives outside the SVG: `preserveAspectRatio="none"`
                 stretches the viewBox to the container, and a <text> inside it stretches too. */}
             <div className="flex items-baseline justify-between gap-2 text-[10px] text-muted-foreground">
-              <span>{formatSampleTime(history[0]?.sampledAt ?? '')}</span>
+              <span>{formatSampleTime(samples[0]?.sampledAt)}</span>
               {/* This is the AXIS CEILING, not a measurement. `computeCpuChartScale` rounds up to a
                   readable gridline, so on a tile whose busiest workload touched 12% it is 100 — a
                   number nothing observed. Labelling it "peak" put that invented figure directly above
                   rows printing their own true peaks, where the two read as the same quantity. The real
                   per-workload peak is on each row; this says only how tall the plot is. */}
               <span className="tabular-nums">{t('DASHBOARD_TRENDS_AXIS', { max: formatAxis(axisMax) })}</span>
-              <span>{formatSampleTime(history.at(-1)?.sampledAt ?? '')}</span>
+              <span>{formatSampleTime(samples.at(-1)?.sampledAt)}</span>
             </div>
+            {/* The axis above is by sample, not by clock, so a break in a trace cannot say how much
+                time it stands for. This does — once, for the longest, since that is the one that
+                makes "first label → last label" misleading. */}
+            {longestGapMs === null ? null : (
+              <p data-testid="workload-trend-gap" className="text-[10px] text-warning">
+                {t('DASHBOARD_TRENDS_GAP', { duration: humanDuration(longestGapMs) })}
+              </p>
+            )}
 
             <ul className="space-y-1.5">
               {rows.map((row) => (
@@ -250,11 +286,28 @@ export function WorkloadTrend({
             </ul>
           </div>
         )}
+        {outside.length > 0 ? (
+          <div data-testid="workload-trend-gpu-unattributed" className="mt-2 space-y-0.5 border-t border-border pt-2 text-[11px]">
+            <p className="uppercase tracking-[0.5px] text-muted-foreground">{t('DASHBOARD_TRENDS_GPU_UNATTRIBUTED')}</p>
+            <ul className="space-y-0.5">
+              {outside.map((entry, index) => (
+                // Two processes can share a name (core-2 runs two `llama-server`s), so the index
+                // keeps the key unique; the list is re-sorted wholesale each poll, never reordered.
+                // biome-ignore lint/suspicious/noArrayIndexKey: see above
+                <li key={`${entry.processName}-${index}`} className="flex items-baseline justify-between gap-2">
+                  <span className="min-w-0 truncate font-mono">{entry.processName}</span>
+                  <span className="shrink-0 tabular-nums text-foreground">{humanBytes(entry.vramMb * MIB)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {gpuAbsent ? (
           // Outside the three-way branch on purpose: the reading is absent whether there are rows,
-          // one sample, or no workloads at all, and the fix is the same in every case.
+          // one sample, or no workloads at all, and the fix is the same in every case. On Apple
+          // there IS no fix — the probe it would name is a Linux rocm-smi / nvidia-smi timer.
           <p data-testid="workload-trend-gpu-absent" className="mt-2 border-t border-border pt-2 text-[11px] leading-snug text-muted-foreground">
-            {t('DASHBOARD_TRENDS_GPU_ABSENT')}
+            {gpuVendor === 'apple' ? t('DASHBOARD_TRENDS_GPU_ABSENT_APPLE') : t('DASHBOARD_TRENDS_GPU_ABSENT')}
           </p>
         ) : null}
       </PanelBody>

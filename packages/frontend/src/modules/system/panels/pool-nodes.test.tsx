@@ -38,6 +38,8 @@ function card(overrides: Partial<PoolNodeCard> & { key: string; label: string })
     lastSeenAt: null,
     consecutiveFailures: null,
     capabilitiesError: null,
+    firstByte: null,
+    decode: null,
     ...overrides,
   };
 }
@@ -132,9 +134,102 @@ describe('PoolNodes', () => {
       const classes = element.className.split(/\s+/);
       if (!classes.includes('hidden')) return 'always';
 
-      return classes.find((name) => /^@?(sm|md|lg|xl|2xl|3xl):table-cell$/.test(name)) ?? 'hidden-with-no-breakpoint';
+      return classes.find((name) => /^@?(xs|sm|md|lg|xl|2xl|3xl):table-cell$/.test(name)) ?? 'hidden-with-no-breakpoint';
     };
 
     expect(headers.map(breakpointOf)).toEqual(cells.map(breakpointOf));
+  });
+});
+
+/*
+ * The columns that answer "which node is slow", and the one that answered nothing.
+ *
+ * GPU pressure was null on all seventeen nodes of the 2026-09-27 fleet (no `/host/sys` mount
+ * anywhere, and the band reads 0 under Vulkan), so its column was hollow pips on every row. It now
+ * exists only when some node can fill it — and because the header and its cells are gated on the
+ * same boolean, the table still cannot shift by a column either way.
+ */
+describe('PoolNodes speed columns', () => {
+  const breakpointOf = (element: Element) => {
+    const classes = element.className.split(/\s+/);
+    if (!classes.includes('hidden')) return 'always';
+
+    return classes.find((name) => /^@?(xs|sm|md|lg|xl|2xl|3xl):table-cell$/.test(name)) ?? 'hidden-with-no-breakpoint';
+  };
+  const headerTexts = () => [...document.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim());
+
+  it('drops the GPU pressure column, header and cells together, when no node measures it', () => {
+    render(
+      <PoolNodes
+        cards={[card({ key: 'core-2', label: 'core-2' }), card({ key: 'core-7', label: 'core-7' })]}
+        window={EMPTY_SAMPLE_WINDOW}
+        state={READY}
+      />,
+    );
+
+    expect(headerTexts()).not.toContain('GPU pressure');
+    const headers = [...document.querySelectorAll('thead th')];
+    const cells = [...document.querySelectorAll('tbody tr[data-node="core-2"] td')];
+    expect(headers).toHaveLength(cells.length);
+    expect(headers.map(breakpointOf)).toEqual(cells.map(breakpointOf));
+  });
+
+  it('keeps the column, aligned, as soon as one node reports a band — band 0 included', () => {
+    render(
+      <PoolNodes
+        cards={[card({ key: 'core-2', label: 'core-2', pressureBand: 0 }), card({ key: 'core-7', label: 'core-7' })]}
+        window={EMPTY_SAMPLE_WINDOW}
+        state={READY}
+      />,
+    );
+
+    expect(headerTexts()).toContain('GPU pressure');
+    const headers = [...document.querySelectorAll('thead th')];
+    const cells = [...document.querySelectorAll('tbody tr[data-node="core-7"] td')];
+    expect(headers.map(breakpointOf)).toEqual(cells.map(breakpointOf));
+  });
+
+  it('shows the slowest first byte and the generation rate per node, and a dash where there is no evidence', () => {
+    render(
+      <PoolNodes
+        cards={[
+          card({
+            key: 'core-6',
+            label: 'core-6',
+            firstByte: { count: 3, p50Ms: 12_500, maxMs: 91_716, maxEstTokens: 38_693 },
+            decode: { tokensPerSec: 11.2, model: 'qwen3.6:27b', ageMs: 240_000 },
+          }),
+          card({ key: 'core-7', label: 'core-7' }),
+        ]}
+        window={EMPTY_SAMPLE_WINDOW}
+        state={READY}
+      />,
+    );
+
+    const slow = [...(document.querySelector('tr[data-node="core-6"]')?.querySelectorAll('td') ?? [])].map((cell) => (cell.textContent ?? '').trim());
+    expect(slow).toContain('1m 32s');
+    expect(slow).toContain('11 tok/s');
+
+    const idle = [...(document.querySelector('tr[data-node="core-7"]')?.querySelectorAll('td') ?? [])].map((cell) => (cell.textContent ?? '').trim());
+    expect(idle.filter((text) => text === '—').length).toBeGreaterThanOrEqual(2);
+    expect(idle).not.toContain('0 ms');
+  });
+
+  it('spells out the median, the worst case and what was excluded on the expanded card', async () => {
+    const user = userEvent.setup();
+    render(
+      <PoolNodes
+        cards={[card({ key: 'core-6', label: 'core-6', firstByte: { count: 3, p50Ms: 12_500, maxMs: 91_716, maxEstTokens: 38_693 } })]}
+        window={EMPTY_SAMPLE_WINDOW}
+        state={READY}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'core-6' }));
+
+    expect(screen.getByText('p50 12.5 s · max 1m 32s')).toBeTruthy();
+    expect(screen.getByText('3 served, 30 min, failovers excluded')).toBeTruthy();
+    // No decode evidence: said in words, never a rate of zero.
+    expect(screen.getByText('not measured in the last 2 h')).toBeTruthy();
   });
 });
