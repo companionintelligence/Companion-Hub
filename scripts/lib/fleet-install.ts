@@ -306,8 +306,11 @@ export function describeStepFailure(out: string, err: string, outcome?: { code: 
     .filter(Boolean);
   // `too many` is Portal's rate limit, relayed by the Hub. Without it the node's line kept the box
   // title, "Pairing failed", and dropped the one line saying the fix was to wait 51 seconds.
+  // `temporarily unavailable` is the same limiter failing closed, for the same reason.
   const telling = lines.filter((line) =>
-    /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out|too many/i.test(line),
+    /hub-up-failed|hub-up-note|failed|refused|denied|error|not registered|already|cannot|unauthori|forbidden|timed out|too many|temporarily unavailable/i.test(
+      line,
+    ),
   );
   const chosen = telling.length > 0 ? telling.slice(-3) : lines.slice(-3);
   const quoted = chosen.join(' | ');
@@ -576,6 +579,8 @@ export async function installNode(
           const gaveUp = limit
             ? ` — ${waitMs === undefined ? tooLongToWait(limit) : `still refused after ${retry} wait(s)`}. Portal allows ${max} new devices per ${windowMs / 60_000} minutes from one address and created none here, so rerun this node later`
             : '';
+          // The next node mints from the same address, so this counts towards the run stopping.
+          if (limit) pacer.gaveUp(node.name);
           steps.push({ name: 'portal device', ok: false, detail: `${message}${gaveUp}` });
           return { node: node.name, ok: false, steps };
         }
@@ -599,45 +604,59 @@ export async function installNode(
    *
    * The refused attempt is reported as the wait it caused, not as a failed step: a node whose retry
    * registered is an installed node, and a `✗` on its first attempt would count it failed.
+   *
+   * Portal's limiter failing closed — `Service temporarily unavailable`, its D1 counter unreachable —
+   * is the same answer from the same place with a five-second wait, and goes round the same loop.
    */
   const redeem = async (name: string, code: string) => {
     let waitingFor: string | undefined;
     for (let retry = 0; ; retry++) {
-      const dueMs = pacer.dueInMs();
-      if (dueMs > 0) {
-        const why = waitingFor ?? describePairingPace(pacer.gapMs);
-        opts.onProgress?.(`waiting ${describeWait(dueMs)} before pairing — ${why}`);
-        await pacer.waitTurn();
+      const why = waitingFor ?? describePairingPace(pacer.gapMs);
+      const waitedMs = await pacer.waitTurn((ms) => opts.onProgress?.(`waiting ${describeWait(ms)} before pairing — ${why}`));
+      if (waitedMs > 0) {
         steps.push({
           name: waitingFor ? 'pairing rate limit' : 'pairing pace',
           ok: true,
           skipped: true,
-          ms: dueMs,
-          detail: `waited ${describeWait(dueMs)}: ${why}`,
+          ms: waitedMs,
+          detail: `waited ${describeWait(waitedMs)}: ${why}`,
         });
       }
-      // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
-      const up = await stepWithOutput(
-        name,
-        target,
-        bringUpScript(opts.postgresPassword, code, opts.mintPairingCode ? opts.portalOrigin : undefined),
-        'hub-up-complete',
-        20 * 60_000,
-      );
-      const limit = up.step.ok ? undefined : detectPairingRateLimit(`${up.err}\n${up.out}`);
-      if (!limit) {
-        pacer.redeemed();
-        return up;
+      // The turn is this node's until Portal's answer is known; whatever happens, it is handed on,
+      // or every node after this one would wait on it for ever.
+      let limit: PortalRateLimit | undefined;
+      let waitMs: number | undefined;
+      let up: Awaited<ReturnType<typeof stepWithOutput>> | undefined;
+      try {
+        // 20 minutes: this pulls the Hub image and every infra container on a cold machine.
+        up = await stepWithOutput(
+          name,
+          target,
+          bringUpScript(opts.postgresPassword, code, opts.mintPairingCode ? opts.portalOrigin : undefined),
+          'hub-up-complete',
+          20 * 60_000,
+        );
+        limit = up.step.ok ? undefined : detectPairingRateLimit(`${up.err}\n${up.out}`);
+        waitMs = limit ? rateLimitWaitMs(limit) : undefined;
+      } finally {
+        // Held even when this node gives up: the next node shares the address, and Portal's answer is for it too.
+        if (limit) pacer.notCounted(waitMs);
+        else pacer.redeemed({ registered: up?.step.ok === true });
       }
-      const waitMs = rateLimitWaitMs(limit);
-      // Held even when this node gives up: the next node shares the address, and Portal's answer is for it too.
-      if (waitMs !== undefined) pacer.holdFor(waitMs);
+      if (!limit) return up;
+      const refusal = limit.limiterUnavailable
+        ? `Portal's rate limiter could not reach its counter and refused the pairing before it looked at the code ("${limit.said}")`
+        : `Portal refused the pairing for rate before it looked at the code ("${limit.said}")`;
       if (waitMs === undefined || retry >= MAX_RATE_LIMIT_RETRIES) {
-        const why = waitMs === undefined ? tooLongToWait(limit) : `still refused for rate after ${retry} wait(s)`;
+        pacer.gaveUp(node.name);
+        const stillRefused = limit.limiterUnavailable
+          ? `Portal's rate limiter was still unavailable after ${retry} wait(s)`
+          : `still refused for rate after ${retry} wait(s)`;
+        const why = waitMs === undefined ? tooLongToWait(limit) : stillRefused;
         up.step.detail = `${up.step.detail} — ${why}. Portal refused before it looked at the code, so the code is still good: rerun this node (--nodes ${node.name}) once nothing else on this network is pairing`;
         return up;
       }
-      waitingFor = `Portal refused the pairing for rate before it looked at the code ("${limit.said}"), so the same code goes again (retry ${retry + 1} of ${MAX_RATE_LIMIT_RETRIES})`;
+      waitingFor = `${refusal}, so the same code goes again (retry ${retry + 1} of ${MAX_RATE_LIMIT_RETRIES})`;
     }
   };
 

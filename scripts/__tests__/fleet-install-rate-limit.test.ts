@@ -31,9 +31,9 @@ vi.mock('../lib/fleet-ssh.js', async (importOriginal) => ({
   sshCapture: mocks.sshCapture,
 }));
 
-import { describeStepFailure, installNode } from '../lib/fleet-install.js';
+import { describeStepFailure, installNode, type NodeInstallReport } from '../lib/fleet-install.js';
 import { classifyPairingFailure } from '../lib/fleet-pairing-codes.js';
-import { type PacerClock, PairingPacer, PortalRateLimitedError } from '../lib/portal-rate-limit.js';
+import { DEFAULT_PAIRING_GAP_MS, type PacerClock, PairingPacer, PORTAL_PAIR_RATE_LIMIT, PortalRateLimitedError } from '../lib/portal-rate-limit.js';
 
 const linuxFacts = {
   os: 'linux',
@@ -60,6 +60,13 @@ const rateLimited = (seconds: number | undefined) =>
   ].join('\n');
 
 const REFUSED = ['┌─ Pairing failed ─┐', '  That pairing code is no longer valid. Ask for a new one.', '└──┘'].join('\n');
+
+/**
+ * Portal's limiter failing closed: its D1 counter unreachable, it refuses the pair with 503
+ * `Service temporarily unavailable` and `Retry-After: 5` before PairDevice runs. The Hub passes the
+ * body of any non-429 through, without the header.
+ */
+const LIMITER_DOWN = ['┌─ Pairing failed ─┐', '  Service temporarily unavailable', '└──┘'].join('\n');
 
 /** A clock that only moves when something sleeps on it or a test says so. */
 function fakeClock(start = 1_000_000): PacerClock & { slept: number[]; advance: (ms: number) => void } {
@@ -182,12 +189,202 @@ describe('a pairing Portal refused for rate', () => {
     expect(report.steps.at(-1)?.detail).toMatch(/Portal asked for 3600s, more than the 600s window/);
   });
 
-  it('still hands a refusal about the code to replacePairingCode, as before', async () => {
+  // A regression guard, not coverage for the fix: this passes before and after it.
+  it('regression guard: a refusal about the code itself still goes to replacePairingCode', async () => {
     nodeWhoseRegisterSays(REFUSED, 'ok');
     const replacePairingCode = vi.fn().mockResolvedValue({ code: 'FRESH1', detail: 'a fresh code' });
     await installNode({ name: 'beta-max', ip: '10.0.0.7' }, { ...opts, replacePairingCode, pairingPacer: new PairingPacer(0, fakeClock()) }, 'ci');
     expect(replacePairingCode).toHaveBeenCalledTimes(1);
     expect(codesSent()).toEqual(['CODE01', 'FRESH1']);
+  });
+});
+
+describe("a pairing Portal's limiter refused because it was down", () => {
+  it('waits the five seconds Portal gives it and sends the same code again, and the node counts as installed', async () => {
+    nodeWhoseRegisterSays(LIMITER_DOWN, 'ok');
+    const clock = fakeClock();
+    const progress: string[] = [];
+    const replacePairingCode = vi.fn();
+    const report = await installNode(
+      { name: 'core-3', ip: '10.0.0.3' },
+      { ...opts, replacePairingCode, pairingPacer: new PairingPacer(0, clock), onProgress: (line) => progress.push(line) },
+      'ci',
+    );
+
+    expect(codesSent()).toEqual(['CODE01', 'CODE01']);
+    expect(clock.slept).toEqual([10_000]);
+    expect(replacePairingCode).not.toHaveBeenCalled();
+    expect(progress).toEqual([expect.stringMatching(/^waiting 10s before pairing — Portal's rate limiter could not reach its counter/)]);
+    expect(report.steps.find((s) => s.name === 'hub up + register')).toMatchObject({ ok: true });
+    expect(report.steps.filter((s) => s.name.startsWith('hub up') && !s.ok)).toEqual([]);
+  });
+
+  it('gives up after three short waits, keeps the code, and says what Portal said', async () => {
+    nodeWhoseRegisterSays(LIMITER_DOWN);
+    const clock = fakeClock();
+    const replacePairingCode = vi.fn();
+    const report = await installNode(
+      { name: 'core-3', ip: '10.0.0.3' },
+      { ...opts, replacePairingCode, pairingPacer: new PairingPacer(0, clock) },
+      'ci',
+    );
+
+    expect(codesSent()).toEqual(['CODE01', 'CODE01', 'CODE01', 'CODE01']);
+    expect(clock.slept).toEqual([10_000, 10_000, 10_000]);
+    expect(replacePairingCode).not.toHaveBeenCalled();
+    const last = report.steps.at(-1);
+    expect(last).toMatchObject({ name: 'hub up + register', ok: false });
+    expect(last?.detail).toContain('Service temporarily unavailable');
+    expect(last?.detail).toMatch(/rate limiter was still unavailable after 3 wait\(s\).*still good: rerun this node \(--nodes core-3\)/);
+    expect(classifyPairingFailure(last?.detail ?? '')).toBeUndefined();
+  });
+});
+
+describe('a run whose pairings Portal keeps refusing', () => {
+  it('says to stop once two nodes in a row have given up, naming them', async () => {
+    nodeWhoseRegisterSays(rateLimited(51));
+    const pacer = new PairingPacer(0, fakeClock());
+    await installNode({ name: 'core-2', ip: '10.0.0.2' }, { ...opts, pairingPacer: pacer }, 'ci');
+    expect(pacer.stopReason()).toBeUndefined();
+    await installNode({ name: 'core-4', ip: '10.0.0.4' }, { ...opts, pairingPacer: pacer }, 'ci');
+    expect(pacer.stopReason()).toMatch(/^Portal kept refusing core-2, core-4, one after the other, before it looked at their codes/);
+  });
+
+  it('counts a mint that stayed refused, since the next node mints from the same address', async () => {
+    nodeWhoseRegisterSays('ok');
+    const pacer = new PairingPacer(0, fakeClock());
+    const mintPairingCode = vi
+      .fn()
+      .mockRejectedValue(
+        new PortalRateLimitedError({ retryAfterSeconds: 30, said: 'Too many requests' }, 'Portal is rate-limiting device registration'),
+      );
+    for (const name of ['core-6', 'core-7']) {
+      await installNode(
+        { name, ip: `10.0.0.${name.slice(-1)}` },
+        { postgresPassword: opts.postgresPassword, mintPairingCode, pairingPacer: pacer },
+        'ci',
+      );
+    }
+    expect(pacer.stopReason()).toMatch(/core-6, core-7/);
+  });
+
+  it('starts counting again after a node registers', async () => {
+    nodeWhoseRegisterSays(rateLimited(51), rateLimited(51), rateLimited(51), rateLimited(51), 'ok', rateLimited(51));
+    const pacer = new PairingPacer(0, fakeClock());
+    for (const name of ['core-2', 'core-4', 'core-5'])
+      await installNode({ name, ip: `10.0.0.${name.slice(-1)}` }, { ...opts, pairingPacer: pacer }, 'ci');
+    // core-2 gave up, core-4 registered, core-5 gave up: never two in a row.
+    expect(pacer.stopReason()).toBeUndefined();
+  });
+});
+
+/**
+ * Portal's pair limiter as CI-Portal `consumeRateLimit` decides it: a fixed window that opens at the
+ * first pairing from an address and closes `windowMs` later, `max` pairings in it, a refusal not
+ * counted, and `Retry-After` the seconds left in the window, rounded up.
+ */
+function portalPairLimiter() {
+  let windowEnd = Number.NEGATIVE_INFINITY;
+  let count = 0;
+  return (at: number): { allowed: true } | { allowed: false; retryAfterSeconds: number } => {
+    if (at >= windowEnd) {
+      windowEnd = at + PORTAL_PAIR_RATE_LIMIT.windowMs;
+      count = 0;
+    }
+    if (count >= PORTAL_PAIR_RATE_LIMIT.max) return { allowed: false, retryAfterSeconds: Math.ceil((windowEnd - at) / 1000) };
+    count += 1;
+    return { allowed: true };
+  };
+}
+
+/**
+ * Every node's `hub up + register` against that limiter, on the test's clock: ten seconds of probe
+ * and preflight, then fifteen of `cihub up` before the pair, and five after it. What each attempt
+ * sent and what Portal answered is kept, in order.
+ */
+function fleetBehindPortal(clock: ReturnType<typeof fakeClock>, pair: ReturnType<typeof portalPairLimiter>) {
+  const attempts: { code: string; allowed: boolean }[] = [];
+  mocks.sshCapture.mockImplementation(async (_target: unknown, script: string) => {
+    if (script.includes('command -v cihub')) {
+      clock.advance(10_000);
+      return { ok: true, out: 'path=/usr/bin/cihub\ncihub 0.2.76\n', err: '', code: 0, ms: 1 };
+    }
+    const code = /cihub register --code '([^']*)'/.exec(script)?.[1];
+    if (code) {
+      clock.advance(15_000);
+      const answer = pair(clock.now());
+      clock.advance(5_000);
+      attempts.push({ code, allowed: answer.allowed });
+      return answer.allowed
+        ? { ok: true, out: '{"registered":true}\nhub-up-complete\n', err: '', code: 0, ms: 1 }
+        : { ok: false, out: rateLimited(answer.retryAfterSeconds), err: '', code: 1, ms: 1 };
+    }
+    return { ok: false, out: '', err: 'not part of this test', code: 1, ms: 1 };
+  });
+  return attempts;
+}
+
+/** Seventeen nodes, one after the other on one pacer, the way `fleet install` runs them. */
+async function installSeventeen(pacer: PairingPacer, replacePairingCode = vi.fn()): Promise<NodeInstallReport[]> {
+  const reports: NodeInstallReport[] = [];
+  for (let i = 1; i <= 17; i++) {
+    const code = `CODE${String(i).padStart(2, '0')}`;
+    reports.push(
+      await installNode({ name: `node-${i}`, ip: `10.0.2.${i}` }, { ...opts, pairingCode: code, replacePairingCode, pairingPacer: pacer }, 'ci'),
+    );
+  }
+  return reports;
+}
+
+const registered = (report: NodeInstallReport) => report.steps.find((s) => s.name === 'hub up + register')?.ok === true;
+
+describe("seventeen nodes through installNode against Portal's limiter", () => {
+  it('stays under it at the default gap: no refusal, and every node registers with its own code, once', async () => {
+    const clock = fakeClock();
+    const attempts = fleetBehindPortal(clock, portalPairLimiter());
+    const reports = await installSeventeen(new PairingPacer(DEFAULT_PAIRING_GAP_MS, clock));
+
+    expect(attempts.filter((a) => !a.allowed)).toEqual([]);
+    expect(attempts.map((a) => a.code)).toEqual(Array.from({ length: 17 }, (_, i) => `CODE${String(i + 1).padStart(2, '0')}`));
+    expect(reports.every(registered)).toBe(true);
+  });
+
+  it('back to back, trips it as the 2026-09-26 rebuild did, waits out what Portal asked, and still registers every node with its own code', async () => {
+    const clock = fakeClock();
+    const attempts = fleetBehindPortal(clock, portalPairLimiter());
+    const replacePairingCode = vi.fn();
+    const started = clock.now();
+    const reports = await installSeventeen(new PairingPacer(0, clock), replacePairingCode);
+    const backToBackMs = clock.now() - started;
+
+    // The eleventh is refused with the rest of the window, waits it out, and the same code goes again.
+    expect(attempts.filter((a) => !a.allowed).map((a) => a.code)).toEqual(['CODE11']);
+    expect(attempts.filter((a) => a.allowed).map((a) => a.code)).toEqual(
+      Array.from({ length: 17 }, (_, i) => `CODE${String(i + 1).padStart(2, '0')}`),
+    );
+    expect(reports.every(registered)).toBe(true);
+    expect(replacePairingCode).not.toHaveBeenCalled();
+
+    // The trade the default makes, measured on the same model: spacing costs more time than the one
+    // wait it avoids, in exchange for leaving the address's budget for anything else on the network.
+    const pacedClock = fakeClock();
+    fleetBehindPortal(pacedClock, portalPairLimiter());
+    const pacedStarted = pacedClock.now();
+    await installSeventeen(new PairingPacer(DEFAULT_PAIRING_GAP_MS, pacedClock));
+    expect(pacedClock.now() - pacedStarted).toBeGreaterThan(backToBackMs);
+  });
+
+  it('waits out a window someone else on the network already filled, then registers', async () => {
+    const clock = fakeClock();
+    const pair = portalPairLimiter();
+    for (let i = 0; i < PORTAL_PAIR_RATE_LIMIT.max; i++) pair(clock.now());
+    const attempts = fleetBehindPortal(clock, pair);
+    const reports = await installSeventeen(new PairingPacer(DEFAULT_PAIRING_GAP_MS, clock));
+
+    expect(attempts[0]).toEqual({ code: 'CODE01', allowed: false });
+    expect(attempts[1]).toEqual({ code: 'CODE01', allowed: true });
+    expect(reports[0]?.steps.find((s) => s.name === 'pairing rate limit')?.ms).toBe(580_000);
+    expect(reports.every(registered)).toBe(true);
   });
 });
 
@@ -266,7 +463,8 @@ describe('a mint Portal refused for rate', () => {
     expect(report.steps.at(-1)?.detail).toMatch(/created none here, so rerun this node later/);
   });
 
-  it('still ends the node on any other mint failure, without waiting', async () => {
+  // A regression guard, not coverage for the fix: this passes before and after it.
+  it('regression guard: any other mint failure still ends the node, without waiting', async () => {
     nodeWhoseRegisterSays('ok');
     const clock = fakeClock();
     const mintPairingCode = vi.fn().mockRejectedValue(new Error('a device named "core-6" already exists in this org'));

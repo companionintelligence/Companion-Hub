@@ -4,8 +4,9 @@
  * On 2026-09-26 a from-scratch rebuild paired ten nodes back to back and the next ones were refused
  * "Too many attempts. Try again in 51 seconds." — Portal allows ten pairings per ten minutes from
  * one address, and a fleet behind one NAT is one address. The run printed "Pairing failed" and moved
- * on. These tests pin what the run now knows about that answer, and that its default spacing keeps a
- * seventeen-node fleet under the limit where back to back does not.
+ * on. These tests pin what the run now knows about that answer and how the pacer behaves; what a
+ * seventeen-node run does against Portal's limiter is in `fleet-install-rate-limit.test.ts`, driven
+ * through `installNode` itself.
  */
 import { describe, expect, it } from 'vitest';
 import { rateLimitedWaitCopy } from '../../packages/backend/src/common/helpers/retry-after.js';
@@ -95,6 +96,23 @@ describe('detectPairingRateLimit', () => {
   it('is never read as a verdict on the code, so the kept code is neither dropped nor replaced', () => {
     expect(classifyPairingFailure(RATE_LIMITED)).toBeUndefined();
   });
+
+  it("reads Portal's limiter failing closed, which the Hub passes through without its five seconds", () => {
+    // CI-Portal `rateLimit` middleware, `failClosed` on the pair route: 503 {"error":"Service
+    // temporarily unavailable"} with Retry-After: 5, before PairDevice runs. The Hub relays the body
+    // of any non-429, and `cihub register` boxes it — rendered here by the CLI's own `box()`.
+    const output = box('Pairing failed', ['Service temporarily unavailable'], 'red');
+    const limit = detectPairingRateLimit(output);
+    expect(limit).toEqual({ said: 'Service temporarily unavailable', retryAfterSeconds: 5, limiterUnavailable: true });
+    expect(rateLimitWaitMs(limit ?? { said: '' })).toBe(10_000);
+    expect(classifyPairingFailure(output)).toBeUndefined();
+  });
+
+  it("does not read the limiter's words outside the Pairing failed box, or Portal's own 503s, as the limiter", () => {
+    expect(detectPairingRateLimit('hub-up-failed: registry said Service temporarily unavailable')).toBeUndefined();
+    // PairDevice's own 503s come after the handler has read the code, and say something else.
+    expect(detectPairingRateLimit(box('Pairing failed', ['Could not start pairing right now. Try again.'], 'red'))).toBeUndefined();
+  });
 });
 
 describe('rateLimitWaitMs', () => {
@@ -164,53 +182,56 @@ describe('PairingPacer', () => {
     pacer.holdFor(10_000);
     expect(pacer.dueInMs()).toBe(65_000);
   });
-});
 
-/**
- * Portal's limiter, reduced to what decides the answer: a fixed window that opens at the first
- * pairing from an address, counts up to `max`, and refuses until it closes (CI-Portal
- * `consumeRateLimit`). A refused pairing is not counted.
- */
-function portalLimiter() {
-  let windowEnd = 0;
-  let count = 0;
-  return (at: number): boolean => {
-    if (at >= windowEnd) {
-      windowEnd = at + PORTAL_PAIR_RATE_LIMIT.windowMs;
-      count = 0;
-    }
-    if (count >= PORTAL_PAIR_RATE_LIMIT.max) return false;
-    count += 1;
-    return true;
-  };
-}
+  it('queues a second caller behind the pairing in flight, then spaces it by the gap from when that one ended', async () => {
+    // A check-then-sleep let two callers read "due now" together and pair side by side. `fleet
+    // install` is serial today; this is what keeps the pacer from depending on that.
+    const clock = fakeClock();
+    const pacer = new PairingPacer(65_000, clock);
+    const order: string[] = [];
+    const first = pacer.waitTurn().then((ms) => order.push(`first after ${ms}`));
+    const second = pacer.waitTurn().then((ms) => order.push(`second after ${ms}`));
+    await first;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(order).toEqual(['first after 0']);
 
-/**
- * Seventeen nodes, serialised the way `fleet install` runs them: ten seconds of probe, preflight and
- * mint, then `hub up + register`, which pairs fifteen seconds in and ends five later. Returns the
- * nodes Portal refused.
- */
-async function installSeventeen(gapMs: number): Promise<number[]> {
-  const clock = fakeClock();
-  const pacer = new PairingPacer(gapMs, clock);
-  const allowed = portalLimiter();
-  const refused: number[] = [];
-  for (let node = 1; node <= 17; node++) {
-    await clock.sleep(10_000);
-    await pacer.waitTurn();
-    if (!allowed(clock.now() + 15_000)) refused.push(node);
-    await clock.sleep(20_000);
+    clock.advance(20_000);
     pacer.redeemed();
-  }
-  return refused;
-}
-
-describe('a seventeen-node install against the limiter', () => {
-  it('trips it back to back, as the rebuild on 2026-09-26 did', async () => {
-    expect((await installSeventeen(0)).length).toBeGreaterThan(0);
+    await second;
+    expect(order).toEqual(['first after 0', 'second after 65000']);
   });
 
-  it('stays under it at the default gap', async () => {
-    expect(await installSeventeen(DEFAULT_PAIRING_GAP_MS)).toEqual([]);
+  it('hands the turn on when Portal refused before counting, and the retry waits out the hold, not the gap', async () => {
+    const clock = fakeClock();
+    const pacer = new PairingPacer(65_000, clock);
+    await pacer.waitTurn();
+    pacer.notCounted(10_000);
+    expect(await pacer.waitTurn()).toBe(10_000);
+    pacer.redeemed();
+    expect(pacer.dueInMs()).toBe(65_000);
+  });
+
+  it('tells a waiting line the wait that follows, once the turn is its own', async () => {
+    const clock = fakeClock();
+    const pacer = new PairingPacer(65_000, clock);
+    const heard: number[] = [];
+    await pacer.waitTurn((ms) => heard.push(ms));
+    pacer.redeemed();
+    clock.advance(5_000);
+    await pacer.waitTurn((ms) => heard.push(ms));
+    expect(heard).toEqual([60_000]);
+  });
+
+  it('says to stop once two nodes in a row gave up, and only a node that registers in between clears it', () => {
+    const pacer = new PairingPacer(0, fakeClock());
+    pacer.gaveUp('core-2');
+    expect(pacer.stopReason()).toBeUndefined();
+    pacer.redeemed({ registered: true });
+    pacer.gaveUp('core-4');
+    expect(pacer.stopReason()).toBeUndefined();
+    // A step that ended without registering says nothing about Portal letting pairings through.
+    pacer.redeemed();
+    pacer.gaveUp('core-5');
+    expect(pacer.stopReason()).toMatch(/^Portal kept refusing core-4, core-5, one after the other/);
   });
 });

@@ -1609,19 +1609,35 @@ seconds.`, which the node's line reduced to `Pairing failed`.
   over its budget plus five seconds, so a run cannot fill the window on its own. The wait comes
   just before `hub up + register`, after the node's probe, preflight, binary and mint. It prints live
   as `… waiting 47s before pairing` and lands on the node's report as `pairing pace`. The dry run
-  says how much waiting the spacing can add.
+  says how much waiting the spacing can add, and what the retries below can add on top.
 - **A refusal for rate.** Portal's limiter answers before its handler, so a `429` means the code was
   never looked at. The run waits what `Retry-After` asked plus five seconds, or the default gap when
   the Hub relayed no delay, and then sends the **same** code again, up to three times. The code is
   neither replaced nor dropped, and the next node is held for the same wait, because it shares the
   address. A wait longer than Portal's own ten-minute window is not taken: the node stops and says
   its code is still good.
+- **The limiter itself down.** The pair route fails closed: when Portal's limiter cannot reach its
+  counter it answers `503 Service temporarily unavailable` with `Retry-After: 5`, again before the
+  handler. The run treats it like a refusal for rate with a ten-second wait, on the same terms.
 - **Minting.** `POST /api/devices` has a limit of its own, 20 per 10 minutes per address. A refusal
   there created no device and took no name, so the mint is waited out and sent again on the same
   terms.
+- **Stopping.** Once two nodes in a row have given up on those refusals, with no node registered in
+  between, the run stops pairing. The nodes left are not dialled and nothing is minted for them; each
+  reads `not attempted`, and the summary names them with the `--nodes` list to rerun. Without the
+  stop, a run whose every pairing is refused would wait about half an hour on each node before it
+  reported anything.
 
 Other pairing from the same network, such as a second operator or a run a few minutes earlier,
 spends the same budget. The first node of a run can still be refused, and the retry covers that.
+That includes a second `fleet install` against the same fleet: each run paces its own pairings and
+not the other's.
+
+The spacing is a trade. On a network where nothing else pairs, `--pairing-gap 0` finishes a large
+fleet sooner: it sends ten back to back, and the eleventh waits out the rest of Portal's window
+once. The default spends about a minute per node so that the run never fills the address's budget,
+which leaves room for anything else on that network, and does not rely on the node's Hub relaying
+how long to wait.
 
 ### `cihub fleet update`
 

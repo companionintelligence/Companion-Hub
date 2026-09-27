@@ -12,6 +12,13 @@
  * A refusal for rate is the cheapest failure a pairing can have. The limiter runs before Portal's
  * handler, so it never looked at the code: nothing is claimed, nothing to keep or replace, and the
  * same code goes again once the window has turned over.
+ *
+ * The same limiter has one other answer that comes before the handler. The pair route is
+ * `failClosed`, so when the limiter cannot reach its D1 counter it refuses rather than let an
+ * unmetered code guess through: `503 {"error":"Service temporarily unavailable"}` with
+ * `Retry-After: 5` (CI-Portal `domains/core/middleware/rateLimit.ts`,
+ * `LIMITER_UNAVAILABLE_RETRY_SECONDS`). Nothing was counted and the code was never looked at, so it
+ * is the same kind of answer with a much shorter wait.
  */
 
 export interface PortalRateLimitRule {
@@ -55,11 +62,32 @@ export const MAX_RATE_LIMIT_RETRIES = 3;
  */
 export const MAX_RATE_LIMIT_WAIT_MS = PORTAL_PAIR_RATE_LIMIT.windowMs + RATE_LIMIT_MARGIN_MS;
 
+/**
+ * CI-Portal `LIMITER_UNAVAILABLE_RETRY_SECONDS`: the `Retry-After` on the limiter's fail-closed 503.
+ * Mirrored because the node's Hub relays `Retry-After` only on a 429, so the seconds never reach the
+ * node's output.
+ */
+export const LIMITER_UNAVAILABLE_RETRY_SECONDS = 5;
+
+/**
+ * How many nodes in a row may give up on Portal refusing them before it looked at their codes
+ * before the run stops pairing. Each such node has already waited up to three times, up to ten
+ * minutes each, so a run that kept going would spend about half an hour per remaining node learning
+ * the same thing: something else on this network is keeping the address's budget spent. One node
+ * can be unlucky; two in a row is the network.
+ */
+export const MAX_REFUSED_NODES_IN_A_ROW = 2;
+
 export interface PortalRateLimit {
   /** What Portal advertised, when the answer carried it. */
   retryAfterSeconds?: number;
   /** The words that said so, quoted on the node's line. */
   said: string;
+  /**
+   * The limiter could not reach its counter and refused anyway (the pair route fails closed), rather
+   * than the address having spent its budget. Nothing was counted, and the wait is seconds.
+   */
+  limiterUnavailable?: true;
 }
 
 /** Portal refused a request for rate. Nothing was created or spent, so the same request can be sent again. */
@@ -97,6 +125,12 @@ export function retryAfterSecondsFrom(headers: Pick<Headers, 'get'>, now = Date.
  * that one counts only inside the `Pairing failed` box: Docker Hub's pull limit says "Too Many
  * Requests" during the `cihub up` in front of it, and a code that never reached Portal is not
  * waiting on Portal.
+ *
+ * The limiter's fail-closed 503 reaches the node the way every other non-429 does: the Hub passes
+ * Portal's `error` through, so the box reads `Service temporarily unavailable`, without the five
+ * seconds. Nothing in Portal's pair handler says those words (its own 503s say "Could not … Try
+ * again." and carry a `code`), and nothing in the Hub does, so inside the `Pairing failed` box they
+ * are the limiter and only the limiter.
  */
 export function detectPairingRateLimit(output: string): PortalRateLimit | undefined {
   const text = output.replace(/\s+/g, ' ');
@@ -104,6 +138,8 @@ export function detectPairingRateLimit(output: string): PortalRateLimit | undefi
   if (/Pairing accepted/i.test(text)) return undefined;
   const hub = /Too many attempts\.?(?: Try again in (\d+) seconds?\.?| Please wait a moment and try again\.?)?/i.exec(text);
   if (hub) return { said: hub[0].trim(), ...(hub[1] ? { retryAfterSeconds: Number(hub[1]) } : {}) };
+  const limiterDown = /Pairing failed\W+(Service temporarily unavailable)/i.exec(text);
+  if (limiterDown?.[1]) return { said: limiterDown[1], retryAfterSeconds: LIMITER_UNAVAILABLE_RETRY_SECONDS, limiterUnavailable: true };
   const passedThrough = /Pairing failed\W+(Too many requests|Pairing failed: HTTP 429)/i.exec(text);
   return passedThrough?.[1] ? { said: passedThrough[1] } : undefined;
 }
@@ -140,43 +176,82 @@ export const realClock: PacerClock = {
 };
 
 /**
- * Spaces one run's pairings and holds them while Portal says to wait.
+ * Spaces one run's pairings, holds them while Portal says to wait, and says when to stop.
  *
- * One per run, shared by every node, because Portal counts per address and the nodes share one.
- * `fleet install` is serialised per node, so spacing consecutive pairings is the whole job: the gap
- * runs from the END of one node's `hub up + register` to the START of the next, since the pair call
- * happens somewhere inside that step and the ends are the only instants this side knows bound it.
+ * One per run, shared by every node, because Portal counts per address and the nodes share one. The
+ * gap runs from the END of one node's `hub up + register` to the START of the next, since the pair
+ * call happens somewhere inside that step and the ends are the only instants this side knows bound it.
+ *
+ * A pairing holds the turn from `waitTurn` until it ends — `redeemed()` when Portal counted it,
+ * `notCounted()` when Portal refused it first — and a second caller queues behind it rather than
+ * reading the same "due now" and going out alongside. `fleet install` is serialised per node, so
+ * today there is never a second caller; the queue is what keeps that an assumption the pacer does
+ * not need. It does not reach across processes: two `fleet install` runs against one fleet each pace
+ * themselves, and between them rest on the bounded retry of a refusal.
  */
 export class PairingPacer {
   private lastRedeemAt: number | undefined;
   private heldUntil = 0;
+  /** Settles when the pairing that holds the turn has ended; the next `waitTurn` queues on it. */
+  private turn: Promise<void> = Promise.resolve();
+  private endTurn: (() => void) | undefined;
+  private refusedInARow: string[] = [];
 
   constructor(
     readonly gapMs: number = DEFAULT_PAIRING_GAP_MS,
     private readonly clock: PacerClock = realClock,
   ) {}
 
-  /** How long, from now, the next pairing has to wait. */
+  /** How long, from now, the gap and any hold make the next pairing wait; a pairing in flight comes on top. */
   dueInMs(): number {
     const now = this.clock.now();
     const byGap = this.lastRedeemAt === undefined ? now : this.lastRedeemAt + this.gapMs;
     return Math.max(0, byGap - now, this.heldUntil - now);
   }
 
-  /** Wait until the next pairing may go out; returns how long that was. */
-  async waitTurn(): Promise<number> {
+  /**
+   * Take the turn: queue behind any pairing in flight, then wait out the gap or a hold. Returns that
+   * last wait, which `onWait` hears just before it starts, so a line printed from it names the wait
+   * that follows and not one read before the queue moved. The caller holds the turn until it calls
+   * `redeemed()` or `notCounted()`, and must call one of them.
+   */
+  async waitTurn(onWait?: (ms: number) => void): Promise<number> {
+    const ahead = this.turn;
+    let end: (() => void) | undefined;
+    this.turn = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    await ahead;
+    this.endTurn = end;
     const ms = this.dueInMs();
-    if (ms > 0) await this.clock.sleep(ms);
+    if (ms > 0) {
+      onWait?.(ms);
+      await this.clock.sleep(ms);
+    }
     return ms;
   }
 
   /**
    * A pairing step just ended, and Portal counted whatever it sent. Called for every outcome but a
-   * refusal for rate — the one answer Portal does not count — including a step that died before it
-   * paired, since from here the two look alike and waiting for nothing only costs time.
+   * refusal before the handler — the answers Portal does not count — including a step that died
+   * before it paired, since from here the two look alike and waiting for nothing only costs time.
+   * `registered` is the one outcome that proves Portal is letting pairings through again, so only it
+   * clears the nodes refused in a row.
    */
-  redeemed(): void {
+  redeemed(outcome: { registered?: boolean } = {}): void {
     this.lastRedeemAt = this.clock.now();
+    if (outcome.registered) this.refusedInARow = [];
+    this.finishTurn();
+  }
+
+  /**
+   * Portal refused this turn's pairing before it counted it — for rate, or because its limiter was
+   * down — so the gap does not restart from it. Ends the turn; `holdMs`, when given, holds every
+   * node, this one's own retry included, for what Portal asked.
+   */
+  notCounted(holdMs?: number): void {
+    if (holdMs !== undefined) this.holdFor(holdMs);
+    this.finishTurn();
   }
 
   /** Portal said to wait: nothing from this address pairs for `ms`, whichever node is next. */
@@ -187,5 +262,30 @@ export class PairingPacer {
   /** A wait that is not about pairing — a mint Portal refused for rate — on the same clock. */
   pause(ms: number): Promise<void> {
     return this.clock.sleep(ms);
+  }
+
+  /**
+   * A node stopped because Portal kept refusing it before it looked at the code: out of waits, or
+   * asked for longer than Portal's own window. Counted until a node registers.
+   */
+  gaveUp(node: string): void {
+    this.refusedInARow.push(node);
+  }
+
+  /**
+   * Why the run should pair no further, once `MAX_REFUSED_NODES_IN_A_ROW` nodes in a row have given
+   * up; `undefined` until then. Without it a run whose every pairing is refused visited every node
+   * before it reported anything: about half an hour of waiting apiece, nine hours or more for
+   * seventeen, to learn on the last node what the second had already shown.
+   */
+  stopReason(): string | undefined {
+    if (this.refusedInARow.length < MAX_REFUSED_NODES_IN_A_ROW) return undefined;
+    return `Portal kept refusing ${this.refusedInARow.join(', ')}, one after the other, before it looked at their codes, for longer than this run waits`;
+  }
+
+  private finishTurn(): void {
+    const end = this.endTurn;
+    this.endTurn = undefined;
+    end?.();
   }
 }

@@ -103,6 +103,17 @@ describe('--pairing-gap', () => {
     process.env.CIHUB_PAIRING_GAP = 'lots';
     expect(() => parseFleetArgs(['install'])).toThrow(/CIHUB_PAIRING_GAP must be whole seconds/);
   });
+
+  it('leaves every other subcommand alone when CIHUB_PAIRING_GAP is malformed, and the flag still wins over it', () => {
+    // Read with the defaults, a stray `90s` in a shell profile refused `fleet status` and the rest,
+    // none of which pair, and `--pairing-gap` could not override it: the env was read before argv.
+    process.env.CIHUB_PAIRING_GAP = '90s';
+    for (const argv of [['status'], ['update', '--hub'], ['list'], ['preflight'], ['scan']]) {
+      expect(() => parseFleetArgs(argv), argv.join(' ')).not.toThrow();
+    }
+    expect(parseFleetArgs(['install', '--pairing-gap', '5']).pairingGapMs).toBe(5_000);
+    expect(() => parseFleetArgs(['install'])).toThrow(/CIHUB_PAIRING_GAP must be whole seconds .*got '90s'/);
+  });
 });
 
 describe('fleet install --execute', () => {
@@ -139,15 +150,55 @@ describe('fleet install --execute', () => {
     expect(thrown).toBe(refusal);
     expect(readPendingPairingCode('10.0.0.2', 'org-1')).toBeUndefined();
   });
+
+  it('stops dialling once two nodes in a row gave up on Portal refusing them, and names the rest to rerun', async () => {
+    // What installNode does when a node runs out of waits: tell the run's pacer. Without a stop, a
+    // run whose every pairing is refused spent about half an hour per node — nine hours or more for
+    // seventeen — before it reported anything.
+    mocks.nodes = ['core-2', 'core-4', 'core-5', 'core-6'].map((name, i) => ({ name, ip: `10.0.0.${i + 2}` }));
+    mocks.installNode.mockImplementation(async (node: { name: string }, opts: InstallOpts) => {
+      opts.pairingPacer?.gaveUp(node.name);
+      return { node: node.name, ok: false, steps: [{ name: 'hub up + register', ok: false, detail: 'Too many attempts. Try again in 51 seconds.' }] };
+    });
+    await runFleetCommand(['install', '--execute', '--json']);
+
+    expect(mocks.installNode.mock.calls.map(([node]) => (node as { name: string }).name)).toEqual(['core-2', 'core-4']);
+    expect(mocks.mintPairingCode).not.toHaveBeenCalled();
+    expect(printed()).toMatch(/not attempted — Portal kept refusing core-2, core-4, one after the other.*so this run stopped pairing/);
+    expect(printed()).toContain('0/4 node(s) installed.');
+    expect(printed()).toContain('not attempted: core-5, core-6');
+    expect(printed()).toContain('rerun with --nodes core-5,core-6');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps going when a node registers between two that gave up', async () => {
+    mocks.nodes = ['core-2', 'core-4', 'core-5', 'core-6'].map((name, i) => ({ name, ip: `10.0.0.${i + 2}` }));
+    mocks.installNode.mockImplementation(async (node: { name: string }, opts: InstallOpts) => {
+      if (node.name === 'core-4') {
+        opts.pairingPacer?.redeemed({ registered: true });
+        return { node: node.name, ok: true, steps: [] };
+      }
+      opts.pairingPacer?.gaveUp(node.name);
+      return { node: node.name, ok: false, steps: [] };
+    });
+    await runFleetCommand(['install', '--execute']);
+
+    // core-2 gave up, core-4 registered, core-5 gave up, core-6 gave up: only then two in a row, and
+    // nothing was left to stop.
+    expect(mocks.installNode).toHaveBeenCalledTimes(4);
+    expect(printed()).not.toContain('not attempted');
+  });
 });
 
 describe('the dry run', () => {
-  it('says how far apart the pairings go and the most waiting that adds', async () => {
+  it('says how far apart the pairings go, the most waiting the spacing adds, and the ceiling on waiting out refusals', async () => {
     mocks.nodes = Array.from({ length: 17 }, (_, i) => ({ name: `core-${i + 1}`, ip: `10.0.0.${i + 1}` }));
     await runFleetCommand(['install']);
     expect(printed()).toMatch(
-      /pairings go out 65s apart — Portal allows 10 pairings per 10 minutes from one network address.*at most ~18 min of waiting across 17 nodes/,
+      /pairings go out 65s apart — Portal allows 10 pairings per 10 minutes from one network address.*the spacing alone adds at most ~18 min of waiting across 17 nodes/,
     );
+    // "At most ~18 min" once read as the whole run's ceiling; the retries have their own.
+    expect(printed()).toMatch(/at most 3 times per pairing and 600s each; once 2 nodes in a row are still refused, the run stops pairing/);
     expect(mocks.installNode).not.toHaveBeenCalled();
   });
 });
