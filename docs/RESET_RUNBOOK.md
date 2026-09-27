@@ -28,19 +28,22 @@ cihub up dev --detached
 
 What it does:
 
-0. Lists the apps and containers it will remove (step 1) before it asks for confirmation. `--dry-run` prints that list and the host data it would delete, then stops. If Docker cannot list containers, the reset stops without removing anything: an app with a restart policy would come back with the daemon, against the deleted data.
+0. Lists the apps and containers it will remove (step 1) before it asks for confirmation. `--dry-run` prints that list and the host data it would delete, including any folder in it that you cannot delete as your user (step 5), then stops. If Docker cannot list containers, the reset stops without removing anything: an app with a restart policy would come back with the daemon, against the deleted data.
 1. Removes every installed app: the containers, networks, and named volumes of each compose project labelled `ci-hub.managed=true` or `ci-os-hub.managed=true`. Apps are separate compose projects, so the next step does not reach them, and apps left running keep bind mounts into the deleted data directory and Hub credentials the reset Hub rejects.
    It also removes any other container attached to the Hub network (`ci-hub_network`, `ci-os-hub_network`, or their underscore spellings) that is not part of the Hub's own compose project. The Hub never installed these, so it has no record of them before or after the reset. Only the container goes; no named volume can be traced to it, and its bind mounts under the data directory go with step 4. On beta-max (2026-09-22) four containers started with `docker run` under Hub-style app names ran on `ci-hub_network` against `app-data/`, invisible to the Hub, which could not stop, expose, or uninstall them.
 2. `docker compose down -v --remove-orphans` — removes Hub containers **and** named volumes such as `ci_hub_pgdata`
 3. Verifies lingering Hub volumes (`ci_hub_pgdata`, `ci_hub_app_data`, `hub_tailscale_state`) and removes any leftovers
 4. Deletes host `hub-data` / tunnel directories (repo dev) or the canonical `companion-hub` tree (prod appliance)
-5. If `hub-data` contains root-owned files (EACCES), retries cleanup via `docker run --rm -v <path>:/d alpine rm -rf /d/*`
+5. If a folder survives because containers wrote files into it as root (EACCES), retries through a root container, `docker run --rm -v <folder>:/d alpine rm -rf /d/*`, in both modes. With rootless Docker that container's root is your user, so it cannot delete files owned by root either.
+6. Checks that the apps' containers and volumes, the Hub's containers, the Hub volumes, and the host folders are gone. It prints **Reset complete** only when they are. Otherwise it prints **Reset incomplete**, lists each survivor (for a folder, the folders inside it that stopped the delete, the errno, and the owner), prints the commands that finish the job, such as `sudo rm -rf -- '<folder>'`, and exits 1. `cihub recreate` then does not start a Hub on the old data.
+
+During the 2026-09-26 fleet rebuild, reset hit EACCES on the data dir on 15 of 17 nodes, still printed "host data were removed", and exited 0.
 
 Use this when the Hub API is down, Docker state is corrupted, or you want the same outcome as a factory install.
 
 Step 1 assumes one Hub per Docker daemon, because the managed labels do not say which Hub installed an app.
 
-`cihub clean` removes installed app containers and their networks, and the other containers on the Hub network, before it deletes the data directory, and keeps their named volumes. `cihub down` stops only the Hub's own project, so without this step `cihub down && cihub clean` left apps running against deleted bind mounts.
+`cihub clean` removes installed app containers and their networks, and the other containers on the Hub network, before it deletes the data directory, and keeps their named volumes. `cihub down` stops only the Hub's own project, so without this step `cihub down && cihub clean` left apps running against deleted bind mounts. Clean deletes host folders as in steps 4 and 5; if one survives, it lists what is left in the same way and exits 1.
 
 The legacy `scripts/nuke.sh` and `scripts/unsafe-cleanup.sh` also remove installed apps before they delete Hub state. If Docker cannot list containers, they stop without deleting anything, because apps with a restart policy come back with the daemon. To keep the apps, run `sudo scripts/nuke.sh --keep-apps`; the script lists them and what they still depend on.
 

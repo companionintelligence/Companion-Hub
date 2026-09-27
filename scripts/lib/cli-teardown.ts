@@ -6,7 +6,7 @@
  * data, and `uninstall` removes the whole install.
  */
 
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { dockerBindMountPath } from '../heal-hub-bind-mounts.js';
@@ -23,8 +23,15 @@ import { startHub } from './cli-lifecycle.js';
 import { run, runBestEffort, runCapture } from './cli-proc.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { isApplianceMode, requireRepoRoot } from './cli-repo-context.js';
-import type { HubEnv } from './cli-types.js';
+import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { dim, printMessageBox } from './cli-ui.js';
+import {
+  describeBlockedFolders,
+  findFoldersBlockingRemoval,
+  type HostDataRemoval,
+  removeHostDataTarget,
+  rootRemovalCommand,
+} from './host-data-removal.js';
 import { composeArgsForContext, envOverridesForContext, type HubContext, requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { CANONICAL_DATA_DIR_NAME, resolveRootFolderHost } from './paths.js';
 
@@ -108,18 +115,90 @@ function pathIsWithin(base: string, target: string): boolean {
   return normalizedTarget === normalizedBase || normalizedTarget.startsWith(`${normalizedBase}${path.sep}`);
 }
 
-function removeDirectoryTarget(targetPath: string, label: string, removed: string[], skipped: string[]) {
-  if (!existsSync(targetPath)) {
-    skipped.push(`${label}: ${targetPath}`);
-    return;
-  }
+/**
+ * Deletes a checkout's host data folder. Folders outside the repository and the user's home are
+ * refused rather than deleted: ROOT_FOLDER_HOST comes from an env file, and a typo there must not
+ * turn `cihub clean` into `rm -rf` somewhere else.
+ */
+function removeCheckoutTarget(targetPath: string): HostDataRemoval {
   const repoRoot = process.cwd();
   const homeDir = process.env.HOME || process.env.USERPROFILE || repoRoot;
-  if (!pathIsWithin(repoRoot, targetPath) && !pathIsWithin(homeDir, targetPath)) {
-    throw new Error(`Refusing to remove ${targetPath}; it is outside the repository and user home directory.`);
+  if (existsSync(targetPath) && !pathIsWithin(repoRoot, targetPath) && !pathIsWithin(homeDir, targetPath)) {
+    return {
+      target: targetPath,
+      existed: true,
+      removed: false,
+      rootContainer: 'not needed',
+      refused: 'it is outside the repository and your home directory, so it was not deleted. Check ROOT_FOLDER_HOST in the env file',
+      blocked: [],
+      leftoverEntries: 0,
+    };
   }
-  rmSync(targetPath, { recursive: true, force: true });
-  removed.push(`${label}: ${targetPath}`);
+  return removeHostDataTarget(targetPath, { removeAsRoot: removeViaRootContainer });
+}
+
+/**
+ * Deletes a host folder's contents as root through a throwaway container, for the files the Hub and
+ * its apps wrote as root. Returns whether Docker started the container. The script ends in
+ * `|| true`, so it exits 0 whatever it deleted; only checking the folder afterwards says whether it
+ * worked. With rootless Docker the container's root is the login user, and it deletes no more than
+ * the CLI could.
+ */
+function removeViaRootContainer(hostPath: string): boolean {
+  printMessageBox('Cleaning root-owned hub data via Docker', [`Target: ${hostPath}`], 'yellow');
+  return runBestEffort('docker', [
+    'run',
+    '--rm',
+    '-v',
+    `${dockerBindMountPath(hostPath)}:/d`,
+    'alpine',
+    'sh',
+    '-c',
+    'rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true',
+  ]);
+}
+
+function currentUserLabel(): string {
+  return typeof process.getuid === 'function' ? `this user (uid ${process.getuid()})` : 'this user';
+}
+
+/**
+ * Names every host data folder that survived, the folders inside it that stopped the delete and
+ * why, and the command that finishes the job. Sets a failing exit code, because a caller that
+ * carried on (`cihub recreate`, a fleet script) would start a Hub on the old data.
+ */
+function reportHostDataLeftovers(results: HostDataRemoval[]): boolean {
+  const survivors = results.filter((result) => !result.removed);
+  if (survivors.length === 0) return true;
+  const lines: string[] = [];
+  for (const result of survivors) {
+    if (result.refused) {
+      lines.push(`${result.target}: ${result.refused}.`);
+      continue;
+    }
+    const count = result.leftoverEntries;
+    lines.push(`${result.target} is still there: ${count} ${count === 1 ? 'entry' : 'entries'} ${currentUserLabel()} cannot delete.`);
+    lines.push(...describeBlockedFolders(result.blocked).map((line) => `  ${line}`));
+    if (result.rootContainer === 'ran') {
+      const permissionOnly = result.blocked.every((folder) => folder.code === 'EACCES' || folder.code === 'EPERM');
+      lines.push(
+        dim(
+          `A root container (docker run --rm -v <folder>:/d alpine rm -rf) ran and did not delete them${permissionOnly ? '; with rootless Docker its root is your user' : ''}.`,
+        ),
+      );
+    } else if (result.rootContainer === 'did not start') {
+      lines.push(
+        dim('The root container that deletes these (docker run --rm -v <folder>:/d alpine rm -rf) did not start; the Docker error is above.'),
+      );
+    }
+    if (result.blocked.some((folder) => folder.code === 'EBUSY')) {
+      lines.push('EBUSY: a running container or a mount still holds that path. `docker ps` and `findmnt` show which; stop it first.');
+    }
+    lines.push(`Delete it as root: ${rootRemovalCommand(result.target)}`);
+  }
+  printMessageBox('Host data left behind', lines, 'red');
+  process.exitCode = 1;
+  return false;
 }
 
 /**
@@ -128,7 +207,7 @@ function removeDirectoryTarget(targetPath: string, label: string, removed: strin
  * app/data mounts, and the Cloudflare tunnel token. Guarded so we only ever delete a folder named
  * `companion-hub` inside the user's data/home directory.
  */
-function cleanApplianceHub(ctx: HubContext, options: CleanHubOptions) {
+function cleanApplianceHub(ctx: HubContext, options: CleanHubOptions): HostDataRemoval[] {
   const dataDir = ctx.dataDir as string;
   const homeDir = process.env.HOME || process.env.USERPROFILE || homedir();
   const safe = path.basename(dataDir) === CANONICAL_DATA_DIR_NAME && pathIsWithin(homeDir, dataDir);
@@ -143,12 +222,13 @@ function cleanApplianceHub(ctx: HubContext, options: CleanHubOptions) {
   if (!options.appsAlreadyRemoved) {
     removeAppContainersBeforeDeletingData();
   }
-  if (existsSync(dataDir)) {
-    rmSync(dataDir, { recursive: true, force: true });
-    printMessageBox('Prod Hub data wiped', [`removed: ${dataDir}`], 'yellow');
-  } else {
-    printMessageBox('Prod Hub data wiped', [dim(`already absent: ${dataDir}`)], 'yellow');
+  const result = removeHostDataTarget(dataDir, { removeAsRoot: removeViaRootContainer });
+  if (result.removed) {
+    const via = result.rootContainer === 'ran' ? ' (the root-owned part through a root container)' : '';
+    printMessageBox('Prod Hub data wiped', [result.existed ? `removed: ${dataDir}${via}` : dim(`already absent: ${dataDir}`)], 'yellow');
   }
+  reportHostDataLeftovers([result]);
+  return [result];
 }
 
 const dockerCapture = (args: string[]) => runCapture('docker', args);
@@ -190,13 +270,27 @@ export function describeAppTeardown(plan: AppTeardownPlan): string[] {
 }
 
 /** Where reset deletes host files: the whole canonical tree (appliance), or hub-data and tunnel (checkout). */
-function hostDataTargets(env: HubEnv): string[] {
+function hostDataTargets(env: HubEnv): { path: string; label: string }[] {
   if (isApplianceMode()) {
     const { dataDir } = resolveHubContext(env);
-    return dataDir ? [dataDir] : [];
+    return dataDir ? [{ path: dataDir, label: 'data dir' }] : [];
   }
   const rootFolderHost = resolveRootFolderHost(getEnvFileOrExit(env));
-  return [rootFolderHost, path.resolve(rootFolderHost, '..', 'tunnel')];
+  return [
+    { path: rootFolderHost, label: 'root folder' },
+    { path: path.resolve(rootFolderHost, '..', 'tunnel'), label: 'tunnel dir' },
+  ];
+}
+
+/** For --dry-run: whether a target is there, and which folders in it need the root container. */
+function dryRunHostDataNotes(target: string): string[] {
+  if (!existsSync(target)) return [dim('    already absent')];
+  const blocked = findFoldersBlockingRemoval(target);
+  if (blocked.length === 0) return [];
+  return [
+    `    ${currentUserLabel()} cannot delete everything in it; reset deletes these through a root container:`,
+    ...describeBlockedFolders(blocked).map((line) => `      ${line}`),
+  ];
 }
 
 /**
@@ -218,24 +312,27 @@ function listedOrRefuse(plan: AppTeardownPlan): boolean {
   return false;
 }
 
-export function cleanHub(env: HubEnv, options: CleanHubOptions = {}) {
+/** Returns what happened to each host data folder; any survivor has already been reported. */
+export function cleanHub(env: HubEnv, options: CleanHubOptions = {}): HostDataRemoval[] {
   if (isApplianceMode()) {
     requireRepoOrApplianceContext('cihub clean', 'allow-missing');
-    cleanApplianceHub(resolveHubContext(env), options);
-    return;
+    return cleanApplianceHub(resolveHubContext(env), options);
   }
   requireRepoRoot('cihub clean');
-  const envFileName = getEnvFileOrExit(env);
-  const rootFolderHost = resolveRootFolderHost(envFileName);
-  const tunnelDir = path.resolve(rootFolderHost, '..', 'tunnel');
   if (!options.appsAlreadyRemoved) {
     removeAppContainersBeforeDeletingData();
   }
-  const removed: string[] = [];
-  const skipped: string[] = [];
-  removeDirectoryTarget(rootFolderHost, 'root folder', removed, skipped);
-  removeDirectoryTarget(tunnelDir, 'tunnel dir', removed, skipped);
-  printMessageBox('Environment files cleaned', [...removed, ...skipped.map((line) => dim(`skipped ${line}`))], 'yellow');
+  const targets = hostDataTargets(env);
+  const results = targets.map(({ path: target }) => removeCheckoutTarget(target));
+  const lines = results.map((result, index) => {
+    const line = `${targets[index].label}: ${result.target}`;
+    if (!result.existed) return dim(`skipped ${line}`);
+    return result.removed ? line : `left behind ${line}`;
+  });
+  const allRemoved = results.every((result) => result.removed);
+  printMessageBox(allRemoved ? 'Environment files cleaned' : 'Environment files partly cleaned', lines, 'yellow');
+  reportHostDataLeftovers(results);
+  return results;
 }
 
 export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Promise<boolean> {
@@ -262,7 +359,8 @@ export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Pro
       [
         'After the apps, reset runs `docker compose down -v` for the ci-hub project (the Hub containers and volumes such as ci_hub_pgdata)',
         'and deletes this host data:',
-        ...hostDataTargets(env).map((target) => `  ${target}`),
+        ...hostDataTargets(env).flatMap(({ path: target }) => [`  ${target}`, ...dryRunHostDataNotes(target)]),
+        'Then it checks that those containers, volumes, and folders are gone. Anything left is listed with the command that removes it, and reset exits 1.',
       ],
       'cyan',
     );
@@ -290,12 +388,17 @@ export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Pro
   }
   downHub(env, { volumes: true });
   verifyHubVolumesRemoved();
-  try {
-    cleanHub(env, { appsAlreadyRemoved: true });
-  } catch (error) {
-    printMessageBox('Host cleanup reported an error', [String(error)], 'yellow');
+  const hostData = cleanHub(env, { appsAlreadyRemoved: true });
+  const dockerLeft = lingeringDockerState(current, appliance ? ['ci-hub', 'ci-os-hub'] : ['ci-hub']);
+  const hostDataLeft = hostData.filter((result) => !result.removed);
+  // Every removal above is best-effort, so the success line is printed only once a fresh look finds
+  // nothing left. Before this check, reset said "host data were removed" on 15 of 17 fleet nodes
+  // (2026-09-26) whose data dir had just failed with EACCES.
+  if (dockerLeft.lines.length > 0 || hostDataLeft.length > 0) {
+    printMessageBox('Reset incomplete', resetIncompleteLines(appliance ? 'prod' : env, dockerLeft, hostDataLeft), 'red');
+    process.exitCode = 1;
+    return false;
   }
-  cleanRootOwnedHubData(env);
   printMessageBox(
     'Reset complete',
     ['Hub runtime state, volumes, and host data were removed.', 'Re-launch CI Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.'],
@@ -304,12 +407,13 @@ export async function resetHub(env: HubEnv, force: boolean, dryRun = false): Pro
   return true;
 }
 
+function isHubVolume(name: string): boolean {
+  return name.includes('ci_hub_pgdata') || name.includes('ci_hub_app_data') || name.includes('hub_tailscale_state');
+}
+
 function verifyHubVolumesRemoved() {
   const { stdout } = runCapture('docker', ['volume', 'ls', '--format', '{{.Name}}']);
-  const lingering = stdout
-    .split('\n')
-    .map((value) => value.trim())
-    .filter((value) => value.includes('ci_hub_pgdata') || value.includes('ci_hub_app_data') || value.includes('hub_tailscale_state'));
+  const lingering = parseNames(stdout).filter(isHubVolume);
 
   if (lingering.length === 0) {
     return;
@@ -321,39 +425,62 @@ function verifyHubVolumesRemoved() {
   }
 }
 
-function cleanRootOwnedHubData(env: HubEnv) {
-  if (isApplianceMode()) return;
+type DockerLeftovers = { lines: string[]; commands: string[] };
 
-  const envFileName = getEnvFileOrExit(env);
-  const rootFolderHost = resolveRootFolderHost(envFileName);
-  if (!existsSync(rootFolderHost)) return;
-
-  try {
-    rmSync(rootFolderHost, { recursive: true, force: true });
-    return;
-  } catch {
-    // Fall through to a root-owned bind mount cleanup via Docker.
+/**
+ * The containers and volumes reset set out to remove that Docker still lists. `docker rm -f`,
+ * `docker volume rm`, and `compose down` all run best-effort, and a volume still attached to a
+ * container survives its `volume rm`; a surviving `ci_hub_pgdata` would hand the "fresh" Hub its
+ * old database.
+ */
+function lingeringDockerState(plan: AppTeardownPlan, hubProjects: string[]): DockerLeftovers {
+  const allContainers = runCapture('docker', ['ps', '-a', '--format', '{{.Names}}']);
+  const allVolumes = runCapture('docker', ['volume', 'ls', '--format', '{{.Name}}']);
+  const hubContainers = hubProjects.map((project) =>
+    runCapture('docker', ['ps', '-a', '--filter', `label=com.docker.compose.project=${project}`, '--format', '{{.Names}}']),
+  );
+  if (!allContainers.ok || !allVolumes.ok || hubContainers.some((listing) => !listing.ok)) {
+    return { lines: ['Docker did not list its containers and volumes, so reset could not check that they were removed.'], commands: [] };
   }
-
-  if (!existsSync(rootFolderHost)) return;
-
-  const hostPath = path.resolve(rootFolderHost);
-  printMessageBox('Cleaning root-owned hub data via Docker', [`Target: ${hostPath}`], 'yellow');
-  runBestEffort('docker', [
-    'run',
-    '--rm',
-    '-v',
-    `${dockerBindMountPath(hostPath)}:/d`,
-    'alpine',
-    'sh',
-    '-c',
-    'rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true',
-  ]);
-  try {
-    rmSync(rootFolderHost, { recursive: true, force: true });
-  } catch {
-    // Best effort \u2014 directory may still contain root-owned entries.
+  const plannedContainers = new Set([...plan.projects.flatMap((project) => project.containers), ...plan.unmanaged]);
+  const plannedVolumes = new Set(plan.projects.flatMap((project) => project.volumes));
+  // `{{.Names}}` joins legacy link aliases with commas; the first entry is the container itself.
+  const names = (stdout: string) => parseNames(stdout).map((line) => line.split(',')[0]);
+  const containers = [
+    ...new Set([
+      ...names(allContainers.stdout).filter((name) => plannedContainers.has(name)),
+      ...hubContainers.flatMap((listing) => names(listing.stdout)),
+    ]),
+  ];
+  const volumes = parseNames(allVolumes.stdout).filter((name) => plannedVolumes.has(name) || isHubVolume(name));
+  const lines: string[] = [];
+  const commands: string[] = [];
+  if (containers.length > 0) {
+    lines.push(`Containers still there: ${containers.join(', ')}`);
+    commands.push(`docker rm -f ${containers.join(' ')}`);
   }
+  if (volumes.length > 0) {
+    lines.push(`Volumes still there: ${volumes.join(', ')}`);
+    lines.push(dim(`  \`docker ps -a --filter volume=${volumes[0]}\` shows a container still using one.`));
+    commands.push(`docker volume rm ${volumes.join(' ')}`);
+  }
+  return { lines, commands };
+}
+
+function resetIncompleteLines(env: HubEnv, dockerLeft: DockerLeftovers, hostDataLeft: HostDataRemoval[]): string[] {
+  const lines: string[] = [];
+  lines.push(...(dockerLeft.lines.length === 0 ? ['Installed apps, Hub containers, and Hub volumes were removed.'] : dockerLeft.lines));
+  if (hostDataLeft.length > 0) {
+    lines.push('Host data was not fully deleted; "Host data left behind" above lists what is left and why.');
+  }
+  const commands = [...dockerLeft.commands, ...hostDataLeft.filter((result) => !result.refused).map((result) => rootRemovalCommand(result.target))];
+  if (commands.length > 0) {
+    lines.push('To finish:', ...commands.map((command) => `  ${command}`));
+  }
+  lines.push(
+    `Then run \`${BASE_COMMAND} reset ${env} --yes\` again; it ends with "Reset complete" once nothing is left. \`${BASE_COMMAND} up ${env}\` starts fresh.`,
+  );
+  return lines;
 }
 
 export async function recreateHub(env: HubEnv, detached = false, force = false) {
