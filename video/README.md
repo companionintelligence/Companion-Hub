@@ -15,6 +15,35 @@ What is *meant* to be committed is the input — the screenshots under `assets/s
 exist they let anyone render a cut without booting the whole stage, and a moved UI shows up as a
 reviewable image diff.
 
+> ⚠️ **The root [`README.md`](../README.md) embeds eight of these shots** in its screenshot grid —
+> `onboarding-wizard`, `ai-models`, `hub-store`, `store-alternatives`, `running-app`, `app-hermes`,
+> `mcp-tools`, and `custom-app-create` (the desktop PNGs) — so a re-shoot updates the README too.
+> `hub-store`, `mcp-tools`, and `custom-app-create` are not in the current storyboard, so a
+> default `make.sh` pass does not re-shoot them; use the longer `--only` list below. Renaming or
+> deleting any of the eight breaks the README; update its grid in the same change.
+>
+> **One cut is committed, outside this directory, on purpose.** The README's hero plays
+> [`docs/images/readme/hub-tour.webp`](../docs/images/readme/hub-tour.webp), a silent loop, and
+> links to [`docs/images/readme/hub-tour.mp4`](../docs/images/readme/hub-tour.mp4), the
+> `ci-hub-30` short with sound. GitHub has no way to host a README video from a build, so these
+> two files are the exception to the rule above. Refresh them after a storyboard change —
+> the WebP is 4.0 s to 20.8 s of the short at 960 px, 12 fps; the MP4 is the whole short at 720p:
+>
+> ```bash
+> # from the CI-Engineering checkout
+> node tools/make-videos.mjs companion-hub --format landscape --kit checkout --out /tmp/hub-cuts
+> V=/tmp/hub-cuts/companion-hub/ci-hub-30-landscape.mp4
+> mkdir -p /tmp/hub-frames
+> ffmpeg -ss 4.0 -t 16.8 -i "$V" -vf "fps=12,scale=960:-1:flags=lanczos" /tmp/hub-frames/f%03d.png
+> img2webp -loop 0 -lossy -q 72 -m 6 -d 83 /tmp/hub-frames/f*.png -o docs/images/readme/hub-tour.webp
+> ffmpeg -i "$V" -vf "scale=1280:-2:flags=lanczos" -c:v libx264 -preset slow -crf 23 \
+>   -pix_fmt yuv420p -movflags +faststart -c:a aac -b:a 128k docs/images/readme/hub-tour.mp4
+> ```
+>
+> `--kit checkout` is there because, as of 2026-09-27, CI-Common `origin/main` ships the kit CLI as
+> `bin/ci-video.ts` while `make-videos.mjs` still looks for `bin/ci-video.mjs`, so the default
+> `--kit origin` fails preflight.
+
 Every shot the storyboard references is captured (0 slates). The cut is **16 scenes**
 and references **8 shot ids × 2 viewports**.
 
