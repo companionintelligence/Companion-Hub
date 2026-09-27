@@ -145,10 +145,11 @@ export interface PoolRoutingRecord {
   slots: PoolRoutingSlots | null;
   /**
    * What local-engine contention did to this decision, or `null` when no local engine was busy with
-   * another model's generation (or the route is not a generation, or no peer could have gone ahead).
-   * The slots twin for the case a queue depth cannot show: when a turn skips an idle-looking local
-   * engine, an operator has to be able to tell "it would have had to load this model behind another
-   * model's turn" from the ranker or a pin. Always `null` on `inbound` rows, like the others.
+   * work this request could not join (or the route is not a generation, or no peer could have gone
+   * ahead). The slots twin for the case a queue depth cannot show: when a turn skips a local engine
+   * that looks barely busy, an operator has to be able to tell "it would have had to reload behind,
+   * or share the engine with, another turn" from the ranker or a pin. Always `null` on `inbound`
+   * rows, like the others.
    */
   contention: PoolRoutingContention | null;
   outcome: PoolRoutingOutcome;
@@ -353,25 +354,32 @@ export interface PoolRoutingSlotDemotion {
 
 /** The local-engine-contention half of a routing decision. Model names, windows and node names only. */
 export interface PoolRoutingContention {
-  /** The window the request asked for (`options.num_ctx`); `null` when it named none, so any resident window served. */
+  /** The window the request asked for (`options.num_ctx` on a native route); `null` when it named none, so it runs at the engine default. */
   numCtx: number | null;
   /**
-   * Local engines that were generating for another model and did not hold this one at that window,
-   * in ranked order. They were moved behind every candidate that was not, never removed, so failover
-   * can still reach them.
+   * Local engines that were generating for work this request could not join, in ranked order. Each
+   * gave up the local head start and moved behind the candidates after it that were no busier, never
+   * removed, so failover can still reach it.
    */
   demoted: PoolRoutingContentionDemotion[];
-  /** `true` when the request was placed on one of those anyway: nothing ahead of it answered, or nothing was ahead of it. */
+  /** `true` when the request was placed on one of those anyway: nothing it gave way to answered, or it gave way to nothing. */
   overridden: boolean;
 }
 
 export interface PoolRoutingContentionDemotion {
   node: string;
   backend: InferenceBackendType;
-  /** The other models this Hub had generations in flight for on that engine. */
-  busyWith: string[];
-  /** The window the engine held the requested model at; `null` when the model was not resident at all. */
-  residentNumCtx: number | null;
+  /**
+   * The generations this Hub had in flight on that engine that the request could not join: another
+   * model's at any window, or this model's at a window other than `runsAt` (on Ollama, which reloads
+   * per window). Each window is as the engine runs it — the request's `num_ctx`, else the default
+   * this node states for the engine — and `null` when it named none and this node states no default.
+   */
+  busyWith: { model: string; numCtx: number | null }[];
+  /** The window this request would have run at there, resolved the same way. */
+  runsAt: number | null;
+  /** The nodes it was moved behind, in order; empty when it kept its place: every candidate after it was busier, or another step had put them behind it. */
+  behind: string[];
 }
 
 export interface PoolRoutingSummary {

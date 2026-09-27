@@ -1103,7 +1103,18 @@ describe('hub-pool-cli Ollama slots', () => {
 
 describe('hub-pool-cli local engine contention', () => {
   const CORE_2 = 'hub-e.example-tailnet.ts.net';
-  const busyPrefilling = { node: 'local', backend: 'ollama', busyWith: ['qwen3.8:27b'], residentNumCtx: 32_768 };
+  /** beta-max at 23:50:22Z: OpenClaw's 27b turn and a Hermes /v1 request for 35b on its Ollama, which states no default window. */
+  const betaMax = {
+    node: 'local',
+    backend: 'ollama',
+    busyWith: [
+      { model: 'qwen3.8:27b', numCtx: 65_536 },
+      { model: 'qwen3.6:35b', numCtx: null },
+    ],
+    runsAt: 65_536,
+    behind: [CORE_2],
+  };
+  const engine = 'local (busy with qwen3.8:27b at num_ctx 65536, qwen3.6:35b at the engine default; this one at num_ctx 65536)';
 
   function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
     return {
@@ -1129,39 +1140,59 @@ describe('hub-pool-cli local engine contention', () => {
     return formatPoolRoutingLogLines({ summary, entries }).join('\n');
   }
 
-  it('marks a row this node was moved on, with what its engine was busy with and the window it held the model at', () => {
-    const text = logOf([routingEntry({ contention: { numCtx: 65_536, demoted: [busyPrefilling], overridden: false } })]);
+  it('marks a row this node was moved on, with the work there the request could not join and the nodes it gave way to', () => {
+    const text = logOf([routingEntry({ contention: { numCtx: 65_536, demoted: [betaMax], overridden: false } })]);
 
-    expect(text).toContain(
-      '↳ moved local (busy with qwen3.8:27b; model loaded at num_ctx 32768, asked 65536) behind nodes with no model load to wait on',
-    );
+    expect(text).toContain(`↳ moved ${engine} behind ${CORE_2}`);
   });
 
-  it('says when the model was not loaded there at all', () => {
-    const text = logOf([routingEntry({ contention: { numCtx: null, demoted: [{ ...busyPrefilling, residentNumCtx: null }], overridden: false } })]);
-
-    expect(text).toContain('↳ moved local (busy with qwen3.8:27b; model not loaded) behind nodes with no model load to wait on');
-  });
-
-  it('says so when the request was placed on the contended engine anyway', () => {
+  it('names a window this node could not state as the engine default', () => {
     const text = logOf([
       routingEntry({
-        node: 'local',
-        failedOverFrom: [CORE_2],
-        attempt: 2,
-        contention: { numCtx: 65_536, demoted: [busyPrefilling], overridden: true },
+        path: '/v1/chat/completions',
+        contention: {
+          numCtx: null,
+          demoted: [{ ...betaMax, busyWith: [{ model: 'qwen3.6:35b', numCtx: 65_536 }], runsAt: null }],
+          overridden: false,
+        },
       }),
     ]);
 
-    expect(text).toContain(
-      '↳ placed anyway on local (busy with qwen3.8:27b; model loaded at num_ctx 32768, asked 65536): no node without a model load to wait on was ahead of it',
-    );
+    expect(text).toContain(`↳ moved local (busy with qwen3.6:35b at num_ctx 65536; this one at the engine default) behind ${CORE_2}`);
+  });
+
+  it('says so when failover reached the contended engine anyway', () => {
+    const text = logOf([
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        failedOverFrom: [CORE_2],
+        attempt: 2,
+        contention: { numCtx: 65_536, demoted: [betaMax], overridden: true },
+      }),
+    ]);
+
+    expect(text).toContain(`↳ placed anyway on ${engine}: nothing it gave way to answered`);
     expect(text).not.toContain('moved');
+  });
+
+  it('says why a contended engine kept its place: every node after it was busier, or moved behind it by a line above', () => {
+    const text = logOf([
+      routingEntry({
+        node: 'local',
+        peerId: null,
+        contention: { numCtx: 65_536, demoted: [{ ...betaMax, behind: [] }], overridden: true },
+      }),
+    ]);
+
+    expect(text).toContain(`↳ kept ${engine} first: every node after it was busier, or moved behind it by a line above`);
   });
 
   it('adds nothing to a row contention did not change, or from a Hub predating it', () => {
     const text = logOf([
       routingEntry({ contention: { numCtx: 65_536, demoted: [], overridden: false } }),
+      // Contended, gave way to nobody, and not placed on: a pin or affinity put another node first.
+      routingEntry({ contention: { numCtx: 65_536, demoted: [{ ...betaMax, behind: [] }], overridden: false } }),
       routingEntry({ contention: null }),
       routingEntry(),
     ]);

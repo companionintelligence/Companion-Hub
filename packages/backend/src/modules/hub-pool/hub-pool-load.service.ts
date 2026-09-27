@@ -5,10 +5,19 @@ import { canonicalModelId } from '@/common/helpers/hub-pool';
 /** Load-map key for this node. Peers are keyed by their `hub_pool_peer.id`. */
 export const LOCAL_CANDIDATE_KEY = 'local';
 
-/** A generation (chat or completion) one of this node's own engines is running, and the model it asked for. */
+/** A generation (chat or completion) one of this node's own engines is running, and the model and window it asked for. */
 export interface LocalGeneration {
   backend: InferenceBackendType;
   model: string;
+  /** Its `options.num_ctx`; `null` when it named none — every `/v1` request — so it runs at the engine's default. */
+  numCtx: number | null;
+}
+
+/** One model at one window on one engine, and how many of its generations are in flight there. */
+interface RunningGenerations {
+  model: string;
+  numCtx: number | null;
+  count: number;
 }
 
 /**
@@ -29,34 +38,37 @@ export interface LocalGeneration {
 export class HubPoolLoadService {
   private readonly inFlight = new Map<string, number>();
   /**
-   * The local generations among that work, per engine and model. Queue depth says how much an
-   * engine is doing; this says what, which is what a request for a model the engine does not hold
-   * has to know — Ollama may not load it until another model's turn lets go (see
-   * `applyLocalContention`).
+   * The local generations among that work, per engine, keyed by model and window. Queue depth says
+   * how much an engine is doing; this says what, which is what the next request has to know when it
+   * cannot join that work — another model's turn, which Ollama must load beside or evict behind, or
+   * this model's at another window, which Ollama must reload for (see `applyLocalContention`).
    */
-  private readonly generations = new Map<InferenceBackendType, Map<string, number>>();
+  private readonly generations = new Map<InferenceBackendType, Map<string, RunningGenerations>>();
 
   /** `generation` is recorded only under {@link LOCAL_CANDIDATE_KEY}: a peer's engines are its own to report. */
   acquire(key: string, generation?: LocalGeneration): void {
     this.inFlight.set(key, this.get(key) + 1);
     if (generation && key === LOCAL_CANDIDATE_KEY) {
-      const models = this.generations.get(generation.backend) ?? new Map<string, number>();
+      const running = this.generations.get(generation.backend) ?? new Map<string, RunningGenerations>();
       const model = canonicalModelId(generation.model);
-      models.set(model, (models.get(model) ?? 0) + 1);
-      this.generations.set(generation.backend, models);
+      const id = generationKey(model, generation.numCtx);
+      const entry = running.get(id) ?? { model, numCtx: generation.numCtx, count: 0 };
+      entry.count += 1;
+      running.set(id, entry);
+      this.generations.set(generation.backend, running);
     }
   }
 
   /** Takes the same `generation` its `acquire` did. */
   release(key: string, generation?: LocalGeneration): void {
     if (generation && key === LOCAL_CANDIDATE_KEY) {
-      const models = this.generations.get(generation.backend);
-      const model = canonicalModelId(generation.model);
-      const left = (models?.get(model) ?? 0) - 1;
-      if (left > 0) {
-        models?.set(model, left);
+      const running = this.generations.get(generation.backend);
+      const id = generationKey(canonicalModelId(generation.model), generation.numCtx);
+      const entry = running?.get(id);
+      if (entry && entry.count > 1) {
+        entry.count -= 1;
       } else {
-        models?.delete(model);
+        running?.delete(id);
       }
     }
     const next = this.get(key) - 1;
@@ -77,8 +89,13 @@ export class HubPoolLoadService {
     return this.get(LOCAL_CANDIDATE_KEY);
   }
 
-  /** The models `backend` has generations in flight for right now, one canonical id each. */
-  localGenerationsOn(backend: InferenceBackendType): string[] {
-    return [...(this.generations.get(backend)?.keys() ?? [])];
+  /** What `backend` has generations in flight for right now: one entry per canonical model id and window. */
+  localGenerationsOn(backend: InferenceBackendType): { model: string; numCtx: number | null }[] {
+    return [...(this.generations.get(backend)?.values() ?? [])].map(({ model, numCtx }) => ({ model, numCtx }));
   }
+}
+
+/** NUL cannot appear in a model id, so no model and window pair can collide with another. */
+function generationKey(model: string, numCtx: number | null): string {
+  return `${model}\u0000${numCtx ?? ''}`;
 }

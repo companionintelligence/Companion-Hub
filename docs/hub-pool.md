@@ -9,7 +9,7 @@ This complements, and does not replace, the existing single-node model recommend
 - **Discovery**: `GET /api/inference/pool/peers/discoverable` lists every unpaired node this Hub can *name*, from up to three directories — the local Tailscale daemon's peer map, the Tailscale Admin API when `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` are configured, and the CI Portal device registry on a registered Hub (which [returns nothing today](#where-pairing-candidates-come-from)) — and probes each unpaired candidate's `GET /api/inference/pool/identify` (reachable over the tailnet the same way the Hub's own dashboard is) to confirm it is a CI-Hub node. None of the three is required, and a node two of them both name is offered once. A Hub with no directory at all is found by address instead. See [Where pairing candidates come from](#where-pairing-candidates-come-from).
 - **Pairing**: a two-way handshake — the requesting Hub sends a token to the candidate; the candidate's operator approves or rejects in **Settings → Network → Hub Pool**; on approval, the candidate issues its own token back. Each side ends up trusting the other with one bearer token per direction (see `hub_pool_peer` in `schema.ts` for the exact model). Rejecting, or never approving, leaves nothing paired. Rejecting and unpairing both send a best-effort *authenticated* notification — the caller presents the token the other side issued it — so the other Hub drops its half immediately instead of forwarding work to a node that will now reject it.
 - **Routing**: once at least one peer is `connected`, every app using `hub_integration.inference` is routed through this Hub's own pool proxy (`/api/inference/pool/*`) instead of a directly-resolved backend URL — this is a global switch, not a per-app setting. With zero connected peers, nothing changes: a single-node Hub behaves exactly as it did before this feature existed. A routed app is also handed its chat model from what the *pool* serves — this node's healthy backends plus every usable peer's inventory — filtered by the app's requirements (tool calling, minimum context), and AI apps whose env would change are regenerated and restarted when pool membership changes. See [App inference handout](system/backend.md#app-inference-handout).
-- **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle. With `poolPrefixAffinityMaxInFlight` above zero, the node and engine that last served a session are moved to the front of that list while their queue is under the limit — a session being what the app names with `X-Hub-Pool-Session`, else what a digest of its system prompt and first turn, in full, names — see [Prefix affinity](#prefix-affinity). With `poolSlotAwareness` on, an Ollama candidate whose queue already fills the slots its node stated is placed behind every candidate that still has one free — see [Slot-aware placement](#slot-aware-placement). For a chat or completion, a local engine that is generating for another model and does not hold the requested one at the window it asks for is placed behind every peer — see [Local engine contention](#local-engine-contention).
+- **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle. With `poolPrefixAffinityMaxInFlight` above zero, the node and engine that last served a session are moved to the front of that list while their queue is under the limit — a session being what the app names with `X-Hub-Pool-Session`, else what a digest of its system prompt and first turn, in full, names — see [Prefix affinity](#prefix-affinity). With `poolSlotAwareness` on, an Ollama candidate whose queue already fills the slots its node stated is placed behind every candidate that still has one free — see [Slot-aware placement](#slot-aware-placement). For a chat or completion, a local engine that is generating for work the request cannot join — another model, or the same model at another window — gives up its head start to peers — see [Local engine contention](#local-engine-contention).
 
   Queue depth counts only requests the proxy placed. Every figure above — this Hub's own in-flight count, the `inFlightRequests` a peer publishes, what this Hub has forwarded — is incremented when a pool proxy hands a request to an engine and decremented when the response finishes; nothing reads the engine's own queue. Traffic that reaches an engine directly — a benchmark's direct `:11434` arm, an app configured with the engine's own URL instead of `hub_integration.inference`, a `curl` from a shell — is invisible to placement, so a node can rank as idle while its engine is full, and the pooled requests sent there queue behind work the ranker never saw. This is not hypothetical: the fleet-qa B5 cell (2026-09-21) measured 5–11 s to the first token on 2-slot nodes from exactly this, the direct arm of the same run holding the slots the pooled arm was placed into. Route every app through the proxy, so that everything an engine serves is something the ranker counted; a direct URL is fine for a one-off probe and wrong for anything that runs alongside pooled traffic. An engine-reported queue depth would close the gap — Ollama exposes none (`/api/ps` says what is loaded, not what is waiting), vLLM's `/metrics` has `vllm:num_requests_waiting` and nothing reads it yet — and until placement reads one, the proxy's own count is the only one it has.
 
@@ -36,7 +36,7 @@ This complements, and does not replace, the existing single-node model recommend
 - **`HUB_POOL_OUTBOUND_DISABLED=true`** / **`HUB_POOL_INBOUND_DISABLED=true`**: the same kind of operator-of-the-box override for one direction only. Each overrides its persisted setting below and is reported separately by `GET /inference/pool/status`. Like the master flag, neither is projected into `.env` by `generateSystemEnvFile`.
 - **`HUB_POOL_MAX_PROMPT_TOKENS=<tokens>`**: this node's [prompt ceiling](#prompt-ceilings), overriding the persisted `poolMaxPromptTokens`. A value outside 1024–1048576, or not a whole number, is ignored rather than guessed at. `GET /inference/pool/status` reports `localNode.maxPromptTokensSetBy: "env"` while it is in force. Not projected into `.env` by `generateSystemEnvFile`.
 - **`HUB_POOL_THROUGHPUT_PLACEMENT=off`** (or `0`, `false`): stop [measured throughput](#throughput-aware-placement) from reordering candidates. This node keeps measuring, reporting and advertising, so turning it back on needs no warm-up. Read per request.
-- **`HUB_POOL_CONTENTION_PLACEMENT=off`** (or `0`, `false`): stop [local engine contention](#local-engine-contention) from moving this node's engine behind peers, and stop the residency read it makes. Read per request.
+- **`HUB_POOL_CONTENTION_PLACEMENT=off`** (or `0`, `false`): stop [local engine contention](#local-engine-contention) from moving this node's engine behind peers. Read per request.
 
 ## Operator settings
 
@@ -425,58 +425,84 @@ marks the requests a measurement moved.
 
 ## Local engine contention
 
-Queue depth counts requests, not what they hold. A local Ollama that is generating for one model
-loads a second model beside it only if memory allows; otherwise it evicts, and it does not evict a
-runner until that runner's request finishes. A request for a model the engine does not hold then
-waits for the other model's turn, and the ranker cannot see that wait.
+Queue depth counts requests, not what they are for. A request placed on a local Ollama that is
+generating for work the request cannot join waits, or runs slower, in ways the ranker cannot see:
 
-Measured on beta-max, 2026-09-26 at about 23:50Z. Its Ollama was prefilling OpenClaw's 39,668-token
-`qwen3.8:27b` turn, which took 362 s at about 110 tok/s. A Hermes turn then asked for `qwen3.6:35b` at
-`num_ctx` 65536. Ollama held that model at 32768, with two more Hermes requests on the runner. Ollama
-logged `predicted to exceed available memory, evicting` and did not load the larger window until the
-OpenClaw turn finished. The Hermes turn waited out its whole 327 s first-byte budget, failed over to
-core-2, and core-2 answered about a second later: the routing-log row reads 328,015 ms, failed over from
-`local`. The ranker had placed it on `local` because three requests in flight here did not outscore
-core-2's last health snapshot, which still counted work that had since finished, plus the one-request
-local head start.
+- **Another model's turn.** Ollama loads the requested model beside the running one if memory
+  allows, and the two then share the engine. Otherwise it evicts, and it does not evict a runner until
+  that runner's request finishes.
+- **The same model at another window.** `num_ctx` is a load parameter, so Ollama waits for the
+  running requests to finish and then reloads the model at the new window. A request with no
+  `num_ctx` — every `/v1` request, since Ollama drops `options` there — runs at the engine's default,
+  `OLLAMA_CONTEXT_LENGTH`.
+
+Measured on beta-max, 2026-09-26 at about 23:50Z. A Hermes turn asked for `qwen3.6:35b` at `num_ctx`
+65536 while Ollama held that model at its 32768 default for two Hermes `/v1` requests, and was
+prefilling OpenClaw's 39,668-token `qwen3.8:27b` turn beside it. The turn waited for the `/v1`
+requests. Ollama then logged `predicted to exceed available memory, evicting` and waited for the
+OpenClaw turn to finish. The turn sat out its whole 327 s first-byte budget, failed over to core-2,
+and core-2 answered about a second later: the routing-log row reads 328,015 ms, failed over from `local`. The
+ranker had placed it on `local` because three requests in flight here did not outscore core-2's last
+health snapshot, which still counted work that had since finished, plus the one-request local head
+start. The OpenClaw turn shows the other half: it loaded beside 35b without an eviction, and its
+prefill then ran at about 110 tok/s, 362 s in all, against about 300 alone. A 7,359-token 35b prompt
+read at 174 tok/s beside it, against 1,019 alone. Earlier that afternoon the same Ollama relaunched 35b
+six times in three minutes, at 65536 after each native Hermes request and at 32768 after each `/v1`
+one.
 
 **What it does.** For a chat or completion — the routes a [prompt ceiling](#prompt-ceilings) judges —
-the Hub checks each local engine for generations it has in flight for *another* model. It counts the
-generations it placed there itself and the ones peers forwarded to it. When there are some, and at
-least one peer can take the request, the Hub asks the engine what it holds right now (`/api/ps` for
-Ollama). If the requested model is not resident, or is resident at a different window than the
-request's `options.num_ctx`, that engine is **demoted** behind every other candidate. The rules are
-the slots':
+with at least one peer that can take the request, the Hub checks each local engine for generations
+in flight that the request cannot join: another model's at any window, or, on Ollama, the requested
+model's at another window. It counts the generations it placed there itself and the ones peers
+forwarded to it, and it asks the engine nothing. A window is read as the engine runs it: the
+request's `options.num_ctx` on a native route, else the engine's default as this node states it —
+its [context cap](#context-caps-the-window-an-app-asks-for-is-the-window-the-engine-runs), which
+`cihub fleet backends --ollama-context` sets to `OLLAMA_CONTEXT_LENGTH`. On a node with no cap, two
+requests that name no window match each other, but one that names no window is not taken to match
+one that names a number.
 
-- **Unjudged is neither contended nor free.** An engine that is generating for nothing else, or only
-  for the requested model, keeps its place. A request with no `num_ctx` is served by any resident
-  window. An engine that cannot say what it holds within the 500 ms placement budget keeps its place.
-- **Demoted, never removed.** Failover still reaches a contended engine when every peer ahead of it
-  fails, and the routing log then says the demotion was overridden.
-- **All contended means nothing moves.**
+A contended engine gives up the `poolLocalAffinity` head start and moves behind the candidates right
+after it that are no busier than it on that footing, including a tie. The head start pays for a
+prompt cache that a turn here reuses; a reload discards that cache, and a shared engine reads far
+slower. It stops at the first busier candidate: both fleet models run one request at a time
+(`-np 1`), so a peer with eight requests in flight is eight turns in a row, while a contended engine
+may be waiting out a turn that is nearly done. It is **demoted, never removed**, as with slots:
+failover still reaches it when everything it gave way to fails, and the routing log then says the
+demotion was overridden.
 
 In the ranking order it sits inside [throughput](#throughput-aware-placement), unlike slots. A node
 measured too slow misses its whole budget, while a contended engine may only be waiting out a turn that
 is nearly done. A [pin](#manual-routing-pins) is applied last, within each group, so a pin at this node
-does not put it back in front of a peer.
+does not put it back in front of a peer it gave way to.
 
-**What it does not cover.** Work that reaches the engine without passing through a pool proxy is
-invisible, as it is to queue depth. Two requests for the *same* model at different windows are not
-judged: the first request's load can serve the second, and the Hub does not track windows in flight.
-The Hub does not predict whether two models fit in memory together, so a demoted engine might have
-loaded the model beside the other one. Peers do not advertise what they hold, so a demoted engine is
-placed behind every peer, not only the ones that have the model loaded.
+**What it does not cover.**
 
-**On by default.** `HUB_POOL_CONTENTION_PLACEMENT=off` turns it off. The residency read runs only when
-another model is generating on the engine and a peer could take the request.
+- Work that reaches the engine without passing through a pool proxy is invisible, as it is to queue
+  depth.
+- Only the entry node judges, and only its own engines. Peers advertise a count, not what it is for,
+  so core-2 can still forward a turn to beta-max while beta-max prefills another model.
+- A request the Hub abandoned at its first-byte deadline stops counting here at once, but Ollama may
+  still be working for it. On beta-max, Ollama logged the abandoned Hermes turn's 499, and aborted the
+  load it was waiting for, about 20 s after the Hub gave up on it. For that long the engine is busier
+  than the Hub thinks.
+- The Hub does not predict whether two models fit in memory together, or how much a given engine slows
+  when it runs two. Either way the engine forfeits its head start, and nothing more.
 
-**Seeing it.** Each routing-log entry carries `contention`: `null` when no local engine was generating
-for another model, otherwise `{ numCtx, demoted: [{ node, backend, busyWith, residentNumCtx }],
-overridden }`. `busyWith` lists the other models, and `residentNumCtx` is the window the engine held
-the requested model at, or `null` when it was not loaded. `cihub pool log` prints
-`↳ moved local (busy with qwen3.8:27b; model loaded at num_ctx 32768, asked 65536) behind nodes with no
-model load to wait on` on a row it changed, and `↳ placed anyway on local (…)` when the request landed
-there regardless.
+**On by default.** `HUB_POOL_CONTENTION_PLACEMENT=off` turns it off.
+
+**Seeing it.** Each routing-log entry carries `contention`: `null` when no local engine was
+contended, otherwise `{ numCtx, demoted: [{ node, backend, busyWith, runsAt, behind }], overridden }`.
+`numCtx` is the window the request named. `busyWith` lists the generations it could not join, as
+`{ model, numCtx }`, and `runsAt` is the window it would have run at on that engine. Each of those
+windows is resolved as the engine runs it, and is `null` when the request named none and this node
+states no default. `behind` lists the nodes the engine gave way to, and is empty when it kept its
+place. `cihub pool log` prints one of three lines:
+
+- `↳ moved local (busy with qwen3.8:27b at num_ctx 65536; this one at num_ctx 65536) behind <node>`
+  when the engine gave way.
+- `↳ placed anyway on local (…): nothing it gave way to answered` when failover reached it.
+- `↳ kept local (…) first: every node after it was busier, or moved behind it by a line above` when
+  it kept its place and served the request.
 
 ## Prefix affinity
 

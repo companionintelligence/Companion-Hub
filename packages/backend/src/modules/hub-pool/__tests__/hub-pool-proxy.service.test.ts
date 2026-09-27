@@ -2924,6 +2924,23 @@ describe('PoolProxyService', () => {
         expect(entry?.promptCeiling?.estimatedTokens).toBe(entry?.contextCap?.numCtx);
       });
 
+      it('ignores options.num_ctx on a /v1 request, as Ollama does: it runs at the engine default all the same', async () => {
+        servePeers(core17AndCore2());
+        answerWith200();
+
+        await service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true, options: { num_ctx: 65_536 }, messages: [{ role: 'user', content: 'hello' }] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: 'core-17.tailxyz.ts.net' });
+        expect(entry?.contextCap).toMatchObject({ source: 'estimated', excluded: [] });
+      });
+
       it('still fails over to the capped node when every node that can take the window fails — a cap must never turn a served request into a 502', async () => {
         servePeers(core17AndCore2());
         vi.mocked(global.fetch).mockImplementation(async (url) =>
@@ -4060,21 +4077,23 @@ describe('PoolProxyService', () => {
 
   /**
    * beta-max, 2026-09-26 ~23:50Z. Its Ollama was prefilling OpenClaw's 39,668-token `qwen3.8:27b`
-   * turn (362 s at ~110 tok/s) when a Hermes turn asked for `qwen3.6:35b` at `num_ctx` 65536, a model
-   * it held at 32768 with two more Hermes requests on that runner. Ollama could not load the larger
-   * window beside the busy runners, so the turn sat out its whole 327 s budget before failing over to
-   * core-2, which answered a second later. Queue depth could not see it: three in flight here did not
-   * outscore core-2's last snapshot plus the local head start. The tie below is the closest case.
+   * turn — 362 s at ~110 tok/s, because it shared the engine with 35b — when a Hermes turn asked for
+   * `qwen3.6:35b` at `num_ctx` 65536, a model it held at its 32768 default for two Hermes `/v1`
+   * requests. The turn waited for those, then for Ollama to evict 27b, and sat out its whole 327 s
+   * budget before failing over to core-2, which answered a second later. Queue depth could not see
+   * it: three in flight here did not outscore core-2's last snapshot plus the local head start. The
+   * tie below is the closest case.
    */
   describe('local engine contention', () => {
     const MODEL = 'qwen3.6:35b';
     const OTHER = 'qwen3.8:27b';
     const HERMES_TURN_BYTES = 65_586;
     const HERMES_NUM_CTX = 65_536;
+    /** beta-max's `OLLAMA_CONTEXT_LENGTH`: the window a `/v1` request, which cannot name one, runs at there. */
+    const ENGINE_DEFAULT = 32_768;
 
     afterEach(() => {
       vi.unstubAllEnvs();
-      vi.useRealTimers();
     });
 
     /** What Ollama's `/api/ps` said, through `listResident`. */
@@ -4097,124 +4116,205 @@ describe('PoolProxyService', () => {
       return peerServing('core-2', MODEL, { inFlightRequests });
     }
 
-    /** beta-max when the Hermes turn arrived: OpenClaw's prefill and two Hermes requests on its Ollama, core-2 tied on score. */
-    function betaMaxMidPrefill(): void {
+    /** A generation this node's Ollama is running, as `proxyRequest` or a peer's forward records it. */
+    function generating(model: string, numCtx: number | null, backend: 'ollama' | 'vllm' | 'lemonade' = 'ollama'): void {
+      loadService.acquire(LOCAL_CANDIDATE_KEY, { backend, model, numCtx });
+    }
+
+    /** beta-max's Ollama at 23:50:22Z, `/api/ps` included: 35b at the default window, 27b at OpenClaw's. */
+    function holdsBoth(): void {
       ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, OTHER] });
-      ollama.listResident.mockResolvedValue(residency([MODEL, 32_768], [OTHER, 65_536]));
-      loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: OTHER });
-      loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: MODEL });
-      loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: MODEL });
+      ollama.listResident.mockResolvedValue(residency([MODEL, ENGINE_DEFAULT], [OTHER, HERMES_NUM_CTX]));
+    }
+
+    const setLocalCap = (maxNumCtx: number | null) => configuration.getInferencePreferences.mockReturnValue({ maxNumCtx } as never);
+
+    /**
+     * beta-max when the Hermes turn arrived: OpenClaw's 27b turn at 65536 and two Hermes `/v1`
+     * requests for 35b on its Ollama, and core-2 tied with it on score — three here, against a
+     * snapshot of two plus the one-request local head start.
+     */
+    function betaMaxMidPrefill(): void {
+      holdsBoth();
+      generating(OTHER, HERMES_NUM_CTX);
+      generating(MODEL, null);
+      generating(MODEL, null);
       peerService.listConnectedPeers.mockResolvedValue([core2(2)]);
+    }
+
+    /** One request here for this model, and core-2 idle: tied at one each, and a tie goes local. */
+    function oneTurnHere(numCtx: number | null): void {
+      holdsBoth();
+      generating(MODEL, numCtx);
+      peerService.listConnectedPeers.mockResolvedValue([core2(0)]);
     }
 
     const ids = (candidates: { peerId: string | null }[]) => candidates.map((candidate) => candidate.peerId);
     const hermesTurn = () => service.buildCandidateList(MODEL, HERMES_TURN_BYTES, true, HERMES_NUM_CTX);
+    /** A `/v1` request: no window of its own. */
+    const hermesV1 = () => service.buildCandidateList(MODEL, HERMES_TURN_BYTES, true, null);
 
     describe('ranking', () => {
-      it('puts this node behind a peer when its engine is busy with another model and does not hold this one at the window asked for', async () => {
+      it('puts this node behind a peer no busier than it when its engine is generating for another model', async () => {
         betaMaxMidPrefill();
 
         // Behind, not gone: if core-2 fails, the turn still waits here rather than 502ing.
         expect(ids(await hermesTurn())).toEqual(['core-2', null]);
       });
 
-      it('demotes a model that is not resident at all, whatever window the request names', async () => {
+      it('moves this node even when its engine holds the model at the window asked for: the turn would share the engine with the other one', async () => {
+        // beta-max, 16:52:31 PDT: a 7359-token 35b prompt read at 174 tok/s beside 27b's prefill, 1019 alone.
         betaMaxMidPrefill();
-        ollama.listResident.mockResolvedValue(residency([OTHER, 65_536]));
+        ollama.listResident.mockResolvedValue(residency([MODEL, HERMES_NUM_CTX], [OTHER, HERMES_NUM_CTX]));
 
-        expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES, true, null))).toEqual(['core-2', null]);
+        expect(ids(await hermesTurn())).toEqual(['core-2', null]);
+        // The engine is not asked: nothing it could say would keep this node first.
+        expect(ollama.listResident).not.toHaveBeenCalled();
       });
 
-      it('keeps this node first when it holds the model at the window asked for: the engine runs it beside the other one', async () => {
+      it('moves this node for a request that names no window, whatever window the engine holds the model at', async () => {
         betaMaxMidPrefill();
-        ollama.listResident.mockResolvedValue(residency([MODEL, HERMES_NUM_CTX], [OTHER, 65_536]));
+        ollama.listResident.mockResolvedValue(residency([MODEL, HERMES_NUM_CTX], [OTHER, HERMES_NUM_CTX]));
 
-        expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
+        expect(ids(await hermesV1())).toEqual(['core-2', null]);
       });
 
-      it('keeps this node first for a request that names no window, when the model is resident at any', async () => {
-        betaMaxMidPrefill();
+      it('moves this node for a request with no window when this model is generating here at another: Ollama reloads it at its default', async () => {
+        // beta-max, 15:47–15:51 PDT: 35b relaunched six times, -c 65536 after each native turn and -c 32768 after each /v1 one.
+        setLocalCap(ENGINE_DEFAULT);
+        oneTurnHere(HERMES_NUM_CTX);
 
-        expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES, true, null))).toEqual([null, 'core-2']);
+        expect(ids(await hermesV1())).toEqual(['core-2', null]);
       });
 
-      it('keeps this node first when the engine holds the model but does not say at what window', async () => {
-        betaMaxMidPrefill();
-        ollama.listResident.mockResolvedValue(residency([MODEL, null], [OTHER, 65_536]));
+      it('keeps this node first for a request with no window when this model is generating here at the default this node states', async () => {
+        setLocalCap(ENGINE_DEFAULT);
+        oneTurnHere(ENGINE_DEFAULT);
 
-        expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
+        expect(ids(await hermesV1())).toEqual([null, 'core-2']);
       });
 
-      it('judges nothing, and asks the engine nothing, when the only generations here are for the requested model', async () => {
-        betaMaxMidPrefill();
-        loadService.release(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: OTHER });
-        loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: MODEL });
+      it('reads a /v1 request in flight as running at the stated default, so a native turn asking for exactly that joins it', async () => {
+        setLocalCap(ENGINE_DEFAULT);
+        oneTurnHere(null);
+
+        expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES, true, ENGINE_DEFAULT))).toEqual([null, 'core-2']);
+      });
+
+      it('counts an unstated default as a different window from any named one, but the same as itself', async () => {
+        oneTurnHere(HERMES_NUM_CTX);
+
+        expect(ids(await hermesV1())).toEqual(['core-2', null]);
+
+        loadService.release(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: MODEL, numCtx: HERMES_NUM_CTX });
+        generating(MODEL, null);
+
+        // Both run at the engine's default, whatever it is: no reload between them.
+        expect(ids(await hermesV1())).toEqual([null, 'core-2']);
+      });
+
+      it('moves this node when this model is generating here at another window: the reload waits for those requests', async () => {
+        // beta-max, 16:52:31 PDT: the 65536 load waited for the second /v1 request to finish. beta-max
+        // states no cap, so the context cap could not move this turn; only the window in flight can.
+        holdsBoth();
+        generating(MODEL, null);
+        generating(MODEL, null);
+        peerService.listConnectedPeers.mockResolvedValue([core2(1)]);
+
+        expect(ids(await hermesTurn())).toEqual(['core-2', null]);
+      });
+
+      it('moves this node for a window inside its cap when this model is generating here at another one', async () => {
+        // The cap takes 32768 here, so only contention can see that the /v1 requests hold 65536.
+        setLocalCap(HERMES_NUM_CTX);
+        oneTurnHere(null);
+
+        expect(ids(await service.buildCandidateList(MODEL, HERMES_TURN_BYTES, true, ENGINE_DEFAULT))).toEqual(['core-2', null]);
+      });
+
+      it('keeps this node first when this model is generating here at the window asked for: that is a queue, which the ranker already counts', async () => {
+        oneTurnHere(HERMES_NUM_CTX);
 
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
         expect(ollama.listResident).not.toHaveBeenCalled();
+      });
+
+      it('judges windows on Ollama only: another engine runs the window it was started with, whatever a request names', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+        lemonade.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        generating(MODEL, null, 'lemonade');
+        peerService.listConnectedPeers.mockResolvedValue([core2(0)]);
+
+        expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
       });
 
       it('judges nothing when the other work here is not a generation: an embedding holds no runner for minutes', async () => {
-        betaMaxMidPrefill();
-        loadService.release(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: OTHER });
+        holdsBoth();
         loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerService.listConnectedPeers.mockResolvedValue([core2(0)]);
 
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
-        expect(ollama.listResident).not.toHaveBeenCalled();
       });
 
       it("judges nothing when the other model is generating on another of this node's engines", async () => {
-        betaMaxMidPrefill();
-        loadService.release(LOCAL_CANDIDATE_KEY, { backend: 'ollama', model: OTHER });
-        loadService.acquire(LOCAL_CANDIDATE_KEY, { backend: 'vllm', model: OTHER });
+        holdsBoth();
+        generating(OTHER, HERMES_NUM_CTX, 'vllm');
+        peerService.listConnectedPeers.mockResolvedValue([core2(0)]);
 
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
-        expect(ollama.listResident).not.toHaveBeenCalled();
       });
 
-      it('asks the engine nothing when there is no peer to put ahead of it', async () => {
+      it('keeps this node ahead of a peer with a deeper queue: contention costs it the head start, not its place', async () => {
+        // Both fleet models run -np 1, so core-2's eight are eight turns in a row.
+        holdsBoth();
+        generating(OTHER, HERMES_NUM_CTX);
+        peerService.listConnectedPeers.mockResolvedValue([core2(8)]);
+
+        expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
+      });
+
+      it('moves this node behind only the peers no busier than it, and stops at the first one that is', async () => {
+        holdsBoth();
+        generating(OTHER, HERMES_NUM_CTX);
+        peerService.listConnectedPeers.mockResolvedValue([core2(0), peerServing('core-6', MODEL, { inFlightRequests: 5 })]);
+
+        expect(ids(await hermesTurn())).toEqual(['core-2', null, 'core-6']);
+      });
+
+      it('gives way to a peer exactly as busy as it: a contended engine loses the ties it would have won', async () => {
+        holdsBoth();
+        generating(OTHER, HERMES_NUM_CTX);
+        generating(OTHER, HERMES_NUM_CTX);
+        peerService.listConnectedPeers.mockResolvedValue([core2(2)]);
+
+        expect(ids(await hermesTurn())).toEqual(['core-2', null]);
+      });
+
+      it('judges within a context-cap group: a peer capped below the window stays behind this node, contended or not', async () => {
+        holdsBoth();
+        generating(OTHER, HERMES_NUM_CTX);
+        peerService.listConnectedPeers.mockResolvedValue([
+          mockPeer({
+            id: 'core-17',
+            nodeFqdn: 'core-17.tailxyz.ts.net',
+            lastCapabilities: capabilitiesWithModel(MODEL, { inFlightRequests: 0, maxNumCtx: 16_384 }) as unknown as Record<string, unknown>,
+          }),
+        ]);
+
+        expect(ids(await hermesTurn())).toEqual([null, 'core-17']);
+      });
+
+      it('moves nothing when there is no peer to put ahead of this node', async () => {
         betaMaxMidPrefill();
         peerService.listConnectedPeers.mockResolvedValue([]);
 
         expect(ids(await hermesTurn())).toEqual([null]);
-        expect(ollama.listResident).not.toHaveBeenCalled();
-      });
-
-      it.each([
-        [
-          'unreachable',
-          () => ollama.listResident.mockResolvedValue({ backend: 'ollama', source: 'unreachable', models: null, error: 'ECONNREFUSED' }),
-        ],
-        ['rejects', () => ollama.listResident.mockRejectedValue(new Error('socket hang up'))],
-        ['says nothing', () => ollama.listResident.mockResolvedValue(undefined as unknown as BackendResidency)],
-      ])('keeps this node where it was when the engine cannot say what is resident (%s)', async (_label, answer) => {
-        betaMaxMidPrefill();
-        answer();
-
-        expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
-      });
-
-      it('ranks without residency once the placement budget runs out, rather than waiting out the 5 s transport timeout', async () => {
-        vi.useFakeTimers();
-        betaMaxMidPrefill();
-        ollama.listResident.mockImplementation(() => new Promise(() => {}));
-
-        const ranking = hermesTurn();
-        let settled = false;
-        void ranking.then(() => {
-          settled = true;
-        });
-        await vi.advanceTimersByTimeAsync(PLACEMENT_PROBE_BUDGET_MS - 1);
-        expect(settled).toBe(false);
-        await vi.advanceTimersByTimeAsync(1);
-        expect(ids(await ranking)).toEqual([null, 'core-2']);
       });
 
       it('leaves a request with no prompt to judge where the ranker put it', async () => {
         betaMaxMidPrefill();
 
         expect(ids(await service.buildCandidateList(MODEL))).toEqual([null, 'core-2']);
-        expect(ollama.listResident).not.toHaveBeenCalled();
       });
 
       it('stops reordering under HUB_POOL_CONTENTION_PLACEMENT=off', async () => {
@@ -4222,17 +4322,16 @@ describe('PoolProxyService', () => {
         vi.stubEnv('HUB_POOL_CONTENTION_PLACEMENT', 'off');
 
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
-        expect(ollama.listResident).not.toHaveBeenCalled();
       });
 
-      it('keeps this node ahead of a peer measured too slow for the prompt: that peer misses its whole budget, a swap wait may not', async () => {
+      it('keeps this node ahead of a peer measured too slow for the prompt: that peer misses its whole budget, a contended engine may not', async () => {
         betaMaxMidPrefill();
         throughput.recordPrefill({ nodeKey: 'core-2', backend: 'ollama', model: MODEL }, { promptTokens: 16_400, ms: 400_000, deadline: true });
 
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
       });
 
-      it('applies before a pin, so a pin at this node cannot put it back in front of a peer with no swap to wait on', async () => {
+      it('applies before a pin, so a pin at this node cannot put it back in front of a peer it gave way to', async () => {
         betaMaxMidPrefill();
         setPoolPreferences({ poolPins: [{ scope: 'model', model: MODEL, targetKind: 'local', mode: 'prefer' }] });
 
@@ -4260,8 +4359,7 @@ describe('PoolProxyService', () => {
       }
 
       beforeEach(() => {
-        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL, OTHER] });
-        ollama.listResident.mockResolvedValue(residency([OTHER, 65_536]));
+        holdsBoth();
         // Idle, so the ranker alone would tie it with this node at one in flight, and a tie goes local.
         peerService.listConnectedPeers.mockResolvedValue([core2(0)]);
       });
@@ -4304,6 +4402,26 @@ describe('PoolProxyService', () => {
         expect(ids(await hermesTurn())).toEqual([null, 'core-2']);
       });
 
+      it('records a /v1 turn at the engine default even when its body names a window: Ollama drops `options` there', async () => {
+        const upstream = holdUpstream();
+        const v1 = service.proxyRequest({
+          path: '/v1/chat/completions',
+          method: 'POST',
+          body: { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, messages: [{ role: 'user', content: 'hi' }] },
+          model: MODEL,
+          res: createMockResponse(),
+        });
+        await vi.waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+        // Recorded at 65536, the native turn would have joined it; at the default, which this node
+        // does not state, it cannot be shown to.
+        expect(ids(await hermesTurn())).toEqual(['core-2', null]);
+        expect(ids(await hermesV1())).toEqual([null, 'core-2']);
+
+        upstream.release();
+        await v1;
+      });
+
       it('does not count an embedding placed here', async () => {
         const upstream = holdUpstream();
         const embedding = service.proxyRequest({
@@ -4322,7 +4440,7 @@ describe('PoolProxyService', () => {
       });
 
       describe('in the routing log', () => {
-        it('names the engine it moved back, what that engine was busy with, and the window it held the model at', async () => {
+        it('names the engine it moved, the generations there this request could not join, and the nodes it moved behind', async () => {
           betaMaxMidPrefill();
           peerService.getPeerById.mockResolvedValue(core2(2));
           vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
@@ -4331,11 +4449,37 @@ describe('PoolProxyService', () => {
 
           const entry = routingLog.list()[0];
           expect(entry).toMatchObject({ node: 'core-2.tailxyz.ts.net', attempt: 1, candidates: 2, failedOverFrom: [], outcome: 'served' });
+          // No context cap here, so the /v1 requests' window is unknown, and unknown is not 65536.
           expect(entry?.contention).toEqual({
             numCtx: HERMES_NUM_CTX,
-            demoted: [{ node: LOCAL_CANDIDATE_KEY, backend: 'ollama', busyWith: [OTHER], residentNumCtx: 32_768 }],
+            demoted: [
+              {
+                node: LOCAL_CANDIDATE_KEY,
+                backend: 'ollama',
+                busyWith: [
+                  { model: OTHER, numCtx: HERMES_NUM_CTX },
+                  { model: MODEL, numCtx: null },
+                ],
+                runsAt: HERMES_NUM_CTX,
+                behind: ['core-2.tailxyz.ts.net'],
+              },
+            ],
             overridden: false,
           });
+        });
+
+        it('states each window as the engine runs it: a /v1 request at the default this node states', async () => {
+          setLocalCap(ENGINE_DEFAULT);
+          betaMaxMidPrefill();
+          peerService.getPeerById.mockResolvedValue(core2(2));
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesBody, model: MODEL, res: createMockResponse() });
+
+          expect(routingLog.list()[0]?.contention?.demoted[0]?.busyWith).toEqual([
+            { model: OTHER, numCtx: HERMES_NUM_CTX },
+            { model: MODEL, numCtx: ENGINE_DEFAULT },
+          ]);
         });
 
         it('still fails over to this node when every peer fails, and says the demotion was overridden', async () => {
@@ -4351,19 +4495,31 @@ describe('PoolProxyService', () => {
 
           const entry = routingLog.list()[0];
           expect(entry).toMatchObject({ node: LOCAL_CANDIDATE_KEY, outcome: 'served', status: 200, failedOverFrom: ['core-2.tailxyz.ts.net'] });
-          expect(entry?.contention).toMatchObject({ demoted: [{ node: LOCAL_CANDIDATE_KEY, busyWith: [OTHER] }], overridden: true });
+          expect(entry?.contention).toMatchObject({
+            demoted: [{ node: LOCAL_CANDIDATE_KEY, behind: ['core-2.tailxyz.ts.net'] }],
+            overridden: true,
+          });
         });
 
-        it('records an empty decision when the engine was busy with another model but held this one at the window asked for', async () => {
-          betaMaxMidPrefill();
-          ollama.listResident.mockResolvedValue(residency([MODEL, HERMES_NUM_CTX], [OTHER, 65_536]));
+        it('says a contended engine kept its place, and was placed on, when every peer was busier', async () => {
+          generating(OTHER, HERMES_NUM_CTX);
+          peerService.listConnectedPeers.mockResolvedValue([core2(8)]);
           vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
 
           await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesBody, model: MODEL, res: createMockResponse() });
 
           const entry = routingLog.list()[0];
-          expect(entry).toMatchObject({ node: LOCAL_CANDIDATE_KEY, attempt: 1 });
-          expect(entry?.contention).toEqual({ numCtx: HERMES_NUM_CTX, demoted: [], overridden: false });
+          expect(entry).toMatchObject({ node: LOCAL_CANDIDATE_KEY, attempt: 1, failedOverFrom: [] });
+          expect(entry?.contention).toMatchObject({ demoted: [{ node: LOCAL_CANDIDATE_KEY, behind: [] }], overridden: true });
+        });
+
+        it('records nothing when the only work here is this model at the window asked for', async () => {
+          generating(MODEL, HERMES_NUM_CTX);
+          vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+
+          await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesBody, model: MODEL, res: createMockResponse() });
+
+          expect(routingLog.list()[0]).toMatchObject({ node: LOCAL_CANDIDATE_KEY, contention: null });
         });
 
         it('records nothing when nothing else is generating here', async () => {
@@ -4379,40 +4535,64 @@ describe('PoolProxyService', () => {
     describe('applyLocalContention', () => {
       const local = { peerId: null, nodeFqdn: null, backend: 'ollama' } as const;
       const localLemonade = { peerId: null, nodeFqdn: null, backend: 'lemonade' } as const;
-      const peer = { peerId: 'core-2', nodeFqdn: 'core-2.tailxyz.ts.net', backend: 'ollama' } as const;
-      const swap = { busyWith: [OTHER], residentNumCtx: 32_768, servesAsLoaded: false };
+      const core2Candidate = { peerId: 'core-2', nodeFqdn: 'core-2.tailxyz.ts.net', backend: 'ollama' } as const;
+      const core6Candidate = { peerId: 'core-6', nodeFqdn: 'core-6.tailxyz.ts.net', backend: 'ollama' } as const;
+      const HEAD_START = 1;
+      /** Ranker scores: a peer's carries the head start, this node's does not. */
+      const scores = new Map<PoolCandidate, number>([
+        [local, 1],
+        [localLemonade, 1],
+        [core2Candidate, 0 + HEAD_START],
+        [core6Candidate, 5 + HEAD_START],
+      ]);
+      const scoreOf = (candidate: PoolCandidate) => scores.get(candidate) ?? 0;
+      const contended =
+        (...engines: PoolCandidate[]) =>
+        (candidate: PoolCandidate) =>
+          engines.includes(candidate);
 
-      it('demotes nothing, and records no decision, when no candidate was judged', () => {
-        expect(applyLocalContention([local, peer], () => null, HERMES_NUM_CTX)).toEqual({ demoted: new Set(), decision: null });
+      it('moves nothing, and names nothing, when no candidate is contended', () => {
+        const group = [local, core2Candidate, core6Candidate];
+
+        expect(applyLocalContention(group, contended(), scoreOf, HEAD_START)).toEqual({ pieces: [group], behind: new Map() });
       });
 
-      it('demotes exactly the engines that would have to load the model behind other work, and names them in ranked order', () => {
-        const result = applyLocalContention(
-          [local, localLemonade, peer],
-          (candidate) =>
-            candidate.peerId === null
-              ? candidate.backend === 'ollama'
-                ? swap
-                : { busyWith: [OTHER], residentNumCtx: HERMES_NUM_CTX, servesAsLoaded: true }
-              : null,
-          HERMES_NUM_CTX,
-        );
+      it('moves a contended engine behind the candidates after it that are no busier once its head start is set aside, up to the first that is', () => {
+        const result = applyLocalContention([local, core2Candidate, core6Candidate], contended(local), scoreOf, HEAD_START);
 
-        expect([...result.demoted]).toEqual([local]);
-        expect(result.decision).toEqual({
-          numCtx: HERMES_NUM_CTX,
-          demoted: [{ node: LOCAL_CANDIDATE_KEY, backend: 'ollama', busyWith: [OTHER], residentNumCtx: 32_768 }],
-          overridden: false,
+        // Two pieces, so a pin applied within each cannot put this node back in front of core-2.
+        expect(result.pieces).toEqual([[core2Candidate], [local, core6Candidate]]);
+        expect(result.behind).toEqual(new Map([[local, [core2Candidate]]]));
+      });
+
+      it('keeps a contended engine where it was, behind nobody, when every candidate after it is busier', () => {
+        const busy = new Map<PoolCandidate, number>([
+          [local, 1],
+          [core2Candidate, 8 + HEAD_START],
+        ]);
+
+        expect(applyLocalContention([local, core2Candidate], contended(local), (candidate) => busy.get(candidate) ?? 0, HEAD_START)).toEqual({
+          pieces: [[local, core2Candidate]],
+          behind: new Map([[local, []]]),
         });
-        expect(splitDemoted([local, localLemonade, peer], result.demoted)).toEqual([[localLemonade, peer], [local]]);
       });
 
-      it('demotes nothing, and says it was overridden, when every candidate is contended', () => {
-        const result = applyLocalContention([local, localLemonade], () => swap, null);
+      it('gives way to a free engine on this node as it would to a peer', () => {
+        const result = applyLocalContention([local, localLemonade, core2Candidate], contended(local), scoreOf, HEAD_START);
 
-        expect(result.demoted.size).toBe(0);
-        expect(result.decision).toMatchObject({ numCtx: null, overridden: true });
-        expect(result.decision?.demoted).toHaveLength(2);
+        expect(result.pieces.flat()).toEqual([localLemonade, core2Candidate, local]);
+      });
+
+      it('moves nothing when every candidate is contended, and keeps them in ranked order', () => {
+        const result = applyLocalContention([local, localLemonade], contended(local, localLemonade), scoreOf, HEAD_START);
+
+        expect(result.pieces).toEqual([[local, localLemonade]]);
+        expect(result.behind).toEqual(
+          new Map<PoolCandidate, PoolCandidate[]>([
+            [local, []],
+            [localLemonade, []],
+          ]),
+        );
       });
     });
   });
