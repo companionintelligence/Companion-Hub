@@ -24,8 +24,6 @@ jobs:
 
       - name: Install dependencies
         uses: "./.github/actions/install-dependencies"
-        with:
-          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run integration tests
         env:

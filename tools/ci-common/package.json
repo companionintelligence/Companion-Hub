@@ -1,0 +1,10 @@
+{
+  "name": "ci-hub-ci-common-tools",
+  "private": true,
+  "description": "Opt-in install of the CI-Common packages behind the Hub's brand checks. Not part of the pnpm workspace; see README.md.",
+  "devDependencies": {
+    "@companionintelligence/assets": "1.0.0",
+    "@companionintelligence/config": "1.0.0",
+    "@companionintelligence/tokens": "1.1.0"
+  }
+}

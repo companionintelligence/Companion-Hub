@@ -1,0 +1,9 @@
+# Makes this directory its own pnpm root, so installing here never touches the Hub
+# workspace one level up (whose install needs no token). See README.md.
+packages: []
+
+minimumReleaseAgeExclude:
+  - '@companionintelligence/tokens'
+  - '@companionintelligence/assets'
+  - '@companionintelligence/config'
+  - '@companionintelligence/content'

@@ -20,9 +20,14 @@ This document has three parts:
 **Part I lives in CI-Common and nowhere else:**
 [`CI-Common/styles/UI-STYLE-GUIDE.md`](https://github.com/companionintelligence/CI-Common/blob/main/styles/UI-STYLE-GUIDE.md).
 The token values are `@companionintelligence/tokens` (`styles/tokens/src/tokens.json`,
-the one hand-edited source), which `packages/frontend/src/styles/globals.css` imports.
-This repo does not carry a copy: a copy is what drifted (this file said `--primary:
-#0f717a` for a month after the canon moved to `#0a6358`). How to consume every
+the one hand-edited source). `packages/frontend/src/styles/globals.css` imports
+`ci-tokens.css`, a byte-for-byte copy of that package's `globals.css` at the version
+pinned in [`tools/ci-common/package.json`](../tools/ci-common/package.json). It is
+committed so a clone builds without a GitHub Packages token, and it is never edited by
+hand: a hand-kept copy is what drifted (this file said `--primary: #0f717a` for a month
+after the canon moved to `#0a6358`). `pnpm run lint:canon` fails if the copy differs
+from the pinned package; `brand:sync` rewrites it. See
+[`tools/ci-common/README.md`](../tools/ci-common/README.md). How to consume every
 part of the canon: [`CI-Common/CONSUMING.md`](https://github.com/companionintelligence/CI-Common/blob/main/CONSUMING.md).
 
 # Part II — this repository (Hub)
@@ -35,6 +40,7 @@ also packaged as a Tauri 2 desktop app.
 | Concern                         | Path                                                                                                 |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | Global tokens & base layer      | `packages/frontend/src/styles/globals.css`                                                           |
+| Canon token copy (do not edit)  | `packages/frontend/src/styles/ci-tokens.css`                                                         |
 | Tailwind config                 | `packages/frontend/tailwind.config.ts`                                                               |
 | App-shell CSS (tooltip, layout) | `packages/frontend/src/app.css`                                                                      |
 | App grid layout                 | `packages/frontend/src/styles/app-grid.css`                                                          |
@@ -48,8 +54,8 @@ also packaged as a Tauri 2 desktop app.
 
 ### Conformance to canon
 
-- ✅ Tokens are canon phthalo-mist (`--primary: #0a6358` / `#c5e8dc`), imported directly from
-  `@companionintelligence/tokens/globals.css` — no local copy to drift.
+- ✅ Tokens are canon phthalo-mist (`--primary: #0a6358` / `#c5e8dc`), from a verified byte copy
+  of `@companionintelligence/tokens/globals.css` (`src/styles/ci-tokens.css`) — never hand-edited.
 - ✅ `cn()` is canonical (`twMerge(clsx(inputs))`).
 - ✅ Radius, font, custom font-sizes, `.dark` theming, lucide sizing all match canon.
 - ✅ Primitives via Radix UI; `glass-container` present.
@@ -95,9 +101,9 @@ values is exactly what drifted in this file before (`--primary: #0f717a` long af
 canon moved to `#0a6358`; the chart series, sidebar, and several other tokens had
 drifted the same way). The live values are always
 [`packages/frontend/src/styles/globals.css`](../packages/frontend/src/styles/globals.css)
-— that file imports `@companionintelligence/tokens/globals.css` directly and defines
-nothing of its own beyond the Hub-only extensions in Part II, so it cannot disagree
-with canon by construction. For the values themselves, read
+— that file imports `ci-tokens.css` (the verified copy of
+`@companionintelligence/tokens/globals.css`) and defines nothing of its own beyond the
+Hub-only extensions in Part II, so it disagrees with canon only by lagging a version. For the values themselves, read
 [`CI-Common/styles/colors.md`](https://github.com/companionintelligence/CI-Common/blob/main/styles/colors.md)
 (generated from `tokens.json`, always current) rather than either file.
 

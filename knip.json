@@ -24,8 +24,7 @@
     },
     "packages/frontend": {
       "entry": ["scripts/**/*.{js,mjs}"],
-      "ignore": ["src/api-client/**", "public/mockServiceWorker.js"],
-      "ignoreDependencies": ["@companionintelligence/assets"]
+      "ignore": ["src/api-client/**", "public/mockServiceWorker.js"]
     },
     "packages/backend": {
       "entry": ["src/main.ts!", "scripts/**/*.{ts,js,cjs}", "vitest*.{ts,mts}"]

@@ -111,11 +111,6 @@ services:
         # Must match DOCKER_PLATFORM (linux/arm64 → arm64). Desktop/CLI write both.
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
-      # pnpm install in the Dockerfile fetches @companionintelligence/tokens from
-      # npm.pkg.github.com, which needs a read:packages token. GitHub Actions passes
-      # this via docker/build-push-action; self-hosted builds get it from here.
-      secrets:
-        - npm_auth_token
     depends_on:
       ci-hub-db:
         condition: service_healthy
@@ -530,9 +525,3 @@ volumes:
     name: ci_hub_pgdata
   hub_tailscale_state:
     name: hub_tailscale_state
-
-secrets:
-  # Build-time only: read from the operator's environment (or .env.prod) so the
-  # token is never baked into image history. Needs the read:packages scope.
-  npm_auth_token:
-    environment: NODE_AUTH_TOKEN

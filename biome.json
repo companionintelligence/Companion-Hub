@@ -20,6 +20,7 @@
       "!**/packages/backend/src/core/database/drizzle/meta",
       "!**/packages/frontend/src/styles/transparent-theme.css",
       "!**/packages/frontend/src/styles/globals.css",
+      "!**/packages/frontend/src/styles/ci-tokens.css",
       "!**/videos",
       "!**/e2e/generated",
       "!**/src-tauri/gen",

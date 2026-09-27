@@ -2,7 +2,7 @@
 #
 # docker-compose.prod.yml declares the ci-hub service `build:`-only — no `image:` at all — so
 # `docker compose pull` has nothing to fetch there and `up` falls back to a from-source build,
-# which needs a GitHub Packages token most fleet nodes don't have. docker-compose.dev-image.yml
+# which is slow and is not the image the pool was told to run. docker-compose.dev-image.yml
 # already solves this the same way, but only for `env=dev`; every real fleet node runs `prod`.
 #
 # `pull_policy: always` is deliberate, not `if_not_present`: CI_HUB_IMAGE names a mutable,

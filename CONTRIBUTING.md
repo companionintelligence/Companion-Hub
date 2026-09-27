@@ -14,9 +14,13 @@ This guide covers conventions for issues and pull requests.
 
 ## Setup
 
-See [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md). It covers the prerequisites, the two
-installs that fail without them (`pnpm install` needs `NODE_AUTH_TOKEN`; `cargo test` needs the GTK
-and WebKit headers), and the known-good test baselines to compare against.
+See [`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md). It covers the prerequisites, the
+failures that look like a broken checkout (`cargo test` needs the GTK and WebKit headers; backend tests
+need `packages/common` built first), and the known-good test baselines to compare against.
+
+`pnpm install` needs no registry token. The brand files the build uses are committed copies of
+CI-Common packages; do not edit them by hand. Maintainers refresh them through
+[`tools/ci-common/`](tools/ci-common/README.md).
 
 Automatic CI triggers are gated, so run `pnpm run check:pr` locally before requesting review —
 nothing runs it for you on push. See [`docs/CI.md`](docs/CI.md).

@@ -3,8 +3,8 @@
 What a fresh clone needs before `pnpm install`, `pnpm test`, and `cargo test` all work.
 
 The quick start in [`../README.md`](../README.md) is enough to run the web stack. Read this page when
-an install or a test run fails on a machine that looks correctly configured — the two failures below
-are the common ones, and neither error message names its own fix.
+an install or a test run fails on a machine that looks correctly configured — the failures below are
+the common ones, and none of their error messages names its own fix.
 
 ## Prerequisites
 
@@ -15,35 +15,25 @@ are the common ones, and neither error message names its own fix.
 | Docker | Engine or Desktop | Needed for the stack, integration tests, and e2e |
 | Rust | stable | Desktop app only. Skip unless you build `packages/desktop`. |
 
-## `pnpm install` fails with a 401
+## `pnpm install` needs no token
 
-```
-ERR_PNPM_FETCH_401  GET https://npm.pkg.github.com/download/@companionintelligence/tokens/...
-Unauthorized - 401
-```
-
-`packages/frontend` depends on `@companionintelligence/tokens`, published to GitHub Packages.
-[`.npmrc`](../.npmrc) points that scope at `npm.pkg.github.com` and reads the credential from
-`NODE_AUTH_TOKEN`, which is not set for you automatically.
-
-If you have the [`gh` CLI](https://cli.github.com) authenticated with the `read:packages` scope, its
-token works:
+Every workspace dependency comes from the public npm registry, so a fresh clone installs with no
+credentials:
 
 ```bash
-NODE_AUTH_TOKEN="$(gh auth token)" pnpm install
+pnpm install
 ```
 
-To make it permanent, export `NODE_AUTH_TOKEN` from your shell profile, or use a personal access
-token with `read:packages`. Confirm your scopes with `gh auth status`.
+If the install fails with `ERR_PNPM_FETCH_401` against `npm.pkg.github.com`, you are on a branch from
+before the Hub stopped depending on GitHub Packages. Rebase onto `dev`.
 
-### Working without the token
+The Hub's design tokens and logos come from the private CI-Common repository, but the files the build
+needs are committed: `packages/frontend/src/styles/ci-tokens.css` and the brand files under
+`packages/frontend/public/`. Only the maintainer commands that check or refresh those copies need the
+CI-Common packages, and they install separately. See
+[`../tools/ci-common/README.md`](../tools/ci-common/README.md).
 
-Only `packages/frontend` needs that package. Everything else installs without it, so a backend or
-CLI change is still workable:
-
-```bash
-pnpm install --filter backend --filter common --filter "./"
-```
+## Backend tests fail with `Cannot find package '@ci-hub/common/validation'`
 
 Build `packages/common` before running backend tests — the backend's vitest config aliases
 `@ci-hub/common/schemas` and `/types` to source, but `/validation` resolves through the package's
