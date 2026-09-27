@@ -1,57 +1,68 @@
 /**
  * `cihub reset` prints "Reset complete" only when nothing it set out to remove is left.
  *
- * During the 2026-09-26 fleet rebuild, reset hit EACCES on the data dir on 15 of 17 nodes (core-2,
- * core-3, and fzzy among them): containers had written folders under `app-data/` as root. It
- * printed the error in a yellow box, then "Hub runtime state, volumes, and host data were removed",
- * and exited 0. The data dir, with `.env`, `.env.dev`, and up to 7.7 GB of app state, survived, and
- * the operators found out only when the next install picked it up.
+ * During the 2026-09-26 fleet rebuild, reset hit EACCES on the data dir on 3 of 17 nodes (core-2,
+ * core-3, and fzzy): containers had written folders under `app-data/` as root. It printed the error
+ * in a yellow box, then "Hub runtime state, volumes, and host data were removed", and exited 0. The
+ * data dir, with `.env`, `.env.dev`, and up to 7.7 GB of app state, survived, and the operators
+ * found out only when the next install picked it up. On every appliance the tunnel folder beside the
+ * data dir, with the Cloudflare token and `registration.json`, survived too, and nothing said so.
  *
  * The EACCES here is real: a folder under the data dir loses its write permission, as a root-owned
  * one is for the login user. So these tests skip when run as root and on Windows. Docker is a fake
- * that records its calls; its `docker run` either deletes the data dir as a rootful daemon's root
- * container would, or does nothing, as rootless Docker's does for files owned by root.
+ * that records its calls and the engine each went to, and answers listings from `state.listings`;
+ * its `docker run` either empties the bind-mounted folder as a rootful daemon's root container
+ * would, or does nothing, as rootless Docker's does for files owned by root.
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { HUB_NETWORK_NAMES } from '../hub-cleanup-lib';
 
 const state = vi.hoisted(() => ({
   home: '',
   dataDir: '',
   locked: '',
+  lockedFolders: [] as string[],
   appliance: true,
   calls: [] as string[],
+  /** The DOCKER_HOST each docker call carried; `compose` goes through envOverridesForContext, mocked below. */
+  dockerHosts: [] as { args: string; dockerHost: string | undefined }[],
   rootContainerDeletes: false,
   rootContainerStarts: true,
-  lingeringVolumes: [] as string[],
+  /** Answers by the exact argv, joined with spaces. Anything else lists nothing. */
+  listings: {} as Record<string, { ok: boolean; stdout: string }>,
 }));
 
-vi.mock('../lib/cli-proc.js', () => ({
-  run: vi.fn((_cmd: string, args: string[]) => state.calls.push(args.join(' '))),
-  runBestEffort: vi.fn((_cmd: string, args: string[]) => {
+vi.mock('../lib/cli-proc.js', () => {
+  const record = (args: string[], env?: Record<string, string | undefined>) => {
     state.calls.push(args.join(' '));
-    if (args[0] !== 'run') return true;
-    if (!state.rootContainerStarts) return false;
-    if (state.rootContainerDeletes) {
-      // The folder bind-mounted at /d, emptied as root would.
-      const mount = args[args.indexOf('-v') + 1];
-      const hostPath = mount.slice(0, mount.lastIndexOf(':/d'));
-      chmodSync(state.locked, 0o755);
-      rmSync(hostPath, { recursive: true, force: true });
-      mkdirSync(hostPath);
-    }
-    return true;
-  }),
-  runCapture: vi.fn((_cmd: string, args: string[]) => {
-    state.calls.push(args.join(' '));
-    if (args.join(' ') === 'volume ls --format {{.Name}}') {
-      return { ok: true, stdout: state.lingeringVolumes.join('\n') };
-    }
-    return { ok: true, stdout: '' };
-  }),
-}));
+    state.dockerHosts.push({ args: args.join(' '), dockerHost: env?.DOCKER_HOST });
+  };
+  return {
+    run: vi.fn((_cmd: string, args: string[]) => record(args)),
+    runBestEffort: vi.fn((_cmd: string, args: string[], env?: Record<string, string | undefined>) => {
+      record(args, env);
+      if (args[0] !== 'run') return true;
+      if (!state.rootContainerStarts) return false;
+      if (state.rootContainerDeletes) {
+        // Root ignores the modes that stop the login user, inside the folder bind-mounted at /d.
+        const mount = args[args.indexOf('-v') + 1];
+        const hostPath = realpathSync(mount.slice(0, mount.lastIndexOf(':/d')));
+        for (const folder of state.lockedFolders.filter(existsSync).map((locked) => realpathSync(locked))) {
+          if (folder === hostPath || folder.startsWith(`${hostPath}${path.sep}`)) chmodSync(folder, 0o755);
+        }
+        for (const name of readdirSync(hostPath)) rmSync(path.join(hostPath, name), { recursive: true, force: true });
+      }
+      return true;
+    }),
+    runCapture: vi.fn((_cmd: string, args: string[], env?: Record<string, string | undefined>) => {
+      record(args, env);
+      return state.listings[args.join(' ')] ?? { ok: true, stdout: '' };
+    }),
+  };
+});
 vi.mock('../lib/cli-prompt.js', () => ({ confirmDestructiveAction: vi.fn(async () => true) }));
 vi.mock('../lib/cli-repo-context.js', () => ({ isApplianceMode: () => state.appliance, requireRepoRoot: vi.fn() }));
 vi.mock('../lib/cli-lifecycle.js', () => ({ startHub: vi.fn() }));
@@ -81,11 +92,14 @@ import { printMessageBox } from '../lib/cli-ui.js';
 const boxes = () => vi.mocked(printMessageBox).mock.calls.map(([title, lines]) => ({ title, lines }));
 const box = (title: string) => boxes().find((entry) => entry.title === title);
 const rootContainerRuns = () => state.calls.filter((line) => line.startsWith('run --rm -v '));
-const lockedFolders: string[] = [];
 const lock = (folder: string) => {
   chmodSync(folder, 0o555);
-  lockedFolders.push(folder);
+  state.lockedFolders.push(folder);
 };
+const listed = (stdout: string) => ({ ok: true, stdout });
+/** What `cihub up` checks before it starts `cloudflared` (cli-compose-env.ts), unmocked. */
+const upWouldStartTheOldTunnel = async (dataDir: string) =>
+  (await vi.importActual<typeof import('../lib/cli-compose-env.js')>('../lib/cli-compose-env.js')).hasRegisteredCloudflareTunnelAtDataDir(dataDir);
 
 describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub reset reports host data it could not delete', () => {
   const previousHome = process.env.HOME;
@@ -94,13 +108,19 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
   beforeEach(() => {
     state.home = mkdtempSync(path.join(tmpdir(), 'cli-reset-host-data-'));
     process.env.HOME = state.home;
+    // Nothing from the machine running the tests may choose the engine, the unit dir, or the root folder.
+    vi.stubEnv('DOCKER_HOST', '');
+    vi.stubEnv('CI_HUB_DOCKER_HOST', '');
+    vi.stubEnv('XDG_CONFIG_HOME', '');
+    vi.stubEnv('ROOT_FOLDER_HOST', '');
     state.appliance = true;
     state.dataDir = path.join(state.home, '.local', 'share', 'companion-hub');
     state.locked = path.join(state.dataDir, 'app-data', 'ci-marketplace', 'opencode', 'data', 'opencode', 'share', 'log');
     state.calls = [];
+    state.dockerHosts = [];
     state.rootContainerDeletes = false;
     state.rootContainerStarts = true;
-    state.lingeringVolumes = [];
+    state.listings = {};
     vi.clearAllMocks();
     mkdirSync(state.locked, { recursive: true });
     writeFileSync(path.join(state.locked, 'opencode.log'), 'x');
@@ -112,8 +132,9 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
   afterEach(() => {
     process.chdir(previousCwd);
     process.env.HOME = previousHome;
+    vi.unstubAllEnvs();
     process.exitCode = undefined;
-    for (const folder of lockedFolders.splice(0)) {
+    for (const folder of state.lockedFolders.splice(0)) {
       if (existsSync(folder)) chmodSync(folder, 0o755);
     }
     rmSync(state.home, { recursive: true, force: true });
@@ -148,7 +169,11 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
 
     expect(rootContainerRuns()).toEqual([`run --rm -v ${state.dataDir}:/d alpine sh -c rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true`]);
     expect(existsSync(state.dataDir)).toBe(false);
-    expect(box('Reset complete')).toBeDefined();
+    // No GPU probe timer is installed here, so there is nothing to say about the folder coming back.
+    expect(box('Reset complete')?.lines).toEqual([
+      'Hub runtime state, volumes, and host data were removed.',
+      'Re-launch CI Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.',
+    ]);
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -162,7 +187,7 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
 
   it('does not print "Reset complete" when a Hub volume survived its removal', async () => {
     state.rootContainerDeletes = true;
-    state.lingeringVolumes = ['ci_hub_pgdata'];
+    state.listings = { 'volume ls --format {{.Name}}': listed('ci_hub_pgdata') };
 
     await expect(resetHub('prod', true)).resolves.toBe(false);
 
@@ -226,6 +251,275 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
     expect(box('Reset complete')).toBeUndefined();
     expect(process.exitCode).toBe(1);
   });
+
+  it("sends every docker call to the Hub's pinned engine, including the final check and the root container", async () => {
+    // The pin the desktop app and `cihub up` write. It lives in the data dir the reset deletes, so
+    // it has to be read before that; the default engine here would be some other daemon.
+    state.rootContainerDeletes = true;
+    mkdirSync(path.join(state.dataDir, 'state'), { recursive: true });
+    writeFileSync(
+      path.join(state.dataDir, 'state', 'docker-engine.json'),
+      JSON.stringify({ dockerHost: 'unix:///run/hub-engine.sock', kind: 'system', reason: 'test', selectedAt: 0 }),
+    );
+
+    await expect(resetHub('prod', true)).resolves.toBe(true);
+
+    // `compose down` takes its engine from envOverridesForContext, which is mocked here.
+    const calls = state.dockerHosts.filter((call) => !call.args.startsWith('compose '));
+    expect(calls.map((call) => call.args)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^run --rm -v /), 'ps -a --format {{.Names}}', 'volume ls --format {{.Name}}']),
+    );
+    expect(calls.filter((call) => call.dockerHost !== 'unix:///run/hub-engine.sock')).toEqual([]);
+    // Reading the pin did not write it back into the deleted data dir.
+    expect(existsSync(state.dataDir)).toBe(false);
+  });
+
+  it("prints commands for what is left that go to the Hub's pinned engine, not the shell's default one", async () => {
+    // The leftovers were found on the pinned engine. A bare `docker rm -f` from the operator's shell
+    // goes to the default engine: "no such container", or a same-named `ci_hub_pgdata` removed there.
+    state.rootContainerDeletes = true;
+    mkdirSync(path.join(state.dataDir, 'state'), { recursive: true });
+    writeFileSync(
+      path.join(state.dataDir, 'state', 'docker-engine.json'),
+      JSON.stringify({ dockerHost: 'unix:///Users/o p/.colima/docker.sock', kind: 'system', reason: 'test', selectedAt: 0 }),
+    );
+    state.listings = {
+      'ps -a --format {{.Names}}': listed('ci-hub'),
+      'ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}': listed('ci-hub'),
+      'volume ls --format {{.Name}}': listed('ci_hub_pgdata'),
+    };
+
+    await expect(resetHub('prod', true)).resolves.toBe(false);
+
+    const host = "--host 'unix:///Users/o p/.colima/docker.sock'";
+    expect(box('Reset incomplete')?.lines).toEqual(
+      expect.arrayContaining([
+        `  \`docker ${host} ps -a --filter volume=ci_hub_pgdata\` shows a container still using one.`,
+        `  docker ${host} rm -f ci-hub`,
+        `  docker ${host} volume rm ci_hub_pgdata`,
+      ]),
+    );
+  });
+
+  it('prints plain docker commands when no engine is pinned', async () => {
+    state.rootContainerDeletes = true;
+    state.listings = {
+      'ps -a --format {{.Names}}': listed('ci-hub'),
+      'ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}': listed('ci-hub'),
+    };
+
+    await expect(resetHub('prod', true)).resolves.toBe(false);
+
+    expect(box('Reset incomplete')?.lines).toEqual(expect.arrayContaining(['  docker rm -f ci-hub']));
+  });
+
+  it('does not print "Reset complete" while an app, a stray container on the Hub network, or a Hub container is still listed', async () => {
+    state.rootContainerDeletes = true;
+    const onHubNetwork = [
+      'ps',
+      '-a',
+      ...HUB_NETWORK_NAMES.flatMap((network) => ['--filter', `network=${network}`]),
+      '--format',
+      '{{.Names}} {{.Labels}}',
+    ];
+    state.listings = {
+      'ps -a --filter label=ci-hub.managed=true --format {{.Labels}}': listed('com.docker.compose.project=ci-hermes,ci-hub.managed=true'),
+      'ps -a --filter label=com.docker.compose.project=ci-hermes --format {{.Names}}': listed('ci-hermes-1'),
+      [onHubNetwork.join(' ')]: listed('stray-app org.opencontainers.image.revision=1'),
+      // What is still there after the teardown; `unrelated` was never reset's to remove.
+      'ps -a --format {{.Names}}': listed('ci-hermes-1\nstray-app\nci-hub\nunrelated'),
+      'ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}': listed('ci-hub'),
+    };
+
+    await expect(resetHub('prod', true)).resolves.toBe(false);
+
+    expect(box('Reset complete')).toBeUndefined();
+    expect(box('Reset incomplete')?.lines).toEqual(
+      expect.arrayContaining(['Containers still there: ci-hermes-1, stray-app, ci-hub', '  docker rm -f ci-hermes-1 stray-app ci-hub']),
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('does not print "Reset complete" when Docker cannot list what is left', async () => {
+    state.rootContainerDeletes = true;
+    state.listings = { 'ps -a --format {{.Names}}': { ok: false, stdout: '' } };
+
+    await expect(resetHub('prod', true)).resolves.toBe(false);
+
+    expect(box('Reset complete')).toBeUndefined();
+    expect(box('Reset incomplete')?.lines).toEqual(
+      expect.arrayContaining(['Docker did not list its containers and volumes, so reset could not check that they were removed.']),
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('says the GPU probe timer writes state/hardware again, when that timer is installed', async () => {
+    // cihub-gpu-processes.timer recreated `companion-hub/state/hardware` within 15 s on 13 fleet
+    // nodes after the 2026-09-26 resets, and operators moved each folder aside by hand.
+    state.rootContainerDeletes = true;
+    const unitDir = path.join(state.home, '.config', 'systemd', 'user');
+    mkdirSync(unitDir, { recursive: true });
+    writeFileSync(path.join(unitDir, 'cihub-gpu-processes.timer'), '[Timer]\nOnUnitActiveSec=15s\n');
+
+    await expect(resetHub('prod', true)).resolves.toBe(true);
+
+    expect(box('Reset complete')?.lines).toEqual(
+      expect.arrayContaining([
+        `cihub-gpu-processes.timer writes ${path.join(state.dataDir, 'state', 'hardware')} again within 15 s. That is expected; ` +
+          '`cihub up` creates the new install beside it, so the folder does not need to be moved aside.',
+      ]),
+    );
+  });
+
+  describe('a checkout root folder that must not be deleted', () => {
+    // ROOT_FOLDER_HOST comes from an env file or the environment. A typo there must not reach
+    // `rm -rf`, nor the root container that deletes whatever the user could not.
+    let repo: string;
+    let outsideParent: string;
+
+    beforeEach(() => {
+      state.appliance = false;
+      state.rootContainerDeletes = true;
+      repo = path.join(state.home, 'repo');
+      mkdirSync(repo);
+      writeFileSync(path.join(repo, 'package.json'), '{}\n');
+      writeFileSync(path.join(state.home, 'keep.txt'), 'x');
+      outsideParent = mkdtempSync(path.join(tmpdir(), 'cli-reset-outside-'));
+      process.chdir(repo);
+    });
+
+    afterEach(() => {
+      rmSync(outsideParent, { recursive: true, force: true });
+    });
+
+    /** `~/alias`, a symlink to home itself, so `~/alias/repo` is the repository. */
+    const symlinkedHome = () => {
+      const alias = path.join(state.home, 'alias');
+      if (!existsSync(alias)) symlinkSync(state.home, alias);
+      return alias;
+    };
+
+    it.each([
+      ['a folder outside the repository and home', () => path.join(outsideParent, 'hub-data'), 'is not inside the repository or your home directory'],
+      ['the home directory', () => state.home, 'is this repository or holds it'],
+      ['the repository itself (ROOT_FOLDER_HOST=.)', () => '.', 'is this repository or holds it'],
+      // The repository through another spelling of its path, which reads as a folder inside home.
+      // process.cwd() reports the real path (on macOS the temp folder's /var is itself a symlink).
+      ['the repository through a symlink inside home', () => path.join(symlinkedHome(), 'repo'), 'is this repository or holds it'],
+    ])('refuses %s, and starts no root container', (_name, rootFolderHost, why) => {
+      // As resolveRootFolderHost resolves it.
+      const target = path.isAbsolute(rootFolderHost()) ? rootFolderHost() : path.resolve(process.cwd(), rootFolderHost());
+      mkdirSync(target, { recursive: true });
+      writeFileSync(path.join(target, 'keep-me'), 'x');
+      writeFileSync(path.join(repo, '.env.dev'), `ROOT_FOLDER_HOST=${rootFolderHost()}\n`);
+
+      cleanHub('dev');
+
+      expect(existsSync(path.join(target, 'keep-me'))).toBe(true);
+      expect(existsSync(path.join(state.home, 'keep.txt'))).toBe(true);
+      expect(existsSync(path.join(repo, 'package.json'))).toBe(true);
+      expect(rootContainerRuns()).toEqual([]);
+      expect(box('Host data left behind')?.lines).toEqual(expect.arrayContaining([expect.stringContaining(`${target}: it ${why}`)]));
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('refuses the repository spelled in another letter case, on a case-insensitive filesystem', (ctx) => {
+      // macOS and Windows filesystems are case-insensitive by default. Node's realpathSync keeps
+      // the case it was given, so `~/REPO` read as a folder inside home and the repository was deleted.
+      const otherCase = path.join(state.home, 'REPO');
+      if (!existsSync(otherCase)) ctx.skip();
+      writeFileSync(path.join(repo, '.env.dev'), `ROOT_FOLDER_HOST=${otherCase}\n`);
+
+      const results = cleanHub('dev');
+
+      expect(existsSync(path.join(repo, 'package.json'))).toBe(true);
+      expect(results[0]).toMatchObject({ target: otherCase, removed: false });
+      expect(rootContainerRuns()).toEqual([]);
+      expect(box('Host data left behind')?.lines).toEqual(
+        expect.arrayContaining([expect.stringContaining(`${otherCase}: it is this repository or holds it`)]),
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('leaves the tunnel folder beside a refused root folder alone, and starts no root container', () => {
+      // With ROOT_FOLDER_HOST=. the tunnel folder is `<folder holding the repo>/tunnel`, here
+      // `~/tunnel`. It was checked on its own, found inside home, deleted with `rm -rf`, and what
+      // the user could not delete went to the root container.
+      const tunnel = path.join(state.home, 'tunnel');
+      const locked = path.join(tunnel, 'other-program', 'cache');
+      mkdirSync(locked, { recursive: true });
+      writeFileSync(path.join(tunnel, 'other-program.conf'), 'x');
+      writeFileSync(path.join(locked, 'entry'), 'x');
+      lock(locked);
+      writeFileSync(path.join(repo, '.env.dev'), 'ROOT_FOLDER_HOST=.\n');
+      // As resolveRootFolderHost resolves them: from process.cwd(), which is a real path.
+      const rootFolder = process.cwd();
+      const tunnelTarget = path.resolve(rootFolder, '..', 'tunnel');
+
+      const results = cleanHub('dev');
+
+      expect(existsSync(path.join(tunnel, 'other-program.conf'))).toBe(true);
+      expect(existsSync(path.join(locked, 'entry'))).toBe(true);
+      expect(results.map((result) => [result.target, result.removed])).toEqual([
+        [rootFolder, false],
+        [tunnelTarget, false],
+      ]);
+      expect(rootContainerRuns()).toEqual([]);
+      expect(box('Host data left behind')?.lines).toEqual(
+        expect.arrayContaining([expect.stringContaining(`${tunnelTarget}: it is the tunnel folder beside ${rootFolder}, which was refused`)]),
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('--dry-run says it will not delete a refused root folder, instead of listing it for deletion', async () => {
+      writeFileSync(path.join(repo, '.env.dev'), 'ROOT_FOLDER_HOST=.\n');
+
+      await expect(resetHub('dev', false, true)).resolves.toBe(false);
+
+      expect(existsSync(path.join(repo, 'package.json'))).toBe(true);
+      const lines = box('Dry run: nothing was removed')?.lines ?? [];
+      const at = lines.indexOf(`  ${process.cwd()}`);
+      expect(at).toBeGreaterThan(-1);
+      expect(lines[at + 1]).toMatch(/^ {4}it is this repository or holds it, so reset does not delete it and exits 1\./);
+    });
+  });
+
+  it("in a checkout, deletes only the Hub's files from a tunnel folder outside the repository, with no root container", () => {
+    // A checkout whose ROOT_FOLDER_HOST is the appliance data dir mounts `~/.local/share/tunnel`,
+    // the folder #1632 deletes file by file because another program may use it. The root folder
+    // itself is the Hub's, so it still gets the root container.
+    state.appliance = false;
+    state.rootContainerDeletes = true;
+    const repo = path.join(state.home, 'repo');
+    mkdirSync(repo);
+    const share = path.join(state.home, '.local', 'share');
+    const tunnel = path.join(share, 'tunnel');
+    const locked = path.join(tunnel, 'other-program', 'cache');
+    mkdirSync(locked, { recursive: true });
+    writeFileSync(path.join(locked, 'entry'), 'x');
+    lock(locked);
+    writeFileSync(path.join(tunnel, 'token'), CLOUDFLARED_TOKEN);
+    writeFileSync(path.join(tunnel, 'registration.json'), '{"tunnelId":"6ff42ae2"}\n');
+    writeFileSync(path.join(tunnel, 'other-program.conf'), 'x');
+    writeFileSync(path.join(repo, '.env.dev'), `ROOT_FOLDER_HOST=${state.dataDir}\n`);
+    process.chdir(repo);
+
+    const results = cleanHub('dev');
+
+    expect(readdirSync(tunnel).sort()).toEqual(['other-program', 'other-program.conf']);
+    expect(existsSync(path.join(locked, 'entry'))).toBe(true);
+    expect(existsSync(state.dataDir)).toBe(false);
+    expect(results.map((result) => [result.target, result.removed])).toEqual([
+      [state.dataDir, true],
+      [tunnel, true],
+    ]);
+    expect(rootContainerRuns()).toEqual([`run --rm -v ${state.dataDir}:/d alpine sh -c rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true`]);
+    expect(box('Environment files cleaned')?.lines).toEqual([
+      `root folder: ${state.dataDir}`,
+      `tunnel dir: removed from ${tunnel}: token, registration.json; kept, not the Hub's: other-program, other-program.conf`,
+    ]);
+    expect(process.exitCode).toBeUndefined();
+  });
 });
 
 /**
@@ -256,14 +550,19 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     beforeEach(() => {
       state.home = mkdtempSync(path.join(tmpdir(), 'cli-reset-tunnel-'));
       process.env.HOME = state.home;
+      // As above: nothing from the machine running the tests may choose the engine or the unit dir.
+      vi.stubEnv('DOCKER_HOST', '');
+      vi.stubEnv('CI_HUB_DOCKER_HOST', '');
+      vi.stubEnv('XDG_CONFIG_HOME', '');
       state.appliance = true;
       share = path.join(state.home, '.local', 'share');
       state.dataDir = path.join(share, 'companion-hub');
       tunnel = path.join(share, 'tunnel');
       state.calls = [];
+      state.dockerHosts = [];
       state.rootContainerDeletes = false;
       state.rootContainerStarts = true;
-      state.lingeringVolumes = [];
+      state.listings = {};
       vi.clearAllMocks();
       mkdirSync(path.join(state.dataDir, 'state'), { recursive: true });
       writeFileSync(path.join(state.dataDir, '.env'), 'X=1\n');
@@ -274,8 +573,9 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
 
     afterEach(() => {
       process.env.HOME = previousHome;
+      vi.unstubAllEnvs();
       process.exitCode = undefined;
-      for (const folder of lockedFolders.splice(0)) {
+      for (const folder of state.lockedFolders.splice(0)) {
         if (existsSync(folder)) chmodSync(folder, 0o755);
       }
       rmSync(state.home, { recursive: true, force: true });
@@ -283,9 +583,12 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
 
     it('deletes the token, registration.json, and the empty certs/, then the folder, and says "Reset complete"', async () => {
       writeTunnel(tunnel);
+      expect(await upWouldStartTheOldTunnel(state.dataDir)).toBe(true);
 
       await expect(resetHub('prod', true)).resolves.toBe(true);
 
+      // The check `cihub up` makes before it turns on the cloudflare profile, unmocked.
+      expect(await upWouldStartTheOldTunnel(state.dataDir)).toBe(false);
       expect(existsSync(tunnel)).toBe(false);
       expect(existsSync(state.dataDir)).toBe(false);
       expect(list(path.join(share, 'other-app'))).toEqual(['data']);
