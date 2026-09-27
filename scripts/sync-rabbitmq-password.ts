@@ -124,7 +124,9 @@ export async function syncRabbitmqPasswordFromEnv(envFile = process.env.ENV_FILE
   console.log('sync-rabbitmq-password: queue recreated and auth matches');
 }
 
-if (isDirectScriptRun(import.meta.url)) {
+const isDirectRun = isDirectScriptRun(import.meta.url, import.meta.main);
+
+if (isDirectRun) {
   syncRabbitmqPasswordFromEnv().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
