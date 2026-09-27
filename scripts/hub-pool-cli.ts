@@ -126,6 +126,11 @@ export interface PoolRoutingSummary {
    * Absent on a Hub predating the flag, which is why nothing here infers it from `failed`.
    */
   clientClosed?: number;
+  /**
+   * How many of `failed` an engine refused as a bad request, so the walk returned the refusal to the
+   * app. Absent on a Hub predating the field, and never inferred from `failed` for the same reason.
+   */
+  requestErrors?: number;
   failovers: number;
   lastAt: string | null;
 }
@@ -1527,6 +1532,9 @@ export function formatPoolProbeLines(result: PoolProbeResult): string[] {
  * still prefilling — a statement about how long the fleet takes to first byte, not about routing.
  * Only printed when the Hub reported the figure and it is non-zero: an older Hub says nothing rather
  * than implying zero, and a fleet where no caller ever left keeps the line it has always had.
+ *
+ * Requests an engine refused as bad are broken out beside the hang-ups for the same reason: they are
+ * an app sending something no node will run, not a pool that cannot place work.
  */
 function formatRoutingCounts(summary: {
   recorded: number;
@@ -1534,10 +1542,16 @@ function formatRoutingCounts(summary: {
   served: number;
   failed: number;
   clientClosed?: number;
+  requestErrors?: number;
   failovers: number;
 }): string {
   const abandoned = summary.clientClosed ?? 0;
-  const failed = abandoned > 0 ? `${summary.failed} failed (${abandoned} abandoned by the caller)` : `${summary.failed} failed`;
+  const refused = summary.requestErrors ?? 0;
+  const reasons = [
+    ...(abandoned > 0 ? [`${abandoned} abandoned by the caller`] : []),
+    ...(refused > 0 ? [refused === 1 ? '1 refused as a bad request' : `${refused} refused as bad requests`] : []),
+  ];
+  const failed = reasons.length > 0 ? `${summary.failed} failed (${reasons.join(', ')})` : `${summary.failed} failed`;
   return `${summary.recorded}/${summary.capacity} recorded · ${summary.served} served · ${failed} · ${summary.failovers} failover(s)`;
 }
 

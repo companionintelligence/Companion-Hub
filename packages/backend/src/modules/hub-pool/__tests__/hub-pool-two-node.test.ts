@@ -1659,7 +1659,9 @@ describe('Hub Pool across two nodes', () => {
         res: captured.res,
       });
 
-      expect(captured.status()).toBe(500);
+      // Beta relays its engine's 500 as it is, and core, whose walk it was, is what calls it a 400.
+      expect(captured.status()).toBe(400);
+      expect(captured.headers['x-hub-pool-upstream-status']).toBe('500');
       expect(JSON.parse(captured.body())).toEqual({ error: 'no user query found in messages' });
       expect(captured.headers[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe(BETA_FQDN);
       const id = captured.headers[POOL_REQUEST_ID_HEADER.toLowerCase()];

@@ -384,6 +384,12 @@ export interface PoolRoutingSummary {
    * patience against this fleet's prefill, not a pool that cannot place work.
    */
   clientClosed: number;
+  /**
+   * The subset of `failed` an engine refused as a bad request — see `PoolRoutingRecord.requestError`.
+   * Inside `failed` and beside it, for `clientClosed`'s reason: "3 failed" reads as a pool that cannot
+   * place work, when these are an app sending something no node will run.
+   */
+  requestErrors: number;
   /** Placed on a candidate and still waiting for its first byte. */
   pending: number;
   /** Records with a non-empty `failedOverFrom`, i.e. requests that a candidate rejected before one answered. */
@@ -558,11 +564,13 @@ export class HubPoolRoutingLogService {
     let pending = 0;
     let failovers = 0;
     let clientClosed = 0;
+    let requestErrors = 0;
     for (const entry of this.entries) {
       if (entry.outcome === 'served') served += 1;
       if (entry.outcome === 'pending') pending += 1;
       if (entry.failedOverFrom.length > 0) failovers += 1;
       if (entry.clientClosed) clientClosed += 1;
+      if (entry.requestError) requestErrors += 1;
     }
     return {
       recorded: this.entries.length,
@@ -570,6 +578,7 @@ export class HubPoolRoutingLogService {
       served,
       failed: this.entries.length - served - pending,
       clientClosed,
+      requestErrors,
       pending,
       failovers,
       lastAt: this.entries[this.entries.length - 1]?.at ?? null,

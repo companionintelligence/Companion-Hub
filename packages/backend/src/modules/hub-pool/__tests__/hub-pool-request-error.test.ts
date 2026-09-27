@@ -6,6 +6,7 @@ import {
   judgeRequestError,
   readRequestErrorVerdict,
   type PoolRequestErrorVerdict,
+  type RequestErrorWalk,
 } from '../hub-pool-request-error';
 
 const json = (value: unknown) => JSON.stringify(value);
@@ -143,30 +144,79 @@ describe('readRequestErrorVerdict', () => {
 describe('judgeRequestError', () => {
   const definitive: PoolRequestErrorVerdict = { signature: 'no-user-query', definitive: true, strikesModel: false };
   const template: PoolRequestErrorVerdict = { signature: 'chat-template', definitive: false, strikesModel: true };
+  const malformed: PoolRequestErrorVerdict = { signature: 'invalid-message', definitive: false, strikesModel: false };
   const tooLong: PoolRequestErrorVerdict = { signature: 'context-length', definitive: false, strikesModel: false };
-  const anyWindow = () => true;
 
-  it('ends the walk on a definitive verdict, confirmed by nobody', () => {
-    expect(judgeRequestError(definitive, 'b', null, anyWindow)).toEqual({ signature: 'no-user-query', basis: 'definitive', confirms: null });
+  /** A candidate as the walk sees it: the node's name, its engine, and the window it runs the request at. */
+  interface Node {
+    name: string;
+    engine: string;
+    window: number | null;
+  }
+  const node = (name: string, engine = 'ollama', window: number | null = 16384): Node => ({ name, engine, window });
+  const walk = (...untried: Node[]): RequestErrorWalk<Node> => ({
+    untried,
+    engineOf: (candidate) => candidate.engine,
+    windowOf: (candidate) => candidate.window,
+  });
+  const refusedBy = (verdict: PoolRequestErrorVerdict, candidate: Node) => ({ verdict, candidate, node: candidate.name });
+
+  it('ends the walk on a definitive verdict, confirmed by nobody, whatever is still ahead', () => {
+    expect(judgeRequestError(definitive, node('b'), null, walk(node('c', 'vllm', null)))).toEqual({
+      signature: 'no-user-query',
+      basis: 'definitive',
+      confirms: null,
+    });
   });
 
   it('carries an ambiguous verdict forward, and ends the walk when the next one to answer agrees', () => {
-    expect(judgeRequestError(template, 'a', null, anyWindow)).toBeNull();
-    expect(judgeRequestError(template, 'b', { verdict: template, candidate: 'a', node: 'node-a' }, anyWindow)).toEqual({
+    expect(judgeRequestError(template, node('a'), null, walk(node('b')))).toBeNull();
+    expect(judgeRequestError(template, node('b'), refusedBy(template, node('a')), walk(node('c')))).toEqual({
       signature: 'chat-template',
       basis: 'confirmed',
-      confirms: 'node-a',
+      confirms: 'a',
     });
   });
 
   it('reads a different reason as new evidence, not agreement', () => {
-    expect(judgeRequestError(tooLong, 'b', { verdict: template, candidate: 'a', node: 'node-a' }, anyWindow)).toBeNull();
+    expect(judgeRequestError(tooLong, node('b'), refusedBy(template, node('a')), walk())).toBeNull();
   });
 
-  it('counts a second "too long" only from a candidate running the same window', () => {
-    const unconfirmed = { verdict: tooLong, candidate: 'a', node: 'node-a' };
+  it('counts a second "too long" only from a candidate running the same, known window', () => {
+    expect(judgeRequestError(tooLong, node('b', 'ollama', 65536), refusedBy(tooLong, node('a')), walk())).toBeNull();
+    expect(judgeRequestError(tooLong, node('b', 'ollama', null), refusedBy(tooLong, node('a', 'ollama', null)), walk())).toBeNull();
+    expect(judgeRequestError(tooLong, node('b'), refusedBy(tooLong, node('a')), walk())).toMatchObject({ basis: 'confirmed' });
+  });
 
-    expect(judgeRequestError(tooLong, 'b', unconfirmed, () => false)).toBeNull();
-    expect(judgeRequestError(tooLong, 'b', unconfirmed, (x, y) => x === 'a' && y === 'b')).toMatchObject({ basis: 'confirmed' });
+  /**
+   * Two agreeing proves the prompt needs more than THEIR window, and nothing about a node further
+   * down: the second refuser is only the next in rank.
+   */
+  it('does not end the walk on "too long" while a node still ahead runs a larger window, or does not say', () => {
+    const agreed = refusedBy(tooLong, node('a'));
+
+    expect(judgeRequestError(tooLong, node('b'), agreed, walk(node('c', 'ollama', 131072)))).toBeNull();
+    expect(judgeRequestError(tooLong, node('b'), agreed, walk(node('c'), node('d', 'ollama', null)))).toBeNull();
+    expect(judgeRequestError(tooLong, node('b'), agreed, walk(node('c'), node('d', 'ollama', 8192)))).toMatchObject({ basis: 'confirmed' });
+  });
+
+  it('does not end the walk on a malformed message or a template while an engine that has not refused is still ahead', () => {
+    for (const verdict of [malformed, template]) {
+      const agreed = refusedBy(verdict, node('a', 'lemonade'));
+
+      expect(judgeRequestError(verdict, node('b', 'lemonade'), agreed, walk(node('c', 'lemonade'), node('d', 'ollama')))).toBeNull();
+      expect(judgeRequestError(verdict, node('b', 'lemonade'), agreed, walk(node('c', 'lemonade')))).toMatchObject({ basis: 'confirmed' });
+      // Two engines that both refused cover both of them.
+      expect(judgeRequestError(verdict, node('b', 'ollama'), agreed, walk(node('c', 'ollama'), node('d', 'lemonade')))).toMatchObject({
+        basis: 'confirmed',
+      });
+    }
+  });
+
+  it('does not care what is ahead once the verdict is on the last candidate', () => {
+    expect(judgeRequestError(tooLong, node('b'), refusedBy(tooLong, node('a')), walk())).toMatchObject({ basis: 'confirmed' });
+    expect(judgeRequestError(malformed, node('b', 'vllm'), refusedBy(malformed, node('a', 'lemonade')), walk())).toMatchObject({
+      basis: 'confirmed',
+    });
   });
 });

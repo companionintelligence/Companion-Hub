@@ -312,11 +312,23 @@ describe('hub-pool-cli formatters', () => {
     expect(confirmed.indexOf('refused the request itself')).toBeLessThan(confirmed.indexOf('failed over from'));
   });
 
+  it('breaks out the requests an engine refused as bad, beside the hang-ups, from the failures', () => {
+    const entries: PoolRoutingLogResponse['entries'] = [];
+    const base = { recorded: 26, capacity: 200, served: 23, failed: 3, failovers: 0, lastAt: null };
+
+    expect(formatPoolRoutingLogLines({ entries, summary: { ...base, clientClosed: 1, requestErrors: 2 } }).join('\n')).toContain(
+      '3 failed (1 abandoned by the caller, 2 refused as bad requests) ·',
+    );
+    expect(formatPoolRoutingLogLines({ entries, summary: { ...base, clientClosed: 0, requestErrors: 1 } }).join('\n')).toContain(
+      '3 failed (1 refused as a bad request) ·',
+    );
+  });
+
   it('leaves the counts line alone on a Hub that reports no hang-ups, and on one too old to report them', () => {
     const entries: PoolRoutingLogResponse['entries'] = [];
     const base = { recorded: 3, capacity: 200, served: 3, failed: 0, failovers: 0, lastAt: null };
 
-    expect(formatPoolRoutingLogLines({ entries, summary: { ...base, clientClosed: 0 } }).join('\n')).toContain('0 failed ·');
+    expect(formatPoolRoutingLogLines({ entries, summary: { ...base, clientClosed: 0, requestErrors: 0 } }).join('\n')).toContain('0 failed ·');
     // Absent, not zero: an older Hub must not be made to claim none of its failures were hang-ups.
     expect(formatPoolRoutingLogLines({ entries, summary: base }).join('\n')).toContain('0 failed ·');
   });

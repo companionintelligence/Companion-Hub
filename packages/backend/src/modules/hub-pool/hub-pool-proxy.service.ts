@@ -453,6 +453,12 @@ export const POOL_MODEL_HEADER = 'X-Hub-Pool-Model';
  * It names a log row the caller could already read with an operator credential, and nothing else.
  */
 export const POOL_REQUEST_ID_HEADER = 'X-Hub-Pool-Request-Id';
+/**
+ * Response → caller: the status the engine answered with, on a response this Hub relayed under
+ * another. Set only on an engine's 500 that proved the request itself was bad (see
+ * `hub-pool-request-error.ts`), which goes to the app as a 400 — see {@link relayedRequestErrorStatus}.
+ */
+export const POOL_UPSTREAM_STATUS_HEADER = 'X-Hub-Pool-Upstream-Status';
 
 /**
  * A peer-supplied request id, or `undefined` when there is none worth keeping.
@@ -487,6 +493,22 @@ export function servedByHeaders(candidate: PoolCandidate, model: string, request
     [POOL_MODEL_HEADER]: model,
     ...(requestId ? { [POOL_REQUEST_ID_HEADER]: requestId } : {}),
   };
+}
+/**
+ * The status an engine's refusal of the request goes to the app under, once the walk has ended on it.
+ *
+ * A 400 rather than the engine's 500, because the status is what an app acts on and the body is what
+ * a person reads. The OpenAI SDKs retry any 5xx twice on their own, and OpenClaw reported both of
+ * core-2's 2026-09-26 turns as `provider internal error, HTTP 502. This is usually temporary — try
+ * again shortly.` Relaying the 500 would have changed only how long that took. A 400 is what the
+ * proxy's own failover rule already means by "the request's fault", and the engine's body and its
+ * original status (in {@link POOL_UPSTREAM_STATUS_HEADER}) still reach the app.
+ *
+ * Not for a verdict that may be the node's own fault (`strikesModel`): a template that would not
+ * render can be the model's copy, which no change to the request fixes, so it keeps the engine's 500.
+ */
+export function relayedRequestErrorStatus(verdict: PoolRequestErrorVerdict, upstreamStatus: number): number {
+  return verdict.strikesModel ? upstreamStatus : 400;
 }
 /** 4xx that means "this node can't serve you", never "your request is bad" — retryable on any candidate. */
 const TRANSPORT_4XX = new Set([408, 429]);
@@ -1017,7 +1039,7 @@ function describeLocalProbes(probes: LocalBackendProbe[]): string {
  * retrying a malformed request on a different machine just wastes a hop — and
  * so is a 500 whose body is an engine's known verdict on the request (see
  * `hub-pool-request-error.ts`), after one more candidate agrees where a single
- * node's word is not enough.
+ * node's word is not enough and no candidate still ahead could answer otherwise.
  *
  * Failover stops the instant a response is committed: once status and headers
  * have gone to the client, a second candidate has nowhere to write.
@@ -1509,21 +1531,25 @@ export class PoolProxyService {
   }
 
   /**
-   * Whether two candidates ran this request at the same, known window — what it takes for a second
-   * "exceeds the context" answer to confirm the first rather than be new evidence.
+   * The window each candidate runs this request at, `null` where it is not known — what the request-
+   * error walk compares to decide whether a second "exceeds the context" answer confirms the first,
+   * and whether a candidate still ahead might fit the prompt.
    *
-   * A request that sets `options.num_ctx` on Ollama's native routes is loaded at that window by every
-   * Ollama engine, so two Ollama candidates agree on it whatever their caps say. Otherwise the window
-   * is each node's own, known only where its cap states it; an unstated one is never the same as
-   * anything, so on a fleet that states none the walk goes on as it did before.
+   * Stricter than {@link contextCapOf}, because here a wrong window ends the walk rather than
+   * reorders it. A request that sets `options.num_ctx` on Ollama's native routes is loaded at that
+   * window by every Ollama engine, whatever their caps say. Otherwise an Ollama engine runs its
+   * node's cap, the operator's statement of `OLLAMA_CONTEXT_LENGTH`; any other engine runs the window
+   * it states itself, which only this node's own engines do. An unknown window matches nothing and
+   * is never "no larger", so on a fleet that states none the walk goes on as it did before.
    */
-  private sameContextWindow(path: string, body: unknown, peers: HubPoolPeer[]): (a: PoolCandidate, b: PoolCandidate) => boolean {
+  private contextWindowOf(path: string, body: unknown, peers: HubPoolPeer[]): (candidate: PoolCandidate) => number | null {
     const numCtx = path.startsWith('/api/') ? requestedNumCtx(body) : null;
     const capOf = this.contextCapOf(peers);
-    const windowOf = (candidate: PoolCandidate) => (numCtx !== null && candidate.backend === 'ollama' ? numCtx : capOf(candidate));
-    return (a, b) => {
-      const window = windowOf(a);
-      return window !== null && window === windowOf(b);
+    return (candidate) => {
+      if (candidate.backend === 'ollama') {
+        return numCtx ?? capOf(candidate);
+      }
+      return candidate.peerId === null ? clampContextCap(this.localEngineStatement(candidate.backend)?.contextLength) : null;
     };
   }
 
@@ -1756,7 +1782,7 @@ export class PoolProxyService {
     // until the next candidate to answer agrees with it or serves the request.
     let unconfirmed: UnconfirmedRequestError<PoolCandidate> | null = null;
     // Built only once an engine says the prompt was too long, which is the one verdict that needs it.
-    const windowComparator = memoize(() => this.sameContextWindow(path, body, peers));
+    const contextWindows = memoize(() => this.contextWindowOf(path, body, peers));
     for (const [index, candidate] of candidates.entries()) {
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
@@ -1824,7 +1850,11 @@ export class PoolProxyService {
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status, verdict);
         const requestError: PoolRoutingRequestError | null = verdict
-          ? judgeRequestError(verdict, candidate, unconfirmed, (a, b) => windowComparator()(a, b))
+          ? judgeRequestError(verdict, candidate, unconfirmed, {
+              untried: candidates.slice(index + 1),
+              engineOf: (other) => other.backend,
+              windowOf: (other) => contextWindows()(other),
+            })
           : null;
         if (!requestError && this.shouldFailover(candidate, upstream.status)) {
           if (verdict) {
@@ -1838,14 +1868,15 @@ export class PoolProxyService {
           await this.noteRejectedCandidate(candidate, upstream.status);
           continue;
         }
+        const relayedStatus = verdict && requestError ? relayedRequestErrorStatus(verdict, upstream.status) : upstream.status;
         if (requestError) {
           // Warn, like a candidate failing: the app is sending something no node will run, and this
           // line is the one place outside the routing log that says so. The label, never the
           // engine's message, which can quote the prompt.
           this.logger.warn(
             `[PoolProxy] ${nodeLabel} rejected the request for "${model}" itself (HTTP ${upstream.status}, ${requestError.signature}` +
-              `${requestError.confirms ? `, as ${requestError.confirms} did` : ''}); returning it to the caller instead of ` +
-              `trying ${candidates.length - index - 1} more candidate(s)`,
+              `${requestError.confirms ? `, as ${requestError.confirms} did` : ''}); returning it to the caller` +
+              `${relayedStatus === upstream.status ? '' : ` as HTTP ${relayedStatus}`} instead of trying ${candidates.length - index - 1} more candidate(s)`,
           );
         }
         // Settled here rather than after the stream: headers are the routing decision, and the
@@ -1863,7 +1894,16 @@ export class PoolProxyService {
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
-        this.commitResponse(upstream, res, { ...servedByHeaders(candidate, model, row.id), ...affinityHeader });
+        this.commitResponse(
+          upstream,
+          res,
+          {
+            ...servedByHeaders(candidate, model, row.id),
+            ...affinityHeader,
+            ...(relayedStatus === upstream.status ? {} : { [POOL_UPSTREAM_STATUS_HEADER]: String(upstream.status) }),
+          },
+          relayedStatus,
+        );
         committed = true;
         const meter = measurable && upstream.ok ? startResponseTiming() : null;
         try {
@@ -2820,9 +2860,12 @@ export class PoolProxyService {
    * set after `streamResponse` starts would be ERR_HTTP_HEADERS_SENT on a streamed completion.
    * Upstream `x-hub-pool-*` headers are dropped whether or not there is an attribution to replace
    * them — see {@link POOL_HEADER_PREFIX}.
+   *
+   * `status` is the upstream's own unless the routed path relays an engine's refusal of the request
+   * under another (see {@link relayedRequestErrorStatus}); the body goes through untouched either way.
    */
-  private commitResponse(upstream: globalThis.Response, res: Response, attribution?: Record<string, string>): void {
-    res.status(upstream.status);
+  private commitResponse(upstream: globalThis.Response, res: Response, attribution?: Record<string, string>, status = upstream.status): void {
+    res.status(status);
     upstream.headers.forEach((value, key) => {
       const name = key.toLowerCase();
       if (!HOP_BY_HOP_HEADERS.has(name) && !name.startsWith(POOL_HEADER_PREFIX)) {

@@ -27,15 +27,24 @@ export interface PoolRequestErrorVerdict {
   /**
    * `true`: no node could have answered this request otherwise, so the first node that says so is
    * believed. `false`: another node might serve it — an engine that validates differently, a larger
-   * window, a node whose own copy of the model is broken — so one more node has to agree first.
+   * window, a node whose own copy of the model is broken — so one more node has to agree first, and
+   * no node the walk has not reached may differ from the two in the way that matters.
    */
   definitive: boolean;
   /** Whether the answer might still be the node's own fault, and so still counts against the model's serving record there. */
   strikesModel: boolean;
 }
 
-interface SignatureRule extends PoolRequestErrorVerdict {
+interface SignatureRule {
+  signature: PoolRequestErrorSignature;
   pattern: RegExp;
+  strikesModel: boolean;
+  /**
+   * What can make a node answer this differently from the two that agreed: the ENGINE it runs, or
+   * the context WINDOW it runs the request at. `null` for a verdict no node can answer otherwise,
+   * which is what makes it definitive.
+   */
+  mayDifferBy: 'engine' | 'window' | null;
 }
 
 /** First match wins, so a Jinja error quoting the Qwen message reads as `no-user-query`, not as a template failure. */
@@ -46,41 +55,45 @@ const SIGNATURES: readonly SignatureRule[] = [
     // the model, so every node holding the model refuses the same body.
     signature: 'no-user-query',
     pattern: /\bno user query found in messages\b/i,
-    definitive: true,
     strikesModel: false,
+    mayDifferBy: null,
   },
   {
     // A chat body with no usable `messages` at all, which no engine can run.
     signature: 'missing-messages',
     pattern: /'messages' is required|\bmessages (?:field )?is required\b|expected 'messages' to be an array/i,
-    definitive: true,
     strikesModel: false,
+    mayDifferBy: null,
   },
   {
     // llama-server's per-message shape checks, which older builds answer with 500. Another engine
-    // holding the same model may accept the message, so it takes a second candidate to agree.
+    // holding the same model may accept the message, so it takes a second candidate to agree, and
+    // none still ahead may run an engine other than the ones that refused.
     signature: 'invalid-message',
     pattern: /missing '(?:role|content)' in message|expected 'message' to be an object|expected 'content' or 'tool_calls'/i,
-    definitive: false,
     strikesModel: false,
+    mayDifferBy: 'engine',
   },
   {
     // The prompt did not fit the window this node runs, which a node with a larger one may have.
-    // The proxy only counts a second candidate as agreeing when it runs the same window.
+    // A second candidate agrees only when it runs the same window, and only while every candidate
+    // still ahead is known to run no larger one.
     signature: 'context-length',
     pattern:
       /exceeds? the available context size|maximum context length|context[_ ]length[_ ]exceeded|exceeds (?:the )?(?:model's )?context (?:length|window)/i,
-    definitive: false,
     strikesModel: false,
+    mayDifferBy: 'window',
   },
   {
     // A chat template that failed to render: Go `text/template` in Ollama, Jinja elsewhere. Usually
     // the request, but a node's own copy of the model can carry a broken template, so it takes a
-    // second candidate to agree and it still counts against the model where it happened.
+    // second candidate to agree and it still counts against the model where it happened. Ollama
+    // renders its own template where the others render the GGUF's or the tokenizer's, so an engine
+    // still ahead that has not refused may render it.
     signature: 'chat-template',
     pattern: /\btemplate: .*\bexecuting\b|\bjinja\b|\bchat template\b|\braise_exception\b|\bprompt error\b/i,
-    definitive: false,
     strikesModel: true,
+    mayDifferBy: 'engine',
   },
 ];
 
@@ -122,7 +135,7 @@ export function classifyRequestError(status: number, bodyText: string): PoolRequ
   const message = engineErrorMessage(parsed);
   if (message === null) return null;
   const rule = SIGNATURES.find((entry) => entry.pattern.test(message));
-  return rule ? { signature: rule.signature, definitive: rule.definitive, strikesModel: rule.strikesModel } : null;
+  return rule ? { signature: rule.signature, definitive: rule.mayDifferBy === null, strikesModel: rule.strikesModel } : null;
 }
 
 /** Largest error body read for a verdict. An engine's error is a sentence; anything bigger is not one of the messages above. */
@@ -186,6 +199,16 @@ export interface UnconfirmedRequestError<C> {
   node: string;
 }
 
+/** What the walk knows about its candidates: enough to say whether one it has not reached could answer differently. */
+export interface RequestErrorWalk<C> {
+  /** The candidates after the one that just answered, which the walk would try next. */
+  untried: readonly C[];
+  /** The engine a candidate runs. */
+  engineOf: (candidate: C) => string;
+  /** The context window a candidate runs this request at, or `null` where it is not known. */
+  windowOf: (candidate: C) => number | null;
+}
+
 /**
  * Whether `verdict`, from `candidate`, ends the walk — and if so the routing log's account of why —
  * given the verdict an earlier candidate left unconfirmed, if any.
@@ -193,14 +216,19 @@ export interface UnconfirmedRequestError<C> {
  * Confirmation is by signature: two candidates refusing the same body for the same reason. A
  * different reason is new evidence rather than agreement, and becomes the verdict the next
  * candidate is asked to confirm. A candidate that failed without answering confirms nothing, and
- * the walk keeps the verdict it had. For `context-length` the two candidates must also run the same
- * window, which only the caller knows how to judge.
+ * the walk keeps the verdict it had.
+ *
+ * Two agreeing is not enough on its own. The second is only the next in rank, and says nothing
+ * about a candidate further down that differs from both in the way the verdict turns on — a larger
+ * window, another engine. So the walk ends only when none still ahead does; until then it goes on,
+ * exactly as it did before any of this, and the next candidate either serves the request or adds to
+ * the evidence. An unknown window is never "no larger".
  */
 export function judgeRequestError<C>(
   verdict: PoolRequestErrorVerdict,
   candidate: C,
   unconfirmed: UnconfirmedRequestError<C> | null,
-  sameContextWindow: (a: C, b: C) => boolean,
+  walk: RequestErrorWalk<C>,
 ): PoolRoutingRequestError | null {
   if (verdict.definitive) {
     return { signature: verdict.signature, basis: 'definitive', confirms: null };
@@ -208,8 +236,28 @@ export function judgeRequestError<C>(
   if (!unconfirmed || unconfirmed.verdict.signature !== verdict.signature) {
     return null;
   }
-  if (verdict.signature === 'context-length' && !sameContextWindow(unconfirmed.candidate, candidate)) {
+  if (!noneAheadMayDiffer(verdict.signature, [unconfirmed.candidate, candidate], walk)) {
     return null;
   }
   return { signature: verdict.signature, basis: 'confirmed', confirms: unconfirmed.node };
+}
+
+function noneAheadMayDiffer<C>(signature: PoolRequestErrorSignature, refused: readonly [C, C], walk: RequestErrorWalk<C>): boolean {
+  const mayDifferBy = SIGNATURES.find((rule) => rule.signature === signature)?.mayDifferBy ?? null;
+  if (mayDifferBy === 'window') {
+    // Both refusers on one known window: that is what proves the prompt needs more than it.
+    const window = walk.windowOf(refused[0]);
+    if (window === null || walk.windowOf(refused[1]) !== window) {
+      return false;
+    }
+    return walk.untried.every((next) => {
+      const nextWindow = walk.windowOf(next);
+      return nextWindow !== null && nextWindow <= window;
+    });
+  }
+  if (mayDifferBy === 'engine') {
+    const engines = new Set(refused.map((one) => walk.engineOf(one)));
+    return walk.untried.every((next) => engines.has(walk.engineOf(next)));
+  }
+  return true;
 }

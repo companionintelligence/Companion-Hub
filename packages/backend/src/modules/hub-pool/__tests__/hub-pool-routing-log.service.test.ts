@@ -150,6 +150,26 @@ describe('HubPoolRoutingLogService', () => {
       expect(service.list()[0]).toMatchObject({ node: 'core-14', status: 500, requestError: { signature: 'no-user-query' } });
     });
 
+    /**
+     * The same reasoning as the hang-up count above: `4 failed` on `cihub pool status` reads as the
+     * pool failing, and a request an engine refused as malformed is the app's to fix. Inside `failed`,
+     * and beside it.
+     */
+    it('counts a row an engine refused as a bad request inside failed, and separately', () => {
+      const refused = service.open((({ outcome: _o, status: _s, durationMs: _d, ...rest }) => rest)(record({ node: 'core-14' })));
+      service.settle(refused, {
+        outcome: 'failed',
+        status: 500,
+        durationMs: 128,
+        requestError: { signature: 'no-user-query', basis: 'definitive', confirms: null },
+      });
+      const left = service.open((({ outcome: _o, status: _s, durationMs: _d, ...rest }) => rest)(record()));
+      service.settle(left, { outcome: 'failed', status: null, clientClosed: true, durationMs: 30_031 });
+      service.record(record());
+
+      expect(service.summary()).toMatchObject({ served: 1, failed: 2, clientClosed: 1, requestErrors: 1 });
+    });
+
     it('opens with no usage, and settling at headers time does not invent one', () => {
       const { outcome: _o, status: _s, durationMs: _d, ...placement } = record();
       const row = service.open(placement);
