@@ -1617,6 +1617,416 @@ describe('PoolProxyService', () => {
   });
 
   /**
+   * core-2, 2026-09-26 23:51:12Z: one `qwen3.8:27b` turn with no user message in it. Ollama answered
+   * 500 `no user query found in messages` from core-14 in 128 ms, core-17 in 134 ms, core-7 after
+   * queueing 4m29s behind another turn, and beta-max; the proxy read every 500 as a node failure,
+   * walked all nine candidates, and handed the app a 502 naming beta-max after 307 s. These pin the
+   * other reading: a 500 whose body is a known engine verdict on the request goes back to the caller.
+   */
+  describe('a request no node can serve', () => {
+    const MODEL = 'qwen3.8:27b';
+    const NODES = Array.from({ length: 9 }, (_, index) => `node-${index + 1}`);
+    const fqdn = (id: string) => `${id}.tailxyz.ts.net`;
+    /** The incident's body: Ollama's native chat with a system prompt and no user turn. */
+    const NO_USER_TURN = {
+      model: MODEL,
+      stream: true,
+      options: { num_ctx: 65536 },
+      messages: [
+        { role: 'system', content: 'You are a helpful agent.' },
+        { role: 'assistant', content: 'Done.' },
+      ],
+    };
+
+    // `globalThis.`: this file's `Response` type is Express's, and these are fetch responses.
+    function engineError(status: number, body: unknown): globalThis.Response {
+      return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
+    }
+    const promptError = () => engineError(500, { error: 'no user query found in messages' });
+    const templateError = () =>
+      engineError(500, { error: 'template: :14:7: executing "" at <.ToolCalls>: can\'t evaluate field ToolCalls in type *api.Message' });
+    const ok = () => new Response(JSON.stringify({ message: { role: 'assistant', content: 'hi' }, done: true }), { status: 200 });
+
+    /** Nine peers holding the model, equally idle, so the ranker keeps them in this order; nothing local. */
+    function ninePeers(overrides: (id: string) => Partial<PoolPeerCapabilities> = () => ({})): HubPoolPeer[] {
+      const peers = NODES.map((id) =>
+        mockPeer({
+          id,
+          nodeFqdn: fqdn(id),
+          lastCapabilities: capabilitiesWithModel(MODEL, { inFlightRequests: 0, ...overrides(id) }) as unknown as Record<string, unknown>,
+        }),
+      );
+      peerService.listConnectedPeers.mockResolvedValue(peers);
+      peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      return peers;
+    }
+
+    async function proxy(
+      res = createMockResponse(),
+      path = '/api/chat',
+      body: Record<string, unknown> = NO_USER_TURN,
+    ): Promise<Response & { chunks: Buffer[] }> {
+      await service.proxyRequest({ path, method: 'POST', body, model: MODEL, res });
+      return res as Response & { chunks: Buffer[] };
+    }
+
+    it('answers the prompt error from the first of nine candidates, with the engine’s own body as a 400', async () => {
+      ninePeers();
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockImplementation(async () => promptError());
+
+      const res = await proxy();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toContain(fqdn('node-1'));
+      // A 400, not the engine's 500: OpenClaw read the incident's 502 as "provider internal error …
+      // usually temporary — try again shortly", and the OpenAI SDKs retry any 5xx on their own.
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.status).toHaveBeenCalledTimes(1);
+      // The engine's words, not a 502 about the pool: the app has to see what is wrong with its request.
+      expect(res.json).not.toHaveBeenCalled();
+      expect(JSON.parse(Buffer.concat(res.chunks).toString())).toEqual({ error: 'no user query found in messages' });
+      const row = routingLog.list()[0];
+      expect(headersSetOn(res)).toMatchObject({
+        'x-hub-pool-served-by': fqdn('node-1'),
+        'x-hub-pool-request-id': row?.id,
+        'x-hub-pool-upstream-status': '500',
+        'content-type': 'application/json; charset=utf-8',
+      });
+      expect(row).toMatchObject({
+        node: fqdn('node-1'),
+        candidates: 9,
+        attempt: 1,
+        failedOverFrom: [],
+        outcome: 'failed',
+        status: 500,
+        requestError: { signature: 'no-user-query', basis: 'definitive', confirms: null },
+      });
+    });
+
+    it('reads the same verdict in the OpenAI-shaped error Ollama’s /v1 and llama-server send', async () => {
+      ninePeers();
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockImplementation(async () =>
+        engineError(500, { error: { code: 500, message: 'No user query found in messages.', type: 'server_error' } }),
+      );
+
+      const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: NO_USER_TURN.messages });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(routingLog.list()[0]?.requestError).toEqual({ signature: 'no-user-query', basis: 'definitive', confirms: null });
+    });
+
+    it('answers it from this node’s own engine too, and does not count it against the model', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      ninePeers();
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockImplementation(async () => promptError());
+
+      const res = await proxy();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]?.[0]).toContain('local-ollama');
+      expect(res.status).toHaveBeenCalledWith(400);
+      // Two such answers inside five minutes would otherwise withhold a model that serves every
+      // well-formed request, on every node an agent looping on one bad turn happened to reach.
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+      expect(ollama.noteServingSuccess).not.toHaveBeenCalled();
+    });
+
+    it('still walks every candidate for a 500 that carries no such verdict, and still charges the model for it', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      ninePeers();
+      const fetchMock = vi.mocked(global.fetch);
+      // What a node that cannot run the model says. Its neighbours may well be able to.
+      fetchMock.mockImplementation(async () =>
+        engineError(500, { error: 'model requires more system memory (30.1 GiB) than is available (22.4 GiB)' }),
+      );
+
+      const res = await proxy();
+
+      expect(fetchMock).toHaveBeenCalledTimes(10);
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(ollama.noteServingFailure).toHaveBeenCalledWith(MODEL, 'HTTP 500');
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'failed', node: null, requestError: null });
+    });
+
+    it('still fails over a 503, a 429 and a transport error, whatever their bodies say', async () => {
+      ninePeers();
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock
+        .mockResolvedValueOnce(engineError(503, { error: { code: 503, message: 'Loading model', type: 'unavailable_error' } }))
+        // Only a 500 is read as an engine's verdict: a 503 or a 429 is a node talking about itself.
+        .mockResolvedValueOnce(engineError(503, { error: 'no user query found in messages' }))
+        .mockResolvedValueOnce(engineError(429, { error: 'no user query found in messages' }))
+        .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+        .mockResolvedValueOnce(ok());
+
+      const res = await proxy();
+
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', attempt: 5, requestError: null });
+    });
+
+    it('does not take the Hub’s own 500 for an engine’s verdict', async () => {
+      ninePeers();
+      const fetchMock = vi.mocked(global.fetch);
+      // Nest's shape, from a peer whose forward threw. It says nothing about the request.
+      fetchMock.mockResolvedValueOnce(engineError(500, { statusCode: 500, message: 'no user query found in messages' })).mockResolvedValueOnce(ok());
+
+      const res = await proxy();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    describe('a verdict one node alone cannot vouch for', () => {
+      it('tries exactly one more candidate, and hands the caller its answer when it agrees', async () => {
+        ninePeers();
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async () => templateError());
+
+        const res = await proxy();
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        // Still the engine's 500: a template that would not render may be the model's own copy, and
+        // that is not something the app can fix by changing its request.
+        expect(res.status).toHaveBeenCalledWith(500);
+        expect(JSON.parse(Buffer.concat(res.chunks).toString()).error).toContain('executing');
+        expect(headersSetOn(res)['x-hub-pool-served-by']).toBe(fqdn('node-2'));
+        expect(headersSetOn(res)).not.toHaveProperty('x-hub-pool-upstream-status');
+        expect(routingLog.list()[0]).toMatchObject({
+          node: fqdn('node-2'),
+          attempt: 2,
+          failedOverFrom: [fqdn('node-1')],
+          outcome: 'failed',
+          status: 500,
+          requestError: { signature: 'chat-template', basis: 'confirmed', confirms: fqdn('node-1') },
+        });
+      });
+
+      it('serves the request when the next node can, which is why one node was not enough', async () => {
+        ninePeers();
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValueOnce(templateError()).mockResolvedValueOnce(ok());
+
+        const res = await proxy();
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: fqdn('node-2'), requestError: null });
+      });
+
+      it('does not count a node that never answered as the confirmation', async () => {
+        ninePeers();
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock
+          .mockResolvedValueOnce(templateError())
+          .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+          .mockResolvedValueOnce(engineError(500, { error: 'llama runner process has terminated: exit status 2' }))
+          .mockResolvedValueOnce(templateError());
+
+        const res = await proxy();
+
+        expect(fetchMock).toHaveBeenCalledTimes(4);
+        expect(res.status).toHaveBeenCalledWith(500);
+        expect(routingLog.list()[0]).toMatchObject({
+          attempt: 4,
+          failedOverFrom: [fqdn('node-1'), fqdn('node-2'), fqdn('node-3')],
+          requestError: { signature: 'chat-template', basis: 'confirmed', confirms: fqdn('node-1') },
+        });
+      });
+
+      /**
+       * The second node to agree is only the next in rank, and a pool mixes engines: two Lemonade
+       * (llama-server) nodes refusing a message shape says nothing about Ollama, which parses the
+       * message itself and renders its own Go template rather than the GGUF's Jinja one.
+       */
+      describe('when an engine that has not answered yet is still ahead', () => {
+        const onLemonade = (id: string): Partial<PoolPeerCapabilities> =>
+          id === 'node-1' || id === 'node-2' ? { backends: [{ type: 'lemonade', healthy: true, modelsLoaded: [MODEL] }] } : {};
+        const malformed = () =>
+          engineError(500, {
+            error: { code: 500, message: 'Failed to parse messages: Missing \'role\' in message: {"content":"x"}', type: 'server_error' },
+          });
+        const jinja = () =>
+          engineError(500, { error: { code: 500, message: 'Error rendering the chat template: Unknown filter', type: 'server_error' } });
+
+        it.each([
+          ['a malformed message', malformed],
+          ['a Jinja template that would not render', jinja],
+        ])('keeps walking past two llama-server nodes that agree on %s, to the Ollama node behind them', async (_label, refusal) => {
+          ninePeers(onLemonade);
+          const fetchMock = vi.mocked(global.fetch);
+          fetchMock.mockResolvedValueOnce(refusal()).mockResolvedValueOnce(refusal()).mockResolvedValue(ok());
+
+          const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+          expect(fetchMock).toHaveBeenCalledTimes(3);
+          expect(res.status).toHaveBeenCalledWith(200);
+          expect(routingLog.list()[0]).toMatchObject({
+            outcome: 'served',
+            node: fqdn('node-3'),
+            backend: 'ollama',
+            failedOverFrom: [fqdn('node-1'), fqdn('node-2')],
+            requestError: null,
+          });
+        });
+
+        it('stops once every node left runs an engine that already refused', async () => {
+          ninePeers(() => ({ backends: [{ type: 'lemonade', healthy: true, modelsLoaded: [MODEL] }] }));
+          const fetchMock = vi.mocked(global.fetch);
+          fetchMock.mockImplementation(async () => malformed());
+
+          const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+          expect(res.status).toHaveBeenCalledWith(400);
+          expect(routingLog.list()[0]?.requestError).toEqual({ signature: 'invalid-message', basis: 'confirmed', confirms: fqdn('node-1') });
+        });
+      });
+
+      it('keeps charging the model for a template that would not render, since the node’s own copy may be the broken one', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        ninePeers();
+        vi.mocked(global.fetch).mockImplementation(async () => templateError());
+
+        await proxy();
+
+        expect(ollama.noteServingFailure).toHaveBeenCalledWith(MODEL, 'HTTP 500');
+      });
+    });
+
+    describe('a prompt longer than the window', () => {
+      const tooLong = () =>
+        engineError(500, {
+          error: { code: 500, message: 'the request exceeds the available context size, try increasing it', type: 'server_error' },
+        });
+
+      it('is confirmed by the next candidate when the request sets the window itself on Ollama’s native route', async () => {
+        ninePeers();
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async () => tooLong());
+
+        const res = await proxy();
+
+        // `options.num_ctx` is what both Ollama candidates load the model at, so they ran the same window.
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(routingLog.list()[0]?.requestError).toEqual({ signature: 'context-length', basis: 'confirmed', confirms: fqdn('node-1') });
+      });
+
+      it('is not confirmed by a node with a larger window, which gets its own chance', async () => {
+        ninePeers((id) => ({ maxNumCtx: id === 'node-1' ? 16384 : 65536 }));
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async () => tooLong());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+        // node-1 runs 16384 and node-2 65536: node-2 failing too is new evidence, not agreement, and
+        // it takes node-3, on the same 65536, to confirm it.
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(routingLog.list()[0]?.requestError).toEqual({ signature: 'context-length', basis: 'confirmed', confirms: fqdn('node-2') });
+      });
+
+      /**
+       * The same pair of windows, the other way round: two small-window nodes ranked ahead of larger
+       * ones. Placement moves a capped node back only when the pool's own estimate of the prompt
+       * (bytes / 4) is over its cap, so an underestimate leaves a 16384 node first — and the two of
+       * them agreeing proves only that the prompt needs more than 16384.
+       */
+      it('keeps walking past two nodes that agree when a node still ahead runs a larger window', async () => {
+        ninePeers((id) => ({ maxNumCtx: id === 'node-1' || id === 'node-2' ? 16384 : 131072 }));
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValueOnce(tooLong()).mockResolvedValueOnce(tooLong()).mockResolvedValue(ok());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({
+          outcome: 'served',
+          node: fqdn('node-3'),
+          failedOverFrom: [fqdn('node-1'), fqdn('node-2')],
+          requestError: null,
+        });
+      });
+
+      it('keeps walking when a node still ahead does not state its window', async () => {
+        ninePeers((id) => (id === 'node-3' ? {} : { maxNumCtx: 16384 }));
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValueOnce(tooLong()).mockResolvedValueOnce(tooLong()).mockResolvedValue(ok());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: fqdn('node-3'), requestError: null });
+      });
+
+      /**
+       * A node's advertised cap is its operator's statement of `OLLAMA_CONTEXT_LENGTH`. It places
+       * requests on every engine the node runs, which costs nothing when it is wrong, but it says
+       * nothing about the window a Lemonade or vLLM engine was launched with, so two of those agreeing
+       * on equal caps proves nothing about the third.
+       */
+      it('does not take an Ollama cap for the window another engine on a peer runs', async () => {
+        ninePeers(() => ({ maxNumCtx: 16384, backends: [{ type: 'lemonade', healthy: true, modelsLoaded: [MODEL] }] }));
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValueOnce(tooLong()).mockResolvedValueOnce(tooLong()).mockResolvedValue(ok());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: fqdn('node-3'), requestError: null });
+      });
+
+      it('stops once no node left to try runs a larger window than the two that agreed', async () => {
+        ninePeers((id) => ({ maxNumCtx: id === 'node-1' || id === 'node-2' ? 131072 : 16384 }));
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async () => tooLong());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(routingLog.list()[0]?.requestError).toEqual({ signature: 'context-length', basis: 'confirmed', confirms: fqdn('node-1') });
+      });
+
+      it('walks the pool as before when no node states its window', async () => {
+        ninePeers();
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async () => tooLong());
+
+        // No `num_ctx` on `/v1`, and no cap advertised: each node runs a window this Hub cannot see.
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
+
+        expect(fetchMock).toHaveBeenCalledTimes(9);
+        expect(res.status).toHaveBeenCalledWith(502);
+        expect(routingLog.list()[0]?.requestError).toBeNull();
+      });
+    });
+
+    it('does not count the verdict against the model when a peer forwarded the request here', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(promptError());
+      const res = createMockResponse();
+
+      await service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', NO_USER_TURN, res, 'peer.example.ts.net', MODEL);
+
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+      // The engine's answer still goes back to the sender whole, so the sender can read it too.
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(JSON.parse(Buffer.concat((res as Response & { chunks: Buffer[] }).chunks).toString())).toEqual({
+        error: 'no user query found in messages',
+      });
+    });
+  });
+
+  /**
    * Nothing else in the module records which node served a request, so these assert against the
    * real request path rather than a hand-built record.
    */
