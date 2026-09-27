@@ -8,6 +8,7 @@ import { gzipSync } from 'node:zlib';
 
 import { CI_CLOUD_DEFAULT } from './cli-types.js';
 import { printMessageBox } from './cli-ui.js';
+import { PortalRateLimitedError, retryAfterSecondsFrom } from './portal-rate-limit.js';
 
 const BUNDLE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const MAX_CATALOG_ID_LENGTH = 48;
@@ -280,6 +281,17 @@ export async function mintPairingCode(params: { name: string; login: PortalLogin
     slug?: string;
     error?: string;
   };
+
+  // Portal's limiter answers before `CreateDevice` runs, so no device exists and the name is still
+  // free: the caller may send the same mint again once the window turns over, and `fleet install` does.
+  if (response.status === 429) {
+    const retryAfterSeconds = retryAfterSecondsFrom(response.headers);
+    const said = body.error ?? 'Too many requests';
+    throw new PortalRateLimitedError(
+      { said, ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }) },
+      `Portal is rate-limiting device registration from this address (${said}${retryAfterSeconds === undefined ? '' : `; try again in ${retryAfterSeconds}s`})`,
+    );
+  }
 
   if (!response.ok || !body.pairingCode || !body.deviceId) {
     // 409 is the one an operator can act on without reading Portal: the name is
