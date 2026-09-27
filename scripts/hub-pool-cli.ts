@@ -273,6 +273,25 @@ export interface PoolRoutingRecord {
    * stated a slot count. Absent on a Hub predating slots.
    */
   slots?: PoolRoutingSlots | null;
+  /**
+   * What local-engine contention did to this decision, or `null` when no local engine was busy with
+   * work the request could not join. Absent on a Hub predating it.
+   */
+  contention?: PoolRoutingContention | null;
+}
+
+/** Mirrors `PoolRoutingContention` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingContention {
+  /** The window the request asked for; `null` when it named none. */
+  numCtx: number | null;
+  /**
+   * Local engines busy with work the request could not join — another model, or this one at another
+   * window — in ranked order, each with the windows as its engine runs them (`null`: the engine
+   * default, which that node does not state) and the nodes it gave way to. Never removed.
+   */
+  demoted: { node: string; backend: string; busyWith: { model: string; numCtx: number | null }[]; runsAt: number | null; behind: string[] }[];
+  /** Placed on one of those anyway: nothing it gave way to answered, or it gave way to nothing. */
+  overridden: boolean;
 }
 
 /** Mirrors `PoolRoutingRequestError` in `hub-pool-routing-log.service.ts`. */
@@ -1574,6 +1593,11 @@ function describeAffinityKey(affinity: Pick<PoolRoutingAffinity, 'key'>): string
   return affinity.key === 'header' ? 'session from X-Hub-Pool-Session' : 'session from prompt digest';
 }
 
+/** A window from a contention record: `null` is a request that named none, on a node that states no default. */
+function describeContextWindow(numCtx: number | null): string {
+  return numCtx === null ? 'the engine default' : `num_ctx ${numCtx}`;
+}
+
 export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
   const summary = log.summary;
   const header = [formatRoutingCounts(summary), `Last decision  ${formatPoolTimestamp(summary.lastAt)}`, ''];
@@ -1686,6 +1710,32 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
           ? `  ↳ placed anyway with every slot full on ${nodes}: no node with a free slot was ahead of it`
           : `  ↳ moved ${nodes} behind nodes with a free slot`,
       );
+    }
+    // Only when an engine gave way or was placed on anyway: one that kept its place while a pin or
+    // affinity put another node first changed nothing an operator needs to read here.
+    const contention = entry.contention;
+    if (contention && contention.demoted.length > 0) {
+      const describe = (demoted: PoolRoutingContention['demoted'][number]) => {
+        const busy = demoted.busyWith.map((generation) => `${sanitizeForBox(generation.model)} at ${describeContextWindow(generation.numCtx)}`);
+        return `${sanitizeForBox(demoted.node)} (busy with ${busy.join(', ')}; this one at ${describeContextWindow(demoted.runsAt)})`;
+      };
+      const placed = contention.overridden
+        ? (contention.demoted.find((demoted) => demoted.node === entry.node && demoted.backend === entry.backend) ?? contention.demoted[0])
+        : undefined;
+      if (placed) {
+        lines.push(
+          placed.behind.length > 0
+            ? `  ↳ placed anyway on ${describe(placed)}: nothing it gave way to answered`
+            : `  ↳ kept ${describe(placed)} first: every node after it was busier, or moved behind it by a line above`,
+        );
+      } else {
+        const moved = contention.demoted.filter((demoted) => demoted.behind.length > 0);
+        if (moved.length > 0) {
+          lines.push(
+            `  ↳ moved ${moved.map((demoted) => `${describe(demoted)} behind ${demoted.behind.map(sanitizeForBox).join(', ')}`).join('; ')}`,
+          );
+        }
+      }
     }
     // Only when affinity changed something or stood aside: a `hit` is the line an operator watching
     // a session stay put needs, a `skipped` says why a turn re-prefilled cold, and a `miss` on every

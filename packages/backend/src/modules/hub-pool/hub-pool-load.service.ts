@@ -1,7 +1,24 @@
 import { Injectable } from '@nestjs/common';
+import type { InferenceBackendType } from '@ci-hub/common/types';
+import { canonicalModelId } from '@/common/helpers/hub-pool';
 
 /** Load-map key for this node. Peers are keyed by their `hub_pool_peer.id`. */
 export const LOCAL_CANDIDATE_KEY = 'local';
+
+/** A generation (chat or completion) one of this node's own engines is running, and the model and window it asked for. */
+export interface LocalGeneration {
+  backend: InferenceBackendType;
+  model: string;
+  /** Its `options.num_ctx`; `null` when it named none — every `/v1` request — so it runs at the engine's default. */
+  numCtx: number | null;
+}
+
+/** One model at one window on one engine, and how many of its generations are in flight there. */
+interface RunningGenerations {
+  model: string;
+  numCtx: number | null;
+  count: number;
+}
 
 /**
  * In-flight inference request counts per pool candidate, used to rank them.
@@ -20,12 +37,40 @@ export const LOCAL_CANDIDATE_KEY = 'local';
 @Injectable()
 export class HubPoolLoadService {
   private readonly inFlight = new Map<string, number>();
+  /**
+   * The local generations among that work, per engine, keyed by model and window. Queue depth says
+   * how much an engine is doing; this says what, which is what the next request has to know when it
+   * cannot join that work — another model's turn, which Ollama must load beside or evict behind, or
+   * this model's at another window, which Ollama must reload for (see `applyLocalContention`).
+   */
+  private readonly generations = new Map<InferenceBackendType, Map<string, RunningGenerations>>();
 
-  acquire(key: string): void {
+  /** `generation` is recorded only under {@link LOCAL_CANDIDATE_KEY}: a peer's engines are its own to report. */
+  acquire(key: string, generation?: LocalGeneration): void {
     this.inFlight.set(key, this.get(key) + 1);
+    if (generation && key === LOCAL_CANDIDATE_KEY) {
+      const running = this.generations.get(generation.backend) ?? new Map<string, RunningGenerations>();
+      const model = canonicalModelId(generation.model);
+      const id = generationKey(model, generation.numCtx);
+      const entry = running.get(id) ?? { model, numCtx: generation.numCtx, count: 0 };
+      entry.count += 1;
+      running.set(id, entry);
+      this.generations.set(generation.backend, running);
+    }
   }
 
-  release(key: string): void {
+  /** Takes the same `generation` its `acquire` did. */
+  release(key: string, generation?: LocalGeneration): void {
+    if (generation && key === LOCAL_CANDIDATE_KEY) {
+      const running = this.generations.get(generation.backend);
+      const id = generationKey(canonicalModelId(generation.model), generation.numCtx);
+      const entry = running?.get(id);
+      if (entry && entry.count > 1) {
+        entry.count -= 1;
+      } else {
+        running?.delete(id);
+      }
+    }
     const next = this.get(key) - 1;
     if (next <= 0) {
       // Drop the key rather than leaving a 0 behind, so an unpaired peer's entry doesn't outlive it.
@@ -43,4 +88,14 @@ export class HubPoolLoadService {
   localInFlight(): number {
     return this.get(LOCAL_CANDIDATE_KEY);
   }
+
+  /** What `backend` has generations in flight for right now: one entry per canonical model id and window. */
+  localGenerationsOn(backend: InferenceBackendType): { model: string; numCtx: number | null }[] {
+    return [...(this.generations.get(backend)?.values() ?? [])].map(({ model, numCtx }) => ({ model, numCtx }));
+  }
+}
+
+/** NUL cannot appear in a model id, so no model and window pair can collide with another. */
+function generationKey(model: string, numCtx: number | null): string {
+  return `${model}\u0000${numCtx ?? ''}`;
 }
