@@ -9,6 +9,13 @@ import { RegistrationController } from '../registration.controller';
 import { RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { probePublicHostname } from '../public-reachability';
+
+// The probe opens sockets and asks real nameservers; no unit test here may reach the network.
+vi.mock('../public-reachability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../public-reachability')>()),
+  probePublicHostname: vi.fn(),
+}));
 
 describe('RegistrationController', () => {
   let controller: RegistrationController;
@@ -416,6 +423,58 @@ describe('RegistrationController', () => {
     it('should reject names that sanitize to empty', async () => {
       const result = await controller.validateOrganizationName('!!!');
       expect(result.available).toBe(false);
+    });
+  });
+
+  describe('probeDomain', () => {
+    const mockedProbe = vi.mocked(probePublicHostname);
+
+    beforeEach(() => {
+      mockedProbe.mockReset();
+    });
+
+    it("asks the registration phase's probe about the name, counting only what this host's resolver routed", async () => {
+      // The page sends the browser to this URL next; a browser on the same network is behind the
+      // same cached NXDOMAIN, so an answer that went around it must not send the browser there.
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
+
+      await expect(controller.probeDomain('https://hub-core-2-demopool1.ci.computer')).resolves.toEqual({ ready: true });
+      expect(mockedProbe).toHaveBeenCalledWith('hub-core-2-demopool1.ci.computer', {
+        requireSystemResolver: true,
+        isAllowedAddress: expect.any(Function),
+      });
+    });
+
+    it('is not ready while the probe gets no 2xx', async () => {
+      mockedProbe.mockResolvedValue({ reachable: false, via: 'zone_nameservers', detail: "the zone's nameservers do not publish it yet" });
+
+      await expect(controller.probeDomain('https://hub-core-2-demopool1.ci.computer')).resolves.toEqual({ ready: false });
+    });
+
+    it('refuses private, tailnet, and loopback addresses from either resolver, and allows public ones', async () => {
+      mockedProbe.mockResolvedValue({ reachable: false, via: 'system' });
+      await controller.probeDomain('https://hub-core-2-demopool1.ci.computer');
+      const isAllowedAddress = mockedProbe.mock.calls[0]?.[1]?.isAllowedAddress;
+
+      expect(['10.0.0.5', '100.101.156.33', '127.0.0.1', '192.168.1.10', '0.0.0.0'].map((address) => isAllowedAddress?.(address))).toEqual([
+        false,
+        false,
+        false,
+        false,
+        false,
+      ]);
+      expect(['104.21.48.168', '2606:4700:3031::ac43:9a62'].map((address) => isAllowedAddress?.(address))).toEqual([true, true]);
+    });
+
+    it.each([
+      'http://hub-core-2-demopool1.ci.computer',
+      'not a url',
+      'https://localhost',
+      'https://10.0.0.5',
+      'https://[::1]',
+    ])('answers %s without probing', async (url) => {
+      await expect(controller.probeDomain(url)).resolves.toEqual({ ready: false });
+      expect(mockedProbe).not.toHaveBeenCalled();
     });
   });
 
