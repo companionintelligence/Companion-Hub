@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PORTAL_REJECTION_CONFIRM_MS, RegistrationService } from '../registration.service';
+import { PORTAL_REJECTION_CONFIRM_MS, PUBLIC_UNREACHABLE_CONFIRM_MS, RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
@@ -17,12 +17,18 @@ import path from 'node:path';
 import { vol } from 'memfs';
 import { TUNNEL_DIR } from '@/common/constants';
 import { writePairingAppCheck } from '../../app-lifecycle/registration-recovery-state';
+import { probePublicHostname } from '../public-reachability';
 
 vi.mock('systeminformation');
 vi.mock('axios');
 vi.mock('../../app-lifecycle/registration-recovery-state', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../app-lifecycle/registration-recovery-state')>()),
   writePairingAppCheck: vi.fn(),
+}));
+// The public-URL probe opens sockets and asks real nameservers; no unit test here may reach the network.
+vi.mock('../public-reachability', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../public-reachability')>()),
+  probePublicHostname: vi.fn(),
 }));
 
 /** Runs `fn` as a check-in `ms` from now sees it: `Date.now()` moved on, and put back afterwards. */
@@ -60,6 +66,7 @@ describe('RegistrationService', () => {
   let tailscaleService: MockProxy<TailscaleService>;
   let tunnelHealthService: MockProxy<TunnelHealthService>;
   const mockedAxios = vi.mocked(axios);
+  const mockedProbe = vi.mocked(probePublicHostname);
 
   beforeEach(async () => {
     configService = mock<ConfigurationService>();
@@ -77,6 +84,8 @@ describe('RegistrationService', () => {
     tunnelHealthService.getHealth.mockReturnValue('unknown');
     mockedAxios.post.mockReset();
     mockedAxios.head.mockReset();
+    mockedProbe.mockReset();
+    mockedProbe.mockResolvedValue({ reachable: false, via: 'system', detail: 'unit tests do not reach the network' });
 
     configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'example.com' } as any);
     (si.uuid as any) = vi.fn().mockResolvedValue({ os: 'uuid-123' });
@@ -508,8 +517,7 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
       cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
       configService.setDomain.mockResolvedValue(undefined);
-      // Mock fetch for tunnel connectivity check
-      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
 
       await (service as any).setupOrganizationInfrastructure('org-new', {
         organization_name: 'New Org',
@@ -581,7 +589,7 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
       cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
       configService.setDomain.mockResolvedValue(undefined);
-      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
 
       // Start from paired phase
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-new' } as any);
@@ -600,6 +608,87 @@ describe('RegistrationService', () => {
       const status = service.getRegistrationStatus();
       expect(['locally_ready', 'publicly_ready']).toContain(status.phase);
       expect(status.registered).toBe(true);
+    });
+
+    describe('the registration probe', () => {
+      const activation = {
+        organization_name: 'New Org',
+        tunnel_id: 't1',
+        tunnel_token: 'tok1',
+        subdomain: 'hub-core-2-demopool1',
+        slug: 'demopool1',
+        domain: 'ci.computer',
+      };
+
+      beforeEach(async () => {
+        deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-new' } as any);
+        cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
+        configService.setDomain.mockResolvedValue(undefined);
+        await service.setPhase('paired');
+      });
+
+      it("promotes on the shared probe's 2xx, asked with the registration's per-step budget", async () => {
+        // Which resolver the probe went through is its own business, tested with the production
+        // wiring in public-reachability.test.ts; here it only has to be the probe, with 2 s steps.
+        mockedProbe.mockResolvedValue({ reachable: true, via: 'zone_nameservers', status: 200 });
+
+        await (service as any).setupOrganizationInfrastructure('org-new', activation);
+
+        expect(mockedProbe).toHaveBeenCalledWith('hub-core-2-demopool1.ci.computer', { timeoutMs: 2_000 });
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      });
+
+      it('does not promote a Hub that turned degraded while the probe ran, which would erase the reason', async () => {
+        // `degraded` → `publicly_ready` is legal, so only this guard keeps three failed check-ins
+        // during the minute-long loop from being overwritten by its late success.
+        mockedProbe.mockImplementation(async () => {
+          await service.setPhase('degraded', ['cloud_validation_failed']);
+          return { reachable: true, via: 'system', status: 200 };
+        });
+
+        await (service as any).setupOrganizationInfrastructure('org-new', activation);
+
+        expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['cloud_validation_failed'], registered: true });
+      });
+
+      it('does not promote for a registration the Hub replaced while the probe ran', async () => {
+        mockedProbe.mockImplementation(async () => {
+          (service as any).registrationGeneration++;
+          return { reachable: true, via: 'system', status: 200 };
+        });
+
+        await (service as any).setupOrganizationInfrastructure('org-new', activation);
+
+        expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      });
+
+      it('gives up after a minute of wall-clock time, however long each attempt takes', async () => {
+        // An attempt that goes around a cached NXDOMAIN to a hung origin takes three 2 s steps, and
+        // `register` waits for this loop: sixty of those were six minutes, not one.
+        vi.useFakeTimers();
+        try {
+          mockedProbe.mockImplementation(async () => {
+            vi.setSystemTime(Date.now() + 6_000);
+            return { reachable: false, via: 'zone_nameservers', detail: 'no response within 2000 ms' };
+          });
+
+          let finished = false;
+          const setup = (service as any).setupOrganizationInfrastructure('org-new', activation).then(() => (finished = true));
+          for (let tick = 0; tick < 120 && !finished; tick++) {
+            await vi.advanceTimersByTimeAsync(1_000);
+          }
+          await setup;
+
+          expect(mockedProbe.mock.calls.length).toBeLessThanOrEqual(10);
+          expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+          expect(loggerService.warn).toHaveBeenCalledWith(
+            expect.stringContaining('Tunnel not yet reachable at https://hub-core-2-demopool1.ci.computer after 60s'),
+          );
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
 
     it('clears portal_rejected when a re-pair into the same organization lands, instead of waiting for the next check-in', async () => {
@@ -628,6 +717,36 @@ describe('RegistrationService', () => {
       expect(deviceRegistrationRepository.deleteAll).not.toHaveBeenCalled();
     });
 
+    it('probes the public URL after a re-pair into the same organization, which skips the registration loop', async () => {
+      // Without this, nothing probed until the next accepted check-in, up to 15 minutes later.
+      const row = {
+        id: 'org-existing',
+        slug: 'existing',
+        name: 'Existing Org',
+        tunnelId: 't-old',
+        tunnelToken: 'tok-old',
+        hubSubdomain: 'hub-core-2-demopool1',
+      } as any;
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', domain: 'ci.computer' } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(row);
+      deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(row);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('degraded', ['portal_rejected']);
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
+
+      await (service as any).setupOrganizationInfrastructure('org-existing', {
+        organization_name: 'Existing Org',
+        tunnel_id: 't-new',
+        tunnel_token: 'tok-new',
+        subdomain: 'hub-core-2-demopool1',
+        slug: 'existing',
+      });
+
+      await vi.waitFor(() => expect(service.getRegistrationStatus().phase).toBe('publicly_ready'));
+      expect(mockedProbe).toHaveBeenCalledWith('hub-core-2-demopool1.ci.computer');
+    });
+
     it("replaces the previous organization's row on a re-pair into another, so boot recovery cannot restore the old tunnel token", async () => {
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-old' } as any);
       await service.setPhase('paired');
@@ -637,7 +756,7 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
       cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
       configService.setDomain.mockResolvedValue(undefined);
-      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
 
       await (service as any).setupOrganizationInfrastructure('org-new', {
         organization_name: 'New Org',
@@ -661,7 +780,7 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
       cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 't1', token: 'tok1' } as any);
       configService.setDomain.mockResolvedValue(undefined);
-      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
 
       await (service as any).setupOrganizationInfrastructure('org-new', {
         organization_name: 'New Org',
@@ -2175,6 +2294,175 @@ describe('RegistrationService', () => {
     });
   });
 
+  describe('public reachability after registration', () => {
+    const HUB_HOSTNAME = 'hub-core-2-demopool1.ci.computer';
+
+    beforeEach(() => {
+      vi.spyOn(service, 'getDeviceId').mockResolvedValue('test-device');
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'http://cloud.api', ciHubApiKey: 'test-api-key', domain: 'ci.computer' } as any);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+        id: 'org-1',
+        hubSubdomain: 'hub-core-2-demopool1',
+        provisioningPhase: 'locally_ready',
+        degradedReasons: null,
+      } as any);
+      deviceRegistrationRepository.updateProvisioningState.mockResolvedValue({} as any);
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { status: 'OK' } } as any);
+    });
+
+    it('moves a Hub restored as locally_ready to publicly_ready once a check-in finds its public URL answering', async () => {
+      // The fleet on 2026-09-27: registration gave up inside a cached NXDOMAIN, the phase was
+      // persisted, and every check-in since only logged. A restart restores the same phase.
+      await (service as any).syncPhaseFromDb();
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'zone_nameservers', status: 200 });
+
+      await (service as any).validateRegistrationWithCloud();
+
+      await vi.waitFor(() => expect(service.getRegistrationStatus().phase).toBe('publicly_ready'));
+      expect(mockedProbe).toHaveBeenCalledWith(HUB_HOSTNAME);
+      expect(deviceRegistrationRepository.updateProvisioningState).toHaveBeenCalledWith('org-1', 'publicly_ready', []);
+      expect(loggerService.info).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`${HUB_HOSTNAME} answered .*zone's nameservers`)));
+    });
+
+    it('keeps locally_ready, and logs which path failed, while the public URL gives no 2xx', async () => {
+      await (service as any).syncPhaseFromDb();
+      mockedProbe.mockResolvedValue({ reachable: false, via: 'system', detail: 'no response within 5000 ms' });
+
+      await (service as any).validateRegistrationWithCloud();
+
+      await vi.waitFor(() =>
+        expect(loggerService.warn).toHaveBeenCalledWith(
+          expect.stringContaining(`${HUB_HOSTNAME} not yet reachable (through this host's resolver; no response`),
+        ),
+      );
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+      expect(deviceRegistrationRepository.updateProvisioningState).not.toHaveBeenCalledWith('org-1', 'publicly_ready', expect.anything());
+    });
+
+    it('does not promote a Hub that turned degraded while the probe was out, which would erase the reason', async () => {
+      await (service as any).syncPhaseFromDb();
+      mockedProbe.mockImplementation(async () => {
+        await service.setPhase('degraded', ['cloud_validation_failed']);
+        return { reachable: true, via: 'system', status: 200 };
+      });
+
+      await (service as any).checkPublicReachability();
+
+      expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['cloud_validation_failed'], registered: true });
+    });
+
+    it('does not promote on a probe that started before the Hub was paired again', async () => {
+      await (service as any).syncPhaseFromDb();
+      mockedProbe.mockImplementation(async () => {
+        (service as any).registrationGeneration++;
+        return { reachable: true, via: 'system', status: 200 };
+      });
+
+      await (service as any).checkPublicReachability();
+
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+    });
+
+    it('runs one probe at a time, however often status polling checks in', async () => {
+      await (service as any).syncPhaseFromDb();
+      let answer: (value: { reachable: boolean; via: 'system'; status: number }) => void = () => {};
+      mockedProbe.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+
+      // Counted by hostname: a registration loop another test left running shares this mock.
+      const probesOfThisHub = () => mockedProbe.mock.calls.filter(([hostname]) => hostname === HUB_HOSTNAME).length;
+
+      const first = (service as any).checkPublicReachability();
+      const second = (service as any).checkPublicReachability();
+      await vi.waitFor(() => expect(probesOfThisHub()).toBe(1));
+      answer({ reachable: true, via: 'system', status: 200 });
+      await Promise.all([first, second]);
+
+      expect(probesOfThisHub()).toBe(1);
+      expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+    });
+
+    describe('once publicly_ready', () => {
+      const UNREACHABLE = { reachable: false, via: 'system', detail: 'HTTP 530' } as const;
+      const REACHABLE = { reachable: true, via: 'system', status: 200 } as const;
+
+      beforeEach(async () => {
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({
+          id: 'org-1',
+          hubSubdomain: 'hub-core-2-demopool1',
+          provisioningPhase: 'publicly_ready',
+          degradedReasons: null,
+        } as any);
+        await (service as any).syncPhaseFromDb();
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      });
+
+      it('goes on probing the public URL on every accepted check-in', async () => {
+        // This used to stop at promotion, so a tunnel that broke afterwards was never noticed.
+        mockedProbe.mockResolvedValue(REACHABLE);
+
+        await (service as any).validateRegistrationWithCloud();
+
+        await vi.waitFor(() => expect(mockedProbe).toHaveBeenCalledWith(HUB_HOSTNAME));
+      });
+
+      it('reports tunnel_unreachable once the public URL has failed for ten minutes, and not on the first failure', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+
+        await (service as any).checkPublicReachability();
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+        expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining(`${HUB_HOSTNAME} stopped answering`));
+
+        await later(PUBLIC_UNREACHABLE_CONFIRM_MS, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus()).toEqual({ phase: 'degraded', degradedReasons: ['tunnel_unreachable'], registered: true });
+        expect(deviceRegistrationRepository.updateProvisioningState).toHaveBeenCalledWith('org-1', 'degraded', ['tunnel_unreachable']);
+      });
+
+      it('starts the ten minutes again after any 2xx', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await (service as any).checkPublicReachability();
+        mockedProbe.mockResolvedValue(REACHABLE);
+        await later(5 * 60_000, () => (service as any).checkPublicReachability());
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await later(11 * 60_000, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+
+        await later(22 * 60_000, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus().phase).toBe('degraded');
+      });
+
+      it('is promoted again by the check-in after the URL answers once more', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await (service as any).checkPublicReachability();
+        await later(PUBLIC_UNREACHABLE_CONFIRM_MS, () => (service as any).checkPublicReachability());
+        expect(service.getRegistrationStatus().phase).toBe('degraded');
+
+        // An accepted check-in takes `degraded` back to `locally_ready`, and its probe promotes.
+        mockedProbe.mockResolvedValue(REACHABLE);
+        await (service as any).validateRegistrationWithCloud();
+
+        await vi.waitFor(() => expect(service.getRegistrationStatus()).toEqual({ phase: 'publicly_ready', degradedReasons: [], registered: true }));
+      });
+
+      it('does not demote on a probe that started before the Hub was paired again', async () => {
+        mockedProbe.mockResolvedValue(UNREACHABLE);
+        await (service as any).checkPublicReachability();
+        mockedProbe.mockImplementation(async () => {
+          (service as any).registrationGeneration++;
+          return UNREACHABLE;
+        });
+
+        await later(PUBLIC_UNREACHABLE_CONFIRM_MS, () => (service as any).checkPublicReachability());
+
+        expect(service.getRegistrationStatus().phase).toBe('publicly_ready');
+      });
+    });
+  });
+
   describe('tunnel follows the registration', () => {
     const registeredRow = {
       id: 'org-1',
@@ -2404,7 +2692,7 @@ describe('RegistrationService', () => {
       deviceRegistrationRepository.getDeviceRegistrationById.mockResolvedValue(null as any);
       deviceRegistrationRepository.createDeviceRegistration.mockResolvedValue({} as any);
       cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 'tunnel-pair', token: 'token-pair' });
-      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
       mockedAxios.post.mockResolvedValue({
         status: 200,
         data: {
@@ -2453,7 +2741,7 @@ describe('RegistrationService', () => {
       configService.getOutboundCiCloudUrl.mockReturnValue('http://cloud.api');
       configService.setDomain.mockResolvedValue(undefined);
       cloudflareClientService.initializeTunnel.mockResolvedValue({ tunnelId: 'tunnel-new', token: 'token-new' });
-      global.fetch = vi.fn().mockResolvedValue({ ok: true }) as any;
+      mockedProbe.mockResolvedValue({ reachable: true, via: 'system', status: 200 });
       const activation = { organization_name: 'Org', tunnel_id: 'tunnel-new', tunnel_token: 'token-new', subdomain: 'hub-org', slug: 'org' };
 
       // A new registration row.

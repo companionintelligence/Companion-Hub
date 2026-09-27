@@ -2,11 +2,12 @@ import { Body, Controller, ForbiddenException, Get, Post, Query, Req, UseGuards 
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import type { RegistrationPhaseReport } from './registration-state';
+import { probePublicHostname } from './public-reachability';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { DEFAULT_CI_CLOUD_URL } from '@/common/constants';
 import { ApiTags, ApiOperation, ApiQuery, ApiResponse } from '@nestjs/swagger';
-import { assertSafeOutboundHttpsUrl } from '@/common/helpers/ssrf-url';
+import { isLocalHostname, isPrivateOrLocalIp } from '@/common/helpers/ip-address';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { HubSessionGuard } from '@/modules/auth/hub-session.guard';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
@@ -398,45 +399,37 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Probe a CF domain to check if the tunnel is serving the Hub' })
   @ApiResponse({ status: 200, description: 'Probe result' })
   async probeDomain(@Query('url') url: string) {
-    if (!url?.startsWith('https://')) {
-      return { ready: false };
-    }
+    let hostname: string;
     try {
-      const safeUrl = await assertSafeOutboundHttpsUrl(url);
-      const res = await fetch(safeUrl, {
-        redirect: 'follow',
-        signal: AbortSignal.timeout(10000),
-      });
-
-      // Any non-2xx response means tunnel or DNS setup is not ready.
-      if (!res.ok) {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'https:') {
         return { ready: false };
       }
-
-      const body = await res.text();
-      // Detect known Cloudflare pages that indicate an unavailable tunnel.
-      if (
-        body.includes('Error 1033') ||
-        body.includes('Error 1003') ||
-        body.includes('Error 1000') ||
-        body.includes('Error 1016') ||
-        body.includes('Error 502') ||
-        body.includes('Error 521') ||
-        body.includes('Error 522') ||
-        body.includes('Error 523') ||
-        body.includes('Error 524') ||
-        body.includes('Error 530')
-      ) {
-        return { ready: false };
-      }
-      // Catch unlisted Cloudflare error pages through their common markers.
-      if (body.includes('cloudflare') && body.includes('error code')) {
-        return { ready: false };
-      }
-      return { ready: true };
+      hostname = parsed.hostname;
     } catch {
       return { ready: false };
     }
+    const literal = hostname.replace(/^\[|\]$/g, '');
+    if (isLocalHostname(literal) || isPrivateOrLocalIp(literal, { includeUnspecified: true })) {
+      return { ready: false };
+    }
+
+    /*
+     * The probe the registration phase uses, so the page and the phase ask the same question: does
+     * the Hub's liveness route answer 2xx at this name? Only a 2xx counts, which Cloudflare's error
+     * pages (1033, 530, 52x) never are. It asks the zone's nameservers first, so polling a name
+     * Portal has not published yet does not plant a 30-minute NXDOMAIN in the resolvers this Hub and
+     * the person's browser share.
+     *
+     * Unlike the phase, a request that had to go around this host's resolver does not count: the page
+     * sends the browser to this URL next, and a browser on the same network is behind the same
+     * cached NXDOMAIN. Falling back to local sign-in is the better answer until that expires.
+     */
+    const probe = await probePublicHostname(hostname, {
+      requireSystemResolver: true,
+      isAllowedAddress: (address) => !isPrivateOrLocalIp(address, { includeUnspecified: true }),
+    });
+    return { ready: probe.reachable };
   }
 
   @Post('pair')
