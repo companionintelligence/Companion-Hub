@@ -7,7 +7,7 @@
  * this spec must see nothing restarted, and a string match on the script cannot prove that.
  */
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -870,11 +870,16 @@ describe.skipIf(!bash)('hubLlamacppUrlShell (sandboxed bash)', () => {
 
   it('replaces a stale value in place and terminates a file with no trailing newline before appending', () => {
     const stale = node({ envInitial: 'LLAMACPP_URL=http://100.1.2.3:8081\nAPI_PORT=5002' });
+    // The fleet's `.env.dev` is 0600 because it carries the Hub's secrets; a rewrite that swaps in a
+    // fresh file would leave it at the umask's mode instead.
+    chmodSync(stale.envFile, 0o600);
     expect(classifyHubLlamacppUrlOutput(stale.run().stdout, '')).toMatchObject({
       outcome: 'applied',
       why: expect.stringContaining('(was http://100.1.2.3:8081)'),
     });
     expect(stale.env()).toBe(`LLAMACPP_URL=${HUB_LLAMACPP_URL}\nAPI_PORT=5002\n`);
+    expect(statSync(stale.envFile).mode & 0o777).toBe(0o600);
+    expect(readdirSync(path.dirname(stale.envFile))).toEqual(['.env.dev']);
 
     // The shape that produced `TRAEFIK_DASHBOARD_PORT=8080LEMONADE_URL=…` on two nodes.
     const unterminated = node({ envInitial: 'TRAEFIK_DASHBOARD_PORT=8080' });

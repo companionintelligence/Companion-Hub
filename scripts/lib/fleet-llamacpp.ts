@@ -694,7 +694,11 @@ export function hubLlamacppUrlShell(url: string = HUB_LLAMACPP_URL): string {
     // is there, so the file keeps its order and its comments.
     `  [ -z "$(tail -c1 "$cihub_lu_env")" ] || printf '\\n' >>"$cihub_lu_env"`,
     '  if grep -q \'^LLAMACPP_URL=\' "$cihub_lu_env"; then',
-    `    sed -i "s|^LLAMACPP_URL=.*|LLAMACPP_URL=$cihub_lu_url|" "$cihub_lu_env"`,
+    // An attached suffix, never a bare `-i`: BSD sed (macOS) reads the argument after `-i` as its
+    // backup suffix, so the bare form takes the script as the suffix and leaves the file untouched.
+    // Not `sed > tmp && mv` either — that swaps in a file at the umask's mode, and this one is 0600.
+    `    sed -i.cihub-bak "s|^LLAMACPP_URL=.*|LLAMACPP_URL=$cihub_lu_url|" "$cihub_lu_env"`,
+    `    rm -f "$cihub_lu_env.cihub-bak"`,
     '  else',
     `    printf 'LLAMACPP_URL=%s\\n' "$cihub_lu_url" >>"$cihub_lu_env"`,
     '  fi',
