@@ -14,7 +14,7 @@
  * its `docker run` either empties the bind-mounted folder as a rootful daemon's root container
  * would, or does nothing, as rootless Docker's does for files owned by root.
  */
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,9 +49,9 @@ vi.mock('../lib/cli-proc.js', () => {
       if (state.rootContainerDeletes) {
         // Root ignores the modes that stop the login user, inside the folder bind-mounted at /d.
         const mount = args[args.indexOf('-v') + 1];
-        const hostPath = mount.slice(0, mount.lastIndexOf(':/d'));
-        for (const folder of state.lockedFolders) {
-          if ((folder === hostPath || folder.startsWith(`${hostPath}${path.sep}`)) && existsSync(folder)) chmodSync(folder, 0o755);
+        const hostPath = realpathSync(mount.slice(0, mount.lastIndexOf(':/d')));
+        for (const folder of state.lockedFolders.filter(existsSync).map((locked) => realpathSync(locked))) {
+          if (folder === hostPath || folder.startsWith(`${hostPath}${path.sep}`)) chmodSync(folder, 0o755);
         }
         for (const name of readdirSync(hostPath)) rmSync(path.join(hostPath, name), { recursive: true, force: true });
       }
@@ -274,6 +274,45 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
     expect(existsSync(state.dataDir)).toBe(false);
   });
 
+  it("prints commands for what is left that go to the Hub's pinned engine, not the shell's default one", async () => {
+    // The leftovers were found on the pinned engine. A bare `docker rm -f` from the operator's shell
+    // goes to the default engine: "no such container", or a same-named `ci_hub_pgdata` removed there.
+    state.rootContainerDeletes = true;
+    mkdirSync(path.join(state.dataDir, 'state'), { recursive: true });
+    writeFileSync(
+      path.join(state.dataDir, 'state', 'docker-engine.json'),
+      JSON.stringify({ dockerHost: 'unix:///Users/o p/.colima/docker.sock', kind: 'system', reason: 'test', selectedAt: 0 }),
+    );
+    state.listings = {
+      'ps -a --format {{.Names}}': listed('ci-hub'),
+      'ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}': listed('ci-hub'),
+      'volume ls --format {{.Name}}': listed('ci_hub_pgdata'),
+    };
+
+    await expect(resetHub('prod', true)).resolves.toBe(false);
+
+    const host = "--host 'unix:///Users/o p/.colima/docker.sock'";
+    expect(box('Reset incomplete')?.lines).toEqual(
+      expect.arrayContaining([
+        `  \`docker ${host} ps -a --filter volume=ci_hub_pgdata\` shows a container still using one.`,
+        `  docker ${host} rm -f ci-hub`,
+        `  docker ${host} volume rm ci_hub_pgdata`,
+      ]),
+    );
+  });
+
+  it('prints plain docker commands when no engine is pinned', async () => {
+    state.rootContainerDeletes = true;
+    state.listings = {
+      'ps -a --format {{.Names}}': listed('ci-hub'),
+      'ps -a --filter label=com.docker.compose.project=ci-hub --format {{.Names}}': listed('ci-hub'),
+    };
+
+    await expect(resetHub('prod', true)).resolves.toBe(false);
+
+    expect(box('Reset incomplete')?.lines).toEqual(expect.arrayContaining(['  docker rm -f ci-hub']));
+  });
+
   it('does not print "Reset complete" while an app, a stray container on the Hub network, or a Hub container is still listed', async () => {
     state.rootContainerDeletes = true;
     const onHubNetwork = [
@@ -383,6 +422,103 @@ describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cihub
       expect(box('Host data left behind')?.lines).toEqual(expect.arrayContaining([expect.stringContaining(`${target}: it ${why}`)]));
       expect(process.exitCode).toBe(1);
     });
+
+    it('refuses the repository spelled in another letter case, on a case-insensitive filesystem', (ctx) => {
+      // macOS and Windows filesystems are case-insensitive by default. Node's realpathSync keeps
+      // the case it was given, so `~/REPO` read as a folder inside home and the repository was deleted.
+      const otherCase = path.join(state.home, 'REPO');
+      if (!existsSync(otherCase)) ctx.skip();
+      writeFileSync(path.join(repo, '.env.dev'), `ROOT_FOLDER_HOST=${otherCase}\n`);
+
+      const results = cleanHub('dev');
+
+      expect(existsSync(path.join(repo, 'package.json'))).toBe(true);
+      expect(results[0]).toMatchObject({ target: otherCase, removed: false });
+      expect(rootContainerRuns()).toEqual([]);
+      expect(box('Host data left behind')?.lines).toEqual(
+        expect.arrayContaining([expect.stringContaining(`${otherCase}: it is this repository or holds it`)]),
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('leaves the tunnel folder beside a refused root folder alone, and starts no root container', () => {
+      // With ROOT_FOLDER_HOST=. the tunnel folder is `<folder holding the repo>/tunnel`, here
+      // `~/tunnel`. It was checked on its own, found inside home, deleted with `rm -rf`, and what
+      // the user could not delete went to the root container.
+      const tunnel = path.join(state.home, 'tunnel');
+      const locked = path.join(tunnel, 'other-program', 'cache');
+      mkdirSync(locked, { recursive: true });
+      writeFileSync(path.join(tunnel, 'other-program.conf'), 'x');
+      writeFileSync(path.join(locked, 'entry'), 'x');
+      lock(locked);
+      writeFileSync(path.join(repo, '.env.dev'), 'ROOT_FOLDER_HOST=.\n');
+      // As resolveRootFolderHost resolves them: from process.cwd(), which is a real path.
+      const rootFolder = process.cwd();
+      const tunnelTarget = path.resolve(rootFolder, '..', 'tunnel');
+
+      const results = cleanHub('dev');
+
+      expect(existsSync(path.join(tunnel, 'other-program.conf'))).toBe(true);
+      expect(existsSync(path.join(locked, 'entry'))).toBe(true);
+      expect(results.map((result) => [result.target, result.removed])).toEqual([
+        [rootFolder, false],
+        [tunnelTarget, false],
+      ]);
+      expect(rootContainerRuns()).toEqual([]);
+      expect(box('Host data left behind')?.lines).toEqual(
+        expect.arrayContaining([expect.stringContaining(`${tunnelTarget}: it is the tunnel folder beside ${rootFolder}, which was refused`)]),
+      );
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('--dry-run says it will not delete a refused root folder, instead of listing it for deletion', async () => {
+      writeFileSync(path.join(repo, '.env.dev'), 'ROOT_FOLDER_HOST=.\n');
+
+      await expect(resetHub('dev', false, true)).resolves.toBe(false);
+
+      expect(existsSync(path.join(repo, 'package.json'))).toBe(true);
+      const lines = box('Dry run: nothing was removed')?.lines ?? [];
+      const at = lines.indexOf(`  ${process.cwd()}`);
+      expect(at).toBeGreaterThan(-1);
+      expect(lines[at + 1]).toMatch(/^ {4}it is this repository or holds it, so reset does not delete it and exits 1\./);
+    });
+  });
+
+  it("in a checkout, deletes only the Hub's files from a tunnel folder outside the repository, with no root container", () => {
+    // A checkout whose ROOT_FOLDER_HOST is the appliance data dir mounts `~/.local/share/tunnel`,
+    // the folder #1632 deletes file by file because another program may use it. The root folder
+    // itself is the Hub's, so it still gets the root container.
+    state.appliance = false;
+    state.rootContainerDeletes = true;
+    const repo = path.join(state.home, 'repo');
+    mkdirSync(repo);
+    const share = path.join(state.home, '.local', 'share');
+    const tunnel = path.join(share, 'tunnel');
+    const locked = path.join(tunnel, 'other-program', 'cache');
+    mkdirSync(locked, { recursive: true });
+    writeFileSync(path.join(locked, 'entry'), 'x');
+    lock(locked);
+    writeFileSync(path.join(tunnel, 'token'), CLOUDFLARED_TOKEN);
+    writeFileSync(path.join(tunnel, 'registration.json'), '{"tunnelId":"6ff42ae2"}\n');
+    writeFileSync(path.join(tunnel, 'other-program.conf'), 'x');
+    writeFileSync(path.join(repo, '.env.dev'), `ROOT_FOLDER_HOST=${state.dataDir}\n`);
+    process.chdir(repo);
+
+    const results = cleanHub('dev');
+
+    expect(readdirSync(tunnel).sort()).toEqual(['other-program', 'other-program.conf']);
+    expect(existsSync(path.join(locked, 'entry'))).toBe(true);
+    expect(existsSync(state.dataDir)).toBe(false);
+    expect(results.map((result) => [result.target, result.removed])).toEqual([
+      [state.dataDir, true],
+      [tunnel, true],
+    ]);
+    expect(rootContainerRuns()).toEqual([`run --rm -v ${state.dataDir}:/d alpine sh -c rm -rf /d/* /d/.[!.]* /d/..?* 2>/dev/null || true`]);
+    expect(box('Environment files cleaned')?.lines).toEqual([
+      `root folder: ${state.dataDir}`,
+      `tunnel dir: removed from ${tunnel}: token, registration.json; kept, not the Hub's: other-program, other-program.conf`,
+    ]);
+    expect(process.exitCode).toBeUndefined();
   });
 });
 

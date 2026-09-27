@@ -20,6 +20,7 @@ import {
   removeHubTunnelFiles,
   rootEntryRemovalCommand,
   rootRemovalCommand,
+  shellArgument,
   summarizeFailures,
 } from '../lib/host-data-removal';
 
@@ -216,6 +217,19 @@ describe('rootEntryRemovalCommand', () => {
     expect(rootEntryRemovalCommand(["C:\\Users\\O'Brien\\tunnel\\token"], ["C:\\Users\\O'Brien\\tunnel"], 'win32')).toBe(
       "Remove-Item -Force -LiteralPath 'C:\\Users\\O''Brien\\tunnel\\token', 'C:\\Users\\O''Brien\\tunnel'   (in an administrator PowerShell)",
     );
+  });
+});
+
+describe('shellArgument', () => {
+  // The Docker host that reset's printed `docker --host …` commands carry.
+  it('leaves an engine address bare when it needs no quoting', () => {
+    expect(shellArgument('unix:///run/docker.sock', 'linux')).toBe('unix:///run/docker.sock');
+    expect(shellArgument('npipe:////./pipe/dockerDesktopLinuxEngine', 'win32')).toBe('npipe:////./pipe/dockerDesktopLinuxEngine');
+  });
+
+  it('quotes a space or a single quote for sh, and for PowerShell on Windows', () => {
+    expect(shellArgument("unix:///Users/O'Brien/my docker.sock", 'darwin')).toBe("'unix:///Users/O'\\''Brien/my docker.sock'");
+    expect(shellArgument("npipe:////./pipe/O'Brien engine", 'win32')).toBe("'npipe:////./pipe/O''Brien engine'");
   });
 });
 

@@ -235,6 +235,12 @@ function powerShellQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+/** One argument for the operator's shell: bare when it needs no quoting, else quoted for sh or PowerShell. */
+export function shellArgument(value: string, platform: NodeJS.Platform = process.platform): string {
+  if (/^[\w./:=+-]+$/.test(value)) return value;
+  return platform === 'win32' ? powerShellQuote(value) : shellQuote(value);
+}
+
 /** The command that finishes the delete as an administrator. */
 export function rootRemovalCommand(target: string, platform: NodeJS.Platform = process.platform): string {
   if (platform === 'win32') return `Remove-Item -Recurse -Force -LiteralPath ${powerShellQuote(target)}   (in an administrator PowerShell)`;
