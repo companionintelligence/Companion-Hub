@@ -13,6 +13,7 @@ interface CloudflareSubdomainFieldProps<TFormValues extends FieldValues> {
   register: UseFormRegister<TFormValues>;
   loading?: boolean;
   localSubdomainError?: string;
+  publicDomainError?: string;
   placeholder: string;
   isCheckingDns: boolean;
   t: (key: string) => string;
@@ -27,6 +28,7 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
   register,
   loading,
   localSubdomainError,
+  publicDomainError,
   placeholder,
   isCheckingDns,
   t,
@@ -81,6 +83,7 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
         disabled={loading}
         placeholder={placeholder}
       />
+      {publicDomainError ? <p className="mt-1.5 text-sm text-destructive">{publicDomainError}</p> : null}
       <div className="mt-1.5 min-h-5 pr-3">
         {isCheckingDns ? <p className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CHECKING_DNS')}</p> : null}
       </div>
