@@ -714,6 +714,16 @@ describe.skipIf(!bash)('hubContextCapShell (sandboxed bash)', () => {
       chmodSync(p, 0o755);
     };
     stub('docker', 'exit 1');
+    // The same in-place-refusing `sed` as the hubLlamacppUrlShell sandbox, so the fake `curl` below
+    // cannot slip back to `sed -i` and stay green on Linux CI, whose GNU sed runs the bare form.
+    stub(
+      'sed',
+      [
+        'for a in "$@"; do case "$a" in -i*|--in-place*|-[Enrsuz]*i*) echo "sed: in-place edit refused by the test sandbox: $a" >&2; exit 1;; esac; done',
+        'for s in /usr/bin/sed /bin/sed; do [ -x "$s" ] && exec "$s" "$@"; done',
+        'exit 127',
+      ].join('\n'),
+    );
     stub(
       'curl',
       [

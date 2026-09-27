@@ -836,6 +836,19 @@ describe.skipIf(!bash)('hubLlamacppUrlShell (sandboxed bash)', () => {
     chmodSync(path.join(bin, 'curl'), 0o755);
     writeFileSync(path.join(bin, 'sleep'), '#!/bin/sh\ntrue\n');
     chmodSync(path.join(bin, 'sleep'), 0o755);
+    // A `sed` that refuses every in-place spelling, so a shell that goes back to one fails on Linux
+    // CI too: GNU sed runs the bare `-i` that BSD sed misreads, and GNU's `-i.SUFFIX` renames the
+    // env file away before the rewrite lands (see hubLlamacppUrlShell).
+    writeFileSync(
+      path.join(bin, 'sed'),
+      [
+        '#!/bin/sh',
+        'for a in "$@"; do case "$a" in -i*|--in-place*|-[Enrsuz]*i*) echo "sed: in-place edit refused by the test sandbox: $a" >&2; exit 1;; esac; done',
+        'for s in /usr/bin/sed /bin/sed; do [ -x "$s" ] && exec "$s" "$@"; done',
+        'exit 127',
+      ].join('\n'),
+    );
+    chmodSync(path.join(bin, 'sed'), 0o755);
     return {
       envFile,
       env: () => readFileSync(envFile, 'utf-8'),
