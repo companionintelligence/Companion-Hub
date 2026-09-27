@@ -18,7 +18,7 @@ import { CloudflareSubdomainField } from '@/modules/app/components/install-form/
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import { useCallback } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
-import { buildPublicWebIdentity, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import type { TranslatableError } from '@/types/error.types';
 
@@ -45,7 +45,7 @@ export default function PortExposeCreatePage() {
     ...getDomainsOptions(),
     enabled: cloudflareAvailable,
   });
-  const availableDomains = getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS;
+  const availableDomains = selectOfferedDomains(getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS, domain);
 
   const {
     register,
@@ -92,7 +92,7 @@ export default function PortExposeCreatePage() {
     [],
   );
 
-  const { isCheckingDns, dnsAvailabilityError } = useDnsAvailability<FormValues>({
+  const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
     enabled: watchExposureMode === 'cloudflare' && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: watchPublicDomain || domain,
@@ -163,6 +163,12 @@ export default function PortExposeCreatePage() {
         return;
       }
 
+      if (domainAvailabilityError) {
+        setError('publicDomain', { message: domainAvailabilityError });
+        toast.error(domainAvailabilityError);
+        return;
+      }
+
       if (dnsAvailabilityError) {
         setError('localSubdomain', { message: dnsAvailabilityError });
         toast.error(dnsAvailabilityError);
@@ -174,6 +180,13 @@ export default function PortExposeCreatePage() {
         if (response.ok) {
           const data = await response.json();
           if (!data.available) {
+            if (data.reason === 'zone_unreachable') {
+              const message = typeof data.message === 'string' && data.message ? data.message : t('APP_INSTALL_FORM_ERROR_DOMAIN_UNAVAILABLE');
+              setError('publicDomain', { message });
+              toast.error(message);
+              return;
+            }
+
             const message =
               typeof data.message === 'string' && data.message ? data.message : t('APP_INSTALL_FORM_ERROR_DNS_NOT_AVAILABLE', { name: subdomain });
             setError('localSubdomain', { message });
@@ -306,6 +319,7 @@ export default function PortExposeCreatePage() {
                   register={register}
                   loading={createPortExpose.isPending}
                   localSubdomainError={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
+                  publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
                   placeholder={defaultAppSubdomain}
                   isCheckingDns={isCheckingDns}
                   t={t}

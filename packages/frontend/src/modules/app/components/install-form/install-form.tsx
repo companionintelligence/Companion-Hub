@@ -30,7 +30,7 @@ import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
 import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
@@ -243,7 +243,11 @@ export const InstallForm: React.FC<IProps> = ({
         : localPreviewHost;
 
   const { data: availableDomainsData } = useQuery(getDomainsOptions());
-  const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
+  const currentPublicSuffix = typeof initialValues?.publicDomain === 'string' ? initialValues.publicDomain : domain;
+  const availableDomains = useMemo(
+    () => selectOfferedDomains(availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, currentPublicSuffix),
+    [availableDomainsData?.domains, currentPublicSuffix],
+  );
 
   /*
    * The organization's connected custom domains. Read unconditionally rather
@@ -671,7 +675,7 @@ export const InstallForm: React.FC<IProps> = ({
     },
   });
 
-  const { isCheckingDns, dnsAvailabilityError } = useDnsAvailability({
+  const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability({
     enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare',
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: watchPublicDomain || domain,
@@ -831,6 +835,7 @@ export const InstallForm: React.FC<IProps> = ({
             register={register}
             loading={loading}
             localSubdomainError={errors.localSubdomain?.message || dnsAvailabilityError || undefined}
+            publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
             placeholder={defaultAppSubdomain}
             isCheckingDns={isCheckingDns}
             t={t}
@@ -975,6 +980,12 @@ export const InstallForm: React.FC<IProps> = ({
       }
 
       // If DNS check found an error, prevent submission
+      if (domainAvailabilityError) {
+        setError('publicDomain', { message: domainAvailabilityError });
+        toast.error(domainAvailabilityError);
+        return;
+      }
+
       if (dnsAvailabilityError) {
         setError('localSubdomain', { message: dnsAvailabilityError });
         toast.error(dnsAvailabilityError);
@@ -988,6 +999,13 @@ export const InstallForm: React.FC<IProps> = ({
         if (response.ok) {
           const data = await response.json();
           if (!data.available) {
+            if (data.reason === 'zone_unreachable') {
+              const message = typeof data.message === 'string' && data.message ? data.message : t('APP_INSTALL_FORM_ERROR_DOMAIN_UNAVAILABLE');
+              setError('publicDomain', { message });
+              toast.error(message);
+              return;
+            }
+
             if (typeof data.message === 'string' && data.message) {
               setError('localSubdomain', { message: data.message });
               toast.error(data.message);

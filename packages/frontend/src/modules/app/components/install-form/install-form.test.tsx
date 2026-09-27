@@ -73,7 +73,9 @@ vi.mock('react-i18next', () => ({
  * would let the picker drift from the bind pass while these tests stayed green.
  */
 
-const MOCK_AVAILABLE_DOMAINS = { domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> };
+const MOCK_AVAILABLE_DOMAINS = {
+  domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string; offered?: boolean }>,
+};
 /**
  * The organization's connected custom domains, as `GET /cloudflare/custom-domains`
  * reports them. `supported: false` is the default because it is the default
@@ -1385,7 +1387,7 @@ describe('InstallForm', () => {
 
   it('renders the public domain selector inside the subdomain field in simple mode', () => {
     vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
-    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'ci.computer', isDefault: true }];
+    MOCK_AVAILABLE_DOMAINS.domains = [{ id: 'd1', domain: 'companionintelligence.com', isDefault: true, offered: true }];
 
     const exposableInfo = {
       ...baseInfo,
