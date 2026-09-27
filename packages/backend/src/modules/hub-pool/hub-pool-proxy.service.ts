@@ -27,11 +27,13 @@ import {
 } from '@/common/helpers/hub-pool';
 import { clampOllamaSlots } from '@/common/helpers/inference-ollama-slots';
 import { HubPoolPeerService } from './hub-pool-peer.service';
-import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY, type LocalGeneration } from './hub-pool-load.service';
 import {
   HubPoolRoutingLogService,
   type PoolRoutingAffinity,
   type PoolRoutingCeilingExclusion,
+  type PoolRoutingContention,
+  type PoolRoutingContentionDemotion,
   type PoolRoutingContextCap,
   type PoolRoutingContextCapExclusion,
   type PoolRoutingOutcome,
@@ -158,7 +160,19 @@ export function isForwardDeadline(error: unknown): boolean {
  */
 export const HUB_POOL_THROUGHPUT_PLACEMENT_ENV_VAR = 'HUB_POOL_THROUGHPUT_PLACEMENT';
 function throughputPlacementEnabled(): boolean {
-  const raw = process.env[HUB_POOL_THROUGHPUT_PLACEMENT_ENV_VAR]?.trim().toLowerCase();
+  return placementSwitchOn(HUB_POOL_THROUGHPUT_PLACEMENT_ENV_VAR);
+}
+
+/**
+ * `HUB_POOL_CONTENTION_PLACEMENT=off` (or `0`/`false`) stops a local engine that is busy with work a
+ * request cannot join from giving way to peers — see {@link applyLocalContention}. Read per request,
+ * like the throughput switch.
+ */
+export const HUB_POOL_CONTENTION_PLACEMENT_ENV_VAR = 'HUB_POOL_CONTENTION_PLACEMENT';
+
+/** A placement step's env kill switch: on unless it says `off`, `0` or `false`. */
+function placementSwitchOn(envVar: string): boolean {
+  const raw = process.env[envVar]?.trim().toLowerCase();
   return !(raw === 'off' || raw === '0' || raw === 'false');
 }
 
@@ -833,6 +847,91 @@ export function applySlotPlacement(
   return { demoted: overridden ? NOTHING_DEMOTED : full, decision: { demoted, overridden } };
 }
 
+/**
+ * The engines that load a model at the window a request asks for, so that one request at another
+ * window than the requests already running must wait for them and reload: Ollama, whose `num_ctx` is
+ * a load parameter. Every other engine runs the window it was started with, whatever a request names.
+ */
+const WINDOW_RELOADING_BACKENDS: ReadonlySet<InferenceBackendType> = new Set<InferenceBackendType>(['ollama']);
+
+/** The window a request runs at when it names one: `options.num_ctx` on Ollama's native routes, never on `/v1`, where Ollama drops `options` and its default applies. */
+function requestedWindow(path: string, body: unknown): number | null {
+  return path.startsWith('/api/') ? requestedNumCtx(body) : null;
+}
+
+/** A window as `cihub pool log` words it: `null` is a request that named none on a node that states no default. */
+function describeWindow(numCtx: number | null): string {
+  return numCtx === null ? 'the engine default' : `num_ctx ${numCtx}`;
+}
+
+/** What contention placement found on one local engine: the generations in flight there that a request placed on it could not join. */
+interface LocalEngineContention {
+  /** Each distinct model and window among them, the window resolved as the engine runs it — see {@link PoolRoutingContentionDemotion.busyWith}. */
+  busyWith: { model: string; numCtx: number | null }[];
+  /** The window the request would run at there. */
+  runsAt: number | null;
+}
+
+/**
+ * Move each contended local engine behind the candidates right after it that are no busier than it
+ * once its local head start is set aside, stopping at the first one that is busier.
+ *
+ * A contended engine is generating for work the request cannot join: another model's turn, which
+ * Ollama must evict behind or share the engine with, or this model's at another window, which it must
+ * wait out and reload for. beta-max, 2026-09-26: a 35b turn at `num_ctx` 65536 waited behind two
+ * `/v1` requests for 35b at the 32768 default, then behind an eviction of 27b, whose 39,668-token
+ * prefill took 362 s because it shared the engine with 35b, and failed over at its 327 s budget.
+ *
+ * The local head start (`poolLocalAffinity`) pays for a prompt cache a turn here reuses. A reload
+ * discards it and a shared engine reads far slower (that 35b: 1,019 tok/s alone, 174 beside 27b), so
+ * a contended engine forfeits the head start and loses ties. It never gives way to a busier
+ * candidate: both fleet models run `-np 1`, so a peer with eight in flight is eight turns in a row.
+ *
+ * Demoted, never removed, as for slots, and among contended engines nothing moves. `pieces` splits
+ * the group before each engine that gave way, so a pin applied within a piece cannot undo it;
+ * `behind` names what each contended engine gave way to, empty when it kept its place. Pure and
+ * exported for its own test.
+ */
+export function applyLocalContention(
+  group: PoolCandidate[],
+  isContended: (candidate: PoolCandidate) => boolean,
+  scoreOf: (candidate: PoolCandidate) => number,
+  headStart: number,
+): { pieces: PoolCandidate[][]; behind: Map<PoolCandidate, PoolCandidate[]> } {
+  const behind = new Map<PoolCandidate, PoolCandidate[]>();
+  const pieces: PoolCandidate[][] = [[]];
+  // Contended engines not yet placed, in ranked order. Every one of them is local, so they share a
+  // score, and the first one's limit is theirs.
+  let waiting: PoolCandidate[] = [];
+  let limit = 0;
+  const place = () => {
+    if (waiting.some((candidate) => (behind.get(candidate)?.length ?? 0) > 0)) {
+      pieces.push([]);
+    }
+    pieces[pieces.length - 1]?.push(...waiting);
+    waiting = [];
+  };
+  for (const candidate of group) {
+    if (isContended(candidate)) {
+      if (waiting.length === 0) {
+        limit = scoreOf(candidate) + headStart;
+      }
+      waiting.push(candidate);
+      behind.set(candidate, []);
+      continue;
+    }
+    if (waiting.length > 0 && scoreOf(candidate) > limit) {
+      place();
+    }
+    for (const contended of waiting) {
+      behind.get(contended)?.push(candidate);
+    }
+    pieces[pieces.length - 1]?.push(candidate);
+  }
+  place();
+  return { pieces: pieces.filter((piece) => piece.length > 0), behind };
+}
+
 /** What one forwarded response revealed about its engine's speed, gathered while it streams. */
 interface ResponseTiming {
   firstChunkAt: number | null;
@@ -1237,6 +1336,13 @@ export class PoolProxyService {
    * would take it past the request's budget moves behind the ones that would not — see
    * {@link applyThroughputPlacement}. `streaming` picks the budget, as it does for the forward.
    *
+   * Then local-engine contention, within each of those groups and only for a generation with a peer
+   * to go to: a local engine generating for work this request cannot join — another model, or this
+   * one at another window — gives up the local head start and moves behind the candidates after it
+   * that are no busier — see {@link applyLocalContention}. Inside throughput, unlike slots: a node
+   * measured too slow misses its whole budget, while a contended engine may only be waiting out a
+   * turn that is nearly done.
+   *
    * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
    */
@@ -1283,6 +1389,7 @@ export class PoolProxyService {
     contextCap: PoolRoutingContextCap | null;
     slots: PoolRoutingSlots | null;
     throughput: PoolRoutingThroughput | null;
+    contention: PoolRoutingContention | null;
     /** What affinity saw and did, and the key to remember the placement under; both `null` when affinity did not apply. */
     affinity: { decision: PoolRoutingAffinity | null; key: PrefixKey | null };
     /** The peer rows ranking read, so placement-time checks see the same snapshot the order came from. */
@@ -1320,21 +1427,45 @@ export class PoolProxyService {
       prompt && measurePromptBytes
         ? this.applyMeasuredThroughput(model, ordered, peers, measurePromptBytes, prompt.streaming)
         : { demoted: NOTHING_DEMOTED, decision: null };
+    // Judged, like throughput, only on the routes `prompt` is passed for: a turn is what a reload
+    // behind another turn, or an engine shared with one, can keep waiting for minutes.
+    const contended = prompt ? this.judgeLocalContention(model, ordered, prompt.numCtx) : null;
+    const scores = new Map(affinity.ordered.map((entry) => [entry.candidate, entry.score]));
+    const headStart = this.localAffinity();
+    const gaveWayTo = new Map<PoolCandidate, PoolCandidate[]>();
+    const giveWay = (part: PoolCandidate[]): PoolCandidate[][] => {
+      if (!contended || !part.some((candidate) => contended.engines.has(candidate))) {
+        return [part];
+      }
+      const result = applyLocalContention(
+        part,
+        (candidate) => contended.engines.has(candidate),
+        (candidate) => scores.get(candidate) ?? 0,
+        headStart,
+      );
+      for (const [candidate, ahead] of result.behind) {
+        gaveWayTo.set(candidate, ahead);
+      }
+      return result.pieces;
+    };
     // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
     // effect on the next request and costs no query on the inference hot path.
     const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
     // The cap is the outermost split and the ceiling the next, because both are operator statements
     // and a node over its cap reloads or truncates where a node over its ceiling is merely slow. The
-    // other two are inferences and split within those: slots outside throughput, because a full
-    // engine queues the request whole where a slow one merely reads it slowly. With nothing demoted
-    // and no over-cap or over-ceiling tail this is `applyPin(ordered, pin)` exactly, which keeps an
-    // unmeasured fleet on the order it had before any of the four existed. The ceiling's own
-    // "everything over means nothing moves" rule was judged on the whole list, so `overCeiling` is
-    // already empty in that case.
+    // other three are inferences and act within those: slots outside throughput, because a full
+    // engine queues the request whole where a slow one merely reads it slowly, and contention inside
+    // throughput, because a slow node misses its whole budget where a contended one may be waiting
+    // out a turn that is nearly done. With nothing demoted and no over-cap or over-ceiling tail this
+    // is `applyPin(ordered, pin)` exactly, which keeps an unmeasured fleet on the order it had before
+    // any of the five existed. The ceiling's own "everything over means nothing moves" rule was
+    // judged on the whole list, so `overCeiling` is already empty in that case.
     const overCeiling = new Set(ceiling.overCeiling);
     const candidates = [cap.preferred, cap.overCap].flatMap((capGroup) =>
       splitDemoted(capGroup, overCeiling).flatMap((group) =>
-        splitDemoted(group, slots.demoted).flatMap((slotPart) => splitDemoted(slotPart, throughput.demoted).flatMap((part) => applyPin(part, pin))),
+        splitDemoted(group, slots.demoted).flatMap((slotPart) =>
+          splitDemoted(slotPart, throughput.demoted).flatMap((part) => giveWay(part).flatMap((piece) => applyPin(piece, pin))),
+        ),
       ),
     );
     return {
@@ -1344,6 +1475,7 @@ export class PoolProxyService {
       contextCap: cap.decision,
       slots: slots.decision,
       throughput: throughput.decision,
+      contention: contended ? this.describeContention(model, contended, gaveWayTo) : null,
       // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
       // first, and a ceiling, a demotion or a pin applied after affinity can each have put another
       // node there. The routing log's other sections say which one did.
@@ -1517,17 +1649,10 @@ export class PoolProxyService {
    * walk, so "the same window" means the same thing to both.
    */
   private contextCapOf(peers: HubPoolPeer[]): (candidate: PoolCandidate) => number | null {
-    const localCap = clampContextCap(this.configuration.getInferencePreferences()?.maxNumCtx);
     const peerCaps = new Map<string, number | null>(
       peers.map((peer) => [peer.id, clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx)]),
     );
-    // A local engine that states its own per-slot window (llama-server's `/props`) is believed over
-    // the node-wide statement: the statement describes Ollama, and a window the engine itself runs
-    // is exactly what the cap exists to keep a request inside.
-    return (candidate) =>
-      candidate.peerId === null
-        ? (clampContextCap(this.localEngineStatement(candidate.backend)?.contextLength) ?? localCap)
-        : (peerCaps.get(candidate.peerId) ?? null);
+    return (candidate) => (candidate.peerId === null ? this.localEngineWindow(candidate.backend) : (peerCaps.get(candidate.peerId) ?? null));
   }
 
   /**
@@ -1543,7 +1668,7 @@ export class PoolProxyService {
    * is never "no larger", so on a fleet that states none the walk goes on as it did before.
    */
   private contextWindowOf(path: string, body: unknown, peers: HubPoolPeer[]): (candidate: PoolCandidate) => number | null {
-    const numCtx = path.startsWith('/api/') ? requestedNumCtx(body) : null;
+    const numCtx = requestedWindow(path, body);
     const capOf = this.contextCapOf(peers);
     return (candidate) => {
       if (candidate.backend === 'ollama') {
@@ -1601,6 +1726,106 @@ export class PoolProxyService {
       );
     }
     return result;
+  }
+
+  /**
+   * Each local candidate's engine judged for {@link applyLocalContention}: the generations this node
+   * has in flight on it that the request cannot join. `null` when nothing was judged — the kill
+   * switch is off, or no peer could go ahead of this node — and an empty `engines` when nothing here
+   * was contended.
+   *
+   * Read from this node's own records — what it placed on its engines and what peers forwarded to
+   * them — so it asks the engine nothing on the request path. Another model's generation is always
+   * contention: Ollama either evicts behind that turn or loads beside it and shares the engine, and
+   * which of the two it would do changes the cost, not the call. This model's generation is
+   * contention only on an engine that reloads per window, at a window other than the one this request
+   * runs at — a reload has to wait for it. The window is resolved as the engine runs it: a request's
+   * own `num_ctx`, else the default this node states for the engine (see {@link localEngineWindow}).
+   * Two requests that name no window run at the same default whatever it is, but with no default
+   * stated, one that names none cannot be shown to match one that names a number, and is judged not
+   * to: the fleet's 35b relaunched six times in three minutes on exactly that mismatch.
+   */
+  private judgeLocalContention(
+    model: string,
+    ordered: PoolCandidate[],
+    numCtxOf: (() => number | null) | undefined,
+  ): { numCtx: number | null; engines: Map<PoolCandidate, LocalEngineContention> } | null {
+    if (!placementSwitchOn(HUB_POOL_CONTENTION_PLACEMENT_ENV_VAR) || !ordered.some((candidate) => candidate.peerId !== null)) {
+      return null;
+    }
+    const numCtx = numCtxOf?.() ?? null;
+    const engines = new Map<PoolCandidate, LocalEngineContention>();
+    for (const candidate of ordered) {
+      const running = candidate.peerId === null ? this.loadService.localGenerationsOn(candidate.backend) : [];
+      if (running.length === 0) {
+        continue;
+      }
+      const judgesWindow = WINDOW_RELOADING_BACKENDS.has(candidate.backend);
+      const engineDefault = judgesWindow ? this.localEngineWindow(candidate.backend) : null;
+      const runsAt = numCtx ?? engineDefault;
+      const busyWith: LocalEngineContention['busyWith'] = [];
+      for (const generation of running) {
+        const window = generation.numCtx ?? engineDefault;
+        const joinable = sameModelId(generation.model, model) && (!judgesWindow || window === runsAt);
+        // One entry per model and window as the engine runs them: a `/v1` request and a native one
+        // naming the stated default are the same load.
+        if (!joinable && !busyWith.some((entry) => entry.model === generation.model && entry.numCtx === window)) {
+          busyWith.push({ model: generation.model, numCtx: window });
+        }
+      }
+      if (busyWith.length > 0) {
+        engines.set(candidate, { busyWith, runsAt });
+      }
+    }
+    return { numCtx, engines };
+  }
+
+  /**
+   * The routing log's account of {@link judgeLocalContention} and {@link applyLocalContention}, and
+   * one debug line when an engine gave way — never at info, for the ceiling's reason. `null` when
+   * no engine here was contended.
+   */
+  private describeContention(
+    model: string,
+    contended: { numCtx: number | null; engines: Map<PoolCandidate, LocalEngineContention> },
+    gaveWayTo: Map<PoolCandidate, PoolCandidate[]>,
+  ): PoolRoutingContention | null {
+    if (contended.engines.size === 0) {
+      return null;
+    }
+    const nodeOf = (candidate: PoolCandidate) => candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
+    const demoted: PoolRoutingContentionDemotion[] = [...contended.engines].map(([candidate, found]) => ({
+      node: nodeOf(candidate),
+      backend: candidate.backend,
+      busyWith: found.busyWith,
+      runsAt: found.runsAt,
+      behind: (gaveWayTo.get(candidate) ?? []).map(nodeOf),
+    }));
+    const moved = demoted.filter((entry) => entry.behind.length > 0);
+    if (moved.length > 0) {
+      const engines = moved
+        .map((entry) => {
+          const busy = entry.busyWith.map((generation) => `${generation.model} at ${describeWindow(generation.numCtx)}`).join(', ');
+          return `${entry.node} ${entry.backend} (busy with ${busy}; this one at ${describeWindow(entry.runsAt)}) behind ${entry.behind.join(', ')}`;
+        })
+        .join('; ');
+      this.logger.debug(`[PoolProxy] "${model}" moved ${engines}, which were no busier once its local head start was set aside`);
+    }
+    return { numCtx: contended.numCtx, demoted, overridden: false };
+  }
+
+  /**
+   * The window a local engine runs a request at when the request names none, as this node states it:
+   * the engine's own statement (llama-server's `/props`), else the node's context cap, which its
+   * operator sets to `OLLAMA_CONTEXT_LENGTH` because Ollama's API does not expose it. `null` when
+   * neither is stated. The same figure a context cap holds a request to — see {@link applyContextCaps}.
+   */
+  private localEngineWindow(backend: InferenceBackendType): number | null {
+    // Believed over the node-wide statement: the statement describes Ollama, and a window the engine
+    // itself runs is exactly what the cap exists to keep a request inside.
+    return (
+      clampContextCap(this.localEngineStatement(backend)?.contextLength) ?? clampContextCap(this.configuration.getInferencePreferences()?.maxNumCtx)
+    );
   }
 
   /**
@@ -1680,6 +1905,7 @@ export class PoolProxyService {
         contextCap: null,
         slots: null,
         throughput: null,
+        contention: null,
         affinity: null,
         outcome: 'failed',
         status: null,
@@ -1706,9 +1932,9 @@ export class PoolProxyService {
     // Keyed on the resolved model, never the alias: `auto` on two Hubs can mean two models, and the
     // cache a session warms is the resolved one's.
     const prefixKey = memoize(() => derivePrefixKey(model, body, params.sessionHeader));
-    const { candidates, pin, promptCeiling, contextCap, slots, throughput, affinity, peers, localProbes } = await this.rankCandidates(
+    const { candidates, pin, promptCeiling, contextCap, slots, throughput, contention, affinity, peers, localProbes } = await this.rankCandidates(
       model,
-      judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey, numCtx: () => requestedNumCtx(body) } : undefined,
+      judged ? { bytes: () => payload()?.length ?? 0, streaming, prefixKey, numCtx: () => requestedWindow(path, body) } : undefined,
     );
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
@@ -1731,6 +1957,7 @@ export class PoolProxyService {
         contextCap,
         slots,
         throughput,
+        contention,
         affinity: affinity.decision,
         outcome: 'failed',
         status: null,
@@ -1770,6 +1997,7 @@ export class PoolProxyService {
       slots,
       ...describeRequestShape(method, body),
       throughput,
+      contention,
       affinity: affinity.decision,
     });
     // The decision stated on the response, like the serving node: set on the 502 too, since a turn
@@ -1828,12 +2056,28 @@ export class PoolProxyService {
           `[PoolProxy] placing "${model}" on ${nodeLabel}, predicted to miss its ${placedThroughput.budgetMs}ms budget, because nothing ahead of it answered`,
         );
       }
+      // Reaching a contended engine means nothing it gave way to answered, or every candidate behind
+      // it was busier. Recorded as an override for the same reason as the slots'; `behind` says which.
+      const placedContention = row.contention;
+      const placedEngine = placedContention?.demoted.find((entry) => entry.node === nodeLabel && entry.backend === candidate.backend);
+      if (placedContention && placedEngine && !placedContention.overridden) {
+        placedContention.overridden = true;
+        this.logger.debug(
+          placedEngine.behind.length > 0
+            ? `[PoolProxy] placing "${model}" on ${nodeLabel}, whose engine is busy with work this request cannot join, because nothing it gave way to answered`
+            : `[PoolProxy] placing "${model}" on ${nodeLabel}, whose engine is busy with work this request cannot join, because it gave way to nothing`,
+        );
+      }
       const target: ThroughputTarget = { nodeKey: key, backend: candidate.backend, model };
       // Judged before this request joins the count: a node with other work in flight is timed as a
       // queue, and a queue recorded as slow hardware would outlive the queue by hours.
       const measurable = judged && this.idleForMeasurement(candidate, peers);
       const attemptStartedAt = Date.now();
-      this.loadService.acquire(key);
+      // Named by model and window only on this node's own engine and only for a generation, which is
+      // what the next request's contention judgement asks about.
+      const generation: LocalGeneration | undefined =
+        judged && candidate.peerId === null ? { backend: candidate.backend, model, numCtx: requestedWindow(path, body) } : undefined;
+      this.loadService.acquire(key, generation);
       // At placement, before the engine answers, so a session's next call — an agent's parallel
       // tool calls arrive while the first is still prefilling — finds the engine already reading
       // the shared prefix. A failover overwrites it with the candidate that actually took the work.
@@ -1948,7 +2192,7 @@ export class PoolProxyService {
           return;
         }
       } finally {
-        this.loadService.release(key);
+        this.loadService.release(key, generation);
       }
     }
 
@@ -2199,7 +2443,10 @@ export class PoolProxyService {
       model && PROMPT_CEILING_PATHS.has(path) && this.loadService.localInFlight() === 0 ? { nodeKey: LOCAL_CANDIDATE_KEY, backend, model } : null;
     const streaming = isStreamingRequest(body);
     const payload = forwardedPayload(method, body);
-    this.loadService.acquire(LOCAL_CANDIDATE_KEY);
+    // A peer's turn holds a runner here exactly as a local app's does, so it is named the same way.
+    const generation: LocalGeneration | undefined =
+      model && PROMPT_CEILING_PATHS.has(path) ? { backend, model, numCtx: requestedWindow(path, body) } : undefined;
+    this.loadService.acquire(LOCAL_CANDIDATE_KEY, generation);
     // Recorded once per forward, whichever way it ends: a stream that dies after the backend
     // answered is the same routing decision, not a second one.
     let recorded = false;
@@ -2252,7 +2499,7 @@ export class PoolProxyService {
       }
       throw error;
     } finally {
-      this.loadService.release(LOCAL_CANDIDATE_KEY);
+      this.loadService.release(LOCAL_CANDIDATE_KEY, generation);
     }
   }
 
@@ -2309,6 +2556,7 @@ export class PoolProxyService {
       contextCap: null,
       slots: null,
       throughput: null,
+      contention: null,
       affinity: null,
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
