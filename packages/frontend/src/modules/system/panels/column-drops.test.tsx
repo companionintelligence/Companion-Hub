@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
-import { LocalContainers } from '@/modules/system/panels/local-resources';
+import { LocalContainers, LocalModels } from '@/modules/system/panels/local-resources';
 import { NetworkModels } from '@/modules/system/panels/network-resources';
 import { PoolActivity } from '@/modules/system/panels/pool-activity';
+import { emptyRoutingBucket } from '@/modules/system/pool-node-series';
 import { render } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { describe, expect, it } from 'vitest';
@@ -28,7 +29,7 @@ function breakpointOf(element: Element): string {
   const classes = element.className.split(/\s+/);
   if (!classes.includes('hidden')) return 'always';
 
-  return classes.find((name) => /^@?(sm|md|lg|xl|2xl|3xl):table-cell$/.test(name)) ?? 'hidden-with-no-breakpoint';
+  return classes.find((name) => /^@?(xs|sm|md|lg|xl|2xl|3xl):table-cell$/.test(name)) ?? 'hidden-with-no-breakpoint';
 }
 
 function expectHeadersAndCellsToAgree(element: ReactElement) {
@@ -83,11 +84,42 @@ describe('column drops', () => {
     );
   });
 
+  it('keeps the local model list aligned now that it carries an in-memory column', () => {
+    expectHeadersAndCellsToAgree(
+      <LocalModels
+        node={{ backends: [{ type: 'ollama', healthy: true, modelsLoaded: ['qwen3.6:35b', 'gemma3:1b'] }] }}
+        inference={undefined}
+        residency={{
+          backends: [
+            {
+              backend: 'ollama',
+              source: 'measured',
+              models: [
+                {
+                  id: 'qwen3.6:35b',
+                  engineGpuBytes: 22_419_246_939,
+                  totalBytes: 22_419_246_939,
+                  expiresAt: null,
+                  contextLength: 65536,
+                  quantization: 'Q4_K_M',
+                },
+              ],
+            },
+          ],
+          residentCount: 1,
+          sampledAt: new Date().toISOString(),
+        }}
+        residencyState={READY}
+        state={READY}
+      />,
+    );
+  });
+
   it('keeps the routing feed aligned at every width', () => {
     expectHeadersAndCellsToAgree(
       <PoolActivity
         entries={[{ at: new Date().toISOString(), direction: 'outbound', model: 'gemma3:1b', node: 'core-2', backend: 'ollama', outcome: 'served' }]}
-        buckets={[{ at: Date.now(), served: 1, failed: 0 }]}
+        buckets={[{ ...emptyRoutingBucket(Date.now()), served: 1 }]}
         state={READY}
       />,
     );

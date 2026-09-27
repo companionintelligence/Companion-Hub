@@ -103,3 +103,31 @@ describe('WorkloadCoverage', () => {
     expect(container.textContent).not.toMatch(/\b0\s*(tokens|%|MB|GB)\b/i);
   });
 });
+
+describe('WorkloadCoverage on the hardware it is wrong about', () => {
+  /*
+   * On a unified-memory APU the profile's `vramMb` is HOST RAM: "Radeon 8060S · 125G" on core-2, and
+   * "· 31G" on core-1, whose GPU actually has a 96 GiB BIOS carve-out the host cannot see. A size
+   * after a GPU's name reads as that GPU's memory, so on these machines there is no size at all.
+   */
+  it('names a unified-memory GPU without a size, since its reported size is host RAM', () => {
+    const { container } = render(
+      <WorkloadCoverage
+        hardware={{ gpu: { vendor: 'amd', model: 'Radeon 8060S', vramMb: 31_357, unifiedMemory: true } }}
+        gpuVramSource="host-file"
+      />,
+    );
+
+    expect(container.textContent).toContain('amd Radeon 8060S');
+    expect(container.textContent).not.toContain('31G');
+  });
+
+  it('tells an Apple Silicon operator there is nothing to install, instead of naming a Linux probe', () => {
+    const { container } = render(
+      <WorkloadCoverage hardware={{ gpu: { vendor: 'apple', model: 'M3 Max', unifiedMemory: true } }} gpuVramSource="absent" />,
+    );
+
+    expect(container.textContent).toContain('Apple GPUs expose no per-process memory to any tool the Hub runs');
+    expect(container.textContent).not.toContain('cihub fleet update --gpu-probe');
+  });
+});

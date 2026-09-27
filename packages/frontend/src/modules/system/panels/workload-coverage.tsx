@@ -152,7 +152,9 @@ export function WorkloadCoverage({
    */
   const gpu = hardware?.gpu;
   const describedGpu = gpu ? [gpu.vendor, gpu.model].filter(Boolean).join(' ') : '';
-  const gpuName = describedGpu && gpu?.vramMb ? `${describedGpu} · ${Math.round(gpu.vramMb / 1024)}G` : describedGpu;
+  // No size on a unified-memory GPU: `vramMb` there is HOST RAM, so "Radeon 8060S · 125G" stated a
+  // GPU memory figure that is really the machine's, and core-1's "· 31G" hid a 96 GiB carve-out.
+  const gpuName = describedGpu && gpu?.vramMb && !gpu.unifiedMemory ? `${describedGpu} · ${Math.round(gpu.vramMb / 1024)}G` : describedGpu;
 
   /*
    * Three states, not two, for the one line that reads live data.
@@ -183,7 +185,16 @@ export function WorkloadCoverage({
         tag={vramAbsent ? t('DASHBOARD_COVERAGE_GPU_TAG_ABSENT') : t('DASHBOARD_COVERAGE_GPU_TAG')}
         why={vramLine}
         also={t('DASHBOARD_COVERAGE_GPU_UTIL')}
-        enable={vramAbsent ? t('DASHBOARD_COVERAGE_GPU_ENABLE_ABSENT') : t('DASHBOARD_COVERAGE_GPU_ENABLE')}
+        enable={
+          /* The absent-source fix names `cihub fleet update --gpu-probe`, a Linux systemd timer that
+             runs rocm-smi / nvidia-smi. On Apple Silicon neither exists and no tool reports
+             per-process GPU memory at all, so the honest sentence is that there is nothing to install. */
+          vramAbsent
+            ? gpu?.vendor === 'apple'
+              ? t('DASHBOARD_COVERAGE_GPU_ENABLE_APPLE')
+              : t('DASHBOARD_COVERAGE_GPU_ENABLE_ABSENT')
+            : t('DASHBOARD_COVERAGE_GPU_ENABLE')
+        }
         nearest={hostLine}
       />
 

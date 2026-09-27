@@ -647,9 +647,16 @@ export const RailStat = ({ stat }: { stat: RailStatData }) => {
       ) : (
         <span className={cn('truncate text-[18px] font-bold leading-none tabular-nums', TONE_TEXT[stat.tone ?? 'plain'])}>{stat.value}</span>
       )}
-      <span className="truncate text-[10px] uppercase leading-tight tracking-[0.5px] text-muted-foreground">{stat.label}</span>
+      {/* `title` on both lines because both truncate: at twelve-up a cell is ~85px, and a sub like
+          "oldest 6m 11s · This Hub" is the part of the figure an operator most wants to read. */}
+      <span className="truncate text-[10px] uppercase leading-tight tracking-[0.5px] text-muted-foreground" title={stat.label}>
+        {stat.label}
+      </span>
       {stat.sub ? (
-        <span className="truncate text-[10px] leading-tight text-muted-foreground/80">
+        <span
+          className="truncate text-[10px] leading-tight text-muted-foreground/80"
+          title={stat.state.failed ? undefined : typeof stat.sub === 'string' ? stat.sub : undefined}
+        >
           {stat.state.failed ? t('DASHBOARD_RAIL_UNAVAILABLE') : stat.sub}
         </span>
       ) : null}
@@ -709,10 +716,71 @@ export function humanCount(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? String(value) : DASH;
 }
 
+/**
+ * A duration in the unit a person reads it in: `850 ms`, `12.5 s`, `6m 40s`, `7h 16m`.
+ *
+ * The routing feed used to print `399710ms` for an agent turn that waited six and a half minutes for
+ * its first byte. Every figure was correct and none of them was readable: on a fleet where a 40k-token
+ * prompt takes 5-13 minutes to prefill, the interesting durations are minutes, and a seven-digit
+ * millisecond count makes a reader do arithmetic to find out whether a node is slow. Below a second
+ * the milliseconds ARE the unit (an embedding call, a cache hit), so they stay.
+ *
+ * `null`/non-finite is unmeasured and renders a dash, like every other helper here.
+ */
+export function humanDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return DASH;
+  const value = Math.max(0, ms);
+  if (Math.round(value) < 1000) return `${Math.round(value)} ms`;
+
+  // Rounded to the tenth BEFORE the unit is chosen, so 59.96 s prints "1m 0s" rather than "60.0 s".
+  const tenths = Math.round(value / 100) / 10;
+  if (tenths < 60) return `${tenths.toFixed(1)} s`;
+
+  const seconds = Math.round(value / 1000);
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+
+  const minutes = Math.round(seconds / 60);
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * A token count as a short approximate figure: `850`, `7.6k`, `39k`.
+ *
+ * Only ever fed ESTIMATES (the pool's `bytes / 4`), which is why it has no exact form — a caller
+ * prints it behind a `~`. A count an engine actually reported goes through `toLocaleString`.
+ */
+export function compactTokens(tokens: number | null | undefined): string {
+  if (tokens === null || tokens === undefined || !Number.isFinite(tokens)) return DASH;
+  const value = Math.max(0, Math.round(tokens));
+  if (value < 1000) return String(value);
+  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
+
+  return `${Math.round(value / 1000)}k`;
+}
+
+/**
+ * Milliseconds since epoch for a timestamp as the Hub serves it, or `NaN`.
+ *
+ * ⚠ THE HUB SERVES TWO SHAPES, AND ONLY ONE OF THEM SAYS WHAT ZONE IT IS IN. Values the backend
+ * builds in memory are ISO-8601 with a `Z`. Values it reads back out of Postgres `timestamp`
+ * columns — which have no zone — arrive as `2026-09-27 10:22:22.896`: UTC wall-clock with the zone
+ * dropped. `Date.parse` reads a zoneless date-time as BROWSER-LOCAL time, so on a PDT laptop the
+ * fzzy Hub's restored history was labelled "10:22 AM" for a sample taken at 03:22 local, seven hours
+ * off, with nothing on screen to say so. Every zoneless value this product emits is UTC, so that is
+ * what it is read as here; a value that carries a zone is left to say so itself.
+ */
+export function parseHubTimestamp(value: string | null | undefined): number {
+  if (!value) return Number.NaN;
+  const trimmed = value.trim();
+  const zoneless = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(trimmed);
+
+  return Date.parse(zoneless ? `${trimmed.replace(' ', 'T')}Z` : trimmed);
+}
+
 /** Short countdown to a future timestamp, for "expires in" columns. */
 export function relativeUntil(iso: string | null | undefined, now: number): string {
   if (!iso) return DASH;
-  const parsed = Date.parse(iso);
+  const parsed = parseHubTimestamp(iso);
   if (!Number.isFinite(parsed)) return DASH;
   const seconds = Math.round((parsed - now) / 1000);
   // Already past: the engine will evict on next sweep, which is not the same as "no expiry".
@@ -726,7 +794,7 @@ export function relativeUntil(iso: string | null | undefined, now: number): stri
 /** Short relative age, for "last seen" columns. */
 export function relativeAge(iso: string | null | undefined, now: number): string {
   if (!iso) return DASH;
-  const parsed = Date.parse(iso.includes('T') ? iso : `${iso.replace(' ', 'T')}Z`);
+  const parsed = parseHubTimestamp(iso);
   if (!Number.isFinite(parsed)) return DASH;
   const seconds = Math.max(0, Math.round((now - parsed) / 1000));
   if (seconds < 60) return `${seconds}s`;

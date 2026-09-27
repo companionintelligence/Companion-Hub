@@ -4,6 +4,8 @@ import {
   appendPoolSample,
   computeCountChartScale,
   EMPTY_SAMPLE_WINDOW,
+  firstByteByNode,
+  latestDecode,
   localContainerRollup,
   nodeInFlightSeries,
   observedPointCount,
@@ -12,9 +14,11 @@ import {
   type PoolSampleWindow,
   routingActivity,
   routingBuckets,
+  routingWindowPartial,
   sampleInFlight,
+  waitingNow,
 } from './pool-node-series';
-import type { PoolNodeSummary, PoolPeerSummary } from './use-dashboard-data';
+import type { PoolNodeSummary, PoolPeerSummary, RoutingLogEntry } from './use-dashboard-data';
 
 /*
  * The pool view's rules, tested away from React.
@@ -274,6 +278,40 @@ describe('poolNodeCards', () => {
   };
   const options = { localLabel: 'This Hub', localContainers: null, healthPollSeconds: 30, now };
 
+  it("gives each card its own first-byte figures, keyed by the node's first DNS label", () => {
+    const firstByte = new Map([
+      ['local', { count: 2, p50Ms: 300, maxMs: 900, maxEstTokens: null }],
+      ['core-7', { count: 1, p50Ms: 16_450, maxMs: 16_450, maxEstTokens: 81 }],
+    ]);
+    const cards = poolNodeCards(
+      local,
+      [
+        { id: 'p', nodeFqdn: 'core-7.tail.ts.net' },
+        { id: 'q', nodeFqdn: 'core-3.tail.ts.net' },
+      ],
+      { ...options, firstByte },
+    );
+
+    expect(Object.fromEntries(cards.map((card) => [card.label, card.firstByte?.maxMs ?? null]))).toEqual({
+      'This Hub': 900,
+      'core-7': 16_450,
+      'core-3': null,
+    });
+  });
+
+  it("reads a peer's generation rate from what we timed and what it advertised, whichever is fresher", () => {
+    const peer: PoolPeerSummary = {
+      id: 'p',
+      throughput: {
+        observed: [{ model: 'qwen3.6:27b', backend: 'ollama', decode: { tokensPerSec: 11, ageMs: 600_000 } }],
+        advertised: [{ model: 'qwen3.6:27b', backend: 'ollama', decode: { tokensPerSec: 12, ageMs: 30_000 } }],
+      },
+    };
+    const [, card] = poolNodeCards(local, [peer], options);
+
+    expect(card?.decode).toEqual({ tokensPerSec: 12, model: 'qwen3.6:27b', ageMs: 30_000 });
+  });
+
   it('puts this Hub first and marks it local', () => {
     const cards = poolNodeCards(local, [{ id: 'p', displayName: 'core-7' }], options);
 
@@ -430,6 +468,193 @@ describe('routingBuckets', () => {
   it('returns nothing at all for a degenerate window rather than dividing by zero', () => {
     expect(routingBuckets([entry('2026-01-01T00:10:05Z')], { now, bucketMs: 0, buckets: 3 })).toEqual([]);
   });
+
+  /*
+   * beta-max, 2026-09-26: `qwen3.8:27b`, 39,668 prompt tokens, first byte at 370,941 ms. For those six
+   * minutes the row was `pending`, and the bars drew it red and "Failed 30m" counted it.
+   */
+  it('counts a request still waiting for its first byte as waiting, never as failed', () => {
+    const [bucket] = routingBuckets([entry('2026-01-01T00:10:05Z', 'pending')], { now, bucketMs: 60_000, buckets: 1 });
+
+    expect(bucket).toMatchObject({ pending: 1, failed: 0, served: 0 });
+  });
+
+  it('counts unplaced requests only inside the window, so one old row cannot hold the page red', () => {
+    const unplaced = (iso: string) => ({ at: iso, direction: 'outbound', node: null, candidates: 0, outcome: 'failed' }) as never;
+    const buckets = routingBuckets([unplaced('2026-01-01T00:10:05Z'), unplaced('2025-12-31T18:00:00Z')], { now, bucketMs: 60_000, buckets: 30 });
+
+    expect(buckets.reduce((sum, bucket) => sum + bucket.unplaced, 0)).toBe(1);
+  });
+
+  it('does not count a request every candidate failed as unplaced — it is a failure', () => {
+    const exhausted = {
+      at: '2026-01-01T00:10:05Z',
+      direction: 'outbound',
+      node: null,
+      candidates: 9,
+      attempt: 9,
+      outcome: 'failed',
+      failedOverFrom: ['a'],
+    };
+    const [bucket] = routingBuckets([exhausted as never], { now, bucketMs: 60_000, buckets: 1 });
+
+    expect(bucket).toMatchObject({ unplaced: 0, failed: 1, failovers: 1 });
+  });
+
+  it('carries failovers, callers who left, and prompt and output tokens per minute', () => {
+    const rows = [
+      {
+        at: '2026-01-01T00:10:05Z',
+        direction: 'outbound',
+        node: 'core-14',
+        outcome: 'served',
+        failedOverFrom: ['core-7'],
+        usage: { promptTokens: 15_932, completionTokens: 41, totalTokens: 15_973 },
+      },
+      { at: '2026-01-01T00:10:10Z', direction: 'outbound', node: 'core-1', outcome: 'failed', clientClosed: true, failedOverFrom: [] },
+      { at: '2026-01-01T00:10:12Z', direction: 'outbound', node: 'local', outcome: 'served', failedOverFrom: [], usage: null },
+    ];
+    const [bucket] = routingBuckets(rows as never[], { now, bucketMs: 60_000, buckets: 1 });
+
+    expect(bucket).toMatchObject({ served: 2, failed: 1, failovers: 1, clientClosed: 1, promptTokens: 15_932, completionTokens: 41 });
+  });
+});
+
+describe('routingWindowPartial', () => {
+  const now = Date.parse('2026-09-27T18:00:00Z');
+  const windowMs = 30 * 60_000;
+  const rows = (...isos: string[]): RoutingLogEntry[] => isos.map((at) => ({ at, direction: 'outbound' }));
+
+  it('is a floor when the ring has evicted and the oldest row held is inside the window', () => {
+    const log = { entries: rows('2026-09-27T17:59:00Z', '2026-09-27T17:50:00Z'), summary: { recorded: 200, totalRecorded: 450 }, matched: 200 };
+
+    expect(routingWindowPartial(log, { now, windowMs })).toBe(true);
+  });
+
+  it('is a floor when a raised ring holds more than the page returned', () => {
+    // `HUB_POOL_ROUTING_LOG_SIZE=10000`: nothing evicted, but the unpaged request gets the newest 200.
+    const log = { entries: rows('2026-09-27T17:59:00Z', '2026-09-27T17:55:00Z'), summary: { recorded: 900, totalRecorded: 900 }, matched: 900 };
+
+    expect(routingWindowPartial(log, { now, windowMs })).toBe(true);
+  });
+
+  it('is exact when rows were dropped but the page still reaches back past the window', () => {
+    const log = { entries: rows('2026-09-27T17:59:00Z', '2026-09-27T17:10:00Z'), summary: { recorded: 200, totalRecorded: 450 }, matched: 200 };
+
+    expect(routingWindowPartial(log, { now, windowMs })).toBe(false);
+  });
+
+  it('is exact when nothing was ever dropped, however full the page looks', () => {
+    // The old check fired at 200 rows held, whether or not anything had been evicted.
+    const entries = rows(...Array.from({ length: 200 }, (_, index) => new Date(now - index * 1000).toISOString()));
+
+    expect(routingWindowPartial({ entries, summary: { recorded: 200, totalRecorded: 200 }, matched: 200 }, { now, windowMs })).toBe(false);
+  });
+
+  it('is exact for a log that never answered — there is no window to be partial about', () => {
+    expect(routingWindowPartial(undefined, { now, windowMs })).toBe(false);
+  });
+});
+
+describe('waitingNow', () => {
+  const now = Date.parse('2026-09-26T23:55:00Z');
+
+  it('counts what is waiting for a first byte and reports the oldest wait, its node and its budget', () => {
+    const rows: RoutingLogEntry[] = [
+      { at: '2026-09-26T23:49:59.317Z', direction: 'outbound', node: 'local', outcome: 'pending', budgetMs: 780_000, bodyBytes: 155_982 },
+      { at: '2026-09-26T23:54:00Z', direction: 'outbound', node: 'core-2.capybara-ulmer.ts.net', outcome: 'pending', budgetMs: 300_000 },
+      { at: '2026-09-26T23:50:00Z', direction: 'outbound', node: 'core-7.capybara-ulmer.ts.net', outcome: 'served' },
+    ];
+
+    expect(waitingNow(rows, now)).toEqual({
+      count: 2,
+      oldest: { ageMs: now - Date.parse('2026-09-26T23:49:59.317Z'), node: 'local', budgetMs: 780_000, estTokens: 38_996 },
+    });
+  });
+
+  it('is a real zero when nothing is waiting', () => {
+    expect(waitingNow([{ at: '2026-09-26T23:50:00Z', direction: 'outbound', node: 'local', outcome: 'served' }], now)).toEqual({
+      count: 0,
+      oldest: null,
+    });
+  });
+});
+
+describe('firstByteByNode', () => {
+  const now = Date.parse('2026-09-26T23:58:00Z');
+  const windowMs = 30 * 60_000;
+  const served = (over: Partial<RoutingLogEntry>): RoutingLogEntry => ({
+    at: '2026-09-26T23:50:00Z',
+    direction: 'outbound',
+    node: 'core-6.capybara-ulmer.ts.net',
+    outcome: 'served',
+    stream: true,
+    failedOverFrom: [],
+    durationMs: 1000,
+    ...over,
+  });
+
+  it('reports median and worst per node, with the prompt size behind the worst', () => {
+    const stats = firstByteByNode(
+      [served({ durationMs: 91_716, bodyBytes: 154_773 }), served({ durationMs: 2_000 }), served({ durationMs: 5_000 })],
+      { now, windowMs },
+    );
+
+    expect(stats.get('core-6')).toEqual({ count: 3, p50Ms: 5_000, maxMs: 91_716, maxEstTokens: 38_693 });
+  });
+
+  /*
+   * core-2's 399,710 ms row reached core-14 after core-7 failed. `durationMs` runs from the proxy
+   * receiving the request, so it is core-7's failure plus core-14's answer — charged to core-14.
+   */
+  it('leaves out a failed-over row, whose duration includes the node that failed first', () => {
+    const stats = firstByteByNode(
+      [served({ node: 'core-14.capybara-ulmer.ts.net', durationMs: 399_710, failedOverFrom: ['core-7.capybara-ulmer.ts.net'] })],
+      { now, windowMs },
+    );
+
+    expect(stats.size).toBe(0);
+  });
+
+  it('leaves out a non-streamed row, whose headers arrive only after the whole generation', () => {
+    expect(firstByteByNode([served({ stream: false, durationMs: 16_450 })], { now, windowMs }).size).toBe(0);
+  });
+
+  it('leaves out failures, rows still waiting, and rows older than the window', () => {
+    const stats = firstByteByNode(
+      [served({ outcome: 'failed' }), served({ outcome: 'pending', durationMs: null }), served({ at: '2026-09-26T23:00:00Z' })],
+      { now, windowMs },
+    );
+
+    expect(stats.size).toBe(0);
+  });
+
+  it("files this Hub's engines under 'local' from both directions — our own placements and peers' forwards", () => {
+    const stats = firstByteByNode(
+      [served({ node: 'local', durationMs: 361 }), served({ direction: 'inbound', node: 'beta-max.capybara-ulmer.ts.net', durationMs: 32_227 })],
+      { now, windowMs },
+    );
+
+    expect(stats.get('local')).toMatchObject({ count: 2, maxMs: 32_227 });
+    expect(stats.has('beta-max')).toBe(false);
+  });
+});
+
+describe('latestDecode', () => {
+  it('takes the freshest generation rate, and carries its model', () => {
+    const reading = latestDecode([
+      { model: 'qwen3:8b', backend: 'ollama', decode: { tokensPerSec: 40, ageMs: 3_600_000 } },
+      { model: 'qwen3.6:27b', backend: 'ollama', decode: { tokensPerSec: 11.2, ageMs: 60_000 } },
+      { model: 'nomic-embed-text', backend: 'ollama', decode: null },
+    ]);
+
+    expect(reading).toEqual({ tokensPerSec: 11.2, model: 'qwen3.6:27b', ageMs: 60_000 });
+  });
+
+  it('is null when nothing has been measured — which after two idle hours is every node', () => {
+    expect(latestDecode([])).toBeNull();
+    expect(latestDecode(undefined)).toBeNull();
+  });
 });
 
 describe('routingActivity', () => {
@@ -440,6 +665,22 @@ describe('routingActivity', () => {
     const activity = routingActivity([row({ node: null, outcome: 'failed' })]);
 
     expect(activity).toMatchObject({ unplaced: 1, outbound: 1, failed: 1 });
+  });
+
+  it('counts a request with no candidate at all as unplaced', () => {
+    expect(routingActivity([row({ node: null, candidates: 0, outcome: 'failed' })])).toMatchObject({ unplaced: 1, failed: 1 });
+  });
+
+  /*
+   * core-2, 2026-09-26T23:51:12Z: `candidates: 9, attempt: 9`, nine nodes in `failedOverFrom`, and
+   * `node: null` because none answered. It read as "1 request no node took" on the verdict.
+   */
+  it('does not count a request every candidate failed as unplaced — nine nodes took it', () => {
+    const activity = routingActivity([
+      row({ node: null, candidates: 9, attempt: 9, outcome: 'failed', failedOverFrom: Array.from({ length: 9 }, (_, i) => `n${i}`) }),
+    ]);
+
+    expect(activity).toMatchObject({ unplaced: 0, failed: 1, failovers: 1 });
   });
 
   /**

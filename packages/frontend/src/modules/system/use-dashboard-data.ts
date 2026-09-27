@@ -5,6 +5,7 @@ import {
   getMemoryOptions,
   getPoolRoutingLogOptions,
   poolStatusOptions,
+  systemLoadOptions,
 } from '@/api-client/@tanstack/react-query.gen';
 import { inferenceStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { fetchAppRuntimeMonitor, type AppRuntimeMonitorSnapshot } from '@/lib/app-runtime-monitor';
@@ -31,6 +32,10 @@ import { useQuery } from '@tanstack/react-query';
  *  STATIC_POLL_MS (120s) `/inference/hardware` and `/inference/cloud-providers`. Both are
  *                       effectively fixed between restarts; they are polled at all only so a
  *                       dashboard left open overnight is not stale after a GPU driver change.
+ *
+ *  (none)               `/system/load`, for host CPU. The dashboard layout already polls it every
+ *                       3s for the header, under the same query key, so this page subscribes to
+ *                       that cache entry and adds no request of its own.
  *
  * Every query is allowed to fail independently, and `retry: false` keeps a failure visible
  * rather than hidden behind three silent retries. A Hub with no pool paired still has
@@ -77,6 +82,26 @@ export interface PoolNodeSummary {
   /** Which measurement produced the band — `'amd-drm'` or `'host-file'`. Absent when unmeasured. */
   gpuPressureSource?: string | null;
   backends?: PoolBackend[];
+  /** What this node's own engines have been measured doing, per (backend, model). Empty after two idle hours. */
+  throughput?: PoolThroughputEstimate[];
+}
+
+/**
+ * How fast one engine serves one model, as `/pool/status` publishes it — mirrors the backend's
+ * `PoolThroughputEstimate` in `hub-pool.types.ts`.
+ *
+ * ⚠ ONLY `decode` IS READ BY THIS PAGE. The prefill points are rates in the pool's own token
+ * ESTIMATE (`bytes / 4` of the whole forwarded body) over Ollama's `prompt_eval_duration`, which on a
+ * prefix-cached agent turn times only the uncached tail. Measured on core-2: local `qwen3.6:35b`
+ * "prefilled" at 22,899.7 tok/s. That figure is fit for ranking (it compares nodes on the same
+ * mistake) and unfit for an operator, who would read it as the machine's speed. `decode` is the
+ * engine's own `eval_count / eval_duration`, which caching does not touch.
+ */
+export interface PoolThroughputEstimate {
+  model: string;
+  backend: string;
+  prefill?: unknown[];
+  decode: { tokensPerSec: number; ageMs: number } | null;
 }
 
 /**
@@ -131,6 +156,12 @@ export interface PoolPeerSummary {
    * snapshots, and the two disagreeing is precisely when the difference matters.
    */
   containers?: PoolContainerRollup | null;
+  /**
+   * The peer's throughput two ways: what THIS Hub timed it doing (`observed`), and what it said about
+   * itself (`advertised`, already clamped by the backend). Either list may be empty — evidence is
+   * forgotten after two idle hours — and an older Hub omits the key entirely.
+   */
+  throughput?: { observed?: PoolThroughputEstimate[]; advertised?: PoolThroughputEstimate[] } | null;
   /**
    * The peer's verbatim self-report, cached at the last successful probe.
    *
@@ -219,6 +250,104 @@ export interface RoutingLogEntry {
    * rule `workload-coverage.tsx` states for the per-workload tile this feeds `tokensByModel` for.
    */
   usage?: { promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } | null;
+  /**
+   * Whether the caller asked for a streamed response. It decides what `durationMs` measured: for a
+   * stream, the wait for the first frame; for a non-streamed request, response headers arrive only
+   * after the WHOLE generation, so its `durationMs` is not a first-byte time at all. `null`/absent on
+   * a row recorded before the body was read, and on a Hub predating the field.
+   */
+  stream?: boolean | null;
+  /** UTF-8 size of the forwarded body. `/ 4` is the pool's own prompt-size estimate. */
+  bodyBytes?: number | null;
+  /** The header deadline this request was placed under, in ms. */
+  budgetMs?: number | null;
+  /** The throughput half of the decision; read only for its `estimatedTokens`, never its rates. */
+  throughput?: { estimatedTokens?: number } | null;
+}
+
+/**
+ * `GET /pool/routing-log`'s summary block — the ring's own account of itself, which the page needs
+ * to tell a complete half hour from a truncated one (see `routingWindowPartial`).
+ */
+export interface RoutingLogSummary {
+  /** Rows the ring holds now. */
+  recorded?: number;
+  /** The ring's size for this process — 200 by default, up to 10,000 with `HUB_POOL_ROUTING_LOG_SIZE`. */
+  capacity?: number;
+  /** Rows recorded since this process started, evicted or not. Above `recorded` means the ring has dropped rows. */
+  totalRecorded?: number;
+  /** Placement time of the oldest row still in the ring. */
+  oldestAt?: string | null;
+  clientClosed?: number;
+  /** When this process's log began — the Hub's own start time, as close as this page can get to one. */
+  startedAt?: string;
+}
+
+/**
+ * One page of the routing log.
+ *
+ * `matched` is how many rows the ring holds; the page without a `limit` is the newest 200 of them.
+ * `matched > entries.length` therefore means the RING is bigger than the page — a Hub running with
+ * `HUB_POOL_ROUTING_LOG_SIZE` raised — and what was left out is older placements.
+ */
+export interface RoutingLogPage {
+  entries?: RoutingLogEntry[];
+  summary?: RoutingLogSummary;
+  matched?: number;
+}
+
+/**
+ * An outbound request no node was even asked to serve: the ranking produced NO candidate.
+ *
+ * ⚠ NOT "an outbound row with no node", which is what every reader tested until this. The proxy
+ * writes `node: null` in two different places for two different facts: when there is no candidate
+ * at all (`candidates: 0` — no peer holds the model, or pooling is off for it), and when EVERY
+ * candidate was tried and failed (`settle` after the failover loop, `candidates: 9, attempt: 9`).
+ * Reading both as "unplaced" put core-2 in red for eighteen hours over one agent turn that nine
+ * nodes had each tried and dropped — a row whose own feed line read "Unplaced · +9 tried", which
+ * contradicts itself. The two send an operator to opposite places: one to which models the pool
+ * holds, the other to why nine nodes could not answer.
+ *
+ * A Hub predating `candidates` gets the old test minus what we can rule out: a row that failed
+ * over was tried, and a caller that hung up was waiting on a node.
+ *
+ * Defined here rather than in `pool-node-series.ts` beside `routingActivity` because
+ * {@link routingByNode} needs it and that module already imports from this one.
+ */
+export function isUnplaced(entry: RoutingLogEntry): boolean {
+  if (entry.direction !== 'outbound') return false;
+  if (typeof entry.candidates === 'number') return entry.candidates === 0;
+
+  return !entry.node && !(entry.failedOverFrom?.length ?? 0) && !entry.clientClosed;
+}
+
+/**
+ * An outbound request every candidate was tried for, and every one failed — see {@link isUnplaced}
+ * for why this is not the same row. A caller that hung up is excluded: the pool did not fail it.
+ *
+ * "Failed" means neither served nor still pending, matching `routingActivity`, so an outcome
+ * string this page does not know is never silently read as fine.
+ */
+export function isExhausted(entry: RoutingLogEntry): boolean {
+  if (entry.direction !== 'outbound' || entry.node || entry.clientClosed) return false;
+  if (entry.outcome === 'served' || entry.outcome === 'pending') return false;
+
+  return typeof entry.candidates === 'number' ? entry.candidates > 0 : (entry.failedOverFrom?.length ?? 0) > 0;
+}
+
+/**
+ * The pool's estimate of a request's prompt size, in tokens, or `null`.
+ *
+ * The routing decision's own `estimatedTokens` when it recorded one, else `bodyBytes / 4` — the same
+ * arithmetic the backend uses, so the two never disagree. It is the size of the WHOLE forwarded body
+ * (system prompt, tools, history), which is what the engine has to prefill on a cold cache.
+ */
+export function estimatedPromptTokens(entry: RoutingLogEntry): number | null {
+  const recorded = entry.throughput?.estimatedTokens;
+  if (typeof recorded === 'number' && Number.isFinite(recorded) && recorded > 0) return recorded;
+  if (typeof entry.bodyBytes === 'number' && Number.isFinite(entry.bodyBytes) && entry.bodyBytes > 0) return Math.round(entry.bodyBytes / 4);
+
+  return null;
 }
 
 export interface InferenceBackendStatus {
@@ -304,7 +433,18 @@ export interface ResidencyReportSummary {
 }
 
 export interface HardwareSummary {
-  gpu?: { available?: boolean; vendor?: string; model?: string; vramMb?: number; unifiedMemory?: boolean; runtimeAvailable?: boolean };
+  gpu?: {
+    available?: boolean;
+    vendor?: string;
+    model?: string;
+    /** ⚠ On a unified-memory machine this is HOST RAM, not a carve-out: core-1 reports 31 G beside a 96 GiB BIOS VRAM split. */
+    vramMb?: number;
+    unifiedMemory?: boolean;
+    /** Whether the GPU runtime is usable from INSIDE the Hub container — false on every fleet node, whose engines run on the host. */
+    runtimeAvailable?: boolean;
+    /** Whether the HOST has a working ROCm stack — what the host engines actually use. Absent off AMD and on older Hubs. */
+    hostRocmAvailable?: boolean;
+  };
   npu?: { available?: boolean; model?: string };
   /** `usedMb`/`sampledAt` arrive with a live (Linux MemAvailable) sample; older Hubs send neither. */
   ram?: { totalMb?: number; availableMb?: number; usedMb?: number; sampledAt?: string };
@@ -353,7 +493,7 @@ export function useDashboardData() {
 
   const routingLog = useQuery({
     ...getPoolRoutingLogOptions(),
-    select: (payload) => payload as unknown as { entries?: RoutingLogEntry[]; summary?: PoolStatusSummary['routing'] },
+    select: (payload) => payload as unknown as RoutingLogPage,
     refetchInterval: POOL_POLL_MS,
     retry: false,
   });
@@ -400,7 +540,18 @@ export function useDashboardData() {
     retry: false,
   });
 
-  return { containers, pool, routingLog, inference, memory, residency, hardware, cloudProviders };
+  /*
+   * No interval of its own, on purpose. `layout.tsx` observes this exact key at 3s for the header's
+   * disk banner, so this observer reads that cache entry as it refreshes. Giving it an interval here
+   * would add a second timer for the same bytes. `cpuLoad` is `si.currentLoad()`: host-wide on a
+   * native Linux Hub, the VM's on Docker Desktop.
+   */
+  const systemLoad = useQuery({
+    ...systemLoadOptions(),
+    retry: false,
+  });
+
+  return { containers, pool, routingLog, inference, memory, residency, hardware, cloudProviders, systemLoad };
 }
 
 /**
@@ -491,11 +642,18 @@ export interface PoolReach {
  * done work for us (and on a fleet where every peer is inbound, those rows dominate), and each
  * request nobody would take credited to the local node via `?? 'local'`.
  *
- * `unplacedLabel` is passed in rather than hardcoded so the caller can translate it.
+ * A row with no node is one of TWO outcomes, and each gets its own label — see {@link isUnplaced}:
+ * no candidate existed (`unplacedLabel`), or every candidate was tried and failed (`exhaustedLabel`).
+ * Folding the second into the first is what had core-2 reporting "a request no node took" for a
+ * request nine nodes each took and dropped. A nodeless row that is neither — a Hub too old to say
+ * how many candidates it had, whose caller also hung up — keeps the old bucket.
+ *
+ * Both labels are passed in rather than hardcoded so the caller can translate them.
  */
-export function routingByNode(entries: RoutingLogEntry[], unplacedLabel: string): Map<string, number> {
+export function routingByNode(entries: RoutingLogEntry[], unplacedLabel: string, exhaustedLabel: string): Map<string, number> {
   const byNode = new Map<string, number>();
   let unplaced = 0;
+  let exhausted = 0;
 
   for (const entry of entries) {
     if (entry.direction !== 'outbound') continue;
@@ -503,16 +661,18 @@ export function routingByNode(entries: RoutingLogEntry[], unplacedLabel: string)
     const node = entry.node?.split('.')[0];
 
     if (!node) {
-      unplaced += 1;
+      if (isExhausted(entry)) exhausted += 1;
+      else unplaced += 1;
       continue;
     }
 
     byNode.set(node, (byNode.get(node) ?? 0) + 1);
   }
 
-  // Counted under its own label rather than folded into a node or dropped: "we tried and nobody
-  // took it" is a real outcome, and the one most worth seeing.
+  // Counted under their own labels rather than folded into a node or dropped: "we had nowhere to
+  // send it" and "everywhere we sent it failed" are real outcomes, and the ones most worth seeing.
   if (unplaced > 0) byNode.set(unplacedLabel, unplaced);
+  if (exhausted > 0) byNode.set(exhaustedLabel, exhausted);
 
   return byNode;
 }
@@ -626,6 +786,75 @@ export function memoryBudgetRows(budget: MemoryBudgetSummary | undefined): Memor
   ];
 
   return rows.filter((row) => row.total > 0);
+}
+
+/**
+ * What the model-memory budget cannot see on a unified-memory machine, or `null` when it adds up.
+ *
+ * The budget is built from host `MemTotal`, and its "used" from per-process reads and the engines'
+ * own accounting. On the fleet's Strix Halo APUs that picture is wrong in BOTH directions, measured
+ * 2026-09-27 against `/sys/class/drm/card*` on the same nodes:
+ *
+ *   - core-1 sets a 96 GiB BIOS VRAM carve-out. Linux never sees that memory, so the host reports
+ *     31 G total and 6 G in use — while Ollama reports 17 G of models loaded INTO the carve-out.
+ *     The panel printed "17G of 29G" directly beside "Host RAM 6G of 31G in use", an on-screen
+ *     contradiction, and a budget that does not describe the GPU at all.
+ *   - fzzy's `dflash_server` (not an engine the Hub manages) and vLLM hold ~42 GiB of GTT: host RAM
+ *     the GPU maps. None of it is in any figure the budget reads, so it said "0.3G of 121G · 0%" on
+ *     a host with 50 G in use.
+ *
+ * Neither is fixable from here — the real figure is sysfs `mem_info_{vram,gtt}_*`, which nothing on
+ * the wire carries yet — but both are DETECTABLE from here, by reconciling three numbers that are
+ * each true on their own: host RAM in use, what the workloads' containers hold, and what the engines
+ * report. When they cannot all be true of the same host, the panel says which way they disagree.
+ *
+ *   `outside-host`  the engines report more than the host has in use (after the workloads), by more
+ *                   than 2 GiB of slack for sampling skew. The models are in memory the host does
+ *                   not count.
+ *   `unaccounted`   host RAM in use that neither the workloads nor the engines account for, above
+ *                   max(8 GiB, 15% of the host). Page cache is not "used", so a gap this size is a
+ *                   process — on these hosts, an engine's GTT mapping. Withheld when an engine holds
+ *                   a model nobody could size: that engine may be exactly where it went.
+ *
+ * `null` unless the RAM figures are a LIVE reading (`sampledAt`, Linux `MemAvailable`) — on a Hub
+ * that sends the app-start snapshot the arithmetic would reconcile a number from hours ago — and
+ * unless the machine is unified-memory, where model memory and host RAM are the same pool. On a
+ * discrete card, engines holding more VRAM than the host has RAM in use is normal. Also `null` until
+ * the container rollup has arrived, since without it every workload byte would read as unaccounted.
+ */
+export interface MemoryReconciliation {
+  kind: 'outside-host' | 'unaccounted';
+  /** MB beyond what the host has in use (`outside-host`), or MB in use that nothing reports (`unaccounted`). */
+  sizeMb: number;
+}
+
+const OUTSIDE_HOST_SLACK_MB = 2 * 1024;
+const UNACCOUNTED_FLOOR_MB = 8 * 1024;
+const UNACCOUNTED_SHARE = 0.15;
+
+export function memoryReconciliation(
+  hardware: HardwareSummary | undefined,
+  rollup: { memoryBytes: number } | null,
+  budget: MemoryBudgetSummary | undefined,
+): MemoryReconciliation | null {
+  const ram = hardware?.ram;
+  if (!ram?.sampledAt || typeof ram.usedMb !== 'number' || typeof ram.totalMb !== 'number' || ram.totalMb <= 0) return null;
+  if (hardware?.gpu?.unifiedMemory !== true || !budget || !rollup) return null;
+
+  const hostUsed = ram.usedMb;
+  const workloads = rollup.memoryBytes / 1024 ** 2;
+  const modelUsed = (budget.modelUsedRamMb ?? 0) + (budget.modelUsedVramMb ?? 0);
+
+  const beyondHost = modelUsed - (hostUsed - workloads);
+  if (beyondHost > OUTSIDE_HOST_SLACK_MB) return { kind: 'outside-host', sizeMb: Math.round(beyondHost) };
+
+  const incomplete = (budget.usage?.backends ?? []).some((entry) => entry.source === 'unmeasured');
+  const unaccounted = hostUsed - workloads - modelUsed;
+  if (!incomplete && unaccounted > Math.max(UNACCOUNTED_FLOOR_MB, UNACCOUNTED_SHARE * ram.totalMb)) {
+    return { kind: 'unaccounted', sizeMb: Math.round(unaccounted) };
+  }
+
+  return null;
 }
 
 /** Share of a budget that is in use, 0-100, or `null` when there is no budget to be a share of. */
