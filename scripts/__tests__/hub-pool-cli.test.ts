@@ -261,6 +261,57 @@ describe('hub-pool-cli formatters', () => {
     expect(text).not.toMatch(/qwen3-coder:30b\s+-\s/);
   });
 
+  /**
+   * core-2, 2026-09-26: the row read `qwen3.8:27b  -  9/9  307336  x failed` with a nine-node chain,
+   * for a turn no node could run. Now the walk stops at the first node, and the row has to say why a
+   * named node "failed" without the pool trying any other.
+   */
+  it('says the request itself was refused, by whom, and how many candidates it was not sent to', () => {
+    const row = {
+      at: '2026-09-26T23:51:12.000Z',
+      direction: 'outbound' as const,
+      path: '/api/chat',
+      model: 'qwen3.8:27b',
+      node: 'core-14.capybara-ulmer.ts.net',
+      peerId: 'p14',
+      backend: 'ollama',
+      candidates: 9,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'failed' as const,
+      status: 500,
+      durationMs: 128,
+    };
+    const summary = { recorded: 1, capacity: 200, served: 0, failed: 1, failovers: 0, lastAt: '2026-09-26T23:51:12.000Z' };
+
+    const definitive = formatPoolRoutingLogLines({
+      entries: [{ ...row, requestError: { signature: 'no-user-query', basis: 'definitive', confirms: null } }],
+      summary,
+    }).join('\n');
+    expect(definitive).toContain('✗ failed 500');
+    expect(definitive).toContain(
+      '↳ core-14.capybara-ulmer.ts.net refused the request itself (no user message for the chat template); returned to the app, not sent to the other 8 candidates',
+    );
+
+    const confirmed = formatPoolRoutingLogLines({
+      entries: [
+        {
+          ...row,
+          node: 'core-17.capybara-ulmer.ts.net',
+          attempt: 2,
+          failedOverFrom: ['core-14.capybara-ulmer.ts.net'],
+          requestError: { signature: 'chat-template', basis: 'confirmed', confirms: 'core-14.capybara-ulmer.ts.net' },
+        },
+      ],
+      summary,
+    }).join('\n');
+    expect(confirmed).toContain(
+      '↳ core-17.capybara-ulmer.ts.net refused the request itself, as core-14.capybara-ulmer.ts.net had (chat template would not render); returned to the app, not sent to the other 7 candidates',
+    );
+    // The refusal is the reason the chain is one node long, so it reads before the chain does.
+    expect(confirmed.indexOf('refused the request itself')).toBeLessThan(confirmed.indexOf('failed over from'));
+  });
+
   it('leaves the counts line alone on a Hub that reports no hang-ups, and on one too old to report them', () => {
     const entries: PoolRoutingLogResponse['entries'] = [];
     const base = { recorded: 3, capacity: 200, served: 3, failed: 0, failovers: 0, lastAt: null };

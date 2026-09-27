@@ -132,6 +132,24 @@ describe('HubPoolRoutingLogService', () => {
       expect(service.summary().clientClosed).toBe(0);
     });
 
+    it('defaults the request-error reason to null, and keeps the node a request error settles on', () => {
+      service.record(record());
+      expect(service.list()[0]?.requestError).toBeNull();
+
+      const row = service.open((({ outcome: _o, status: _s, durationMs: _d, ...rest }) => rest)(record({ node: 'core-14' })));
+      service.settle(row, {
+        outcome: 'failed',
+        status: 500,
+        durationMs: 128,
+        requestError: { signature: 'no-user-query', basis: 'definitive', confirms: null },
+      });
+
+      // Counted as failed — the app got no answer — with the node that said so, which is what tells
+      // it apart from a request every candidate failed.
+      expect(service.summary()).toMatchObject({ failed: 1, failovers: 0 });
+      expect(service.list()[0]).toMatchObject({ node: 'core-14', status: 500, requestError: { signature: 'no-user-query' } });
+    });
+
     it('opens with no usage, and settling at headers time does not invent one', () => {
       const { outcome: _o, status: _s, durationMs: _d, ...placement } = record();
       const row = service.open(placement);

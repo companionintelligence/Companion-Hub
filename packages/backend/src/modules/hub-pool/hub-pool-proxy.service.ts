@@ -38,6 +38,7 @@ import {
   type PoolRoutingPin,
   type PoolRoutingPromptCeiling,
   type PoolRoutingRecordInput,
+  type PoolRoutingRequestError,
   type PoolRoutingSlotDemotion,
   type PoolRoutingSlots,
   type PoolRoutingThroughput,
@@ -59,6 +60,7 @@ import {
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
 import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
+import { judgeRequestError, readRequestErrorVerdict, type PoolRequestErrorVerdict, type UnconfirmedRequestError } from './hub-pool-request-error';
 import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
@@ -1012,7 +1014,10 @@ function describeLocalProbes(probes: LocalBackendProbe[]): string {
  * Fails over on a connection error, a header-wait timeout, a 5xx, and the 4xx
  * that describe the *hop* rather than the request (see TRANSPORT_4XX /
  * PEER_TRANSPORT_4XX). A genuine caller 4xx is passed straight through —
- * retrying a malformed request on a different machine just wastes a hop.
+ * retrying a malformed request on a different machine just wastes a hop — and
+ * so is a 500 whose body is an engine's known verdict on the request (see
+ * `hub-pool-request-error.ts`), after one more candidate agrees where a single
+ * node's word is not enough.
  *
  * Failover stops the instant a response is committed: once status and headers
  * have gone to the client, a second candidate has nowhere to write.
@@ -1463,17 +1468,7 @@ export class PoolProxyService {
     measurePromptBytes: () => number,
     numCtxOf: (() => number | null) | undefined,
   ): ReturnType<typeof applyContextCap> {
-    const localCap = clampContextCap(this.configuration.getInferencePreferences()?.maxNumCtx);
-    const peerCaps = new Map<string, number | null>(
-      peers.map((peer) => [peer.id, clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx)]),
-    );
-    // A local engine that states its own per-slot window (llama-server's `/props`) is believed over
-    // the node-wide statement: the statement describes Ollama, and a window the engine itself runs
-    // is exactly what the cap exists to keep a request inside.
-    const capOf = (candidate: PoolCandidate) =>
-      candidate.peerId === null
-        ? (clampContextCap(this.localEngineStatement(candidate.backend)?.contextLength) ?? localCap)
-        : (peerCaps.get(candidate.peerId) ?? null);
+    const capOf = this.contextCapOf(peers);
     if (!ordered.some((candidate) => capOf(candidate) !== null)) {
       return { preferred: ordered, overCap: [], decision: null };
     }
@@ -1492,6 +1487,44 @@ export class PoolProxyService {
       );
     }
     return result;
+  }
+
+  /**
+   * Each candidate's context cap, from this node's `inferenceMaxNumCtx` or a peer's advertised
+   * `maxNumCtx`, `null` where none is stated. One reader for placement and for the request-error
+   * walk, so "the same window" means the same thing to both.
+   */
+  private contextCapOf(peers: HubPoolPeer[]): (candidate: PoolCandidate) => number | null {
+    const localCap = clampContextCap(this.configuration.getInferencePreferences()?.maxNumCtx);
+    const peerCaps = new Map<string, number | null>(
+      peers.map((peer) => [peer.id, clampContextCap((peer.lastCapabilities as unknown as PoolPeerCapabilities | null)?.maxNumCtx)]),
+    );
+    // A local engine that states its own per-slot window (llama-server's `/props`) is believed over
+    // the node-wide statement: the statement describes Ollama, and a window the engine itself runs
+    // is exactly what the cap exists to keep a request inside.
+    return (candidate) =>
+      candidate.peerId === null
+        ? (clampContextCap(this.localEngineStatement(candidate.backend)?.contextLength) ?? localCap)
+        : (peerCaps.get(candidate.peerId) ?? null);
+  }
+
+  /**
+   * Whether two candidates ran this request at the same, known window — what it takes for a second
+   * "exceeds the context" answer to confirm the first rather than be new evidence.
+   *
+   * A request that sets `options.num_ctx` on Ollama's native routes is loaded at that window by every
+   * Ollama engine, so two Ollama candidates agree on it whatever their caps say. Otherwise the window
+   * is each node's own, known only where its cap states it; an unstated one is never the same as
+   * anything, so on a fleet that states none the walk goes on as it did before.
+   */
+  private sameContextWindow(path: string, body: unknown, peers: HubPoolPeer[]): (a: PoolCandidate, b: PoolCandidate) => boolean {
+    const numCtx = path.startsWith('/api/') ? requestedNumCtx(body) : null;
+    const capOf = this.contextCapOf(peers);
+    const windowOf = (candidate: PoolCandidate) => (numCtx !== null && candidate.backend === 'ollama' ? numCtx : capOf(candidate));
+    return (a, b) => {
+      const window = windowOf(a);
+      return window !== null && window === windowOf(b);
+    };
   }
 
   /**
@@ -1719,6 +1752,11 @@ export class PoolProxyService {
 
     let lastError: unknown;
     let committed = false;
+    // An engine's verdict on the request that its node alone could not vouch for, carried forward
+    // until the next candidate to answer agrees with it or serves the request.
+    let unconfirmed: UnconfirmedRequestError<PoolCandidate> | null = null;
+    // Built only once an engine says the prompt was too long, which is the one verdict that needs it.
+    const windowComparator = memoize(() => this.sameContextWindow(path, body, peers));
     for (const [index, candidate] of candidates.entries()) {
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
@@ -1779,14 +1817,36 @@ export class PoolProxyService {
       try {
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
         const headersAt = Date.now();
+        // Read before the serving record and the failover decision, because both turn on it: a 500
+        // that proves the request is bad is neither the model failing nor a reason to try the next node.
+        const verdict = await readRequestErrorVerdict(upstream);
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
-        this.noteLocalServing(candidate, model, upstream.status);
-        if (this.shouldFailover(candidate, upstream.status)) {
+        this.noteLocalServing(candidate, model, upstream.status, verdict);
+        const requestError: PoolRoutingRequestError | null = verdict
+          ? judgeRequestError(verdict, candidate, unconfirmed, (a, b) => windowComparator()(a, b))
+          : null;
+        if (!requestError && this.shouldFailover(candidate, upstream.status)) {
+          if (verdict) {
+            unconfirmed = { verdict, candidate, node: nodeLabel };
+            this.logger.debug(
+              `[PoolProxy] ${nodeLabel} rejected the request for "${model}" (${verdict.signature}), which another node may not; asking the next candidate`,
+            );
+          }
           lastError = new Error(`${candidate.nodeFqdn ?? 'local'} returned ${upstream.status}`);
           failedOverFrom.push(nodeLabel);
           await this.noteRejectedCandidate(candidate, upstream.status);
           continue;
+        }
+        if (requestError) {
+          // Warn, like a candidate failing: the app is sending something no node will run, and this
+          // line is the one place outside the routing log that says so. The label, never the
+          // engine's message, which can quote the prompt.
+          this.logger.warn(
+            `[PoolProxy] ${nodeLabel} rejected the request for "${model}" itself (HTTP ${upstream.status}, ${requestError.signature}` +
+              `${requestError.confirms ? `, as ${requestError.confirms} did` : ''}); returning it to the caller instead of ` +
+              `trying ${candidates.length - index - 1} more candidate(s)`,
+          );
         }
         // Settled here rather than after the stream: headers are the routing decision, and the
         // generation that follows can run for minutes (or never end, if the client hung up).
@@ -1795,9 +1855,11 @@ export class PoolProxyService {
           peerId: candidate.peerId,
           backend: candidate.backend,
           attempt: index + 1,
-          outcome: 'served',
+          // `failed` for an engine's refusal of the request: the node answered, but nothing was served.
+          outcome: requestError ? 'failed' : 'served',
           status: upstream.status,
           durationMs: Date.now() - startedAt,
+          requestError,
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
@@ -1971,6 +2033,9 @@ export class PoolProxyService {
    * `forwardLocal` connected-check), which says nothing about the application's request — whereas
    * the same status from the local engine is the engine's verdict on the request and is passed
    * through untouched.
+   *
+   * Status alone. The one 5xx that is not a reason to move on — a 500 whose body blames the request —
+   * is decided before this is asked, in `proxyRequest`, because it needs the body.
    */
   private shouldFailover(candidate: PoolCandidate, status: number): boolean {
     if (status >= 500) {
@@ -1989,18 +2054,28 @@ export class PoolProxyService {
    * capabilities are its own to correct (see {@link noteRejectedCandidate}), and a 500 relayed
    * through it says nothing about which of ITS backends failed.
    */
-  private noteLocalServing(candidate: PoolCandidate, model: string, status: number): void {
+  private noteLocalServing(candidate: PoolCandidate, model: string, status: number, verdict: PoolRequestErrorVerdict | null): void {
     if (candidate.peerId !== null) {
       return;
     }
-    this.noteLocalServingOutcome(candidate.backend, model, status);
+    this.noteLocalServingOutcome(candidate.backend, model, status, verdict);
   }
 
   /**
    * The rule itself, shared by the outbound path ({@link noteLocalServing}) and the peer-facing
    * inbound forward, so a model's serving record does not depend on which door the request came in.
+   *
+   * A 500 whose body is an engine's verdict on the request is no strike either, unless the verdict
+   * could be the node's own fault (see `strikesModel`). Two strikes inside five minutes withhold the
+   * model, so without this an agent retrying one malformed turn withholds a healthy model on every
+   * node its retries reach.
    */
-  private noteLocalServingOutcome(backendType: InferenceBackendType, model: string | undefined, status: number): void {
+  private noteLocalServingOutcome(
+    backendType: InferenceBackendType,
+    model: string | undefined,
+    status: number,
+    verdict: PoolRequestErrorVerdict | null = null,
+  ): void {
     if (!model) {
       return;
     }
@@ -2010,6 +2085,9 @@ export class PoolProxyService {
     // Dropping it here is what keeps quarantine request-accurate rather than TTL-accurate: the
     // next request re-probes this backend instead of offering a model the node just failed.
     if (status >= 500) {
+      if (verdict && !verdict.strikesModel) {
+        return;
+      }
       if (backend?.noteServingFailure?.(model, `HTTP ${status}`)) {
         this.localHealth.invalidate(backendType);
       }
@@ -2098,7 +2176,9 @@ export class PoolProxyService {
       // earns no strikes, withholds nothing, and keeps advertising the dead model to its peers.
       // The metadata exemption stays on the model argument: describing a model is not evidence that
       // it serves, so a peer-forwarded `/api/show` must not credit or strike its serving record.
-      this.noteLocalServingOutcome(backend, MODEL_METADATA_PATHS.has(path) ? undefined : model, upstream.status);
+      // The error body is read from a clone, so the sender still gets it whole and judges it itself.
+      const verdict = await readRequestErrorVerdict(upstream);
+      this.noteLocalServingOutcome(backend, MODEL_METADATA_PATHS.has(path) ? undefined : model, upstream.status, verdict);
       if (!target || !upstream.ok) {
         await this.pipeResponse(upstream, res);
         return;
