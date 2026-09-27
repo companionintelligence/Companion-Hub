@@ -143,6 +143,14 @@ export interface PoolRoutingRecord {
    * found a free slot too. Always `null` on `inbound` rows, like the others.
    */
   slots: PoolRoutingSlots | null;
+  /**
+   * What local-engine contention did to this decision, or `null` when no local engine was busy with
+   * another model's generation (or the route is not a generation, or no peer could have gone ahead).
+   * The slots twin for the case a queue depth cannot show: when a turn skips an idle-looking local
+   * engine, an operator has to be able to tell "it would have had to load this model behind another
+   * model's turn" from the ranker or a pin. Always `null` on `inbound` rows, like the others.
+   */
+  contention: PoolRoutingContention | null;
   outcome: PoolRoutingOutcome;
   /**
    * `true` when this row stopped because the CALLER went away, not because routing failed: the app
@@ -341,6 +349,29 @@ export interface PoolRoutingSlotDemotion {
   inFlight: number;
   /** The slot count the node advertised. */
   slots: number;
+}
+
+/** The local-engine-contention half of a routing decision. Model names, windows and node names only. */
+export interface PoolRoutingContention {
+  /** The window the request asked for (`options.num_ctx`); `null` when it named none, so any resident window served. */
+  numCtx: number | null;
+  /**
+   * Local engines that were generating for another model and did not hold this one at that window,
+   * in ranked order. They were moved behind every candidate that was not, never removed, so failover
+   * can still reach them.
+   */
+  demoted: PoolRoutingContentionDemotion[];
+  /** `true` when the request was placed on one of those anyway: nothing ahead of it answered, or nothing was ahead of it. */
+  overridden: boolean;
+}
+
+export interface PoolRoutingContentionDemotion {
+  node: string;
+  backend: InferenceBackendType;
+  /** The other models this Hub had generations in flight for on that engine. */
+  busyWith: string[];
+  /** The window the engine held the requested model at; `null` when the model was not resident at all. */
+  residentNumCtx: number | null;
 }
 
 export interface PoolRoutingSummary {

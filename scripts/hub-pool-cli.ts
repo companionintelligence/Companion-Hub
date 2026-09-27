@@ -263,6 +263,21 @@ export interface PoolRoutingRecord {
    * stated a slot count. Absent on a Hub predating slots.
    */
   slots?: PoolRoutingSlots | null;
+  /**
+   * What local-engine contention did to this decision, or `null` when no local engine was busy with
+   * another model. Absent on a Hub predating it.
+   */
+  contention?: PoolRoutingContention | null;
+}
+
+/** Mirrors `PoolRoutingContention` in `hub-pool-routing-log.service.ts`. */
+export interface PoolRoutingContention {
+  /** The window the request asked for; `null` when it named none. */
+  numCtx: number | null;
+  /** Local engines busy with another model that did not hold this one at that window, in ranked order. Moved behind the rest, never removed. */
+  demoted: { node: string; backend: string; busyWith: string[]; residentNumCtx: number | null }[];
+  /** Placed on one of those anyway: nothing ahead of it answered, or nothing was ahead of it. */
+  overridden: boolean;
 }
 
 /** Mirrors `PoolRoutingSlots` in `hub-pool-routing-log.service.ts`. */
@@ -1634,6 +1649,25 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         slots.overridden
           ? `  ↳ placed anyway with every slot full on ${nodes}: no node with a free slot was ahead of it`
           : `  ↳ moved ${nodes} behind nodes with a free slot`,
+      );
+    }
+    // Only when an engine was moved, as for slots: an empty decision says the engine held the model
+    // at the window asked for, which changed nothing.
+    const contention = entry.contention;
+    if (contention && contention.demoted.length > 0) {
+      const engines = contention.demoted
+        .map((demoted) => {
+          const held =
+            demoted.residentNumCtx === null
+              ? 'model not loaded'
+              : `model loaded at num_ctx ${demoted.residentNumCtx}${contention.numCtx === null ? '' : `, asked ${contention.numCtx}`}`;
+          return `${sanitizeForBox(demoted.node)} (busy with ${demoted.busyWith.map(sanitizeForBox).join(', ')}; ${held})`;
+        })
+        .join(', ');
+      lines.push(
+        contention.overridden
+          ? `  ↳ placed anyway on ${engines}: no node without a model load to wait on was ahead of it`
+          : `  ↳ moved ${engines} behind nodes with no model load to wait on`,
       );
     }
     // Only when affinity changed something or stood aside: a `hit` is the line an operator watching

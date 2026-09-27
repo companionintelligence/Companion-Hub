@@ -1101,6 +1101,75 @@ describe('hub-pool-cli Ollama slots', () => {
   });
 });
 
+describe('hub-pool-cli local engine contention', () => {
+  const CORE_2 = 'hub-e.example-tailnet.ts.net';
+  const busyPrefilling = { node: 'local', backend: 'ollama', busyWith: ['qwen3.8:27b'], residentNumCtx: 32_768 };
+
+  function routingEntry(overrides: Partial<PoolRoutingLogResponse['entries'][number]> = {}): PoolRoutingLogResponse['entries'][number] {
+    return {
+      at: '2026-09-26T23:50:22.068Z',
+      direction: 'outbound',
+      path: '/api/chat',
+      model: 'qwen3.6:35b',
+      node: CORE_2,
+      peerId: 'peer-2',
+      backend: 'ollama',
+      candidates: 2,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'served',
+      status: 200,
+      durationMs: 2_100,
+      ...overrides,
+    };
+  }
+
+  function logOf(entries: PoolRoutingLogResponse['entries']): string {
+    const summary = { recorded: entries.length, capacity: 200, served: entries.length, failed: 0, failovers: 0, lastAt: '2026-09-26T23:50:22.068Z' };
+    return formatPoolRoutingLogLines({ summary, entries }).join('\n');
+  }
+
+  it('marks a row this node was moved on, with what its engine was busy with and the window it held the model at', () => {
+    const text = logOf([routingEntry({ contention: { numCtx: 65_536, demoted: [busyPrefilling], overridden: false } })]);
+
+    expect(text).toContain(
+      '↳ moved local (busy with qwen3.8:27b; model loaded at num_ctx 32768, asked 65536) behind nodes with no model load to wait on',
+    );
+  });
+
+  it('says when the model was not loaded there at all', () => {
+    const text = logOf([routingEntry({ contention: { numCtx: null, demoted: [{ ...busyPrefilling, residentNumCtx: null }], overridden: false } })]);
+
+    expect(text).toContain('↳ moved local (busy with qwen3.8:27b; model not loaded) behind nodes with no model load to wait on');
+  });
+
+  it('says so when the request was placed on the contended engine anyway', () => {
+    const text = logOf([
+      routingEntry({
+        node: 'local',
+        failedOverFrom: [CORE_2],
+        attempt: 2,
+        contention: { numCtx: 65_536, demoted: [busyPrefilling], overridden: true },
+      }),
+    ]);
+
+    expect(text).toContain(
+      '↳ placed anyway on local (busy with qwen3.8:27b; model loaded at num_ctx 32768, asked 65536): no node without a model load to wait on was ahead of it',
+    );
+    expect(text).not.toContain('moved');
+  });
+
+  it('adds nothing to a row contention did not change, or from a Hub predating it', () => {
+    const text = logOf([
+      routingEntry({ contention: { numCtx: 65_536, demoted: [], overridden: false } }),
+      routingEntry({ contention: null }),
+      routingEntry(),
+    ]);
+
+    expect(text).not.toContain('↳');
+  });
+});
+
 describe('hub-pool-cli throughput', () => {
   const FZZY = 'hub-d.example-tailnet.ts.net';
   const deadlineAt46k = { fromTokens: 32_768, promptTokens: 46_000, tokensPerSec: 49.8, deadline: true, ageMs: 60_000 };
