@@ -1,6 +1,6 @@
 import type { AppRuntimeHealth, AppRuntimeHistorySample } from '@/lib/app-runtime-monitor';
 import { render } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { WorkloadTrend } from './workload-trends';
 
@@ -314,14 +314,31 @@ describe('WorkloadTrend across a Hub restart', () => {
     expect(container.querySelector('[data-testid="workload-trend-gap"]')?.textContent).toBe('7h 17m gap — the Hub was not sampling');
   });
 
-  it('labels the axis from the restored samples read as UTC, not as browser-local time', () => {
-    const { container } = render(<WorkloadTrend metric="cpu" history={fzzy} apps={[app(hub.appUrn, hub.appName, 5.3)]} state={READY} />);
+  /*
+   * In the browser's zone, pinned. CI runs in UTC, where a zoneless string read as local time and the
+   * same string read as UTC are the same instant — so without the pin this test passed against the
+   * bug it names (`new Date(value)`), and reverting the fix would have stayed green. fzzy's viewer
+   * was in Pacific time, which is what is pinned here.
+   */
+  describe('in a browser west of UTC', () => {
+    beforeAll(() => {
+      vi.stubEnv('TZ', 'America/Los_Angeles');
+    });
+    afterAll(() => {
+      vi.unstubAllEnvs();
+    });
 
-    const first = container.querySelector('.justify-between > span')?.textContent;
-    expect(first).toBe(format('2026-09-27T10:22:22.896Z'));
-    // In any zone but UTC, reading the same string as local time gives a different label.
-    const misread = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date('2026-09-27T10:22:22.896'));
-    if (misread !== format('2026-09-27T10:22:22.896Z')) expect(first).not.toBe(misread);
+    it('labels the axis from the restored samples read as UTC, not as browser-local time', () => {
+      const misread = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date('2026-09-27T10:22:22.896'));
+      // The pin took: in this zone the two readings are seven hours apart. Fails loudly, rather than
+      // passing vacuously, on a runner that ignores TZ.
+      expect(misread).not.toBe(format('2026-09-27T10:22:22.896Z'));
+
+      const { container } = render(<WorkloadTrend metric="cpu" history={fzzy} apps={[app(hub.appUrn, hub.appName, 5.3)]} state={READY} />);
+
+      const first = container.querySelector('.justify-between > span')?.textContent;
+      expect(first).toBe(format('2026-09-27T10:22:22.896Z'));
+    });
   });
 
   it('draws two samples taken 0.7 s apart as one observation, not as a minute of trace', () => {
@@ -345,7 +362,8 @@ describe('WorkloadTrend GPU memory held outside any workload', () => {
   /*
    * core-2, 2026-09-27: `unattributedGpu` held two `llama-server`s — 24,331 MB and 493 MB — while the
    * tile showed rows of dashes under copy saying VRAM "is measured on this node". The engines are host
-   * processes, so no workload row can ever own that memory; this is the only place it can be shown.
+   * processes, so no workload row can ever own that memory. Without `/inference/memory` a bare
+   * `llama-server` could be Ollama's or Lemonade's, so it is listed unnamed rather than guessed.
    */
   it('lists what the sampler found holding VRAM outside every workload, largest first', () => {
     const { container } = render(
@@ -366,6 +384,55 @@ describe('WorkloadTrend GPU memory held outside any workload', () => {
     expect(footer?.textContent).toContain('Held outside any workload');
     const lines = [...(footer?.querySelectorAll('li') ?? [])].map((li) => li.textContent);
     expect(lines).toEqual(['llama-server24 GB', 'llama-server493 MB']);
+  });
+
+  /*
+   * The same core-2 rows WITH the Model memory payload it served in the same minute: Ollama, sized
+   * by its process at 24,824 MB = 24,331 + 493. Those rows are Ollama's runners, not a second 24 GB.
+   */
+  it("names an engine's runners as that engine's, already counted in Model memory, not as a second holder", () => {
+    const { container } = render(
+      <WorkloadTrend
+        metric="gpu"
+        history={history}
+        apps={[app(hub.appUrn, hub.appName, 2)]}
+        state={READY}
+        gpuVramSource="host-file"
+        unattributed={[
+          { processName: 'llama-server', vramMb: 493 },
+          { processName: 'llama-server', vramMb: 24_331 },
+        ]}
+        modelMemory={[{ backend: 'ollama', models: ['nomic-embed-text:latest', 'qwen3.6:35b'], pool: 'ram', usedMb: 24_824, source: 'process' }]}
+      />,
+    );
+
+    const lines = [...(container.querySelectorAll('[data-testid="workload-trend-gpu-unattributed"] li') ?? [])].map((li) => li.textContent);
+    expect(lines).toEqual(['llama-server · ollama, in Model memory24 GB', 'llama-server · ollama, in Model memory493 MB']);
+  });
+
+  /*
+   * fzzy, 2026-09-27: vLLM's engine core (314 MB — exactly vLLM's Model memory figure) and
+   * `dflash_server` (17,788 MB), which no engine the Hub manages accounts for. The second is the one
+   * figure on the page nothing else shows, so it leads.
+   */
+  it('lists memory no managed engine accounts for first, and says so', () => {
+    const { container } = render(
+      <WorkloadTrend
+        metric="gpu"
+        history={history}
+        apps={[app(hub.appUrn, hub.appName, 2)]}
+        state={READY}
+        gpuVramSource="host-file"
+        unattributed={[
+          { processName: 'VLLM::EngineCor', vramMb: 314 },
+          { processName: 'dflash_server', vramMb: 17_788 },
+        ]}
+        modelMemory={[{ backend: 'vllm', models: ['Qwen/Qwen3.5-9B'], pool: 'ram', usedMb: 314, source: 'process' }]}
+      />,
+    );
+
+    const lines = [...container.querySelectorAll('[data-testid="workload-trend-gpu-unattributed"] li')].map((li) => li.textContent);
+    expect(lines).toEqual(['dflash_server · no managed engine17 GB', 'VLLM::EngineCor · vllm, in Model memory314 MB']);
   });
 
   it('prints nothing when the sampler found nothing unattributed, and never on the CPU or memory tiles', () => {

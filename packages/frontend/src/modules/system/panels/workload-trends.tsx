@@ -7,7 +7,8 @@ import {
   formatSampleTime,
   sampleTimeline,
 } from '@/modules/system/resource-monitor-chart';
-import type { LoadState } from '@/modules/system/use-dashboard-data';
+import { type GpuProcessOwner, gpuProcessOwner, type LoadState, type ModelMemoryUsageEntrySummary } from '@/modules/system/use-dashboard-data';
+import { cn } from '@/lib/utils';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -86,6 +87,11 @@ const MIB = 1024 ** 2;
 
 type Metric = 'cpu' | 'memory' | 'gpu';
 
+/** A process row whose memory Model memory already shows — the same bytes, listed for attribution only. */
+function counted(owner: GpuProcessOwner): boolean {
+  return owner !== null && owner !== 'unmanaged' && owner.inModelMemory;
+}
+
 /**
  * One workload's value in one sample, or `null` for "not known".
  *
@@ -116,6 +122,7 @@ export function WorkloadTrend({
   gpuVramSource,
   gpuVendor,
   unattributed,
+  modelMemory,
   className,
 }: {
   metric: Metric;
@@ -135,19 +142,43 @@ export function WorkloadTrend({
    * the footer below. `null`/absent renders nothing.
    */
   unattributed?: UnattributedGpuProcess[] | null;
+  /**
+   * Only read for `metric="gpu"`: `/inference/memory`'s per-engine usage, to say which of those
+   * processes are an engine's and already counted in Model memory. Absent (not answered, or
+   * failed) leaves a bare `llama-server` unnamed rather than guessing.
+   */
+  modelMemory?: ModelMemoryUsageEntrySummary[];
   className?: string;
 }) {
   const { t } = useTranslation();
+  const ownerLabel = (owner: GpuProcessOwner): string | null =>
+    owner === null
+      ? null
+      : owner === 'unmanaged'
+        ? t('DASHBOARD_TRENDS_GPU_UNMANAGED')
+        : owner.inModelMemory
+          ? t('DASHBOARD_TRENDS_GPU_OWNER_COUNTED', { engine: owner.engine })
+          : owner.engine;
   const gpuAbsent = metric === 'gpu' && gpuVramSource === 'absent';
   /*
    * VRAM held OUTSIDE any workload, which on this fleet is almost all of it: the engines are host
-   * processes (Ollama, llama-server) or containers this Hub did not start, so no row above can ever
-   * own their memory. core-2 held 24 GB in `llama-server` while this tile showed five rows of dashes
-   * under copy saying VRAM "is measured on this node" — true, and it was, and none of it was drawn.
-   * Largest first, one line per process as the sampler reported it.
+   * processes or containers this Hub did not start, so no row above can ever own their memory.
+   *
+   * Each line says WHOSE it is, by the same rule the backend uses to build Model memory — see
+   * `gpuProcessOwner`. That matters because most of these rows are ALREADY on the page: core-2's two
+   * `llama-server`s (24,331 + 493 MB) are Ollama's runners, and are exactly the 24,824 MB Model memory
+   * shows for Ollama. Listed bare, they read as a second 24 GB held by something unmanaged. So an
+   * engine's rows are named for the engine and marked as the memory Model memory already counts, and
+   * listed after the rows nothing else on the page shows — fzzy's `dflash_server`, 17 GB no managed
+   * engine accounts for, which is what this footer is really for. Largest first within each group.
    */
   const outside =
-    metric === 'gpu' ? [...(unattributed ?? [])].filter((entry) => Number.isFinite(entry.vramMb)).sort((a, b) => b.vramMb - a.vramMb) : [];
+    metric === 'gpu'
+      ? [...(unattributed ?? [])]
+          .filter((entry) => Number.isFinite(entry.vramMb))
+          .map((entry) => ({ ...entry, owner: gpuProcessOwner(entry.processName, modelMemory) }))
+          .sort((a, b) => Number(counted(a.owner)) - Number(counted(b.owner)) || b.vramMb - a.vramMb)
+      : [];
 
   /*
    * Deduped and gap-marked once, and everything below reads the result: the ranking, the waiting
@@ -295,8 +326,14 @@ export function WorkloadTrend({
                 // keeps the key unique; the list is re-sorted wholesale each poll, never reordered.
                 // biome-ignore lint/suspicious/noArrayIndexKey: see above
                 <li key={`${entry.processName}-${index}`} className="flex items-baseline justify-between gap-2">
-                  <span className="min-w-0 truncate font-mono">{entry.processName}</span>
-                  <span className="shrink-0 tabular-nums text-foreground">{humanBytes(entry.vramMb * MIB)}</span>
+                  <span className="min-w-0 truncate">
+                    <span className="font-mono">{entry.processName}</span>
+                    {ownerLabel(entry.owner) ? <span className="text-muted-foreground"> · {ownerLabel(entry.owner)}</span> : null}
+                  </span>
+                  {/* Muted when Model memory already counts it: the same bytes, not more of them. */}
+                  <span className={cn('shrink-0 tabular-nums', counted(entry.owner) ? 'text-muted-foreground' : 'text-foreground')}>
+                    {humanBytes(entry.vramMb * MIB)}
+                  </span>
                 </li>
               ))}
             </ul>

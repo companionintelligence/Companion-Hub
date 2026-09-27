@@ -514,8 +514,8 @@
       "capabilitiesError": null,
       "gpuPressure": null,
       "gpuPressureSource": null,
-      "nodeFqdn": "fzzy.capybara-ulmer.ts.net",
-      "tailnet": "capybara-ulmer.ts.net",
+      "nodeFqdn": "fzzy.tailnet-example.ts.net",
+      "tailnet": "tailnet-example.ts.net",
       "tailscaleConnected": true,
       "maxPromptTokens": null,
       "maxPromptTokensSetBy": null,
@@ -526,7 +526,7 @@
     "peers": [
       {
         "id": "peer-core-2",
-        "nodeFqdn": "core-2.capybara-ulmer.ts.net",
+        "nodeFqdn": "core-2.tailnet-example.ts.net",
         "displayName": null,
         "direction": "outbound",
         "status": "connected",
@@ -597,7 +597,7 @@
       },
       {
         "id": "peer-core-1",
-        "nodeFqdn": "core-1.capybara-ulmer.ts.net",
+        "nodeFqdn": "core-1.tailnet-example.ts.net",
         "displayName": null,
         "direction": "outbound",
         "status": "connected",

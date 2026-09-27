@@ -217,6 +217,7 @@ export default function ResourceMonitorPage() {
         gpuVramSource={containers.data?.gpuVramSource}
         gpuVendor={hardware.data?.gpu?.vendor}
         unattributed={containers.data?.unattributedGpu}
+        modelMemory={memory.data?.usage?.backends}
         className="col-span-full md:col-span-1 xl:col-span-3"
       />
       <WorkloadCoverage
