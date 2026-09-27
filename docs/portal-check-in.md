@@ -13,6 +13,11 @@ Each accepted check-in updates the device's `last_seen` in Portal. Portal's orga
 
 Reading `GET /api/registration/status` is therefore not a passive observation. It can send a check-in, which changes `last_seen`, and it can change the phase.
 
+After each accepted check-in, the Hub probes its own public URL with `GET https://<hub hostname>/api/health/live`, and only a 2xx counts. The probe asks the zone's authoritative nameservers before the Hub's own resolver, so a cached NXDOMAIN on the Hub's network neither blocks it nor gets planted by it:
+
+- A `locally_ready` Hub whose URL answers becomes `publicly_ready`.
+- A `publicly_ready` Hub whose URL has failed every probe for 10 minutes becomes `degraded` with `tunnel_unreachable`. The next accepted check-in returns it to `locally_ready`, and the probe promotes it again once the URL answers.
+
 ## Read registration health without checking in
 
 `GET /api/registration/phase` returns the phase, the degraded reasons, and the outcome of the last check-in this Hub process sent. It reads memory only and never contacts Portal. Like `status`, it needs no authentication.
