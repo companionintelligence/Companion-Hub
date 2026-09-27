@@ -1,0 +1,3276 @@
+{
+  "node": "core-2",
+  "now": "2026-09-27T18:00:54Z",
+  "apps_resource-monitor": {
+    "sampledAt": "2026-09-27T18:00:50.491Z",
+    "apps": [
+      {
+        "appUrn": "ci-openclaw:ci-marketplace",
+        "appName": "ci-openclaw",
+        "status": "running",
+        "cpuPercent": 3.03,
+        "memoryUsageBytes": 433745920,
+        "memoryLimitBytes": 134306766848,
+        "highCpu": false,
+        "sustainedHighCpu": false,
+        "responsive": true,
+        "degraded": false,
+        "forceStopEligible": false,
+        "reason": null,
+        "cpuLimit": null,
+        "usesDefaultCpuLimit": false,
+        "sampledAt": "2026-09-27T18:00:50.492Z",
+        "containers": [
+          {
+            "containerId": "77c9497b2ea3",
+            "name": "ci-openclaw_ci-marketplace-ci-openclaw-1",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 3.03,
+            "memoryUsageBytes": 433745920,
+            "memoryLimitBytes": 134306766848
+          }
+        ],
+        "gpuVramMb": null,
+        "readiness": null
+      },
+      {
+        "appUrn": "ci-hub:system",
+        "appName": "CI Hub",
+        "status": "running",
+        "cpuPercent": 2.25,
+        "memoryUsageBytes": 450306048,
+        "memoryLimitBytes": 671533834240,
+        "highCpu": false,
+        "sustainedHighCpu": false,
+        "responsive": true,
+        "degraded": false,
+        "forceStopEligible": false,
+        "reason": null,
+        "cpuLimit": null,
+        "usesDefaultCpuLimit": false,
+        "sampledAt": "2026-09-27T18:00:50.491Z",
+        "containers": [
+          {
+            "containerId": "13b58f65ba99",
+            "name": "ci-hub",
+            "state": "running",
+            "status": "Up 18 hours (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 1.04,
+            "memoryUsageBytes": 203112448,
+            "memoryLimitBytes": 134306766848
+          },
+          {
+            "containerId": "fb6b53fb5ff7",
+            "name": "cloudflared",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0.68,
+            "memoryUsageBytes": 22904832,
+            "memoryLimitBytes": 134306766848
+          },
+          {
+            "containerId": "deeef26627d6",
+            "name": "traefik",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0.06,
+            "memoryUsageBytes": 23965696,
+            "memoryLimitBytes": 134306766848
+          },
+          {
+            "containerId": "72d7c99130b2",
+            "name": "ci-hub-db",
+            "state": "running",
+            "status": "Up 20 hours (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 0.11,
+            "memoryUsageBytes": 80199680,
+            "memoryLimitBytes": 134306766848
+          },
+          {
+            "containerId": "63982d8e7047",
+            "name": "ci-hub-queue",
+            "state": "running",
+            "status": "Up 20 hours (healthy)",
+            "health": "healthy",
+            "exitCode": null,
+            "cpuPercent": 0.36,
+            "memoryUsageBytes": 120123392,
+            "memoryLimitBytes": 134306766848
+          }
+        ],
+        "gpuVramMb": null,
+        "readiness": null
+      },
+      {
+        "appUrn": "opencode-web:ci-marketplace",
+        "appName": "opencode-web",
+        "status": "running",
+        "cpuPercent": 1.06,
+        "memoryUsageBytes": 452276224,
+        "memoryLimitBytes": 134306766848,
+        "highCpu": false,
+        "sustainedHighCpu": false,
+        "responsive": true,
+        "degraded": false,
+        "forceStopEligible": false,
+        "reason": null,
+        "cpuLimit": null,
+        "usesDefaultCpuLimit": false,
+        "sampledAt": "2026-09-27T18:00:50.492Z",
+        "containers": [
+          {
+            "containerId": "f87bc5ac033f",
+            "name": "opencode-web_ci-marketplace-opencode-web-1",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 1.06,
+            "memoryUsageBytes": 452276224,
+            "memoryLimitBytes": 134306766848
+          }
+        ],
+        "gpuVramMb": null,
+        "readiness": null
+      },
+      {
+        "appUrn": "ci-hermes:ci-marketplace",
+        "appName": "ci-hermes",
+        "status": "running",
+        "cpuPercent": 0.77,
+        "memoryUsageBytes": 442744832,
+        "memoryLimitBytes": 268613533696,
+        "highCpu": false,
+        "sustainedHighCpu": false,
+        "responsive": true,
+        "degraded": false,
+        "forceStopEligible": false,
+        "reason": null,
+        "cpuLimit": null,
+        "usesDefaultCpuLimit": false,
+        "sampledAt": "2026-09-27T18:00:50.492Z",
+        "containers": [
+          {
+            "containerId": "0515dc0007e7",
+            "name": "ci-hermes_ci-marketplace-ci-hermes-1",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0.46,
+            "memoryUsageBytes": 192020480,
+            "memoryLimitBytes": 134306766848
+          },
+          {
+            "containerId": "2e431d5e1b44",
+            "name": "ci-hermes_ci-marketplace-ci-hermes-gateway-1",
+            "state": "running",
+            "status": "Up 20 hours",
+            "health": null,
+            "exitCode": null,
+            "cpuPercent": 0.31,
+            "memoryUsageBytes": 250724352,
+            "memoryLimitBytes": 134306766848
+          }
+        ],
+        "gpuVramMb": null,
+        "readiness": null
+      }
+    ],
+    "history": [
+      {
+        "sampledAt": "2026-09-27T17:38:49.783Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 1.06,
+            "memoryUsageBytes": 443084800,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.68,
+            "memoryUsageBytes": 432091136,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.14,
+            "memoryUsageBytes": 452628480,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.26,
+            "memoryUsageBytes": 462532608,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:39:49.783Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.65,
+            "memoryUsageBytes": 443281408,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.93,
+            "memoryUsageBytes": 432615424,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.19,
+            "memoryUsageBytes": 453238784,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.08,
+            "memoryUsageBytes": 455798784,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:40:49.783Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 1.16,
+            "memoryUsageBytes": 443654144,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.78,
+            "memoryUsageBytes": 432615424,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.12,
+            "memoryUsageBytes": 452325376,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 61.13,
+            "memoryUsageBytes": 513794048,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:41:49.783Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 1.03,
+            "memoryUsageBytes": 443219968,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.12,
+            "memoryUsageBytes": 432357376,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.12,
+            "memoryUsageBytes": 453083136,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 4.76,
+            "memoryUsageBytes": 459767808,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:42:49.784Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.87,
+            "memoryUsageBytes": 443633664,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.7,
+            "memoryUsageBytes": 432615424,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.2,
+            "memoryUsageBytes": 452984832,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5.25,
+            "memoryUsageBytes": 462712832,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:43:49.785Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.94,
+            "memoryUsageBytes": 442605568,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.75,
+            "memoryUsageBytes": 432345088,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 0.93,
+            "memoryUsageBytes": 452427776,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.09,
+            "memoryUsageBytes": 461873152,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:44:49.788Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 1,
+            "memoryUsageBytes": 442441728,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.21,
+            "memoryUsageBytes": 432095232,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 0.15,
+            "memoryUsageBytes": 452706304,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 25.66,
+            "memoryUsageBytes": 465780736,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:45:49.788Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.8,
+            "memoryUsageBytes": 444092416,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.62,
+            "memoryUsageBytes": 432357376,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 0.32,
+            "memoryUsageBytes": 452452352,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.58,
+            "memoryUsageBytes": 447086592,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:46:49.788Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 1.03,
+            "memoryUsageBytes": 442179584,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.69,
+            "memoryUsageBytes": 432353280,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.13,
+            "memoryUsageBytes": 452784128,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.25,
+            "memoryUsageBytes": 450654208,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:47:49.788Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.8,
+            "memoryUsageBytes": 442630144,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.6,
+            "memoryUsageBytes": 432353280,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 0.98,
+            "memoryUsageBytes": 452268032,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.08,
+            "memoryUsageBytes": 485658624,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:48:49.790Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.68,
+            "memoryUsageBytes": 443289600,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.22,
+            "memoryUsageBytes": 432611328,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.02,
+            "memoryUsageBytes": 453021696,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 6.01,
+            "memoryUsageBytes": 492396544,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:49:49.792Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.84,
+            "memoryUsageBytes": 443170816,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3,
+            "memoryUsageBytes": 432099328,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.07,
+            "memoryUsageBytes": 453824512,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 303.12,
+            "memoryUsageBytes": 486592512,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:50:49.792Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.94,
+            "memoryUsageBytes": 442970112,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.83,
+            "memoryUsageBytes": 432353280,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 0.92,
+            "memoryUsageBytes": 453304320,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 1.9,
+            "memoryUsageBytes": 481214464,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:51:49.795Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.87,
+            "memoryUsageBytes": 443551744,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.06,
+            "memoryUsageBytes": 432541696,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.13,
+            "memoryUsageBytes": 453324800,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5.01,
+            "memoryUsageBytes": 487874560,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:52:49.796Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.92,
+            "memoryUsageBytes": 443920384,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.62,
+            "memoryUsageBytes": 432836608,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.01,
+            "memoryUsageBytes": 453152768,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 6.66,
+            "memoryUsageBytes": 481996800,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:53:49.796Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 1.03,
+            "memoryUsageBytes": 443305984,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.32,
+            "memoryUsageBytes": 432918528,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.16,
+            "memoryUsageBytes": 452411392,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 5.4,
+            "memoryUsageBytes": 480321536,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:54:49.797Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.79,
+            "memoryUsageBytes": 443387904,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3,
+            "memoryUsageBytes": 434184192,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1,
+            "memoryUsageBytes": 452411392,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 8.81,
+            "memoryUsageBytes": 486039552,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:55:49.798Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.85,
+            "memoryUsageBytes": 443994112,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.11,
+            "memoryUsageBytes": 433922048,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.07,
+            "memoryUsageBytes": 453713920,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 6.34,
+            "memoryUsageBytes": 474107904,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:56:49.799Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.74,
+            "memoryUsageBytes": 442912768,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.59,
+            "memoryUsageBytes": 433926144,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.16,
+            "memoryUsageBytes": 452386816,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2,
+            "memoryUsageBytes": 482832384,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:57:49.800Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.61,
+            "memoryUsageBytes": 443633664,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.61,
+            "memoryUsageBytes": 433913856,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 0.89,
+            "memoryUsageBytes": 452726784,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.06,
+            "memoryUsageBytes": 481792000,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:58:49.800Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.71,
+            "memoryUsageBytes": 443367424,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 2.74,
+            "memoryUsageBytes": 433999872,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.13,
+            "memoryUsageBytes": 452972544,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.34,
+            "memoryUsageBytes": 479449088,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T17:59:49.802Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.67,
+            "memoryUsageBytes": 443076608,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.07,
+            "memoryUsageBytes": 434003968,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.09,
+            "memoryUsageBytes": 452263936,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 319.57,
+            "memoryUsageBytes": 484298752,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T18:00:49.803Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.77,
+            "memoryUsageBytes": 442744832,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.03,
+            "memoryUsageBytes": 433745920,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 2.24,
+            "memoryUsageBytes": 452018176,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.25,
+            "memoryUsageBytes": 450306048,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      },
+      {
+        "sampledAt": "2026-09-27T18:00:50.491Z",
+        "apps": [
+          {
+            "appUrn": "ci-hermes:ci-marketplace",
+            "appName": "ci-hermes",
+            "status": "running",
+            "cpuPercent": 0.77,
+            "memoryUsageBytes": 442744832,
+            "containerCount": 2,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-openclaw:ci-marketplace",
+            "appName": "ci-openclaw",
+            "status": "running",
+            "cpuPercent": 3.03,
+            "memoryUsageBytes": 433745920,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "opencode-web:ci-marketplace",
+            "appName": "opencode-web",
+            "status": "running",
+            "cpuPercent": 1.06,
+            "memoryUsageBytes": 452276224,
+            "containerCount": 1,
+            "gpuVramMb": null
+          },
+          {
+            "appUrn": "ci-hub:system",
+            "appName": "CI Hub",
+            "status": "running",
+            "cpuPercent": 2.25,
+            "memoryUsageBytes": 450306048,
+            "containerCount": 5,
+            "gpuVramMb": null
+          }
+        ]
+      }
+    ],
+    "unattributedGpu": [
+      {
+        "processName": "llama-server",
+        "vramMb": 493
+      },
+      {
+        "processName": "llama-server",
+        "vramMb": 24331
+      }
+    ],
+    "gpuVramSource": "host-file"
+  },
+  "inference_pool_status": {
+    "enabled": true,
+    "disabledBy": null,
+    "directions": {
+      "outbound": {
+        "enabled": true,
+        "disabledBy": null
+      },
+      "inbound": {
+        "enabled": true,
+        "disabledBy": null
+      }
+    },
+    "reason": "active",
+    "routingActive": true,
+    "settings": {
+      "poolEnabled": true,
+      "poolOutboundEnabled": true,
+      "poolInboundEnabled": true,
+      "poolLocalAffinity": 1,
+      "poolHealthPollSeconds": 30,
+      "poolRequireSignedPeers": false,
+      "poolShareContainerStats": true,
+      "poolPressureWeight": 0,
+      "poolMaxPromptTokens": null,
+      "poolProbeSnapshotTtlMs": 0,
+      "poolPrefixAffinityMaxInFlight": 0,
+      "poolSlotAwareness": 0,
+      "poolPins": [],
+      "poolRouteAppsAlways": true
+    },
+    "localNode": {
+      "inFlightRequests": 0,
+      "hardwareTier": "high",
+      "backends": [
+        {
+          "type": "ollama",
+          "healthy": true,
+          "modelsLoaded": [
+            "qwen3.6:35b",
+            "ornith-1.5:35b",
+            "gemma4:e4b",
+            "ornith-1.5:9b",
+            "qwen2.5-coder:14b",
+            "qwen2.5-coder:32b",
+            "qwen3-coder:30b",
+            "nomic-embed-text:latest",
+            "gemma3:1b",
+            "gemma3:27b",
+            "gemma3:4b"
+          ]
+        },
+        {
+          "type": "vllm",
+          "healthy": false,
+          "modelsLoaded": []
+        },
+        {
+          "type": "lemonade",
+          "healthy": false,
+          "modelsLoaded": []
+        },
+        {
+          "type": "omlx",
+          "healthy": false,
+          "modelsLoaded": []
+        }
+      ],
+      "capabilitiesError": null,
+      "gpuPressure": null,
+      "gpuPressureSource": null,
+      "nodeFqdn": "core-2.capybara-ulmer.ts.net",
+      "tailnet": "capybara-ulmer.ts.net",
+      "tailscaleConnected": true,
+      "maxPromptTokens": null,
+      "maxPromptTokensSetBy": null,
+      "maxNumCtx": null,
+      "ollamaSlots": null,
+      "throughput": []
+    },
+    "peers": [
+      {
+        "id": "peer-core-4",
+        "nodeFqdn": "core-4.capybara-ulmer.ts.net",
+        "displayName": "core-4",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.746",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 4.6,
+          "memoryBytes": 441790464
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3-coder:30b", "nomic-embed-text:cpu", "gemma3:1b-cpu", "gemma3:1b", "nomic-embed-text:latest"]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 4.6,
+            "memoryBytes": 441790464
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.741Z"
+        }
+      },
+      {
+        "id": "peer-core-10",
+        "nodeFqdn": "core-10.capybara-ulmer.ts.net",
+        "displayName": "ci",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.752",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 5.96,
+          "memoryBytes": 475316224
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.6:35b",
+                "nomic-embed-text:latest",
+                "qwen3-coder:30b",
+                "ornith-1.5:35b",
+                "qwen2.5-coder:14b",
+                "qwen2.5-coder:32b",
+                "qwen3:8b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 5.96,
+            "memoryBytes": 475316224
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.753Z"
+        }
+      },
+      {
+        "id": "peer-core-1",
+        "nodeFqdn": "core-1.capybara-ulmer.ts.net",
+        "displayName": null,
+        "direction": "outbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.747",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.45,
+          "memoryBytes": 489779200
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "gemma3:1b",
+                "ornith-1.5:9b",
+                "gemma4:26b",
+                "qwen3-coder:30b",
+                "qwen3.6:27b",
+                "qwen3:8b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.45,
+            "memoryBytes": 489779200
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.713Z"
+        }
+      },
+      {
+        "id": "peer-core-3",
+        "nodeFqdn": "core-3.capybara-ulmer.ts.net",
+        "displayName": "core-3",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.752",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 3.62,
+          "memoryBytes": 403582976
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3.6:35b", "qwen3:8b", "nomic-embed-text:latest"]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 3.62,
+            "memoryBytes": 403582976
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.774Z"
+        }
+      },
+      {
+        "id": "peer-beta-red",
+        "nodeFqdn": "beta-red.capybara-ulmer.ts.net",
+        "displayName": "beta-red",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.76",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 99,
+          "memoryBytes": 532135936
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["nomic-embed-text:latest", "qwen2.5-coder:7b", "gemma4:e4b", "ornith-1.5:9b", "gemma3:4b", "gemma3:1b", "qwen3:8b"]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen2.5-3B-Instruct-AWQ"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 99,
+            "memoryBytes": 532135936
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.771Z"
+        }
+      },
+      {
+        "id": "peer-beta-max",
+        "nodeFqdn": "beta-max.capybara-ulmer.ts.net",
+        "displayName": "beta-max",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.751",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 9,
+          "stopped": 0,
+          "total": 9,
+          "cpuPercent": 5.33,
+          "memoryBytes": 1847930880
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "gemma4:e4b",
+                "ornith-1.5:9b",
+                "qwen3.6:35b",
+                "qwen3-coder:30b",
+                "qwen3.6:27b",
+                "qwen3-vl:32b",
+                "gemma3:1b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 9,
+            "running": 9,
+            "stopped": 0,
+            "cpuPercent": 5.33,
+            "memoryBytes": 1847930880
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.720Z"
+        }
+      },
+      {
+        "id": "peer-beta-1",
+        "nodeFqdn": "beta-1.capybara-ulmer.ts.net",
+        "displayName": "beta-1",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.746",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 8.03,
+          "memoryBytes": 591183872
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "north-mini-code-1.0:latest",
+                "gemma4:31b",
+                "muse-glimmer:30b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gpt-oss:20b",
+                "qwen3.5:27b",
+                "qwen3.6:27b",
+                "qwen3-coder:30b",
+                "gemma4:e4b",
+                "gemma3:1b",
+                "nomic-embed-text:latest",
+                "qwen3.8:27b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 8.03,
+            "memoryBytes": 591183872
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.719Z"
+        }
+      },
+      {
+        "id": "peer-beta-nas",
+        "nodeFqdn": "beta-nas.capybara-ulmer.ts.net",
+        "displayName": "beta-nas",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.736",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.11,
+          "memoryBytes": 448184320
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3.5:4b", "nomic-embed-text:latest", "ornith-1.5:9b", "qwen2.5-coder:7b", "qwen3.6:27b"]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen2.5-3B-Instruct-AWQ"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.11,
+            "memoryBytes": 448184320
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.723Z"
+        }
+      },
+      {
+        "id": "peer-beta-glass",
+        "nodeFqdn": "beta-glass.capybara-ulmer.ts.net",
+        "displayName": "beta-3-glass",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.745",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.11,
+          "memoryBytes": 518606848
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "mxbai-embed-large:latest",
+                "qwen3.8:27b",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:9b",
+                "qwen3.5:4b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.11,
+            "memoryBytes": 518606848
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.728Z"
+        }
+      },
+      {
+        "id": "peer-core-14",
+        "nodeFqdn": "core-14.capybara-ulmer.ts.net",
+        "displayName": "core-14",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.745",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 2.14,
+          "memoryBytes": 451842048
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 2.14,
+            "memoryBytes": 451842048
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.736Z"
+        }
+      },
+      {
+        "id": "peer-core-7",
+        "nodeFqdn": "core-7.capybara-ulmer.ts.net",
+        "displayName": "core-7",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.739",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 320.13,
+          "memoryBytes": 454344704
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3.6:27b",
+                "qwen3.6:35b",
+                "qwen3-coder:30b",
+                "gemma4:e4b",
+                "gabegoodhart/minimax-m2:230b",
+                "gemma4:31b",
+                "qwen3-vl:32b",
+                "gemma3:1b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 320.13,
+            "memoryBytes": 454344704
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.728Z"
+        }
+      },
+      {
+        "id": "peer-beta-ms-a2",
+        "nodeFqdn": "beta-ms-a2.capybara-ulmer.ts.net",
+        "displayName": "beta-ms-a2",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.737",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 5.18,
+          "memoryBytes": 466657280
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 5.18,
+            "memoryBytes": 466657280
+          },
+          "hardwareTier": "cpu-only",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.726Z"
+        }
+      },
+      {
+        "id": "peer-core-5",
+        "nodeFqdn": "core-5.capybara-ulmer.ts.net",
+        "displayName": "core-5",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.747",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 36.59,
+          "memoryBytes": 436211712
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:122b",
+                "muse-glimmer:30b",
+                "qwen3.5:27b",
+                "nomic-embed-text:latest",
+                "qwen3-coder:30b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3.6:27b",
+                "qwen3.6:35b",
+                "gemma3:27b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 36.59,
+            "memoryBytes": 436211712
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.746Z"
+        }
+      },
+      {
+        "id": "peer-fzzy",
+        "nodeFqdn": "fzzy.capybara-ulmer.ts.net",
+        "displayName": "fzzy",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.753",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 9.25,
+          "memoryBytes": 828932096
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3-coder:30b",
+                "llava:latest",
+                "gemma3n:e4b",
+                "qwen2.5:0.5b",
+                "nemotron3:33b",
+                "qwen3.6:35b",
+                "llama3.2:latest",
+                "nomic-embed-text:latest",
+                "moondream:latest",
+                "gemma4:31b",
+                "qwen3-vl:32b",
+                "gemma3:1b",
+                "qwen3.5:9b",
+                "qwen3.6:27b",
+                "qwen3.5:4b",
+                "gabegoodhart/minimax-m2:230b",
+                "nemotron-3-super:120b",
+                "deepseek-coder-v2:16b",
+                "deepseek-r1:70b",
+                "deepseek-r1:32b",
+                "gpt-oss:120b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 9.25,
+            "memoryBytes": 828932096
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.759Z"
+        }
+      },
+      {
+        "id": "peer-core-17",
+        "nodeFqdn": "core-17.capybara-ulmer.ts.net",
+        "displayName": "core-17",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.755",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 20.44,
+          "memoryBytes": 458010624
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 20.44,
+            "memoryBytes": 458010624
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.765Z"
+        }
+      },
+      {
+        "id": "peer-core-6",
+        "nodeFqdn": "core-6.capybara-ulmer.ts.net",
+        "displayName": "core-6",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-27 18:00:30.751",
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 224.58,
+          "memoryBytes": 423739392
+        },
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        },
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "mxbai-embed-large:latest",
+                "qwen3.8:27b",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:9b",
+                "qwen3.5:4b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 224.58,
+            "memoryBytes": 423739392
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0,
+          "updatedAt": "2026-09-27T18:00:30.759Z"
+        }
+      }
+    ],
+    "peerCounts": {
+      "total": 16,
+      "connected": 16,
+      "pending": 0,
+      "unreachable": 0,
+      "disabled": 0
+    },
+    "pins": [],
+    "routing": {
+      "recorded": 27,
+      "capacity": 200,
+      "served": 26,
+      "failed": 1,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 2,
+      "lastAt": "2026-09-27T03:00:02.682Z",
+      "oldestAt": "2026-09-26T23:49:40.619Z",
+      "totalRecorded": 27,
+      "bootId": "b41dbf93-9009-4179-ac5c-bac53f4a3083",
+      "startedAt": "2026-09-26T23:47:49.027Z"
+    }
+  },
+  "inference_pool_routing-log": {
+    "entries": [
+      {
+        "at": "2026-09-27T03:00:02.682Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 22,
+        "usage": null,
+        "stream": false,
+        "bodyBytes": 466,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-27T03:00:02.567Z",
+        "direction": "outbound",
+        "model": "nomic-embed-text",
+        "node": "core-4.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 17,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 87,
+        "usage": {
+          "promptTokens": 417,
+          "completionTokens": null,
+          "totalTokens": 417
+        },
+        "stream": false,
+        "bodyBytes": 1450,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-27T03:00:02.562Z",
+        "direction": "outbound",
+        "model": "nomic-embed-text",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 17,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 43,
+        "usage": {
+          "promptTokens": 124,
+          "completionTokens": null,
+          "totalTokens": 124
+        },
+        "stream": false,
+        "bodyBytes": 466,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-27T03:00:02.560Z",
+        "direction": "outbound",
+        "model": "nomic-embed-text",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 17,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 44,
+        "usage": {
+          "promptTokens": 28,
+          "completionTokens": null,
+          "totalTokens": 28
+        },
+        "stream": false,
+        "bodyBytes": 148,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-27T03:00:01.246Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": "beta-1.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 12524,
+        "usage": {
+          "promptTokens": 1465,
+          "completionTokens": 1026,
+          "totalTokens": 2491
+        },
+        "stream": true,
+        "bodyBytes": 6091,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-27T03:00:01.208Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": "core-1.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 11526,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 5997,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:57:03.235Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": "beta-1.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 30605,
+        "usage": {
+          "promptTokens": 16075,
+          "completionTokens": 126,
+          "totalTokens": 16201
+        },
+        "stream": true,
+        "bodyBytes": 66371,
+        "budgetMs": 331000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 16532,
+          "budgetMs": 331000
+        }
+      },
+      {
+        "at": "2026-09-26T23:55:50.074Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 974,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 65586,
+        "budgetMs": 327000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:52:35.137Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 396,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 32777,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:52:34.528Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 3226,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 32368,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:51:30.841Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 387,
+        "usage": {
+          "promptTokens": 9045,
+          "completionTokens": 506,
+          "totalTokens": 9551
+        },
+        "stream": true,
+        "bodyBytes": 48399,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 12100,
+          "budgetMs": 300000
+        }
+      },
+      {
+        "at": "2026-09-26T23:51:24.952Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 568,
+        "usage": {
+          "promptTokens": 8951,
+          "completionTokens": 292,
+          "totalTokens": 9243
+        },
+        "stream": true,
+        "bodyBytes": 46982,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 11745,
+          "budgetMs": 300000
+        }
+      },
+      {
+        "at": "2026-09-26T23:51:12.631Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": null,
+        "backend": null,
+        "candidates": 9,
+        "attempt": 9,
+        "failedOverFrom": [
+          "beta-1.capybara-ulmer.ts.net",
+          "core-14.capybara-ulmer.ts.net",
+          "core-1.capybara-ulmer.ts.net",
+          "core-17.capybara-ulmer.ts.net",
+          "beta-glass.capybara-ulmer.ts.net",
+          "beta-ms-a2.capybara-ulmer.ts.net",
+          "core-6.capybara-ulmer.ts.net",
+          "core-7.capybara-ulmer.ts.net",
+          "beta-max.capybara-ulmer.ts.net"
+        ],
+        "pin": null,
+        "outcome": "failed",
+        "status": null,
+        "durationMs": 307336,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 155923,
+        "budgetMs": 780000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 38964,
+          "budgetMs": 780000
+        }
+      },
+      {
+        "at": "2026-09-26T23:51:03.173Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 395,
+        "usage": {
+          "promptTokens": 8673,
+          "completionTokens": 1198,
+          "totalTokens": 9871
+        },
+        "stream": true,
+        "bodyBytes": 42149,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 10537,
+          "budgetMs": 300000
+        }
+      },
+      {
+        "at": "2026-09-26T23:50:54.422Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 450,
+        "usage": {
+          "promptTokens": 8538,
+          "completionTokens": 453,
+          "totalTokens": 8991
+        },
+        "stream": true,
+        "bodyBytes": 40158,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 10040,
+          "budgetMs": 300000
+        }
+      },
+      {
+        "at": "2026-09-26T23:50:44.526Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 718,
+        "usage": {
+          "promptTokens": 8354,
+          "completionTokens": 512,
+          "totalTokens": 8866
+        },
+        "stream": true,
+        "bodyBytes": 38018,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 9505,
+          "budgetMs": 300000
+        }
+      },
+      {
+        "at": "2026-09-26T23:50:34.873Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 385,
+        "usage": {
+          "promptTokens": 7981,
+          "completionTokens": 575,
+          "totalTokens": 8556
+        },
+        "stream": true,
+        "bodyBytes": 35648,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 8912,
+          "budgetMs": 300000
+        }
+      },
+      {
+        "at": "2026-09-26T23:50:27.735Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 365,
+        "usage": {
+          "promptTokens": 7831,
+          "completionTokens": 363,
+          "totalTokens": 8194
+        },
+        "stream": true,
+        "bodyBytes": 34004,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 8501,
+          "budgetMs": 300000
+        }
+      },
+      {
+        "at": "2026-09-26T23:50:23.347Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 361,
+        "usage": {
+          "promptTokens": 7735,
+          "completionTokens": 217,
+          "totalTokens": 7952
+        },
+        "stream": true,
+        "bodyBytes": 32882,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:50:21.867Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": "core-14.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 2,
+        "failedOverFrom": ["core-7.capybara-ulmer.ts.net"],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 399710,
+        "usage": {
+          "promptTokens": 15932,
+          "completionTokens": 41,
+          "totalTokens": 15973
+        },
+        "stream": true,
+        "bodyBytes": 65850,
+        "budgetMs": 329000,
+        "clientClosed": false,
+        "throughput": {
+          "estimatedTokens": 16402,
+          "budgetMs": 329000
+        }
+      },
+      {
+        "at": "2026-09-26T23:50:15.560Z",
+        "direction": "inbound",
+        "model": null,
+        "node": "beta-max.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 32227,
+        "usage": null,
+        "stream": true,
+        "bodyBytes": 64141,
+        "budgetMs": 320000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:50:13.116Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 10115,
+        "usage": {
+          "promptTokens": 7641,
+          "completionTokens": 62,
+          "totalTokens": 7703
+        },
+        "stream": true,
+        "bodyBytes": 32483,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:49:43.340Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": "core-7.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 16450,
+        "usage": {
+          "promptTokens": 324,
+          "completionTokens": 12,
+          "totalTokens": 336
+        },
+        "stream": false,
+        "bodyBytes": 1403,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:49:43.018Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": "beta-1.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 29651,
+        "usage": {
+          "promptTokens": 15439,
+          "completionTokens": 495,
+          "totalTokens": 15934
+        },
+        "stream": true,
+        "bodyBytes": 64141,
+        "budgetMs": 320000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:49:40.988Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 27027,
+        "usage": {
+          "promptTokens": 7359,
+          "completionTokens": 361,
+          "totalTokens": 7720
+        },
+        "stream": true,
+        "bodyBytes": 30991,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:49:40.784Z",
+        "direction": "outbound",
+        "model": "qwen3.8:27b",
+        "node": "core-6.capybara-ulmer.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 91716,
+        "usage": {
+          "promptTokens": 16386,
+          "completionTokens": 265,
+          "totalTokens": 16651
+        },
+        "stream": true,
+        "bodyBytes": 154773,
+        "budgetMs": 774000,
+        "clientClosed": false,
+        "throughput": null
+      },
+      {
+        "at": "2026-09-26T23:49:40.619Z",
+        "direction": "outbound",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 211,
+        "usage": {
+          "promptTokens": 621,
+          "completionTokens": 1697,
+          "totalTokens": 2318
+        },
+        "stream": true,
+        "bodyBytes": 2721,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "throughput": null
+      }
+    ],
+    "summary": {
+      "recorded": 27,
+      "capacity": 200,
+      "served": 26,
+      "failed": 1,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 2,
+      "lastAt": "2026-09-27T03:00:02.682Z",
+      "oldestAt": "2026-09-26T23:49:40.619Z",
+      "totalRecorded": 27,
+      "startedAt": "2026-09-26T23:47:49.027Z"
+    },
+    "matched": 27
+  },
+  "inference_status": {
+    "backends": [
+      {
+        "type": "ollama",
+        "running": true,
+        "healthy": true,
+        "modelsLoaded": 11
+      },
+      {
+        "type": "vllm",
+        "running": false,
+        "healthy": false,
+        "modelsLoaded": 0
+      },
+      {
+        "type": "lemonade",
+        "running": false,
+        "healthy": false,
+        "modelsLoaded": 0
+      },
+      {
+        "type": "omlx",
+        "running": false,
+        "healthy": false,
+        "modelsLoaded": 0
+      }
+    ]
+  },
+  "inference_memory": {
+    "totalVramMb": 0,
+    "totalRamMb": 128085,
+    "systemReservedRamMb": 2048,
+    "dockerOverheadMb": 0,
+    "appContainerBudgetMb": 0,
+    "modelBudgetVramMb": 0,
+    "modelBudgetRamMb": 126037,
+    "modelUsedVramMb": 0,
+    "modelUsedRamMb": 24824,
+    "pinnedVramMb": 0,
+    "pinnedRamMb": 0,
+    "usage": {
+      "sampledAt": "2026-09-27T18:00:53.951Z",
+      "backends": [
+        {
+          "backend": "ollama",
+          "models": ["nomic-embed-text:latest", "qwen3.6:35b"],
+          "pool": "ram",
+          "usedMb": 24824,
+          "source": "process"
+        }
+      ]
+    }
+  },
+  "inference_models_resident": {
+    "backends": [
+      {
+        "backend": "ollama",
+        "source": "measured",
+        "models": [
+          {
+            "id": "nomic-embed-text:latest",
+            "engineGpuBytes": 314730086,
+            "totalBytes": 314730086,
+            "expiresAt": "2026-09-27T20:00:02.681457378-07:00",
+            "contextLength": 2048,
+            "quantization": "F16"
+          },
+          {
+            "id": "qwen3.6:35b",
+            "engineGpuBytes": 22419246939,
+            "totalBytes": 22419246939,
+            "expiresAt": "2026-09-27T16:55:51.867513154-07:00",
+            "contextLength": 65536,
+            "quantization": "Q4_K_M"
+          }
+        ]
+      },
+      {
+        "backend": "vllm",
+        "source": "unsupported",
+        "models": null
+      },
+      {
+        "backend": "lemonade",
+        "source": "unreachable",
+        "models": null,
+        "error": "connect ECONNREFUSED 172.17.0.1:13305"
+      },
+      {
+        "backend": "omlx",
+        "source": "unsupported",
+        "models": null
+      }
+    ],
+    "residentCount": 2,
+    "sampledAt": "2026-09-27T18:00:53.989Z"
+  },
+  "inference_hardware": {
+    "gpu": {
+      "available": true,
+      "vendor": "amd",
+      "model": "Radeon 8060S",
+      "vramMb": 128085,
+      "unifiedMemory": true,
+      "driverVersion": "",
+      "runtimeAvailable": false,
+      "containerHostKind": "native-linux",
+      "hostRocmAvailable": true,
+      "hostRocmKfdAvailable": true
+    },
+    "npu": {
+      "available": false,
+      "model": ""
+    },
+    "ram": {
+      "totalMb": 128085,
+      "availableMb": 95383,
+      "usedMb": 32702,
+      "sampledAt": "2026-09-27T18:00:53.845Z"
+    },
+    "cpu": {
+      "arch": "x86_64",
+      "cores": 32,
+      "model": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S"
+    },
+    "os": {
+      "platform": "linux",
+      "name": "Alpine Linux",
+      "version": "v3.21"
+    },
+    "effectiveInferenceMemoryMb": 95383,
+    "tier": "high"
+  },
+  "inference_cloud-providers": [],
+  "system_load": {
+    "diskUsed": 435,
+    "diskSize": 915,
+    "percentUsed": 48,
+    "cpuLoad": 1.0060362173038229,
+    "cpuCores": 32,
+    "memoryTotal": 125,
+    "memoryUsed": 73,
+    "percentUsedMemory": 59,
+    "hasVmWedge": false,
+    "runtimeKind": "linux-native",
+    "platformGuidance": "Resources reflect this machine directly. No Docker Desktop VM limits apply."
+  }
+}

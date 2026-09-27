@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DASH, humanBytes, humanCount, relativeAge } from './dense';
+import { compactTokens, DASH, humanBytes, humanCount, humanDuration, parseHubTimestamp, relativeAge, relativeUntil } from './dense';
 
 /*
  * The formatting helpers, which carry the dashboard's absence-vs-zero contract.
@@ -63,5 +63,58 @@ describe('relativeAge', () => {
 
   it('never reports a negative age from a peer whose clock runs ahead', () => {
     expect(relativeAge('2026-09-10T02:35:00.000Z', now)).toBe('0s');
+  });
+});
+
+describe('humanDuration', () => {
+  it('prints each duration in the unit a person reads it in', () => {
+    expect(humanDuration(850)).toBe('850 ms');
+    expect(humanDuration(12_500)).toBe('12.5 s');
+    // core-2's slowest first byte, which the feed used to print as "399710ms".
+    expect(humanDuration(399_710)).toBe('6m 40s');
+    expect(humanDuration(7 * 3_600_000 + 16 * 60_000)).toBe('7h 16m');
+  });
+
+  it('rounds before choosing a unit, so a value at a boundary never prints as "1000 ms" or "60.0 s"', () => {
+    expect(humanDuration(999.7)).toBe('1.0 s');
+    expect(humanDuration(59_960)).toBe('1m 0s');
+  });
+
+  it('renders a dash for a duration nobody measured', () => {
+    expect(humanDuration(null)).toBe(DASH);
+    expect(humanDuration(undefined)).toBe(DASH);
+    expect(humanDuration(Number.NaN)).toBe(DASH);
+  });
+});
+
+describe('compactTokens', () => {
+  it('shortens a prompt-size estimate', () => {
+    expect(compactTokens(850)).toBe('850');
+    expect(compactTokens(7_641)).toBe('7.6k');
+    expect(compactTokens(38_979)).toBe('39k');
+    expect(compactTokens(null)).toBe(DASH);
+  });
+});
+
+describe('parseHubTimestamp', () => {
+  it("reads a zoneless timestamp from a Postgres column as UTC, not as the browser's local time", () => {
+    // fzzy's restored history, 2026-09-27: the chart labelled this "10:22 AM" in a PDT browser.
+    expect(parseHubTimestamp('2026-09-27 10:22:22.896')).toBe(Date.parse('2026-09-27T10:22:22.896Z'));
+    expect(parseHubTimestamp('2026-09-27T10:22:22')).toBe(Date.parse('2026-09-27T10:22:22Z'));
+  });
+
+  it('leaves a timestamp that names its zone at the instant it names', () => {
+    expect(parseHubTimestamp('2026-09-27T16:55:51.867513154-07:00')).toBe(Date.parse('2026-09-27T23:55:51.867Z'));
+  });
+
+  it('is NaN for nothing at all, so callers fall through to their dash', () => {
+    expect(parseHubTimestamp(null)).toBeNaN();
+    expect(parseHubTimestamp('')).toBeNaN();
+  });
+});
+
+describe('relativeUntil', () => {
+  it('counts down to an engine expiry written with an offset and nanoseconds, as Ollama writes it', () => {
+    expect(relativeUntil('2026-09-27T16:55:51.867513154-07:00', Date.parse('2026-09-27T18:00:54Z'))).toBe('6h');
   });
 });

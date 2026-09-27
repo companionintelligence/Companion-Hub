@@ -1,5 +1,6 @@
-import type { PoolNodeSummary, PoolPeerSummary, RoutingLogEntry } from '@/modules/system/use-dashboard-data';
-import { peerLabel } from '@/modules/system/use-dashboard-data';
+import { parseHubTimestamp } from '@/components/ui/dense/dense';
+import type { PoolNodeSummary, PoolPeerSummary, PoolThroughputEstimate, RoutingLogEntry, RoutingLogPage } from '@/modules/system/use-dashboard-data';
+import { estimatedPromptTokens, isUnplaced, peerLabel } from '@/modules/system/use-dashboard-data';
 
 /*
  * The pool's live view, as pure functions.
@@ -245,6 +246,13 @@ export interface PoolNodeCard {
   lastSeenAt: string | null;
   consecutiveFailures: number | null;
   capabilitiesError: string | null;
+  /**
+   * Time to first byte for requests this node served in the window, or `null` when it served none.
+   * See {@link firstByteByNode} for what is excluded and why.
+   */
+  firstByte: FirstByteStats | null;
+  /** The freshest generation rate anyone measured for this node, or `null`. See {@link latestDecode}. */
+  decode: DecodeReading | null;
 }
 
 function countModels(backends: { healthy?: boolean; modelsLoaded?: string[] }[] | undefined): number {
@@ -273,7 +281,8 @@ export function peerReportedInFlight(peer: PoolPeerSummary, healthPollSeconds: n
   if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 0 || raw > MAX_REPORTED_IN_FLIGHT) return null;
 
   const pollSeconds = typeof healthPollSeconds === 'number' && healthPollSeconds > 0 ? healthPollSeconds : DEFAULT_HEALTH_POLL_SECONDS;
-  const parsed = peer.lastSeenAt ? Date.parse(peer.lastSeenAt.includes('T') ? peer.lastSeenAt : `${peer.lastSeenAt.replace(' ', 'T')}Z`) : Number.NaN;
+  // `lastSeenAt` comes out of a zoneless Postgres column — see `parseHubTimestamp`.
+  const parsed = parseHubTimestamp(peer.lastSeenAt);
   if (!Number.isFinite(parsed)) return null;
 
   return now - parsed <= pollSeconds * CAPABILITIES_FRESHNESS_POLLS * 1000 ? raw : null;
@@ -301,9 +310,17 @@ export function peerReportedInFlight(peer: PoolPeerSummary, healthPollSeconds: n
 export function poolNodeCards(
   local: PoolNodeSummary | undefined,
   peers: PoolPeerSummary[],
-  options: { localLabel: string; localContainers: NodeContainers | null; healthPollSeconds?: number; now: number },
+  options: {
+    localLabel: string;
+    localContainers: NodeContainers | null;
+    healthPollSeconds?: number;
+    now: number;
+    /** From {@link firstByteByNode}. Absent reads as "no node served anything in the window". */
+    firstByte?: Map<string, FirstByteStats>;
+  },
 ): PoolNodeCard[] {
   const cards: PoolNodeCard[] = [];
+  const firstByteFor = (key: string | null | undefined) => (key ? (options.firstByte?.get(key) ?? null) : null);
 
   if (local) {
     cards.push({
@@ -325,6 +342,8 @@ export function poolNodeCards(
       lastSeenAt: null,
       consecutiveFailures: null,
       capabilitiesError: local.capabilitiesError ?? null,
+      firstByte: firstByteFor(LOCAL_NODE_KEY),
+      decode: latestDecode(local.throughput),
     });
   }
 
@@ -356,10 +375,46 @@ export function poolNodeCards(
       lastSeenAt: peer.lastSeenAt ?? null,
       consecutiveFailures: typeof peer.consecutiveFailures === 'number' ? peer.consecutiveFailures : null,
       capabilitiesError: null,
+      // The routing log names a peer by FQDN; its first label is the key both sides agree on.
+      firstByte: firstByteFor(peer.nodeFqdn?.split('.')[0]),
+      decode: latestDecode([...(peer.throughput?.observed ?? []), ...(peer.throughput?.advertised ?? [])]),
     });
   }
 
   return cards;
+}
+
+/** A generation rate, and whose. */
+export interface DecodeReading {
+  tokensPerSec: number;
+  model: string;
+  ageMs: number;
+}
+
+/**
+ * The freshest decode (generation) rate in a node's throughput evidence, or `null`.
+ *
+ * Freshest rather than fastest or averaged: the evidence is per (backend, model), and a node that
+ * generated at 40 tok/s on a 7B an hour ago and at 11 tok/s on a 27B a minute ago is, right now, an
+ * 11 tok/s node for the work it is being given. The model is carried with the rate so the reader
+ * can tell which of those they are looking at.
+ *
+ * DECODE ONLY. The prefill points in the same estimate are divided by the whole prompt's size on
+ * turns the engine served mostly from its prefix cache, and read 13,000-34,000 tok/s — see
+ * `PoolThroughputEstimate`. They are never shown.
+ */
+export function latestDecode(estimates: PoolThroughputEstimate[] | null | undefined): DecodeReading | null {
+  let best: DecodeReading | null = null;
+
+  for (const estimate of estimates ?? []) {
+    const decode = estimate?.decode;
+    if (!decode || !Number.isFinite(decode.tokensPerSec) || decode.tokensPerSec <= 0 || !Number.isFinite(decode.ageMs)) continue;
+    if (best === null || decode.ageMs < best.ageMs) {
+      best = { tokensPerSec: decode.tokensPerSec, model: estimate.model, ageMs: decode.ageMs };
+    }
+  }
+
+  return best;
 }
 
 /** One poll's in-flight reading for every node on screen, ready for {@link appendPoolSample}. */
@@ -369,18 +424,68 @@ export function sampleInFlight(cards: PoolNodeCard[]): Record<string, number | n
 
 // ── Routing activity ─────────────────────────────────────────────────────────
 
-/** One time bucket of routing decisions, oldest first. */
+/**
+ * One time bucket of routing decisions, oldest first.
+ *
+ * `served + failed + pending` is every decision placed in the minute. The rest are SUBSETS of those
+ * rows, counted here so that every figure the page states "in the last 30 minutes" is summed from the
+ * same bins — the rail, the bars and the verdict can then never disagree about the same half hour.
+ */
 export interface RoutingBucket {
   /** Bucket start, ms since epoch. */
   at: number;
   served: number;
+  /** Settled without an answer. Never includes a request still waiting — see `pending`. */
   failed: number;
+  /**
+   * Placed and still waiting for a first byte. Its own figure because it is not a failure YET: a
+   * 40k-token agent turn waits 5-6 minutes for prefill (beta-max, `qwen3.8:27b`, 39,668 tokens: first
+   * byte at 370,941 ms), and counting it as failed for that whole wait painted a red bar under a
+   * request that went on to succeed.
+   */
+  pending: number;
+  /** Outbound decisions with no candidate at all — see `isUnplaced`. */
+  unplaced: number;
+  /** Decisions where at least one node was tried and rejected before the one that answered (or none did). */
+  failovers: number;
+  /** The subset of `failed` that ended because the caller hung up, not because routing failed. */
+  clientClosed: number;
+  /** Engine-reported prompt tokens on rows placed in this minute. Rows with no usage frame add nothing. */
+  promptTokens: number;
+  /** Engine-reported output tokens, likewise. */
+  completionTokens: number;
+}
+
+const EMPTY_BUCKET: Omit<RoutingBucket, 'at'> = {
+  served: 0,
+  failed: 0,
+  pending: 0,
+  unplaced: 0,
+  failovers: 0,
+  clientClosed: 0,
+  promptTokens: 0,
+  completionTokens: 0,
+};
+
+/** A bucket with nothing in it, at `at`. Exported for callers and tests that build buckets by hand. */
+export function emptyRoutingBucket(at: number): RoutingBucket {
+  return { at, ...EMPTY_BUCKET };
+}
+
+/** Every decision placed in a bucket, whatever became of it. */
+export function bucketTotal(bucket: RoutingBucket): number {
+  return bucket.served + bucket.failed + bucket.pending;
+}
+
+/** A finite, positive usage figure or 0. `null` is the common case (no usage frame) and contributes nothing. */
+function usageCount(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 /**
  * Routing decisions over time, binned from the log's OWN timestamps.
  *
- * This is the one genuine history the pool exposes: the routing log is a 200-entry ring in which
+ * This is the one genuine history the pool exposes: the routing log is a bounded ring (200 rows by default) in which
  * every record carries the wall-clock instant of the decision, so the shape of the last N minutes
  * is measured rather than watched. It needs no browser accumulation and survives a page reload.
  *
@@ -398,27 +503,64 @@ export function routingBuckets(entries: RoutingLogEntry[], options: { now: numbe
 
   const newest = Math.floor(now / bucketMs) * bucketMs;
   const oldest = newest - (buckets - 1) * bucketMs;
-  const counts = new Map<number, { served: number; failed: number }>();
+  const counts = new Map<number, RoutingBucket>();
 
   for (const entry of entries) {
-    const at = Date.parse(entry.at);
+    const at = parseHubTimestamp(entry.at);
     if (!Number.isFinite(at)) continue;
 
     const bucket = Math.floor(at / bucketMs) * bucketMs;
     if (bucket < oldest || bucket > newest) continue;
 
-    const slot = counts.get(bucket) ?? { served: 0, failed: 0 };
+    const slot = counts.get(bucket) ?? emptyRoutingBucket(bucket);
+    // Three-way, matching `routingActivity`: anything neither served nor still waiting is a failure,
+    // so an outcome string this page does not know is never silently read as fine.
     if (entry.outcome === 'served') slot.served += 1;
+    else if (entry.outcome === 'pending') slot.pending += 1;
     else slot.failed += 1;
+
+    if (isUnplaced(entry)) slot.unplaced += 1;
+    if ((entry.failedOverFrom?.length ?? 0) > 0) slot.failovers += 1;
+    if (entry.clientClosed === true && entry.outcome !== 'served' && entry.outcome !== 'pending') slot.clientClosed += 1;
+    slot.promptTokens += usageCount(entry.usage?.promptTokens);
+    slot.completionTokens += usageCount(entry.usage?.completionTokens);
     counts.set(bucket, slot);
   }
 
   return Array.from({ length: buckets }, (_, index) => {
     const at = oldest + index * bucketMs;
-    const slot = counts.get(at);
 
-    return { at, served: slot?.served ?? 0, failed: slot?.failed ?? 0 };
+    return counts.get(at) ?? emptyRoutingBucket(at);
   });
+}
+
+/**
+ * `true` when the log this page holds may be MISSING decisions from the window, so a count summed
+ * over it is a floor rather than a total.
+ *
+ * Two ways rows go missing, and the summary says which has happened: the ring EVICTED them
+ * (`totalRecorded > recorded` — it is 200 rows by default and drops the oldest silently), or the ring
+ * holds more than the unpaged request returned (`matched > entries.length` — a Hub with
+ * `HUB_POOL_ROUTING_LOG_SIZE` raised still serves the newest 200 by default). Either is only a
+ * problem for the window if the OLDEST row held is inside it: if the page reaches back past the start
+ * of the window, everything in the window is on the page, whatever was dropped before it.
+ *
+ * Replaces a check for "200 entries held", which mirrored the backend's default capacity by hand and
+ * so fired on every busy Hub whether or not the window was affected, and never on a Hub whose ring
+ * had been raised.
+ */
+export function routingWindowPartial(log: RoutingLogPage | undefined, options: { now: number; windowMs: number }): boolean {
+  const entries = log?.entries ?? [];
+  const recorded = log?.summary?.recorded;
+  const totalRecorded = log?.summary?.totalRecorded;
+  const evicted = typeof totalRecorded === 'number' && typeof recorded === 'number' && totalRecorded > recorded;
+  const paged = typeof log?.matched === 'number' && log.matched > entries.length;
+  if (!evicted && !paged) return false;
+
+  // Newest first, so the last row held is the oldest.
+  const oldestHeld = parseHubTimestamp(entries.at(-1)?.at);
+
+  return !Number.isFinite(oldestHeld) || oldestHeld > options.now - options.windowMs;
 }
 
 /** Headline counts for the activity feed, over the entries actually held. */
@@ -431,7 +573,7 @@ export interface RoutingActivity {
   failovers: number;
   inbound: number;
   outbound: number;
-  /** Outbound attempts no node took. Distinct from `failed`: nothing was even tried at a node. */
+  /** Outbound requests with no candidate at all. Distinct from `failed`: nothing was even tried at a node. */
   unplaced: number;
   /**
    * Sum of `usage.totalTokens` over held entries that actually carry one — a real, partial count,
@@ -444,10 +586,11 @@ export interface RoutingActivity {
 /**
  * What the held log says, counted once.
  *
- * `unplaced` counts OUTBOUND rows with no serving node — the case `routingByNode` buckets under
- * its own label rather than crediting to `local`. It is deliberately not folded into `failed`:
- * "we asked four nodes and all four refused" and "we had no candidate to ask" send an operator to
- * different settings.
+ * `unplaced` counts outbound rows that had NO CANDIDATE — see `isUnplaced`. A row where every
+ * candidate was tried and failed has no serving node either, and used to be counted here; it is a
+ * `failed` row now, and only that. The two send an operator to different settings: "we had no
+ * candidate to ask" is about which models the pool holds, "we asked nine nodes and all nine
+ * refused" is about why they could not answer.
  */
 export function routingActivity(entries: RoutingLogEntry[]): RoutingActivity {
   const activity: RoutingActivity = {
@@ -480,8 +623,117 @@ export function routingActivity(entries: RoutingLogEntry[]): RoutingActivity {
     }
 
     activity.outbound += 1;
-    if (!entry.node) activity.unplaced += 1;
+    if (isUnplaced(entry)) activity.unplaced += 1;
   }
 
   return activity;
+}
+
+/** The key {@link firstByteByNode} files this Hub's own engines under — the same key its node card uses. */
+export const LOCAL_NODE_KEY = 'local';
+
+/** The node a routing row's work ran on, as a short key: `'local'` for this Hub, else the peer's first DNS label. */
+function servingNodeKey(entry: RoutingLogEntry): string | null {
+  // An inbound row's `node` is the peer that SENT the work; our own engine served it.
+  if (entry.direction === 'inbound') return LOCAL_NODE_KEY;
+  if (!entry.node) return null;
+
+  return entry.node === LOCAL_NODE_KEY ? LOCAL_NODE_KEY : entry.node.split('.')[0] || null;
+}
+
+/** The request waiting longest for its first byte, and how many are waiting. */
+export interface WaitingNow {
+  count: number;
+  oldest: { ageMs: number; node: string | null; budgetMs: number | null; estTokens: number | null } | null;
+}
+
+/**
+ * Requests placed on a node and still waiting for their first byte, right now.
+ *
+ * The question an operator watching an agent turn actually has — "is anything stuck, where, and for
+ * how long against what deadline" — and until this it was answerable only by finding the one amber
+ * row in the feed. The oldest wait is the one that matters: it is the one closest to its budget.
+ *
+ * `node` is the short key (`'local'` for this Hub) — the caller translates it for display.
+ */
+export function waitingNow(entries: RoutingLogEntry[], now: number): WaitingNow {
+  let count = 0;
+  let oldest: WaitingNow['oldest'] = null;
+
+  for (const entry of entries) {
+    if (entry.outcome !== 'pending') continue;
+    count += 1;
+
+    const at = parseHubTimestamp(entry.at);
+    if (!Number.isFinite(at)) continue;
+    const ageMs = Math.max(0, now - at);
+    if (oldest === null || ageMs > oldest.ageMs) {
+      oldest = {
+        ageMs,
+        node: servingNodeKey(entry),
+        budgetMs: typeof entry.budgetMs === 'number' && entry.budgetMs > 0 ? entry.budgetMs : null,
+        estTokens: estimatedPromptTokens(entry),
+      };
+    }
+  }
+
+  return { count, oldest };
+}
+
+/** Time to first byte over a window, for one node. */
+export interface FirstByteStats {
+  count: number;
+  p50Ms: number;
+  maxMs: number;
+  /** The prompt-size estimate of the request behind `maxMs`, so a slow figure carries its excuse. */
+  maxEstTokens: number | null;
+}
+
+/**
+ * Time to first byte per serving node, over the window — the number that says which node is slow.
+ *
+ * Only rows where `durationMs` IS a first-byte time are counted, and that excludes more than it
+ * looks like it should:
+ *
+ *   - served only. A failure's duration is how long it took to fail.
+ *   - `stream === true` only. A non-streamed request gets response headers after the WHOLE
+ *     generation, so its duration is completion time; mixing the two would make a node that happened
+ *     to get non-streamed work look minutes slower than its neighbours.
+ *   - no failover. `durationMs` runs from the proxy receiving the request, so a row that reached the
+ *     second node after the first timed out carries the first node's wait too — core-2's 399,710 ms
+ *     row is core-14's answer plus core-7's failure.
+ *
+ * This Hub's own engines are one entry, `'local'`, built from BOTH directions: outbound rows we
+ * placed on ourselves and inbound rows peers placed on us are the same engine answering.
+ */
+export function firstByteByNode(entries: RoutingLogEntry[], options: { now: number; windowMs: number }): Map<string, FirstByteStats> {
+  const samples = new Map<string, { ms: number; estTokens: number | null }[]>();
+  const since = options.now - options.windowMs;
+
+  for (const entry of entries) {
+    if (entry.outcome !== 'served' || entry.stream !== true || (entry.failedOverFrom?.length ?? 0) > 0) continue;
+    if (typeof entry.durationMs !== 'number' || !Number.isFinite(entry.durationMs) || entry.durationMs < 0) continue;
+
+    const at = parseHubTimestamp(entry.at);
+    if (!Number.isFinite(at) || at < since || at > options.now) continue;
+
+    const key = servingNodeKey(entry);
+    if (!key) continue;
+
+    const list = samples.get(key) ?? [];
+    list.push({ ms: entry.durationMs, estTokens: estimatedPromptTokens(entry) });
+    samples.set(key, list);
+  }
+
+  const stats = new Map<string, FirstByteStats>();
+  for (const [key, list] of samples) {
+    const sorted = [...list].sort((a, b) => a.ms - b.ms);
+    const slowest = sorted.at(-1);
+    // Nearest-rank median: a figure one of these requests actually took, never an average of two.
+    const median = sorted[Math.ceil(sorted.length / 2) - 1];
+    if (!slowest || !median) continue;
+    stats.set(key, { count: sorted.length, p50Ms: median.ms, maxMs: slowest.ms, maxEstTokens: slowest.estTokens });
+  }
+
+  return stats;
 }

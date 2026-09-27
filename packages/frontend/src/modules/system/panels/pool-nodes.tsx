@@ -3,6 +3,7 @@ import {
   DASH,
   humanBytes,
   humanCount,
+  humanDuration,
   KpiTable,
   Panel,
   PanelBody,
@@ -19,6 +20,7 @@ import {
 import { cn } from '@/lib/utils';
 import {
   computeCountChartScale,
+  type DecodeReading,
   nodeInFlightSeries,
   observedPointCount,
   type PoolNodeCard,
@@ -77,6 +79,11 @@ function BackendChip({ backend }: { backend: PoolNodeCard['backends'][number] })
       <span className="tabular-nums text-muted-foreground">{backend.models}</span>
     </span>
   );
+}
+
+/** A generation rate at the precision it is worth: one decimal below 10 tok/s, where a CPU-served node lives. */
+function formatRate(reading: DecodeReading): string {
+  return reading.tokensPerSec >= 10 ? String(Math.round(reading.tokensPerSec)) : reading.tokensPerSec.toFixed(1);
 }
 
 /** One line of the card's right-hand legend: a quiet label, a loud value, an optional caveat. */
@@ -162,6 +169,33 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
             value={card.models === null ? DASH : humanCount(card.models)}
             tone={card.models ? 'plain' : 'muted'}
           />
+          {/* The two figures that answer "is this node slow": how long a request waited for its
+              first byte here, and how fast it then generated. Neither is a percentage and neither
+              is invented for a node that served nothing — see `firstByteByNode` and `latestDecode`. */}
+          <Readout
+            label={t('DASHBOARD_NODE_FIRST_BYTE')}
+            value={
+              card.firstByte ? (
+                <span className="text-[12px]">
+                  {t('DASHBOARD_NODE_FIRST_BYTE_VALUE', { p50: humanDuration(card.firstByte.p50Ms), max: humanDuration(card.firstByte.maxMs) })}
+                </span>
+              ) : (
+                DASH
+              )
+            }
+            tone={card.firstByte ? 'plain' : 'muted'}
+            hint={card.firstByte ? t('DASHBOARD_NODE_FIRST_BYTE_HINT', { count: card.firstByte.count }) : t('DASHBOARD_NODE_FIRST_BYTE_NONE')}
+          />
+          <Readout
+            label={t('DASHBOARD_NODE_DECODE')}
+            value={card.decode ? t('DASHBOARD_NODE_DECODE_VALUE', { rate: formatRate(card.decode) }) : DASH}
+            tone={card.decode ? 'plain' : 'muted'}
+            hint={
+              card.decode
+                ? t('DASHBOARD_NODE_DECODE_HINT', { model: card.decode.model, age: humanDuration(card.decode.ageMs) })
+                : t('DASHBOARD_NODE_DECODE_NONE')
+            }
+          />
           {/* Band 0 is a real measurement and must not look like the absence of one, so the pips
               and the words are both driven off `null` rather than off the number. */}
           <Readout
@@ -212,9 +246,10 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
  * The pool as a TABLE of machines, one row each, with the full card one click away.
  *
  * A grid of cards spent ~270px per node on chrome to say what a 22px row says — four nodes filled
- * a laptop screen before a single number about this machine appeared. The row carries the six
- * facts an operator scans across nodes (status, name, tier, in-flight now, its trend, GPU pressure
- * band, containers); everything else lives in `NodeCard`, which is REUSED VERBATIM as the expanded
+ * a laptop screen before a single number about this machine appeared. The row carries the facts an
+ * operator scans across nodes (status, name, tier, in-flight now, slowest first byte, its trend, GPU
+ * pressure band where any node measures one, generation rate, containers); everything else lives in
+ * `NodeCard`, which is REUSED VERBATIM as the expanded
  * row rather than reimplemented. That matters twice over: no information is lost by the collapse,
  * and there is exactly one source for the detail view at every width — so a column dropped below a
  * breakpoint is still reachable, not gone.
@@ -251,6 +286,17 @@ export function PoolNodes({
 
   const toggle = (key: string) => setExpanded((current) => (current.includes(key) ? current.filter((open) => open !== key) : [...current, key]));
 
+  /*
+   * The GPU-pressure column exists only when some node can fill it. On the 2026-09-27 fleet it was
+   * empty on all seventeen: the band needs `/host/sys` (mounted nowhere) and reads 0 under Vulkan,
+   * which is what these nodes serve on. A column of hollow pips on every row is a column of "not
+   * measured", and it cost the width the first-byte and generation columns now use. The header and
+   * its cells are gated on the SAME boolean, so the table cannot shift. The card keeps its readout,
+   * where "not measured on this node" is said once, in words.
+   */
+  const showPressure = cards.some((card) => card.pressureBand !== null);
+  const columns = 9 + (showPressure ? 1 : 0);
+
   return (
     <Panel
       title={t('DASHBOARD_POOL_NODES_TITLE')}
@@ -272,8 +318,14 @@ export function PoolNodes({
                 <Th>{t('DASHBOARD_COL_NODE')}</Th>
                 <Th className="hidden @md:table-cell">{t('DASHBOARD_COL_TIER')}</Th>
                 <Th align="right">{t('DASHBOARD_NODE_NOW')}</Th>
+                <Th align="right" className="hidden @lg:table-cell">
+                  {t('DASHBOARD_COL_FIRST_BYTE_MAX')}
+                </Th>
                 <Th className="hidden w-24 @xl:table-cell">{t('DASHBOARD_COL_TREND')}</Th>
-                <Th className="hidden @2xl:table-cell">{t('DASHBOARD_NODE_PRESSURE')}</Th>
+                {showPressure ? <Th className="hidden @2xl:table-cell">{t('DASHBOARD_NODE_PRESSURE')}</Th> : null}
+                <Th align="right" className="hidden @2xl:table-cell">
+                  {t('DASHBOARD_COL_DECODE')}
+                </Th>
                 <Th align="right" className="hidden @md:table-cell">
                   {t('DASHBOARD_COL_CONTAINERS')}
                 </Th>
@@ -325,13 +377,38 @@ export function PoolNodes({
                     <Td align="right" className={(card.inFlight ?? 0) > 0 ? 'font-medium text-success' : 'text-muted-foreground'}>
                       {humanCount(card.inFlight)}
                     </Td>
+                    {/* The slowest first byte this node gave in the window — the figure that says
+                        which node an agent turn should not be waiting on. A dash is "served nothing
+                        streamed in 30 minutes", never "fast". */}
+                    <Td
+                      align="right"
+                      className="hidden whitespace-nowrap @lg:table-cell"
+                      title={card.firstByte ? t('DASHBOARD_NODE_FIRST_BYTE_HINT', { count: card.firstByte.count }) : undefined}
+                    >
+                      {card.firstByte ? humanDuration(card.firstByte.maxMs) : <span className="text-muted-foreground">{DASH}</span>}
+                    </Td>
                     <Td className="hidden @xl:table-cell">
                       <StepAreaChart variant="row" height={20} points={series} max={max} tone="ok" label={`${card.label} — ${inFlightLabel}`} />
                     </Td>
                     {/* Band 0 is a real measurement and `null` is "this node cannot measure",
                         so the pips are driven off `null` rather than off the number. */}
-                    <Td className="hidden @2xl:table-cell">
-                      <BandMeter value={card.pressureBand} />
+                    {showPressure ? (
+                      <Td className="hidden @2xl:table-cell">
+                        <BandMeter value={card.pressureBand} />
+                      </Td>
+                    ) : null}
+                    <Td
+                      align="right"
+                      className="hidden whitespace-nowrap @2xl:table-cell"
+                      title={
+                        card.decode ? t('DASHBOARD_NODE_DECODE_HINT', { model: card.decode.model, age: humanDuration(card.decode.ageMs) }) : undefined
+                      }
+                    >
+                      {card.decode ? (
+                        t('DASHBOARD_NODE_DECODE_VALUE', { rate: formatRate(card.decode) })
+                      ) : (
+                        <span className="text-muted-foreground">{DASH}</span>
+                      )}
                     </Td>
                     <Td align="right" className="hidden @md:table-cell">
                       {card.containers === null ? (
@@ -343,7 +420,7 @@ export function PoolNodes({
                   </Tr>
                   {open ? (
                     <tr id={detailId}>
-                      <td colSpan={8} className="border-b border-border/70 bg-muted/10 p-0">
+                      <td colSpan={columns} className="border-b border-border/70 bg-muted/10 p-0">
                         <NodeCard card={card} window={samples} />
                       </td>
                     </tr>
