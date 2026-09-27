@@ -776,7 +776,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/DnsAvailabilityResponseDto"
                 }
               }
             }
@@ -16741,6 +16741,28 @@
         "required": [
           "supported",
           "domains"
+        ],
+        "additionalProperties": false
+      },
+      "DnsAvailabilityResponseDto": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "zone_unreachable",
+              "hostname_taken"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "available"
         ],
         "additionalProperties": false
       },

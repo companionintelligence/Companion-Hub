@@ -72,6 +72,20 @@ describe('CloudflareController', () => {
       expect(result.available).toBe(false);
     });
 
+    it('hands the form the reason CI-Cloud gave, so a full zone lands on the domain picker', async () => {
+      hostnameService.resolvesToExistingAppHostname.mockResolvedValue(false);
+      const answer = {
+        available: false,
+        reason: 'zone_unreachable' as const,
+        message: "We can't serve any more apps from this domain. Pick another domain name to host this app.",
+      };
+      cfService.checkDnsAvailability.mockResolvedValue(answer);
+
+      const result = await controller.checkDnsAvailability('n8n', 'ci3.pw', 'n8n:store');
+
+      expect(result).toEqual(answer);
+    });
+
     it('treats an invalid appUrn query as absent instead of throwing', async () => {
       hostnameService.resolvesToExistingAppHostname.mockResolvedValue(false);
       cfService.checkDnsAvailability.mockResolvedValue({
