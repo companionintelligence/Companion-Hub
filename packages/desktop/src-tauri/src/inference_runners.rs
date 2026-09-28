@@ -35,24 +35,11 @@ const MACOS_LAUNCH_AGENT_PREFIX: &str = "computer.ci.companion-hub.inference";
 #[cfg(any(test, target_os = "linux"))]
 const LINUX_SYSTEMD_SERVICE_PREFIX: &str = "computer.ci.companion-hub.inference";
 
-const DSPARK_PORT: u16 = 8080;
-const MTPLX_PORT: u16 = 8000;
-// Keep vLLM separate from MTPLX. Both otherwise default to port 8000.
 const VLLM_PORT: u16 = 8002;
 const OLLAMA_PORT: u16 = 11434;
-const LUCEBOX_PORT: u16 = 8000;
 
-const DSPARK_ENDPOINT: &str = "http://host.docker.internal:8080";
-const MTPLX_ENDPOINT: &str = "http://host.docker.internal:8000";
 const VLLM_ENDPOINT: &str = "http://host.docker.internal:8002";
 const OLLAMA_ENDPOINT: &str = "http://host.docker.internal:11434";
-const LUCEBOX_ENDPOINT: &str = "http://host.docker.internal:8000";
-
-const LUCEBOX_IMAGE_CUDA: &str = "ghcr.io/luce-org/lucebox-hub:cuda12";
-const LUCEBOX_IMAGE_ROCM: &str = "ghcr.io/luce-org/lucebox-hub:rocm";
-const LUCEBOX_CONTAINER_NAME: &str = "ci-hub-inference-lucebox";
-const VLLM_METAL_INSTALL_URL: &str =
-    "https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh";
 
 /// The complete automatic setup set. The frontend sends this list explicitly,
 /// but the native layer also has a safe default for future callers.
@@ -238,119 +225,6 @@ fn install_and_start_omlx(data_dir: &Path) -> InferenceRunnerResult {
     }
 }
 
-#[allow(dead_code)]
-fn install_and_start_dspark(data_dir: &Path) -> InferenceRunnerResult {
-    if !platform_is_apple_silicon() {
-        return skipped(
-            "dspark",
-            "This native Metal runner is supported only on Apple Silicon.",
-        );
-    }
-
-    if probe_http(DSPARK_PORT, "/health") {
-        return already_running("dspark", DSPARK_ENDPOINT);
-    }
-
-    let executable = match ensure_python_cli(data_dir, "dspark", "mlx-dspark", "mlx-dspark", 10) {
-        Ok(path) => path,
-        Err(error) => return failed("dspark", error),
-    };
-    let api_key = match ensure_runner_api_key(data_dir, "dspark") {
-        Ok(key) => key,
-        Err(error) => return failed("dspark", error),
-    };
-
-    // Keep this command exact: --no-model is the managed-server mode that lets
-    // the Hub load and swap models through mlx-dspark's common HTTP API.
-    let args = vec![
-        "serve".to_string(),
-        "--no-model".to_string(),
-        "--host".to_string(),
-        "0.0.0.0".to_string(),
-        "--port".to_string(),
-        DSPARK_PORT.to_string(),
-        "--api-key".to_string(),
-        api_key.clone(),
-    ];
-    start_host_process(
-        data_dir,
-        "dspark",
-        &executable,
-        &args,
-        DSPARK_PORT,
-        "/health",
-        DSPARK_ENDPOINT,
-        Some(&api_key),
-    )
-}
-
-#[allow(dead_code)]
-fn install_and_start_mtplx(data_dir: &Path) -> InferenceRunnerResult {
-    if !platform_is_apple_silicon() {
-        return skipped(
-            "mtplx",
-            "This native MLX runner is supported only on Apple Silicon.",
-        );
-    }
-
-    // MTPLX may have moved off 8000 when another service occupied the
-    // preferred port on its first run. Reuse the persisted endpoint before
-    // allocating another port, otherwise every FTUE retry can launch a second
-    // MTPLX process on a new port.
-    let existing_api_key = read_runner_api_key(data_dir, "mtplx");
-    if let Some(endpoint) = persisted_runner_endpoint(data_dir, "mtplx") {
-        if let Some(port) = endpoint_port(&endpoint) {
-            if probe_http_authenticated(port, "/v1/models", existing_api_key.as_deref()) {
-                return already_running("mtplx", &endpoint);
-            }
-        }
-    }
-
-    if probe_http_authenticated(MTPLX_PORT, "/v1/models", existing_api_key.as_deref()) {
-        return already_running("mtplx", MTPLX_ENDPOINT);
-    }
-
-    let port = match available_host_port(MTPLX_PORT) {
-        Some(port) => port,
-        None => {
-            return failed(
-                "mtplx",
-                "No local port was available for MTPLX.".to_string(),
-            )
-        }
-    };
-    let endpoint = host_endpoint(port);
-
-    let executable = match ensure_python_cli(data_dir, "mtplx", "mtplx", "mtplx", 11) {
-        Ok(path) => path,
-        Err(error) => return failed("mtplx", error),
-    };
-    let api_key = match ensure_runner_api_key(data_dir, "mtplx") {
-        Ok(key) => key,
-        Err(error) => return failed("mtplx", error),
-    };
-    let api_key_path = runner_api_key_path(data_dir, "mtplx");
-    let args = vec![
-        "serve".to_string(),
-        "--host".to_string(),
-        "0.0.0.0".to_string(),
-        "--port".to_string(),
-        port.to_string(),
-        "--api-key-file".to_string(),
-        api_key_path.display().to_string(),
-    ];
-    start_host_process(
-        data_dir,
-        "mtplx",
-        &executable,
-        &args,
-        port,
-        "/v1/models",
-        &endpoint,
-        Some(&api_key),
-    )
-}
-
 fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
     if cfg!(target_os = "windows") {
         return skipped(
@@ -439,139 +313,6 @@ fn install_and_start_ollama(data_dir: &Path) -> InferenceRunnerResult {
             InferenceRunnerState::Installed,
             Some(OLLAMA_ENDPOINT.to_string()),
             Some("Ollama was installed; its API is still starting.".to_string()),
-        )
-    }
-}
-
-#[allow(dead_code)]
-fn install_and_start_lucebox(data_dir: &Path) -> InferenceRunnerResult {
-    if cfg!(target_os = "macos") {
-        return skipped(
-            "lucebox",
-            "Docker cannot pass Apple Silicon Metal through to this GPU runner.",
-        );
-    }
-
-    if probe_http(LUCEBOX_PORT, "/health") || probe_http(LUCEBOX_PORT, "/v1/models") {
-        return already_running("lucebox", LUCEBOX_ENDPOINT);
-    }
-
-    if !hub_manager::is_docker_available() {
-        return skipped(
-            "lucebox",
-            "A working Docker engine is required for this GPU runner.",
-        );
-    }
-
-    let existing = docker_container_exists(data_dir, LUCEBOX_CONTAINER_NAME);
-    let port = if existing {
-        // A stopped container retains the host port it was created with. The
-        // managed container always uses the default port, so keep that mapping
-        // when restarting it instead of probing a new port and waiting there.
-        LUCEBOX_PORT
-    } else {
-        match available_host_port(LUCEBOX_PORT) {
-            Some(port) => port,
-            None => {
-                return failed(
-                    "lucebox",
-                    "No local port was available for the GPU runner.".to_string(),
-                )
-            }
-        }
-    };
-    let endpoint = host_endpoint(port);
-
-    let image = if nvidia_smi_works() {
-        LUCEBOX_IMAGE_CUDA
-    } else if cfg!(target_os = "linux")
-        && Path::new("/dev/kfd").exists()
-        && Path::new("/dev/dri").exists()
-    {
-        LUCEBOX_IMAGE_ROCM
-    } else {
-        return skipped(
-            "lucebox",
-            "Automatic setup requires a supported NVIDIA or Linux AMD GPU.",
-        );
-    };
-
-    let models_dir = data_dir
-        .join(RUNNER_INSTALL_DIR)
-        .join("lucebox")
-        .join("models");
-    if let Err(error) = fs::create_dir_all(&models_dir) {
-        return failed(
-            "lucebox",
-            format!("Could not create the runner model directory: {error}"),
-        );
-    }
-
-    let pull = run_docker(
-        data_dir,
-        "lucebox",
-        &["pull".to_string(), image.to_string()],
-    );
-    if let Err(error) = pull {
-        return failed("lucebox", error);
-    }
-
-    let run_result = if existing && !docker_container_running(data_dir, LUCEBOX_CONTAINER_NAME) {
-        run_docker(
-            data_dir,
-            "lucebox",
-            &["start".to_string(), LUCEBOX_CONTAINER_NAME.to_string()],
-        )
-    } else if existing {
-        Ok("The existing GPU container is already running.".to_string())
-    } else {
-        let mut args = vec![
-            "run".to_string(),
-            "-d".to_string(),
-            "--name".to_string(),
-            LUCEBOX_CONTAINER_NAME.to_string(),
-            "--restart".to_string(),
-            "unless-stopped".to_string(),
-            "-p".to_string(),
-            format!("{port}:8080"),
-            "-v".to_string(),
-            format!("{}:/opt/lucebox-hub/server/models", models_dir.display()),
-        ];
-        if image == LUCEBOX_IMAGE_CUDA {
-            args.extend(["--gpus".to_string(), "all".to_string()]);
-        } else {
-            args.extend([
-                "--device".to_string(),
-                "/dev/kfd".to_string(),
-                "--device".to_string(),
-                "/dev/dri".to_string(),
-                "--security-opt".to_string(),
-                "seccomp=unconfined".to_string(),
-            ]);
-        }
-        args.push(image.to_string());
-        run_docker(data_dir, "lucebox", &args)
-    };
-
-    if let Err(error) = run_result {
-        return failed("lucebox", error);
-    }
-
-    if wait_for_http(port, "/health", STARTUP_WAIT)
-        || wait_for_http(port, "/v1/models", STARTUP_WAIT)
-    {
-        success(
-            "lucebox",
-            InferenceRunnerState::InstalledAndStarted,
-            Some(endpoint.clone()),
-            Some("The GPU container was installed and started.".to_string()),
-        )
-    } else {
-        success(
-            "lucebox",
-            InferenceRunnerState::Installed,
-            Some(endpoint),
-            Some("The GPU container was installed; its model server is still starting or needs a model file.".to_string()),
         )
     }
 }
@@ -692,59 +433,6 @@ fn ensure_compatible_host_python(
     Err(format!(
         "Python 3.{minimum_minor}+ is required to install {runner}, but no compatible Python was found."
     ))
-}
-
-fn ensure_vllm_metal(data_dir: &Path) -> Result<PathBuf, String> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| "The current user's home directory could not be resolved.".to_string())?;
-    let expected = home.join(".venv-vllm-metal").join("bin").join("vllm");
-    if expected.exists() {
-        return Ok(expected);
-    }
-
-    let runner_dir = data_dir.join(RUNNER_INSTALL_DIR).join("vllm");
-    fs::create_dir_all(&runner_dir)
-        .map_err(|error| format!("Could not create the vLLM runner directory: {error}"))?;
-    let script_path = runner_dir.join("install-vllm-metal.sh");
-    let curl = command_on_path("curl").ok_or_else(|| {
-        "curl is required to install vLLM-Metal but was not found on PATH.".to_string()
-    })?;
-    let downloaded = run_command(
-        data_dir,
-        "vllm",
-        &curl,
-        &[
-            "-fsSL".to_string(),
-            VLLM_METAL_INSTALL_URL.to_string(),
-            "-o".to_string(),
-            script_path.display().to_string(),
-        ],
-    );
-    if let Err(error) = downloaded {
-        return Err(error);
-    }
-
-    #[cfg(unix)]
-    fs::set_permissions(&script_path, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("Could not make the vLLM-Metal installer executable: {error}"))?;
-
-    let bash = command_on_path("bash").ok_or_else(|| {
-        "bash is required to install vLLM-Metal but was not found on PATH.".to_string()
-    })?;
-    run_command(
-        data_dir,
-        "vllm",
-        &bash,
-        &[script_path.display().to_string()],
-    )?;
-
-    if expected.exists() {
-        Ok(expected)
-    } else {
-        command_on_path("vllm").ok_or_else(|| {
-            "The vLLM-Metal installer completed without creating a vllm command.".to_string()
-        })
-    }
 }
 
 fn host_python(minimum_minor: u8) -> Option<PathBuf> {
@@ -1518,88 +1206,6 @@ fn run_command(
     }
 }
 
-fn run_docker(data_dir: &Path, runner: &str, args: &[String]) -> Result<String, String> {
-    append_runner_log(
-        data_dir,
-        runner,
-        &format!("running docker {}", args.join(" ")),
-    );
-    let output = hub_manager::docker_command()
-        .args(args)
-        .output()
-        .map_err(|error| format!("Could not run Docker: {error}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format_command_output(&stdout, &stderr);
-    append_runner_log(data_dir, runner, &combined);
-    if output.status.success() {
-        Ok(combined)
-    } else if combined.is_empty() {
-        Err(format!("Docker exited with {}.", output.status))
-    } else {
-        Err(format!("Docker failed: {combined}"))
-    }
-}
-
-fn docker_container_exists(data_dir: &Path, name: &str) -> bool {
-    let output = hub_manager::docker_command()
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            &format!("name=^{name}$"),
-            "--format",
-            "{{.Names}}",
-        ])
-        .output();
-    let exists = output
-        .map(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .any(|line| line.trim() == name)
-        })
-        .unwrap_or(false);
-    if exists {
-        append_runner_log(
-            data_dir,
-            "lucebox",
-            &format!("found existing Docker container {name}"),
-        );
-    }
-    exists
-}
-
-fn docker_container_running(data_dir: &Path, name: &str) -> bool {
-    let output = hub_manager::docker_command()
-        .args([
-            "ps",
-            "--filter",
-            "status=running",
-            "--filter",
-            &format!("name=^{name}$"),
-            "--format",
-            "{{.Names}}",
-        ])
-        .output();
-    let running = output
-        .map(|output| {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .any(|line| line.trim() == name)
-        })
-        .unwrap_or(false);
-    if running {
-        append_runner_log(
-            data_dir,
-            "lucebox",
-            &format!("existing Docker container {name} is running"),
-        );
-    }
-    running
-}
-
 fn runner_state_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(RUNNER_STATE_DIR)
 }
@@ -1734,37 +1340,36 @@ mod tests {
     #[test]
     fn result_serializes_for_the_frontend_contract() {
         let json = serde_json::to_value(success(
-            "dspark",
+            "omlx",
             InferenceRunnerState::InstalledAndStarted,
-            Some(DSPARK_ENDPOINT.to_string()),
+            Some(OMLX_ENDPOINT.to_string()),
             Some("started".to_string()),
         ))
         .expect("result should serialize");
-        assert_eq!(json["runner"], "dspark");
+        assert_eq!(json["runner"], "omlx");
         assert_eq!(json["state"], "installed_and_started");
-        assert_eq!(json["endpointUrl"], DSPARK_ENDPOINT);
+        assert_eq!(json["endpointUrl"], OMLX_ENDPOINT);
         assert_eq!(json["detail"], "started");
     }
 
     #[test]
-    fn dspark_command_is_the_managed_no_model_command() {
+    fn redact_args_hides_sensitive_api_key() {
         let args = [
             "serve",
-            "--no-model",
             "--host",
             "0.0.0.0",
             "--port",
-            "8080",
+            "8000",
             "--api-key",
             "secret",
         ];
         assert_eq!(
             args.join(" "),
-            "serve --no-model --host 0.0.0.0 --port 8080 --api-key secret"
+            "serve --host 0.0.0.0 --port 8000 --api-key secret"
         );
         assert_eq!(
             redact_args(&args.map(ToString::to_string), Some("secret")).join(" "),
-            "serve --no-model --host 0.0.0.0 --port 8080 --api-key <redacted>"
+            "serve --host 0.0.0.0 --port 8000 --api-key <redacted>"
         );
     }
 
@@ -1780,15 +1385,15 @@ mod tests {
     #[test]
     fn creates_and_reuses_private_runner_api_keys() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let first = ensure_runner_api_key(tempdir.path(), "dspark").expect("create key");
-        let second = ensure_runner_api_key(tempdir.path(), "dspark").expect("reuse key");
+        let first = ensure_runner_api_key(tempdir.path(), "runner_test").expect("create key");
+        let second = ensure_runner_api_key(tempdir.path(), "runner_test").expect("reuse key");
 
         assert_eq!(first, second);
         assert_eq!(first.len(), API_KEY_BYTES * 2);
         assert!(first.chars().all(|character| character.is_ascii_hexdigit()));
         #[cfg(unix)]
         assert_eq!(
-            fs::metadata(runner_api_key_path(tempdir.path(), "dspark"))
+            fs::metadata(runner_api_key_path(tempdir.path(), "runner_test"))
                 .expect("key metadata")
                 .permissions()
                 .mode()
@@ -1908,7 +1513,7 @@ mod tests {
     #[test]
     fn platform_gate_keeps_mlx_runners_off_non_apple_builds() {
         if !platform_is_apple_silicon() {
-            let result = install_and_start_dspark(Path::new("/tmp/ci-hub-inference-runner-test"));
+            let result = install_and_start_omlx(Path::new("/tmp/ci-hub-inference-runner-test"));
             assert_eq!(result.state, InferenceRunnerState::Skipped);
         }
     }
