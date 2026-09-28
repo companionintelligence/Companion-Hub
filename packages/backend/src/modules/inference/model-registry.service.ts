@@ -268,7 +268,7 @@ export class ModelRegistryService implements OnModuleInit {
 
   /**
    * Compute the best-fit LLMs for the hardware, best first, across every backend represented in the
-   * LLM catalog (currently 'ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', and 'lucebox') — not just Ollama. Each backend's picks are
+   * LLM catalog (currently 'ollama', 'vllm', 'lemonade', and 'omlx') — not just Ollama. Each backend's picks are
    * computed independently (its own best-fit ranking, size-spanning selection) and concatenated, so
    * `getRecommendedModelsForHardware`'s result naturally contains a per-backend recommendation without
    * callers needing to ask for one explicitly; a caller resolving a specific active backend (see

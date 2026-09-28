@@ -13,9 +13,12 @@ import { OmlxBackend } from '../backends/omlx.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach } from 'vitest';
+import axios from 'axios';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { HardwareProfile, TrackedModel, CuratedModel } from '@ci-hub/common/types';
+
+vi.mock('axios');
 
 describe('InferenceRouterService', () => {
   let service: InferenceRouterService;
@@ -41,6 +44,7 @@ describe('InferenceRouterService', () => {
   };
 
   beforeEach(async () => {
+    vi.clearAllMocks();
     loggerService = mock<LoggerService>();
     hardwareInspector = mock<HardwareInspectorService>();
     modelRegistry = mock<ModelRegistryService>();
@@ -430,6 +434,68 @@ describe('InferenceRouterService', () => {
 
       await expect(service.prepareTrackedModel('qwen3-8-27b-mtp')).resolves.toBeNull();
       expect(modelPuller.loadModel).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── routeCompletion ─────────────────────────────────
+  describe('routeCompletion', () => {
+    it('routes text completions to /v1/completions on the active backend', async () => {
+      const tracked = { catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', backend: 'ollama', state: 'loaded' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(tracked);
+      modelRegistry.getTrackedModels.mockReturnValue([tracked]);
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { id: 'cmpl-123', choices: [{ text: 'console.log("hello")' }] }, headers: {} });
+
+      const res = await service.routeCompletion({ model: 'qwen3.8:27b-mtp-q4_K_M', prompt: 'function greet() {' });
+      expect(res.backend).toBe('ollama');
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://ci-hub-ollama:11434/v1/completions',
+        expect.objectContaining({ model: 'qwen3.8:27b-mtp-q4_K_M', prompt: 'function greet() {' }),
+        expect.objectContaining({ timeout: expect.any(Number) }),
+      );
+    });
+
+    it('supports streaming completions with dynamic timeout', async () => {
+      const tracked = { catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', backend: 'ollama', state: 'loaded' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(tracked);
+      modelRegistry.getTrackedModels.mockReturnValue([tracked]);
+      const mockStream = {} as NodeJS.ReadableStream;
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: mockStream, headers: {} });
+
+      const res = await service.routeCompletion({ model: 'qwen3.8:27b-mtp-q4_K_M', prompt: 'hello', stream: true });
+      expect(res.stream).toBe(mockStream);
+      expect(axios.post).toHaveBeenCalledWith(
+        'http://ci-hub-ollama:11434/v1/completions',
+        expect.anything(),
+        expect.objectContaining({ responseType: 'stream', timeout: expect.any(Number) }),
+      );
+    });
+  });
+
+  // ─── Tool-calling error preservation ─────────────────
+  describe('tool calling error preservation', () => {
+    it('preserves 400 errors from backend instead of silently stripping tools and retrying', async () => {
+      const tracked = { catalogId: 'qwen3-0-6b', backendModelId: 'qwen3:0.6b', backend: 'ollama', state: 'loaded' } as TrackedModel;
+      modelRegistry.getTrackedModel.mockReturnValue(tracked);
+      modelRegistry.getTrackedModels.mockReturnValue([tracked]);
+
+      const error400 = new Error('Request failed with status code 400');
+      (error400 as unknown as { isAxiosError: boolean; response: { status: number; data: { error: string } } }).isAxiosError = true;
+      (error400 as unknown as { response: { status: number; data: { error: string } } }).response = {
+        status: 400,
+        data: { error: 'model does not support tools' },
+      };
+      vi.mocked(axios.isAxiosError).mockReturnValue(true);
+      vi.mocked(axios.post).mockRejectedValueOnce(error400);
+
+      const bodyWithTools = {
+        model: 'qwen3:0.6b',
+        messages: [{ role: 'user', content: 'what is the weather?' }],
+        tools: [{ type: 'function', function: { name: 'get_weather' } }],
+      };
+
+      await expect(service.routeChatCompletion(bodyWithTools)).rejects.toThrow('Request failed with status code 400');
+      // Must NOT have retried a second time with tools stripped
+      expect(axios.post).toHaveBeenCalledTimes(1);
     });
   });
 });
