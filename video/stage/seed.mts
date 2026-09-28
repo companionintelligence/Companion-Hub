@@ -54,6 +54,33 @@
  *    Nothing credential-shaped is invented: no key string appears in this repo,
  *    in the DB dump, or in any frame. Rows are keyed by name so a re-run does
  *    not stack up a growing count.
+ *
+ * 5. THE TUNNEL TOKEN, WRITTEN AFTER THE ROW. The Hub counts itself registered
+ *    only with a registration row AND a tunnel token on disk. start-backend.sh
+ *    writes a dummy token before boot, but since #1472 ("Run the tunnel only
+ *    while this Hub is registered") the backend removes a token it finds with no
+ *    registration row — and at boot there is none, because this script runs
+ *    after the backend is up. The row then lands beside an empty tunnel dir and
+ *    the Hub reports `unregistered`, so every page redirects to
+ *    /device-registration and every shot times out on its `waitFor`. Measured on
+ *    2026-09-27: the stage had not been able to film a signed-in frame since
+ *    #1472. Writing the token here, after the row, is what e2e's `locallyReady`
+ *    fixture does (e2e/fixtures/hub-states.ts), for the same reason.
+ *
+ * 6. THE OPERATOR'S PORTAL LINK. Since the one-operator-per-Portal-person work
+ *    (#1402, #1437), a password login that names a Portal subject with no
+ *    `federated_identity` row, on a Hub that already has an operator, is
+ *    admitted only after Portal WhoIs confirms org membership. The mock portal
+ *    has no WhoIs route, so that check is `unknown` and login answers 503
+ *    AUTH_ERROR_ORG_CHECK_UNAVAILABLE — every `before` block's login fails and
+ *    every shot times out on the page behind it. A linked operator takes the
+ *    other path, which admits on `unknown` unless the user was revoked. So the
+ *    seed writes the link an operator's first sign-in would have written:
+ *    issuer = this Hub's CI_CLOUD_URL (AuthService.getPublicPortalBaseUrl),
+ *    subject = the id the mock portal signs every accepted email in as
+ *    (e2e/mock-portal/scenarios.ts). This is the state of a Hub whose operator
+ *    has signed in before, not a bypass: the password is still checked by the
+ *    mock portal on every login.
  */
 
 // Dynamic imports on purpose: these modules are TS sources compiled on the fly by
@@ -63,14 +90,23 @@ const schema = await import('../../packages/backend/src/core/database/drizzle/sc
 const { db } = await import('../../e2e/helpers/db');
 const { testUser } = await import('../../e2e/helpers/constants');
 const { createHash, randomBytes } = await import('node:crypto');
-const { inArray } = await import('drizzle-orm');
+const { mkdirSync, writeFileSync } = await import('node:fs');
+const { join } = await import('node:path');
+const { eq, inArray } = await import('drizzle-orm');
 
-const { apiKey, app, deviceRegistration, user } = schema;
+const { apiKey, app, deviceRegistration, federatedIdentity, user } = schema;
 
 /** The org/device identity storyboard.json is written against. */
 const ORG = { id: 'capture-org', slug: 'acme', name: 'Acme', hubSubdomain: 'hub-living-room-server-acme' };
 
 const OPERATOR_EMAIL = process.env.CAPTURE_OPERATOR_EMAIL ?? 'owner@acme.com';
+
+/** Header item 6. Normalised the way AuthService.getPublicPortalBaseUrl normalises it. */
+const PORTAL_ISSUER = (process.env.CI_CLOUD_URL ?? '').trim().replace(/\/$/, '');
+const PORTAL_SUBJECT = 'test-portal-user';
+
+/** Where start-backend.sh and e2e/fixtures/hub-states.ts put the token — see header item 5. */
+const TUNNEL_DIR = process.env.CI_HUB_TUNNEL_DIR ?? join(process.env.CI_HUB_DATA_DIR ?? '/tmp/ci-hub-e2e', 'tunnel');
 
 /** Marketplace apps shown as installed on /home. Immich is excluded — see the header. */
 const INSTALLED = ['jellyfin', 'home-assistant', 'nextcloud'];
@@ -91,9 +127,20 @@ async function main() {
     .values({ ...ORG, tunnelId: null, provisioningPhase: 'locally_ready' })
     .onConflictDoNothing();
 
+  // After the row, never before: a token with no row is a leftover the backend removes.
+  mkdirSync(TUNNEL_DIR, { recursive: true });
+  writeFileSync(join(TUNNEL_DIR, 'token'), 'e2e-mock-tunnel-token', 'utf-8');
+
   await db
     .insert(user)
     .values({ username: OPERATOR_EMAIL, password: testUser.hashedPassword, operator: true, hasCompletedOnboarding: true })
+    .onConflictDoNothing();
+
+  if (!PORTAL_ISSUER) throw new Error('CI_CLOUD_URL is unset — export the stage env before seeding (see header item 6)');
+  const [operator] = await db.select({ id: user.id }).from(user).where(eq(user.username, OPERATOR_EMAIL));
+  await db
+    .insert(federatedIdentity)
+    .values({ userId: operator.id, issuer: PORTAL_ISSUER, subject: PORTAL_SUBJECT, email: OPERATOR_EMAIL, emailVerified: true })
     .onConflictDoNothing();
 
   await db
@@ -134,7 +181,9 @@ async function main() {
   );
 
   // biome-ignore lint/suspicious/noConsole: capture-stage script progress output
-  console.log(`seeded org=${ORG.slug} operator=${OPERATOR_EMAIL} apps=${INSTALLED.join(',')} mcp-keys=${MCP_KEYS.length} (raw values discarded)`);
+  console.log(
+    `seeded org=${ORG.slug} (+tunnel token) operator=${OPERATOR_EMAIL} (portal link ${PORTAL_SUBJECT}) apps=${INSTALLED.join(',')} mcp-keys=${MCP_KEYS.length} (raw values discarded)`,
+  );
   process.exit(0);
 }
 

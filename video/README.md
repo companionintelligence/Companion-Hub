@@ -18,8 +18,11 @@ reviewable image diff.
 > ⚠️ **The root [`README.md`](../README.md) embeds eight of these shots** in its screenshot grid —
 > `onboarding-wizard`, `ai-models`, `hub-store`, `store-alternatives`, `running-app`, `app-hermes`,
 > `mcp-tools`, and `custom-app-create` (the desktop PNGs) — so a re-shoot updates the README too.
-> `hub-store`, `mcp-tools`, and `custom-app-create` are not in the current storyboard, so a
-> default `make.sh` pass does not re-shoot them; use the longer `--only` list below. Renaming or
+> A default `make.sh` re-shoots only the three of them in the rendered cut (`ai-models`,
+> `store-alternatives`, `running-app`). `onboarding-wizard` and `app-hermes` are parked library
+> scenes, re-shot by `STAGE_SHOTS=library ./video/make.sh`. `hub-store`, `mcp-tools`, and
+> `custom-app-create` have no scene in `storyboard.json` at all, so nothing can re-shoot them —
+> `--only` filters the storyboard's recipes and cannot reach an id that has none. Renaming or
 > deleting any of the eight breaks the README; update its grid in the same change.
 >
 > **One cut is committed, outside this directory, on purpose.** The README's hero plays
@@ -44,25 +47,42 @@ reviewable image diff.
 > `bin/ci-video.ts` while `make-videos.mjs` still looks for `bin/ci-video.mjs`, so the default
 > `--kit origin` fails preflight.
 
-Every shot the storyboard references is captured (0 slates). The cut is **16 scenes**
-and references **8 shot ids × 2 viewports**.
+Every shot the rendered cut needs is captured (0 slates). The rendered cut is the storyboard's
+`master` (**13 scenes**) plus the deliverables beside it, and together they need **5 shot ids × 2
+viewports** — `ai-hardware`, `ai-models`, `running-app`, `port-expose`, `store-alternatives`.
+That is the kit's `shotsOf`, the number `check`, the render gate and `make-videos --list` count.
 
-> ⚠️ **Nine shot ids are committed and are NOT in the current cut.** They are kept, not deleted,
-> and that is a deliberate deviation from the house rule that a dropped scene takes its PNGs with
-> it (see CI-Spellbook #52/#53 and CI-Web-XR-Scan #50). The reason: none of them was dropped for a
-> defect — the storyboard was rewritten around a new script that simply does not have a beat for
-> them — and two of them (`running-app`, `custom-app-create`) cost four product PRs and a real
-> four-container Immich install to unblock. They cost nothing at render time and `shot-coverage`
-> caps `have` at `need`, so they do not distort any fleet count.
+> ⚠️ **Thirteen more shot ids are committed and are NOT in the rendered cut.** They are kept, not
+> deleted, and that is a deliberate deviation from the house rule that a dropped scene takes its
+> PNGs with it (see CI-Spellbook #52/#53 and CI-Web-XR-Scan #50). The reason: none of them was
+> dropped for a defect — the storyboard was rewritten around a new script that simply does not
+> have a beat for them — and `custom-app-create` cost product PRs to unblock. They cost nothing at
+> render time and `shot-coverage` caps `have` at `need`, so they do not distort any fleet count.
+> They come in two kinds, and the difference is whether anything can re-shoot them.
 >
-> | Parked shot | What it is | Why it is out of this cut |
+> **Parked library scenes — five.** Still in `storyboard.scenes` with their `capture` recipes,
+> just not referenced by `master` or any deliverable (the acquisition rewrite, #1130, moved the cut
+> off them). `STAGE_SHOTS=library ./video/make.sh` re-shoots them; a default run does not.
+>
+> | Parked scene | What it is |
+> |---|---|
+> | `hub-home` | The dashboard with three installed-app tiles |
+> | `install-dialog` | The Install Immich dialog, This Machine Only selected |
+> | `onboarding-wizard` | The Set Up Your Hub wizard |
+> | `app-hermes`, `app-openclaw` | Hermes' and OpenClaw's store pages |
+>
+> **PNGs with no scene — eight.** Their scenes were cut from `storyboard.json` outright, so no
+> recipe survives and nothing — not `STAGE_SHOTS=library`, not `--only` — can re-shoot them. To
+> bring one back, restore its scene from git history first.
+>
+> | Shot | What it is | Why it is out |
 > |---|---|---|
 > | `login-screen` | The local login form | The script opens on the problem, not on signing in |
 > | `device-registration` | The six-character pairing step | No pairing beat in the script |
 > | `app-details` | Immich's store page + App Privacy card | The App Privacy beat is cut — see below |
-> | `running-app` | Immich with a genuine green Running pill | No "it is live" beat; the strongest orphan here |
 > | `custom-app-create` | Bring-your-own-container form | No BYO beat in the script |
 > | `mcp-tools` | MCP server, keys and tool catalog | No agent-plumbing beat |
+> | `hub-store` | The featured store view | Cut in the #1090 rewrite; the store appears as its Alternatives view instead |
 > | `hub-settings`, `hub-settings-security` | The settings tab row and Security tab | The old cut ended a chapter on a settings page; the new one does not |
 >
 > ⚠️ **The App Privacy beat is gone.** It is not in the current script, and CI-Engineering's
@@ -81,7 +101,7 @@ node tools/make-videos.mjs companion-hub    # render this repo's two cuts from t
 It resolves `video-kit` straight from the CI-Common checkout on disk — no npm registry, no token.
 
 **To re-shoot, use this repo's own runner** — one command, which stands the whole stage up,
-shoots it in two passes and takes it down again:
+shoots it in the passes each shot needs and takes it down again:
 
 ```bash
 ./video/make.sh --no-render          # stage, capture, check (no render — much faster)
@@ -96,11 +116,21 @@ belongs to each repo. Companion Hub had no such command until [`video/make.sh`](
 [`video/stage.sh`](stage.sh) landed, and in the meantime an *App Privacy* fix merged while the
 committed footage still showed the old card.
 
-**What `stage.sh` shoots is the cut**: the nine shot ids the current `storyboard.json` references.
-The nine **parked** ids listed above — `running-app` among them — are *not* re-shot, deliberately.
-`running-app` needs a genuine four-container Immich install, and installing Immich also swaps the
-store page's Install button for Open, which would change `install-dialog`. Re-shooting those is a
-separate, explicit act; the steps are still below.
+**What `stage.sh` shoots is read from the storyboard, not listed in it.** `capture_all` asks the
+kit's own `shotsOf` for the rendered cut — today the five ids above — so adding a scene to
+`master` is all it takes for the next run to shoot it. It used to carry a fixed list, and #1130
+moved the cut out from under that list: for six weeks `make.sh` re-shot five parked scenes and
+never `running-app`. What `stage.sh` still decides is *which pass* each id needs — see
+[Capture passes](#capture-passes).
+
+```bash
+./video/make.sh --no-render                       # the rendered cut (default)
+STAGE_SHOTS=library ./video/make.sh --no-render   # every scene with a recipe, parked ones too
+```
+
+The cut is the default because nothing renders a parked shot, and re-shooting one only churns its
+PNG: four of the five shots that moved between two identical runs of #1092 (`app-hermes`,
+`app-openclaw`, `hub-home`, `install-dialog`) are parked now.
 
 ## Quick start
 
@@ -218,16 +248,16 @@ stay in step with it.
 
 ```bash
 
-pnpm exec tsx video/stage/seed.mts        # org, operator, installed-app rows, MCP keys
+pnpm exec tsx video/stage/seed.mts        # org + tunnel token, operator, installed-app rows, MCP keys
 
 cd video && APP_URL=http://localhost:9191 npm run capture -- \
-  --only hub-home,ai-hardware,install-dialog,port-expose,store-alternatives,app-hermes,app-openclaw
+  --only ai-hardware,ai-models,port-expose,store-alternatives
 ```
 
-That list is **the shots the current storyboard needs**, minus the two FTUE shots below. The nine
-parked ids are not re-shot by it; re-shooting them needs the longer list this file used to carry —
-`login-screen,hub-store,app-details,mcp-tools,hub-settings,hub-settings-security,running-app,custom-app-create`
-— plus a genuine Immich install for `running-app`.
+That list is **the rendered cut's ordinary signed-in shots as of 2026-09-27** — the cut minus
+`running-app`, which needs Immich first (below). It is written out here for a hand-run only and
+will drift from the storyboard like the one `stage.sh` used to carry did; `./video/make.sh`
+derives it fresh on every run, so prefer that.
 
 **Re-run `video/stage/seed.mts` immediately before the pass, and capture `hub-home` first.**
 This is the five-minute `sync_app_statuses` cron, and its symptom has changed since this file last
@@ -242,26 +272,38 @@ difference small enough to skim past in a diff and fatal on screen. Re-seed, the
 redirects a signed-in visitor to `/home`, so once any earlier shot had authenticated, `hub-home`
 timed out waiting for an email field that would never appear. It now uses the idempotent
 `POST /api/auth/login` + `location.assign` shape this file recommends for every new shot, so it
-works anywhere in the order. `onboarding-wizard` still uses the form shape, and still must be
-pass 2.
+works anywhere in the order. `onboarding-wizard` still uses the form shape, and still needs its
+own pass.
 
-`running-app` additionally needs Immich genuinely installed and up before the pass. It is
-the one shot with a prerequisite the storyboard cannot express, so do it explicitly and
-check the containers rather than trusting the API's 201:
+`running-app` additionally needs Immich genuinely installed and up before it is shot. It is the
+one shot with a prerequisite the storyboard cannot express, so `capture_all` does it in its own
+last pass (`_stage_immich_install` in `stage.sh`): log in, install through the Hub's own API,
+then wait until the Hub reports `running` **and** every service in the marketplace's
+`docker-compose.json` has a healthy container — not merely `Up`, and not the API's 201. By hand,
+on a `--keep-up` stage:
 
 ```bash
 curl -s -c /tmp/hub.jar -X POST http://localhost:9192/api/auth/login \
   -H 'Content-Type: application/json' -d '{"username":"owner@acme.com","password":"password"}'
 curl -s -b /tmp/hub.jar -X POST 'http://localhost:9192/api/app-lifecycle/immich:ci-marketplace/install' \
-  -H 'Content-Type: application/json' -d '{"port":9008,"exposedLocal":false,"exposed":false}'
+  -H 'Content-Type: application/json' -d '{"port":9196,"exposedLocal":false,"exposed":false}'
 # install is async — wait for all four, and for HEALTHY, not merely Up
-docker ps --filter name=immich --format '{{.Names}} {{.Status}}'
+docker ps --filter label=com.docker.compose.project=immich_ci-marketplace --format '{{.Names}} {{.Status}}'
 ```
 
-`app-details` and `install-dialog` film Immich's **store** page and need its Install button,
-which the header swaps for Open the moment Immich is installed. So either capture those two
-before installing, or leave them alone — they are already committed. `--only` scoped to
-`running-app,custom-app-create` does not touch them.
+**Immich's compose project is `immich_ci-marketplace` on every Hub**, so a developer's own Hub on
+the same Docker daemon would share it. The stage decides what is its own by the compose working
+directory (under `STAGE_DATA_DIR`), refuses to install when another Hub's Immich is present, and
+`stage_down` removes only its own containers. It also clears the previous run's Immich data before
+installing: that Postgres directory was initialised with the last install's random
+`IMMICH_DB_PASSWORD`, which a fresh install does not know.
+
+`install-dialog` (and `app-details`, if its scene comes back) film Immich's **store** page and
+need its Install button, which the header swaps for Open the moment Immich is installed; the
+install also adds a fourth tile to `hub-home`. That used to be why `running-app` was not shot at
+all. It is now a matter of order — the Immich pass runs after every other pass, and nothing undoes
+the install before `stage_down`. So on a `--keep-up` stage that has run it, re-shoot those scenes
+only after a fresh `make.sh`.
 
 **Never let the frontend build race `start-backend.sh`.** That script builds `@ci-hub/common`
 partway through its own run. Backgrounding it and building the frontend at the same time — the
@@ -331,24 +373,25 @@ is recorded below, because both were blocked by something real rather than by ef
 one the install still fails, just later and louder. Budget a few minutes for the first pass:
 Immich's four images are pulled for real.
 
-## Three capture passes
+## Capture passes
+<a id="capture-passes"></a>
 
-Two FTUE shots need Hub state that is mutually exclusive with an operational, onboarded
-Hub, so a full capture runs in three passes. They used to be declared and left as
-permanent slates; they are filmed now.
+Some shots need Hub state that is mutually exclusive with an operational, onboarded Hub, or with
+each other, so `capture_all` sorts every id it is given into the pass its state needs. The sort is
+a `case` statement in `stage.sh`; any id it does not name is an ordinary signed-in shot, so a new
+scene needs a line there only if it needs a new state. Passes whose ids are absent from the run
+are skipped.
 
 | Pass | Shots | Setup |
 |---|---|---|
-| 1 | everything except the two below | `video/stage/seed.mts`, re-run immediately before the pass — plus a genuine Immich install for `running-app` (see above) |
-| 2 | `onboarding-wizard` | `setWelcomeSeen(false)` (`e2e/helpers/settings.ts`) re-arms the wizard, which `onboarding-page.tsx` otherwise skips whenever `hasCompletedOnboarding` is true. Each pass gets a fresh BrowserContext, so this shot carries its own login in `before`. |
-| 3 | `device-registration` | flip the mock portal with `curl -X POST localhost:9193/___control -d '{"scenario":"unregistered"}'`, then `freshUnregistered()` (`e2e/fixtures/hub-states.ts`) clears the DB and removes the tunnel token `start-backend.sh` wrote. **Must run last** — it destroys the seeded admin. Do not reach for `POST /api/registration/prepare-fresh`; it refuses while the Hub is operational. |
+| signed-in | `hub-home` alone, then every id not named below, in storyboard order | `video/stage/seed.mts`, re-run immediately before. `hub-home` gets its own `kit capture` because one invocation shoots in storyboard order, not `--only` order, and every desktop frame before any mobile one. |
+| onboarding | `onboarding-wizard` | `setWelcomeSeen(false)` (`e2e/helpers/settings.ts`) re-arms the wizard, which `onboarding-page.tsx` otherwise skips whenever `hasCompletedOnboarding` is true; `RESTORE=1` puts it back afterwards. Each pass gets a fresh BrowserContext, so this shot carries its own login in `before`. |
+| Immich | `running-app` | A genuine Immich install, waited on until healthy (see above). **Last**, because nothing undoes it before `stage_down`. |
+| *(refused)* | `device-registration` | Not run by `capture_all`, which stops before shooting anything if the id is in the set. By hand: flip the mock portal with `curl -X POST localhost:9193/___control -d '{"scenario":"unregistered"}'`, then `freshUnregistered()` (`e2e/fixtures/hub-states.ts`) clears the DB and removes the tunnel token `start-backend.sh` wrote. **Must run last** — it destroys the seeded admin. Do not reach for `POST /api/registration/prepare-fresh`; it refuses while the Hub is operational. |
 
-Pass 1 is every shot id in `storyboard.json` except those two — the `--only` list in the
-command above. Add a scene, add its id there.
-
-**Both pass-1 shots added in the 30/30 pass log themselves in.** `running-app` and
+**Both shots added in the 30/30 pass log themselves in.** `running-app` and
 `custom-app-create` do not inherit the session from `hub-home`'s `before` block the way the
-rest of pass 1 does: each starts at its own route, waits on `<its own selector>, input[placeholder='you@example.com']`
+rest of the signed-in pass did: each starts at its own route, waits on `<its own selector>, input[placeholder='you@example.com']`
 (a CSS selector list, so it resolves whether the Hub answers with the page or the login
 gate), then logs in over `POST /api/auth/login` in an `eval` and navigates. That is
 idempotent — it works as shot #1 of a fresh context and as shot #11 of a warm one. Prefer
