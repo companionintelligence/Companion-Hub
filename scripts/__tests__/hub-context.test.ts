@@ -778,6 +778,8 @@ const SEED_PASSWORD = 'sentinel-pw-8f3a2c';
 const SEED_IMAGE = 'ghcr.io/example-invalid/not-a-real-hub:sentinel-42';
 const SEED_IMAGE_FROM = 'sentinel-source-5c1e';
 const SEED_COMPOSE_FROM = 'sentinel-compose-9b27';
+const SEED_PORTAL = 'https://portal.example.invalid';
+const SEED_PORTAL_FROM = 'sentinel-portal-3f81';
 
 describe('ensureApplianceInstall', () => {
   let exitSpy: ReturnType<typeof spyOnExit>;
@@ -816,6 +818,8 @@ describe('ensureApplianceInstall', () => {
       hubImage: SEED_IMAGE,
       hubImageFrom: SEED_IMAGE_FROM,
       composeFrom: SEED_COMPOSE_FROM,
+      portalUrl: SEED_PORTAL,
+      portalUrlFrom: SEED_PORTAL_FROM,
       warnings: [],
     });
     const { ensureApplianceInstall } = await loadFreshHubContext();
@@ -829,6 +833,9 @@ describe('ensureApplianceInstall', () => {
     expect(boxText()).toContain(SEED_IMAGE);
     expect(boxText()).toContain(`from ${SEED_IMAGE_FROM}`);
     expect(boxText()).toContain(`Compose: from ${SEED_COMPOSE_FROM}`);
+    // The Portal decides where a pairing code works, so the report names it and where it came from.
+    expect(boxText()).toContain(`Portal: ${SEED_PORTAL}`);
+    expect(boxText()).toContain(`from ${SEED_PORTAL_FROM}`);
     // Nothing disagreed with the seed, so there is nothing to shout about.
     expect(boxText()).not.toContain('Check this Hub install');
   });
@@ -845,6 +852,8 @@ describe('ensureApplianceInstall', () => {
       hubImage: SEED_IMAGE,
       hubImageFrom: SEED_IMAGE_FROM,
       composeFrom: SEED_COMPOSE_FROM,
+      portalUrl: SEED_PORTAL,
+      portalUrlFrom: SEED_PORTAL_FROM,
       warnings,
     });
     const { ensureApplianceInstall } = await loadFreshHubContext();
@@ -879,6 +888,8 @@ describe('ensureApplianceInstall', () => {
       hubImage: SEED_IMAGE,
       hubImageFrom: SEED_IMAGE_FROM,
       composeFrom: SEED_COMPOSE_FROM,
+      portalUrl: SEED_PORTAL,
+      portalUrlFrom: SEED_PORTAL_FROM,
       warnings: [],
     });
     const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');

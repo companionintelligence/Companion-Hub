@@ -137,16 +137,47 @@ describe('bringUpScript on a node', () => {
    * one repeats): `000` is nothing listening yet, `404` a Hub without the route. `phase` is the body
    * the check after `register` reads.
    */
-  function runOnNode(opts: { image?: string; probes?: string[]; phase: string; desktopRunning?: boolean }) {
+  function runOnNode(opts: {
+    image?: string;
+    probes?: string[];
+    phase: string;
+    desktopRunning?: boolean;
+    /** The node's env file before `cihub up`, after its API_PORT/CI_HUB_IMAGE lines; `null` is a node with none yet. */
+    envExtra?: string | null;
+    /** The Portal the code was minted on, handed to `bringUpScript`. */
+    portalOrigin?: string;
+    /** Stand in for a `cihub` older than seeding from CI_CLOUD_URL: its seed writes production whatever it is given. */
+    seedIgnoresCloudUrl?: boolean;
+  }) {
     const home = mkdtempSync(join(tmpdir(), 'bringup-home-'));
     const bin = mkdtempSync(join(tmpdir(), 'bringup-bin-'));
     tempDirs.push(home, bin);
     const dataDir = join(home, '.local', 'share', 'companion-hub');
     mkdirSync(dataDir, { recursive: true });
-    writeFileSync(join(dataDir, '.env.dev'), `API_PORT=5002\n${opts.image ? `CI_HUB_IMAGE=${opts.image}\n` : ''}`);
+    const envPath = join(dataDir, '.env.dev');
+    if (opts.envExtra !== null) {
+      writeFileSync(envPath, `API_PORT=5002\n${opts.image ? `CI_HUB_IMAGE=${opts.image}\n` : ''}${opts.envExtra ?? ''}`);
+    }
     writeFileSync(join(home, 'probes'), `${(opts.probes ?? ['200']).join('\n')}\n`);
-    // Every call is recorded, so a test can say whether `register` ever ran — that is the code spent.
-    writeFileSync(join(bin, 'cihub'), '#!/bin/sh\necho "$*" >> "$HOME/cihub-calls"\nexit 0\n', { mode: 0o755 });
+    if (opts.seedIgnoresCloudUrl) writeFileSync(join(home, 'seed-ignores-cloud-url'), '');
+    // Every call is recorded with the CI_CLOUD_URL it saw, so a test can say whether `register` ever
+    // ran — that is the code spent — and what `up` was told. `up` on a node with no env file seeds
+    // one as `seedApplianceInstall` does: CI_CLOUD_URL when it is set, else production.
+    writeFileSync(
+      join(bin, 'cihub'),
+      [
+        '#!/bin/sh',
+        'echo "$* CI_CLOUD_URL=${CI_CLOUD_URL-unset}" >> "$HOME/cihub-calls"',
+        'env_dev="$HOME/.local/share/companion-hub/.env.dev"',
+        'if [ "$1" = up ] && [ ! -f "$env_dev" ]; then',
+        '  url="${CI_CLOUD_URL:-https://hub.ci.computer}"; [ ! -f "$HOME/seed-ignores-cloud-url" ] || url=https://hub.ci.computer',
+        '  echo "API_PORT=5002" > "$env_dev"; echo "CI_CLOUD_URL=$url" >> "$env_dev"',
+        'fi',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
     writeFileSync(
       join(bin, 'curl'),
       [
@@ -164,13 +195,23 @@ describe('bringUpScript on a node', () => {
     writeFileSync(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     // Stubbed either way, so whatever runs on the machine running the test cannot answer for the node.
     writeFileSync(join(bin, 'pgrep'), `#!/bin/sh\nexit ${opts.desktopRunning ? 0 : 1}\n`, { mode: 0o755 });
-    const res = spawnSync('bash', ['-c', bringUpScript('pw12345678', 'ABC123')], {
+    const res = spawnSync('bash', ['-c', bringUpScript('pw12345678', 'ABC123', opts.portalOrigin)], {
       encoding: 'utf8',
       env: { PATH: `${bin}:${process.env.PATH ?? ''}`, HOME: home },
     });
     const calls = existsSync(join(home, 'cihub-calls')) ? readFileSync(join(home, 'cihub-calls'), 'utf8') : '';
     const probeCount = existsSync(join(home, 'probe-count')) ? Number(readFileSync(join(home, 'probe-count'), 'utf8').trim()) : 0;
-    return { code: res.status, out: res.stdout, err: res.stderr, registered: calls.includes('register'), probeCount };
+    const up = calls.split('\n').find((line) => line.startsWith('up '));
+    return {
+      code: res.status,
+      out: res.stdout,
+      err: res.stderr,
+      registered: calls.includes('register'),
+      probeCount,
+      /** The CI_CLOUD_URL `cihub up` ran with (`unset` when none), or undefined when `up` never ran. */
+      upCloudUrl: up?.match(/CI_CLOUD_URL=(\S*)$/)?.[1],
+      envAfter: existsSync(envPath) ? readFileSync(envPath, 'utf8') : undefined,
+    };
   }
 
   it('names the image on the failure line when the Hub never answers — the 0.2.70 core-6 was seeded with', () => {
@@ -244,6 +285,64 @@ describe('bringUpScript on a node', () => {
     const last = ok.out.trim().split('\n').at(-1) ?? '';
     expect(last.startsWith(`hub-up-complete (CI_HUB_IMAGE=${image}; a companion-hub desktop app is running`)).toBe(true);
   });
+
+  const DEV_PORTAL = 'https://hub.companionintelligence.com';
+
+  it('2026-09-28: seeds a wiped node against the Portal its code was minted on, and registers it', () => {
+    // Sixteen wiped nodes, codes minted on the dev Portal: every fresh `cihub up` seeded production,
+    // and the check after it stopped the node with portal-mismatch, so none of them could come up.
+    const res = runOnNode({ envExtra: null, portalOrigin: `${DEV_PORTAL}/`, phase: '{"registered":true}' });
+    expect(res.upCloudUrl).toBe(DEV_PORTAL);
+    expect(res.envAfter).toContain(`CI_CLOUD_URL=${DEV_PORTAL}\n`);
+    expect(res.err).not.toContain('portal-mismatch');
+    expect(res.code).toBe(0);
+    expect(res.registered).toBe(true);
+  });
+
+  it('refuses an installed Hub that pairs against another Portal before `cihub up`, and leaves its Portal alone', () => {
+    const res = runOnNode({ envExtra: 'CI_CLOUD_URL=https://hub.ci.computer\n', portalOrigin: DEV_PORTAL, phase: '{"registered":true}' });
+    expect(res.code).toBe(1);
+    const line = describeStepFailure(res.out, res.err, { code: res.code, marker: 'hub-up-complete' });
+    expect(line).toContain('portal-mismatch');
+    expect(line).toContain('this Hub pairs against https://hub.ci.computer');
+    expect(line).toContain(`the code was minted on ${DEV_PORTAL}`);
+    expect(line).toContain('cihub up was not run');
+    // Nothing restarted, nothing rewritten, and the code is still unspent.
+    expect(res.upCloudUrl).toBeUndefined();
+    expect(res.envAfter).toContain('CI_CLOUD_URL=https://hub.ci.computer\n');
+    expect(res.envAfter).not.toContain(DEV_PORTAL);
+    expect(res.registered).toBe(false);
+  });
+
+  it('brings up an installed Hub already on the mint Portal, whatever its trailing slash', () => {
+    const res = runOnNode({ envExtra: `CI_CLOUD_URL=${DEV_PORTAL}/\n`, portalOrigin: DEV_PORTAL, phase: '{"registered":true}' });
+    expect(res.code).toBe(0);
+    expect(res.registered).toBe(true);
+  });
+
+  it('names a cihub too old to seed from CI_CLOUD_URL when a fresh node still comes up on production', () => {
+    const res = runOnNode({ envExtra: null, portalOrigin: DEV_PORTAL, seedIgnoresCloudUrl: true, phase: '{"registered":true}' });
+    expect(res.code).toBe(1);
+    expect(res.upCloudUrl).toBe(DEV_PORTAL);
+    const line = describeStepFailure(res.out, res.err, { code: res.code, marker: 'hub-up-complete' });
+    expect(line).toContain('portal-mismatch');
+    expect(line).toContain('without honouring CI_CLOUD_URL');
+    expect(res.registered).toBe(false);
+  });
+
+  it('names a running desktop app when the Portal changed under `cihub up`', () => {
+    // Every Hub start it makes rewrites CI_CLOUD_URL to its own build's Portal, as it does CI_HUB_IMAGE.
+    const res = runOnNode({ envExtra: null, portalOrigin: DEV_PORTAL, seedIgnoresCloudUrl: true, desktopRunning: true, phase: '' });
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('rewrites CI_CLOUD_URL to its own Portal');
+    expect(res.registered).toBe(false);
+  });
+
+  it('hands `cihub up` no Portal when the caller does not know where the code was minted', () => {
+    const res = runOnNode({ envExtra: null, phase: '{"registered":true}' });
+    expect(res.upCloudUrl).toBe('unset');
+    expect(res.code).toBe(0);
+  });
 });
 
 describe('portalOriginMismatch', () => {
@@ -279,21 +378,33 @@ describe('nodePortalUrlScript', () => {
 });
 
 describe('bringUpScript portal check', () => {
-  it("checks the Hub's Portal after `cihub up` writes it and before `register` resets anything", () => {
+  it("checks the Hub's Portal before `cihub up`, again after it writes the file, and before `register` resets anything", () => {
     const script = bringUpScript('pw12345678', 'ABC123', 'https://hub.ci.computer/');
     const up = script.indexOf('cihub up --detached');
-    const check = script.indexOf('portal-mismatch');
+    const before = script.indexOf('portal-mismatch');
+    const after = script.lastIndexOf('portal-mismatch');
     const register = script.indexOf('cihub register');
     expect(up).toBeGreaterThanOrEqual(0);
-    expect(check).toBeGreaterThan(up);
-    expect(register).toBeGreaterThan(check);
+    expect(before).toBeLessThan(up);
+    expect(after).toBeGreaterThan(up);
+    expect(register).toBeGreaterThan(after);
     // Compared as an origin, so the node's trailing slash does not fail an identical Portal.
     expect(script).toContain("!= 'https://hub.ci.computer'");
     expect(script).toMatch(/hub-up-failed: portal-mismatch[^\n]*exit 1/);
   });
 
-  it('adds no check when the caller does not know where the code was minted', () => {
-    expect(bringUpScript('pw12345678', 'ABC123')).not.toContain('portal-mismatch');
+  it('hands `cihub up` the mint origin as CI_CLOUD_URL, so a fresh node is seeded against that Portal', () => {
+    const script = bringUpScript('pw12345678', 'ABC123', 'https://hub.companionintelligence.com/');
+    expect(script).toContain("CI_CLOUD_URL='https://hub.companionintelligence.com' cihub up --detached");
+    // For `up` alone: `register` and everything after it read the Portal from the node's env file.
+    expect(script).not.toMatch(/export CI_CLOUD_URL/);
+  });
+
+  it('adds no check and no Portal when the caller does not know where the code was minted', () => {
+    const script = bringUpScript('pw12345678', 'ABC123');
+    expect(script).not.toContain('portal-mismatch');
+    expect(script).not.toContain('CI_CLOUD_URL=');
+    expect(script).toContain('\ncihub up --detached\n');
   });
 });
 
