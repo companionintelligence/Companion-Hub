@@ -222,7 +222,13 @@ describe('AppDetailsPage', () => {
   it('puts the price chip on the icon row so a long name cannot drop it under the author', () => {
     render(<AppDetailsPage />);
 
-    const [mobileChip, desktopChip] = screen.getAllByTestId('app-price-badge');
+    const chips = screen.getAllByTestId('app-price-badge');
+    expect(chips).toHaveLength(2);
+    const mobileChip = chips[0];
+    const desktopChip = chips[1];
+    if (!mobileChip || !desktopChip) {
+      throw new Error('expected a mobile and a desktop price chip');
+    }
     const icon = screen.getByRole('img', { name: 'Test App' });
 
     expect(mobileChip.parentElement).toBe(icon.parentElement);
