@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import ResourceMonitorPage from '../pages/resource-monitor-page';
 
+// A whole page and nine queries per test. `renderNode` already waits up to 8 s for the skeletons to
+// clear, which the 5 s default cut short on a loaded runner, failing tests that were only slow.
+vi.setConfig({ testTimeout: 30_000 });
+
 /*
  * THE WHOLE PAGE, AGAINST WHAT THE FLEET ACTUALLY SERVED.
  *
@@ -53,7 +57,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   systemLoadOptions: () => ({ queryKey: ['system-load'], queryFn: async () => fx.data.system_load }),
 }));
 
-async function renderNode(node: 'core-2' | 'core-1' | 'fzzy', options: { routingLog?: string } = {}) {
+async function renderNode(
+  node: 'core-2' | 'core-1' | 'fzzy',
+  options: { routingLog?: string; pool?: string; now?: string; edit?: (data: Record<string, unknown>) => void } = {},
+) {
   fx.data = JSON.parse(readFileSync(join(FIXTURES, `${node}.json`), 'utf8'));
   let now = fx.data.now as string;
   // A routing log from another instant replaces the node's own, and the clock moves to that instant.
@@ -62,6 +69,13 @@ async function renderNode(node: 'core-2' | 'core-1' | 'fzzy', options: { routing
     fx.data['inference_pool_routing-log'] = rewound['inference_pool_routing-log'];
     now = rewound.now;
   }
+  // Likewise a pool status from a later capture.
+  if (options.pool) {
+    fx.data.inference_pool_status = JSON.parse(readFileSync(join(FIXTURES, options.pool), 'utf8')).inference_pool_status;
+  }
+  if (options.now) now = options.now;
+  // A deliberate edit of the real payload, for a state the fleet was not in when it was captured.
+  options.edit?.(fx.data);
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(now));
 
@@ -252,5 +266,185 @@ describe('resource monitor on core-2 mid-burst (its routing log as it stood at 2
     expect(firstByte('local')).toBe('32.2 s');
     expect(firstByte('peer-core-14')).toBe('—');
     expect(firstByte('peer-core-7')).toBe('—');
+  });
+});
+
+/*
+ * POOL REACH AND THIS HUB'S OWN INFERENCE, AGAINST THE POOL AS IT STOOD ON 2026-09-28.
+ *
+ * `core-2-pool-2026-09-28T162624Z.json` is a fresh read-only capture of core-2's `/pool/status` and
+ * `/pool/routing-log?limit=200` at 16:26:24Z: fifteen peers, all connected, and a ring of 37 rows.
+ * Scrubbed as the 09-27 captures are (suffix replaced, peer ids renamed, public keys, key
+ * fingerprints, node uuids and request ids dropped); otherwise untouched. The rest of the page stays
+ * on its 09-27 payloads.
+ *
+ * At the capture instant nothing had been placed for 75 minutes. At 15:12:00Z — the second test's
+ * clock — the ring held exactly what was captured, because nothing was recorded after 15:11:00.724:
+ * four requests core-2's own callers sent at 15:04 (three served here, one on core-17) and four
+ * `/api/show` forwards beta-max sent in at 15:11.
+ */
+describe('resource monitor on core-2 with its 2026-09-28 pool (15 peers)', () => {
+  const POOL = 'core-2-pool-2026-09-28T162624Z.json';
+
+  it('draws all fifteen peers as connected spokes, under the names the Pool nodes table uses', async () => {
+    const container = await renderNode('core-2', { pool: POOL, routingLog: POOL });
+    const spokes = [...container.querySelectorAll('[data-testid="pool-reach-peer"]')];
+
+    expect(spokes).toHaveLength(15);
+    expect(spokes.every((spoke) => spoke.getAttribute('data-status') === 'connected')).toBe(true);
+    const names = spokes.map((spoke) => spoke.getAttribute('data-peer'));
+    // One name per node on the page. core-10 calls itself "ci" and beta-glass "beta-3-glass", and
+    // that is what Pool nodes prints; core-1 sends no display name, so both fall back to its host.
+    const tableNames = [...container.querySelectorAll('td')].map((cell) => cell.textContent?.trim());
+    for (const name of ['ci', 'beta-3-glass', 'core-1']) {
+      expect(names).toContain(name);
+      expect(tableNames).toContain(name);
+    }
+    expect(names).not.toContain('core-10');
+    // The host an operator would ssh to rides beside the name wherever the slot has room for both.
+    expect(container.querySelector('[data-peer="ci"] text')?.textContent).toBe('ci core-10');
+    expect(container.querySelector('[data-testid="pool-reach-overflow"]')).toBeNull();
+    expect(container.querySelector('[data-testid="pool-reach-graph"]')?.getAttribute('aria-label')).toBe(
+      'core-2 and its 15 paired peers: 15 connected',
+    );
+    // beta-ms-a2 holds 23 models on a CPU-only box; the label says both.
+    expect(container.querySelectorAll('[data-peer="beta-ms-a2"] text')[1]?.textContent).toBe('23 models · cpu-only');
+    const legend = container.querySelector('[data-testid="pool-reach-legend"]')?.textContent ?? '';
+    expect(legend).toContain('15connected');
+    expect(legend).not.toContain('unreachable');
+  });
+
+  it('says a quiet half hour in words, over a log that covers it', async () => {
+    const container = await renderNode('core-2', { pool: POOL, routingLog: POOL });
+
+    expect(container.querySelector('[data-testid="inference-from-here"]')?.textContent).toContain(
+      'Nothing sent from this Hub in the last 30 minutes.',
+    );
+    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')).toBeNull();
+  });
+
+  it("counts core-2's own four requests, not beta-max's four forwards the rail also routed", async () => {
+    const container = await renderNode('core-2', { pool: POOL, routingLog: POOL, now: '2026-09-28T15:12:00Z' });
+    const tile = container.querySelector('[data-testid="inference-from-here"]') as HTMLElement;
+
+    expect(railStat(container, 'Routed 30m')).toBe('8Routed 30m');
+    expect(railStat(tile, 'Requests')).toBe('4Requests');
+    expect(railStat(tile, 'Failed')).toBe('0Failed');
+    // 15 + 17 + 17 + 17 prompt and 2 + 8 + 3 + 3 output, every request reporting: the same totals
+    // Pool activity's 30-minute chips read, because only outbound rows carry usage.
+    expect(railStat(tile, 'Prompt tok')).toBe('66Prompt tok');
+    expect(railStat(tile, 'Output tok')).toBe('16Output tok');
+    expect(railStat(container, 'Prompt tok 30m')).toBe('66Prompt tok 30m');
+    // None of the four was streamed, so no duration here is a first byte.
+    expect(railStat(tile, '1st byte p50')).toBe('—1st byte p50none streamed');
+    const models = [...container.querySelectorAll('[data-testid="inference-from-here-models"] li')].map((item) => item.textContent);
+    expect(models).toEqual(['gemma3:1b2 req40 tok', 'qwen3.5:4b1 req25 tok', 'qwen3-coder:30b1 req17 tok']);
+  });
+});
+
+/*
+ * THE TILE'S HONESTY RULES, THROUGH THE PAGE'S OWN WIRING.
+ *
+ * `InferenceFromHere` is told by the page whether some calls bypass the log and whether the log may
+ * be missing rows; the component tests pass both by hand, so a page that stopped computing either
+ * would leave them green. These edit the real 09-28 capture into each state and read the tile.
+ */
+describe('resource monitor on core-2: what the tile can and cannot vouch for', () => {
+  const POOL = 'core-2-pool-2026-09-28T162624Z.json';
+  type Pool = { enabled?: boolean; peers: Record<string, unknown>[]; settings: Record<string, unknown>; directions?: Record<string, unknown> };
+  const pool = (data: Record<string, unknown>) => data.inference_pool_status as Pool;
+  const tile = (container: HTMLElement) => container.querySelector('[data-testid="inference-from-here"]')?.textContent ?? '';
+  const unlogged = (container: HTMLElement) => container.querySelector('[data-testid="inference-from-here-unlogged"]')?.textContent ?? null;
+
+  it('logs everything while a peer is connected, so a quiet half hour is a real zero', async () => {
+    const container = await renderNode('core-2', { pool: POOL, routingLog: POOL });
+
+    expect(tile(container)).toContain('Nothing sent from this Hub in the last 30 minutes.');
+    expect(unlogged(container)).toBeNull();
+  });
+
+  it('on a Hub with nothing paired, names /api/inference/v1 as the gap and never claims nothing was sent', async () => {
+    const container = await renderNode('core-2', {
+      pool: POOL,
+      routingLog: POOL,
+      edit: (data) => {
+        pool(data).peers = [];
+      },
+    });
+
+    expect(tile(container)).not.toContain('Nothing sent');
+    expect(tile(container)).toContain('Nothing logged from this Hub in the last 30 minutes.');
+    // `poolRouteAppsAlways` is on in the capture: apps go through the proxy, which logs.
+    expect(unlogged(container)).toContain('/api/inference/v1');
+  });
+
+  it('with every peer unreachable, the same: /v1 serves locally and unlogged', async () => {
+    const container = await renderNode('core-2', {
+      pool: POOL,
+      routingLog: POOL,
+      edit: (data) => {
+        for (const peer of pool(data).peers) peer.status = 'unreachable';
+      },
+    });
+
+    expect(tile(container)).not.toContain('Nothing sent');
+    expect(unlogged(container)).toContain('/api/inference/v1');
+  });
+
+  it('says apps bypass the log entirely when they are handed engines directly and no peer is connected', async () => {
+    const container = await renderNode('core-2', {
+      pool: POOL,
+      routingLog: POOL,
+      edit: (data) => {
+        pool(data).peers = [];
+        pool(data).settings.poolRouteAppsAlways = false;
+      },
+    });
+
+    expect(tile(container)).not.toContain('Nothing');
+    expect(unlogged(container)).toContain('call their engines directly');
+  });
+
+  it('reads the counts as floors when the ring dropped rows from inside the window', async () => {
+    const container = await renderNode('core-2', {
+      pool: POOL,
+      routingLog: POOL,
+      now: '2026-09-28T15:12:00Z',
+      edit: (data) => {
+        const log = data['inference_pool_routing-log'] as { entries: { at: string }[]; summary: Record<string, unknown> };
+        // Keep only the rows from 15:04 on, and say the ring evicted the rest.
+        log.entries = log.entries.filter((entry) => Date.parse(entry.at) >= Date.parse('2026-09-28T15:04:00Z'));
+        log.summary = { ...log.summary, recorded: log.entries.length, totalRecorded: 400, oldestAt: log.entries.at(-1)?.at };
+      },
+    });
+
+    expect(container.querySelector('[data-testid="inference-from-here-partial"]')?.textContent).toContain('At least');
+    expect(railStat(container.querySelector('[data-testid="inference-from-here"]') as HTMLElement, 'Requests')).toBe('4Requests');
+  });
+
+  it('says the log starts at a restart inside the window, so a short count is not read as a quiet half hour', async () => {
+    const container = await renderNode('core-2', {
+      pool: POOL,
+      routingLog: POOL,
+      now: '2026-09-28T15:12:00Z',
+      edit: (data) => {
+        const log = data['inference_pool_routing-log'] as { summary: Record<string, unknown> };
+        log.summary = { ...log.summary, startedAt: '2026-09-28T15:00:00.000Z' };
+      },
+    });
+
+    expect(tile(container)).toContain('Log starts at the Hub restart, 12m 0s ago.');
+  });
+
+  it('greys the reach drawing and says why when outbound routing is off here', async () => {
+    const container = await renderNode('core-2', {
+      pool: POOL,
+      routingLog: POOL,
+      edit: (data) => {
+        pool(data).directions = { outbound: { enabled: false, disabledBy: 'setting' }, inbound: { enabled: true, disabledBy: null } };
+      },
+    });
+
+    expect(container.querySelector('[data-testid="pool-reach-routing-off"]')?.textContent).toContain('Outbound routing is off');
   });
 });
