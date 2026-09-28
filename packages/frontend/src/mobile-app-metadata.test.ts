@@ -153,6 +153,16 @@ describe('mobile app metadata: cihub deep-link scheme', () => {
   });
 });
 
+describe('mobile app metadata: Android in-app auth session', () => {
+  it('compiles Chrome Auth Tab into the Android app', () => {
+    const kotlin = read('gen/android/app/src/main/java/computer/ci/app/hub/AuthSession.kt');
+    expect(kotlin).toMatch(/AuthTabIntent/);
+    expect(kotlin).toMatch(/nativeOnResult/);
+    expect(androidGradle).toMatch(/androidx\.browser:browser:/);
+    expect(androidManifest).toMatch(/android\.support\.customtabs\.action\.CustomTabsService/);
+  });
+});
+
 describe('mobile app metadata: iOS in-app auth session', () => {
   it('compiles the ASWebAuthenticationSession sheet into the iOS app', () => {
     const swift = read('gen/apple/Sources/AuthSession/AuthSession.swift');

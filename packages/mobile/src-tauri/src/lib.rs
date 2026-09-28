@@ -9,10 +9,11 @@
 //! The only native responsibility kept from desktop is **deep-link capture**:
 //! the Portal SSO flow finishes by redirecting to `cihub://auth?token=…`,
 //! pairing flows use `cihub://pair?code=…`, and mobile OIDC PKCE returns via
-//! `cihub://auth/callback?code=…`. On iOS, `start_auth_session` presents that
-//! Portal page in an in-app Safari sheet (`ASWebAuthenticationSession`) and
-//! feeds the `cihub://` callback into this same capture path so the app never
-//! jumps out to Safari. We stash the URL and emit `deep-link-auth` /
+//! `cihub://auth/callback?code=…`. `start_auth_session` presents that Portal
+//! page in an in-app browser (iOS `ASWebAuthenticationSession`, Android Chrome
+//! Auth Tab) and feeds the `cihub://` callback into this same capture path so
+//! the app never jumps out to the system browser. We stash the URL and emit
+//! `deep-link-auth` /
 //! `deep-link-pair` / `deep-link-oidc` so the frontend can finish the flow
 //! even when iOS relaunches the app (the desktop-only `deep-link://new-url`
 //! event never fires on a phone).
@@ -90,10 +91,12 @@ fn clear_pending_oidc_callback(state: tauri::State<'_, PendingOidcCallback>) {
     }
 }
 
-/// iOS only. In-app Safari authentication sheet. Resolves when the sheet
-/// finishes and rejects with `code: 'CANCELLED'` if the user dismisses it.
-/// The callback URL is handed to [`handle_deep_link_url`] so existing
-/// `deep-link-auth` / `deep-link-oidc` listeners still finish the login.
+/// In-app sign-in sheet (iOS Safari session, Android Auth Tab). Resolves when
+/// the sheet finishes and rejects with `code: 'CANCELLED'` if the user
+/// dismisses it. The callback URL is handed to [`handle_deep_link_url`] so
+/// existing `deep-link-auth` / `deep-link-oidc` listeners still finish the
+/// login. A Custom Tabs fallback resolves as soon as the tab opens; the
+/// `cihub://` intent filter finishes that path.
 #[tauri::command]
 async fn start_auth_session(
     app: tauri::AppHandle,
@@ -105,8 +108,9 @@ async fn start_auth_session(
         .map(str::trim)
         .filter(|scheme| !scheme.is_empty())
         .unwrap_or("cihub");
-    let callback_url = auth_session::start(&url, scheme).await?;
-    handle_deep_link_url(&app, &callback_url);
+    if let Some(callback_url) = auth_session::start(&app, &url, scheme).await? {
+        handle_deep_link_url(&app, &callback_url);
+    }
     Ok(())
 }
 
