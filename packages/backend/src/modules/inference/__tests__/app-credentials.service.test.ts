@@ -277,6 +277,24 @@ describe('AppCredentialsService', () => {
       });
     });
 
+    it('points ci-mentra at the DIRECT Ollama /v1 keyed with LLM_* names', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
+      service.invalidateCache();
+      const config = await service.getCredentials('ci-mentra');
+
+      expect(config.app).toBe('ci-mentra');
+      expect(config.env).toEqual({
+        LLM_API_BASE: OLLAMA_OPENAI_URL,
+        LLM_API_KEY: 'ollama',
+        LLM_DEFAULT_CHAT_MODEL: 'hermes4:70b',
+        LLM_DEFAULT_EMBEDDING_MODEL: 'nomic-embed-text',
+        OLLAMA_HOST: OLLAMA_BASE_URL,
+        LLM_NUM_CTX: '65536',
+        CI_INFERENCE_BACKEND: 'ollama',
+      });
+    });
+
     it('floors hermes-agent context to its 64K minimum on memory-constrained hardware, but not openclaw', async () => {
       // ~12 GiB inference budget → memory ladder picks the 32768 tier. Hermes
       // declares a 64000-token minimum (it aborts below that), so its value is

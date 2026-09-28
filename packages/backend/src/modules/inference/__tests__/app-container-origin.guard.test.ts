@@ -62,6 +62,15 @@ describe('AppContainerOriginGuard', () => {
     expect(addresses).toHaveBeenCalledWith(['hermes-agent', 'ci-hermes']);
   });
 
+  it('admits a ci-mentra container for the ci-mentra slug, and refuses it for hermes-agent', async () => {
+    addresses.mockImplementation(async (names: readonly string[]) => (names.includes('ci-mentra') ? new Set(['172.19.0.20']) : new Set<string>()));
+    await expect(guard.canActivate(createContext({ ip: '172.19.0.20', params: { slug: 'ci-mentra' } }))).resolves.toBe(true);
+    expect(addresses).toHaveBeenCalledWith(['ci-mentra', 'mentra']);
+    await expect(guard.canActivate(createContext({ ip: '172.19.0.20', params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
   it('refuses an unknown slug without asking Docker for anything', async () => {
     await expect(guard.canActivate(createContext({ ip: '172.19.0.9', params: { slug: 'not-an-agent' } }))).rejects.toBeInstanceOf(ForbiddenException);
     expect(addresses).toHaveBeenCalledWith([]);
