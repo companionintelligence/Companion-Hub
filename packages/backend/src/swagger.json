@@ -16646,6 +16646,9 @@
       "AvailableDomainsResponseDto": {
         "type": "object",
         "properties": {
+          "supported": {
+            "type": "boolean"
+          },
           "domains": {
             "type": "array",
             "items": {
@@ -16677,6 +16680,7 @@
           }
         },
         "required": [
+          "supported",
           "domains"
         ],
         "additionalProperties": false

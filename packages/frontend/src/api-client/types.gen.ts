@@ -2224,6 +2224,7 @@ export type PerformUpdateBody = {
 };
 
 export type AvailableDomainsResponseDto = {
+    supported: boolean;
     domains: Array<{
         id: string;
         domain: string;

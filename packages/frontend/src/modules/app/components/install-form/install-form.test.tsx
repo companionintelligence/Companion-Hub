@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import type { AppInfo, FormField } from '@/types/app.types';
 import { CustomDomainField } from './custom-domain-field';
 import { InstallForm } from './install-form';
+import { preselectedPublicDomain } from './preselected-public-domain';
 import { useAppContext } from '@/context/app-context';
 import { TranslatableError } from '@/types/error.types';
 
@@ -49,6 +50,16 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mockTauriInvoke(...args),
 }));
 
+/*
+ * A passthrough spy. Under jsdom the domain picker's native <select> answers a
+ * programmatic value change with its first option, so the field shows the Hub
+ * domain whatever the form preselected; what the form asked for is read here.
+ */
+vi.mock('./preselected-public-domain', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./preselected-public-domain')>();
+  return { preselectedPublicDomain: vi.fn(actual.preselectedPublicDomain) };
+});
+
 const { toast } = vi.hoisted(() => ({
   toast: {
     error: vi.fn(),
@@ -74,6 +85,7 @@ vi.mock('react-i18next', () => ({
  */
 
 const MOCK_AVAILABLE_DOMAINS = {
+  supported: true,
   domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string; offered?: boolean }>,
 };
 /**
@@ -97,6 +109,9 @@ const MOCK_CUSTOM_DOMAINS = {
 const MOCK_USE_QUERY_RESULT = {
   data: MOCK_AVAILABLE_DOMAINS,
   isLoading: false,
+  isFetching: false,
+  isError: false,
+  refetch: vi.fn(),
 };
 /** `GET /portal/config`. No portal address by default, as on a Hub with none configured. */
 const MOCK_PORTAL_CONFIG = { portalUrl: null as string | null, deviceId: null, registrationUrl: null, demoMode: false };
@@ -130,7 +145,9 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 describe('InstallForm', () => {
   afterEach(() => {
+    MOCK_AVAILABLE_DOMAINS.supported = true;
     MOCK_AVAILABLE_DOMAINS.domains = [];
+    MOCK_USE_QUERY_RESULT.isFetching = false;
     MOCK_CUSTOM_DOMAINS.supported = false;
     MOCK_CUSTOM_DOMAINS.domains = [];
     MOCK_PORTAL_CONFIG.portalUrl = null;
@@ -1409,6 +1426,42 @@ describe('InstallForm', () => {
     MOCK_CUSTOM_DOMAINS.domains = [];
   });
 
+  describe('while there is no domain to pick', () => {
+    const exposableInfo = {
+      ...baseInfo,
+      exposable: true,
+      dynamic_config: true,
+      urn: 'activepieces:gitstore',
+    } as unknown as AppInfo;
+
+    const renderForm = () =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={exposableInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+
+    it('marks the domain as loading while the list is on its way', () => {
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+      MOCK_USE_QUERY_RESULT.isFetching = true;
+
+      renderForm();
+
+      expect(screen.getByRole('status', { name: 'APP_INSTALL_FORM_DOMAINS_LOADING' })).toBeInTheDocument();
+      expect(screen.queryByLabelText('COMMON_PUBLIC_DOMAIN')).not.toBeInTheDocument();
+    });
+
+    it('asks for the list again when the Hub could not get it', () => {
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+      MOCK_AVAILABLE_DOMAINS.supported = false;
+
+      renderForm();
+      fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_DOMAINS_UNAVAILABLE' }));
+
+      expect(MOCK_USE_QUERY_RESULT.refetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('shows hostname details with copy buttons in simple mode', async () => {
     vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
@@ -1647,6 +1700,95 @@ describe('InstallForm', () => {
 
     await waitFor(() => {
       expect(getEnableAuthSwitch()).not.toBeChecked();
+    });
+  });
+
+  describe('the public domain Companion Portal preselects', () => {
+    /*
+     * The Hub is on `companionintelligence.com`; Companion Portal preselects the `.pw` zone that is
+     * filling. An installed app keeps the domain it serves from — swapping it silently would move the
+     * app to a new address on the next save. What a new install takes is `preselectedPublicDomain`'s
+     * to decide, and its own tests cover it.
+     */
+    const domainsWithPoolDefault = () => {
+      MOCK_AVAILABLE_DOMAINS.domains = [
+        { id: 'own', domain: 'companionintelligence.com', isDefault: false, offered: false },
+        { id: 'pool', domain: 'ci1.pw', isDefault: true, offered: true },
+      ];
+    };
+    const trigger = () => screen.getByLabelText('COMMON_PUBLIC_DOMAIN');
+    const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const preselections = () => vi.mocked(preselectedPublicDomain).mock.results.map((result) => result.value);
+
+    it("never replaces an installed app's own domain", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      domainsWithPoolDefault();
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', publicDomain: 'companionintelligence.com' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+
+      await settle();
+
+      expect(trigger()).toHaveAttribute('title', 'companionintelligence.com');
+      expect(preselections().length).toBeGreaterThan(0);
+      expect(preselections().every((value) => value === null)).toBe(true);
+    });
+
+    it('never replaces the Hub domain an installed app with no stored domain serves from', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      domainsWithPoolDefault();
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+
+      await settle();
+
+      expect(trigger()).toHaveAttribute('title', 'companionintelligence.com');
+      expect(preselections().length).toBeGreaterThan(0);
+      expect(preselections().every((value) => value === null)).toBe(true);
+    });
+
+    it('gives an installed app moving to the Web from this device the preselection', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      domainsWithPoolDefault();
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'local' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+      await settle();
+
+      expect(preselections()).toContain('ci1.pw');
     });
   });
 
