@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		014BF31D80EB0AC7F4EF9068 /* CompanionHubAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D061B03AEB8D2A04CC4FE6D /* CompanionHubAppIntents.swift */; };
+		2E8A1C9D4B6F7E8A9C0D1E2F /* AuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F4E2C1A8B7D6E5F4C3B2A10 /* AuthSession.swift */; };
+		6B7C8D9E0F1A2B3C4D5E6F70 /* AuthenticationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A6B7C8D9E0F1A2B3C4D5E6F /* AuthenticationServices.framework */; };
 		089F337E3D45B7F886583B8D /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4BBEBC74C5D46FA449BD8DC8 /* UIKit.framework */; };
 		12E01263B2CA8E8B5FCC61BE /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 19504980A96F1EB169B60D7E /* WebKit.framework */; };
 		1693E3D5B4349EB4110852BE /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 6D392AFB5EB613D062CB37FF /* libapp.a */; };
@@ -37,7 +39,9 @@
 		5339289DD699732B41FDB951 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		6D392AFB5EB613D062CB37FF /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		7A4DB32945F336FC5CF023F7 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		5A6B7C8D9E0F1A2B3C4D5E6F /* AuthenticationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AuthenticationServices.framework; path = System/Library/Frameworks/AuthenticationServices.framework; sourceTree = SDKROOT; };
 		8D061B03AEB8D2A04CC4FE6D /* CompanionHubAppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionHubAppIntents.swift; sourceTree = "<group>"; };
+		9F4E2C1A8B7D6E5F4C3B2A10 /* AuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSession.swift; sourceTree = "<group>"; };
 		916A0DDB3ACCBED1DB6CBE2B /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		B0383C943636A1376A38F184 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
@@ -52,6 +56,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1693E3D5B4349EB4110852BE /* libapp.a in Frameworks */,
+				6B7C8D9E0F1A2B3C4D5E6F70 /* AuthenticationServices.framework in Frameworks */,
 				59B13AB2444A52DD65A208D2 /* CoreGraphics.framework in Frameworks */,
 				75318803EB8E93CF09E91A2F /* Metal.framework in Frameworks */,
 				3B16D219B61EF9C7167E1B39 /* MetalKit.framework in Frameworks */,
@@ -68,6 +73,7 @@
 		1267B5F8B3E446CEAFE7940D /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				5A6B7C8D9E0F1A2B3C4D5E6F /* AuthenticationServices.framework */,
 				95EC4B87E7C760D8012742F3 /* CoreGraphics.framework */,
 				6D392AFB5EB613D062CB37FF /* libapp.a */,
 				250314429D9F32E2F8DF0F7A /* Metal.framework */,
@@ -84,6 +90,7 @@
 			isa = PBXGroup;
 			children = (
 				A42A14BE22AD4E5C5CEC26F1 /* AppIntents */,
+				3C4D5E6F7A8B9C0D1E2F3A4B /* AuthSession */,
 				7A4C4DD1AF1266AC3769E9C4 /* ci-os-hub-mobile */,
 			);
 			path = Sources;
@@ -146,6 +153,14 @@
 				3DA568AC0055DA5D3510122B /* Info.plist */,
 			);
 			path = "ci-os-hub-mobile_iOS";
+			sourceTree = "<group>";
+		};
+		3C4D5E6F7A8B9C0D1E2F3A4B /* AuthSession */ = {
+			isa = PBXGroup;
+			children = (
+				9F4E2C1A8B7D6E5F4C3B2A10 /* AuthSession.swift */,
+			);
+			path = AuthSession;
 			sourceTree = "<group>";
 		};
 		A42A14BE22AD4E5C5CEC26F1 /* AppIntents */ = {
@@ -261,6 +276,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				014BF31D80EB0AC7F4EF9068 /* CompanionHubAppIntents.swift in Sources */,
+				2E8A1C9D4B6F7E8A9C0D1E2F /* AuthSession.swift in Sources */,
 				4C9E7FA103D2E689913F12C9 /* main.mm in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
