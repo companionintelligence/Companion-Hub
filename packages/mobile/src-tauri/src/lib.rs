@@ -9,16 +9,21 @@
 //! The only native responsibility kept from desktop is **deep-link capture**:
 //! the Portal SSO flow finishes by redirecting to `cihub://auth?token=…`,
 //! pairing flows use `cihub://pair?code=…`, and mobile OIDC PKCE returns via
-//! `cihub://auth/callback?code=…`. We capture those, stash them, and emit
-//! `deep-link-auth` / `deep-link-pair` / `deep-link-oidc` so the frontend can
-//! finish the flow even when iOS relaunches the app (the desktop-only
-//! `deep-link://new-url` event never fires on a phone).
+//! `cihub://auth/callback?code=…`. On iOS, `start_auth_session` presents that
+//! Portal page in an in-app Safari sheet (`ASWebAuthenticationSession`) and
+//! feeds the `cihub://` callback into this same capture path so the app never
+//! jumps out to Safari. We stash the URL and emit `deep-link-auth` /
+//! `deep-link-pair` / `deep-link-oidc` so the frontend can finish the flow
+//! even when iOS relaunches the app (the desktop-only `deep-link://new-url`
+//! event never fires on a phone).
 //!
 //! **App Intents** (iOS Siri/Shortcuts/Spotlight/Action Button) reuse the very
 //! same channel: the Swift `AppIntent`s open `cihub://intent/<action>` URLs
 //! (e.g. `cihub://intent/connect`, `cihub://intent/open?hub=Apple%20Hub`). We
 //! capture those, stash the action, and emit a `deep-link-intent` event the
 //! frontend routes to the right screen — so an intent needs no extra IPC.
+
+mod auth_session;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -85,6 +90,26 @@ fn clear_pending_oidc_callback(state: tauri::State<'_, PendingOidcCallback>) {
     }
 }
 
+/// iOS only. In-app Safari authentication sheet. Resolves when the sheet
+/// finishes and rejects with `code: 'CANCELLED'` if the user dismisses it.
+/// The callback URL is handed to [`handle_deep_link_url`] so existing
+/// `deep-link-auth` / `deep-link-oidc` listeners still finish the login.
+#[tauri::command]
+async fn start_auth_session(
+    app: tauri::AppHandle,
+    url: String,
+    callback_scheme: Option<String>,
+) -> Result<(), auth_session::AuthSessionError> {
+    let scheme = callback_scheme
+        .as_deref()
+        .map(str::trim)
+        .filter(|scheme| !scheme.is_empty())
+        .unwrap_or("cihub");
+    let callback_url = auth_session::start(&url, scheme).await?;
+    handle_deep_link_url(&app, &callback_url);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -103,6 +128,7 @@ pub fn run() {
             consume_pending_intent,
             consume_pending_oidc_callback,
             clear_pending_oidc_callback,
+            start_auth_session,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -493,7 +519,10 @@ mod tests {
             );
         } else {
             let url = frontend_fixup_url().expect("iOS/macOS still need the WKWebView fix-up");
-            assert!(url.contains("/connect"), "iOS deep-links straight to connect: {url}");
+            assert!(
+                url.contains("/connect"),
+                "iOS deep-links straight to connect: {url}"
+            );
         }
     }
 
@@ -516,7 +545,9 @@ mod tests {
     #[test]
     fn frontend_href_accepts_vite_and_https_hubs() {
         assert!(webview_already_on_frontend("http://localhost:5005/connect"));
-        assert!(webview_already_on_frontend("https://hub-core3-bc.companionintelligence.com/login"));
+        assert!(webview_already_on_frontend(
+            "https://hub-core3-bc.companionintelligence.com/login"
+        ));
         assert!(!webview_already_on_frontend("tauri://localhost"));
         assert!(!webview_already_on_frontend("cihub://auth/callback"));
         assert!(!webview_already_on_frontend("about:blank"));
