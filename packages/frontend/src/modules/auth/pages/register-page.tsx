@@ -33,7 +33,7 @@ export default () => {
     ...registerMutation(),
     onSuccess: async (data) => {
       if (data?.requiresEmailVerification) {
-        toast.success(t('AUTH_REGISTER_EMAIL_VERIFICATION_REQUIRED'));
+        toast.success(t('AUTH_REGISTER_VERIFY_EMAIL'));
         return;
       }
 
