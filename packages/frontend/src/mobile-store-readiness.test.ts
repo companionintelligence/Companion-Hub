@@ -189,4 +189,60 @@ describe('mobile privacy/permission posture', () => {
     // The Portal must stay reachable or sign-in breaks.
     expect(http?.allow?.some((a) => a.url.includes('hub.ci.computer'))).toBe(true);
   });
+
+  /*
+   * Every zone Companion Portal publishes a Hub under, the new `.pw` zones first.
+   * The app reaches a Hub at its public hostname through the native HTTP client
+   * (`http:default`), and its events and sockets through the webview (CSP
+   * `connect-src`, `remote.urls`). A zone missing from any one of the three is a
+   * Hub the phone cannot sign in to, with nothing on screen saying why.
+   */
+  const HUB_ZONES = [
+    'ci.computer',
+    'companionintelligence.com',
+    'companionintel.com',
+    'ci0.pw',
+    'ci1.pw',
+    'ci2.pw',
+    'ci3.pw',
+    'ci4.pw',
+    'ci5.pw',
+    'ci6.pw',
+    'ci8.pw',
+    'ci9.pw',
+    'chimera.engineer',
+    'chimeracompute.com',
+    'chimeracomputer.com',
+    'companionintelligence.io',
+    'companionintelligence.org',
+    'lifescope.io',
+    'mysticalengine.com',
+  ];
+
+  it.each(HUB_ZONES)('can reach a Hub published under %s', (zone) => {
+    const caps = JSON.parse(read('capabilities/default.json')) as {
+      remote: { urls: string[] };
+      permissions: Array<string | { identifier: string; allow?: Array<{ url: string }> }>;
+    };
+    const http = caps.permissions.find(
+      (p): p is { identifier: string; allow?: Array<{ url: string }> } => typeof p === 'object' && p.identifier === 'http:default',
+    );
+    const csp = (JSON.parse(read('tauri.conf.json')) as { app: { security: { csp: string } } }).app.security.csp;
+    const connectSrc = (csp.match(/connect-src([^;]*)/)?.[1] ?? '').trim().split(/\s+/);
+
+    expect(http?.allow?.map((entry) => entry.url)).toContain(`https://*.${zone}/*`);
+    expect(caps.remote.urls).toContain(`https://*.${zone}`);
+    expect(connectSrc).toContain(`https://*.${zone}`);
+    expect(connectSrc).toContain(`wss://*.${zone}`);
+  });
+
+  it('keeps the generated capability schema in step with the capability file', () => {
+    const caps = JSON.parse(read('capabilities/default.json')) as { remote: unknown; permissions: unknown };
+    const generated = JSON.parse(read('gen/schemas/capabilities.json')) as {
+      default: { remote: unknown; permissions: unknown };
+    };
+
+    expect(generated.default.remote).toEqual(caps.remote);
+    expect(generated.default.permissions).toEqual(caps.permissions);
+  });
 });

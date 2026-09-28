@@ -14,6 +14,7 @@ import { Input } from '@/components/ui/Input/Input';
 import { useAppContext } from '@/context/app-context';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
+import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
@@ -307,6 +308,8 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
                 publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
                 placeholder={defaultAppSubdomain}
                 isCheckingDns={isCheckingDns}
+                domainListNote={domainListNoteFor(getDomains)}
+                onRetryDomainList={() => void getDomains.refetch()}
                 t={t}
               />
             ) : null}
