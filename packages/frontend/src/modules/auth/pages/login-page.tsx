@@ -11,7 +11,7 @@ import { clearHubConnection, getHubBaseUrlSync, isMobileClient, usesCloudConnect
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
 import { buildPortalSsoStartUrl } from '@/lib/portal-sso-url';
 import { followSafeRedirect } from '@/lib/safe-redirect';
-import { openAuthInSystemBrowser } from '@/lib/helpers/open-auth-browser';
+import { AuthSessionCancelledError, openAuthSession } from '@/lib/helpers/open-auth-browser';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -222,7 +222,10 @@ export default () => {
               // Same reasoning as the sign-in button in login-form: the opener
               // rejects on an ACL/plugin failure, and swallowing that leaves a
               // switcher that looks clicked and does nothing.
-              openAuthInSystemBrowser(portalSsoHref).catch((error: unknown) => {
+              openAuthSession(portalSsoHref).catch((error: unknown) => {
+                if (error instanceof AuthSessionCancelledError) {
+                  return;
+                }
                 console.error('login: the system opener refused the SSO URL', error);
                 toast.error(t('COMMON_AN_ERROR_OCCURRED'));
               });

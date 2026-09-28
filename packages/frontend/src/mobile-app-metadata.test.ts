@@ -153,6 +153,16 @@ describe('mobile app metadata: cihub deep-link scheme', () => {
   });
 });
 
+describe('mobile app metadata: iOS in-app auth session', () => {
+  it('compiles the ASWebAuthenticationSession sheet into the iOS app', () => {
+    const swift = read('gen/apple/Sources/AuthSession/AuthSession.swift');
+    expect(swift).toMatch(/ASWebAuthenticationSession/);
+    expect(swift).toMatch(/cihub_start_auth_session/);
+    expect(read('gen/apple/ci-os-hub-mobile.xcodeproj/project.pbxproj')).toMatch(/AuthSession\.swift/);
+    expect(iosProjectYml).toMatch(/AuthenticationServices\.framework/);
+  });
+});
+
 describe('mobile app metadata: iOS deployment target', () => {
   it('is iOS 16 in both project.yml and tauri.conf', () => {
     expect(iosDeploymentTarget).toBe(EXPECTED_IOS_TARGET);

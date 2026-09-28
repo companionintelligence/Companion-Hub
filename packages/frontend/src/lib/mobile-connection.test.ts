@@ -81,6 +81,16 @@ afterEach(() => {
 });
 
 describe('isMobileUserAgent', () => {
+  it('isIosPlatform is iPhone/iPad only, not Android', async () => {
+    setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)');
+    const ios = await freshModule();
+    expect(ios.isIosPlatform()).toBe(true);
+
+    setUserAgent(ANDROID_UA);
+    const android = await freshModule();
+    expect(android.isIosPlatform()).toBe(false);
+  });
+
   it('is true for Android / iPhone even without Tauri', async () => {
     setTauri(false);
     setUserAgent(ANDROID_UA);

@@ -3,10 +3,8 @@ import { retryDynamicImport } from '@/lib/chunk-load-error';
 /**
  * Open an auth URL in the real system browser (Safari / Chrome Custom Tabs).
  *
- * Used by every native shell:
- *  - cloud-connect PKCE on `/connect` (`oidc.ts`), iOS/Android
- *  - Hub Companion Account SSO on `/login` (`mobile-hub-sso`)
- *  - Hub Companion Account SSO on `/login` (`desktop-hub-sso`)
+ * Used by Android and desktop native shells. iOS callers go through
+ * {@link openAuthSession} so Portal sign-in stays in an in-app sheet.
  *
  * Desktop calls this from an onClick, NOT from an `<a href>`: an anchor whose
  * href is same-origin with the packaged shell is left alone by the Providers
@@ -54,4 +52,55 @@ export async function openAuthInSystemBrowser(url: string): Promise<void> {
   document.body.appendChild(a);
   a.click();
   a.remove();
+}
+
+/** User dismissed the in-app sign-in sheet. Callers should stay quiet. */
+export class AuthSessionCancelledError extends Error {
+  constructor() {
+    super('Sign-in cancelled');
+    this.name = 'AuthSessionCancelledError';
+  }
+}
+
+function isAuthSessionCancel(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const rec = err as { code?: unknown; message?: unknown };
+  if (rec.code === 'CANCELLED') return true;
+  return typeof rec.message === 'string' && rec.message === 'Sign-in cancelled';
+}
+
+function isTauriShell(): boolean {
+  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/** iPhone / iPad / iPod, including iPad "Request Desktop Website". */
+function isIosPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iphone|ipad|ipod/i.test(ua)) return true;
+  if (/iphone|ipad|ipod/i.test(navigator.platform || '')) return true;
+  return /macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
+}
+
+/**
+ * Sign-in / registration in an in-app sheet on iOS (`ASWebAuthenticationSession`).
+ * The sheet returns `cihub://` to the app, which the existing deep-link
+ * listener finishes. Android, desktop, and web keep opening the system browser.
+ */
+export async function openAuthSession(url: string, callbackScheme = 'cihub'): Promise<void> {
+  if (!isTauriShell() || !isIosPlatform()) {
+    await openAuthInSystemBrowser(url);
+    return;
+  }
+
+  try {
+    const { invoke } = await retryDynamicImport(() => import('@tauri-apps/api/core'));
+    await invoke('start_auth_session', { url, callbackScheme });
+  } catch (err: unknown) {
+    if (isAuthSessionCancel(err)) {
+      throw new AuthSessionCancelledError();
+    }
+
+    throw err;
+  }
 }
