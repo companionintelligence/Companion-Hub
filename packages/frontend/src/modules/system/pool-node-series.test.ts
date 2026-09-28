@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   appendPoolSample,
+  bucketWindow,
   computeCountChartScale,
   EMPTY_SAMPLE_WINDOW,
   firstByteByNode,
+  inferenceFromHere,
   latestDecode,
   localContainerRollup,
   nodeInFlightSeries,
@@ -16,9 +18,10 @@ import {
   routingBuckets,
   routingWindowPartial,
   sampleInFlight,
+  unloggedCalls,
   waitingNow,
 } from './pool-node-series';
-import type { PoolNodeSummary, PoolPeerSummary, RoutingLogEntry } from './use-dashboard-data';
+import type { PoolNodeSummary, PoolPeerSummary, PoolStatusSummary, RoutingLogEntry } from './use-dashboard-data';
 
 /*
  * The pool view's rules, tested away from React.
@@ -398,6 +401,36 @@ describe('poolNodeCards', () => {
     // NULL, not 0: we could not ask. A 0 would assert the node holds nothing while the engine
     // chips on the same card still show its cached `ollama 2`.
     expect(card?.models).toBeNull();
+  });
+
+  it('reads a connected peer with no capabilities snapshot as models unknown, not as 0', () => {
+    // Right after approve/confirm, and after a 401/403 cleared the cache while the row stays connected.
+    const [, fresh] = poolNodeCards(local, [{ id: 'p', status: 'connected', lastCapabilities: null }], options);
+    const [, absent] = poolNodeCards(local, [{ id: 'q', status: 'connected' }], options);
+
+    expect(fresh?.models).toBeNull();
+    expect(absent?.models).toBeNull();
+  });
+
+  it('reads this node as models unknown when it could not read its own engines', () => {
+    const [card] = poolNodeCards({ ...local, backends: [], capabilitiesError: 'ollama: ECONNREFUSED' }, [], options);
+
+    expect(card?.models).toBeNull();
+  });
+
+  it('carries whether a peer is taking work, keeping an older build that never said as unknown', () => {
+    const caps = { backends: [] };
+    const cards = poolNodeCards(
+      local,
+      [
+        { id: 'a', displayName: 'a', status: 'connected', lastCapabilities: { ...caps, acceptingWork: false } },
+        { id: 'b', displayName: 'b', status: 'connected', lastCapabilities: { ...caps, acceptingWork: true } },
+        { id: 'c', displayName: 'c', status: 'connected', lastCapabilities: caps },
+      ],
+      options,
+    );
+
+    expect(cards.slice(1).map((card) => card.acceptingWork)).toEqual([false, true, null]);
   });
 
   it('excludes an unhealthy backend from the model count, which still lists what it cannot serve', () => {
@@ -803,5 +836,221 @@ describe('routingActivity', () => {
     ]);
 
     expect(activity.tokensServed).toBe(180);
+  });
+});
+
+describe('bucketWindow', () => {
+  it('spans the buckets exactly, first start to last end', () => {
+    const buckets = routingBuckets([], { now: Date.parse('2026-01-01T00:10:30Z'), bucketMs: 60_000, buckets: 3 });
+
+    expect(bucketWindow(buckets, 60_000)).toEqual({ from: Date.parse('2026-01-01T00:08:00Z'), to: Date.parse('2026-01-01T00:11:00Z') });
+  });
+
+  it('is null with no buckets, rather than a window of its own invention', () => {
+    expect(bucketWindow([], 60_000)).toBeNull();
+  });
+});
+
+describe('inferenceFromHere', () => {
+  const window = { from: Date.parse('2026-01-01T00:00:00Z'), to: Date.parse('2026-01-01T00:30:00Z') };
+  const row = (minute: number, extras: Partial<RoutingLogEntry> = {}): RoutingLogEntry => ({
+    at: `2026-01-01T00:${String(minute).padStart(2, '0')}:00Z`,
+    direction: 'outbound',
+    model: 'qwen3.6:35b',
+    node: 'local',
+    outcome: 'served',
+    status: 200,
+    durationMs: 1_000,
+    stream: true,
+    ...extras,
+  });
+  const usage = (promptTokens: number, completionTokens: number) => ({
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens,
+  });
+
+  it("counts only requests that entered the pool here — never a peer's work that ran on our engines", () => {
+    const own = inferenceFromHere([row(1), row(2), row(3, { direction: 'inbound', model: null, node: 'beta-max.tailnet-example.ts.net' })], window);
+
+    expect(own.requests).toBe(2);
+    expect(own.served).toBe(2);
+  });
+
+  it('counts a row inside [from, to) and nothing outside it', () => {
+    const own = inferenceFromHere(
+      [row(0), { ...row(0), at: '2026-01-01T00:30:00Z' }, { ...row(0), at: '2025-12-31T23:59:59Z' }, { ...row(0), at: 'not a time' }],
+      window,
+    );
+
+    expect(own.requests).toBe(1);
+  });
+
+  it('splits outcomes three ways, as the rail does, and counts failovers', () => {
+    const own = inferenceFromHere(
+      [
+        row(1),
+        row(2, { outcome: 'pending', durationMs: null }),
+        row(3, { outcome: 'failed', status: 502, node: null }),
+        row(4, { outcome: 'something-new' }),
+        row(5, { failedOverFrom: ['core-7.tailnet-example.ts.net'] }),
+      ],
+      window,
+    );
+
+    expect(own).toMatchObject({ requests: 5, served: 2, pending: 1, failed: 2, failovers: 1 });
+  });
+
+  it('sums engine-reported tokens and says how many served requests reported any', () => {
+    const own = inferenceFromHere([row(1, { usage: usage(100, 10) }), row(2, { usage: usage(50, 5) }), row(3), row(4, { usage: null })], window);
+
+    expect(own).toMatchObject({ promptTokens: 150, completionTokens: 15, usageReported: 2, served: 4 });
+  });
+
+  it('reports no usage as none reported, not as zero tokens reported', () => {
+    const own = inferenceFromHere([row(1), row(2)], window);
+
+    expect(own.usageReported).toBe(0);
+    expect(own.served).toBe(2);
+  });
+
+  it('counts an embedding that reported prompt tokens only as a request that reported usage', () => {
+    const own = inferenceFromHere([row(1, { usage: { promptTokens: 10, completionTokens: null, totalTokens: 10 }, stream: false })], window);
+
+    expect(own).toMatchObject({ usageReported: 1, promptTokens: 10, completionTokens: 0 });
+  });
+
+  it('agrees with the per-minute buckets on tokens over the same window', () => {
+    const entries = [
+      row(1, { usage: usage(7_641, 62) }),
+      row(20, { usage: usage(16_386, 265) }),
+      row(29, { direction: 'inbound', model: null }),
+      row(31, { usage: usage(999, 9) }),
+    ];
+    const now = Date.parse('2026-01-01T00:29:30Z');
+    const buckets = routingBuckets(entries, { now, bucketMs: 60_000, buckets: 30 });
+    const own = inferenceFromHere(entries, bucketWindow(buckets, 60_000) ?? window);
+
+    expect(own.promptTokens).toBe(buckets.reduce((sum, bucket) => sum + bucket.promptTokens, 0));
+    expect(own.completionTokens).toBe(buckets.reduce((sum, bucket) => sum + bucket.completionTokens, 0));
+  });
+
+  it('times first bytes only where the duration is one: served, streamed, never failed over', () => {
+    const own = inferenceFromHere(
+      [
+        row(1, { durationMs: 300 }),
+        row(2, { durationMs: 900 }),
+        row(3, { durationMs: 16_450, stream: false }),
+        row(4, { durationMs: 399_710, failedOverFrom: ['core-7.tailnet-example.ts.net'] }),
+        row(5, { durationMs: 307_336, outcome: 'failed' }),
+      ],
+      window,
+    );
+
+    // Nearest rank over [300, 900]: a time one of these requests took, not an average of two.
+    expect(own.firstByte).toEqual({ count: 2, p50Ms: 300, p90Ms: null });
+  });
+
+  it('states a p90 only from ten streamed requests up, the first count where it is not the slowest', () => {
+    const own = inferenceFromHere(
+      [100, 200, 300, 400, 500, 600, 700, 800, 900, 10_000].map((ms, index) => row(index, { durationMs: ms })),
+      window,
+    );
+
+    expect(own.firstByte).toEqual({ count: 10, p50Ms: 500, p90Ms: 900 });
+  });
+
+  it('states no p90 from nine requests, where nearest rank would just be the slowest one', () => {
+    const own = inferenceFromHere(
+      [100, 200, 300, 400, 500, 600, 700, 800, 99_000].map((ms, index) => row(index, { durationMs: ms })),
+      window,
+    );
+
+    expect(own.firstByte).toEqual({ count: 9, p50Ms: 500, p90Ms: null });
+  });
+
+  it('splits failures the way the rail does: callers who hung up, and failures past a whole budget', () => {
+    const own = inferenceFromHere(
+      [
+        row(1, { outcome: 'failed', status: null, clientClosed: true, durationMs: 40_000 }),
+        row(2, { outcome: 'failed', status: null, clientClosed: true, durationMs: 12_000 }),
+        row(3, { outcome: 'failed', status: null, budgetMs: 300_000, durationMs: 300_100 }),
+        row(4, { outcome: 'failed', status: 502, durationMs: 90 }),
+        // A caller that left after the answer arrived is not a failure at all.
+        row(5, { clientClosed: true }),
+      ],
+      window,
+    );
+
+    expect(own).toMatchObject({ failed: 4, clientClosed: 2, overBudget: 1 });
+  });
+
+  it('has no first byte at all when nothing streamed was served', () => {
+    expect(inferenceFromHere([row(1, { stream: false })], window).firstByte).toBeNull();
+  });
+
+  it('ranks models by requests, keeps unreported tokens unknown, and says how many were left out', () => {
+    const own = inferenceFromHere(
+      [
+        row(1, { model: 'gemma3:1b', usage: usage(17, 3) }),
+        row(2, { model: 'gemma3:1b', usage: usage(17, 3) }),
+        row(3, { model: 'qwen3.8:27b' }),
+        row(4, { model: 'qwen3-coder:30b', usage: usage(15, 2) }),
+        row(5, { model: 'a' }),
+        row(6, { model: 'b' }),
+        row(7, { model: 'c' }),
+      ],
+      window,
+      3,
+    );
+
+    expect(own.models).toEqual([
+      { model: 'gemma3:1b', requests: 2, tokens: 40 },
+      { model: 'qwen3-coder:30b', requests: 1, tokens: 17 },
+      { model: 'a', requests: 1, tokens: null },
+    ]);
+    expect(own.modelCount).toBe(6);
+  });
+});
+
+describe('unloggedCalls', () => {
+  const READY = { pending: false, failed: false };
+  const connected: PoolPeerSummary = { id: 'p', status: 'connected' };
+  const pool = (over: Partial<PoolStatusSummary> = {}): PoolStatusSummary => ({
+    enabled: true,
+    peers: [connected],
+    settings: { poolRouteAppsAlways: true },
+    ...over,
+  });
+
+  it('is nothing while a peer is connected: both inference routes go through the logging proxy', () => {
+    expect(unloggedCalls(pool(), READY)).toBe('none');
+  });
+
+  it('counts a connected peer the operator disabled, as the backend does when choosing the route', () => {
+    // `hasConnectedPeers()` ignores the per-peer switch, so /v1 still goes through the proxy.
+    expect(unloggedCalls(pool({ peers: [{ id: 'p', status: 'connected', enabled: false }] }), READY)).toBe('none');
+  });
+
+  it('names only /api/inference/v1 when no peer is connected but apps are routed through the pool proxy', () => {
+    expect(unloggedCalls(pool({ peers: [] }), READY)).toBe('v1');
+    expect(unloggedCalls(pool({ peers: [{ id: 'p', status: 'unreachable' }] }), READY)).toBe('v1');
+    // Pooling off: /v1 serves locally whatever is paired, and the switch still hands apps the proxy.
+    expect(unloggedCalls(pool({ enabled: false }), READY)).toBe('v1');
+  });
+
+  it('reads an absent switch as its default, which is on', () => {
+    expect(unloggedCalls(pool({ peers: [], settings: {} }), READY)).toBe('v1');
+    expect(unloggedCalls({}, READY)).toBe('v1');
+  });
+
+  it('says apps bypass the log when they are handed engines directly and no peer is connected', () => {
+    expect(unloggedCalls(pool({ peers: [], settings: { poolRouteAppsAlways: false } }), READY)).toBe('apps');
+  });
+
+  it('is unknown, never "all logged", while pool status has failed or not answered', () => {
+    expect(unloggedCalls(undefined, { pending: false, failed: true })).toBe('unknown');
+    expect(unloggedCalls(pool(), { pending: false, failed: true })).toBe('unknown');
+    expect(unloggedCalls(undefined, { pending: true, failed: false })).toBe('unknown');
   });
 });
