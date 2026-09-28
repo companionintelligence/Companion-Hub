@@ -288,7 +288,7 @@ function ModelGroup({
         <span className="rounded-full bg-background/40 px-2 py-0.5 text-xs">{group.items.length}</span>
       </button>
       {open && (
-        <div className="overflow-x-auto border-t border-border/60 bg-card">
+        <div className="min-w-0 overflow-x-auto border-t border-border/60 bg-card">
           <table className="w-full border-collapse text-left">
             <thead>
               <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">

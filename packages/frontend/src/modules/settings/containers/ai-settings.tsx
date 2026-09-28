@@ -518,7 +518,7 @@ export const AiSettingsContainer = () => {
 
   if (loading) {
     return (
-      <div className="space-y-5">
+      <div className="min-w-0 space-y-5">
         <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
           <div className="flex flex-col items-center gap-4 py-4 text-center">
             <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
@@ -526,7 +526,7 @@ export const AiSettingsContainer = () => {
           </div>
           <div className="space-y-4 mt-2">
             <Skeleton className="h-40 w-full rounded-md" />
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 [&>*]:min-w-0">
               {Array.from({ length: 3 }).map((_, i) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton count never changes
                 <Skeleton key={`sk-${i}`} className="h-40 w-full rounded-md" />
@@ -540,7 +540,7 @@ export const AiSettingsContainer = () => {
 
   if (error || !profile) {
     return (
-      <div className="space-y-5">
+      <div className="min-w-0 space-y-5">
         <div className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 text-center py-8">
           <p className="text-destructive mb-4">{t('AI_SETTINGS_LOAD_FAILED', { error: String(error) })}</p>
           <Button variant="outline" onClick={() => fetchProfile()}>
@@ -572,7 +572,7 @@ export const AiSettingsContainer = () => {
     : { title: 'AI_SETTINGS_CONFIRM_TITLE', description: 'AI_SETTINGS_CONFIRM_DESCRIPTION' };
 
   return (
-    <div className="space-y-5">
+    <div className="min-w-0 space-y-5">
       {/* Hardware overview — same component as FTUE */}
       <div ref={rocmSectionRef}>
         <SystemOverview
@@ -595,7 +595,7 @@ export const AiSettingsContainer = () => {
             {backendCompatibleRecommendedModels.length === 0 ? (
               <p className="text-sm text-muted-foreground">{t('AI_SETTINGS_NO_RECOMMENDED_MODELS')}</p>
             ) : (
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid min-w-0 grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 [&>*]:min-w-0">
                 {backendCompatibleRecommendedModels.map((model) => {
                   const isSelected = selectedModelIds.includes(model.id);
                   const tracked = trackedModels[model.id];
@@ -676,9 +676,9 @@ export const AiSettingsContainer = () => {
             )}
 
             {!runtimeModelsLoading && runtimeModels.length > 0 && (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 [&>*]:min-w-0">
                 {runtimeModels.map((model) => (
-                  <div key={model.id} className="flex items-center gap-3 rounded-md border border-border bg-foreground/[0.015] p-4">
+                  <div key={model.id} className="flex min-w-0 items-center gap-3 rounded-md border border-border bg-foreground/[0.015] p-4">
                     <span className="flex-shrink-0 text-foreground/60 [&>*]:size-8">
                       <ModelIcon model={{ id: model.id, displayName: model.name, modality: 'llm', metadata: undefined }} />
                     </span>
