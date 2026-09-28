@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import type { AppInfo, FormField } from '@/types/app.types';
 import { CustomDomainField } from './custom-domain-field';
 import { InstallForm } from './install-form';
+import { preselectedPublicDomain } from './preselected-public-domain';
 import { useAppContext } from '@/context/app-context';
 import { TranslatableError } from '@/types/error.types';
 
@@ -48,6 +49,16 @@ const { mockTauriInvoke } = vi.hoisted(() => ({ mockTauriInvoke: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mockTauriInvoke(...args),
 }));
+
+/*
+ * A passthrough spy. Under jsdom the domain picker's native <select> answers a
+ * programmatic value change with its first option, so the field shows the Hub
+ * domain whatever the form preselected; what the form asked for is read here.
+ */
+vi.mock('./preselected-public-domain', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./preselected-public-domain')>();
+  return { preselectedPublicDomain: vi.fn(actual.preselectedPublicDomain) };
+});
 
 const { toast } = vi.hoisted(() => ({
   toast: {
@@ -1707,6 +1718,7 @@ describe('InstallForm', () => {
     };
     const trigger = () => screen.getByLabelText('COMMON_PUBLIC_DOMAIN');
     const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+    const preselections = () => vi.mocked(preselectedPublicDomain).mock.results.map((result) => result.value);
 
     it("never replaces an installed app's own domain", async () => {
       vi.mocked(useAppContext).mockReturnValue(exposableContext());
@@ -1728,6 +1740,8 @@ describe('InstallForm', () => {
       await settle();
 
       expect(trigger()).toHaveAttribute('title', 'companionintelligence.com');
+      expect(preselections().length).toBeGreaterThan(0);
+      expect(preselections().every((value) => value === null)).toBe(true);
     });
 
     it('never replaces the Hub domain an installed app with no stored domain serves from', async () => {
@@ -1750,6 +1764,31 @@ describe('InstallForm', () => {
       await settle();
 
       expect(trigger()).toHaveAttribute('title', 'companionintelligence.com');
+      expect(preselections().length).toBeGreaterThan(0);
+      expect(preselections().every((value) => value === null)).toBe(true);
+    });
+
+    it('gives an installed app moving to the Web from this device the preselection', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      domainsWithPoolDefault();
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'local' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_EXPOSURE_CLOUDFLARE' }));
+      await settle();
+
+      expect(preselections()).toContain('ci1.pw');
     });
   });
 

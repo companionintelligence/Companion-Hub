@@ -83,8 +83,9 @@ interface IProps {
   editingAppUrn?: string;
   /**
    * The form edits an app that is already installed (the settings dialog), rather
-   * than a new install. Such an app already has its public address, so the form
-   * never swaps its domain for the one Companion Portal would preselect now.
+   * than a new install. Such an app, when served on the Web, already has its public
+   * address, so the form never swaps its domain for the one Companion Portal would
+   * preselect now. See `preselectedPublicDomain`.
    */
   isEdit?: boolean;
 }
@@ -627,25 +628,29 @@ export const InstallForm: React.FC<IProps> = ({
     }
   }, [suggestedAppBaseUrl, formFields, dirtyFields, getValues, setValue, initialValues]);
 
+  const initialExposureMode = typeof initialValues?.exposureMode === 'string' ? initialValues.exposureMode : undefined;
+
   useEffect(() => {
     if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0) {
       return;
     }
 
     // See `preselectedPublicDomain`: a new install takes what Companion Portal
-    // preselects; an installed app, and a domain the operator picked, never do.
+    // preselects; an installed app served on the Web, and a domain the operator
+    // picked, never do.
     const next = preselectedPublicDomain({
       availableDomains,
       currentPublicDomain: getValues('publicDomain'),
       hubDomain: domain,
       dirty: Boolean(dirtyFields.publicDomain),
       isEdit,
+      initialExposureMode,
     });
 
     if (next) {
       setValue('publicDomain', next);
     }
-  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, isEdit, setValue, watchExposureMode]);
+  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, initialExposureMode, isEdit, setValue, watchExposureMode]);
 
   useEffect(() => {
     if (appStatus !== 'running' || watchExposureMode !== 'cloudflare') {

@@ -16,8 +16,9 @@ import { useAppContext } from '@/context/app-context';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
+import { preselectedPublicDomain } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
 import { buildPublicWebIdentity, deriveAppSlug, RESERVED_APP_NAMES, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import type { AvailableDomain } from '@ci-hub/common/types';
@@ -46,7 +47,10 @@ export default function PortExposeCreatePage() {
     ...getDomainsOptions(),
     enabled: cloudflareAvailable,
   });
-  const availableDomains = selectOfferedDomains(getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS, domain);
+  const availableDomains = useMemo(
+    () => selectOfferedDomains(getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS, domain),
+    [getDomains.data?.domains, domain],
+  );
 
   const {
     register,
@@ -55,7 +59,9 @@ export default function PortExposeCreatePage() {
     watch,
     setError,
     clearErrors,
-    formState: { errors },
+    getValues,
+    setValue,
+    formState: { errors, dirtyFields },
   } = useForm<FormValues>({
     defaultValues: {
       exposureMode: resolveExposureMode(undefined, { cloudflareAvailable, tailscaleAvailable }),
@@ -66,6 +72,26 @@ export default function PortExposeCreatePage() {
   const watchLocalSubdomain = watch('localSubdomain');
   const watchPublicDomain = watch('publicDomain');
   const watchName = watch('name');
+
+  // A new app, so the domain Companion Portal preselects, as in the install form.
+  // Without it the form sends the Hub's own zone, which may take no new names.
+  useEffect(() => {
+    if (watchExposureMode !== 'cloudflare') {
+      return;
+    }
+
+    const next = preselectedPublicDomain({
+      availableDomains,
+      currentPublicDomain: getValues('publicDomain'),
+      hubDomain: domain,
+      dirty: Boolean(dirtyFields.publicDomain),
+      isEdit: false,
+    });
+
+    if (next) {
+      setValue('publicDomain', next);
+    }
+  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, setValue, watchExposureMode]);
 
   const derivedSlug = deriveAppSlug(watchName || '');
   const defaultAppSubdomain = derivedSlug || 'app';

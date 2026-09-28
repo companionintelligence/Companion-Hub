@@ -32,6 +32,12 @@ describe('preselectedPublicDomain', () => {
 
   it('never moves an installed app', () => {
     expect(preselectedPublicDomain({ ...base, isEdit: true })).toBeNull();
+    expect(preselectedPublicDomain({ ...base, isEdit: true, initialExposureMode: 'cloudflare' })).toBeNull();
+  });
+
+  it('gives an installed app its first public address the preselection too', () => {
+    expect(preselectedPublicDomain({ ...base, isEdit: true, initialExposureMode: 'local' })).toBe('ci1.pw');
+    expect(preselectedPublicDomain({ ...base, isEdit: true, initialExposureMode: 'tailscale' })).toBe('ci1.pw');
   });
 
   it('never overrides a domain the operator picked', () => {

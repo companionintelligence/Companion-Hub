@@ -23,6 +23,10 @@ describe('domainListNoteFor', () => {
     expect(domainListNoteFor({ data: { supported: true }, isError: false, isFetching: false })).toBe('none-offered');
   });
 
+  it('does not guess from an older Hub that does not say whether it got an answer', () => {
+    expect(domainListNoteFor({ data: {}, isError: false, isFetching: false })).toBeUndefined();
+  });
+
   it('says nothing when the list was never asked for', () => {
     expect(domainListNoteFor({ data: undefined, isError: false, isFetching: false })).toBeUndefined();
   });

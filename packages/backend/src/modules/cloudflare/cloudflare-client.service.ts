@@ -20,6 +20,13 @@ import { type DnsAvailability, readDnsAvailability } from './dns-availability';
 const DEVICE_APPLICATIONS_TIMEOUT_MS = 15_000;
 
 /**
+ * How long `fetchAvailableDomains` waits for the Portal. This client sets no timeout,
+ * and the subdomain field shows a spinner until the list answers and offers a retry
+ * only once it fails: a request that never answers would spin for good.
+ */
+const AVAILABLE_DOMAINS_TIMEOUT_MS = 15_000;
+
+/**
  * Where one custom domain stands on this Hub, sent to Companion Portal so it can
  * tell a CONNECTED domain from a SERVING one.
  *
@@ -681,7 +688,7 @@ export class CloudflareClientService {
 
   async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
     try {
-      const requestConfig = this.getRequestConfig();
+      const requestConfig = { ...this.getRequestConfig(), timeout: AVAILABLE_DOMAINS_TIMEOUT_MS };
       let response: AxiosResponse<{ domains?: unknown[] }>;
 
       // Companion Portal serves the domain list at `/api/domains`. Retain the
@@ -706,9 +713,18 @@ export class CloudflareClientService {
         return { supported: false, domains: [] };
       }
 
-      const domains = response.data.domains
+      const entries = response.data.domains;
+      const domains = entries
         .filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))
         .map((entry: AvailableDomain) => ({ ...entry, id: String(entry.id) }));
+
+      // Entries none of which can be read are a list the Hub did not get, not a
+      // Portal offering nothing: the picker would say there is nothing to choose.
+      if (entries.length > 0 && domains.length === 0) {
+        this.logger.warn(`CI-Cloud answered the domain list request with ${entries.length} entries, none of which could be read`);
+
+        return { supported: false, domains: [] };
+      }
 
       this.logger.debug(`Fetched ${domains.length} domain(s) from CI-Cloud`);
 

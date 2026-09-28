@@ -417,6 +417,31 @@ describe('CloudflareClientService', () => {
 
       await expect(service.fetchAvailableDomains()).resolves.toEqual({ supported: false, domains: [] });
     });
+
+    it('reports a list with no entry it can read as unanswered, not as a Portal offering nothing', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { domains: [{ id: 1, domain: 'ci0.pw', isDefault: 'yes' }, { name: 'ci1.pw' }] } });
+
+      await expect(service.fetchAvailableDomains()).resolves.toEqual({ supported: false, domains: [] });
+    });
+
+    it('keeps the entries it can read when only some are unreadable', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { domains: [{ id: 1, domain: 'ci0.pw', isDefault: true }, { name: 'ci1.pw' }] } });
+
+      await expect(service.fetchAvailableDomains()).resolves.toEqual({
+        supported: true,
+        domains: [{ id: '1', domain: 'ci0.pw', isDefault: true }],
+      });
+    });
+
+    // Without one a Portal that never answers leaves the field's spinner up for good,
+    // with no retry on offer.
+    it('gives up on a Portal that does not answer', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { domains: [] } });
+
+      await service.fetchAvailableDomains();
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('domains', expect.objectContaining({ timeout: expect.any(Number) }));
+    });
   });
 
   describe('checkDnsAvailability', () => {

@@ -10,7 +10,8 @@
  * - `unavailable`: the Hub never got a list (the request failed, or the Hub
  *   could not ask Companion Portal). Retrying can help.
  * - `none-offered`: Companion Portal answered and offers nothing else.
- * - `undefined`: nothing was asked, so there is nothing to say.
+ * - `undefined`: nothing was asked, or a Hub too old to say whether it got an
+ *   answer; there is nothing to say.
  */
 export type DomainListNote = 'loading' | 'unavailable' | 'none-offered' | undefined;
 
@@ -36,5 +37,8 @@ export function domainListNoteFor({ data, isError, isFetching }: DomainListQuery
     return 'unavailable';
   }
 
-  return data ? 'none-offered' : undefined;
+  // Only a Hub that says it got an answer can say nothing is offered. A Hub
+  // predating `supported` (the phone app talks to older Hubs) sends an empty list
+  // for a failure too, and "nothing to choose from" would be a guess.
+  return data?.supported === true ? 'none-offered' : undefined;
 }
