@@ -13,7 +13,7 @@
  *
  * Token exchange goes through the Tauri HTTP plugin (native, no webview CORS).
  */
-import { openAuthInSystemBrowser } from '@/lib/helpers/open-auth-browser';
+import { AuthSessionCancelledError, openAuthSession } from '@/lib/helpers/open-auth-browser';
 import { DEFAULT_PORTAL_URL } from './portal-client';
 
 export const OIDC_CLIENT_ID = 'ci-hub';
@@ -319,9 +319,10 @@ async function exchangeCode(portal: string, code: string, codeVerifier: string):
 }
 
 /**
- * Run the full OIDC PKCE login against the Portal. Opens the system browser and
- * resolves once the user finishes and the `cihub://auth/callback` deep link is
- * captured and exchanged for tokens.
+ * Run the full OIDC PKCE login against the Portal. On iOS the Portal page is an
+ * in-app authentication sheet; elsewhere it is the system browser. Resolves once
+ * the user finishes and the `cihub://auth/callback` deep link is captured and
+ * exchanged for tokens.
  */
 export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, options: { signal?: AbortSignal } = {}): Promise<OidcTokens> {
   const portal = normalizePortalUrl(portalUrl);
@@ -338,17 +339,41 @@ export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, option
   authorizeUrl.searchParams.set('code_challenge_method', 'S256');
   authorizeUrl.searchParams.set('state', state);
 
-  // Persist PKCE *before* Safari opens — iOS often kills the webview while
-  // the user is on the Portal, then cold-starts us from the callback.
+  // Persist PKCE *before* the sheet / browser opens — iOS often kills the
+  // webview while the user is on the Portal, then cold-starts us from the callback.
   // Drop a leftover `cihub://` from the last attempt *before* we listen, or
   // takePendingOidcCallbackUrl() poisons this waiter with the old state.
   await clearPendingOidc();
   exchangeByCode.clear();
   persistPendingOidc({ verifier: codeVerifier, state, portal, startedAt: Date.now() });
 
-  // Start listening BEFORE opening the browser so we never miss the redirect.
-  const callback = awaitOidcCallback(state, options.signal);
-  await openAuthInSystemBrowser(authorizeUrl.toString());
+  // `addEventListener` does not fire for a signal that is already aborted, and
+  // opening the sheet after the caller has given up is pointless.
+  if (options.signal?.aborted) {
+    await clearPendingOidc();
+    throw new OidcCancelledError();
+  }
+
+  const abortOnDismiss = new AbortController();
+  const onCallerAbort = () => abortOnDismiss.abort();
+  options.signal?.addEventListener('abort', onCallerAbort);
+  const callback = awaitOidcCallback(state, abortOnDismiss.signal);
+
+  try {
+    await openAuthSession(authorizeUrl.toString());
+  } catch (err) {
+    abortOnDismiss.abort();
+    options.signal?.removeEventListener('abort', onCallerAbort);
+    await callback.catch(() => undefined);
+
+    if (err instanceof AuthSessionCancelledError) {
+      await clearPendingOidc();
+      throw new OidcCancelledError();
+    }
+
+    throw err;
+  }
+
   try {
     const { code } = await callback;
     const tokens = await exchangeCode(portal, code, codeVerifier);
@@ -357,6 +382,8 @@ export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, option
   } catch (err) {
     if (err instanceof OidcCancelledError) await clearPendingOidc();
     throw err;
+  } finally {
+    options.signal?.removeEventListener('abort', onCallerAbort);
   }
 }
 

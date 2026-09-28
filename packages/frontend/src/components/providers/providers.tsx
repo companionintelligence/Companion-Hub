@@ -73,7 +73,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
       // Narrowing this to skip same-origin links is correct on its own, but it
       // also means a same-origin anchor now stays in-app — which is why desktop
       // sign-in cannot be an <a href> at all. hub-auth-flow.ts requires
-      // desktop-hub-sso to open via a button calling openAuthInSystemBrowser, so
+      // desktop-hub-sso to open via a button calling openAuthSession, so
       // it reaches the system browser regardless of this exemption. See
       // external-link-interception.test.tsx for that contract.
       //
