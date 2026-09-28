@@ -21,7 +21,13 @@ const availableDomainSchema = z.object({
   offered: z.boolean().optional(),
 });
 
+/**
+ * `supported` has the custom-domain list's meaning: whether Companion Portal
+ * answered. An empty `domains` with `supported: true` is a Portal offering
+ * nothing; with `supported: false` the Hub never got a list.
+ */
 export const availableDomainsResponseSchema = z.object({
+  supported: z.boolean(),
   domains: z.array(availableDomainSchema),
 });
 
