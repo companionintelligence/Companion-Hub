@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-24 (custom domains: the dark-domain restart banner and tile badge)
+> **Last updated:** 2026-09-27 (iOS Portal sign-in uses the in-app Safari sheet)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -74,8 +74,8 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 - Session refresh: `packages/frontend/src/lib/hub-session-refresh.ts`
 - Local Vite (`:5005`) must probe same-origin `/api/health/live` (the Vite proxy) before a leftover Docker Hub on `:5002`. Do **not** bind the API client to `:5004` or `:5002` — `/api` stays same-origin on `:5005` so the session cookie survives. Binding it was a 401 → full `/login` reload → "Connecting to local API...". HubStatus on `:5005` must ignore Docker compose status (that is the appliance stack). Featured (`GET /api/store/featured-bundle`) is served through that Vite proxy.
 - Companion Account flows (`packages/frontend/src/lib/hub-auth-flow.ts` — do not mix):
-  - **`mobile-cloud-connect`** — iOS/Android `/connect` only. Portal PKCE (`oidc.ts`) → Safari → `cihub://auth/callback` → `deep-link-oidc`. Not Hub `/portal/start`.
-  - **`mobile-hub-sso`** — iOS/Android `/login` after a Hub is chosen. `{remoteHub}/api/auth/portal/start?desktop=1` in Safari → `cihub://auth?token=…` → `deep-link-auth`. Never localhost. Button + `openAuthInSystemBrowser` so WKWebView stays mounted.
+  - **`mobile-cloud-connect`** — iOS/Android `/connect` only. Portal PKCE (`oidc.ts`) → `openAuthSession` (iOS in-app `ASWebAuthenticationSession` sheet, Android system browser) → `cihub://auth/callback` → `deep-link-oidc`. Not Hub `/portal/start`.
+  - **`mobile-hub-sso`** — iOS/Android `/login` after a Hub is chosen. `{remoteHub}/api/auth/portal/start?desktop=1` via `openAuthSession` → `cihub://auth?token=…` → `deep-link-auth`. Never localhost. Button + `openAuthSession` so WKWebView stays mounted and iOS never jumps out to Safari.
   - **`desktop-hub-sso`** — Mac / Linux / Windows Tauri while the Hub is running. Same-origin (Vite `:5005` or packaged `:5002`) `/portal/start?desktop=1` in the system browser → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub. Button + `openAuthInSystemBrowser`, never an `<a href>`: a same-origin anchor is left alone by the Providers link interceptor, so it navigates the app's own webview and unmounts `useDesktopPortalAuth` — the only code that exchanges the one-time token. Heartbeat `session-hint?desktop=1` so a Chrome loopback callback can hand off into Tauri.
   - **`browser-hub-sso`** — any browser on a Hub (including a phone browser). Same-origin `/portal/start` with no `desktop=1`; cookie session. On **loopback**, this is stolen into `desktop-hub-sso` while Tauri is announcing presence (10 min). Stop the desktop shell to test a real browser cookie session. Product origin is **`:5002`**; `:5005` is source-dev only — see `docs/system/desktop.md` ("Two stacks — do not mix").
 
@@ -110,7 +110,7 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - Authorization codes are single-use. Safari + `/connect` resume both try the same code — exchange is memoized per code so the loser does not toast "invalid code".
 - After a Hub is chosen, go to `/login` (not `/`). Root must not wait on the remote Hub's registration API on any mobile route.
 - `I18nProvider` must not fetch `/api/i18n` on a phone — that `window.fetch` to the remote Hub never settles and leaves the exact "Loading…" screen. Use bundled `en`.
-- Hub `/login` Portal SSO on iOS/Android uses the chosen Hub URL (not `localhost:5002`) with `desktop=1`, opened in Safari via `openAuthInSystemBrowser`, so the phone returns via `cihub://auth?token=…` instead of navigating the WKWebView away from `/login`.
+- Hub `/login` Portal SSO on iOS/Android uses the chosen Hub URL (not `localhost:5002`) with `desktop=1`, opened via `openAuthSession` (iOS in-app Safari sheet, Android system browser), so the phone returns via `cihub://auth?token=…` instead of navigating the WKWebView away from `/login`.
 - The SSO button email is the **Portal user** from the OIDC `id_token` (or email/password), stored in `ci-hub.portalAccountEmail`. On a phone, that wins over the Hub operator (`hub_operator` is often `support@…` on a shared appliance).
 - Hung Hub calls must not spin forever. I18n never gates on "Loading…". Root loader, `/home` session/app-context, and a 6s DOM watchdog all end in Retry + Switch Hub. The HTML boot strip also grows Reload / Connect if React never paints. Do not send a failed app-context load into onboarding.
 

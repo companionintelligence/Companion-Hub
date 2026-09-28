@@ -18,8 +18,10 @@ Portal (hub.ci.computer)            Appliance Hub (hub-<dev>-<org>.ci.computer)
    [pick a hub] ─ set client baseUrl ─> load existing Hub SPA with that session
 ```
 
-The native shell (`src-tauri`) only captures the `cihub://` deep links (Portal
-SSO + pairing) and exposes the Tauri HTTP/store/os/deep-link/opener plugins.
+The native shell (`src-tauri`) captures the `cihub://` deep links (Portal
+SSO + pairing), presents Portal sign-in on iOS in an in-app Safari sheet
+(`ASWebAuthenticationSession` via `start_auth_session`), and exposes the Tauri
+HTTP/store/os/deep-link/opener plugins.
 (`tauri-plugin-notification` was deliberately **removed** — it dragged
 POST_NOTIFICATIONS/RECEIVE_BOOT_COMPLETED/WAKE_LOCK into the Android manifest
 with zero callers. Re-add it alongside the push epic, see ROADMAP.md.)
