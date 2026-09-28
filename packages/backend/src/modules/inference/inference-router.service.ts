@@ -333,6 +333,58 @@ export class InferenceRouterService {
     throw new Error(`Model ${resolvedModel} not found or not available`);
   }
 
+  /** Route text / FIM completion request (e.g. for editor code completion) */
+  async routeCompletion(body: Record<string, unknown>): Promise<{
+    data: unknown;
+    headers?: Record<string, string>;
+    stream?: NodeJS.ReadableStream;
+    backend: string;
+  }> {
+    const requestedModel = (body.model as string) || 'auto';
+    let probed: ProbedBackends | undefined;
+    const probeOnce = async (): Promise<ProbedBackends> => (probed ??= await this.probeBackends());
+
+    const resolvedModel = requestedModel === 'auto' ? await this.resolveAutoModel(probeOnce) : requestedModel;
+    if (!resolvedModel) {
+      throw new Error('No models available — no local models loaded and no cloud providers configured');
+    }
+
+    const prepared = await this.prepareTrackedModel(resolvedModel);
+    if (prepared) {
+      return this.proxyToBackend(prepared.backend, prepared.backendModelId, body, '/v1/completions');
+    }
+
+    for (const [backendType, , health] of await probeOnce()) {
+      if (health.running && health.healthy) {
+        const modelNames = health.modelsLoaded;
+        if (modelNames.some((m) => m === resolvedModel || m.startsWith(`${resolvedModel}:`))) {
+          return this.proxyToBackend(backendType, resolvedModel, body, '/v1/completions');
+        }
+      }
+    }
+
+    // Cloud completion fallback if cloud provider is available
+    const provider = this.cloudFallback.resolveProvider(resolvedModel);
+    if (provider) {
+      const baseUrl = provider.baseUrl || this.cloudFallback.getDefaultBaseUrl(provider.provider);
+      const isStream = !!body.stream;
+      const response = await axios.post(`${baseUrl}/completions`, body, {
+        headers: {
+          Authorization: `Bearer ${provider.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        responseType: isStream ? 'stream' : 'json',
+        timeout: 120000,
+      });
+      if (isStream) {
+        return { data: null, stream: response.data, headers: response.headers as Record<string, string>, backend: `cloud:${provider.provider}` };
+      }
+      return { data: response.data, headers: response.headers as Record<string, string>, backend: `cloud:${provider.provider}` };
+    }
+
+    throw new Error(`Model ${resolvedModel} not found or not available for completions`);
+  }
+
   /** Route TTS request */
   async routeTts(body: Record<string, unknown>): Promise<{ data: Buffer; backend: string }> {
     const lemonadeBackend = this.backends.tryGet('lemonade');
@@ -489,9 +541,10 @@ export class InferenceRouterService {
     backendType: InferenceBackendType,
     backendModelId: string,
     body: Record<string, unknown>,
+    endpointPath = '/v1/chat/completions',
   ): Promise<{ data: unknown; headers?: Record<string, string>; stream?: NodeJS.ReadableStream; backend: string }> {
     const backend = this.backends.get(backendType);
-    const url = `${backend.getBaseUrl()}/v1/chat/completions`;
+    const url = `${backend.getBaseUrl()}${endpointPath}`;
 
     const requestBody: Record<string, unknown> = { ...body, model: backendModelId };
 
@@ -508,19 +561,7 @@ export class InferenceRouterService {
       ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
     };
 
-    try {
-      return await this.sendToBackend(url, requestBody, backendType, !!body.stream, headers);
-    } catch (err) {
-      if (axios.isAxiosError(err) && err.response?.status === 400 && (requestBody.tools || requestBody.tool_choice)) {
-        const errMsg = typeof err.response?.data === 'object' ? JSON.stringify(err.response.data) : String(err.response?.data ?? '');
-        if (errMsg.includes('does not support tools') || errMsg.includes('tool')) {
-          this._logger.warn(`[Inference] Model ${backendModelId} does not support tools, retrying without`);
-          const { tools: _t, tool_choice: _tc, ...bodyWithoutTools } = requestBody;
-          return await this.sendToBackend(url, bodyWithoutTools, backendType, !!body.stream, headers);
-        }
-      }
-      throw err;
-    }
+    return this.sendToBackend(url, requestBody, backendType, !!body.stream, headers);
   }
 
   private async sendToBackend(
@@ -530,17 +571,22 @@ export class InferenceRouterService {
     stream: boolean,
     headers: Record<string, string>,
   ): Promise<{ data: unknown; headers?: Record<string, string>; stream?: NodeJS.ReadableStream; backend: string }> {
+    // Dynamic timeout based on estimated prompt tokens, mirroring Hub Pool's firstByteBudgetMs:
+    // Minimum 120s, scaling up for large prompts (e.g. 150KB system + tool definitions).
+    const bodyBytes = Buffer.byteLength(JSON.stringify(requestBody));
+    const dynamicTimeoutMs = Math.max(120_000, Math.ceil(bodyBytes / 4 / 50) * 1000);
+
     if (stream) {
       const response = await axios.post(url, requestBody, {
         responseType: 'stream',
-        timeout: 0,
+        timeout: dynamicTimeoutMs,
         headers,
       });
       return { data: null, stream: response.data, backend: backendType };
     }
 
     const response = await axios.post(url, requestBody, {
-      timeout: 120000,
+      timeout: dynamicTimeoutMs,
       headers,
     });
 

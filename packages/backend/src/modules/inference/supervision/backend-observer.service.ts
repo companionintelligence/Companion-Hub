@@ -52,7 +52,7 @@ interface BackendRuntimeState {
 }
 
 /**
- * Watches the six inference backends and the Hub's own compose project, and tells someone when a
+ * Watches the four inference backends and the Hub's own compose project, and tells someone when a
  * container is being restarted in a loop.
  *
  * **This service never restarts, stops, starts, or reconfigures anything.** It has no reference to

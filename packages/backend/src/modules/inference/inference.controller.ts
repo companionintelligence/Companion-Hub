@@ -172,10 +172,30 @@ export class InferenceController {
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/completions')
-  v1Completions(@Res() res: Response) {
-    res.status(400).json({
-      error: { message: 'Legacy completions endpoint is not supported. Use /v1/chat/completions instead.', type: 'invalid_request_error' },
-    });
+  async v1Completions(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    const model = (body.model as string) || 'auto';
+    if (await this.poolPeers.hasConnectedPeers()) {
+      return this.poolProxy.proxyRequest({ path: '/v1/completions', method: 'POST', body, model, res });
+    }
+    try {
+      const result = await this.router.routeCompletion(body);
+      if (result.stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        if (result.headers) {
+          for (const [key, value] of Object.entries(result.headers)) {
+            res.setHeader(key, value);
+          }
+        }
+        result.stream.pipe(res);
+      } else {
+        res.json(result.data);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+    }
   }
 
   @UseGuards(InferenceAccessGuard)
