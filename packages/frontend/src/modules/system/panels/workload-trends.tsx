@@ -20,10 +20,12 @@ import { useTranslation } from 'react-i18next';
  * here. GPU VRAM is real per-process data (`gpu-process-sampler.service.ts`), attributed to
  * whichever workload's container holds it (`DockerReadFacade.mapPidsToContainers`) — it is NOT
  * compute utilization, which no tool this Hub shells out to can report per process on this fleet's
- * hardware (see `workload-coverage.tsx`, which still states THAT absence in words). Tokens per
- * workload are not in this payload, not anywhere behind it, and are not drawn ANYWHERE — the
- * proxy has no concept of which app a request came from at all, only which model and node served
- * it (see `pool-activity.tsx`'s per-model token breakdown, the nearest real signal there is).
+ * hardware: `rocm-smi`'s CU occupancy reads UNKNOWN and `nvidia-smi pmon` reads `-` for every
+ * process (beta-max and beta-red, 2026-09-15). The GPU tile says so in its caption, because a VRAM
+ * chart with no word about utilization reads as the whole GPU story. Tokens per workload are not in
+ * this payload and are not drawn anywhere: inference routes admit apps by network origin and never
+ * learn which app is calling, so the nearest real signals are Pool activity's per-model tokens and
+ * the "Inference from this Hub" tile beside this one.
  *
  * ── GPU VRAM is real WHERE IT IS READ, and the tile says where that is ───────────────────────
  *
@@ -259,8 +261,30 @@ export function WorkloadTrend({
     return metric === 'gpu' ? computeVramChartScale(values).max : computeMemoryChartScale(values).max;
   }, [metric, rows]);
 
+  /*
+   * Which source answered is on hover, not in the line: it matters when the chart goes quiet, and the
+   * line has to fit one row of a quarter-width tile. Not-known (in flight, failed, or an older Hub)
+   * names no source rather than guessing one.
+   */
+  const gpuSource =
+    gpuVramSource === 'host-file'
+      ? t('DASHBOARD_TRENDS_GPU_SOURCE_HOST_FILE')
+      : gpuVramSource === 'tool'
+        ? t('DASHBOARD_TRENDS_GPU_SOURCE_TOOL')
+        : null;
+
   return (
     <Panel title={title} density="compact" className={className}>
+      {/* Outside PanelBody: it is a fact about instrumentation, true whatever the query did. */}
+      {metric === 'gpu' ? (
+        <p
+          data-testid="workload-trend-gpu-caption"
+          className="text-[11px] leading-snug text-muted-foreground"
+          title={[gpuSource, t('DASHBOARD_TRENDS_GPU_SOURCE_UTIL')].filter(Boolean).join(' ')}
+        >
+          {t('DASHBOARD_TRENDS_GPU_CAPTION')}
+        </p>
+      ) : null}
       <PanelBody state={state} error={t('DASHBOARD_CONTAINERS_FAILED')} lines={6}>
         {rows.length === 0 ? (
           <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_TRENDS_NO_WORKLOADS')}</p>

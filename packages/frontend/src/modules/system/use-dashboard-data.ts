@@ -149,6 +149,11 @@ export interface PoolPeerSummary {
   gpuPressure?: number | null;
   authMode?: string;
   /**
+   * The current run of failed health probes, or `null` while they succeed. Process-local on the
+   * backend, so a restart clears it until the next probe fails. Only `kind` is read here.
+   */
+  probeFailure?: { kind?: string; since?: string; action?: string | null } | null;
+  /**
    * The peer's clamped, freshness-gated container rollup, or `null` for "not reported".
    *
    * Read this, never `lastCapabilities.containers`. The raw blob is what the remote machine sent;
@@ -252,8 +257,8 @@ export interface RoutingLogEntry {
    * Token counts, attached once the backend's response finished — `null`/absent while pending,
    * and forever when the dialect never reported one (most entries, today: see
    * `response-usage-tap.ts` on the backend for exactly which two shapes are recognised). Never a
-   * proxy for a real count — no estimate from `durationMs` or byte lengths, matching the same
-   * rule `workload-coverage.tsx` states for the per-workload tile this feeds `tokensByModel` for.
+   * proxy for a real count — no estimate from `durationMs` or byte lengths. A row with none is
+   * "not reported", which is why the token figures built from it say how many rows reported.
    */
   usage?: { promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } | null;
   /**

@@ -459,3 +459,37 @@ describe('WorkloadTrend GPU memory held outside any workload', () => {
     expect(note?.textContent).not.toContain('cihub fleet update');
   });
 });
+
+describe('WorkloadTrend GPU caption', () => {
+  const caption = (container: HTMLElement) => container.querySelector('[data-testid="workload-trend-gpu-caption"]');
+
+  it('says VRAM is all the GPU tile measures, on the GPU tile alone', () => {
+    const gpu = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="host-file" />);
+    expect(caption(gpu.container)?.textContent).toBe('VRAM per workload · compute % not measurable');
+
+    for (const metric of ['cpu', 'memory'] as const) {
+      const other = render(<WorkloadTrend metric={metric} history={[]} apps={[]} state={READY} />);
+      expect(caption(other.container)).toBeNull();
+    }
+  });
+
+  it('keeps the caption through a failed sample: it is about the instrumentation, not the query', () => {
+    const { container } = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={{ pending: false, failed: true }} />);
+
+    expect(caption(container)).not.toBeNull();
+  });
+
+  it('names which source answered on hover, and none when that is not known', () => {
+    const fromFile = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="host-file" />);
+    expect(caption(fromFile.container)?.getAttribute('title')).toContain('host probe file');
+
+    const fromTool = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="tool" />);
+    expect(caption(fromTool.container)?.getAttribute('title')).toContain('Hub running nvidia-smi / rocm-smi itself');
+
+    const unknown = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} />);
+    const title = caption(unknown.container)?.getAttribute('title') ?? '';
+    expect(title).not.toContain('host probe');
+    expect(title).not.toContain('itself');
+    expect(title).toContain('not measurable per process');
+  });
+});

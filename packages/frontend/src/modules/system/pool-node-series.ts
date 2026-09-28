@@ -253,6 +253,10 @@ export interface PoolNodeCard {
   firstByte: FirstByteStats | null;
   /** The freshest generation rate anyone measured for this node, or `null`. See {@link latestDecode}. */
   decode: DecodeReading | null;
+  /** How the peer authenticates to us (`signed` | `bearer`). Absent on the local card and on older Hubs. */
+  authMode?: string | null;
+  /** The kind of the peer's current run of failed probes, or `null` while its probes succeed. */
+  probeFailure?: string | null;
 }
 
 function countModels(backends: { healthy?: boolean; modelsLoaded?: string[] }[] | undefined): number {
@@ -378,6 +382,8 @@ export function poolNodeCards(
       // The routing log names a peer by FQDN; its first label is the key both sides agree on.
       firstByte: firstByteFor(peer.nodeFqdn?.split('.')[0]),
       decode: latestDecode([...(peer.throughput?.observed ?? []), ...(peer.throughput?.advertised ?? [])]),
+      authMode: peer.authMode ?? null,
+      probeFailure: peer.probeFailure?.kind ?? null,
     });
   }
 
@@ -767,6 +773,17 @@ export interface FirstByteStats {
 }
 
 /**
+ * `true` when a row's `durationMs` IS a time to first byte: served, streamed, and never failed over.
+ * Shared by {@link firstByteByNode} and {@link inferenceFromHere} so the two cannot drift apart on
+ * which rows count — the reasons for each exclusion are on `firstByteByNode`.
+ */
+export function isFirstByteSample(entry: RoutingLogEntry): boolean {
+  if (entry.outcome !== 'served' || entry.stream !== true || (entry.failedOverFrom?.length ?? 0) > 0) return false;
+
+  return typeof entry.durationMs === 'number' && Number.isFinite(entry.durationMs) && entry.durationMs >= 0;
+}
+
+/**
  * Time to first byte per serving node, over the window — the number that says which node is slow.
  *
  * Only rows where `durationMs` IS a first-byte time are counted, and that excludes more than it
@@ -788,8 +805,7 @@ export function firstByteByNode(entries: RoutingLogEntry[], options: { now: numb
   const since = options.now - options.windowMs;
 
   for (const entry of entries) {
-    if (entry.outcome !== 'served' || entry.stream !== true || (entry.failedOverFrom?.length ?? 0) > 0) continue;
-    if (typeof entry.durationMs !== 'number' || !Number.isFinite(entry.durationMs) || entry.durationMs < 0) continue;
+    if (!isFirstByteSample(entry)) continue;
 
     const at = parseHubTimestamp(entry.at);
     if (!Number.isFinite(at) || at < since || at > options.now) continue;
@@ -798,7 +814,7 @@ export function firstByteByNode(entries: RoutingLogEntry[], options: { now: numb
     if (!key) continue;
 
     const list = samples.get(key) ?? [];
-    list.push({ ms: entry.durationMs, estTokens: estimatedPromptTokens(entry) });
+    list.push({ ms: entry.durationMs as number, estTokens: estimatedPromptTokens(entry) });
     samples.set(key, list);
   }
 
@@ -813,4 +829,124 @@ export function firstByteByNode(entries: RoutingLogEntry[], options: { now: numb
   }
 
   return stats;
+}
+
+// ── Inference from this Hub ──────────────────────────────────────────────────
+
+/**
+ * The span {@link routingBuckets} covers, as `[from, to)`, or `null` for no buckets.
+ *
+ * Anything else that states a figure "in the last 30 minutes" reads its window from here, so it
+ * counts exactly the rows the rail and the per-minute bars count, and never re-reads the clock.
+ */
+export function bucketWindow(buckets: RoutingBucket[], bucketMs: number): { from: number; to: number } | null {
+  const first = buckets[0];
+  const last = buckets.at(-1);
+  if (!first || !last || bucketMs <= 0) return null;
+
+  return { from: first.at, to: last.at + bucketMs };
+}
+
+/** What this Hub's own callers asked the pool for over one window. See {@link inferenceFromHere}. */
+export interface OwnInference {
+  /** Every request that entered the pool at this Hub and was placed in the window. */
+  requests: number;
+  served: number;
+  /** Settled without an answer — anything neither served nor still waiting, as `routingActivity` counts it. */
+  failed: number;
+  pending: number;
+  failovers: number;
+  /** Served requests whose response carried a usage frame. The denominator is `served`: only a served request can. */
+  usageReported: number;
+  promptTokens: number;
+  completionTokens: number;
+  /** Over served, streamed, never-failed-over requests only — see {@link isFirstByteSample}. `null` when there were none. */
+  firstByte: { count: number; p50Ms: number; p90Ms: number | null } | null;
+  /** Most-requested models first. `tokens` is `null` when none of that model's requests reported usage. */
+  models: { model: string; requests: number; tokens: number | null }[];
+  /** Distinct models asked for, so a caller can say how many the list above left out. */
+  modelCount: number;
+}
+
+/** Below this many samples a p90 is just the slowest request, so it is not stated. */
+const P90_MIN_SAMPLES = 5;
+
+/** Nearest-rank percentile of an ascending list: a figure one of these requests actually took. */
+function nearestRank(sorted: number[], share: number): number | undefined {
+  return sorted[Math.max(0, Math.ceil(sorted.length * share) - 1)];
+}
+
+function hasUsage(entry: RoutingLogEntry): boolean {
+  const usage = entry.usage;
+  if (!usage) return false;
+
+  return [usage.promptTokens, usage.completionTokens, usage.totalTokens].some((value) => typeof value === 'number' && Number.isFinite(value));
+}
+
+/**
+ * Requests that ENTERED THE POOL AT THIS HUB over `[from, to)`: `outbound` rows only.
+ *
+ * The routing log writes `outbound` for a call to this Hub's own inference routes — its apps by
+ * network origin, or an editor or SDK holding one of its `inference` API keys — and `inbound` for
+ * work a peer forwarded to our engines (`hub-pool-routing-log.service.ts`). So this counts this
+ * Hub's callers wherever the pool served them, and leaves out every peer's traffic that merely ran
+ * on our hardware. Tokens are summed exactly as `routingBuckets` sums them, and only outbound rows
+ * ever carry usage, so the totals equal Pool activity's 30-minute token chips.
+ */
+export function inferenceFromHere(entries: RoutingLogEntry[], window: { from: number; to: number }, topModels = 5): OwnInference {
+  const own: OwnInference = {
+    requests: 0,
+    served: 0,
+    failed: 0,
+    pending: 0,
+    failovers: 0,
+    usageReported: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    firstByte: null,
+    models: [],
+    modelCount: 0,
+  };
+  const firstBytes: number[] = [];
+  const byModel = new Map<string, { requests: number; tokens: number | null }>();
+
+  for (const entry of entries) {
+    if (entry.direction !== 'outbound') continue;
+    const at = parseHubTimestamp(entry.at);
+    if (!Number.isFinite(at) || at < window.from || at >= window.to) continue;
+
+    own.requests += 1;
+    if (entry.outcome === 'served') own.served += 1;
+    else if (entry.outcome === 'pending') own.pending += 1;
+    else own.failed += 1;
+    if ((entry.failedOverFrom?.length ?? 0) > 0) own.failovers += 1;
+
+    if (entry.outcome === 'served' && hasUsage(entry)) own.usageReported += 1;
+    own.promptTokens += usageCount(entry.usage?.promptTokens);
+    own.completionTokens += usageCount(entry.usage?.completionTokens);
+    if (isFirstByteSample(entry)) firstBytes.push(entry.durationMs as number);
+
+    // Named even when nothing served it: which model a failing caller asked for is the lead.
+    if (entry.model) {
+      const slot = byModel.get(entry.model) ?? { requests: 0, tokens: null };
+      slot.requests += 1;
+      const total = entry.usage?.totalTokens;
+      if (typeof total === 'number' && Number.isFinite(total) && total > 0) slot.tokens = (slot.tokens ?? 0) + total;
+      byModel.set(entry.model, slot);
+    }
+  }
+
+  const sorted = firstBytes.sort((a, b) => a - b);
+  const p50 = nearestRank(sorted, 0.5);
+  const p90 = nearestRank(sorted, 0.9);
+  own.firstByte =
+    p50 === undefined ? null : { count: sorted.length, p50Ms: p50, p90Ms: sorted.length >= P90_MIN_SAMPLES && p90 !== undefined ? p90 : null };
+
+  own.modelCount = byModel.size;
+  own.models = [...byModel.entries()]
+    .map(([model, slot]) => ({ model, ...slot }))
+    .sort((a, b) => b.requests - a.requests || (b.tokens ?? 0) - (a.tokens ?? 0) || a.model.localeCompare(b.model))
+    .slice(0, Math.max(0, topModels));
+
+  return own;
 }

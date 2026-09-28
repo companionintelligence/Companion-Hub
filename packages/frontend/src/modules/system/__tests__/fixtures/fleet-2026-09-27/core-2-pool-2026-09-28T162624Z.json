@@ -1,0 +1,2548 @@
+{
+  "node": "core-2",
+  "now": "2026-09-28T16:26:24.895Z",
+  "inference_pool_status": {
+    "enabled": true,
+    "disabledBy": null,
+    "directions": {
+      "outbound": {
+        "enabled": true,
+        "disabledBy": null
+      },
+      "inbound": {
+        "enabled": true,
+        "disabledBy": null
+      }
+    },
+    "reason": "active",
+    "routingActive": true,
+    "settings": {
+      "poolEnabled": true,
+      "poolOutboundEnabled": true,
+      "poolInboundEnabled": true,
+      "poolLocalAffinity": 1,
+      "poolHealthPollSeconds": 30,
+      "poolRequireSignedPeers": false,
+      "poolShareContainerStats": true,
+      "poolPressureWeight": 0,
+      "poolMaxPromptTokens": null,
+      "poolProbeSnapshotTtlMs": 0,
+      "poolPrefixAffinityMaxInFlight": 0,
+      "poolSlotAwareness": 0,
+      "poolPins": [],
+      "poolRouteAppsAlways": true
+    },
+    "tailscaleAdminApiConfigured": false,
+    "localNode": {
+      "inFlightRequests": 0,
+      "hardwareTier": "high",
+      "backends": [
+        {
+          "type": "ollama",
+          "healthy": true,
+          "modelsLoaded": [
+            "qwen3.6:35b",
+            "ornith-1.5:35b",
+            "gemma4:e4b",
+            "ornith-1.5:9b",
+            "qwen2.5-coder:14b",
+            "qwen2.5-coder:32b",
+            "qwen3-coder:30b",
+            "nomic-embed-text:latest",
+            "gemma3:1b",
+            "gemma3:27b",
+            "gemma3:4b"
+          ]
+        },
+        {
+          "type": "vllm",
+          "healthy": false,
+          "modelsLoaded": []
+        },
+        {
+          "type": "lemonade",
+          "healthy": false,
+          "modelsLoaded": []
+        },
+        {
+          "type": "omlx",
+          "healthy": false,
+          "modelsLoaded": []
+        }
+      ],
+      "capabilitiesError": null,
+      "gpuPressure": null,
+      "gpuPressureSource": null,
+      "nodeFqdn": "core-2.tailnet-example.ts.net",
+      "tailnet": "tailnet-example.ts.net",
+      "tailscaleConnected": true,
+      "maxPromptTokens": null,
+      "maxPromptTokensSetBy": null,
+      "maxNumCtx": null,
+      "ollamaSlots": null,
+      "throughput": []
+    },
+    "peers": [
+      {
+        "id": "peer-beta-1",
+        "nodeFqdn": "beta-1.tailnet-example.ts.net",
+        "displayName": "beta-1",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.582",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "north-mini-code-1.0:latest",
+                "gemma4:31b",
+                "muse-glimmer:30b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gpt-oss:20b",
+                "qwen3.5:27b",
+                "qwen3.6:27b",
+                "qwen3-coder:30b",
+                "gemma4:e4b",
+                "gemma3:1b",
+                "nomic-embed-text:latest",
+                "qwen3.8:27b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.575Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 949.86,
+            "memoryBytes": 596504576
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 949.86,
+          "memoryBytes": 596504576
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-6",
+        "nodeFqdn": "core-6.tailnet-example.ts.net",
+        "displayName": "core-6",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.592",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:9b",
+                "qwen3.5:4b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.583Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 2.77,
+            "memoryBytes": 861581312
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 2.77,
+          "memoryBytes": 861581312
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-14",
+        "nodeFqdn": "core-14.tailnet-example.ts.net",
+        "displayName": "core-14",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.593",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "mxbai-embed-large:latest",
+                "qwen3.8:27b",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.588Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.87,
+            "memoryBytes": 492056576
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.87,
+          "memoryBytes": 492056576
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-5",
+        "nodeFqdn": "core-5.tailnet-example.ts.net",
+        "displayName": "core-5",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.593",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:122b",
+                "muse-glimmer:30b",
+                "qwen3.5:27b",
+                "nomic-embed-text:latest",
+                "qwen3-coder:30b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3.6:27b",
+                "qwen3.6:35b",
+                "gemma3:27b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.600Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.68,
+            "memoryBytes": 434515968
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.68,
+          "memoryBytes": 434515968
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-1",
+        "nodeFqdn": "core-1.tailnet-example.ts.net",
+        "displayName": null,
+        "direction": "outbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.567",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "gemma3:1b",
+                "ornith-1.5:9b",
+                "gemma4:26b",
+                "qwen3-coder:30b",
+                "qwen3.6:27b",
+                "qwen3:8b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.554Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 234.27,
+            "memoryBytes": 923230208
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 234.27,
+          "memoryBytes": 923230208
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-beta-nas",
+        "nodeFqdn": "beta-nas.tailnet-example.ts.net",
+        "displayName": "beta-nas",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.568",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3.5:4b", "nomic-embed-text:latest", "ornith-1.5:9b", "qwen2.5-coder:7b", "qwen3.6:27b"]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen2.5-3B-Instruct-AWQ"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.566Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 9.84,
+            "memoryBytes": 486088704
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 9.84,
+          "memoryBytes": 486088704
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-beta-max",
+        "nodeFqdn": "beta-max.tailnet-example.ts.net",
+        "displayName": "beta-max",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.58",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "gemma4:e4b",
+                "ornith-1.5:9b",
+                "qwen3.6:35b",
+                "qwen3-coder:30b",
+                "qwen3.6:27b",
+                "qwen3-vl:32b",
+                "gemma3:1b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.563Z",
+          "containers": {
+            "total": 9,
+            "running": 9,
+            "stopped": 0,
+            "cpuPercent": 4.69,
+            "memoryBytes": 2016714752
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 9,
+          "stopped": 0,
+          "total": 9,
+          "cpuPercent": 4.69,
+          "memoryBytes": 2016714752
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-7",
+        "nodeFqdn": "core-7.tailnet-example.ts.net",
+        "displayName": "core-7",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.586",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.8:27b",
+                "nomic-embed-text:latest",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen3.6:27b",
+                "qwen3.6:35b",
+                "qwen3-coder:30b",
+                "gemma4:e4b",
+                "gabegoodhart/minimax-m2:230b",
+                "gemma4:31b",
+                "qwen3-vl:32b",
+                "gemma3:1b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.571Z",
+          "containers": {
+            "total": 16,
+            "running": 12,
+            "stopped": 4,
+            "cpuPercent": 2.94,
+            "memoryBytes": 2696585216
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 12,
+          "stopped": 4,
+          "total": 16,
+          "cpuPercent": 2.94,
+          "memoryBytes": 2696585216
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-10",
+        "nodeFqdn": "core-10.tailnet-example.ts.net",
+        "displayName": "ci",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.569",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.6:35b",
+                "nomic-embed-text:latest",
+                "qwen3-coder:30b",
+                "ornith-1.5:35b",
+                "qwen2.5-coder:14b",
+                "qwen2.5-coder:32b",
+                "qwen3:8b",
+                "gemma3:4b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.571Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 2.89,
+            "memoryBytes": 506101760
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 2.89,
+          "memoryBytes": 506101760
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-beta-glass",
+        "nodeFqdn": "beta-glass.tailnet-example.ts.net",
+        "displayName": "beta-3-glass",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.581",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "mxbai-embed-large:latest",
+                "qwen3.8:27b",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:9b",
+                "qwen3.5:4b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.583Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 2.8,
+            "memoryBytes": 534548480
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 2.8,
+          "memoryBytes": 534548480
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-17",
+        "nodeFqdn": "core-17.tailnet-example.ts.net",
+        "displayName": "core-17",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.582",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen3.5-9B"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.575Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.53,
+            "memoryBytes": 490393600
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.53,
+          "memoryBytes": 490393600
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-3",
+        "nodeFqdn": "core-3.tailnet-example.ts.net",
+        "displayName": "core-3",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.568",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3.6:35b", "qwen3:8b", "nomic-embed-text:latest"]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.566Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.69,
+            "memoryBytes": 439021568
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.69,
+          "memoryBytes": 439021568
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-beta-ms-a2",
+        "nodeFqdn": "beta-ms-a2.tailnet-example.ts.net",
+        "displayName": "beta-ms-a2",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.582",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": [
+                "qwen3.5:0.8b",
+                "nomic-embed-text:latest",
+                "deepseek-r1:8b",
+                "qwen3.5:2b",
+                "lfm2.5:8b",
+                "ornith-1.5:35b",
+                "gemma4:26b",
+                "qwen2.5-coder:3b",
+                "qwen2.5-coder:7b",
+                "qwen3-coder:30b",
+                "nomic-embed-text-v2-moe:latest",
+                "qwen3.8:27b",
+                "mxbai-embed-large:latest",
+                "gabegoodhart/minimax-m2:230b",
+                "qwen3.5:4b",
+                "qwen3.5:9b",
+                "gemma3:1b",
+                "qwen3.6:27b",
+                "qwen3:32b",
+                "qwen3:30b",
+                "gemma4:e2b",
+                "gemma4:31b",
+                "qwen3.6:35b"
+              ]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.575Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 2.69,
+            "memoryBytes": 494551040
+          },
+          "hardwareTier": "cpu-only",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 2.69,
+          "memoryBytes": 494551040
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-core-4",
+        "nodeFqdn": "core-4.tailnet-example.ts.net",
+        "displayName": "core-4",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.598",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["qwen3-coder:30b", "nomic-embed-text:cpu", "gemma3:1b-cpu", "gemma3:1b", "nomic-embed-text:latest"]
+            },
+            {
+              "type": "vllm",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "lemonade",
+              "healthy": false,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.600Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 1.09,
+            "memoryBytes": 436752384
+          },
+          "hardwareTier": "high",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 1.09,
+          "memoryBytes": 436752384
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      },
+      {
+        "id": "peer-beta-red",
+        "nodeFqdn": "beta-red.tailnet-example.ts.net",
+        "displayName": "beta-red",
+        "direction": "inbound",
+        "status": "connected",
+        "enabled": true,
+        "consecutiveFailures": 0,
+        "lastSeenAt": "2026-09-28 16:26:06.597",
+        "lastCapabilities": {
+          "backends": [
+            {
+              "type": "ollama",
+              "healthy": true,
+              "modelsLoaded": ["nomic-embed-text:latest", "qwen2.5-coder:7b", "gemma4:e4b", "ornith-1.5:9b", "gemma3:4b", "gemma3:1b", "qwen3:8b"]
+            },
+            {
+              "type": "vllm",
+              "healthy": true,
+              "modelsLoaded": ["Qwen/Qwen2.5-3B-Instruct-AWQ"]
+            },
+            {
+              "type": "lemonade",
+              "healthy": true,
+              "modelsLoaded": []
+            },
+            {
+              "type": "omlx",
+              "healthy": false,
+              "modelsLoaded": []
+            }
+          ],
+          "updatedAt": "2026-09-28T16:26:06.600Z",
+          "containers": {
+            "total": 5,
+            "running": 5,
+            "stopped": 0,
+            "cpuPercent": 0.96,
+            "memoryBytes": 537632768
+          },
+          "hardwareTier": "medium",
+          "acceptingWork": true,
+          "inFlightRequests": 0
+        },
+        "probeFailure": null,
+        "inFlightRequests": 0,
+        "authMode": "signed",
+        "gpuPressure": null,
+        "containers": {
+          "running": 5,
+          "stopped": 0,
+          "total": 5,
+          "cpuPercent": 0.96,
+          "memoryBytes": 537632768
+        },
+        "maxPromptTokens": null,
+        "maxNumCtx": null,
+        "ollamaSlots": null,
+        "throughput": {
+          "observed": [],
+          "advertised": []
+        }
+      }
+    ],
+    "peerCounts": {
+      "total": 15,
+      "connected": 15,
+      "pending": 0,
+      "unreachable": 0,
+      "disabled": 0
+    },
+    "pins": [],
+    "routing": {
+      "recorded": 37,
+      "capacity": 200,
+      "served": 36,
+      "failed": 1,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 2,
+      "lastAt": "2026-09-28T15:11:00.724Z",
+      "oldestAt": "2026-09-26T23:49:40.619Z",
+      "totalRecorded": 37,
+      "startedAt": "2026-09-26T23:47:49.027Z"
+    }
+  },
+  "inference_pool_routing-log": {
+    "entries": [
+      {
+        "stream": false,
+        "bodyBytes": 21,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:11:00.724Z",
+        "direction": "inbound",
+        "path": "/api/show",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 3,
+        "usage": null,
+        "updatedAt": "2026-09-28T15:11:00.724Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 28,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:11:00.703Z",
+        "direction": "inbound",
+        "path": "/api/show",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 3,
+        "usage": null,
+        "updatedAt": "2026-09-28T15:11:00.703Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 28,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:11:00.681Z",
+        "direction": "inbound",
+        "path": "/api/show",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 2,
+        "usage": null,
+        "updatedAt": "2026-09-28T15:11:00.681Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 20,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:11:00.658Z",
+        "direction": "inbound",
+        "path": "/api/show",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 4,
+        "usage": null,
+        "updatedAt": "2026-09-28T15:11:00.658Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 130,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:04:37.893Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3-coder:30b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 13,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 6977,
+        "usage": {
+          "promptTokens": 15,
+          "completionTokens": 2,
+          "totalTokens": 17
+        },
+        "updatedAt": "2026-09-28T15:04:44.866Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 125,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:04:29.124Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.5:4b",
+        "node": "core-17.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 7,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 8727,
+        "usage": {
+          "promptTokens": 17,
+          "completionTokens": 8,
+          "totalTokens": 25
+        },
+        "updatedAt": "2026-09-28T15:04:37.849Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 124,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:04:29.050Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "gemma3:1b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 37,
+        "usage": {
+          "promptTokens": 17,
+          "completionTokens": 3,
+          "totalTokens": 20
+        },
+        "updatedAt": "2026-09-28T15:04:29.085Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 124,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T15:04:27.504Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "gemma3:1b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 1507,
+        "usage": {
+          "promptTokens": 17,
+          "completionTokens": 3,
+          "totalTokens": 20
+        },
+        "updatedAt": "2026-09-28T15:04:29.007Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 81,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T03:00:01.763Z",
+        "direction": "outbound",
+        "path": "/v1/embeddings",
+        "model": "nomic-embed-text",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 17,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 27,
+        "usage": {
+          "promptTokens": 10,
+          "completionTokens": null,
+          "totalTokens": 10
+        },
+        "updatedAt": "2026-09-28T03:00:01.788Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 6091,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-28T03:00:00.373Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "core-1.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 11331,
+        "usage": null,
+        "updatedAt": "2026-09-28T03:00:11.694Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 466,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-27T03:00:02.682Z",
+        "direction": "inbound",
+        "path": "/v1/embeddings",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 22,
+        "usage": null,
+        "updatedAt": "2026-09-27T03:00:02.682Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 1450,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-27T03:00:02.567Z",
+        "direction": "outbound",
+        "path": "/v1/embeddings",
+        "model": "nomic-embed-text",
+        "node": "core-4.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 17,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 87,
+        "usage": {
+          "promptTokens": 417,
+          "completionTokens": null,
+          "totalTokens": 417
+        },
+        "updatedAt": "2026-09-27T03:00:02.651Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 466,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-27T03:00:02.562Z",
+        "direction": "outbound",
+        "path": "/v1/embeddings",
+        "model": "nomic-embed-text",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 17,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 43,
+        "usage": {
+          "promptTokens": 124,
+          "completionTokens": null,
+          "totalTokens": 124
+        },
+        "updatedAt": "2026-09-27T03:00:02.601Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 148,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-27T03:00:02.560Z",
+        "direction": "outbound",
+        "path": "/v1/embeddings",
+        "model": "nomic-embed-text",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 17,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 44,
+        "usage": {
+          "promptTokens": 28,
+          "completionTokens": null,
+          "totalTokens": 28
+        },
+        "updatedAt": "2026-09-27T03:00:02.599Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 6091,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-27T03:00:01.246Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "beta-1.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 12524,
+        "usage": {
+          "promptTokens": 1465,
+          "completionTokens": 1026,
+          "totalTokens": 2491
+        },
+        "updatedAt": "2026-09-27T03:00:38.163Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 5997,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-27T03:00:01.208Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "core-1.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 11526,
+        "usage": null,
+        "updatedAt": "2026-09-27T03:00:12.725Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 66371,
+        "budgetMs": 331000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:57:03.235Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "beta-1.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 16532,
+          "budgetMs": 331000,
+          "estimates": [
+            {
+              "node": "beta-1.tailnet-example.ts.net",
+              "backend": "ollama",
+              "tokensPerSec": 844.4,
+              "fromPromptTokens": 15975,
+              "extrapolated": true,
+              "predictedMs": 20261,
+              "source": "advertised",
+              "deadline": false,
+              "slow": false
+            },
+            {
+              "node": "core-7.tailnet-example.ts.net",
+              "backend": "ollama",
+              "tokensPerSec": 49.8,
+              "fromPromptTokens": 16402,
+              "extrapolated": true,
+              "predictedMs": 334238,
+              "source": "observed",
+              "deadline": true,
+              "slow": true
+            },
+            {
+              "node": "core-14.tailnet-example.ts.net",
+              "backend": "ollama",
+              "tokensPerSec": 251.3,
+              "fromPromptTokens": 16402,
+              "extrapolated": true,
+              "predictedMs": 66302,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 30605,
+        "usage": {
+          "promptTokens": 16075,
+          "completionTokens": 126,
+          "totalTokens": 16201
+        },
+        "updatedAt": "2026-09-26T23:57:36.695Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 65586,
+        "budgetMs": 327000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:55:50.074Z",
+        "direction": "inbound",
+        "path": "/api/chat",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 974,
+        "usage": null,
+        "updatedAt": "2026-09-26T23:55:50.074Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 32777,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:52:35.137Z",
+        "direction": "inbound",
+        "path": "/v1/chat/completions",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 396,
+        "usage": null,
+        "updatedAt": "2026-09-26T23:52:35.137Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 32368,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:52:34.528Z",
+        "direction": "inbound",
+        "path": "/v1/chat/completions",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 3226,
+        "usage": null,
+        "updatedAt": "2026-09-26T23:52:34.528Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 48399,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:51:30.841Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 12100,
+          "budgetMs": 300000,
+          "estimates": [
+            {
+              "node": "local",
+              "backend": "ollama",
+              "tokensPerSec": 13238.1,
+              "fromPromptTokens": 9505,
+              "extrapolated": true,
+              "predictedMs": 1164,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 387,
+        "usage": {
+          "promptTokens": 9045,
+          "completionTokens": 506,
+          "totalTokens": 9551
+        },
+        "updatedAt": "2026-09-26T23:51:40.634Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 46982,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:51:24.952Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 11745,
+          "budgetMs": 300000,
+          "estimates": [
+            {
+              "node": "local",
+              "backend": "ollama",
+              "tokensPerSec": 13238.1,
+              "fromPromptTokens": 9505,
+              "extrapolated": true,
+              "predictedMs": 1096,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 568,
+        "usage": {
+          "promptTokens": 8951,
+          "completionTokens": 292,
+          "totalTokens": 9243
+        },
+        "updatedAt": "2026-09-26T23:51:30.773Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 155923,
+        "budgetMs": 780000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:51:12.631Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": null,
+        "backend": null,
+        "candidates": 9,
+        "attempt": 9,
+        "failedOverFrom": [
+          "beta-1.tailnet-example.ts.net",
+          "core-14.tailnet-example.ts.net",
+          "core-1.tailnet-example.ts.net",
+          "core-17.tailnet-example.ts.net",
+          "beta-glass.tailnet-example.ts.net",
+          "beta-ms-a2.tailnet-example.ts.net",
+          "core-6.tailnet-example.ts.net",
+          "core-7.tailnet-example.ts.net",
+          "beta-max.tailnet-example.ts.net"
+        ],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 38964,
+          "budgetMs": 780000,
+          "estimates": [
+            {
+              "node": "beta-1.tailnet-example.ts.net",
+              "backend": "ollama",
+              "tokensPerSec": 844.4,
+              "fromPromptTokens": 15975,
+              "extrapolated": true,
+              "predictedMs": 112548,
+              "source": "advertised",
+              "deadline": false,
+              "slow": false
+            },
+            {
+              "node": "core-1.tailnet-example.ts.net",
+              "backend": "ollama",
+              "tokensPerSec": 4343.3,
+              "fromPromptTokens": 38676,
+              "extrapolated": true,
+              "predictedMs": 9038,
+              "source": "advertised",
+              "deadline": false,
+              "slow": false
+            },
+            {
+              "node": "core-6.tailnet-example.ts.net",
+              "backend": "ollama",
+              "tokensPerSec": 497.5,
+              "fromPromptTokens": 38676,
+              "extrapolated": true,
+              "predictedMs": 78894,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "failed",
+        "status": null,
+        "durationMs": 307336,
+        "usage": null,
+        "updatedAt": "2026-09-26T23:56:19.937Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 42149,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:51:03.173Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 10537,
+          "budgetMs": 300000,
+          "estimates": [
+            {
+              "node": "local",
+              "backend": "ollama",
+              "tokensPerSec": 13238.1,
+              "fromPromptTokens": 9505,
+              "extrapolated": true,
+              "predictedMs": 882,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 395,
+        "usage": {
+          "promptTokens": 8673,
+          "completionTokens": 1198,
+          "totalTokens": 9871
+        },
+        "updatedAt": "2026-09-26T23:51:24.897Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 40158,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:54.422Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 10040,
+          "budgetMs": 300000,
+          "estimates": [
+            {
+              "node": "local",
+              "backend": "ollama",
+              "tokensPerSec": 13238.1,
+              "fromPromptTokens": 9505,
+              "extrapolated": true,
+              "predictedMs": 801,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 450,
+        "usage": {
+          "promptTokens": 8538,
+          "completionTokens": 453,
+          "totalTokens": 8991
+        },
+        "updatedAt": "2026-09-26T23:51:03.132Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 38018,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:44.526Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 9505,
+          "budgetMs": 300000,
+          "estimates": [
+            {
+              "node": "local",
+              "backend": "ollama",
+              "tokensPerSec": 22899.7,
+              "fromPromptTokens": 8221,
+              "extrapolated": true,
+              "predictedMs": 480,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 718,
+        "usage": {
+          "promptTokens": 8354,
+          "completionTokens": 512,
+          "totalTokens": 8866
+        },
+        "updatedAt": "2026-09-26T23:50:54.374Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 35648,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:34.873Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 8912,
+          "budgetMs": 300000,
+          "estimates": [
+            {
+              "node": "local",
+              "backend": "ollama",
+              "tokensPerSec": 22899.7,
+              "fromPromptTokens": 8221,
+              "extrapolated": true,
+              "predictedMs": 422,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 385,
+        "usage": {
+          "promptTokens": 7981,
+          "completionTokens": 575,
+          "totalTokens": 8556
+        },
+        "updatedAt": "2026-09-26T23:50:44.494Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 34004,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:27.735Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 8501,
+          "budgetMs": 300000,
+          "estimates": [
+            {
+              "node": "local",
+              "backend": "ollama",
+              "tokensPerSec": 22899.7,
+              "fromPromptTokens": 8221,
+              "extrapolated": true,
+              "predictedMs": 384,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 365,
+        "usage": {
+          "promptTokens": 7831,
+          "completionTokens": 363,
+          "totalTokens": 8194
+        },
+        "updatedAt": "2026-09-26T23:50:34.832Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 32882,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:23.347Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 361,
+        "usage": {
+          "promptTokens": 7735,
+          "completionTokens": 217,
+          "totalTokens": 7952
+        },
+        "updatedAt": "2026-09-26T23:50:27.665Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 65850,
+        "budgetMs": 329000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:21.867Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "core-14.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 2,
+        "failedOverFrom": ["core-7.tailnet-example.ts.net"],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": {
+          "estimatedTokens": 16402,
+          "budgetMs": 329000,
+          "estimates": [
+            {
+              "node": "beta-1.tailnet-example.ts.net",
+              "backend": "ollama",
+              "tokensPerSec": 844.4,
+              "fromPromptTokens": 15975,
+              "extrapolated": true,
+              "predictedMs": 19942,
+              "source": "observed",
+              "deadline": false,
+              "slow": false
+            }
+          ],
+          "overridden": false
+        },
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 399710,
+        "usage": {
+          "promptTokens": 15932,
+          "completionTokens": 41,
+          "totalTokens": 15973
+        },
+        "updatedAt": "2026-09-26T23:57:03.101Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 64141,
+        "budgetMs": 320000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:15.560Z",
+        "direction": "inbound",
+        "path": "/api/chat",
+        "model": null,
+        "node": "beta-max.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 1,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 32227,
+        "usage": null,
+        "updatedAt": "2026-09-26T23:50:15.560Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 32483,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:50:13.116Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 10115,
+        "usage": {
+          "promptTokens": 7641,
+          "completionTokens": 62,
+          "totalTokens": 7703
+        },
+        "updatedAt": "2026-09-26T23:50:23.267Z"
+      },
+      {
+        "stream": false,
+        "bodyBytes": 1403,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:49:43.340Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "core-7.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 16450,
+        "usage": {
+          "promptTokens": 324,
+          "completionTokens": 12,
+          "totalTokens": 336
+        },
+        "updatedAt": "2026-09-26T23:49:59.788Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 64141,
+        "budgetMs": 320000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:49:43.018Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "beta-1.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 29651,
+        "usage": {
+          "promptTokens": 15439,
+          "completionTokens": 495,
+          "totalTokens": 15934
+        },
+        "updatedAt": "2026-09-26T23:50:21.684Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 30991,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:49:40.988Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 27027,
+        "usage": {
+          "promptTokens": 7359,
+          "completionTokens": 361,
+          "totalTokens": 7720
+        },
+        "updatedAt": "2026-09-26T23:50:13.059Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 154773,
+        "budgetMs": 774000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:49:40.784Z",
+        "direction": "outbound",
+        "path": "/api/chat",
+        "model": "qwen3.8:27b",
+        "node": "core-6.tailnet-example.ts.net",
+        "backend": "ollama",
+        "candidates": 9,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 91716,
+        "usage": {
+          "promptTokens": 16386,
+          "completionTokens": 265,
+          "totalTokens": 16651
+        },
+        "updatedAt": "2026-09-26T23:51:12.487Z"
+      },
+      {
+        "stream": true,
+        "bodyBytes": 2721,
+        "budgetMs": 300000,
+        "clientClosed": false,
+        "at": "2026-09-26T23:49:40.619Z",
+        "direction": "outbound",
+        "path": "/v1/chat/completions",
+        "model": "qwen3.6:35b",
+        "node": "local",
+        "backend": "ollama",
+        "candidates": 12,
+        "attempt": 1,
+        "failedOverFrom": [],
+        "pin": null,
+        "promptCeiling": null,
+        "contextCap": null,
+        "slots": null,
+        "throughput": null,
+        "affinity": null,
+        "outcome": "served",
+        "status": 200,
+        "durationMs": 211,
+        "usage": {
+          "promptTokens": 621,
+          "completionTokens": 1697,
+          "totalTokens": 2318
+        },
+        "updatedAt": "2026-09-26T23:50:05.950Z"
+      }
+    ],
+    "summary": {
+      "recorded": 37,
+      "capacity": 200,
+      "served": 36,
+      "failed": 1,
+      "clientClosed": 0,
+      "pending": 0,
+      "failovers": 2,
+      "lastAt": "2026-09-28T15:11:00.724Z",
+      "oldestAt": "2026-09-26T23:49:40.619Z",
+      "totalRecorded": 37,
+      "startedAt": "2026-09-26T23:47:49.027Z"
+    },
+    "matched": 37,
+    "nextSince": "2026-09-28T15:11:00.724Z"
+  }
+}
