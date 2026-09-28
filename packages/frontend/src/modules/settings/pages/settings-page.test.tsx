@@ -64,14 +64,17 @@ describe('SettingsPage', () => {
     expect(await screen.findByText('User settings')).toBeInTheDocument();
 
     const tabsList = screen.getByRole('tablist');
-    expect(tabsList.parentElement).toHaveClass('flex', 'justify-center');
+    expect(tabsList.parentElement).toHaveClass('flex', 'justify-center', 'min-w-0');
+    // The strip is inline-flex and wider than a phone. It has to shrink and scroll
+    // inside itself, or that width becomes the page and the phone pans sideways.
+    expect(tabsList).toHaveClass('w-full', 'min-w-0', 'overflow-x-auto');
 
     const scrollContainer = screen.getByTestId('settings-scroll-container');
     const innerWrapper = scrollContainer.firstElementChild as HTMLElement;
 
-    expect(scrollContainer).toHaveClass('overflow-y-auto');
+    expect(scrollContainer).toHaveClass('overflow-y-auto', 'overflow-x-hidden', 'min-w-0');
     expect(scrollContainer).not.toHaveClass('overflow-hidden');
-    expect(innerWrapper).toHaveClass('max-w-5xl');
+    expect(innerWrapper).toHaveClass('max-w-5xl', 'min-w-0');
     expect(innerWrapper).not.toHaveClass('max-w-none');
     expect(innerWrapper).not.toHaveClass('h-full');
   });
