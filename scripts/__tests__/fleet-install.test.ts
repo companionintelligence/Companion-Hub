@@ -203,6 +203,7 @@ describe('bringUpScript on a node', () => {
     const probeCount = existsSync(join(home, 'probe-count')) ? Number(readFileSync(join(home, 'probe-count'), 'utf8').trim()) : 0;
     const up = calls.split('\n').find((line) => line.startsWith('up '));
     return {
+      home,
       code: res.status,
       out: res.stdout,
       err: res.stderr,
@@ -307,6 +308,8 @@ describe('bringUpScript on a node', () => {
     expect(line).toContain('this Hub pairs against https://hub.ci.computer');
     expect(line).toContain(`the code was minted on ${DEV_PORTAL}`);
     expect(line).toContain('cihub up was not run');
+    // The way to move it is the operator's, and it is named: a reset node is seeded like a wiped one.
+    expect(line).toContain(`cihub reset --yes here and rerun to seed it on ${DEV_PORTAL}`);
     // Nothing restarted, nothing rewritten, and the code is still unspent.
     expect(res.upCloudUrl).toBeUndefined();
     expect(res.envAfter).toContain('CI_CLOUD_URL=https://hub.ci.computer\n');
@@ -326,7 +329,13 @@ describe('bringUpScript on a node', () => {
     expect(res.upCloudUrl).toBe(DEV_PORTAL);
     const line = describeStepFailure(res.out, res.err, { code: res.code, marker: 'hub-up-complete' });
     expect(line).toContain('portal-mismatch');
-    expect(line).toContain('without honouring CI_CLOUD_URL');
+    expect(line).toContain('too old to honour CI_CLOUD_URL');
+    // What "install a newer one" takes: fleet install keeps a node's cihub unless the offered one is
+    // newer, and a branch build without CI_HUB_BUILD_VERSION reports 0.0.0-dev, older than any
+    // release. And this `up` has already seeded the node, so the next run's check before the mint
+    // would stop it too. All of it inside the 300 characters `describeStepFailure` keeps.
+    expect(line).toContain('CI_HUB_BUILD_VERSION');
+    expect(line).toContain('then cihub reset --yes and rerun');
     expect(res.registered).toBe(false);
   });
 
@@ -335,6 +344,20 @@ describe('bringUpScript on a node', () => {
     const res = runOnNode({ envExtra: null, portalOrigin: DEV_PORTAL, seedIgnoresCloudUrl: true, desktopRunning: true, phase: '' });
     expect(res.code).toBe(1);
     expect(res.err).toContain('rewrites CI_CLOUD_URL to its own Portal');
+    expect(res.registered).toBe(false);
+  });
+
+  it.each([
+    ['before `cihub up`, for an installed Hub on another Portal', { envExtra: 'CI_CLOUD_URL=https://hub.ci.computer\n' }],
+    ['after `cihub up`, for a fresh node a too-old cihub seeded', { envExtra: null, seedIgnoresCloudUrl: true }],
+  ])('never runs the mint origin as shell in the portal-mismatch line %s', (_when, node) => {
+    // The URL parser keeps `$(`, `)` and backticks in a host, and an origin that does not parse is
+    // used as given; either way it went into a double-quoted `echo`, where the shell expanded it.
+    const res = runOnNode({ ...node, portalOrigin: 'https://hub.example.com$(touch "$HOME/pwned")', phase: '{"registered":true}' });
+    expect(res.code).toBe(1);
+    expect(res.err).toContain('portal-mismatch');
+    expect(res.err).toContain('$(touch "$HOME/pwned")');
+    expect(existsSync(join(res.home, 'pwned'))).toBe(false);
     expect(res.registered).toBe(false);
   });
 
@@ -359,6 +382,10 @@ describe('portalOriginMismatch', () => {
     expect(why).toContain('https://hub.companionintelligence.com');
     expect(why).toContain('410');
     expect(why).toContain('CI_CLOUD_URL=https://hub.ci.computer cihub login');
+    // 2026-09-28: the wiped nodes a first run left seeded with production, never paired. Minting on
+    // production is the wrong advice for them; a reset makes them fresh, and fresh ones are seeded
+    // against the Portal the code comes from.
+    expect(why).toContain('cihub reset --yes');
   });
 
   it('does not call an unknown or unreadable node URL a mismatch', () => {
@@ -388,14 +415,17 @@ describe('bringUpScript portal check', () => {
     expect(before).toBeLessThan(up);
     expect(after).toBeGreaterThan(up);
     expect(register).toBeGreaterThan(after);
-    // Compared as an origin, so the node's trailing slash does not fail an identical Portal.
-    expect(script).toContain("!= 'https://hub.ci.computer'");
+    // Compared as an origin, so the node's trailing slash does not fail an identical Portal — and
+    // held in a variable, never spliced into the double-quoted mismatch lines.
+    expect(script).toContain("mint_portal='https://hub.ci.computer'");
+    expect(script).toContain('!= "$mint_portal"');
     expect(script).toMatch(/hub-up-failed: portal-mismatch[^\n]*exit 1/);
   });
 
   it('hands `cihub up` the mint origin as CI_CLOUD_URL, so a fresh node is seeded against that Portal', () => {
     const script = bringUpScript('pw12345678', 'ABC123', 'https://hub.companionintelligence.com/');
-    expect(script).toContain("CI_CLOUD_URL='https://hub.companionintelligence.com' cihub up --detached");
+    expect(script).toContain("mint_portal='https://hub.companionintelligence.com'");
+    expect(script).toContain('CI_CLOUD_URL="$mint_portal" cihub up --detached');
     // For `up` alone: `register` and everything after it read the Portal from the node's env file.
     expect(script).not.toMatch(/export CI_CLOUD_URL/);
   });

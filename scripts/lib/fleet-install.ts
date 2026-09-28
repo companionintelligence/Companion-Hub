@@ -37,6 +37,7 @@ import {
 import { tailscaleCertStep } from './fleet-tailscale-cert.js';
 import { gatePreflight, preflightNode } from './fleet-preflight.js';
 import { classifyPairingFailure, type PairingCodeOutcome } from './fleet-pairing-codes.js';
+import { isLoopbackPortalHost, shownPortalValue, validatePortalOrigin } from './seed-appliance.js';
 import {
   describePairingPace,
   describeWait,
@@ -153,13 +154,48 @@ export function portalOriginMismatch(nodeUrl: string | undefined, mintOrigin: st
   return (
     `this Hub pairs against ${node} (its CI_CLOUD_URL), but the code would be minted on ${mint} — ` +
     `a code from one Portal is not in the other's database, so it would be refused 410 every time. ` +
-    `Mint on ${node}: CI_CLOUD_URL=${node} cihub login --scope device:manage, or set CI_PORTAL_ORIGIN=${node} with CI_PORTAL_TOKEN`
+    `Mint on ${node}: CI_CLOUD_URL=${node} cihub login --scope device:manage, or set CI_PORTAL_ORIGIN=${node} with CI_PORTAL_TOKEN. ` +
+    // The other way out, and the one a rebuild needs: 2026-09-28's wiped nodes came out of the first
+    // run seeded with production and never paired, and minting on production is not what that run
+    // was for. Whether to move a Hub stays the operator's call; the run only names the command.
+    `Or, if this Hub never paired and belongs on ${mint}: cihub reset --yes on the node deletes its install, and the next run seeds it against ${mint}`
   );
 }
 
-/** The mint origin as a single-quoted shell word's contents, compared with the node's CI_CLOUD_URL as an origin. */
-function shellQuotedOrigin(expectedPortalOrigin: string): string {
-  return (originOf(expectedPortalOrigin) ?? expectedPortalOrigin).replace(/'/g, "'\\''");
+/**
+ * Why no node can be seeded against, or pair with, a code minted on `mintOrigin`; `null` when one can.
+ *
+ * The node's seed takes the mint origin as CI_CLOUD_URL only when {@link validatePortalOrigin} does,
+ * and writes production otherwise — so a Portal on the LAN over plain http, which this machine can
+ * mint on, would leave every node on the one Portal its code is not in, with the check after `up`
+ * blaming the node's cihub. The seed does accept a loopback Portal, as the desktop does, but on a
+ * fleet node localhost is the node: before the seed honoured CI_CLOUD_URL such a node stopped with
+ * portal-mismatch; now it would go on to `register` against a Portal that is not there. Checked
+ * before anything touches the node, so neither leaves a device in Portal or a cihub replaced.
+ */
+export function unusableMintOrigin(mintOrigin: string): string | null {
+  const checked = validatePortalOrigin(mintOrigin);
+  const shown = shownPortalValue(mintOrigin);
+  if ('why' in checked) {
+    return `the pairing codes would be minted on ${shown}, which no node can be seeded against: ${checked.why}. Log in to the Portal by its https origin, or set CI_PORTAL_ORIGIN to it`;
+  }
+  if (isLoopbackPortalHost(new URL(checked.origin).hostname)) {
+    return `the pairing codes would be minted on ${shown}, a loopback address: on a fleet node it names the node itself, where no Portal answers. Use a Portal the nodes can reach`;
+  }
+  return null;
+}
+
+/**
+ * `$mint_portal`: the mint origin, compared with the node's CI_CLOUD_URL as an origin.
+ *
+ * Assigned once, single-quoted, and only ever expanded as `"$mint_portal"`. It used to be spliced
+ * into the double-quoted `echo` of each mismatch line, where the shell ran whatever `$(…)` it held —
+ * and the URL parser keeps `$`, `(` and backticks in a host, while an origin that does not parse is
+ * used as given. `installNode` refuses such an origin before minting, but this script is built from
+ * whatever it is handed.
+ */
+function mintPortalLine(expectedPortalOrigin: string): string {
+  return `mint_portal='${(originOf(expectedPortalOrigin) ?? expectedPortalOrigin).replace(/'/g, "'\\''")}'`;
 }
 
 const readNodePortal = (variable: string) =>
@@ -176,11 +212,12 @@ const readNodePortal = (variable: string) =>
  * before `up` has restarted anything.
  */
 function portalOriginCheckBeforeUpLines(expectedPortalOrigin: string): string[] {
-  const expected = shellQuotedOrigin(expectedPortalOrigin);
   return [
+    mintPortalLine(expectedPortalOrigin),
     ENV_FILE_LINE,
     readNodePortal('pre_portal'),
-    `if [ -n "$pre_portal" ] && [ "$pre_portal" != '${expected}' ]; then echo "hub-up-failed: portal-mismatch: this Hub pairs against $pre_portal, the code was minted on ${expected}; cihub up was not run, so its Portal is unchanged" >&2; exit 1; fi`,
+    // Short enough for the node's line, which `describeStepFailure` cuts at 300 characters.
+    'if [ -n "$pre_portal" ] && [ "$pre_portal" != "$mint_portal" ]; then echo "hub-up-failed: portal-mismatch: this Hub pairs against $pre_portal, the code was minted on $mint_portal; cihub up was not run. If it never paired, cihub reset --yes here and rerun to seed it on $mint_portal" >&2; exit 1; fi',
   ];
 }
 
@@ -192,15 +229,19 @@ function portalOriginCheckBeforeUpLines(expectedPortalOrigin: string): string[] 
  * CI_CLOUD_URL (it writes production whatever it is given), or a desktop app, whose every Hub start
  * rewrites CI_CLOUD_URL to its own build's Portal.
  */
-function portalOriginCheckAfterUpLines(expectedPortalOrigin: string): string[] {
-  const expected = shellQuotedOrigin(expectedPortalOrigin);
+function portalOriginCheckAfterUpLines(): string[] {
   return [
     readNodePortal('hub_portal'),
-    `if [ -n "$hub_portal" ] && [ "$hub_portal" != '${expected}' ]; then`,
+    'if [ -n "$hub_portal" ] && [ "$hub_portal" != "$mint_portal" ]; then',
     '  why=""',
     '  if [ -n "$desk" ]; then why="; a companion-hub desktop app is running here, and every Hub start it makes rewrites CI_CLOUD_URL to its own Portal"',
-    '  elif [ -z "$pre_portal" ]; then why="; this node\'s cihub seeded that without honouring CI_CLOUD_URL, so it predates that fix: install a newer one"; fi',
-    `  echo "hub-up-failed: portal-mismatch: this Hub pairs against $hub_portal, the code was minted on ${expected}$why" >&2; exit 1`,
+    // "Install a newer one" was all this said, and `fleet install` would not: it keeps a node's cihub
+    // unless the one on offer is newer, and a branch build without CI_HUB_BUILD_VERSION says
+    // 0.0.0-dev, older than any release. The node is also seeded now, so the next run stops it before
+    // the mint unless it is reset. Kept inside the 300 characters of the node's line; docs/CLI.md
+    // has the rest.
+    '  elif [ -z "$pre_portal" ]; then why="; its cihub is too old to honour CI_CLOUD_URL: install a newer one (a branch build needs CI_HUB_BUILD_VERSION=x.y.z), then cihub reset --yes and rerun"; fi',
+    '  echo "hub-up-failed: portal-mismatch: this Hub pairs against $hub_portal, the code was minted on $mint_portal$why" >&2; exit 1',
     'fi',
   ];
 }
@@ -227,7 +268,7 @@ export function bringUpScript(postgresPassword: string, pairingCode: string, exp
     // portal-mismatch right after this line. Scoped to `up` rather than exported. On an appliance only
     // the seed reads it (the appliance compose deliberately does not interpolate CI_CLOUD_URL), and
     // the seed runs only when there is no complete install, so it cannot move an existing Hub.
-    expectedPortalOrigin ? `CI_CLOUD_URL='${shellQuotedOrigin(expectedPortalOrigin)}' cihub up --detached` : 'cihub up --detached',
+    expectedPortalOrigin ? 'CI_CLOUD_URL="$mint_portal" cihub up --detached' : 'cihub up --detached',
     ENV_FILE_LINE,
     // The image the node ended up pinning, on the node's line whichever way the step ends. Read after
     // `up`, so a desktop app that rewrote the file first shows here too. On 2026-09-26 core-6 and fzzy
@@ -242,7 +283,7 @@ export function bringUpScript(postgresPassword: string, pairingCode: string, exp
     // wrong one answers 410 PAIRING_CODE_INVALID after first resetting the node's registration.
     // Checked again here, after `up` wrote the file and before `register` touches anything: a `cihub`
     // too old to seed from CI_CLOUD_URL, or a desktop app, can still have written another Portal.
-    ...(expectedPortalOrigin ? portalOriginCheckAfterUpLines(expectedPortalOrigin) : []),
+    ...(expectedPortalOrigin ? portalOriginCheckAfterUpLines() : []),
     // The port the Hub was actually given, not the one it usually gets: a heal that moved API_PORT
     // to 5003 once left the probe below silent while the step reported success.
     'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
@@ -562,6 +603,11 @@ export async function installNode(
 ): Promise<NodeInstallReport> {
   const target: SshTarget = { host: node.ip, user: node.user ?? sshUser };
   const steps: InstallStep[] = [];
+
+  // First of all: a Portal no node can be seeded against fails every node the same way, and failing
+  // here costs nothing — no probe, no cihub replaced, no device minted.
+  const unusable = opts.mintPairingCode && opts.portalOrigin ? unusableMintOrigin(opts.portalOrigin) : null;
+  if (unusable) return { node: node.name, ok: false, steps: [{ name: 'portal origin', ok: false, detail: unusable }] };
 
   const { facts, error } = await readHostFacts(target);
   if (!facts) {
