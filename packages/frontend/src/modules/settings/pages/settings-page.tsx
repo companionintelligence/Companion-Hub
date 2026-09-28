@@ -41,18 +41,19 @@ export default () => {
   };
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex min-h-0 flex-1 flex-col">
-        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex h-full min-h-0 flex-1 flex-col">
-          <div className="mx-auto flex w-full max-w-5xl justify-center">
+    <div className="flex h-full min-w-0 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <Tabs value={currentTab} onValueChange={handleTabChange} className="flex h-full min-h-0 min-w-0 w-full flex-1 flex-col">
+          <div className="mx-auto flex w-full min-w-0 max-w-5xl justify-center">
             {/* One scrolling strip, not six tabs plus a "More" dropdown.
                 The dropdown was three separate defects: the active tab lost its indicator
                 whenever it lived inside it, the items were DropdownMenuItems rather than
                 tabs so the tablist told a screen reader it had two children when it has
                 eight, and roving arrow-key focus stopped at the visible pair. All eight
                 triggers measure 598px, which scrolls comfortably in the 358px mobile pane,
-                so the strip is simply better on every axis. */}
-            <TabsList className="max-w-full justify-start overflow-x-auto border border-border/50 bg-card/50 md:justify-center">
+                so the strip is simply better on every axis. min-w-0 keeps that width
+                inside the strip instead of letting it widen the settings column. */}
+            <TabsList className="w-full min-w-0 max-w-full justify-start overflow-x-auto border border-border/50 bg-card/50 md:justify-center">
               <TabsTrigger value="settings">{t('COMMON_SETTINGS')}</TabsTrigger>
               <TabsTrigger value="security">{t('COMMON_SECURITY')}</TabsTrigger>
               <TabsTrigger value="appstores">{t('COMMON_APP_STORES')}</TabsTrigger>
@@ -64,11 +65,14 @@ export default () => {
             </TabsList>
           </div>
           <div
-            className={cn('page-scroller-edge-3 relative min-h-0 flex-1 py-3 pl-3', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')}
+            className={cn(
+              'page-scroller-edge-3 relative min-h-0 min-w-0 flex-1 overflow-x-hidden py-3 pl-3',
+              isLogsTab ? 'overflow-hidden' : 'overflow-y-auto',
+            )}
             data-testid="settings-scroll-container"
             data-page-scroller="settings"
           >
-            <div className={cn('mx-auto w-full', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
+            <div className={cn('mx-auto w-full min-w-0', isLogsTab ? 'h-full max-w-none' : 'max-w-5xl')}>
               <TabsContent value="settings">
                 {currentTab === 'settings' && (
                   <Suspense fallback={<div>{t('SETTINGS_NETWORK_LOADING')}</div>}>

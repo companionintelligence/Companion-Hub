@@ -93,7 +93,7 @@ export const StatChipRow = ({ children }: { children: ReactNode }) => <div class
 // ── Tables ───────────────────────────────────────────────────────────────────
 
 export const KpiTable = ({ head, children, className }: { head: ReactNode; children: ReactNode; className?: string }) => (
-  <div className={cn('overflow-x-auto rounded-md border border-border', className)}>
+  <div className={cn('min-w-0 overflow-x-auto rounded-md border border-border', className)}>
     <table className="w-full border-collapse text-[13px]">
       <thead>
         <tr className="bg-muted/40">{head}</tr>
