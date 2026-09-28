@@ -3,7 +3,7 @@
  *
  * The Portal (better-auth `oidcProvider`) registers a first-party public client
  * `ci-hub` with PKCE required and the custom-scheme redirect `cihub://auth/callback`.
- * On mobile we run the Authorization Code + PKCE flow in the system browser and
+ * On mobile we run the Authorization Code + PKCE flow in an in-app browser and
  * capture the redirect back into the app via the `cihub://` deep link:
  *
  *   1. build {portal}/api/auth/oauth2/authorize?... and open it in the browser
@@ -320,7 +320,8 @@ async function exchangeCode(portal: string, code: string, codeVerifier: string):
 
 /**
  * Run the full OIDC PKCE login against the Portal. On iOS the Portal page is an
- * in-app authentication sheet; elsewhere it is the system browser. Resolves once
+ * in-app authentication sheet (iOS Safari session, Android Auth Tab); desktop
+ * uses the system browser. Resolves once
  * the user finishes and the `cihub://auth/callback` deep link is captured and
  * exchanged for tokens.
  */

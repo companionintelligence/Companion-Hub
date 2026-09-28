@@ -1,10 +1,10 @@
 import { retryDynamicImport } from '@/lib/chunk-load-error';
 
 /**
- * Open an auth URL in the real system browser (Safari / Chrome Custom Tabs).
+ * Open an auth URL in the real system browser.
  *
- * Used by Android and desktop native shells. iOS callers go through
- * {@link openAuthSession} so Portal sign-in stays in an in-app sheet.
+ * Used by the desktop shell. Phone sign-in goes through {@link openAuthSession}
+ * and does not call this.
  *
  * Desktop calls this from an onClick, NOT from an `<a href>`: an anchor whose
  * href is same-origin with the packaged shell is left alone by the Providers
@@ -16,8 +16,8 @@ import { retryDynamicImport } from '@/lib/chunk-load-error';
 export async function openAuthInSystemBrowser(url: string): Promise<void> {
   let openUrl: ((href: string) => Promise<void>) | undefined;
   try {
-    // retryDynamicImport for the same reason open-external.ts uses it: this is
-    // the sign-in path on every native shell, so a stale chunk hash here is the
+    // retryDynamicImport for the same reason open-external.ts uses it: desktop
+    // sign-in still imports this plugin, so a stale chunk hash here is the
     // difference between a browser opening and a button that does nothing.
     const opener = await retryDynamicImport(() => import('@tauri-apps/plugin-opener'));
     openUrl = opener.openUrl;
@@ -82,13 +82,20 @@ function isIosPlatform(): boolean {
   return /macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
 }
 
+function isAndroidPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /android/i.test(navigator.userAgent || '');
+}
+
 /**
- * Sign-in / registration in an in-app sheet on iOS (`ASWebAuthenticationSession`).
- * The sheet returns `cihub://` to the app, which the existing deep-link
- * listener finishes. Android, desktop, and web keep opening the system browser.
+ * Sign-in / registration in an in-app sheet.
+ * iOS uses `ASWebAuthenticationSession`. Android uses Chrome Auth Tab, which
+ * falls back to a Custom Tab on older browsers. The sheet returns `cihub://`
+ * to the app, which the existing deep-link listener finishes. Desktop and web
+ * keep opening the system browser.
  */
 export async function openAuthSession(url: string, callbackScheme = 'cihub'): Promise<void> {
-  if (!isTauriShell() || !isIosPlatform()) {
+  if (!isTauriShell() || (!isIosPlatform() && !isAndroidPlatform())) {
     await openAuthInSystemBrowser(url);
     return;
   }
