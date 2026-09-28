@@ -23,7 +23,7 @@ import { hubAuthFlowPolicy } from '@/lib/hub-auth-flow';
  *
  * So desktop does not use an anchor at all:
  *
- *     onClick -> openAuthInSystemBrowser -> system browser -> Portal login
+ *     onClick -> openAuthSession -> system browser -> Portal login
  *       -> cihub://auth?token=... -> Tauri deep link -> token exchange
  *
  * The React app stays mounted the whole time, which is what makes the last step
@@ -72,7 +72,7 @@ describe('desktop portal SSO contract', () => {
 
   it('opens sign-in in the system browser and keeps the deep-link return path', () => {
     const policy = hubAuthFlowPolicy('desktop-hub-sso');
-    // Desktop calls openAuthInSystemBrowser itself rather than leaning on the
+    // Desktop calls openAuthSession itself rather than leaning on the
     // interceptor. There is no second tab to worry about: the button branch of
     // login-form renders no anchor for the handler to see.
     expect(policy.openHubSsoInSystemBrowser).toBe(true);
