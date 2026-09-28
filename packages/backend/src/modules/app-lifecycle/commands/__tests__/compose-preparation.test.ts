@@ -645,38 +645,42 @@ describe('prepareAppComposeDir', () => {
     it('keeps the host port on loopback for an app holding a Hub MCP key', async () => {
       const { stubs, moduleRef, docker } = createHarness();
       // CI-OpenClaw's and CI-Hermes' shape: an MCP client with no edge_auth block.
-      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+      const manifest = {
         id: 'ci-openclaw',
         exposable: true,
         hub_integration: { mcp_client: true },
-      });
+      };
+      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(manifest);
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local' }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true });
+      // The manifest rides along so the route builder can fall back to its edge-auth default.
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest });
     });
 
     it('keeps the host port on loopback for an app that asks for edge auth', async () => {
       const { stubs, moduleRef, docker } = createHarness();
-      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({
+      const manifest = {
         id: 'opencode',
         exposable: true,
         hub_integration: { edge_auth: { default: true } },
-      });
+      };
+      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(manifest);
 
       // The stored enableAuth is no opt-out: an install that never decided also reads `false`.
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: false }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: true });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: true, manifest });
     });
 
     it('publishes on every interface for an app with neither', async () => {
       const { stubs, moduleRef, docker } = createHarness();
-      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue({ id: 'nextcloud', exposable: true, hub_integration: {} });
+      const manifest = { id: 'nextcloud', exposable: true, hub_integration: {} };
+      stubs.marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(manifest);
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm({ exposureMode: 'local', enableAuth: true }));
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false });
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest });
     });
 
     it('keeps the all-interfaces default and says so when the listing cannot be resolved', async () => {
@@ -685,7 +689,8 @@ describe('prepareAppComposeDir', () => {
 
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
-      expect(lastConstruction().options).toEqual({ loopbackHostPort: false });
+      // No manifest to hand the route builder either: it decides from the form and the port alone.
+      expect(lastConstruction().options).toEqual({ loopbackHostPort: false, manifest: undefined });
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`No manifest for ${APP_URN}`));
     });
   });
