@@ -97,7 +97,7 @@ export const openExternal = async (url: string): Promise<boolean> => {
       // retryDynamicImport, because a stale chunk hash here is not cosmetic.
       //
       // Sign-in shares this dependency without going through this function:
-      // login-form calls openAuthInSystemBrowser directly, and it imports the
+      // login-form calls openAuthSession, which on Android/desktop imports the
       // same @tauri-apps/plugin-opener. So a stale chunk hash here takes the
       // sign-in button and every external link out together, which is exactly
       // the reported pairing.
