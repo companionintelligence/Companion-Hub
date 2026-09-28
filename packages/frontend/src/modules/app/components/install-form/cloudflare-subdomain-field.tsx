@@ -80,7 +80,22 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
                     <div title={prefixText} className="flex min-w-0 max-w-[52%] shrink-0 items-center px-3 overflow-hidden">
                       <span className="block w-full min-w-0 truncate">{prefixText}</span>
                     </div>
-                    <Select value={(value as string) || ''} onValueChange={onChange}>
+                    {/*
+                     * ⚠ AN EMPTY VALUE IS NEVER A CHOICE. Radix's hidden native
+                     * select answers a value the form sets (the Portal's
+                     * preselection) with a change to `''` before its options have
+                     * caught up, which cleared the picker to its placeholder while
+                     * the form kept the domain. No item has an empty value, so no
+                     * person can pick one.
+                     */}
+                    <Select
+                      value={(value as string) || ''}
+                      onValueChange={(next) => {
+                        if (next) {
+                          onChange(next);
+                        }
+                      }}
+                    >
                       <SelectTrigger
                         title={selectedDomain}
                         aria-label={t('COMMON_PUBLIC_DOMAIN')}

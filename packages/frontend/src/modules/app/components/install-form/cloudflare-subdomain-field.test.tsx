@@ -1,4 +1,4 @@
-import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
+import { fireEvent, render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { useForm } from 'react-hook-form';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,11 @@ global.ResizeObserver = class ResizeObserver {
 };
 
 const SUFFIX = '-acme.ci0.pw';
+
+const PICKER_DOMAINS: AvailableDomain[] = [
+  { id: '1', domain: 'ci0.pw', isDefault: true, offered: true },
+  { id: '2', domain: 'ci1.pw', isDefault: false, offered: true },
+];
 
 type Values = { localSubdomain: string; publicDomain: string };
 
@@ -93,6 +98,20 @@ describe('CloudflareSubdomainField', () => {
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
     expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
+
+  /*
+   * Radix's hidden native select answers a value the form sets with a change to
+   * `''` when its options lag behind, which cleared the picker to its
+   * placeholder while the form kept the domain.
+   */
+  it('keeps the domain when the hidden native select reports an empty change', () => {
+    const { container } = render(<Field note={undefined} availableDomains={PICKER_DOMAINS} />);
+    const native = container.querySelector('select') as HTMLSelectElement;
+
+    fireEvent.change(native, { target: { value: '' } });
+
+    expect(screen.getByRole('combobox', { name: 'COMMON_PUBLIC_DOMAIN' })).toHaveTextContent('ci0.pw');
   });
 
   it('shows the picker, and no mark, once there are domains to choose from', () => {
