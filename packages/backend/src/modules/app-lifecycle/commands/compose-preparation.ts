@@ -183,7 +183,12 @@ export async function prepareAppComposeDir(
     }
     const loopbackHostPort = appInfo ? hostPortStaysOnLoopback(appInfo) : false;
 
-    const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, { loopbackHostPort });
+    // The manifest also carries the edge-auth default the route builder falls back to for a stored
+    // form that never decided `enableAuth` (see `requiresHubLoginOnPublicRoute`).
+    const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported, {
+      loopbackHostPort,
+      manifest: appInfo ?? undefined,
+    });
     const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
     const composeFile = await dockerComposeBuilder.getDockerCompose(

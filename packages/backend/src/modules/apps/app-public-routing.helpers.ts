@@ -1,3 +1,4 @@
+import { manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
 import { publishesPublicWebRoute, resolveRoutingSubdomain, storedExposureForm } from '@ci-hub/common/types';
 import type { AppFormHostPortFields } from './app-exposure.helpers';
 
@@ -30,15 +31,26 @@ export function publicRoutingSnapshotOf<T extends AppPublicRoutingSnapshot & { c
 /**
  * Whether the tunnel route puts the Hub login (`ci-hub@file`) in front of the app.
  *
- * The form's `enableAuth` when it holds one. When it does not, an open host port turns the login
+ * The form's `enableAuth` when it holds one. When it does not, the manifest's
+ * `hub_integration.edge_auth.default` decides, and failing that an open host port turns the login
  * on. Compose once skipped the tunnel route for apps on an open host port (#678's gate), and most
  * of them never chose a login, because the queue sets `openPort` to true for any API or MCP install
  * that left it out. Without this default, the next Hub upgrade (`restartRunningApps`) would put
  * those apps on the internet with no login, CI-OpenClaw among them, whose `/` hands out a gateway
- * token. The install and settings dialogs also turn the toggle on by default.
+ * token.
+ *
+ * The manifest default is read here, at route-build time, and not only when a form is saved
+ * (`app-lifecycle.service.ts` self-heals a stored form there): an install that never decided —
+ * `openPort: false`, no `enableAuth` key — is otherwise served with no login until someone re-saves
+ * its settings, while the settings dialog showed the toggle as on. That was the live OpenClaw
+ * exposure found 2026-09-28. `manifest` is optional because a compose rebuild can run without a
+ * resolvable manifest; then only the form and the port decide, as before.
  */
-export function requiresHubLoginOnPublicRoute(form: { enableAuth?: boolean; openPort?: boolean }): boolean {
-  return form.enableAuth ?? Boolean(form.openPort);
+export function requiresHubLoginOnPublicRoute(
+  form: { enableAuth?: boolean; openPort?: boolean },
+  manifest?: Parameters<typeof manifestDefaultsEdgeAuthOn>[0],
+): boolean {
+  return form.enableAuth ?? ((manifest !== undefined && manifestDefaultsEdgeAuthOn(manifest)) || Boolean(form.openPort));
 }
 
 /**
