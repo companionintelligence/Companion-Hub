@@ -64,8 +64,8 @@ function showOverlay(): void {
     minWidth: '200px',
     border: '0',
     borderRadius: '8px',
-    background: '#2563eb',
-    color: '#fff',
+    backgroundColor: 'var(--primary)',
+    color: 'var(--primary-foreground)',
     font: '16px/1.2 -apple-system, sans-serif',
     fontWeight: '600',
   });
