@@ -39,7 +39,7 @@ export const OperatorsList = () => {
         {operators.isError ? (
           <p className="text-sm text-muted-foreground">{t('COMMON_AN_ERROR_OCCURRED')}</p>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="min-w-0 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-left text-muted-foreground">

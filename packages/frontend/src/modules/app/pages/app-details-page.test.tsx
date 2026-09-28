@@ -219,6 +219,24 @@ describe('AppDetailsPage', () => {
     expect(screen.getByTestId('app-header-actions-row')).toHaveClass('md:flex-row', 'md:justify-between');
   });
 
+  it('puts the price chip on the icon row so a long name cannot drop it under the author', () => {
+    render(<AppDetailsPage />);
+
+    const chips = screen.getAllByTestId('app-price-badge');
+    expect(chips).toHaveLength(2);
+    const mobileChip = chips[0];
+    const desktopChip = chips[1];
+    if (!mobileChip || !desktopChip) {
+      throw new Error('expected a mobile and a desktop price chip');
+    }
+    const icon = screen.getByRole('img', { name: 'Test App' });
+
+    expect(mobileChip.parentElement).toBe(icon.parentElement);
+    expect(mobileChip).toHaveClass('col-start-2', 'row-start-1', 'justify-self-end', 'sm:hidden');
+    expect(icon.parentElement).toHaveClass('items-start', 'grid');
+    expect(desktopChip).toHaveClass('hidden', 'sm:inline-flex');
+  });
+
   it('disables runtime-health polling while an app is uninstalling', () => {
     useQuery.mockImplementation((options: { queryKey?: readonly unknown[]; enabled?: boolean }) => {
       if (options.queryKey?.[0] === 'app-image-size') {

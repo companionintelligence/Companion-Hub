@@ -275,7 +275,7 @@ export const McpSettingsContainer = () => {
           {installedMcpApps.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t('MCP_SETTINGS_INSTALLED_EMPTY')}</p>
           ) : (
-            <div className="overflow-x-auto">
+            <div className="min-w-0 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-muted-foreground">
