@@ -315,7 +315,7 @@ const ContainersSection = ({ containers }: { containers: ContainerInfo[] }) => {
         <div className="text-sm text-muted-foreground rounded-md border border-dashed p-4 text-center">{t('SYSTEM_INSPECTOR_NO_CONTAINERS')}</div>
       ) : (
         <div className="rounded-lg border overflow-hidden">
-          <div className="overflow-x-auto">
+          <div className="min-w-0 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-muted/50">
@@ -406,7 +406,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
         <>
           {/* Desktop: Table */}
           <div className="rounded-lg border overflow-hidden hidden sm:block">
-            <div className="overflow-x-auto">
+            <div className="min-w-0 overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/50">
