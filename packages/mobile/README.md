@@ -19,8 +19,9 @@ Portal (hub.ci.computer)            Appliance Hub (hub-<dev>-<org>.ci.computer)
 ```
 
 The native shell (`src-tauri`) captures the `cihub://` deep links (Portal
-SSO + pairing), presents Portal sign-in on iOS in an in-app Safari sheet
-(`ASWebAuthenticationSession` via `start_auth_session`), and exposes the Tauri
+SSO + pairing), presents Portal sign-in in an in-app browser (iOS
+`ASWebAuthenticationSession`, Android Chrome Auth Tab, both via
+`start_auth_session`), and exposes the Tauri
 HTTP/store/os/deep-link/opener plugins.
 (`tauri-plugin-notification` was deliberately **removed** — it dragged
 POST_NOTIFICATIONS/RECEIVE_BOOT_COMPLETED/WAKE_LOCK into the Android manifest

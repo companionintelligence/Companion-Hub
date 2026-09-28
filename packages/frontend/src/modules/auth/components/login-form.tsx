@@ -113,8 +113,8 @@ export const LoginForm: React.FC<IProps> = ({
           )}
           {/* The hint has to follow the branch above: the <a href> branch is a
               plain browser already ON the Hub, which navigates in place. Every
-              native shell — phone and desktop alike — takes the button branch and
-              really does open the system browser. */}
+              native shell — phone and desktop alike — takes the button branch.
+              Phones present an in-app browser sheet. Desktop opens the system browser. */}
           <div className="text-xs text-muted-foreground text-center mt-2">
             {t(
               portalReachable

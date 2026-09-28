@@ -96,11 +96,10 @@ export const openExternal = async (url: string): Promise<boolean> => {
     try {
       // retryDynamicImport, because a stale chunk hash here is not cosmetic.
       //
-      // Sign-in shares this dependency without going through this function:
-      // login-form calls openAuthSession, which on Android/desktop imports the
-      // same @tauri-apps/plugin-opener. So a stale chunk hash here takes the
-      // sign-in button and every external link out together, which is exactly
-      // the reported pairing.
+      // Sign-in on desktop shares this dependency without going through this
+      // function: login-form calls openAuthSession, which imports the same
+      // @tauri-apps/plugin-opener. Phone sign-in uses start_auth_session
+      // instead. A stale chunk hash here still takes every external link out.
       const { openUrl } = await retryDynamicImport(() => import('@tauri-apps/plugin-opener'));
       await openUrl(normalizedUrl);
       if (shouldWarmDns) void warmDns(hostname);
