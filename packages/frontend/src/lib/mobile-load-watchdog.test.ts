@@ -33,7 +33,10 @@ describe('installMobileLoadWatchdog', () => {
     const overlay = document.getElementById('ci-hub-mobile-load-error');
     expect(overlay).toBeTruthy();
     expect(overlay?.textContent).toContain("This Hub isn't responding.");
-    expect(document.querySelector('[data-testid="mobile-load-retry"]')).toBeTruthy();
+    const retry = document.querySelector('[data-testid="mobile-load-retry"]') as HTMLButtonElement;
+    expect(retry).toBeTruthy();
+    expect(retry.style.backgroundColor).toBe('var(--primary)');
+    expect(retry.style.color).toBe('var(--primary-foreground)');
     expect(document.querySelector('[data-testid="mobile-load-switch-hub"]')).toBeTruthy();
   });
 
