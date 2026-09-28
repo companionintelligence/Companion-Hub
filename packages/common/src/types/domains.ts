@@ -13,6 +13,13 @@ export interface AvailableDomain {
 }
 
 export interface AvailableDomainsResponse {
+  /**
+   * Whether Companion Portal answered with a list, as for the custom-domain list.
+   * `false` is not "no domains": the Hub could not get the list (not paired,
+   * offline, or the Portal failed), and the picker says so rather than showing
+   * the Hub's own domain as though it were the only choice.
+   */
+  supported: boolean;
   domains: AvailableDomain[];
 }
 

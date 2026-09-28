@@ -82,6 +82,7 @@ export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, o
             appStatus={status}
             editingAppUrn={info.urn}
             onDirtyChange={setHasChanges}
+            isEdit
           />
 
           {/* Outside the <form>: the Hub-provisioned trust material (app key + identity secret) is

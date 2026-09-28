@@ -11,7 +11,24 @@
       "https://*.ci.computer",
       "https://ci.computer",
       "https://*.companionintelligence.com",
-      "https://companionintelligence.com"
+      "https://companionintelligence.com",
+      "https://*.ci0.pw",
+      "https://*.ci1.pw",
+      "https://*.ci2.pw",
+      "https://*.ci3.pw",
+      "https://*.ci4.pw",
+      "https://*.ci5.pw",
+      "https://*.ci6.pw",
+      "https://*.ci8.pw",
+      "https://*.ci9.pw",
+      "https://*.companionintel.com",
+      "https://*.chimera.engineer",
+      "https://*.chimeracompute.com",
+      "https://*.chimeracomputer.com",
+      "https://*.companionintelligence.io",
+      "https://*.companionintelligence.org",
+      "https://*.lifescope.io",
+      "https://*.mysticalengine.com"
     ]
   },
   "permissions": [
@@ -40,6 +57,54 @@
         },
         {
           "url": "https://*.companionintel.com/*"
+        },
+        {
+          "url": "https://*.ci0.pw/*"
+        },
+        {
+          "url": "https://*.ci1.pw/*"
+        },
+        {
+          "url": "https://*.ci2.pw/*"
+        },
+        {
+          "url": "https://*.ci3.pw/*"
+        },
+        {
+          "url": "https://*.ci4.pw/*"
+        },
+        {
+          "url": "https://*.ci5.pw/*"
+        },
+        {
+          "url": "https://*.ci6.pw/*"
+        },
+        {
+          "url": "https://*.ci8.pw/*"
+        },
+        {
+          "url": "https://*.ci9.pw/*"
+        },
+        {
+          "url": "https://*.chimera.engineer/*"
+        },
+        {
+          "url": "https://*.chimeracompute.com/*"
+        },
+        {
+          "url": "https://*.chimeracomputer.com/*"
+        },
+        {
+          "url": "https://*.companionintelligence.io/*"
+        },
+        {
+          "url": "https://*.companionintelligence.org/*"
+        },
+        {
+          "url": "https://*.lifescope.io/*"
+        },
+        {
+          "url": "https://*.mysticalengine.com/*"
         },
         {
           "url": "http://localhost:*/*"

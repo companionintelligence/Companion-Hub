@@ -373,6 +373,7 @@ describe('CloudflareClientService', () => {
       const result = await service.fetchAvailableDomains();
 
       expect(result).toEqual({
+        supported: true,
         domains: [
           { id: '1', domain: 'example.com', isDefault: true, scope: 'org' },
           { id: '2', domain: 'ci.computer', isDefault: false },
@@ -392,8 +393,54 @@ describe('CloudflareClientService', () => {
       expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(1, 'domains', expect.anything());
       expect(mockAxiosInstance.get).toHaveBeenNthCalledWith(2, 'cloudflare/domains', expect.anything());
       expect(result).toEqual({
+        supported: true,
         domains: [{ id: '1', domain: 'example.com', isDefault: true }],
       });
+    });
+
+    // The picker tells "the Portal offers nothing" from "the Hub never got a
+    // list" by this flag, so each answer has to set it the right way round.
+    it('reports an empty list the Portal sent as answered', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { domains: [] } });
+
+      await expect(service.fetchAvailableDomains()).resolves.toEqual({ supported: true, domains: [] });
+    });
+
+    it('reports a failed request as unanswered, not as an empty list', async () => {
+      mockAxiosInstance.get.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(service.fetchAvailableDomains()).resolves.toEqual({ supported: false, domains: [] });
+    });
+
+    it('reports a 2xx without a list as unanswered', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { error: 'maintenance' } });
+
+      await expect(service.fetchAvailableDomains()).resolves.toEqual({ supported: false, domains: [] });
+    });
+
+    it('reports a list with no entry it can read as unanswered, not as a Portal offering nothing', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { domains: [{ id: 1, domain: 'ci0.pw', isDefault: 'yes' }, { name: 'ci1.pw' }] } });
+
+      await expect(service.fetchAvailableDomains()).resolves.toEqual({ supported: false, domains: [] });
+    });
+
+    it('keeps the entries it can read when only some are unreadable', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { domains: [{ id: 1, domain: 'ci0.pw', isDefault: true }, { name: 'ci1.pw' }] } });
+
+      await expect(service.fetchAvailableDomains()).resolves.toEqual({
+        supported: true,
+        domains: [{ id: '1', domain: 'ci0.pw', isDefault: true }],
+      });
+    });
+
+    // Without one a Portal that never answers leaves the field's spinner up for good,
+    // with no retry on offer.
+    it('gives up on a Portal that does not answer', async () => {
+      mockAxiosInstance.get.mockResolvedValue({ data: { domains: [] } });
+
+      await service.fetchAvailableDomains();
+
+      expect(mockAxiosInstance.get).toHaveBeenCalledWith('domains', expect.objectContaining({ timeout: expect.any(Number) }));
     });
   });
 
