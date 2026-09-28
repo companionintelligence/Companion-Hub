@@ -312,7 +312,7 @@ export function ModelCard({
         <span className={cn('flex-shrink-0 [&>*]:size-8', selected ? 'text-primary' : 'text-foreground/70 group-hover:text-foreground')}>{icon}</span>
         <span className="min-w-0">
           <span className="flex flex-wrap items-center gap-1.5">
-            <span className="text-sm font-semibold leading-tight">{title}</span>
+            <span className="break-words text-sm font-semibold leading-tight">{title}</span>
             {agentDefault && (
               <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-medium text-primary-foreground">
                 {t('ONBOARDING_AGENT_DEFAULT')}

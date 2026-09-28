@@ -215,26 +215,35 @@ export default () => {
       <Card className="overflow-hidden border-border/60 bg-card/80 shadow-sm">
         <CardContent className="space-y-4 p-3 sm:space-y-6 sm:p-6">
           <div className="space-y-4 sm:space-y-6">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:gap-6">
-              <div className="flex shrink-0 justify-start">
-                <img
-                  src={logoUrl}
-                  alt={info?.name}
-                  className="h-24 w-24 rounded-md object-cover bg-white/10 shadow-lg sm:h-28 sm:w-28 md:h-32 md:w-32"
-                  onError={(e) => {
-                    e.currentTarget.src = '/app-not-found.jpg';
-                  }}
-                />
-              </div>
+            <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-4 sm:flex sm:gap-6">
+              <img
+                src={logoUrl}
+                alt={info?.name}
+                className="col-start-1 row-start-1 h-24 w-24 shrink-0 rounded-md object-cover bg-white/10 shadow-lg sm:h-28 sm:w-28 md:h-32 md:w-32"
+                onError={(e) => {
+                  e.currentTarget.src = '/app-not-found.jpg';
+                }}
+              />
+              {/* On a phone the price sits on the icon row, top right. A long name used to
+                  wrap this chip onto the next line, under the author. */}
+              <span
+                data-testid="app-price-badge"
+                className="col-start-2 row-start-1 justify-self-end rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:hidden"
+              >
+                {t('APP_PRICE_FREE')}
+              </span>
 
-              <div className="min-w-0 flex-1 space-y-3 sm:space-y-4">
+              <div className="col-span-2 min-w-0 space-y-3 sm:flex-1 sm:space-y-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0 space-y-2">
-                    <h1 className="text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
+                    <h1 className="break-words text-2xl font-semibold tracking-tight sm:text-4xl">{info?.name}</h1>
                     {info?.author ? <p className="text-base font-medium text-emerald-800 dark:text-emerald-400 sm:text-lg">{info.author}</p> : null}
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-2">
-                    <span className="rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm">
+                    <span
+                      data-testid="app-price-badge"
+                      className="hidden rounded-md bg-emerald-500 px-3 py-1.5 text-sm font-semibold uppercase tracking-wide text-emerald-950 shadow-sm sm:inline-flex"
+                    >
                       {t('APP_PRICE_FREE')}
                     </span>
                     <MemoryStatusBadge appUrn={appUrn} />
