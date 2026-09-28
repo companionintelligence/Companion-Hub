@@ -16,7 +16,7 @@ const { openAuthSession, AuthSessionCancelledError } = vi.hoisted(() => {
   };
 });
 vi.mock('@/lib/helpers/open-auth-browser', () => ({
-  openAuthSession: (...a: unknown[]) => openAuthSession(...a),
+  openAuthSession: (url?: string) => openAuthSession(url),
   AuthSessionCancelledError,
 }));
 
