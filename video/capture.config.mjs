@@ -117,7 +117,7 @@
  *
  *    The two FTUE shots are the exception: `onboarding-wizard` and
  *    `device-registration` are captured in their own later passes with their own
- *    fresh BrowserContext (video/README.md § "Three capture passes"), so
+ *    fresh BrowserContext (video/README.md § "Capture passes"), so
  *    `onboarding-wizard` carries its own login in `before`.
  *
  * 8. ALTERNATIVES FAVICONS — the alternatives table renders each vendor pill's
@@ -153,8 +153,10 @@
  *        which is that symlink — an install dirties the checkout it reads from.
  *        Point it at a worktree of your own.
  *      - Installing Immich swaps its store-page Install button for Open, which
- *        is what `app-details` and `install-dialog` wait on. Capture those two
- *        first, or scope `--only` so they are not re-shot.
+ *        is what `app-details` and `install-dialog` wait on. video/stage.sh's
+ *        capture_all installs it in its LAST pass for exactly that reason; by
+ *        hand, capture those two first, or scope `--only` so they are not
+ *        re-shot.
  *
  * 10. EXPOSE-A-PORT DNS CHECK — the Expose a port form debounces a live
  *    subdomain-availability call (`/api/cloudflare/check-dns-availability`,
