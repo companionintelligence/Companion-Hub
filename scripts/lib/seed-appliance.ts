@@ -4,6 +4,8 @@
  * Desktop normally writes `~/.local/share/companion-hub/{.env,.env.dev,docker-compose.prod.yml}`.
  * After a wipe, `cihub up prod` can do the same: copy the bundled compose file and write
  * a runtime env. The operator is prompted for POSTGRES_PASSWORD; other secrets are generated.
+ * The Hub pairs against production unless CI_CLOUD_URL names another Portal
+ * (see {@link APPLIANCE_DEFAULT_CI_CLOUD_URL}).
  */
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -21,6 +23,21 @@ import { compareCihubVersions } from './fleet-cihub-binary.js';
 export const HUB_COMPOSE_FILENAME = 'docker-compose.prod.yml';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 export const MIN_POSTGRES_PASSWORD_LENGTH = 8;
+
+/**
+ * The Portal a fresh appliance pairs against when CI_CLOUD_URL does not name another: production.
+ *
+ * Deliberately not `CI_CLOUD_DEFAULT` (the dev tier), although that is this CLI's own default for
+ * `login`, `register` and `catalog`. This seed writes the install a production desktop app writes
+ * (`DEFAULT_PROD_CI_CLOUD_URL` in the desktop's hub_env.rs), and the image it pins by default is a
+ * production release — `:<x.y.z>` and `:latest` are published only by production builds
+ * (scripts/release/resolve-hub-image-tags.cjs). A customer's `cihub reset` + `cihub up` has landed
+ * on production since #1162; following the CLI's default instead would pair that appliance with a
+ * Portal whose database has never heard of their account, and nothing would say why until the code
+ * came back 410. Choosing another Portal is a deliberate act: CI_CLOUD_URL in the environment, which
+ * `cihub fleet install` sets to the Portal it minted the node's pairing code on.
+ */
+export const APPLIANCE_DEFAULT_CI_CLOUD_URL = 'https://hub.ci.computer';
 
 const APPLIANCE_SUBDIRS = ['state', 'repos', 'apps', 'logs', 'media', 'user-config', 'app-data', 'backups', 'cache', '.internal', '.docker'] as const;
 
@@ -48,7 +65,7 @@ export type SeedApplianceOptions = {
    * list names the desktop package's directories under /usr/lib, which a test cannot write to.
    */
   composeCandidates?: HubResourceCandidate[];
-  /** Tests only: the environment the image is resolved from (default `process.env`). */
+  /** Tests only: the environment the image and Portal are resolved from (default `process.env`). */
   env?: NodeJS.ProcessEnv;
   /** Tests only: stand in for this machine's desktop package, desktop app, and cihub build. */
   imageHost?: ApplianceImageHost;
@@ -63,6 +80,10 @@ export type SeedApplianceResult = {
   hubImage: string;
   /** Where `hubImage` came from, in words, for the line that reports the seed. */
   hubImageFrom: string;
+  /** The CI_CLOUD_URL written: the Portal this Hub pairs against. */
+  portalUrl: string;
+  /** Where `portalUrl` came from, in words, for the line that reports the seed. */
+  portalUrlFrom: string;
   /** What the operator has to read before trusting this install; empty when nothing here disagrees with it. */
   warnings: string[];
 };
@@ -504,6 +525,99 @@ export function resolveApplianceHubImage(
   return { ...resolved, cli, warnings };
 }
 
+/** Loopback hosts, matching `is_loopback_portal_host` in the desktop and `isLoopbackPortalHost` in the backend. */
+function isLoopbackPortalHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
+}
+
+/**
+ * `value` as a Portal origin (`https://host[:port]`, no trailing slash), or why it cannot be one.
+ *
+ * The rules the desktop applies to its Portal URL override (`validate_portal_url_override` in
+ * portal_url.rs), because the value lands in the same env file and is read the same way. The backend
+ * appends `/api/...` to it and app OIDC injection uses it as the token issuer, so a path, query or
+ * fragment is refused rather than cut. Docker compose interpolates `$` when it reads the file, so the
+ * host must be a plain DNS name or an IP. And plain http is accepted only for a Portal on this
+ * machine, since the Hub sends its device key there. Trailing slashes are dropped first:
+ * `https://host/` is the same Portal, and the fleet check compares origins without them.
+ */
+export function validatePortalOrigin(value: string): { origin: string } | { why: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(value.trim().replace(/\/+$/, ''));
+  } catch {
+    return { why: 'it is not an absolute URL (expected e.g. https://hub.companionintelligence.com)' };
+  }
+  const host = parsed.hostname;
+  if (!host) return { why: 'it has no host' };
+  // `[…]` is an IPv6 literal the parser has already validated; anything else must be DNS labels
+  // (IPv4 included), which rules out the `$`, `{` and quotes the URL parser lets into a host.
+  if (!host.startsWith('[') && !host.split('.').every((label) => /^[a-z0-9_-]+$/i.test(label))) {
+    return { why: 'its host is not a DNS name (letters, digits, hyphens, and dots, with no trailing dot)' };
+  }
+  if (parsed.protocol === 'http:' && !isLoopbackPortalHost(host)) {
+    return { why: 'it must use https; plain http is accepted only for localhost' };
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return { why: `it must use https, not ${parsed.protocol.replace(/:$/, '')}` };
+  }
+  if (parsed.username || parsed.password) return { why: 'it must not contain credentials' };
+  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    return { why: 'it must be a bare origin with no path, query, or fragment' };
+  }
+  return { origin: parsed.origin };
+}
+
+export type ResolvedAppliancePortal = {
+  /** The CI_CLOUD_URL to write. */
+  url: string;
+  /** `environment`: CI_CLOUD_URL named it. `default`: {@link APPLIANCE_DEFAULT_CI_CLOUD_URL}. */
+  source: 'environment' | 'default';
+  /** Set when CI_CLOUD_URL held something that is not a Portal origin, which the seed then ignored. */
+  rejected?: { value: string; why: string };
+};
+
+/**
+ * The Portal a fresh install pairs against: CI_CLOUD_URL from the environment when it is a usable
+ * origin, else {@link APPLIANCE_DEFAULT_CI_CLOUD_URL}.
+ *
+ * Read only here, when there is no complete install (an env file and its compose). An installed Hub's
+ * CI_CLOUD_URL is never rewritten from the environment — `cihub up` on a seeded appliance does not
+ * come through this file, and the appliance compose does not interpolate CI_CLOUD_URL from the shell
+ * — so exporting it can choose a new Hub's Portal and cannot move an old one.
+ *
+ * An unusable value is ignored and the default kept, as the desktop does with a refused override:
+ * failing here would leave no install at all half-way through `cihub up`, and the operator gets the
+ * reason in the seed's warnings.
+ */
+export function resolveAppliancePortalUrl(env: NodeJS.ProcessEnv = process.env): ResolvedAppliancePortal {
+  const raw = env.CI_CLOUD_URL?.trim();
+  if (!raw) return { url: APPLIANCE_DEFAULT_CI_CLOUD_URL, source: 'default' };
+  const checked = validatePortalOrigin(raw);
+  if ('origin' in checked) return { url: checked.origin, source: 'environment' };
+  return { url: APPLIANCE_DEFAULT_CI_CLOUD_URL, source: 'default', rejected: { value: raw, why: checked.why } };
+}
+
+/** Where a seeded Portal came from, for the line that reports the seed. */
+export function describeAppliancePortalSource(resolved: ResolvedAppliancePortal): string {
+  if (resolved.source === 'environment') return 'set by CI_CLOUD_URL';
+  if (resolved.rejected) return 'the default for a new appliance, production, because CI_CLOUD_URL was not usable';
+  return 'the default for a new appliance, production (CI_CLOUD_URL is not set)';
+}
+
+/** What the operator reads when CI_CLOUD_URL was ignored; empty when it was not. */
+function describeRejectedPortal(resolved: ResolvedAppliancePortal, envFiles: string[]): string[] {
+  if (!resolved.rejected) return [];
+  // A URL with a password in it is not echoed back into a terminal, or a fleet run's log.
+  const shown = resolved.rejected.why.includes('credentials') ? 'a URL with credentials in it' : resolved.rejected.value;
+  return [
+    `Ignored CI_CLOUD_URL=${shown}: ${resolved.rejected.why}.`,
+    `This Hub pairs against ${resolved.url}, and a pairing code minted on any other Portal is refused 410.`,
+    `To pair it with another Portal, set CI_CLOUD_URL to that Portal's bare origin (e.g. https://hub.companionintelligence.com) in ${envFiles.join(' and ')} before ${BASE_COMMAND} register.`,
+  ];
+}
+
 export function renderApplianceEnvContent(input: {
   dataDir: string;
   postgresPassword: string;
@@ -511,6 +625,8 @@ export function renderApplianceEnvContent(input: {
   rabbitmqPassword: string;
   hubImage: string;
   hubVersion: string;
+  /** The Portal this Hub pairs against (default {@link APPLIANCE_DEFAULT_CI_CLOUD_URL}); see {@link resolveAppliancePortalUrl}. */
+  ciCloudUrl?: string;
 }): string {
   const rootFolderHost = dockerBindMountPath(input.dataDir);
   const composeFileHost = dockerBindMountPath(path.join(input.dataDir, HUB_COMPOSE_FILENAME));
@@ -525,8 +641,12 @@ export function renderApplianceEnvContent(input: {
     '',
     '# Derived (recomputed for this CLI seed)',
     'INTERNAL_IP=0.0.0.0',
+    // A placeholder, the same for every Portal: the desktop's dev and prod builds both start from
+    // companionintelligence.com, and registration replaces it with the zone Portal assigns this
+    // organization (ConfigurationService.setDomain, from registration.service). Deriving it from the
+    // Portal would only be a second guess at what registration is about to write anyway.
     'DOMAIN=companionintelligence.com',
-    'CI_CLOUD_URL=https://hub.ci.computer',
+    `CI_CLOUD_URL=${input.ciCloudUrl ?? APPLIANCE_DEFAULT_CI_CLOUD_URL}`,
     `CI_HUB_VERSION=${input.hubVersion}`,
     `CI_HUB_IMAGE=${input.hubImage}`,
     `COMPOSE_FILE_HOST=${composeFileHost}`,
@@ -576,6 +696,11 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     options.hubImage ? { ...(options.env ?? process.env), CI_HUB_IMAGE: options.hubImage } : (options.env ?? process.env),
     host,
   );
+  // Until 2026-09-28 this was always production, whatever the operator asked for. Rebuilding sixteen
+  // wiped nodes against the dev Portal that day, `cihub fleet install` could not bring up a single
+  // fresh one: each stopped with portal-mismatch straight after `cihub up`, because the seed had just
+  // written the one Portal the node's code could never be redeemed on.
+  const portal = resolveAppliancePortalUrl(options.env ?? process.env);
   const jwtSecret = options.jwtSecret || randomBytes(64).toString('hex');
   const rabbitmqPassword = options.rabbitmqPassword || randomBytes(32).toString('hex');
   const envContent = renderApplianceEnvContent({
@@ -585,13 +710,15 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     rabbitmqPassword,
     hubImage: resolvedImage.image,
     hubVersion: options.hubVersion || resolvedImage.version,
+    ciCloudUrl: portal.url,
   });
 
   const primaryName = process.platform === 'win32' ? '.env' : '.env.dev';
   const compatName = process.platform === 'win32' ? '.env.dev' : '.env';
   const envFilePath = path.join(dataDir, primaryName);
+  const compatPath = path.join(dataDir, compatName);
   writeFileSync(envFilePath, envContent, { encoding: 'utf8', mode: 0o600 });
-  writeFileSync(path.join(dataDir, compatName), envContent, { encoding: 'utf8', mode: 0o600 });
+  writeFileSync(compatPath, envContent, { encoding: 'utf8', mode: 0o600 });
 
   return {
     dataDir,
@@ -600,6 +727,12 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     composeFrom,
     hubImage: resolvedImage.image,
     hubImageFrom: describeHubImageSource(resolvedImage),
-    warnings: [...resolvedImage.warnings, ...describeIgnoredHubResources(compose, 'compose')],
+    portalUrl: portal.url,
+    portalUrlFrom: describeAppliancePortalSource(portal),
+    warnings: [
+      ...describeRejectedPortal(portal, [envFilePath, compatPath]),
+      ...resolvedImage.warnings,
+      ...describeIgnoredHubResources(compose, 'compose'),
+    ],
   };
 }

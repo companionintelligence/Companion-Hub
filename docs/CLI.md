@@ -297,6 +297,7 @@ cihub config [env]           # show resolved config values only
   3. This `cihub`'s own release, `ghcr.io/companionintelligence/ci-hub:<version>`, when it is a plain `x.y.z` release, which the release pipeline publishes. An older desktop app keeps this pin on its next Hub start; it discards `:latest`.
   4. `ghcr.io/companionintelligence/ci-hub:latest`. A dev or trial build lands here, and the report says the Hub is then the newest release, not that build.
 - The fresh install writes this `cihub`'s own compose. That is the one built into the binary, unless a compose of the same release is on disk: the desktop package's, when the package is this release, or the checkout a source run comes from. A compose or `traefik-assets` directory beside a standalone `cihub` is ignored, because nothing installs one there. The same goes for a desktop package at another release. On 2026-09-27, 16 of 17 fleet nodes had a v0.2.70 compose beside `/usr/local/bin/cihub`. Every rebuilt Hub ran on it, without the `ci_hub_internal` and `ci_hub_edge` networks and with Postgres and RabbitMQ published on `0.0.0.0`.
+- The fresh install pairs against the Portal in `CI_CLOUD_URL` when that is a bare origin (`https`, or plain `http` for `localhost` only), and against production, `https://hub.ci.computer`, when it is unset. That default is what a release Hub has always used, although `cihub`'s own commands default to the dev Portal. An unusable value is ignored and the seed says why in a red box. `CI_CLOUD_URL` is read only when there is no install yet, so it never moves an installed Hub to another Portal.
 - The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. Remove a desktop package nothing uses with `sudo apt remove companion-hub`.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
@@ -1089,6 +1090,13 @@ all installed on. To act on some nodes only, pass `--nodes`.
 
 The Postgres password `install` needs is read from **`CIHUB_POSTGRES_PASSWORD`** and has no flag, so
 it never lands in a shell history or a process listing.
+
+When `install` mints the pairing codes, a node with no install yet is seeded against the Portal the
+codes come from (`CI_PORTAL_ORIGIN`, or the Portal `cihub login` used): `cihub up` on the node gets
+that origin as `CI_CLOUD_URL`. A node whose Hub already pairs against another Portal stops with
+`portal-mismatch` and is left as it is, checked before the mint and again on the node before
+`cihub up`. Until 2026-09-28 the seed always wrote production, so a run minting on the dev Portal
+could bring up no freshly wiped node at all.
 
 ### `cihub fleet scan`
 

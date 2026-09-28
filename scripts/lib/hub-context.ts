@@ -129,6 +129,7 @@ export async function ensureApplianceInstall(): Promise<void> {
       `Creating a fresh install at ${ctx.dataDir}`,
       'Enter a password for the Hub database (POSTGRES_PASSWORD).',
       'Set POSTGRES_PASSWORD in the environment to skip the prompt.',
+      'Set CI_CLOUD_URL to pair this Hub with a Portal other than production.',
     ],
     'yellow',
   );
@@ -145,6 +146,9 @@ export async function ensureApplianceInstall(): Promise<void> {
         `Data dir: ${seeded.dataDir}`,
         `Image: ${seeded.hubImage}`,
         `  from ${seeded.hubImageFrom}`,
+        // As consequential as the image: a code minted on any other Portal is refused 410.
+        `Portal: ${seeded.portalUrl}`,
+        `  from ${seeded.portalUrlFrom}`,
         `Compose: from ${seeded.composeFrom}`,
         `Next: ${BASE_COMMAND} up continues automatically.`,
       ],
