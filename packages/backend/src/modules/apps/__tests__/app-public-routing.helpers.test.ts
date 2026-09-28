@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { didPublicRoutingIdentityChange, publishesCloudflarePublicRoute, resolveRoutingSubdomain } from '../app-public-routing.helpers';
+import {
+  didPublicRoutingIdentityChange,
+  publishesCloudflarePublicRoute,
+  requiresHubLoginOnPublicRoute,
+  resolveRoutingSubdomain,
+} from '../app-public-routing.helpers';
 
 describe('app-public-routing.helpers', () => {
   describe('publishesCloudflarePublicRoute', () => {
@@ -13,6 +18,30 @@ describe('app-public-routing.helpers', () => {
 
     it('returns false for local-only apps', () => {
       expect(publishesCloudflarePublicRoute({ exposureMode: 'local', exposedLocal: false })).toBe(false);
+    });
+  });
+
+  describe('requiresHubLoginOnPublicRoute', () => {
+    const edgeAuthOn = { exposable: true, hub_integration: { edge_auth: { default: true } } };
+
+    it('honours an explicit operator choice over the manifest and the port', () => {
+      expect(requiresHubLoginOnPublicRoute({ enableAuth: false, openPort: true }, edgeAuthOn)).toBe(false);
+      expect(requiresHubLoginOnPublicRoute({ enableAuth: true, openPort: false })).toBe(true);
+    });
+
+    it('falls back to the manifest edge-auth default for a stored form that never decided', () => {
+      // The 2026-09-28 OpenClaw shape: openPort false, no enableAuth key. The route must carry the
+      // login as soon as the manifest asks for it, without waiting for a settings re-save.
+      expect(requiresHubLoginOnPublicRoute({ openPort: false }, edgeAuthOn)).toBe(true);
+      expect(requiresHubLoginOnPublicRoute({ openPort: false }, { exposable: true })).toBe(false);
+      // A manifest default only counts for an exposable app.
+      expect(requiresHubLoginOnPublicRoute({ openPort: false }, { exposable: false, hub_integration: { edge_auth: { default: true } } })).toBe(false);
+    });
+
+    it('turns the login on for an open host port when neither the form nor a manifest decided', () => {
+      expect(requiresHubLoginOnPublicRoute({ openPort: true })).toBe(true);
+      expect(requiresHubLoginOnPublicRoute({ openPort: false })).toBe(false);
+      expect(requiresHubLoginOnPublicRoute({})).toBe(false);
     });
   });
 

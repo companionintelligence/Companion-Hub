@@ -60,6 +60,11 @@ export interface ComposeBuilderOptions {
    * `hostPortStaysOnLoopback(appInfo)` in `@ci-hub/common/schemas`, which says which apps and why.
    */
   loopbackHostPort?: boolean;
+  /**
+   * The app's manifest, when the caller could resolve it. Only its `hub_integration.edge_auth.default`
+   * is read, by `requiresHubLoginOnPublicRoute`, for a stored form that never decided `enableAuth`.
+   */
+  manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
 }
 
 interface Network {
@@ -145,6 +150,7 @@ export class DockerComposeBuilder {
   private networkIsolationOptions?: NetworkIsolationOptions;
   private securityOptions?: string[];
   private loopbackHostPort = false;
+  private manifest?: Parameters<typeof requiresHubLoginOnPublicRoute>[1];
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
@@ -220,6 +226,9 @@ export class DockerComposeBuilder {
     }
     if (options.loopbackHostPort !== undefined) {
       this.loopbackHostPort = options.loopbackHostPort;
+    }
+    if (options.manifest !== undefined) {
+      this.manifest = options.manifest;
     }
     return this;
   }
@@ -498,7 +507,7 @@ export class DockerComposeBuilder {
         appId: appName,
         storeId: appStoreId,
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
-        enableAuth: requiresHubLoginOnPublicRoute(form),
+        enableAuth: requiresHubLoginOnPublicRoute(form, this.manifest),
         cloudflareOriginHostname: this.cloudflareOriginHostname,
         cloudflarePublicHostname: this.cloudflarePublicHostname,
         localDomain: this.localDomain,
