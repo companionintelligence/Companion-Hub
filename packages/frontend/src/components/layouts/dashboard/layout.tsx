@@ -122,7 +122,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
           <TunnelStatusBanner />
         </div>
         {shouldSkipIosPageSlide() ? (
-          <div className="w-full min-h-0 flex-1" data-page-key={pageKey} data-testid="dashboard-page">
+          <div className="w-full min-h-0 min-w-0 flex-1" data-page-key={pageKey} data-testid="dashboard-page">
             {children}
           </div>
         ) : (
@@ -139,7 +139,7 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
                 x: { type: 'spring', stiffness: 300, damping: 30 },
                 opacity: { duration: 0.2 },
               }}
-              className="w-full min-h-0 flex-1"
+              className="w-full min-h-0 min-w-0 flex-1"
             >
               {children}
             </motion.div>

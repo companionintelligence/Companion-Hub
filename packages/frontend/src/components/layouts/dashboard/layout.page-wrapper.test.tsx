@@ -66,8 +66,9 @@ describe('DashboardLayout page wrapper', () => {
 
     // With `flex-1` alone the wrapper grows to fit the page: the store pane and
     // the Settings pane stop scrolling, and <main> scrolls the whole page,
-    // store sidebar included.
-    expect(screen.getByRole('heading', { name: 'Page' }).parentElement).toHaveClass('flex-1', 'min-h-0');
+    // store sidebar included. `min-w-0` is the width twin: a wide child
+    // (the settings tab strip) otherwise becomes the page width.
+    expect(screen.getByRole('heading', { name: 'Page' }).parentElement).toHaveClass('flex-1', 'min-h-0', 'min-w-0');
   });
 
   it('keys the wrapper by page, sharing one key across the store routes', () => {
