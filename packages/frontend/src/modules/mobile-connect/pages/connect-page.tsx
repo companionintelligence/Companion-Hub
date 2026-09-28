@@ -13,7 +13,7 @@ import { emailFromIdToken, loginWithPortalOidc, OidcCancelledError, resumePendin
 import { type HubDevice, listHubDevices, type PortalAuth, readPersistedPortalUrl, readStoredPortalAuth, writePortalAuth } from '../portal-client';
 
 /**
- * Mobile-only entry screen. Portal OIDC in the system browser, then pick a Hub.
+ * Mobile-only entry screen. Portal OIDC in an in-app browser, then pick a Hub.
  * Email/password and a custom Portal URL live under Advanced — same split as
  * Memory's `/device-connect` landing.
  */

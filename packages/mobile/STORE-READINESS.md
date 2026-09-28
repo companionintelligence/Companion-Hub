@@ -61,7 +61,9 @@ Fixed as part of this prep — no action needed:
 - Release `signingConfig` loader (`keystore.properties`, gitignored) + a secrets-gated **release AAB** job.
 - Adaptive icon (`mipmap-anydpi-v26`) — Android 8+ was masking the legacy PNG.
 - `windowSoftInputMode=adjustResize`.
-- Already compliant: `targetSdk=36` (Play's 2025 floor is 35), `minSdk=24`, R8 + proguard on release, `usesCleartextTraffic=false` in release, INTERNET-only permissions.
+- Already compliant: `targetSdk=36` (Play's floor for new apps and updates as of 31 Aug 2026 is 36), `minSdk=24`, R8 + proguard on release, `usesCleartextTraffic=false` in release, INTERNET-only permissions.
+- Sign-in uses Chrome **Auth Tab** (`androidx.browser` 1.9.0), the Play-accepted equivalent of the iOS `ASWebAuthenticationSession` sheet. Custom Tabs is the fallback when the browser has no Auth Tab or the URL is `http`. The manifest `queries` Custom Tabs so Android 11+ can see Chrome.
+- 16 KB page size: `useLegacyPackaging = false` plus `max-page-size=16384` rustflags for `aarch64` and `x86_64`. NDK r27 and older still produce a Play rejection without the flag.
 
 **Security / UX**
 - **Self-updater gated off mobile.** `isTauri()` is true on iOS/Android, so the desktop update checker was mounting there and polling our own release feed from inside a store-shipped app — it can only offer `.dmg`/`.exe` artifacts a phone cannot install, and self-updating outside the store is an App Store rejection (2.4.5 / 3.2.2). It stayed silent only by accident: the mobile Rust shell never registers `get_desktop_release_version_command`, so the invoke rejected. The gate is now explicit (`canSelfUpdate()`) and covered by tests, so adding a version command later can't silently arm it.

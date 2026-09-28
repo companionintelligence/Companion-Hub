@@ -65,14 +65,27 @@ describe('openAuthSession', () => {
     expect(openUrl).not.toHaveBeenCalled();
   });
 
-  it('on Android still opens the system browser', async () => {
+  it('on Android uses the in-app Auth Tab and not the system browser', async () => {
     setTauri(true);
     setUserAgent('Mozilla/5.0 (Linux; Android 15)');
+    invoke.mockResolvedValue(undefined);
 
     await openAuthSession('https://idp.example.com/auth');
 
-    expect(openUrl).toHaveBeenCalledWith('https://idp.example.com/auth');
-    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith('start_auth_session', {
+      url: 'https://idp.example.com/auth',
+      callbackScheme: 'cihub',
+    });
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it('maps a dismissed Android sheet to AuthSessionCancelledError', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Linux; Android 15)');
+    invoke.mockRejectedValue(Object.assign(new Error('Sign-in cancelled'), { code: 'CANCELLED' }));
+
+    await expect(openAuthSession('https://idp.example.com/auth')).rejects.toBeInstanceOf(AuthSessionCancelledError);
+    expect(openUrl).not.toHaveBeenCalled();
   });
 });
 
