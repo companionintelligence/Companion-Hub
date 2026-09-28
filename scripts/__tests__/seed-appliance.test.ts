@@ -7,6 +7,7 @@ import {
   type ApplianceImageHost,
   composeResourceCandidates,
   describeHubImageSource,
+  desktopPortalOverridePath,
   describeIgnoredHubResources,
   envPasswordFrom,
   findBundledCompose,
@@ -350,6 +351,9 @@ describe('validatePortalOrigin', () => {
     ['https://hub.companionintelligence.com/api', 'bare origin'],
     ['https://hub.companionintelligence.com?x=1', 'bare origin'],
     ['https://ci:secret@hub.companionintelligence.com', 'credentials'],
+    // Credentials are named first, whatever else is wrong: the warning decides on that reason
+    // whether the value can be echoed.
+    ['http://ci:secret@hub.companionintelligence.com', 'credentials'],
     // The URL parser lets `$` into a host, and compose interpolates it when it reads the env file.
     ['https://hub$x.companionintelligence.com', 'DNS name'],
     ['https://hub.companionintelligence.com.', 'DNS name'],
@@ -387,9 +391,9 @@ describe('seedApplianceInstall Portal', () => {
     if (dataDir) rmSync(dataDir, { recursive: true, force: true });
   });
 
-  const seed = (env: NodeJS.ProcessEnv) => {
+  const seed = (env: NodeJS.ProcessEnv, imageHost: ApplianceImageHost = bareHost) => {
     dataDir = mkdtempSync(join(tmpdir(), 'cihub-seed-portal-'));
-    return seedApplianceInstall({ dataDir, postgresPassword: 'operator-secret', findCompose: () => undefined, env, imageHost: bareHost });
+    return seedApplianceInstall({ dataDir, postgresPassword: 'operator-secret', findCompose: () => undefined, env, imageHost });
   };
   const portalLines = (result: { dataDir: string }) =>
     ['.env', '.env.dev'].map((name) => readFileSync(join(result.dataDir, name), 'utf8').match(/^CI_CLOUD_URL=.*$/gm));
@@ -422,14 +426,62 @@ describe('seedApplianceInstall Portal', () => {
     expect(warned).toContain('Ignored CI_CLOUD_URL=http://hub.companionintelligence.com');
     expect(warned).toContain('must use https');
     expect(warned).toContain(join(result.dataDir, '.env.dev'));
+    // `up` goes on to start the Hub on production, and the backend reads CI_CLOUD_URL only when it
+    // starts: an edit to the file alone would still leave `register` talking to production.
+    expect(warned).toContain('cihub restart');
   });
 
-  it('does not echo a password in a refused CI_CLOUD_URL into the warning', () => {
-    const result = seed({ CI_CLOUD_URL: 'https://ci:hunter2hunter2@hub.companionintelligence.com' });
+  it.each([
+    'https://ci:hunter2hunter2@hub.companionintelligence.com',
+    // Refused for the scheme or the host as well, which used to be checked first and so decided
+    // whether the value was echoed: all three went into the warning, password and all.
+    'http://ci:hunter2hunter2@hub.companionintelligence.com',
+    'ftp://ci:hunter2hunter2@hub.companionintelligence.com',
+    'https://ci:hunter2hunter2@hub$x.companionintelligence.com',
+  ])('does not echo the password in a refused CI_CLOUD_URL=%s into the warning', (value) => {
+    const result = seed({ CI_CLOUD_URL: value });
     expect(result.portalUrl).toBe('https://hub.ci.computer');
     const warned = result.warnings.join('\n');
     expect(warned).toContain('credentials');
     expect(warned).not.toContain('hunter2hunter2');
+  });
+
+  describe('with a companion-hub desktop package on the machine', () => {
+    // The package at this cihub's release, so the image resolver has nothing of its own to say and
+    // any warning here is about the Portal.
+    const sameRelease = (running: boolean): ApplianceImageHost => ({
+      ...bareHost,
+      desktopPackageVersion: () => '0.2.76',
+      desktopAppRunning: () => running,
+    });
+
+    it.each([
+      ['idle', false],
+      ['running', true],
+    ])('warns that the desktop app (%s) rewrites the Portal CI_CLOUD_URL chose, and names the override file', (_state, running) => {
+      // Every desktop launch and Hub start recomputes CI_CLOUD_URL from the Portal its build was
+      // compiled for (portal_url.rs); an idle app does it on its next launch, after `register`.
+      const result = seed({ CI_CLOUD_URL: 'https://hub.companionintelligence.com' }, sameRelease(running));
+      expect(result.portalUrl).toBe('https://hub.companionintelligence.com');
+      const warned = result.warnings.join('\n');
+      expect(warned).toContain('rewrites CI_CLOUD_URL');
+      expect(warned).toContain('https://hub.companionintelligence.com');
+      expect(warned).toContain(join('computer.ci.app.hub', 'portal-url-override'));
+    });
+
+    it('names the override file where the desktop app reads it: dirs::config_dir(), then its app identifier', () => {
+      expect(desktopPortalOverridePath({ HOME: '/home/ci' }, 'linux')).toBe('/home/ci/.config/computer.ci.app.hub/portal-url-override');
+      expect(desktopPortalOverridePath({ HOME: '/home/ci', XDG_CONFIG_HOME: '/srv/cfg' }, 'linux')).toBe(
+        '/srv/cfg/computer.ci.app.hub/portal-url-override',
+      );
+      expect(desktopPortalOverridePath({ HOME: '/Users/ci' }, 'darwin')).toBe(
+        '/Users/ci/Library/Application Support/computer.ci.app.hub/portal-url-override',
+      );
+    });
+
+    it('says nothing about the Portal when none was chosen: the seed wrote what a release desktop app writes', () => {
+      expect(seed({}, sameRelease(true)).warnings.join('\n')).not.toContain('CI_CLOUD_URL');
+    });
   });
 });
 
