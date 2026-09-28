@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  APPLIANCE_DEFAULT_CI_CLOUD_URL,
   type ApplianceImageHost,
   composeResourceCandidates,
   describeHubImageSource,
@@ -16,10 +17,12 @@ import {
   pickHubResource,
   renderApplianceEnvContent,
   resolveApplianceHubImage,
+  resolveAppliancePortalUrl,
   resolvePostgresPassword,
   seedApplianceInstall,
   traefikAssetsCandidates,
   untrustedHubResourceReason,
+  validatePortalOrigin,
   validateSeedPassword,
 } from '../lib/seed-appliance';
 
@@ -308,6 +311,125 @@ describe('renderApplianceEnvContent', () => {
     expect(body).toContain('POSTGRES_PASSWORD=db-pass');
     expect(body).toContain('CI_CLOUD_URL=https://hub.ci.computer');
     expect(body).toContain('DOMAIN=companionintelligence.com');
+  });
+
+  it('writes the Portal it is given, and only that one', () => {
+    const body = renderApplianceEnvContent({
+      dataDir: '/home/ci/.local/share/companion-hub',
+      postgresPassword: 'db-pass',
+      jwtSecret: 'jwt',
+      rabbitmqPassword: 'rq',
+      hubImage: `${HUB_STACK_IMAGE_REPO}:latest`,
+      hubVersion: 'latest',
+      ciCloudUrl: 'https://hub.companionintelligence.com',
+    });
+    expect(body.match(/^CI_CLOUD_URL=.*$/gm)).toEqual(['CI_CLOUD_URL=https://hub.companionintelligence.com']);
+    // The zone is a placeholder registration replaces, the same whichever Portal is chosen.
+    expect(body).toContain('DOMAIN=companionintelligence.com');
+  });
+});
+
+describe('validatePortalOrigin', () => {
+  it('accepts a bare https origin and returns it normalized, without the trailing slash', () => {
+    expect(validatePortalOrigin('https://hub.companionintelligence.com')).toEqual({ origin: 'https://hub.companionintelligence.com' });
+    expect(validatePortalOrigin(' https://hub.companionintelligence.com/ ')).toEqual({ origin: 'https://hub.companionintelligence.com' });
+    // The form the fleet check compares against: lower-case host, no default port, no slashes.
+    expect(validatePortalOrigin('https://Portal.CompanionIntel.com:443//')).toEqual({ origin: 'https://portal.companionintel.com' });
+    expect(validatePortalOrigin('https://portal.test:8443')).toEqual({ origin: 'https://portal.test:8443' });
+  });
+
+  it('accepts plain http only for a Portal on this machine, as the desktop override does', () => {
+    expect(validatePortalOrigin('http://ci-portal.localhost:8787')).toEqual({ origin: 'http://ci-portal.localhost:8787' });
+    expect(validatePortalOrigin('http://127.0.0.1:8787')).toEqual({ origin: 'http://127.0.0.1:8787' });
+    expect(validatePortalOrigin('http://hub.companionintelligence.com')).toEqual({ why: expect.stringContaining('https') });
+  });
+
+  it.each([
+    ['hub.companionintelligence.com', 'absolute URL'],
+    ['ftp://hub.companionintelligence.com', 'https, not ftp'],
+    ['https://hub.companionintelligence.com/api', 'bare origin'],
+    ['https://hub.companionintelligence.com?x=1', 'bare origin'],
+    ['https://ci:secret@hub.companionintelligence.com', 'credentials'],
+    // The URL parser lets `$` into a host, and compose interpolates it when it reads the env file.
+    ['https://hub$x.companionintelligence.com', 'DNS name'],
+    ['https://hub.companionintelligence.com.', 'DNS name'],
+  ])('refuses %s', (value, why) => {
+    expect(validatePortalOrigin(value)).toEqual({ why: expect.stringContaining(why) });
+  });
+});
+
+describe('resolveAppliancePortalUrl', () => {
+  it('keeps production when CI_CLOUD_URL is unset or blank — every install before this one', () => {
+    expect(APPLIANCE_DEFAULT_CI_CLOUD_URL).toBe('https://hub.ci.computer');
+    expect(resolveAppliancePortalUrl({})).toEqual({ url: 'https://hub.ci.computer', source: 'default' });
+    expect(resolveAppliancePortalUrl({ CI_CLOUD_URL: '  ' })).toEqual({ url: 'https://hub.ci.computer', source: 'default' });
+  });
+
+  it('takes CI_CLOUD_URL when it is a Portal origin', () => {
+    expect(resolveAppliancePortalUrl({ CI_CLOUD_URL: 'https://hub.companionintelligence.com/' })).toEqual({
+      url: 'https://hub.companionintelligence.com',
+      source: 'environment',
+    });
+  });
+
+  it('keeps production and says why when CI_CLOUD_URL is not one', () => {
+    expect(resolveAppliancePortalUrl({ CI_CLOUD_URL: 'hub.companionintelligence.com' })).toMatchObject({
+      url: 'https://hub.ci.computer',
+      source: 'default',
+      rejected: { value: 'hub.companionintelligence.com', why: expect.stringContaining('absolute URL') },
+    });
+  });
+});
+
+describe('seedApplianceInstall Portal', () => {
+  let dataDir: string;
+  afterEach(() => {
+    if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const seed = (env: NodeJS.ProcessEnv) => {
+    dataDir = mkdtempSync(join(tmpdir(), 'cihub-seed-portal-'));
+    return seedApplianceInstall({ dataDir, postgresPassword: 'operator-secret', findCompose: () => undefined, env, imageHost: bareHost });
+  };
+  const portalLines = (result: { dataDir: string }) =>
+    ['.env', '.env.dev'].map((name) => readFileSync(join(result.dataDir, name), 'utf8').match(/^CI_CLOUD_URL=.*$/gm));
+
+  it('seeds the Portal CI_CLOUD_URL names — the dev Portal a fleet install mints on — in both env files', () => {
+    // 2026-09-28: sixteen wiped nodes, codes minted on the dev Portal, and every fresh `cihub up`
+    // wrote production, so the fleet check stopped each node with portal-mismatch before `register`.
+    const result = seed({ CI_CLOUD_URL: 'https://hub.companionintelligence.com/' });
+    expect(portalLines(result)).toEqual([
+      ['CI_CLOUD_URL=https://hub.companionintelligence.com'],
+      ['CI_CLOUD_URL=https://hub.companionintelligence.com'],
+    ]);
+    expect(result.portalUrl).toBe('https://hub.companionintelligence.com');
+    expect(result.portalUrlFrom).toBe('set by CI_CLOUD_URL');
+    expect(result.warnings.join('\n')).not.toContain('CI_CLOUD_URL');
+  });
+
+  it('seeds production without CI_CLOUD_URL, and says it was not set', () => {
+    const result = seed({});
+    expect(portalLines(result)).toEqual([['CI_CLOUD_URL=https://hub.ci.computer'], ['CI_CLOUD_URL=https://hub.ci.computer']]);
+    expect(result.portalUrlFrom).toContain('CI_CLOUD_URL is not set');
+    expect(result.warnings.join('\n')).not.toContain('CI_CLOUD_URL');
+  });
+
+  it('seeds production for an unusable CI_CLOUD_URL, and warns with the reason and where to fix it', () => {
+    const result = seed({ CI_CLOUD_URL: 'http://hub.companionintelligence.com' });
+    expect(portalLines(result)).toEqual([['CI_CLOUD_URL=https://hub.ci.computer'], ['CI_CLOUD_URL=https://hub.ci.computer']]);
+    expect(result.portalUrlFrom).toContain('not usable');
+    const warned = result.warnings.join('\n');
+    expect(warned).toContain('Ignored CI_CLOUD_URL=http://hub.companionintelligence.com');
+    expect(warned).toContain('must use https');
+    expect(warned).toContain(join(result.dataDir, '.env.dev'));
+  });
+
+  it('does not echo a password in a refused CI_CLOUD_URL into the warning', () => {
+    const result = seed({ CI_CLOUD_URL: 'https://ci:hunter2hunter2@hub.companionintelligence.com' });
+    expect(result.portalUrl).toBe('https://hub.ci.computer');
+    const warned = result.warnings.join('\n');
+    expect(warned).toContain('credentials');
+    expect(warned).not.toContain('hunter2hunter2');
   });
 });
 
