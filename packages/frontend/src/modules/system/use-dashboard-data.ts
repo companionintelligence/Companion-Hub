@@ -223,6 +223,12 @@ export interface PoolStatusSummary {
     poolHealthPollSeconds?: number;
     poolRequireSignedPeers?: boolean;
     poolPressureWeight?: number;
+    /**
+     * Default on. When on, apps are handed this Hub's pool proxy even with no peer connected, so
+     * their calls reach the routing log; when off, a peerless Hub hands them their engines directly.
+     * See `unloggedCalls`.
+     */
+    poolRouteAppsAlways?: boolean;
   };
 }
 
@@ -632,12 +638,14 @@ export function poolModelIndex(
 }
 
 export interface PoolReach {
+  /** Connected peers the operator has not disabled. */
   connected: number;
+  /** Unreachable peers the operator has not disabled — a disabled peer counts as disabled, whatever its socket says. */
   unreachable: number;
   reachableModels: number;
   /** Models no local backend holds — the only number that says what pooling actually buys this node. */
   exclusiveModels: number;
-  /** Sum over connected peers, or `null` when not one of them reported the counter. */
+  /** This Hub's forwarded-and-open requests, summed over every peer that reports the counter; `null` when none does. */
   peerInFlight: number | null;
 }
 
@@ -719,11 +727,17 @@ export function poolReach(peers: PoolPeerSummary[], local: PoolNodeSummary | und
 
   const reachable = new Set(connected.flatMap((peer) => servable(peer.lastCapabilities?.backends)));
   const localModels = new Set(servable(local?.backends));
-  const reported = connected.filter((peer) => typeof peer.inFlightRequests === 'number');
+  // Every peer that reports the counter, not only connected ones: it is THIS Hub's count of work it
+  // sent there, still true after the peer dropped or was disabled, and the reach drawing badges each
+  // of them — a total over fewer peers than the badges beside it would disagree with them.
+  const reported = peers.filter((peer) => typeof peer.inFlightRequests === 'number');
 
   return {
     connected: connected.length,
-    unreachable: peers.filter((peer) => peer.status === 'unreachable').length,
+    // Disabled outranks the socket, as `connected` above and the node cards already have it: a peer
+    // the operator took out of routing is not reach this Hub has lost. Counting it here made the
+    // rail say "1 unreachable" beside a drawing and legend that showed it disabled.
+    unreachable: peers.filter((peer) => peer.status === 'unreachable' && peer.enabled !== false).length,
     reachableModels: reachable.size,
     exclusiveModels: [...reachable].filter((model) => !localModels.has(model)).length,
     // No peer reporting the counter is "unknown", not "idle" — the panel must render a dash.

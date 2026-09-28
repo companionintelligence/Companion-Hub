@@ -1,5 +1,13 @@
 import { parseHubTimestamp } from '@/components/ui/dense/dense';
-import type { PoolNodeSummary, PoolPeerSummary, PoolThroughputEstimate, RoutingLogEntry, RoutingLogPage } from '@/modules/system/use-dashboard-data';
+import type {
+  LoadState,
+  PoolNodeSummary,
+  PoolPeerSummary,
+  PoolStatusSummary,
+  PoolThroughputEstimate,
+  RoutingLogEntry,
+  RoutingLogPage,
+} from '@/modules/system/use-dashboard-data';
 import { estimatedPromptTokens, isUnplaced, peerLabel } from '@/modules/system/use-dashboard-data';
 
 /*
@@ -257,6 +265,12 @@ export interface PoolNodeCard {
   authMode?: string | null;
   /** The kind of the peer's current run of failed probes, or `null` while its probes succeed. */
   probeFailure?: string | null;
+  /**
+   * The peer's own `acceptingWork` flag from its last snapshot: `false` when it has switched inbound
+   * off or disabled us, which the proxy skips it on. `null` when it never said (an older build, which
+   * never refuses) or there is no snapshot. Absent on the local card.
+   */
+  acceptingWork?: boolean | null;
 }
 
 function countModels(backends: { healthy?: boolean; modelsLoaded?: string[] }[] | undefined): number {
@@ -336,7 +350,9 @@ export function poolNodeCards(
       status: 'local',
       hardwareTier: local.hardwareTier ?? null,
       backends: describeBackends(local.backends),
-      models: countModels(local.backends),
+      // A Hub that could not read its own engines sends `backends: []` beside the error, and counting
+      // that empty list said "0 models" about engines nobody asked.
+      models: local.capabilitiesError ? null : countModels(local.backends),
       inFlight: typeof local.inFlightRequests === 'number' ? local.inFlightRequests : null,
       inFlightMeaning: 'local-engines',
       peerReportedInFlight: null,
@@ -366,7 +382,11 @@ export function poolNodeCards(
       // A peer that is not connected holds only a cached inventory; counting it presents capacity
       // that has stopped answering as live.
       // null, not 0 — see `models` on the card type. The chips beside it show cached counts.
-      models: peer.status === 'connected' ? countModels(peer.lastCapabilities?.backends) : null,
+      // A connected peer with no snapshot is unknown too: that is every peer between approval and
+      // its first probe, and one whose cache was cleared when it answered 401/403 while its row
+      // stays connected. The proxy skips it for the same reason, so a "0" there was a healthy-looking
+      // zero about a node nobody could ask.
+      models: peer.status === 'connected' && peer.lastCapabilities ? countModels(peer.lastCapabilities.backends) : null,
       inFlight: typeof peer.inFlightRequests === 'number' ? peer.inFlightRequests : null,
       inFlightMeaning: 'forwarded-by-us',
       peerReportedInFlight: peerReportedInFlight(peer, options.healthPollSeconds, options.now),
@@ -384,6 +404,7 @@ export function poolNodeCards(
       decode: latestDecode([...(peer.throughput?.observed ?? []), ...(peer.throughput?.advertised ?? [])]),
       authMode: peer.authMode ?? null,
       probeFailure: peer.probeFailure?.kind ?? null,
+      acceptingWork: typeof peer.lastCapabilities?.acceptingWork === 'boolean' ? peer.lastCapabilities.acceptingWork : null,
     });
   }
 
@@ -854,6 +875,13 @@ export interface OwnInference {
   served: number;
   /** Settled without an answer — anything neither served nor still waiting, as `routingActivity` counts it. */
   failed: number;
+  /**
+   * The part of `failed` where the caller hung up first — split out as the rail splits it, because
+   * this tile's callers are this Hub's own apps, the ones most likely to give up on a long prefill.
+   */
+  clientClosed: number;
+  /** The part of `failed` that took a whole first-byte budget to fail. See {@link isOverBudgetFailure}. */
+  overBudget: number;
   pending: number;
   failovers: number;
   /** Served requests whose response carried a usage frame. The denominator is `served`: only a served request can. */
@@ -868,8 +896,11 @@ export interface OwnInference {
   modelCount: number;
 }
 
-/** Below this many samples a p90 is just the slowest request, so it is not stated. */
-const P90_MIN_SAMPLES = 5;
+/**
+ * The fewest samples at which a nearest-rank p90 is not simply the slowest request: `ceil(0.9 × n)`
+ * equals `n` for every n up to 9, so below ten "p90" would be the maximum under another name.
+ */
+const P90_MIN_SAMPLES = 10;
 
 /** Nearest-rank percentile of an ascending list: a figure one of these requests actually took. */
 function nearestRank(sorted: number[], share: number): number | undefined {
@@ -886,18 +917,25 @@ function hasUsage(entry: RoutingLogEntry): boolean {
 /**
  * Requests that ENTERED THE POOL AT THIS HUB over `[from, to)`: `outbound` rows only.
  *
- * The routing log writes `outbound` for a call to this Hub's own inference routes — its apps by
- * network origin, or an editor or SDK holding one of its `inference` API keys — and `inbound` for
- * work a peer forwarded to our engines (`hub-pool-routing-log.service.ts`). So this counts this
- * Hub's callers wherever the pool served them, and leaves out every peer's traffic that merely ran
- * on our hardware. Tokens are summed exactly as `routingBuckets` sums them, and only outbound rows
- * ever carry usage, so the totals equal Pool activity's 30-minute token chips.
+ * The routing log writes `outbound` for every call `PoolProxyService.proxyRequest` handles, and
+ * `inbound` for work a peer forwarded to our engines (`hub-pool-routing-log.service.ts`). Who can
+ * make an outbound call is whoever `InferenceAccessGuard` admits: anything whose address is private
+ * — this Hub's apps, but also any machine on its LAN or tailnet, since Tailscale's 100.64.0.0/10 is
+ * private to it — with no key read at all, and an `inference` API key from anywhere else. So this
+ * counts traffic that entered here wherever the pool served it, not "this Hub's apps", and leaves
+ * out every peer's traffic that merely ran on our hardware. Calls that never reach `proxyRequest`
+ * are not in the log at all; see {@link unloggedCalls}.
+ *
+ * Tokens are summed exactly as `routingBuckets` sums them, and only outbound rows ever carry usage,
+ * so the totals equal Pool activity's 30-minute token chips.
  */
 export function inferenceFromHere(entries: RoutingLogEntry[], window: { from: number; to: number }, topModels = 5): OwnInference {
   const own: OwnInference = {
     requests: 0,
     served: 0,
     failed: 0,
+    clientClosed: 0,
+    overBudget: 0,
     pending: 0,
     failovers: 0,
     usageReported: 0,
@@ -918,7 +956,12 @@ export function inferenceFromHere(entries: RoutingLogEntry[], window: { from: nu
     own.requests += 1;
     if (entry.outcome === 'served') own.served += 1;
     else if (entry.outcome === 'pending') own.pending += 1;
-    else own.failed += 1;
+    else {
+      own.failed += 1;
+      // The same two splits `routingBuckets` makes, so this tile and the rail describe a failure alike.
+      if (entry.clientClosed === true) own.clientClosed += 1;
+      if (isOverBudgetFailure(entry)) own.overBudget += 1;
+    }
     if ((entry.failedOverFrom?.length ?? 0) > 0) own.failovers += 1;
 
     if (entry.outcome === 'served' && hasUsage(entry)) own.usageReported += 1;
@@ -949,4 +992,32 @@ export function inferenceFromHere(entries: RoutingLogEntry[], window: { from: nu
     .slice(0, Math.max(0, topModels));
 
   return own;
+}
+
+/**
+ * Which of this Hub's inference calls never reach the routing log, so a count built from it is not
+ * the whole of what was asked here.
+ *
+ * - `none`: both app-facing routes go through `proxyRequest`, which writes a row for every call.
+ * - `v1`: `/api/inference/v1/{chat/completions,embeddings}` serve from the local router WITHOUT a row
+ *   whenever `hasConnectedPeers()` is false (pooling off, or no peer row `connected`; the per-peer
+ *   switch is not consulted). Apps handed `/api/inference/pool/*` — every app while
+ *   `poolRouteAppsAlways` is on, its default — are still logged; `HUB_INFERENCE_URL` callers,
+ *   editors and SDKs on `/v1` are not.
+ * - `apps`: the same, and the switch is off, so apps were handed their engines directly and nothing
+ *   they send passes through this Hub at all.
+ * - `unknown`: pool status failed or has not answered, so which of the above holds cannot be said.
+ *
+ * An absent `poolRouteAppsAlways` reads as its default, on: the backend fills the default in before
+ * it serialises, so absence only comes from a build that predates the switch.
+ */
+export type UnloggedCalls = 'none' | 'v1' | 'apps' | 'unknown';
+
+export function unloggedCalls(pool: PoolStatusSummary | undefined, state: LoadState): UnloggedCalls {
+  if (state.failed || !pool) return 'unknown';
+
+  const peerConnected = pool.enabled !== false && (pool.peers ?? []).some((peer) => peer.status === 'connected');
+  if (peerConnected) return 'none';
+
+  return pool.settings?.poolRouteAppsAlways === false ? 'apps' : 'v1';
 }

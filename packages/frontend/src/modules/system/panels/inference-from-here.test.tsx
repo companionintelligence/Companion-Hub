@@ -34,7 +34,7 @@ function renderTile(own: OwnInference, overrides: Partial<Parameters<typeof Infe
       partial={false}
       windowFrom={WINDOW.from}
       startedAt="2026-09-26T23:47:49.027Z"
-      unlogged={false}
+      unlogged="none"
       now={NOW}
       state={READY}
       {...overrides}
@@ -117,27 +117,66 @@ describe('InferenceFromHere', () => {
     expect(models).toEqual(['gemma3:1b2 req—']);
   });
 
-  it('gives a median first byte, and a p90 only once there are five to take it from', () => {
+  it('gives a median first byte, and a p90 only once there are ten to take it from', () => {
     const streamed = (ms: number, minute: number) => row(`2026-09-28T15:0${minute}:00Z`, { stream: true, durationMs: ms });
     const few = renderTile(inferenceFromHere([streamed(400, 1), streamed(800, 2)], WINDOW));
     expect(chip(few, '1st byte p50')).toBe('400 ms1st byte p502 streamed');
 
-    const many = renderTile(
+    // Nine: nearest rank would name the slowest request its p90, so there is none.
+    const nine = renderTile(
       inferenceFromHere(
-        [400, 500, 600, 700, 32_227].map((ms, index) => streamed(ms, index)),
+        [400, 500, 600, 700, 800, 900, 1_000, 1_100, 32_227].map((ms, index) => streamed(ms, index)),
         WINDOW,
       ),
     );
-    expect(chip(many, '1st byte p50')).toBe('600 ms1st byte p50p90 32.2 s');
+    expect(chip(nine, '1st byte p50')).toBe('800 ms1st byte p509 streamed');
+
+    const ten = renderTile(
+      inferenceFromHere(
+        [400, 500, 600, 700, 800, 900, 1_000, 1_100, 1_200, 32_227].map((ms, index) => streamed(ms, index)),
+        WINDOW,
+      ),
+    );
+    expect(chip(ten, '1st byte p50')).toBe('800 ms1st byte p50p90 1.2 s');
 
     const none = renderTile(inferenceFromHere([row('2026-09-28T15:00:00Z')], WINDOW));
     expect(chip(none, '1st byte p50')).toBe('—1st byte p50none streamed');
   });
 
-  it('marks the count as a floor when the ring may have dropped rows from the window', () => {
-    const container = renderTile(inferenceFromHere([row('2026-09-28T15:00:00Z')], WINDOW), { partial: true });
+  it('marks every count as a floor when the ring may have dropped rows from the window', () => {
+    const container = renderTile(
+      inferenceFromHere([row('2026-09-28T15:00:00Z', { usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 } })], WINDOW),
+      { partial: true },
+    );
 
-    expect(chip(container, 'Requests')).toBe('1Requestsat least — log dropped rows');
+    // One note for the whole tile: Requests, Failed, Failovers and both token totals come from the same rows.
+    expect(container.querySelector('[data-testid="inference-from-here-partial"]')?.textContent).toBe(
+      'At least: the log dropped older rows from this window, so every count here is a floor.',
+    );
+    expect(chip(container, 'Requests')).toBe('1Requests');
+  });
+
+  it('never says "nothing sent" over a window the log may not fully cover', () => {
+    const container = renderTile(EMPTY, { partial: true });
+
+    expect(container.textContent).not.toContain('Nothing sent');
+    expect(container.querySelector('[data-testid="inference-from-here"]')?.textContent).toContain(
+      'None among the rows still held. The log dropped older rows from this window.',
+    );
+  });
+
+  it("qualifies Failed the way the rail does: callers who hung up aren't a pool that failed them", () => {
+    const own = inferenceFromHere(
+      [
+        row('2026-09-28T15:00:00Z', { outcome: 'failed', status: null, clientClosed: true, durationMs: 40_000 }),
+        row('2026-09-28T15:01:00Z', { outcome: 'failed', status: null, budgetMs: 300_000, durationMs: 300_100 }),
+        row('2026-09-28T15:02:00Z'),
+      ],
+      WINDOW,
+    );
+    const container = renderTile(own);
+
+    expect(chip(container, 'Failed')).toBe('2Failed1 past budget · 1 caller left');
   });
 
   it('says when the log itself starts inside the window', () => {
@@ -146,9 +185,50 @@ describe('InferenceFromHere', () => {
     expect(container.textContent).toContain('Log starts at the Hub restart, 10m 0s ago.');
   });
 
-  it('warns that calls are not logged while no peer is connected, even over an empty window', () => {
-    const container = renderTile(EMPTY, { unlogged: true });
+  it('never says "nothing sent" when some calls bypass the log: it says what was logged and which calls were not', () => {
+    const container = renderTile(EMPTY, { unlogged: 'v1' });
+    const tile = container.querySelector('[data-testid="inference-from-here"]')?.textContent ?? '';
 
-    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')?.textContent).toContain("aren't logged here");
+    expect(tile).not.toContain('Nothing sent');
+    expect(tile).toContain('Nothing logged from this Hub in the last 30 minutes.');
+    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')?.textContent).toBe(
+      'No peer is connected, so calls to /api/inference/v1 are served here without being logged. Calls through the pool proxy are logged.',
+    );
+  });
+
+  it('shows only the gap, and no count at all, when apps call their engines directly', () => {
+    const container = renderTile(EMPTY, { unlogged: 'apps' });
+    const tile = container.querySelector('[data-testid="inference-from-here"]')?.textContent ?? '';
+
+    expect(tile).not.toContain('Nothing');
+    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')?.textContent).toBe(
+      "No peer is connected and apps aren't routed through the pool, so they call their engines directly and nothing they send is logged here.",
+    );
+  });
+
+  it('says it cannot tell, rather than "nothing sent", while pool status is unknown', () => {
+    const container = renderTile(EMPTY, { unlogged: 'unknown' });
+    const tile = container.querySelector('[data-testid="inference-from-here"]')?.textContent ?? '';
+
+    expect(tile).not.toContain('Nothing sent');
+    expect(tile).toContain('Nothing logged from this Hub in the last 30 minutes.');
+    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')?.textContent).toBe(
+      "Pool status didn't load, so whether some calls bypassed the log is unknown.",
+    );
+  });
+
+  it('keeps the logged counts and names the gap beside them when some calls bypass the log', () => {
+    const container = renderTile(inferenceFromHere([row('2026-09-28T15:00:00Z')], WINDOW), { unlogged: 'v1' });
+
+    expect(chip(container, 'Requests')).toBe('1Requestslogged calls only');
+    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')).not.toBeNull();
+  });
+
+  it('says who the callers are as the log knows them: anything that entered the pool here', () => {
+    const container = renderTile(EMPTY);
+
+    expect(container.textContent).toContain(
+      "Requests that entered the pool at this Hub, from its apps, anything on its LAN or tailnet, and API-key clients, wherever they ran. Work peers forward here isn't counted.",
+    );
   });
 });

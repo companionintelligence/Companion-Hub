@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import { type PoolNodeCard, poolNodeCards } from './pool-node-series';
-import { REACH_MAX_SLOTS, REACH_ROW, REACH_WIDTH, type ReachPeer, reachLayout, reachPeers } from './pool-reach';
+import {
+  badgeCentre,
+  fitFirst,
+  fitText,
+  REACH_LABEL_GAP,
+  REACH_MAX_SLOTS,
+  REACH_ROW,
+  REACH_WIDTH,
+  type ReachPeer,
+  reachLayout,
+  reachPeers,
+  textWidth,
+} from './pool-reach';
 import type { PoolPeerSummary } from './use-dashboard-data';
 
 /*
@@ -41,13 +53,40 @@ function spokes(count: number, extras: (index: number) => Partial<PoolPeerSummar
 }
 
 describe('reachPeers', () => {
-  it('draws only peers, never this Hub, each under its tailnet name', () => {
-    const peers = reachPeers(cards([peer('beta-1'), peer('core-10', { displayName: 'ci' })]));
+  it('draws only peers, never this Hub, each under the name the Pool nodes table gives it', () => {
+    const peers = reachPeers(
+      cards([
+        peer('beta-1'),
+        peer('core-10', { displayName: 'ci' }),
+        peer('core-1', { displayName: null }),
+        peer('beta-glass', { displayName: 'beta-3-glass' }),
+      ]),
+    );
 
-    expect(peers.map((entry) => entry.name)).toEqual(['beta-1', 'core-10']);
-    // core-10 calls itself "ci": the name an operator can ssh to leads, the alias rides along.
-    expect(peers[1]?.alias).toBe('ci');
-    expect(peers[0]?.alias).toBeNull();
+    // One name per node on the page: the card's label, which is what Pool nodes and the model index print.
+    expect(peers.map((entry) => entry.name)).toEqual(['beta-1', 'beta-3-glass', 'ci', 'core-1']);
+    // The tailnet host rides along only where it says something the name does not.
+    expect(peers.map((entry) => entry.host)).toEqual([null, 'beta-glass', 'core-10', null]);
+  });
+
+  it('marks a connected peer the proxy will not use, or whose probes are failing, instead of drawing it healthy', () => {
+    const peers = reachPeers(
+      cards([
+        peer('a'),
+        // Capabilities cleared after the peer answered 401: connected, but no inventory to route on.
+        peer('b', { lastCapabilities: null, consecutiveFailures: 2, probeFailure: { kind: 'unauthorized' } }),
+        // Inbound switched off there: the proxy skips it on the flag.
+        peer('c', { lastCapabilities: { hardwareTier: 'high', acceptingWork: false, backends: [] } }),
+        // Timing out but still inside its strikes: still routable, and still worth a look.
+        peer('d', { consecutiveFailures: 1, probeFailure: { kind: 'unreachable' } }),
+        peer('e', { status: 'unreachable', probeFailure: { kind: 'unreachable' } }),
+      ]),
+    );
+
+    expect(peers.map((entry) => entry.concern)).toEqual([null, 'unreported', 'declining', 'probe', null]);
+    // Absent, not 0: the drawing's "models not reported" is reachable for a connected peer.
+    expect(peers[1]?.models).toBeNull();
+    expect(peers.map((entry) => entry.status)).toEqual(['connected', 'connected', 'connected', 'connected', 'unreachable']);
   });
 
   it('orders names as an operator counts them: core-2 before core-10', () => {
@@ -132,7 +171,7 @@ describe('reachLayout', () => {
     }
   });
 
-  it('keeps every node inside the fixed-width viewBox, so it scales rather than scrolls', () => {
+  it('keeps every node inside the default-width viewBox, so it scales rather than scrolls', () => {
     const layout = reachLayout(spokes(24));
 
     expect(layout.width).toBe(REACH_WIDTH);
@@ -175,7 +214,100 @@ describe('reachLayout', () => {
     expect(layout.counts).toEqual({ connected: 28, unreachable: 1, pending: 1, disabled: 0 });
   });
 
+  it('keeps a connected peer with a problem on the drawing before any healthy one', () => {
+    const layout = reachLayout(
+      spokes(30, (index) =>
+        index === 29
+          ? { lastCapabilities: null, probeFailure: { kind: 'unauthorized' } }
+          : index === 28
+            ? { probeFailure: { kind: 'unreachable' } }
+            : {},
+      ),
+    );
+    const drawn = layout.placed.map((entry) => entry.name);
+
+    expect(drawn).toContain('core-30');
+    expect(drawn).toContain('core-29');
+    for (const hidden of layout.overflow?.peers ?? []) expect(hidden.concern).toBeNull();
+  });
+
+  it('lays out at the width it is drawn, so a label is the same size on a phone as on a desktop', () => {
+    for (const width of [300, 322, 329, 380, 403, 480]) {
+      const layout = reachLayout(spokes(24), { width });
+
+      expect(layout.width).toBe(width);
+      for (const entry of layout.placed) {
+        expect(entry.x).toBeGreaterThan(0);
+        expect(entry.x).toBeLessThan(width);
+        // The label's room runs from the marker's label edge to the drawing's edge, never past it.
+        const start = entry.side === 'right' ? entry.x + REACH_LABEL_GAP : entry.x - REACH_LABEL_GAP;
+        expect(entry.side === 'right' ? start + entry.room : start - entry.room).toBeGreaterThanOrEqual(0);
+        expect(entry.side === 'right' ? start + entry.room : start - entry.room).toBeLessThanOrEqual(width);
+        expect(entry.room).toBeGreaterThanOrEqual(80);
+      }
+    }
+  });
+
   it('places the same pool the same way on every poll', () => {
     expect(reachLayout(spokes(15))).toEqual(reachLayout(spokes(15)));
+  });
+});
+
+describe('fitting a label to its room', () => {
+  // The longest things a label says on this fleet, name line and detail line.
+  const NAMES = ['mac-studio-m4-ultra', 'workstation-lab-02', 'beta-3-glass', 'core-10'];
+  const DETAILS = ['models not reported', '23 models · cpu-only', 'probes refused', 'unreachable · 2d', 'awaiting peer', 'not taking work'];
+
+  it('never lets an estimated label extent pass the edge of the drawing, at any width', () => {
+    for (const width of [300, 322, 329, 380, 403]) {
+      const layout = reachLayout(spokes(24), { width });
+      for (const entry of layout.placed) {
+        const start = entry.side === 'right' ? entry.x + REACH_LABEL_GAP : entry.x - REACH_LABEL_GAP;
+        for (const [text, size, weight] of [
+          ...NAMES.map((name) => [name, 12, 600] as const),
+          ...DETAILS.map((detail) => [detail, 10, 400] as const),
+        ]) {
+          const shown = fitText(text, entry.room, size, weight);
+          const extent = textWidth(shown, size, weight);
+          if (entry.side === 'right') expect(start + extent).toBeLessThanOrEqual(width);
+          else expect(start - extent).toBeGreaterThanOrEqual(0);
+        }
+      }
+    }
+  });
+
+  it('keeps text that fits whole, and clips what does not with an ellipsis', () => {
+    expect(fitText('core-10', 100, 12, 600)).toBe('core-10');
+    const clipped = fitText('mac-studio-m4-ultra', 80, 12, 600);
+    expect(clipped.endsWith('…')).toBe(true);
+    expect(textWidth(clipped, 12, 600)).toBeLessThanOrEqual(80);
+  });
+
+  it('prefers a shorter whole phrase to a clipped long one', () => {
+    // "23 models" says the thing that matters; "23 models · cpu-o…" says less.
+    expect(fitFirst(['23 models · cpu-only', '23 models'], 70, 10)).toBe('23 models');
+    expect(fitFirst(['23 models · cpu-only', '23 models'], 200, 10)).toBe('23 models · cpu-only');
+  });
+
+  it('estimates at least as wide as Manrope, the font the app loads, measured', () => {
+    // Measured in Chromium with Manrope loaded (canvas measureText), 2026-09-28.
+    expect(textWidth('pending · awaiting peer', 10, 400)).toBeGreaterThanOrEqual(105.9);
+    expect(textWidth('23 models · cpu-only', 10, 400)).toBeGreaterThanOrEqual(94.3);
+    expect(textWidth('mac-studio-m4-ultra', 12, 600)).toBeGreaterThanOrEqual(120.8);
+    expect(textWidth('core-10', 12, 600)).toBeGreaterThanOrEqual(43.4);
+  });
+});
+
+describe('the in-flight badge', () => {
+  it("sits on the peer's own spoke, between the hub and the marker", () => {
+    const layout = reachLayout(spokes(30));
+    for (const entry of layout.placed) {
+      const badge = badgeCentre(entry, layout.hub);
+      // Collinear with hub → peer, and strictly between them.
+      const cross = (entry.x - layout.hub.x) * (badge.y - layout.hub.y) - (entry.y - layout.hub.y) * (badge.x - layout.hub.x);
+      expect(Math.abs(cross)).toBeLessThan(1e-6);
+      expect(Math.min(layout.hub.x, entry.x) <= badge.x && badge.x <= Math.max(layout.hub.x, entry.x)).toBe(true);
+      expect(Math.hypot(badge.x - entry.x, badge.y - entry.y)).toBeGreaterThanOrEqual(12);
+    }
   });
 });

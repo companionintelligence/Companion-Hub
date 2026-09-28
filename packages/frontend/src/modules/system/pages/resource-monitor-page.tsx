@@ -17,6 +17,7 @@ import {
   poolNodeCards,
   routingBuckets,
   routingWindowPartial,
+  unloggedCalls,
   waitingNow,
 } from '@/modules/system/pool-node-series';
 import { pageVerdict, STALE_SAMPLE_MS } from '@/modules/system/triage';
@@ -127,8 +128,14 @@ export default function ResourceMonitorPage() {
   // Over the buckets' own span, so "Requests" here is the outbound share of the rail's "Routed 30m".
   const routingWindow = useMemo(() => bucketWindow(buckets, BUCKET_MS), [buckets]);
   const own = useMemo(() => inferenceFromHere(entries, routingWindow ?? { from: now - WINDOW_MS, to: now }), [entries, routingWindow, now]);
-  // With pooling off or no peer connected, `/api/inference/v1` serves apps locally and logs nothing.
-  const ownUnlogged = pool.data ? pool.data.enabled === false || reach.connected === 0 : false;
+  // Which calls bypass the log right now — decided the way the backend picks the route, not from
+  // `reach`, which drops disabled peers that `/api/inference/v1` still proxies through.
+  const ownUnlogged = unloggedCalls(pool.data, poolState);
+  // The tile waits for pool status too, so it never flashes "unknown" before the answer lands; only
+  // the log failing fails it, because its counts do not depend on pool status at all.
+  const ownState = { pending: routingState.pending || poolState.pending, failed: routingState.failed };
+  // This Hub's own switches, which stop every spoke carrying work whatever each peer's state.
+  const routingOff = pool.data?.enabled === false ? 'pool' : pool.data?.directions?.outbound?.enabled === false ? 'outbound' : null;
   const waiting = waitingNow(entries, now);
   const oldestWait = waiting.oldest;
   const reconciliation = memoryReconciliation(hardware.data, rollup, memory.data);
@@ -234,7 +241,7 @@ export default function ResourceMonitorPage() {
         startedAt={routingLog.data?.summary?.startedAt}
         unlogged={ownUnlogged}
         now={now}
-        state={routingState}
+        state={ownState}
         className="col-span-full md:col-span-1 xl:col-span-3"
       />
 
@@ -267,7 +274,7 @@ export default function ResourceMonitorPage() {
         state={poolState}
         className="col-span-full md:col-span-1 xl:col-span-4"
       />
-      <PoolReach cards={nodeCards} figures={reach} state={poolState} className="col-span-full md:col-span-1 xl:col-span-4" />
+      <PoolReach cards={nodeCards} figures={reach} routingOff={routingOff} state={poolState} className="col-span-full md:col-span-1 xl:col-span-4" />
       <NetworkModels
         peers={peerRows}
         node={localNode}

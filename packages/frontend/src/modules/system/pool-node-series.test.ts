@@ -18,9 +18,10 @@ import {
   routingBuckets,
   routingWindowPartial,
   sampleInFlight,
+  unloggedCalls,
   waitingNow,
 } from './pool-node-series';
-import type { PoolNodeSummary, PoolPeerSummary, RoutingLogEntry } from './use-dashboard-data';
+import type { PoolNodeSummary, PoolPeerSummary, PoolStatusSummary, RoutingLogEntry } from './use-dashboard-data';
 
 /*
  * The pool view's rules, tested away from React.
@@ -400,6 +401,36 @@ describe('poolNodeCards', () => {
     // NULL, not 0: we could not ask. A 0 would assert the node holds nothing while the engine
     // chips on the same card still show its cached `ollama 2`.
     expect(card?.models).toBeNull();
+  });
+
+  it('reads a connected peer with no capabilities snapshot as models unknown, not as 0', () => {
+    // Right after approve/confirm, and after a 401/403 cleared the cache while the row stays connected.
+    const [, fresh] = poolNodeCards(local, [{ id: 'p', status: 'connected', lastCapabilities: null }], options);
+    const [, absent] = poolNodeCards(local, [{ id: 'q', status: 'connected' }], options);
+
+    expect(fresh?.models).toBeNull();
+    expect(absent?.models).toBeNull();
+  });
+
+  it('reads this node as models unknown when it could not read its own engines', () => {
+    const [card] = poolNodeCards({ ...local, backends: [], capabilitiesError: 'ollama: ECONNREFUSED' }, [], options);
+
+    expect(card?.models).toBeNull();
+  });
+
+  it('carries whether a peer is taking work, keeping an older build that never said as unknown', () => {
+    const caps = { backends: [] };
+    const cards = poolNodeCards(
+      local,
+      [
+        { id: 'a', displayName: 'a', status: 'connected', lastCapabilities: { ...caps, acceptingWork: false } },
+        { id: 'b', displayName: 'b', status: 'connected', lastCapabilities: { ...caps, acceptingWork: true } },
+        { id: 'c', displayName: 'c', status: 'connected', lastCapabilities: caps },
+      ],
+      options,
+    );
+
+    expect(cards.slice(1).map((card) => card.acceptingWork)).toEqual([false, true, null]);
   });
 
   it('excludes an unhealthy backend from the model count, which still lists what it cannot serve', () => {
@@ -920,13 +951,38 @@ describe('inferenceFromHere', () => {
     expect(own.firstByte).toEqual({ count: 2, p50Ms: 300, p90Ms: null });
   });
 
-  it('states a p90 only from five streamed requests up', () => {
+  it('states a p90 only from ten streamed requests up, the first count where it is not the slowest', () => {
     const own = inferenceFromHere(
       [100, 200, 300, 400, 500, 600, 700, 800, 900, 10_000].map((ms, index) => row(index, { durationMs: ms })),
       window,
     );
 
     expect(own.firstByte).toEqual({ count: 10, p50Ms: 500, p90Ms: 900 });
+  });
+
+  it('states no p90 from nine requests, where nearest rank would just be the slowest one', () => {
+    const own = inferenceFromHere(
+      [100, 200, 300, 400, 500, 600, 700, 800, 99_000].map((ms, index) => row(index, { durationMs: ms })),
+      window,
+    );
+
+    expect(own.firstByte).toEqual({ count: 9, p50Ms: 500, p90Ms: null });
+  });
+
+  it('splits failures the way the rail does: callers who hung up, and failures past a whole budget', () => {
+    const own = inferenceFromHere(
+      [
+        row(1, { outcome: 'failed', status: null, clientClosed: true, durationMs: 40_000 }),
+        row(2, { outcome: 'failed', status: null, clientClosed: true, durationMs: 12_000 }),
+        row(3, { outcome: 'failed', status: null, budgetMs: 300_000, durationMs: 300_100 }),
+        row(4, { outcome: 'failed', status: 502, durationMs: 90 }),
+        // A caller that left after the answer arrived is not a failure at all.
+        row(5, { clientClosed: true }),
+      ],
+      window,
+    );
+
+    expect(own).toMatchObject({ failed: 4, clientClosed: 2, overBudget: 1 });
   });
 
   it('has no first byte at all when nothing streamed was served', () => {
@@ -954,5 +1010,47 @@ describe('inferenceFromHere', () => {
       { model: 'a', requests: 1, tokens: null },
     ]);
     expect(own.modelCount).toBe(6);
+  });
+});
+
+describe('unloggedCalls', () => {
+  const READY = { pending: false, failed: false };
+  const connected: PoolPeerSummary = { id: 'p', status: 'connected' };
+  const pool = (over: Partial<PoolStatusSummary> = {}): PoolStatusSummary => ({
+    enabled: true,
+    peers: [connected],
+    settings: { poolRouteAppsAlways: true },
+    ...over,
+  });
+
+  it('is nothing while a peer is connected: both inference routes go through the logging proxy', () => {
+    expect(unloggedCalls(pool(), READY)).toBe('none');
+  });
+
+  it('counts a connected peer the operator disabled, as the backend does when choosing the route', () => {
+    // `hasConnectedPeers()` ignores the per-peer switch, so /v1 still goes through the proxy.
+    expect(unloggedCalls(pool({ peers: [{ id: 'p', status: 'connected', enabled: false }] }), READY)).toBe('none');
+  });
+
+  it('names only /api/inference/v1 when no peer is connected but apps are routed through the pool proxy', () => {
+    expect(unloggedCalls(pool({ peers: [] }), READY)).toBe('v1');
+    expect(unloggedCalls(pool({ peers: [{ id: 'p', status: 'unreachable' }] }), READY)).toBe('v1');
+    // Pooling off: /v1 serves locally whatever is paired, and the switch still hands apps the proxy.
+    expect(unloggedCalls(pool({ enabled: false }), READY)).toBe('v1');
+  });
+
+  it('reads an absent switch as its default, which is on', () => {
+    expect(unloggedCalls(pool({ peers: [], settings: {} }), READY)).toBe('v1');
+    expect(unloggedCalls({}, READY)).toBe('v1');
+  });
+
+  it('says apps bypass the log when they are handed engines directly and no peer is connected', () => {
+    expect(unloggedCalls(pool({ peers: [], settings: { poolRouteAppsAlways: false } }), READY)).toBe('apps');
+  });
+
+  it('is unknown, never "all logged", while pool status has failed or not answered', () => {
+    expect(unloggedCalls(undefined, { pending: false, failed: true })).toBe('unknown');
+    expect(unloggedCalls(pool(), { pending: false, failed: true })).toBe('unknown');
+    expect(unloggedCalls(undefined, { pending: true, failed: false })).toBe('unknown');
   });
 });

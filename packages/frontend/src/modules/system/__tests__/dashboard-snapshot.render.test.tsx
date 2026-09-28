@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { writeFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import ResourceMonitorPage from '../pages/resource-monitor-page';
 
@@ -343,6 +343,20 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
  * page, and the prose tile is gone.
  */
 describe('workload band', () => {
+  // The GPU caption's hint opens a react-tooltip, which floating-ui positions with a ResizeObserver
+  // jsdom lacks. Nothing resizes here, so one that observes nothing will do.
+  const original = globalThis.ResizeObserver;
+  beforeAll(() => {
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+  });
+  afterAll(() => {
+    globalThis.ResizeObserver = original;
+  });
+
   it('states what is not measured beside the figures it qualifies, and gives the fourth slot to real numbers', async () => {
     fixtures.hardware = { gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 128_085, unifiedMemory: true } };
     fixtures.pool = {};
@@ -378,15 +392,21 @@ describe('workload band', () => {
 
     expect(container.querySelector('[data-testid="workload-coverage"]')).toBeNull();
     expect(container.textContent).not.toContain('Not measured per workload');
-    expect(container.querySelector('[data-testid="workload-trend-gpu-caption"]')?.textContent).toBe('VRAM per workload · compute % not measurable');
-    // Which source answered is kept, on hover, rather than dropped with the tile that used to say it.
-    await waitFor(
-      () => expect(container.querySelector('[data-testid="workload-trend-gpu-caption"]')?.getAttribute('title')).toContain('host probe file'),
-      {
-        timeout: 8000,
-      },
-    );
+    const caption = container.querySelector('[data-testid="workload-trend-gpu-caption"]');
+    expect(caption?.textContent).toBe('VRAM per workload · compute % not measurable');
+    // Which source answered is kept, behind a hint a keyboard can focus, rather than dropped with the
+    // tile that used to say it — and not in a native `title`, which neither a keyboard nor a phone opens.
+    const anchor = caption?.querySelector('[tabindex="0"]') as HTMLElement | null;
+    expect(anchor).not.toBeNull();
+    expect(caption?.getAttribute('title')).toBeNull();
+    fireEvent.focus(anchor as HTMLElement);
+    await waitFor(() => expect(document.body.textContent).toContain('host probe file'), { timeout: 8000 });
     expect(container.textContent).toContain("inference calls don't identify the app");
-    expect(container.querySelector('[data-testid="inference-from-here"]')?.textContent).toContain('gemma3:1b');
+    const own = container.querySelector('[data-testid="inference-from-here"]')?.textContent ?? '';
+    expect(own).toContain('gemma3:1b');
+    // `pool = {}`: nothing paired, and the routing switch at its default. The proxy logged this call;
+    // what it cannot vouch for is /api/inference/v1, and it says so rather than "apps aren't logged".
+    expect(own).toContain('logged calls only');
+    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')?.textContent).toContain('/api/inference/v1');
   }, 20_000);
 });

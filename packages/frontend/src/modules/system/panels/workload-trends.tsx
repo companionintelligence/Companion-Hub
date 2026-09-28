@@ -1,4 +1,5 @@
 import { DASH, humanBytes, humanDuration, Panel, PanelBody, StepAreaChart } from '@/components/ui/dense/dense';
+import { HintText } from '@/components/ui/field-hint/field-hint';
 import type { AppRuntimeHealth, AppRuntimeHistorySample, GpuVramSource, UnattributedGpuProcess } from '@/lib/app-runtime-monitor';
 import {
   computeCpuChartScale,
@@ -262,9 +263,10 @@ export function WorkloadTrend({
   }, [metric, rows]);
 
   /*
-   * Which source answered is on hover, not in the line: it matters when the chart goes quiet, and the
-   * line has to fit one row of a quarter-width tile. Not-known (in flight, failed, or an older Hub)
-   * names no source rather than guessing one.
+   * Which source answered is in the caption's hint, not in the line: it matters when the chart goes
+   * quiet, and the line has to fit one row of a quarter-width tile. A focusable hint rather than a
+   * native `title`, which neither a keyboard nor a touch screen can open. Not-known (in flight,
+   * failed, or an older Hub) names no source rather than guessing one.
    */
   const gpuSource =
     gpuVramSource === 'host-file'
@@ -277,13 +279,16 @@ export function WorkloadTrend({
     <Panel title={title} density="compact" className={className}>
       {/* Outside PanelBody: it is a fact about instrumentation, true whatever the query did. */}
       {metric === 'gpu' ? (
-        <p
-          data-testid="workload-trend-gpu-caption"
-          className="text-[11px] leading-snug text-muted-foreground"
-          title={[gpuSource, t('DASHBOARD_TRENDS_GPU_SOURCE_UTIL')].filter(Boolean).join(' ')}
-        >
-          {t('DASHBOARD_TRENDS_GPU_CAPTION')}
-        </p>
+        // A div, not a p: the hint's tooltip renders a div beside its anchor, which a p cannot hold.
+        <div data-testid="workload-trend-gpu-caption" className="text-[11px] leading-snug text-muted-foreground">
+          <HintText
+            id="dashboard-gpu-caption"
+            hint={[gpuSource, t('DASHBOARD_TRENDS_GPU_SOURCE_UTIL')].filter(Boolean).join(' ')}
+            className="underline decoration-dotted underline-offset-2"
+          >
+            {t('DASHBOARD_TRENDS_GPU_CAPTION')}
+          </HintText>
+        </div>
       ) : null}
       <PanelBody state={state} error={t('DASHBOARD_CONTAINERS_FAILED')} lines={6}>
         {rows.length === 0 ? (

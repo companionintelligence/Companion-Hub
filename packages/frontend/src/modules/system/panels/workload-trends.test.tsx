@@ -1,5 +1,5 @@
 import type { AppRuntimeHealth, AppRuntimeHistorySample } from '@/lib/app-runtime-monitor';
-import { render } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { WorkloadTrend } from './workload-trends';
@@ -479,17 +479,46 @@ describe('WorkloadTrend GPU caption', () => {
     expect(caption(container)).not.toBeNull();
   });
 
-  it('names which source answered on hover, and none when that is not known', () => {
+  // react-tooltip positions itself with floating-ui, which watches its anchor with a ResizeObserver
+  // that jsdom does not have. Nothing here resizes, so an observer that observes nothing will do.
+  const original = globalThis.ResizeObserver;
+  beforeAll(() => {
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+  });
+  afterAll(() => {
+    globalThis.ResizeObserver = original;
+  });
+
+  /** Focus the caption's hint, as a keyboard would, and read the tooltip it opens. */
+  async function hintFor(container: HTMLElement): Promise<string> {
+    const anchor = caption(container)?.querySelector('[tabindex="0"]');
+    expect(anchor, 'the caption is not a focusable hint').toBeTruthy();
+    fireEvent.focus(anchor as HTMLElement);
+    const tooltip = await screen.findByRole('tooltip');
+    const text = tooltip.textContent ?? '';
+    fireEvent.blur(anchor as HTMLElement);
+    cleanup();
+
+    return text;
+  }
+
+  it('names which source answered in a hint a keyboard can open, and none when that is not known', async () => {
     const fromFile = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="host-file" />);
-    expect(caption(fromFile.container)?.getAttribute('title')).toContain('host probe file');
+    // Not a native `title`: neither a keyboard nor a touch screen can open one.
+    expect(caption(fromFile.container)?.getAttribute('title')).toBeNull();
+    expect(await hintFor(fromFile.container)).toContain('host probe file');
 
     const fromTool = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} gpuVramSource="tool" />);
-    expect(caption(fromTool.container)?.getAttribute('title')).toContain('Hub running nvidia-smi / rocm-smi itself');
+    expect(await hintFor(fromTool.container)).toContain('Hub running nvidia-smi / rocm-smi itself');
 
     const unknown = render(<WorkloadTrend metric="gpu" history={[]} apps={[]} state={READY} />);
-    const title = caption(unknown.container)?.getAttribute('title') ?? '';
-    expect(title).not.toContain('host probe');
-    expect(title).not.toContain('itself');
-    expect(title).toContain('not measurable per process');
+    const hint = await hintFor(unknown.container);
+    expect(hint).not.toContain('host probe');
+    expect(hint).not.toContain('itself');
+    expect(hint).toContain('not measurable per process');
   });
 });
