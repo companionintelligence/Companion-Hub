@@ -10,6 +10,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { BUNDLED_HUB_COMPOSE } from './bundled-hub-assets.generated.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -526,7 +527,7 @@ export function resolveApplianceHubImage(
 }
 
 /** Loopback hosts, matching `is_loopback_portal_host` in the desktop and `isLoopbackPortalHost` in the backend. */
-function isLoopbackPortalHost(hostname: string): boolean {
+export function isLoopbackPortalHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
   return host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host.endsWith('.localhost');
 }
@@ -549,6 +550,8 @@ export function validatePortalOrigin(value: string): { origin: string } | { why:
   } catch {
     return { why: 'it is not an absolute URL (expected e.g. https://hub.companionintelligence.com)' };
   }
+  // First, whatever else is wrong with it: the reason decides whether a warning may echo the value.
+  if (parsed.username || parsed.password) return { why: 'it must not contain credentials' };
   const host = parsed.hostname;
   if (!host) return { why: 'it has no host' };
   // `[…]` is an IPv6 literal the parser has already validated; anything else must be DNS labels
@@ -562,7 +565,6 @@ export function validatePortalOrigin(value: string): { origin: string } | { why:
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     return { why: `it must use https, not ${parsed.protocol.replace(/:$/, '')}` };
   }
-  if (parsed.username || parsed.password) return { why: 'it must not contain credentials' };
   if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
     return { why: 'it must be a bare origin with no path, query, or fragment' };
   }
@@ -606,15 +608,66 @@ export function describeAppliancePortalSource(resolved: ResolvedAppliancePortal)
   return 'the default for a new appliance, production (CI_CLOUD_URL is not set)';
 }
 
+/**
+ * A refused Portal value as it may be printed: as given, unless it could hold credentials.
+ *
+ * Decided on the text, not on which rule refused it. Keying on the reason let
+ * `http://ci:secret@host` through whole, because the scheme was checked before the credentials, and
+ * a value that does not parse at all has no userinfo to look for. A Portal origin has no `@`, so any
+ * `@` is treated as a password; the operator knows what they typed.
+ */
+export function shownPortalValue(value: string): string {
+  return value.includes('@') ? 'a URL with credentials in it (not shown)' : value;
+}
+
 /** What the operator reads when CI_CLOUD_URL was ignored; empty when it was not. */
 function describeRejectedPortal(resolved: ResolvedAppliancePortal, envFiles: string[]): string[] {
   if (!resolved.rejected) return [];
-  // A URL with a password in it is not echoed back into a terminal, or a fleet run's log.
-  const shown = resolved.rejected.why.includes('credentials') ? 'a URL with credentials in it' : resolved.rejected.value;
   return [
-    `Ignored CI_CLOUD_URL=${shown}: ${resolved.rejected.why}.`,
+    `Ignored CI_CLOUD_URL=${shownPortalValue(resolved.rejected.value)}: ${resolved.rejected.why}.`,
     `This Hub pairs against ${resolved.url}, and a pairing code minted on any other Portal is refused 410.`,
-    `To pair it with another Portal, set CI_CLOUD_URL to that Portal's bare origin (e.g. https://hub.companionintelligence.com) in ${envFiles.join(' and ')} before ${BASE_COMMAND} register.`,
+    // `up` carries on and starts the Hub on the default, and the backend reads CI_CLOUD_URL only
+    // when its container starts, so an edit alone leaves `register` talking to production.
+    `To pair it with another Portal, set CI_CLOUD_URL to that Portal's bare origin (e.g. https://hub.companionintelligence.com) in ${envFiles.join(' and ')},`,
+    `then ${BASE_COMMAND} restart --detached so the Hub reads it, before ${BASE_COMMAND} register.`,
+  ];
+}
+
+/**
+ * The desktop app's Portal override file: `portal_url_override_path` in portal_url.rs, under
+ * `dirs::config_dir()` — on Linux `$XDG_CONFIG_HOME`, else `~/.config`.
+ */
+export function desktopPortalOverridePath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const home = env.HOME?.trim() || homedir();
+  const configDir =
+    platform === 'darwin'
+      ? path.join(home, 'Library', 'Application Support')
+      : platform === 'win32'
+        ? env.APPDATA?.trim() || path.join(home, 'AppData', 'Roaming')
+        : env.XDG_CONFIG_HOME?.trim() || path.join(home, '.config');
+  return path.join(configDir, 'computer.ci.app.hub', 'portal-url-override');
+}
+
+/**
+ * What the operator reads when CI_CLOUD_URL chose a Portal that a desktop app here will overwrite.
+ *
+ * Every desktop launch and every Hub start it makes recomputes CI_CLOUD_URL from the Portal its build
+ * was compiled for, or from its override file (hub_manager/compose.rs, portal_url.rs), exactly as it
+ * does CI_HUB_IMAGE. The image gets a warning from {@link resolveApplianceHubImage}; the Portal went
+ * without one, and a fleet node's check after `up` only sees an app that is running at that moment —
+ * an idle one moves the Hub on its next launch, after `register` has paired it here. Said only when
+ * CI_CLOUD_URL was chosen: the default is what a release desktop app writes anyway.
+ */
+function describeDesktopPortalRewrite(resolved: ResolvedAppliancePortal, host: ApplianceImageHost, env: NodeJS.ProcessEnv): string[] {
+  if (resolved.source !== 'environment') return [];
+  const desktop = host.desktopPackageVersion()?.trim() || undefined;
+  const running = host.desktopAppRunning();
+  if (!desktop && !running) return [];
+  const app = `The companion-hub${desktop ? ` ${desktop}` : ''} desktop app ${running ? 'is running' : 'is installed'} on this machine.`;
+  return [
+    `${app} Every launch and every Hub start it makes rewrites CI_CLOUD_URL to the Portal its build`,
+    `was compiled for, replacing ${resolved.url} unless that is its Portal too${running ? '' : ' — on its next launch, even after this Hub has paired'}.`,
+    `To keep ${resolved.url} under the desktop app, write it to ${desktopPortalOverridePath(env)}, the app's Portal override.${desktop ? ' If nothing here uses the desktop app: sudo apt remove companion-hub' : ''}`,
   ];
 }
 
@@ -731,6 +784,7 @@ export function seedApplianceInstall(options: SeedApplianceOptions): SeedApplian
     portalUrlFrom: describeAppliancePortalSource(portal),
     warnings: [
       ...describeRejectedPortal(portal, [envFilePath, compatPath]),
+      ...describeDesktopPortalRewrite(portal, host, options.env ?? process.env),
       ...resolvedImage.warnings,
       ...describeIgnoredHubResources(compose, 'compose'),
     ],

@@ -88,9 +88,30 @@ describe('installNode portal origin gate', () => {
     await run('https://hub.companionintelligence.com/');
     expect(mint).toHaveBeenCalledTimes(1);
     const bringUp = mocks.sshCapture.mock.calls.map((c) => String(c[1])).find((cmd) => cmd.includes('cihub register'));
-    expect(bringUp).toContain("CI_CLOUD_URL='https://hub.companionintelligence.com' cihub up --detached");
+    expect(bringUp).toContain("mint_portal='https://hub.companionintelligence.com'");
+    expect(bringUp).toContain('CI_CLOUD_URL="$mint_portal" cihub up --detached');
     // Checked again on the node itself, before and after `up`.
     expect(bringUp).toContain('portal-mismatch');
+  });
+
+  it.each([
+    // A Portal on the LAN over plain http: the seed refuses it and writes production, so the node
+    // would come up on the one Portal the code is not in, and the line after `up` would blame cihub.
+    ['http://portal.lan:8787', 'https'],
+    // Accepted by the seed, but on a fleet node localhost is the node: `register` would go to a
+    // Portal that is not there, after a device was minted for it.
+    ['http://localhost:8787', 'loopback'],
+    ['https://ci-portal.localhost', 'loopback'],
+    ['https://ci:hunter2hunter2@hub.companionintelligence.com', 'credentials'],
+  ])('refuses to mint on %s, which no node can be seeded against, before touching the node', async (origin, why) => {
+    const report = await run(origin);
+    expect(report.ok).toBe(false);
+    expect(report.steps).toHaveLength(1);
+    expect(report.steps[0]).toMatchObject({ name: 'portal origin', ok: false });
+    expect(report.steps[0]?.detail).toContain(why);
+    expect(report.steps[0]?.detail).not.toContain('hunter2hunter2');
+    expect(mint).not.toHaveBeenCalled();
+    expect(mocks.sshCapture).not.toHaveBeenCalled();
   });
 
   it('does not probe at all without a Portal to compare against, and hands `cihub up` none', async () => {
