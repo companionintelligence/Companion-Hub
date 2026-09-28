@@ -1,3 +1,4 @@
+import en from '@ci-hub/common/i18n/translations/en.json';
 import { render, screen, userEvent } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RegisterPage, { clientLoader } from './register-page';
@@ -137,6 +138,22 @@ describe('RegisterPage', () => {
     expect(setUserContext).toHaveBeenCalledWith({ isLoggedIn: true, isConfigured: true });
     expect(refreshUserContext).toHaveBeenCalledOnce();
     expect(mockNavigate).toHaveBeenCalledWith('/onboarding');
+  });
+
+  it('shows the email-verification toast instead of a raw i18n key', async () => {
+    mockUseMutation.mockImplementation((options) => {
+      mutate = vi.fn((values) => options.onSuccess?.({ success: true, requiresEmailVerification: true }, values, undefined)) as typeof mutate;
+      return { mutate, isPending: false };
+    });
+
+    render(<RegisterPage />);
+
+    await userEvent.click(screen.getByRole('button', { name: 'register form' }));
+
+    expect(mockToastSuccess).toHaveBeenCalledWith('AUTH_REGISTER_VERIFY_EMAIL');
+    expect(en.AUTH_REGISTER_VERIFY_EMAIL).toBe('Check your email to verify your CI Account, then sign in.');
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockMarkSessionIssuedAt).not.toHaveBeenCalled();
   });
 
   it('keeps configured users on login', () => {
