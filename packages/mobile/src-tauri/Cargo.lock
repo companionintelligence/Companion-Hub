@@ -493,6 +493,7 @@ dependencies = [
 name = "ci-os-hub-mobile"
 version = "0.1.0"
 dependencies = [
+ "jni",
  "log",
  "serde",
  "serde_json",

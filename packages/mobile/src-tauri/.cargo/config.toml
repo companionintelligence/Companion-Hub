@@ -1,0 +1,8 @@
+# Play rejects 64-bit native libraries whose ELF LOAD segments are aligned to
+# 4 KB. NDK r28+ defaults to 16 KB; pin it so an older NDK still produces a
+# store-legal binary. 32-bit ABIs are not part of the 16 KB requirement.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
