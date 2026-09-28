@@ -297,7 +297,7 @@ cihub config [env]           # show resolved config values only
   3. This `cihub`'s own release, `ghcr.io/companionintelligence/ci-hub:<version>`, when it is a plain `x.y.z` release, which the release pipeline publishes. An older desktop app keeps this pin on its next Hub start; it discards `:latest`.
   4. `ghcr.io/companionintelligence/ci-hub:latest`. A dev or trial build lands here, and the report says the Hub is then the newest release, not that build.
 - The fresh install writes this `cihub`'s own compose. That is the one built into the binary, unless a compose of the same release is on disk: the desktop package's, when the package is this release, or the checkout a source run comes from. A compose or `traefik-assets` directory beside a standalone `cihub` is ignored, because nothing installs one there. The same goes for a desktop package at another release. On 2026-09-27, 16 of 17 fleet nodes had a v0.2.70 compose beside `/usr/local/bin/cihub`. Every rebuilt Hub ran on it, without the `ci_hub_internal` and `ci_hub_edge` networks and with Postgres and RabbitMQ published on `0.0.0.0`.
-- The fresh install pairs against the Portal in `CI_CLOUD_URL` when that is a bare origin (`https`, or plain `http` for `localhost` only), and against production, `https://hub.ci.computer`, when it is unset. That default is what a release Hub has always used, although `cihub`'s own commands default to the dev Portal. An unusable value is ignored and the seed says why in a red box. `CI_CLOUD_URL` is read only when there is no install yet, so it never moves an installed Hub to another Portal.
+- The fresh install pairs against the Portal in `CI_CLOUD_URL` when that is a bare origin (`https`, or plain `http` for `localhost` only), and against production, `https://hub.ci.computer`, when it is unset. That default is what a release Hub has always used, although `cihub`'s own commands default to the dev Portal. An unusable value is ignored and the seed says why in a red box; to fix it afterwards, edit `CI_CLOUD_URL` in both env files and run `cihub restart --detached`, since the Hub reads it only when it starts. `CI_CLOUD_URL` is read only when there is no complete install, meaning an env file and the compose beside it, so it never moves a complete install to another Portal. A partial one is seeded again from scratch and does take it; the seed's green box names the Portal it wrote. A desktop app rewrites `CI_CLOUD_URL` on every launch and Hub start, to the Portal its build was compiled for. When one is installed or running and `CI_CLOUD_URL` chose the Portal, the seed says so in a red box and names the app's override file (`~/.config/computer.ci.app.hub/portal-url-override` on Linux), which keeps the chosen Portal under the app.
 - The seed never reads a CI-Hub checkout under the home directory or an env file left by an earlier install. If it passed over a file, if a desktop package at another release is installed, or if a desktop app is running that will rewrite the pin on its next start, the seed says so in a red box. Remove a desktop package nothing uses with `sudo apt remove companion-hub`.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
@@ -1097,6 +1097,23 @@ that origin as `CI_CLOUD_URL`. A node whose Hub already pairs against another Po
 `portal-mismatch` and is left as it is, checked before the mint and again on the node before
 `cihub up`. Until 2026-09-28 the seed always wrote production, so a run minting on the dev Portal
 could bring up no freshly wiped node at all.
+
+Three things follow from that:
+
+- **The node's `cihub` has to have the fix.** Seeding happens in the node's own `cihub`, and
+  `install` keeps a node's `cihub` unless the one on offer is newer. A `cihub` from before the fix
+  seeds production anyway, and the node stops with `portal-mismatch` after `cihub up`, its line
+  saying the `cihub` is too old. A release that has the fix replaces it. So does a `--cihub-binary`
+  built with `CI_HUB_BUILD_VERSION` set above the node's version. A branch build without it reports
+  `0.0.0-dev`, which is older than every release, so it never replaces one.
+- **A node that one of those runs left seeded with production is no longer fresh.** The next run
+  stops it with `portal-mismatch` before the mint. If it never paired, `cihub reset --yes` on the
+  node deletes that install, and the next run seeds it against the Portal the code comes from. Both
+  `portal-mismatch` lines name this command. Whether a Hub moves is the operator's call; `install`
+  never resets a node itself.
+- **The Portal the codes are minted on must be one a node can use.** It must be an `https` origin
+  that is not a loopback address: on a fleet node, `localhost` is the node itself. Anything else
+  fails every node before it is touched, with nothing minted.
 
 ### `cihub fleet scan`
 
