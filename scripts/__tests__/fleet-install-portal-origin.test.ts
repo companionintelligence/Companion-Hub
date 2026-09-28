@@ -70,6 +70,8 @@ describe('installNode portal origin gate', () => {
     expect(report.steps.at(-1)).toMatchObject({ name: 'portal origin', ok: false });
     expect(report.steps.at(-1)?.detail).toContain('https://hub.ci.computer');
     expect(mint).not.toHaveBeenCalled();
+    // An installed Hub is never handed another Portal: nothing is brought up at all.
+    expect(mocks.sshCapture.mock.calls.some((c) => String(c[1]).includes('cihub up'))).toBe(false);
   });
 
   it('mints when the Portals match', async () => {
@@ -79,17 +81,24 @@ describe('installNode portal origin gate', () => {
     expect(report.steps.map((s) => s.name)).toContain('portal device');
   });
 
-  it('mints when the node cannot say yet — bringUpScript checks again after `cihub up`', async () => {
+  it('mints for a node with no install yet, and seeds it against the Portal the code was minted on', async () => {
+    // 2026-09-28: sixteen wiped nodes answered empty here, were minted codes on the dev Portal, and
+    // were then seeded with production by `cihub up` — the one Portal those codes could not pair on.
     nodeUrl = '';
-    await run('https://hub.companionintelligence.com');
+    await run('https://hub.companionintelligence.com/');
     expect(mint).toHaveBeenCalledTimes(1);
     const bringUp = mocks.sshCapture.mock.calls.map((c) => String(c[1])).find((cmd) => cmd.includes('cihub register'));
+    expect(bringUp).toContain("CI_CLOUD_URL='https://hub.companionintelligence.com' cihub up --detached");
+    // Checked again on the node itself, before and after `up`.
     expect(bringUp).toContain('portal-mismatch');
   });
 
-  it('does not probe at all without a Portal to compare against', async () => {
+  it('does not probe at all without a Portal to compare against, and hands `cihub up` none', async () => {
     await run(undefined);
     expect(mocks.sshCapture.mock.calls.some((c) => String(c[1]).includes('ci-cloud-url='))).toBe(false);
     expect(mint).toHaveBeenCalledTimes(1);
+    const bringUp = mocks.sshCapture.mock.calls.map((c) => String(c[1])).find((cmd) => cmd.includes('cihub register'));
+    expect(bringUp).toContain('\ncihub up --detached\n');
+    expect(bringUp).not.toContain('CI_CLOUD_URL=');
   });
 });
