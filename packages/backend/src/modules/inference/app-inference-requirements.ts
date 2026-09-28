@@ -23,6 +23,8 @@ export interface AppInferenceRequirements {
 
 const HERMES_REQUIREMENTS: AppInferenceRequirements = Object.freeze({ minContextLength: 64_000, toolCalling: true });
 const OPENCLAW_REQUIREMENTS: AppInferenceRequirements = Object.freeze({ toolCalling: true });
+/** CI-Mentra sends voice tools on its chat requests; replies are short, so no context floor. */
+const CI_MENTRA_REQUIREMENTS: AppInferenceRequirements = Object.freeze({ toolCalling: true });
 
 /**
  * Keyed by both names each agent goes by. `hermes-agent` and `openclaw` are the bootstrap slugs the
@@ -36,6 +38,8 @@ const APP_INFERENCE_REQUIREMENTS: Record<string, AppInferenceRequirements> = {
   'ci-hermes': HERMES_REQUIREMENTS,
   openclaw: OPENCLAW_REQUIREMENTS,
   'ci-openclaw': OPENCLAW_REQUIREMENTS,
+  'ci-mentra': CI_MENTRA_REQUIREMENTS,
+  mentra: CI_MENTRA_REQUIREMENTS,
 };
 
 const NO_REQUIREMENTS: AppInferenceRequirements = Object.freeze({});

@@ -27,7 +27,7 @@ import { handoutRecord, readHandoutRecords, writeHandoutRecords, type RecordedHa
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
 // inference config through their own app env wiring instead.
-export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw'] as const;
+export const SUPPORTED_APP_SLUGS = ['hermes-agent', 'openclaw', 'ci-mentra'] as const;
 export type AppSlug = (typeof SUPPORTED_APP_SLUGS)[number];
 
 export const SUPPORTED_API_VERSIONS = [1] as const;
@@ -74,6 +74,14 @@ const APP_ENV_KEYS: Record<AppSlug, { baseUrl: string; model: string; embeddings
     embeddings: 'EMBEDDINGS_MODEL',
     apiKey: 'OPENAI_API_KEY',
     numCtx: 'CI_LLM_NUM_CTX',
+  },
+  // CI-Mentra smart-glasses bridge: reads the LLM_* names from its bootstrap.env.
+  'ci-mentra': {
+    baseUrl: 'LLM_API_BASE',
+    model: 'LLM_DEFAULT_CHAT_MODEL',
+    embeddings: 'LLM_DEFAULT_EMBEDDING_MODEL',
+    apiKey: 'LLM_API_KEY',
+    numCtx: 'LLM_NUM_CTX',
   },
 };
 

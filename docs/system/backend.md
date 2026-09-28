@@ -318,7 +318,9 @@ plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
 Installed apps get inference config two ways, and both choose the model through the same rules:
 `InferenceEnvResolver` writes it into `app.env` when the app is generated, and
 `AppCredentialsService` serves it over `GET /api/inference/apps/:slug/credentials.env` (alias
-`bootstrap.env`), which CI-OpenClaw and CI-Hermes fetch at container start.
+`bootstrap.env`), which CI-OpenClaw, CI-Hermes and the CI-Mentra glasses bridge (slug `ci-mentra`,
+keys `LLM_API_BASE`, `LLM_API_KEY`, `LLM_DEFAULT_CHAT_MODEL`, `LLM_DEFAULT_EMBEDDING_MODEL`,
+`LLM_NUM_CTX`) fetch at container start.
 
 - **App-only, by origin.** The handout routes (`credentials`, `credentials.env`, `bootstrap.env`)
   carry `InternalOriginGuard` and accept no API key. Apps fetch them container-to-container, which
@@ -331,8 +333,9 @@ Installed apps get inference config two ways, and both choose the model through 
   (`tunnel-marker`, `forwarded-hop`, or `public-address`); an app that sees one is reaching the Hub
   through its public hostname instead of the Docker network.
 - **Requirements.** `app-inference-requirements.ts` is the per-app table: Hermes needs tool calling
-  and a 64000-token window, and OpenClaw needs tool calling. Each is keyed under its bootstrap slug
-  (`hermes-agent`, `openclaw`) and its first-party app name (`ci-hermes`, `ci-openclaw`), because
+  and a 64000-token window, and OpenClaw and CI-Mentra need tool calling. Each is keyed under its
+  bootstrap slug (`hermes-agent`, `openclaw`, `ci-mentra`) and its installed app name (`ci-hermes`,
+  `ci-openclaw`, `mentra`), because
   `app.env` is generated under the installed name. A catalog model that fails them is never handed
   out. If nothing suitable is available the app gets no model and an explicit `CI_INFERENCE_ERROR`
   instead. The credentials endpoint still answers 200 in that case, because both bootstrap scripts
