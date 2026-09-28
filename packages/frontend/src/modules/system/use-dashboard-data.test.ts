@@ -93,6 +93,28 @@ describe('poolReach', () => {
 
     expect(reach).toMatchObject({ connected: 0, unreachable: 1, reachableModels: 0, exclusiveModels: 0 });
   });
+
+  it('counts a disabled peer as disabled whatever its socket says, as the node cards and the reach drawing do', () => {
+    // One definition for the rail, the verdict and the drawing's legend: an operator disable outranks
+    // the lifecycle status, exactly as `connected` already excludes a disabled peer.
+    const reach = poolReach([withModels('parked', ['a:1b'], { status: 'unreachable', enabled: false })], local);
+
+    expect(reach).toMatchObject({ connected: 0, unreachable: 0 });
+  });
+
+  it("sums this Hub's forwarded counter over every peer that reports it, so it equals the drawing's badges", () => {
+    // Our own counter about work we sent there: still ours to read after the peer dropped or was disabled.
+    const reach = poolReach(
+      [
+        withModels('busy', ['a:1b'], { inFlightRequests: 2 }),
+        withModels('dropped', ['a:1b'], { status: 'unreachable', inFlightRequests: 1 }),
+        withModels('parked', ['a:1b'], { enabled: false, inFlightRequests: 1 }),
+      ],
+      local,
+    );
+
+    expect(reach.peerInFlight).toBe(4);
+  });
 });
 
 describe('memoryBudgetRows', () => {

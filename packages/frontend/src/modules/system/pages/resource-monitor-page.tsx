@@ -1,19 +1,23 @@
 import { BandHeader, parseHubTimestamp } from '@/components/ui/dense/dense';
 import { DashboardRail } from '@/modules/system/panels/kpi-rail';
 import { HostCapacity, LocalContainers, LocalModels, ModelMemory } from '@/modules/system/panels/local-resources';
-import { NetworkModels, NetworkOverview } from '@/modules/system/panels/network-resources';
+import { InferenceFromHere } from '@/modules/system/panels/inference-from-here';
+import { NetworkModels } from '@/modules/system/panels/network-resources';
 import { PoolActivity } from '@/modules/system/panels/pool-activity';
 import { PoolNodes } from '@/modules/system/panels/pool-nodes';
+import { PoolReach } from '@/modules/system/panels/pool-reach';
 import { CloudProviders, MiscPanel, poolConfigWarnings, PoolSummary } from '@/modules/system/panels/pooling-misc';
-import { WorkloadCoverage } from '@/modules/system/panels/workload-coverage';
 import { WorkloadTrend } from '@/modules/system/panels/workload-trends';
 import {
+  bucketWindow,
   firstByteByNode,
+  inferenceFromHere,
   LOCAL_NODE_KEY,
   localContainerRollup,
   poolNodeCards,
   routingBuckets,
   routingWindowPartial,
+  unloggedCalls,
   waitingNow,
 } from '@/modules/system/pool-node-series';
 import { pageVerdict, STALE_SAMPLE_MS } from '@/modules/system/triage';
@@ -48,7 +52,7 @@ import { useTranslation } from 'react-i18next';
  *
  * ── Why everything derived is derived HERE ───────────────────────────────────────────────────
  *
- * `buckets`, `rollup`, `reach`, `waiting` and `firstByte` are computed once at page
+ * `buckets`, `rollup`, `reach`, `waiting`, `firstByte` and `own` are computed once at page
  * level and passed down. The rail's "routed in the last 30 minutes" and the activity panel's
  * per-minute bars are the same measurement shown twice; deriving them separately is how two
  * figures about the same half hour come to disagree because a poll landed between two calls to
@@ -121,6 +125,17 @@ export default function ResourceMonitorPage() {
   const reach = poolReach(peerRows, localNode);
   const buckets = useMemo(() => routingBuckets(entries, { now, bucketMs: BUCKET_MS, buckets: BUCKET_COUNT }), [entries, now]);
   const windowPartial = routingWindowPartial(routingLog.data, { now, windowMs: WINDOW_MS });
+  // Over the buckets' own span, so "Requests" here is the outbound share of the rail's "Routed 30m".
+  const routingWindow = useMemo(() => bucketWindow(buckets, BUCKET_MS), [buckets]);
+  const own = useMemo(() => inferenceFromHere(entries, routingWindow ?? { from: now - WINDOW_MS, to: now }), [entries, routingWindow, now]);
+  // Which calls bypass the log right now — decided the way the backend picks the route, not from
+  // `reach`, which drops disabled peers that `/api/inference/v1` still proxies through.
+  const ownUnlogged = unloggedCalls(pool.data, poolState);
+  // The tile waits for pool status too, so it never flashes "unknown" before the answer lands; only
+  // the log failing fails it, because its counts do not depend on pool status at all.
+  const ownState = { pending: routingState.pending || poolState.pending, failed: routingState.failed };
+  // This Hub's own switches, which stop every spoke carrying work whatever each peer's state.
+  const routingOff = pool.data?.enabled === false ? 'pool' : pool.data?.directions?.outbound?.enabled === false ? 'outbound' : null;
   const waiting = waitingNow(entries, now);
   const oldestWait = waiting.oldest;
   const reconciliation = memoryReconciliation(hardware.data, rollup, memory.data);
@@ -189,11 +204,9 @@ export default function ResourceMonitorPage() {
       />
 
       {/* ── A. Workloads on this machine ──────────────────────────────────── */}
-      {/* Four equal tiles in one row: three measured metrics and, in the last slot, a statement of
-          what is STILL not measured per workload (compute utilization, and tokens). The coverage
-          tile deliberately has no plot rectangle of its own — an empty chart frame beside a
-          populated one reads as loading-or-broken, which is the absence/idleness collision this
-          page exists to avoid, wearing a different costume. */}
+      {/* Four equal tiles in one row: three per-workload trends and what this Hub's callers asked the
+          pool for. What is not measured per workload (compute %, tokens by app) is a one-line
+          caption on the tile whose numbers it qualifies, not a quarter of the row in prose. */}
       <BandHeader title={t('DASHBOARD_BAND_WORKLOAD')} />
       <WorkloadTrend
         metric="cpu"
@@ -220,9 +233,15 @@ export default function ResourceMonitorPage() {
         modelMemory={memory.data?.usage?.backends}
         className="col-span-full md:col-span-1 xl:col-span-3"
       />
-      <WorkloadCoverage
-        hardware={hardware.data}
-        gpuVramSource={containers.data?.gpuVramSource}
+      <InferenceFromHere
+        own={own}
+        minutes={BUCKET_COUNT}
+        partial={windowPartial}
+        windowFrom={routingWindow?.from ?? null}
+        startedAt={routingLog.data?.summary?.startedAt}
+        unlogged={ownUnlogged}
+        now={now}
+        state={ownState}
         className="col-span-full md:col-span-1 xl:col-span-3"
       />
 
@@ -244,10 +263,8 @@ export default function ResourceMonitorPage() {
       <PoolActivity entries={entries} buckets={buckets} state={routingState} className="col-span-full md:col-span-2 xl:col-span-7" />
 
       {/* ── D. What the pool offers ───────────────────────────────────────── */}
-      {/* Three equal spans, not 4+8 then a stray 4. NetworkOverview and NetworkModels summed to
-          exactly 12, so LocalModels was auto-placed onto a second row and sat alone against eight
-          empty columns — the dead space this rebuild exists to remove. Ordered local → overview →
-          index to match the band's own question: what do WE offer, then what does the pool. */}
+      {/* Three equal spans, so the band fills one row of twelve. Ordered local → reach → index to
+          match the band's own question: what do WE offer, who can we reach, and what do they hold. */}
       <BandHeader title={t('DASHBOARD_BAND_OFFERS')} />
       <LocalModels
         node={localNode}
@@ -257,7 +274,7 @@ export default function ResourceMonitorPage() {
         state={poolState}
         className="col-span-full md:col-span-1 xl:col-span-4"
       />
-      <NetworkOverview peers={peerRows} node={localNode} state={poolState} className="col-span-full md:col-span-1 xl:col-span-4" />
+      <PoolReach cards={nodeCards} figures={reach} routingOff={routingOff} state={poolState} className="col-span-full md:col-span-1 xl:col-span-4" />
       <NetworkModels
         peers={peerRows}
         node={localNode}

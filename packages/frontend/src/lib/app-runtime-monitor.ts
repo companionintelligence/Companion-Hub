@@ -60,7 +60,7 @@ export interface AppRuntimeHealth {
    * `gpu-process-sampler.service.ts` and `DockerReadFacade.mapPidsToContainers` on the backend.
    * `null`, never `0`: the underlying tools are a presence list, not a per-container gauge, so
    * there is no way to positively confirm "measured and definitely zero". Compute UTILIZATION per
-   * workload is not represented anywhere — see `workload-coverage.tsx`.
+   * workload is not represented anywhere; the GPU trend tile's caption says so.
    */
   gpuVramMb: number | null;
   /**

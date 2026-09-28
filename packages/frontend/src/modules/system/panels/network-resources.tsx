@@ -1,57 +1,18 @@
-import { DASH, KpiTable, MeterBar, Panel, PanelBody, StatChip, StatChipRow, TableEmpty, Td, Th, Tr } from '@/components/ui/dense/dense';
-import { type LoadState, poolModelIndex, type PoolNodeSummary, type PoolPeerSummary, poolReach } from '@/modules/system/use-dashboard-data';
+import { KpiTable, MeterBar, Panel, PanelBody, TableEmpty, Td, Th, Tr } from '@/components/ui/dense/dense';
+import { type LoadState, poolModelIndex, type PoolNodeSummary, type PoolPeerSummary } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
 
 /*
  * NETWORK RESOURCES — what the rest of the pool is OFFERING this node, as capacity.
  *
- * Per-node state lives on the pool node cards; this section answers the question no per-node
- * view can, which is how the pool's capability overlaps. A model on three nodes survives one
- * going down, a model on one node is a single point of failure, and a model only a peer holds
- * is the reason to be pooled at all.
+ * Per-node state lives on the pool node cards and who this Hub can reach is `pool-reach.tsx`; this
+ * answers the question neither can, which is how the pool's capability overlaps. A model on three
+ * nodes survives one going down, a model on one node is a single point of failure, and a model only
+ * a peer holds is the reason to be pooled at all.
  *
- * Peers come from `/pool/status`, not `/pool/peers`: the status rows carry live
- * `inFlightRequests` and the effective `gpuPressure` band, and reading one endpoint means
- * the two halves of this section can never disagree mid-poll.
+ * Peers come from `/pool/status`, not `/pool/peers`, so this and the reach drawing beside it read
+ * one payload and can never disagree mid-poll.
  */
-
-export function NetworkOverview({
-  peers,
-  node,
-  state,
-  className,
-}: {
-  peers: PoolPeerSummary[];
-  node: PoolNodeSummary | undefined;
-  state: LoadState;
-  className?: string;
-}) {
-  const { t } = useTranslation();
-  const reach = poolReach(peers, node);
-
-  return (
-    <Panel title={t('DASHBOARD_NETWORK_OVERVIEW_TITLE')} density="compact" className={className}>
-      <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={2}>
-        <StatChipRow>
-          <StatChip value={reach.connected} label={t('DASHBOARD_PEERS_CONNECTED')} tone={reach.connected > 0 ? 'ok' : 'muted'} />
-          {reach.unreachable > 0 ? <StatChip value={reach.unreachable} label={t('DASHBOARD_PEERS_UNREACHABLE')} tone="bad" /> : null}
-          <StatChip value={reach.reachableModels} label={t('DASHBOARD_REACHABLE_MODELS')} tone={reach.reachableModels > 0 ? 'ok' : 'muted'} />
-          <StatChip
-            value={reach.exclusiveModels}
-            label={t('DASHBOARD_EXCLUSIVE_MODELS')}
-            tone={reach.exclusiveModels > 0 ? 'ok' : 'muted'}
-            hint={t('DASHBOARD_EXCLUSIVE_MODELS_HINT')}
-            hintId="dashboard-exclusive-models"
-          />
-          {/* Dash, not 0: no peer reporting the counter means unknown, not idle. Labelled with the
-              rail's own word for it: this used to say "Peer load", which is a different claim — the
-              number is OUR requests still open at peers, not how loaded they are. */}
-          <StatChip value={reach.peerInFlight ?? DASH} label={t('DASHBOARD_RAIL_FORWARDED')} tone="muted" />
-        </StatChipRow>
-      </PanelBody>
-    </Panel>
-  );
-}
 
 /**
  * Which models the pool can serve, and from where.

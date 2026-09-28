@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, waitFor } from '@testing-library/react';
 import { writeFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import ResourceMonitorPage from '../pages/resource-monitor-page';
 
@@ -67,7 +67,7 @@ const peer = (
   extras: Record<string, unknown> = {},
 ) => ({
   id: `peer-${name}`,
-  nodeFqdn: `${name}.capybara-ulmer.ts.net`,
+  nodeFqdn: `${name}.tailnet-example.ts.net`,
   displayName: name,
   direction: 'inbound',
   status: 'connected',
@@ -96,8 +96,8 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
       directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
       settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
       localNode: {
-        nodeFqdn: 'beta-max.capybara-ulmer.ts.net',
-        tailnet: 'capybara-ulmer.ts.net',
+        nodeFqdn: 'beta-max.tailnet-example.ts.net',
+        tailnet: 'tailnet-example.ts.net',
         hardwareTier: 'high',
         inFlightRequests: 0,
         tailscaleConnected: true,
@@ -142,7 +142,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           at: secondsAgo(20),
           direction: 'outbound',
           model: 'ornith-1.5:9b',
-          node: 'core-2.capybara-ulmer.ts.net',
+          node: 'core-2.tailnet-example.ts.net',
           backend: 'ollama',
           outcome: 'served',
           status: 200,
@@ -152,7 +152,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           at: secondsAgo(75),
           direction: 'inbound',
           model: null,
-          node: 'core-7.capybara-ulmer.ts.net',
+          node: 'core-7.tailnet-example.ts.net',
           backend: 'ollama',
           outcome: 'served',
           status: 200,
@@ -162,12 +162,12 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           at: secondsAgo(140),
           direction: 'outbound',
           model: 'qwen2.5-coder:7b',
-          node: 'beta-red.capybara-ulmer.ts.net',
+          node: 'beta-red.tailnet-example.ts.net',
           backend: 'ollama',
           outcome: 'served',
           status: 200,
           durationMs: 20_124,
-          failedOverFrom: ['core-2.capybara-ulmer.ts.net'],
+          failedOverFrom: ['core-2.tailnet-example.ts.net'],
         },
         {
           at: secondsAgo(190),
@@ -193,7 +193,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           at: secondsAgo(430),
           direction: 'outbound',
           model: 'gemma4:26b',
-          node: 'core-7.capybara-ulmer.ts.net',
+          node: 'core-7.tailnet-example.ts.net',
           backend: 'ollama',
           outcome: 'served',
           status: 200,
@@ -204,7 +204,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           at: secondsAgo(720),
           direction: 'inbound',
           model: null,
-          node: 'core-2.capybara-ulmer.ts.net',
+          node: 'core-2.tailnet-example.ts.net',
           backend: 'vllm',
           outcome: 'served',
           status: 200,
@@ -327,7 +327,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
     );
 
     // Wait for real DATA, not a static heading — a title renders before any query settles.
-    await waitFor(() => expect(container.textContent).toContain('beta-max.capybara-ulmer.ts.net'), { timeout: 5000 });
+    await waitFor(() => expect(container.textContent).toContain('beta-max.tailnet-example.ts.net'), { timeout: 5000 });
     await waitFor(() => expect(container.textContent).toContain('core-2'), { timeout: 5000 });
     await waitFor(() => expect(container.textContent).toContain('Companion Memory'), { timeout: 5000 });
     writeFileSync(OUT as string, container.innerHTML, 'utf-8');
@@ -337,22 +337,49 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
 /*
  * A REAL CHECK, not gated on `DASHBOARD_SNAPSHOT_OUT`.
  *
- * The snapshot above is a development affordance that CI never runs, which is how this page
- * shipped three absence-as-zero regressions with a green suite. The coverage tile is the one
- * element on the board whose correctness is entirely structural — it must state that GPU and
- * token metering do not exist, and it must be incapable of drawing anything that could be read
- * as a measurement of them — so it is asserted here where CI will actually run it.
+ * The workload band used to spend its fourth tile on ~600px of prose about what is not measured per
+ * workload. Those two facts now sit as one line each beside the numbers they qualify, and the slot
+ * holds what this Hub's callers asked the pool for. This pins both halves: the facts are still on the
+ * page, and the prose tile is gone.
  */
-describe('workload coverage tile', () => {
-  it('says what is not measured and draws nothing at all', async () => {
+describe('workload band', () => {
+  // The GPU caption's hint opens a react-tooltip, which floating-ui positions with a ResizeObserver
+  // jsdom lacks. Nothing resizes here, so one that observes nothing will do.
+  const original = globalThis.ResizeObserver;
+  beforeAll(() => {
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+  });
+  afterAll(() => {
+    globalThis.ResizeObserver = original;
+  });
+
+  it('states what is not measured beside the figures it qualifies, and gives the fourth slot to real numbers', async () => {
     fixtures.hardware = { gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 128_085, unifiedMemory: true } };
     fixtures.pool = {};
-    fixtures.log = { entries: [] };
+    fixtures.log = {
+      entries: [
+        {
+          at: secondsAgo(40),
+          direction: 'outbound',
+          model: 'gemma3:1b',
+          node: 'local',
+          backend: 'ollama',
+          outcome: 'served',
+          status: 200,
+          durationMs: 37,
+          usage: { promptTokens: 17, completionTokens: 3, totalTokens: 20 },
+        },
+      ],
+    };
     fixtures.memory = {};
     fixtures.cloud = [];
     fixtures.inference = {};
     fixtures.residency = { backends: [], residentCount: 0, sampledAt: secondsAgo(5) };
-    fixtures.monitor = { sampledAt: secondsAgo(5), apps: [], history: [] };
+    fixtures.monitor = { sampledAt: secondsAgo(5), apps: [], history: [], gpuVramSource: 'host-file' };
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { container } = render(
@@ -361,46 +388,25 @@ describe('workload coverage tile', () => {
       </QueryClientProvider>,
     );
 
-    const tile = container.querySelector('[data-testid="workload-coverage"]') as HTMLElement | null;
-    expect(tile).not.toBeNull();
+    await waitFor(() => expect(container.querySelector('[data-testid="inference-from-here"]')).not.toBeNull(), { timeout: 8000 });
 
-    // The words, in the register the copy rules fix: present tense, and never "0", "—",
-    // "no data", "unavailable" or "coming soon".
-    //
-    // GPU VRAM is real now (see workload-trends.tsx) — this tile's GPU tag says so precisely
-    // ("VRAM only") rather than the blanket "Not measured" it used to say; compute UTILIZATION
-    // per workload is the half that remains genuinely unmeasured. Tokens are unchanged: still
-    // "Not recorded" per workload, even though real per-model counts now exist elsewhere.
-    expect(tile?.textContent).toContain('VRAM only');
-    expect(tile?.textContent).toContain('NOT measured');
-    expect(tile?.textContent).toContain('Not recorded');
-    expect(tile?.textContent).toContain('GPU per workload');
-    expect(tile?.textContent).toContain('LLM tokens per workload');
-    // Not a substring check: the prose legitimately uses em-dashes as punctuation. What must not
-    // exist is an element whose WHOLE content is a dash or a zero — that is a read-out, and a
-    // read-out here would be a measurement of something that is not measured.
-    const readouts = [...(tile?.querySelectorAll('*') ?? [])].map((node) => (node.textContent ?? '').trim());
-    expect(readouts).not.toContain('—');
-    expect(readouts).not.toContain('0');
-    expect(readouts).not.toContain('0%');
-
-    // The copy rules, enforced: never "no data" (reads as an empty result set), never
-    // "unavailable" (reads as a failed fetch), never "coming soon" (a roadmap promise).
-    for (const banned of ['No data', 'no data', 'Unavailable', 'unavailable', 'Coming soon', 'coming soon']) {
-      expect(tile?.textContent).not.toContain(banned);
-    }
-
-    // No axis, no gridline, no baseline, no plot frame, no legend swatch — no SVG of any kind.
-    // An empty chart frame beside a populated one reads as loading-or-broken, which is the
-    // absence/idleness collision in a different costume.
-    expect(tile?.querySelector('svg')).toBeNull();
-
-    // Dashed means "waiting for samples" everywhere else on this page. GPU-per-workload is not
-    // waiting; it was never built, so the tile uses a solid left accent rule instead.
-    expect(tile?.className).not.toContain('border-dashed');
-
-    // The host GPU is a fact about hardware, not a per-workload metric, and it is the only thing
-    // the tile reads. It must arrive without ever gating the statement above it.
-    await waitFor(() => expect(tile?.textContent).toContain('Radeon 8060S'), { timeout: 5000 });
-  });
+    expect(container.querySelector('[data-testid="workload-coverage"]')).toBeNull();
+    expect(container.textContent).not.toContain('Not measured per workload');
+    const caption = container.querySelector('[data-testid="workload-trend-gpu-caption"]');
+    expect(caption?.textContent).toBe('VRAM per workload · compute % not measurable');
+    // Which source answered is kept, behind a hint a keyboard can focus, rather than dropped with the
+    // tile that used to say it — and not in a native `title`, which neither a keyboard nor a phone opens.
+    const anchor = caption?.querySelector('[tabindex="0"]') as HTMLElement | null;
+    expect(anchor).not.toBeNull();
+    expect(caption?.getAttribute('title')).toBeNull();
+    fireEvent.focus(anchor as HTMLElement);
+    await waitFor(() => expect(document.body.textContent).toContain('host probe file'), { timeout: 8000 });
+    expect(container.textContent).toContain("inference calls don't identify the app");
+    const own = container.querySelector('[data-testid="inference-from-here"]')?.textContent ?? '';
+    expect(own).toContain('gemma3:1b');
+    // `pool = {}`: nothing paired, and the routing switch at its default. The proxy logged this call;
+    // what it cannot vouch for is /api/inference/v1, and it says so rather than "apps aren't logged".
+    expect(own).toContain('logged calls only');
+    expect(container.querySelector('[data-testid="inference-from-here-unlogged"]')?.textContent).toContain('/api/inference/v1');
+  }, 20_000);
 });
