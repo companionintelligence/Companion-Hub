@@ -1650,6 +1650,67 @@ describe('InstallForm', () => {
     });
   });
 
+  describe('the public domain Companion Portal preselects', () => {
+    /*
+     * The Hub is on `companionintelligence.com`; Companion Portal preselects the `.pw` zone that is
+     * filling. An installed app keeps the domain it serves from — swapping it silently would move the
+     * app to a new address on the next save. What a new install takes is `preselectedPublicDomain`'s
+     * to decide, and its own tests cover it.
+     */
+    const domainsWithPoolDefault = () => {
+      MOCK_AVAILABLE_DOMAINS.domains = [
+        { id: 'own', domain: 'companionintelligence.com', isDefault: false, offered: false },
+        { id: 'pool', domain: 'ci1.pw', isDefault: true, offered: true },
+      ];
+    };
+    const trigger = () => screen.getByLabelText('COMMON_PUBLIC_DOMAIN');
+    const settle = () => act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+
+    it("never replaces an installed app's own domain", async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      domainsWithPoolDefault();
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare', publicDomain: 'companionintelligence.com' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+
+      await settle();
+
+      expect(trigger()).toHaveAttribute('title', 'companionintelligence.com');
+    });
+
+    it('never replaces the Hub domain an installed app with no stored domain serves from', async () => {
+      vi.mocked(useAppContext).mockReturnValue(exposableContext());
+      domainsWithPoolDefault();
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={exposableInfo()}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare' }}
+            isEdit
+          />
+        </MemoryRouter>,
+      );
+
+      await settle();
+
+      expect(trigger()).toHaveAttribute('title', 'companionintelligence.com');
+    });
+  });
+
   it('reports unsaved edits only once the operator changes a field, and not after it is changed back', async () => {
     vi.mocked(useAppContext).mockReturnValue(exposableContext());
     const onDirtyChange = vi.fn();

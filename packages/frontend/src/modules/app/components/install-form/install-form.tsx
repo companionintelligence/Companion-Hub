@@ -48,6 +48,7 @@ import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
 import { CustomDomainField } from './custom-domain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
+import { preselectedPublicDomain } from './preselected-public-domain';
 import { useDnsAvailability } from './use-dns-availability';
 
 /**
@@ -79,6 +80,12 @@ interface IProps {
   /** True while the operator has changed a field away from the value the form opened with. */
   onDirtyChange?: (hasEdits: boolean) => void;
   editingAppUrn?: string;
+  /**
+   * The form edits an app that is already installed (the settings dialog), rather
+   * than a new install. Such an app already has its public address, so the form
+   * never swaps its domain for the one Companion Portal would preselect now.
+   */
+  isEdit?: boolean;
 }
 
 export type FormValues = {
@@ -151,6 +158,7 @@ export const InstallForm: React.FC<IProps> = ({
   onValidityChange,
   onDirtyChange,
   editingAppUrn,
+  isEdit = false,
 }) => {
   const { t } = useTranslation();
   const { userSettings, isProduction, user, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
@@ -622,24 +630,20 @@ export const InstallForm: React.FC<IProps> = ({
       return;
     }
 
-    const currentPublicDomain = getValues('publicDomain');
-    const defaultDomain = availableDomains.find((entry) => entry.isDefault)?.domain;
-    const fallbackDomain = defaultDomain || availableDomains[0]?.domain;
-    if (!fallbackDomain) {
-      return;
-    }
+    // See `preselectedPublicDomain`: a new install takes what Companion Portal
+    // preselects; an installed app, and a domain the operator picked, never do.
+    const next = preselectedPublicDomain({
+      availableDomains,
+      currentPublicDomain: getValues('publicDomain'),
+      hubDomain: domain,
+      dirty: Boolean(dirtyFields.publicDomain),
+      isEdit,
+    });
 
-    if (dirtyFields.publicDomain) {
-      return;
+    if (next) {
+      setValue('publicDomain', next);
     }
-
-    // Preserve explicit user/form values; only replace the implicit device-domain fallback.
-    if (currentPublicDomain && currentPublicDomain !== domain) {
-      return;
-    }
-
-    setValue('publicDomain', fallbackDomain);
-  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, setValue, watchExposureMode]);
+  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, isEdit, setValue, watchExposureMode]);
 
   useEffect(() => {
     if (appStatus !== 'running' || watchExposureMode !== 'cloudflare') {
