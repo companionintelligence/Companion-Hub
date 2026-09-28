@@ -1,5 +1,22 @@
-import { Body, Controller, ConflictException, Get, Headers, Inject, Param, Patch, Post, Query, Res, UseGuards, forwardRef } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ConflictException,
+  Get,
+  Headers,
+  Inject,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+  forwardRef,
+} from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
+import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
 import { ApiHeader, ApiTags } from '@nestjs/swagger';
 import { PoolProxyService } from '@/modules/hub-pool/hub-pool-proxy.service';
@@ -41,6 +58,7 @@ import { buildOmlxRemediation, OmlxBackend, resolveOmlxProbeUrl } from './backen
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
+import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management,
@@ -211,7 +229,7 @@ export class InferenceController {
   async v1AudioSpeech(@Body() body: Record<string, unknown>, @Res() res: Response) {
     try {
       const result = await this.router.routeTts(body);
-      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Content-Type', speechContentType(body));
       res.send(result.data);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -221,10 +239,21 @@ export class InferenceController {
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/audio/transcriptions')
-  async v1AudioTranscriptions(@Body() body: Record<string, unknown>, @Res() res: Response) {
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_TRANSCRIPTION_BYTES } }))
+  async v1AudioTranscriptions(@UploadedFile() file: UploadedAudio | undefined, @Body() body: Record<string, unknown>, @Res() res: Response) {
+    // OpenAI clients send multipart/form-data with the audio in `file`.
+    if (!file) {
+      res.status(400).json({
+        error: {
+          message: "Send the audio as multipart/form-data in a field named 'file'.",
+          type: 'invalid_request_error',
+          code: 'missing_file',
+        },
+      });
+      return;
+    }
     try {
-      // STT expects FormData but we receive the raw body here; pass through
-      const result = await this.router.routeStt(body as unknown as FormData);
+      const result = await this.router.routeStt(buildTranscriptionForm(file, body));
       res.json(result.data);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
