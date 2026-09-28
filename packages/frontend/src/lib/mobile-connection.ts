@@ -122,6 +122,18 @@ export function isMobileUserAgent(): boolean {
   return /macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
 }
 
+/**
+ * iPhone / iPad / iPod, including iPad "Request Desktop Website" (Macintosh +
+ * touch). Used to pick the in-app Safari sheet over system Safari.
+ */
+export function isIosPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iphone|ipad|ipod/i.test(ua)) return true;
+  if (/iphone|ipad|ipod/i.test(navigator.platform || '')) return true;
+  return /macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
+}
+
 function isLvhMeHost(): boolean {
   if (typeof window === 'undefined') return false;
   try {

@@ -3,8 +3,22 @@ import { listen } from '@tauri-apps/api/event';
 import { emailFromIdToken, loginWithPortalOidc, OIDC_CLIENT_ID, OIDC_REDIRECT_URI, resumePendingOidcLogin } from './oidc';
 import { DEFAULT_PORTAL_URL } from './portal-client';
 
-const openUrl = vi.fn(async (..._a: unknown[]) => {});
-vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: (...a: unknown[]) => openUrl(...a) }));
+const { openAuthSession, AuthSessionCancelledError } = vi.hoisted(() => {
+  class AuthSessionCancelledError extends Error {
+    constructor() {
+      super('Sign-in cancelled');
+      this.name = 'AuthSessionCancelledError';
+    }
+  }
+  return {
+    openAuthSession: vi.fn(async (_url?: string) => {}),
+    AuthSessionCancelledError,
+  };
+});
+vi.mock('@/lib/helpers/open-auth-browser', () => ({
+  openAuthSession: (url?: string) => openAuthSession(url),
+  AuthSessionCancelledError,
+}));
 
 const httpFetch = vi.fn();
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: (...a: unknown[]) => httpFetch(...a) }));
@@ -37,7 +51,8 @@ function resetDeepLinkHandlers(): void {
 }
 
 beforeEach(() => {
-  openUrl.mockClear();
+  openAuthSession.mockReset();
+  openAuthSession.mockResolvedValue(undefined);
   httpFetch.mockReset();
   unlisten.mockClear();
   invoke.mockReset();
@@ -50,10 +65,10 @@ beforeEach(() => {
 /** Drive the flow: wait for the authorize URL + listener, then fire the callback. */
 async function fireCallback(code: string, stateOverride?: string, eventName = 'deep-link://new-url') {
   await vi.waitFor(() => {
-    expect(openUrl).toHaveBeenCalled();
+    expect(openAuthSession).toHaveBeenCalled();
     expect(anyListener()).toBeTruthy();
   });
-  const authorizeUrl = new URL(openUrl.mock.calls[0]?.[0] as string);
+  const authorizeUrl = new URL(openAuthSession.mock.calls[0]?.[0] as string);
   const state = stateOverride ?? authorizeUrl.searchParams.get('state') ?? '';
   listeners.get(eventName)?.({ payload: `${OIDC_REDIRECT_URI}?code=${code}&state=${state}` });
   return authorizeUrl;
@@ -92,7 +107,7 @@ describe('loginWithPortalOidc', () => {
     const promise = loginWithPortalOidc();
     await fireCallback('code', 'tampered-state');
     expect(httpFetch).not.toHaveBeenCalled();
-    const authorizeUrl = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const authorizeUrl = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     const state = authorizeUrl.searchParams.get('state') ?? '';
     anyListener()?.({ payload: `${OIDC_REDIRECT_URI}?code=real&state=${state}` });
     await expect(promise).resolves.toMatchObject({ accessToken: 'AT' });
@@ -109,7 +124,7 @@ describe('loginWithPortalOidc', () => {
     await fireCallback('once-code');
     await vi.waitFor(() => expect(httpFetch).toHaveBeenCalledTimes(1));
 
-    const authorizeUrl = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const authorizeUrl = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     const state = authorizeUrl.searchParams.get('state') ?? '';
     invoke.mockResolvedValue(`${OIDC_REDIRECT_URI}?code=once-code&state=${state}`);
 
@@ -126,6 +141,12 @@ describe('loginWithPortalOidc', () => {
     const promise = loginWithPortalOidc();
     await fireCallback('code');
     await expect(promise).rejects.toThrow('bad verifier');
+  });
+
+  it('treats a dismissed iOS sheet as a quiet cancel', async () => {
+    openAuthSession.mockRejectedValue(new AuthSessionCancelledError());
+    await expect(loginWithPortalOidc()).rejects.toMatchObject({ name: 'OidcCancelledError' });
+    expect(httpFetch).not.toHaveBeenCalled();
   });
 });
 
@@ -173,7 +194,7 @@ describe('loginWithPortalOidc — PKCE security properties', () => {
     // The verifier must exist only in app memory + the token POST. Leaking it
     // into the browser-visible URL would defeat PKCE entirely.
     expect(authorizeUrl.toString()).not.toContain(verifier);
-    expect(String(openUrl.mock.calls[0]?.[0])).not.toContain(verifier);
+    expect(String(openAuthSession.mock.calls[0]?.[0])).not.toContain(verifier);
   });
 
   it('generates a fresh verifier and state per sign-in (no replay across attempts)', async () => {
@@ -189,14 +210,14 @@ describe('loginWithPortalOidc — PKCE security properties', () => {
     // Reset the captured handlers so the second run registers its own.
     resetDeepLinkHandlers();
     httpFetch.mockClear();
-    openUrl.mockClear();
+    openAuthSession.mockClear();
 
     const second = loginWithPortalOidc();
     await vi.waitFor(() => {
-      expect(openUrl).toHaveBeenCalled();
+      expect(openAuthSession).toHaveBeenCalled();
       expect(anyListener()).toBeTruthy();
     });
-    const urlB = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const urlB = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     anyListener()?.({ payload: `${OIDC_REDIRECT_URI}?code=code-b&state=${urlB.searchParams.get('state')}` });
     await second;
     const verifierB = new URLSearchParams(httpFetch.mock.calls[0]?.[1].body).get('code_verifier');
@@ -237,7 +258,7 @@ describe('loginWithPortalOidc — callback handling', () => {
     expect(httpFetch).not.toHaveBeenCalled();
 
     // The genuine callback still completes the flow.
-    const url = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const url = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     anyListener()?.({ payload: `${OIDC_REDIRECT_URI}?code=real&state=${url.searchParams.get('state')}` });
     await expect(promise).resolves.toMatchObject({ accessToken: 'AT' });
   });
@@ -247,7 +268,7 @@ describe('loginWithPortalOidc — callback handling', () => {
     const promise = loginWithPortalOidc();
     await vi.waitFor(() => expect(anyListener()).toBeTruthy());
 
-    const url = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const url = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     anyListener()?.({ payload: ['cihub://pair?code=abc123', `${OIDC_REDIRECT_URI}?code=real&state=${url.searchParams.get('state')}`] });
 
     await expect(promise).resolves.toMatchObject({ accessToken: 'AT' });
@@ -315,11 +336,11 @@ describe('resumePendingOidcLogin', () => {
 
     const controller = new AbortController();
     const first = loginWithPortalOidc(undefined, { signal: controller.signal });
-    await vi.waitFor(() => expect(openUrl).toHaveBeenCalled());
+    await vi.waitFor(() => expect(openAuthSession).toHaveBeenCalled());
     // Drain the in-flight waiter's consume_pending call (null) so it doesn't
     // also grab the cold-start URL we hand to resume next.
     await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
-    const authorizeUrl = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const authorizeUrl = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     const state = authorizeUrl.searchParams.get('state') ?? '';
 
     invoke.mockResolvedValue(`${OIDC_REDIRECT_URI}?code=cold-code&state=${state}`);
@@ -337,9 +358,9 @@ describe('resumePendingOidcLogin', () => {
     httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
     const controller = new AbortController();
     const first = loginWithPortalOidc(undefined, { signal: controller.signal });
-    await vi.waitFor(() => expect(openUrl).toHaveBeenCalled());
+    await vi.waitFor(() => expect(openAuthSession).toHaveBeenCalled());
     await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
-    const authorizeUrl = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const authorizeUrl = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     const state = authorizeUrl.searchParams.get('state') ?? '';
 
     invoke.mockResolvedValue(null);
@@ -356,7 +377,7 @@ describe('resumePendingOidcLogin', () => {
   it('ignores a leftover callback whose state does not match the current attempt', async () => {
     const controller = new AbortController();
     const first = loginWithPortalOidc(undefined, { signal: controller.signal });
-    await vi.waitFor(() => expect(openUrl).toHaveBeenCalled());
+    await vi.waitFor(() => expect(openAuthSession).toHaveBeenCalled());
     await vi.waitFor(() => expect(invoke).toHaveBeenCalled());
 
     invoke.mockResolvedValue(`${OIDC_REDIRECT_URI}?code=stolen&state=tampered`);
@@ -371,7 +392,7 @@ describe('resumePendingOidcLogin', () => {
     httpFetch.mockResolvedValue(tokenResponse({ access_token: 'AT' }));
     const promise = loginWithPortalOidc();
     await vi.waitFor(() => expect(anyListener()).toBeTruthy());
-    const authorizeUrl = new URL(openUrl.mock.calls[0]?.[0] as string);
+    const authorizeUrl = new URL(openAuthSession.mock.calls[0]?.[0] as string);
     const state = authorizeUrl.searchParams.get('state') ?? '';
 
     anyListener()?.({ payload: `${OIDC_REDIRECT_URI}?code=stale&state=old-attempt` });
