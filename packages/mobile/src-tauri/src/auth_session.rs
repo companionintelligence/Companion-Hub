@@ -1,22 +1,23 @@
-//! iOS in-app Safari authentication sheet (`ASWebAuthenticationSession`).
+//! In-app sign-in sheet.
 //!
-//! Android and desktop never call this — the frontend falls through to the
-//! system opener. The command still exists everywhere so a stale JS bundle
-//! gets a structured error instead of a missing-command reject.
+//! iOS presents `ASWebAuthenticationSession`. Android presents Chrome Auth Tab
+//! (Custom Tabs when the browser is older than Chrome 137, or the URL is
+//! http). Desktop never calls this — the frontend falls through to the system
+//! opener. The command still exists everywhere so a stale JS bundle gets a
+//! structured error instead of a missing-command reject.
 
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthSessionError {
     Cancelled,
+    /// Desktop only. Android and iOS always have a sheet.
+    #[cfg_attr(any(target_os = "android", target_os = "ios"), allow(dead_code))]
     Unavailable,
-    /// Built by the iOS sheet callback. Host `cargo test` never constructs it.
-    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
     Failed(String),
 }
 
 impl AuthSessionError {
-    #[cfg_attr(not(target_os = "ios"), allow(dead_code))]
     pub fn failed(message: impl Into<String>) -> Self {
         Self::Failed(message.into())
     }
@@ -51,14 +52,182 @@ impl Serialize for AuthSessionError {
     }
 }
 
-#[cfg(not(target_os = "ios"))]
-pub async fn start(_url: &str, _callback_scheme: &str) -> Result<String, AuthSessionError> {
-    Err(AuthSessionError::Unavailable)
+/// `Ok(Some(url))` is a captured `cihub://` callback. `Ok(None)` means a
+/// Custom Tab was opened and the existing deep-link intent filter will finish
+/// the login. Waiting on that close would surface a cancel and abort a
+/// successful OIDC exchange.
+pub async fn start(
+    app: &tauri::AppHandle,
+    url: &str,
+    callback_scheme: &str,
+) -> Result<Option<String>, AuthSessionError> {
+    #[cfg(target_os = "ios")]
+    {
+        let _ = app;
+        return ios::start(url, callback_scheme).await.map(Some);
+    }
+    #[cfg(target_os = "android")]
+    {
+        return android::start(app, url, callback_scheme).await;
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _ = (app, url, callback_scheme);
+        Err(AuthSessionError::Unavailable)
+    }
 }
 
-#[cfg(target_os = "ios")]
-pub async fn start(url: &str, callback_scheme: &str) -> Result<String, AuthSessionError> {
-    ios::start(url, callback_scheme).await
+/// Maps the Kotlin / Swift callback into a deep-link URL, an "already opened"
+/// signal, or a structured error. Pure so host tests cover the Android codes.
+fn interpret(
+    url: Option<&str>,
+    code: Option<&str>,
+    message: Option<&str>,
+) -> Result<Option<String>, AuthSessionError> {
+    if let Some(callback) = url.map(str::trim).filter(|value| !value.is_empty()) {
+        return Ok(Some(callback.to_string()));
+    }
+    match code.unwrap_or("").trim() {
+        "OPENED" => Ok(None),
+        "CANCELLED" => Err(AuthSessionError::Cancelled),
+        _ => Err(AuthSessionError::failed(
+            message
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("Sign-in failed"),
+        )),
+    }
+}
+
+#[cfg(target_os = "android")]
+mod android {
+    use super::{interpret, AuthSessionError};
+    use jni::objects::{JClass, JObject, JString, JValue};
+    use jni::JNIEnv;
+    use std::sync::mpsc;
+    use std::sync::Mutex;
+    use tauri::Manager;
+
+    static PENDING: Mutex<Option<mpsc::Sender<Result<Option<String>, AuthSessionError>>>> =
+        Mutex::new(None);
+
+    fn finish(url: Option<String>, code: Option<String>, message: Option<String>) {
+        let result = interpret(url.as_deref(), code.as_deref(), message.as_deref());
+        if let Ok(mut pending) = PENDING.lock() {
+            if let Some(tx) = pending.take() {
+                let _ = tx.send(result);
+            }
+        }
+    }
+
+    fn java_string(env: &mut JNIEnv, value: &JString) -> Option<String> {
+        if value.as_raw().is_null() {
+            return None;
+        }
+        env.get_string(value).ok().map(|text| text.into())
+    }
+
+    /// Called from `AuthSession.nativeOnResult`. Auth Tab delivers the
+    /// redirect here. Custom Tabs delivers `OPENED` as soon as the tab is up.
+    #[no_mangle]
+    pub extern "system" fn Java_computer_ci_app_hub_AuthSession_nativeOnResult<'local>(
+        mut env: JNIEnv<'local>,
+        _class: jni::objects::JClass<'local>,
+        url: JString<'local>,
+        code: JString<'local>,
+        message: JString<'local>,
+    ) {
+        finish(
+            java_string(&mut env, &url),
+            java_string(&mut env, &code),
+            java_string(&mut env, &message),
+        );
+    }
+
+    fn launch(env: &mut JNIEnv, activity: &JObject, url: &str, scheme: &str) -> Result<(), String> {
+        let class_name = env
+            .new_string("computer.ci.app.hub.AuthSession")
+            .map_err(|err| err.to_string())?;
+        let class_obj = env
+            .call_method(
+                activity,
+                "getAppClass",
+                "(Ljava/lang/String;)Ljava/lang/Class;",
+                &[JValue::Object(&*class_name)],
+            )
+            .and_then(|value| value.l())
+            .map_err(|err| err.to_string())?;
+        let class = JClass::from(class_obj);
+        let url_j = env.new_string(url).map_err(|err| err.to_string())?;
+        let scheme_j = env.new_string(scheme).map_err(|err| err.to_string())?;
+        env.call_static_method(
+            &class,
+            "start",
+            "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;)V",
+            &[
+                JValue::Object(activity),
+                JValue::Object(&*url_j),
+                JValue::Object(&*scheme_j),
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+        if env.exception_check().unwrap_or(false) {
+            let _ = env.exception_describe();
+            let _ = env.exception_clear();
+            return Err("Could not open the sign-in sheet.".to_string());
+        }
+        Ok(())
+    }
+
+    pub async fn start(
+        app: &tauri::AppHandle,
+        url: &str,
+        callback_scheme: &str,
+    ) -> Result<Option<String>, AuthSessionError> {
+        let (tx, rx) = mpsc::channel();
+        {
+            let mut pending = PENDING
+                .lock()
+                .map_err(|_| AuthSessionError::failed("Sign-in sheet is unavailable"))?;
+            if let Some(previous) = pending.take() {
+                let _ = previous.send(Err(AuthSessionError::Cancelled));
+            }
+            *pending = Some(tx);
+        }
+
+        let Some(webview) = app.webview_windows().into_values().next() else {
+            if let Ok(mut pending) = PENDING.lock() {
+                pending.take();
+            }
+            return Err(AuthSessionError::failed("Sign-in sheet is unavailable"));
+        };
+
+        let url = url.to_string();
+        let scheme = callback_scheme.to_string();
+        let queued = webview.with_webview(move |platform| {
+            platform.jni_handle().exec(move |env, activity, _webview| {
+                if let Err(message) = launch(env, activity, &url, &scheme) {
+                    finish(None, Some("FAILED".to_string()), Some(message));
+                }
+            });
+        });
+        if let Err(err) = queued {
+            if let Ok(mut pending) = PENDING.lock() {
+                pending.take();
+            }
+            return Err(AuthSessionError::failed(err.to_string()));
+        }
+
+        tauri::async_runtime::spawn_blocking(move || {
+            rx.recv().unwrap_or_else(|_| {
+                Err(AuthSessionError::failed(
+                    "Sign-in sheet closed unexpectedly",
+                ))
+            })
+        })
+        .await
+        .map_err(|_| AuthSessionError::failed("Sign-in sheet closed unexpectedly"))?
+    }
 }
 
 #[cfg(target_os = "ios")]
@@ -145,7 +314,7 @@ mod ios {
 
 #[cfg(test)]
 mod tests {
-    use super::AuthSessionError;
+    use super::{interpret, AuthSessionError};
 
     #[test]
     fn cancelled_serializes_the_code_the_js_hook_checks() {
@@ -159,5 +328,24 @@ mod tests {
         let json = serde_json::to_value(AuthSessionError::Unavailable).expect("serialize");
         assert_eq!(json["code"], "FAILED");
         assert_eq!(json["message"], "Could not open the sign-in sheet.");
+    }
+
+    #[test]
+    fn auth_tab_callback_is_a_deep_link() {
+        let url = interpret(Some("cihub://auth?token=abc"), None, None).expect("ok");
+        assert_eq!(url.as_deref(), Some("cihub://auth?token=abc"));
+    }
+
+    #[test]
+    fn custom_tabs_open_does_not_invent_a_callback() {
+        // None means "tab is open, wait for the cihub:// intent". Feeding an
+        // empty URL through handle_deep_link_url would be a second, fake login.
+        assert_eq!(interpret(None, Some("OPENED"), None).expect("ok"), None);
+    }
+
+    #[test]
+    fn dismissed_sheet_is_a_cancel_not_a_failure() {
+        let err = interpret(None, Some("CANCELLED"), Some("Sign-in cancelled")).unwrap_err();
+        assert_eq!(err, AuthSessionError::Cancelled);
     }
 }
