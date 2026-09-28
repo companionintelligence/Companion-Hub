@@ -9,9 +9,11 @@ import { getHubBaseUrlSync, usesCloudConnect } from '@/lib/mobile-connection';
  *
  *  - `mobile-cloud-connect` — iOS/Android `/connect` only. Portal PKCE
  *    (`oidc.ts`, `cihub://auth/callback`, `deep-link-oidc`), then pick a Hub.
+ *    iOS opens the Portal in an in-app sheet (`openAuthSession`).
  *  - `mobile-hub-sso` — iOS/Android `/login` after a Hub is chosen. Remote Hub
- *    `/api/auth/portal/start?desktop=1` in Safari → `cihub://auth?token=` →
- *    `deep-link-auth` / desktop-exchange on that Hub.
+ *    `/api/auth/portal/start?desktop=1` via `openAuthSession` (iOS sheet,
+ *    Android system browser) → `cihub://auth?token=` → `deep-link-auth` /
+ *    desktop-exchange on that Hub.
  *  - `desktop-hub-sso` — Mac / Linux / Windows Tauri while a Hub is running.
  *    Same-origin (or probed) Hub `/portal/start?desktop=1` opened in the SYSTEM
  *    BROWSER → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub.
@@ -53,15 +55,16 @@ export interface HubAuthFlowPolicy {
   /** `cihub://` / `cihub-dev://` one-time token after Hub SSO. */
   usesDeepLinkHandoff: boolean;
   /**
-   * Native Hub SSO must keep its own webview mounted (button + system browser).
+   * Native Hub SSO must keep its own webview mounted (button + `openAuthSession`).
    *
    * True for iOS/Android AND for Mac/Linux/Windows. Both finish through
    * `cihub://auth?token=`, and the only code that exchanges that token —
    * `useDesktopPortalAuth` — lives in this React app. Navigating the app's own
    * webview to `/portal/start` unmounts it, so the token arrives with nobody
-   * listening. The authorization request also belongs in a real browser on its
-   * own terms: RFC 8252, plus passkeys, password managers and an address bar the
-   * user can check before typing a Companion Account password.
+   * listening. iOS presents an in-app Safari sheet; Android and desktop still
+   * open the system browser. The authorization request belongs in Safari chrome
+   * on its own terms: RFC 8252, plus passkeys, password managers and an address
+   * bar the user can check before typing a Companion Account password.
    */
   openHubSsoInSystemBrowser: boolean;
   /** Switch-Hub control — only after a remote Hub was chosen. */

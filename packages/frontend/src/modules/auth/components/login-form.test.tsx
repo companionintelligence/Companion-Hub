@@ -3,9 +3,15 @@ import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { LoginForm } from './login-form';
 
-const openAuthInSystemBrowser = vi.fn(async (_url?: string) => {});
+const openAuthSession = vi.fn(async (_url?: string) => {});
 vi.mock('@/lib/helpers/open-auth-browser', () => ({
-  openAuthInSystemBrowser: (url: string) => openAuthInSystemBrowser(url),
+  openAuthSession: (url: string) => openAuthSession(url),
+  AuthSessionCancelledError: class AuthSessionCancelledError extends Error {
+    constructor() {
+      super('Sign-in cancelled');
+      this.name = 'AuthSessionCancelledError';
+    }
+  },
 }));
 
 vi.mock('react-i18next', () => ({
@@ -107,8 +113,8 @@ describe('LoginForm', () => {
     expect(onSwitchAccount).toHaveBeenCalled();
   });
 
-  it('opens Companion Account SSO in the system browser so the native webview stays mounted', async () => {
-    openAuthInSystemBrowser.mockClear();
+  it('opens Companion Account SSO through openAuthSession so the native webview stays mounted', async () => {
+    openAuthSession.mockClear();
     render(
       <MemoryRouter>
         <LoginForm
@@ -123,7 +129,7 @@ describe('LoginForm', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' }));
 
-    expect(openAuthInSystemBrowser).toHaveBeenCalledWith('http://localhost:5005/api/auth/portal/start?desktop=1');
+    expect(openAuthSession).toHaveBeenCalledWith('http://localhost:5005/api/auth/portal/start?desktop=1');
     expect(screen.queryByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).not.toBeInTheDocument();
   });
 });
