@@ -74,6 +74,7 @@ vi.mock('react-i18next', () => ({
  */
 
 const MOCK_AVAILABLE_DOMAINS = {
+  supported: true,
   domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string; offered?: boolean }>,
 };
 /**
@@ -97,6 +98,9 @@ const MOCK_CUSTOM_DOMAINS = {
 const MOCK_USE_QUERY_RESULT = {
   data: MOCK_AVAILABLE_DOMAINS,
   isLoading: false,
+  isFetching: false,
+  isError: false,
+  refetch: vi.fn(),
 };
 /** `GET /portal/config`. No portal address by default, as on a Hub with none configured. */
 const MOCK_PORTAL_CONFIG = { portalUrl: null as string | null, deviceId: null, registrationUrl: null, demoMode: false };
@@ -130,7 +134,9 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 describe('InstallForm', () => {
   afterEach(() => {
+    MOCK_AVAILABLE_DOMAINS.supported = true;
     MOCK_AVAILABLE_DOMAINS.domains = [];
+    MOCK_USE_QUERY_RESULT.isFetching = false;
     MOCK_CUSTOM_DOMAINS.supported = false;
     MOCK_CUSTOM_DOMAINS.domains = [];
     MOCK_PORTAL_CONFIG.portalUrl = null;
@@ -1407,6 +1413,42 @@ describe('InstallForm', () => {
     MOCK_AVAILABLE_DOMAINS.domains = [];
     MOCK_CUSTOM_DOMAINS.supported = false;
     MOCK_CUSTOM_DOMAINS.domains = [];
+  });
+
+  describe('while there is no domain to pick', () => {
+    const exposableInfo = {
+      ...baseInfo,
+      exposable: true,
+      dynamic_config: true,
+      urn: 'activepieces:gitstore',
+    } as unknown as AppInfo;
+
+    const renderForm = () =>
+      render(
+        <MemoryRouter>
+          <InstallForm info={exposableInfo} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>,
+      );
+
+    it('marks the domain as loading while the list is on its way', () => {
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+      MOCK_USE_QUERY_RESULT.isFetching = true;
+
+      renderForm();
+
+      expect(screen.getByRole('status', { name: 'APP_INSTALL_FORM_DOMAINS_LOADING' })).toBeInTheDocument();
+      expect(screen.queryByLabelText('COMMON_PUBLIC_DOMAIN')).not.toBeInTheDocument();
+    });
+
+    it('asks for the list again when the Hub could not get it', () => {
+      vi.mocked(useAppContext).mockReturnValue(createContext(false) as unknown as ReturnType<typeof useAppContext>);
+      MOCK_AVAILABLE_DOMAINS.supported = false;
+
+      renderForm();
+      fireEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_DOMAINS_UNAVAILABLE' }));
+
+      expect(MOCK_USE_QUERY_RESULT.refetch).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('shows hostname details with copy buttons in simple mode', async () => {

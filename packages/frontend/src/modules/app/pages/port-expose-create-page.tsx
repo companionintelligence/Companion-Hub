@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/Button';
 import { useAppContext } from '@/context/app-context';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
+import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import { useCallback } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
@@ -322,6 +323,8 @@ export default function PortExposeCreatePage() {
                   publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
                   placeholder={defaultAppSubdomain}
                   isCheckingDns={isCheckingDns}
+                  domainListNote={domainListNoteFor(getDomains)}
+                  onRetryDomainList={() => void getDomains.refetch()}
                   t={t}
                 />
               ) : null}

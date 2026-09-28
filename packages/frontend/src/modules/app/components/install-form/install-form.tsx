@@ -45,6 +45,7 @@ import {
 import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
 import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
+import { domainListNoteFor } from './domain-list-note';
 import { CustomDomainField } from './custom-domain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
@@ -250,7 +251,8 @@ export const InstallForm: React.FC<IProps> = ({
         ? tailscalePreviewHost || `${tailscaleNodeFqdn || 'tailnet'}${watchPort ? `:${watchPort}` : ''}`
         : localPreviewHost;
 
-  const { data: availableDomainsData } = useQuery(getDomainsOptions());
+  const availableDomainsQuery = useQuery(getDomainsOptions());
+  const availableDomainsData = availableDomainsQuery.data;
   const currentPublicSuffix = typeof initialValues?.publicDomain === 'string' ? initialValues.publicDomain : domain;
   const availableDomains = useMemo(
     () => selectOfferedDomains(availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, currentPublicSuffix),
@@ -842,6 +844,8 @@ export const InstallForm: React.FC<IProps> = ({
             publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
             placeholder={defaultAppSubdomain}
             isCheckingDns={isCheckingDns}
+            domainListNote={domainListNoteFor(availableDomainsQuery)}
+            onRetryDomainList={() => void availableDomainsQuery.refetch()}
             t={t}
           />
         ) : null}

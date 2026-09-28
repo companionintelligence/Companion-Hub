@@ -1,8 +1,19 @@
 import { InputGroup } from '@/components/ui/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
+import { cn } from '@/lib/utils';
 import type { AvailableDomain } from '@ci-hub/common/types';
+import { Info, Loader2, RefreshCw } from 'lucide-react';
+import { useId } from 'react';
 import type { Control, FieldValues, Path, UseFormRegister } from 'react-hook-form';
 import { Controller } from 'react-hook-form';
+import { Tooltip } from 'react-tooltip';
+import type { DomainListNote } from './domain-list-note';
+
+const DOMAIN_LIST_NOTE_KEYS = {
+  loading: 'APP_INSTALL_FORM_DOMAINS_LOADING',
+  unavailable: 'APP_INSTALL_FORM_DOMAINS_UNAVAILABLE',
+  'none-offered': 'APP_INSTALL_FORM_DOMAINS_NONE_OFFERED',
+} as const;
 
 interface CloudflareSubdomainFieldProps<TFormValues extends FieldValues> {
   control: Control<TFormValues>;
@@ -16,6 +27,10 @@ interface CloudflareSubdomainFieldProps<TFormValues extends FieldValues> {
   publicDomainError?: string;
   placeholder: string;
   isCheckingDns: boolean;
+  /** Why the domain is plain text rather than a picker. See `domainListNoteFor`. */
+  domainListNote: DomainListNote;
+  /** Asks for the domain list again. Offered when it could not be loaded. */
+  onRetryDomainList: () => void;
   t: (key: string) => string;
 }
 
@@ -31,10 +46,22 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
   publicDomainError,
   placeholder,
   isCheckingDns,
+  domainListNote,
+  onRetryDomainList,
   t,
 }: CloudflareSubdomainFieldProps<TFormValues>) {
+  // react-tooltip finds its anchor by selector, and `useId` returns colons.
+  const noteAnchorClass = `domain-list-note-${useId().replace(/[^\w-]/g, '')}`;
+  const showNote = availableDomains.length === 0 && domainListNote !== undefined;
+  const noteHint = domainListNote ? t(DOMAIN_LIST_NOTE_KEYS[domainListNote]) : undefined;
+
   return (
     <div className="mb-3">
+      {/*
+       * Outside the suffix, whose `overflow-hidden` keeps a long domain on one
+       * line: the tooltip must not be clipped by it.
+       */}
+      {showNote ? <Tooltip className="tooltip" anchorSelect={`.${noteAnchorClass}`} place="top-end" content={noteHint} /> : null}
       <InputGroup
         groupPrefix="https://"
         groupClassName="overflow-hidden"
@@ -74,7 +101,13 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
               }}
             />
           ) : (
-            `-${cloudflareSuffix}.${watchPublicDomain || domain}`
+            <PlainDomainSuffix
+              text={`-${cloudflareSuffix}.${watchPublicDomain || domain}`}
+              note={domainListNote}
+              hint={noteHint}
+              anchorClass={noteAnchorClass}
+              onRetry={onRetryDomainList}
+            />
           )
         }
         {...register('localSubdomain' as Path<TFormValues>)}
@@ -87,6 +120,55 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
       <div className="mt-1.5 min-h-5 pr-3">
         {isCheckingDns ? <p className="text-sm text-muted-foreground">{t('APP_INSTALL_FORM_CHECKING_DNS')}</p> : null}
       </div>
+    </div>
+  );
+}
+
+interface PlainDomainSuffixProps {
+  text: string;
+  note: DomainListNote;
+  hint?: string;
+  anchorClass: string;
+  onRetry: () => void;
+}
+
+/**
+ * The domain as plain text, with a mark saying why there is no picker.
+ *
+ * Without the mark, a list still loading, a list that failed and a Portal that
+ * offers nothing all look the same, and the form reads as though it never had a
+ * picker. The mark carries the explanation as its tooltip and accessible name.
+ */
+function PlainDomainSuffix({ text, note, hint, anchorClass, onRetry }: PlainDomainSuffixProps) {
+  return (
+    <div className="flex h-9 w-full min-w-0 items-center gap-2 overflow-hidden rounded-r-md border border-l-0 border-input bg-muted px-3 text-sm text-muted-foreground">
+      <span title={text} className="block min-w-0 flex-1 truncate">
+        {text}
+      </span>
+      {note === 'loading' ? (
+        <span role="status" aria-label={hint} className={cn('flex shrink-0 cursor-help', anchorClass)} data-testid="domain-list-loading">
+          <Loader2 className="size-3.5 animate-spin" aria-hidden />
+        </span>
+      ) : null}
+      {note === 'unavailable' ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          aria-label={hint}
+          className={cn(
+            'flex shrink-0 rounded-sm text-warning transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            anchorClass,
+          )}
+          data-testid="domain-list-retry"
+        >
+          <RefreshCw className="size-3.5" aria-hidden />
+        </button>
+      ) : null}
+      {note === 'none-offered' ? (
+        <span role="img" aria-label={hint} className={cn('flex shrink-0 cursor-help', anchorClass)} data-testid="domain-list-none-offered">
+          <Info className="size-3.5" aria-hidden />
+        </span>
+      ) : null}
     </div>
   );
 }

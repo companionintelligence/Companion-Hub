@@ -698,15 +698,21 @@ export class CloudflareClientService {
         response = await this.client.get('cloudflare/domains', requestConfig);
       }
 
-      const domains = Array.isArray(response.data?.domains)
-        ? response.data.domains
-            .filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))
-            .map((entry: AvailableDomain) => ({ ...entry, id: String(entry.id) }))
-        : [];
+      // A 2xx without a list is no answer either: say so, or the picker would
+      // present the Hub's own domain as the only one there is.
+      if (!Array.isArray(response.data?.domains)) {
+        this.logger.warn('CI-Cloud answered the domain list request without a list');
+
+        return { supported: false, domains: [] };
+      }
+
+      const domains = response.data.domains
+        .filter((entry: unknown): entry is AvailableDomain => this.isAvailableDomain(entry))
+        .map((entry: AvailableDomain) => ({ ...entry, id: String(entry.id) }));
 
       this.logger.debug(`Fetched ${domains.length} domain(s) from CI-Cloud`);
 
-      return { domains };
+      return { supported: true, domains };
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`Failed to fetch available domains: ${error.message}`);
@@ -717,7 +723,7 @@ export class CloudflareClientService {
         this.logger.error(`Domain fetch error response: ${JSON.stringify(error.response.data)}`);
       }
 
-      return { domains: [] };
+      return { supported: false, domains: [] };
     }
   }
 
