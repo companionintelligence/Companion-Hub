@@ -39,6 +39,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
 
+# Android Auth Tab (the ASWebAuthenticationSession equivalent) calls back
+# through JNI. Host and iOS builds never link this.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 [profile.release]
 codegen-units = 1
 lto = true

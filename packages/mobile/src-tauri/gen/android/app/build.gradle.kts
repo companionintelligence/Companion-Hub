@@ -72,6 +72,13 @@ android {
             )
         }
     }
+    // Play requires 16 KB zip alignment for uncompressed native libraries
+    // (Nov 2025, still in force). AGP 8.5+ does this when legacy packaging is off.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
     kotlinOptions {
         jvmTarget = "1.8"
     }
@@ -86,6 +93,9 @@ rust {
 
 dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
+    // Auth Tab: in-app Chrome sign-in, same job as iOS ASWebAuthenticationSession.
+    // Falls back to Custom Tabs on browsers that don't support it (Chrome < 137).
+    implementation("androidx.browser:browser:1.9.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
