@@ -1703,6 +1703,57 @@ describe('InstallForm', () => {
     });
   });
 
+  // The Edit Settings flow (`isEdit`) must show what the Hub actually serves. A stored form that
+  // never decided enableAuth is persisted as false and routed without the login unless the
+  // manifest's edge-auth default says otherwise. The switch used to show ON regardless, which is
+  // how an OpenClaw install sat on the internet with no login while its settings dialog said
+  // "Enable authentication" was on (2026-09-28).
+  it('shows a stored form that never decided auth as OFF on edit', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={exposableInfo()}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[]}
+          initialValues={{ exposureMode: 'cloudflare' }}
+          isEdit
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getEnableAuthSwitch()).not.toBeChecked();
+    });
+  });
+
+  it('shows a stored form that never decided auth as ON on edit when the manifest defaults edge auth on', async () => {
+    vi.mocked(useAppContext).mockReturnValue(exposableContext());
+    const infoWithEdgeAuth = {
+      ...(exposableInfo() as object),
+      hub_integration: { edge_auth: { default: true } },
+    } as unknown as AppInfo;
+
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={infoWithEdgeAuth}
+          onSubmit={vi.fn()}
+          formId="test-form"
+          formFields={[]}
+          initialValues={{ exposureMode: 'cloudflare' }}
+          isEdit
+        />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(getEnableAuthSwitch()).toBeChecked();
+    });
+  });
+
   describe('the public domain Companion Portal preselects', () => {
     /*
      * The Hub is on `companionintelligence.com`; Companion Portal preselects the `.pw` zone that is

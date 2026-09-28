@@ -33,6 +33,7 @@ import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { saveBlobAsFile, splitSavedPath } from '@/lib/save-file';
+import { manifestDefaultsEdgeAuthOn } from '@ci-hub/common/schemas';
 import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import {
   type LastUsedInstallConfig,
@@ -289,6 +290,12 @@ export const InstallForm: React.FC<IProps> = ({
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
+  // What the enable-auth switch shows, and submits, when the form holds no value. A fresh install
+  // starts protected. An EDIT shows what the Hub actually serves for a stored form that never
+  // decided: the manifest's `hub_integration.edge_auth.default`, else off. The switch used to show
+  // `?? true` on an edit while the backend persisted `?? false` and built the route without the
+  // login, so an install that never decided looked protected and was not (OpenClaw, 2026-09-28).
+  const enableAuthFallback = useMemo(() => (isEdit ? manifestDefaultsEdgeAuthOn(info) : true), [isEdit, info]);
   const watchedFormValues = watch();
 
   // Client-side install-config export/import + "recently used" list (no backend involved — see
@@ -565,7 +572,7 @@ export const InstallForm: React.FC<IProps> = ({
         setValue('openPort', defaultMode === 'local');
       }
       if (shouldSeed && initialValues?.enableAuth === undefined) {
-        setValue('enableAuth', true);
+        setValue('enableAuth', enableAuthFallback);
       }
       if (shouldSeed && info.port && initialValues?.port === undefined) {
         setValue('port', info.port.toString());
@@ -593,6 +600,7 @@ export const InstallForm: React.FC<IProps> = ({
     cloudflareAvailable,
     domain,
     tailscaleAvailable,
+    enableAuthFallback,
   ]);
 
   // Separate effect: only responsible for setting the default localSubdomain.
@@ -931,13 +939,13 @@ export const InstallForm: React.FC<IProps> = ({
       <Controller
         control={control}
         name="enableAuth"
-        defaultValue={true}
+        defaultValue={enableAuthFallback}
         render={({ field: { onChange, value, ref, ...props } }) => (
           <Switch
             {...props}
             className="mb-3"
             ref={ref}
-            checked={value ?? true}
+            checked={value ?? enableAuthFallback}
             onCheckedChange={onChange}
             label={
               <>
@@ -969,7 +977,7 @@ export const InstallForm: React.FC<IProps> = ({
       ...withFieldDefaults,
       exposureMode,
       exposedLocal: info.exposable && exposureMode === 'cloudflare', // backward compat
-      enableAuth: withFieldDefaults.enableAuth ?? true,
+      enableAuth: withFieldDefaults.enableAuth ?? enableAuthFallback,
       port: withFieldDefaults.port || (info.port ? info.port.toString() : undefined),
     };
 
