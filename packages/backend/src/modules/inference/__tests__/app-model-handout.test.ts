@@ -45,6 +45,13 @@ describe('app inference requirements', () => {
     expect(appInferenceRequirements('ci-openclaw')).toEqual(appInferenceRequirements('openclaw'));
   });
 
+  it('requires tool calling but no context floor for ci-mentra, under both of its app names', () => {
+    expect(appInferenceRequirements('ci-mentra')).toEqual({ toolCalling: true });
+    expect(appInferenceRequirements('mentra')).toEqual({ toolCalling: true });
+    expect(checkModelRequirements(gemma1b, appInferenceRequirements('ci-mentra'))).toEqual({ verdict: 'fails', unmet: ['no tool calling'] });
+    expect(checkModelRequirements(qwenCoder30b, appInferenceRequirements('ci-mentra')).verdict).toBe('meets');
+  });
+
   it('cannot be tricked into returning an Object.prototype member for a hostile slug', () => {
     for (const slug of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
       expect(appInferenceRequirements(slug)).toEqual({});
