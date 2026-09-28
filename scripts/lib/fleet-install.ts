@@ -111,10 +111,19 @@ export function shouldAdoptExistingCihub(
   return { adopt: false, why: `${existing.version} is older than ${wantedVersion}; replacing it`, compared: true };
 }
 
-/** Where a node's Hub reads CI_CLOUD_URL, printed as `ci-cloud-url=<value>` (empty when unset). */
+/**
+ * `$env_file`: the primary env file a node's Hub reads, else its compat copy. One line, so the check
+ * before the mint and every check in `bringUpScript` read the same file.
+ */
+const ENV_FILE_LINE = 'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"';
+
+/**
+ * Where a node's Hub reads CI_CLOUD_URL, printed as `ci-cloud-url=<value>`. Empty when unset —
+ * including a node with no env file yet, which `bringUpScript` seeds with the mint origin.
+ */
 export function nodePortalUrlScript(): string {
   return [
-    'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    ENV_FILE_LINE,
     'url="$(grep -h \'^CI_CLOUD_URL=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2-)"',
     'echo "ci-cloud-url=$url"',
     'echo "ci-cloud-url-file=$env_file"',
@@ -148,11 +157,51 @@ export function portalOriginMismatch(nodeUrl: string | undefined, mintOrigin: st
   );
 }
 
-function portalOriginCheckLines(expectedPortalOrigin: string): string[] {
-  const expected = (originOf(expectedPortalOrigin) ?? expectedPortalOrigin).replace(/'/g, "'\\''");
+/** The mint origin as a single-quoted shell word's contents, compared with the node's CI_CLOUD_URL as an origin. */
+function shellQuotedOrigin(expectedPortalOrigin: string): string {
+  return (originOf(expectedPortalOrigin) ?? expectedPortalOrigin).replace(/'/g, "'\\''");
+}
+
+const readNodePortal = (variable: string) =>
+  `${variable}="$(grep -h '^CI_CLOUD_URL=' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- | sed 's:/*$::')"`;
+
+/**
+ * Before `cihub up`: an install that already names another Portal stops here, untouched.
+ *
+ * `up` is about to be handed the mint origin as CI_CLOUD_URL, and that may only ever seed a node that
+ * has no Portal yet — an installed Hub pointing elsewhere belongs to that Portal's organization, and
+ * moving it is not something a fleet run decides. The seed never rewrites a complete install, but a
+ * partial one (an env file whose compose is gone) is seeded again from scratch, and the check before
+ * the mint is skipped when its SSH probe comes back empty. So the script refuses on its own evidence,
+ * before `up` has restarted anything.
+ */
+function portalOriginCheckBeforeUpLines(expectedPortalOrigin: string): string[] {
+  const expected = shellQuotedOrigin(expectedPortalOrigin);
   return [
-    'hub_portal="$(grep -h \'^CI_CLOUD_URL=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2- | sed \'s:/*$::\')"',
-    `if [ -n "$hub_portal" ] && [ "$hub_portal" != '${expected}' ]; then echo "hub-up-failed: portal-mismatch: this Hub pairs against $hub_portal, the code was minted on ${expected}" >&2; exit 1; fi`,
+    ENV_FILE_LINE,
+    readNodePortal('pre_portal'),
+    `if [ -n "$pre_portal" ] && [ "$pre_portal" != '${expected}' ]; then echo "hub-up-failed: portal-mismatch: this Hub pairs against $pre_portal, the code was minted on ${expected}; cihub up was not run, so its Portal is unchanged" >&2; exit 1; fi`,
+  ];
+}
+
+/**
+ * After `cihub up`: the Portal the node actually ended up with, before `register` resets anything.
+ *
+ * A fresh node should now hold the mint origin, seeded from CI_CLOUD_URL. When it does not, the line
+ * says which of the two known writers put something else there: a `cihub` older than seeding from
+ * CI_CLOUD_URL (it writes production whatever it is given), or a desktop app, whose every Hub start
+ * rewrites CI_CLOUD_URL to its own build's Portal.
+ */
+function portalOriginCheckAfterUpLines(expectedPortalOrigin: string): string[] {
+  const expected = shellQuotedOrigin(expectedPortalOrigin);
+  return [
+    readNodePortal('hub_portal'),
+    `if [ -n "$hub_portal" ] && [ "$hub_portal" != '${expected}' ]; then`,
+    '  why=""',
+    '  if [ -n "$desk" ]; then why="; a companion-hub desktop app is running here, and every Hub start it makes rewrites CI_CLOUD_URL to its own Portal"',
+    '  elif [ -z "$pre_portal" ]; then why="; this node\'s cihub seeded that without honouring CI_CLOUD_URL, so it predates that fix: install a newer one"; fi',
+    `  echo "hub-up-failed: portal-mismatch: this Hub pairs against $hub_portal, the code was minted on ${expected}$why" >&2; exit 1`,
+    'fi',
   ];
 }
 
@@ -162,14 +211,24 @@ function portalOriginCheckLines(expectedPortalOrigin: string): string[] {
  * The password reaches the seed through the environment because `seedApplianceInstall` prompts
  * otherwise, and there is no terminal here to answer. `cihub register --code` is non-interactive;
  * without `--code` it drops into a readline loop that would hang until the SSH budget expires.
+ *
+ * `expectedPortalOrigin` is the Portal the code was minted on. A fresh node is seeded against it —
+ * `cihub up` gets it as CI_CLOUD_URL, which the seed writes — and a node that already names another
+ * Portal is refused before `up` and again after it (see the two check functions above).
  */
 export function bringUpScript(postgresPassword: string, pairingCode: string, expectedPortalOrigin?: string): string {
   return [
     'set -e',
     // Single-quoted heredoc-free assignment; the password never reaches argv, only the environment.
     `export CIHUB_POSTGRES_PASSWORD='${postgresPassword.replace(/'/g, "'\\''")}'`,
-    'cihub up --detached',
-    'env_file="$HOME/.local/share/companion-hub/.env.dev"; [ -f "$env_file" ] || env_file="$HOME/.local/share/companion-hub/.env"',
+    ...(expectedPortalOrigin ? portalOriginCheckBeforeUpLines(expectedPortalOrigin) : []),
+    // The seed used to write production whatever Portal the code came from, so on 2026-09-28 a fleet
+    // install minting on the dev Portal could bring up no fresh node at all: each one stopped with
+    // portal-mismatch right after this line. Scoped to `up` rather than exported. On an appliance only
+    // the seed reads it (the appliance compose deliberately does not interpolate CI_CLOUD_URL), and
+    // the seed runs only when there is no complete install, so it cannot move an existing Hub.
+    expectedPortalOrigin ? `CI_CLOUD_URL='${shellQuotedOrigin(expectedPortalOrigin)}' cihub up --detached` : 'cihub up --detached',
+    ENV_FILE_LINE,
     // The image the node ended up pinning, on the node's line whichever way the step ends. Read after
     // `up`, so a desktop app that rewrote the file first shows here too. On 2026-09-26 core-6 and fzzy
     // failed with "nothing answered …/registration/phase" and nothing else: the ci-hub:0.2.70 and
@@ -179,11 +238,11 @@ export function bringUpScript(postgresPassword: string, pairingCode: string, exp
     // start it makes puts its own build back: core-6's 0.2.70 app did so eight seconds after the seed.
     'desktop_note="a companion-hub desktop app is running on this node, and every Hub start it makes rewrites CI_HUB_IMAGE to its own build"',
     'desk=""; if pgrep -x companion-hub >/dev/null 2>&1; then echo "hub-up-note: $desktop_note"; desk="; $desktop_note"; fi',
-    // A fresh node's `cihub up` seeds CI_CLOUD_URL from its own build, which need not be the Portal the
-    // code was minted on — and a code minted on one Portal is not in the other's database, so every
-    // `register` answers 410 PAIRING_CODE_INVALID after first resetting the node's registration.
-    // Checked here, after `up` wrote the file and before `register` touches anything.
-    ...(expectedPortalOrigin ? portalOriginCheckLines(expectedPortalOrigin) : []),
+    // A code minted on one Portal is not in the other's database, so every `register` against the
+    // wrong one answers 410 PAIRING_CODE_INVALID after first resetting the node's registration.
+    // Checked again here, after `up` wrote the file and before `register` touches anything: a `cihub`
+    // too old to seed from CI_CLOUD_URL, or a desktop app, can still have written another Portal.
+    ...(expectedPortalOrigin ? portalOriginCheckAfterUpLines(expectedPortalOrigin) : []),
     // The port the Hub was actually given, not the one it usually gets: a heal that moved API_PORT
     // to 5003 once left the probe below silent while the step reported success.
     'port="$(grep -h \'^API_PORT=\' "$env_file" 2>/dev/null | tail -1 | cut -d= -f2)"; [ -n "$port" ] || port=5002',
@@ -381,7 +440,8 @@ export interface InstallOptions {
   mintPairingCode?: () => Promise<{ code: string; detail: string }>;
   /**
    * The Portal `mintPairingCode` mints on. Set, each node's own CI_CLOUD_URL is checked against it
-   * before anything is minted, and again after `cihub up` — see `portalOriginMismatch`.
+   * before anything is minted, and again before and after `cihub up` — see `portalOriginMismatch`.
+   * A node with no install yet is seeded against it: `cihub up` gets it as CI_CLOUD_URL.
    */
   portalOrigin?: string;
   /** Called once `register` has verifiably succeeded, so a kept code can be forgotten. */
@@ -571,8 +631,10 @@ export async function installNode(
   let pairingCode = opts.pairingCode;
   if (opts.mintPairingCode && opts.portalOrigin) {
     // Before the mint, so a node that could never redeem the code does not leave a device in Portal.
-    // A node with no env file yet (never brought up) cannot answer; the check in `bringUpScript`
-    // catches that one once `cihub up` has written it.
+    // A node with no env file yet (never brought up, or wiped) answers empty, and that is not a
+    // mismatch but a fresh install: `bringUpScript` hands `cihub up` this origin as CI_CLOUD_URL, so
+    // the seed writes the Portal the code is minted on. `bringUpScript` checks again before and
+    // after `up`, for whatever this probe could not see.
     const url = await sshCapture(target, nodePortalUrlScript(), 20_000);
     const nodeUrl = url.out.match(/^ci-cloud-url=(.*)$/m)?.[1]?.trim();
     const mismatch = portalOriginMismatch(nodeUrl, opts.portalOrigin);
