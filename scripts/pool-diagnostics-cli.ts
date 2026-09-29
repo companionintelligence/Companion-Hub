@@ -101,14 +101,9 @@ const NON_STREAMING_PROBE_MAX_TOKENS = 256;
 /** Inference backends whose URL the Hub resolves by name on every capabilities build. */
 const BACKEND_URL_VARS = [
   { label: 'OLLAMA_URL', vars: ['OLLAMA_URL'] },
+  { label: 'OMLX_URL', vars: ['OMLX_URL'] },
   { label: 'VLLM_URL', vars: ['VLLM_URL'] },
   { label: 'LEMONADE_URL', vars: ['LEMONADE_URL'] },
-  { label: 'MTPLX_URL', vars: ['MTPLX_URL'] },
-  { label: 'DSPARK_URL', vars: ['DSPARK_URL'] },
-  // lucebox.backend.ts:161 reads SPECULATIVE_INFERENCE_URL first and falls back to LUCEBOX_URL.
-  { label: 'LUCEBOX_URL', vars: ['SPECULATIVE_INFERENCE_URL', 'LUCEBOX_URL'] },
-  { label: 'LLAMACPP_URL', vars: ['LLAMACPP_URL'] },
-  { label: 'LMSTUDIO_URL', vars: ['LMSTUDIO_URL'] },
 ] as const;
 
 /** INFERENCE_BACKEND_TYPES (packages/common/src/types/inference.ts:84), in the order the fan-out builds them. */
@@ -2171,7 +2166,7 @@ const SAFE_HOSTNAME = /^[A-Za-z0-9._-]{1,253}$/;
  * The Hub container's own environment, which is the authority on where its backends are.
  *
  * Reading the env FILE is not enough and was the original defect here: `docker-compose.prod.yml`
- * sets OLLAMA_URL/VLLM_URL/MTPLX_URL/DSPARK_URL/LEMONADE_URL in the service's `environment:` block,
+ * sets OLLAMA_URL/VLLM_URL/OMLX_URL/LEMONADE_URL in the service's `environment:` block,
  * so on a compose install the file has none of them and the container has all of them. A check that
  * read only the file reported "no backend URLs configured" on a node running six backends — exactly
  * inverting the finding it exists to make.
@@ -2304,7 +2299,7 @@ export function checkBackendDns(specs: BackendUrlSpec[], results: DnsProbeResult
         verdict: 'unknown',
         detail: 'cannot determine, because the container environment could not be read and the env file sets no backend URL',
         notes: [
-          'Compose sets OLLAMA_URL/VLLM_URL/LEMONADE_URL/MTPLX_URL/DSPARK_URL in the `hub` service',
+          'Compose sets OLLAMA_URL/VLLM_URL/OMLX_URL/LEMONADE_URL in the `hub` service',
           '`environment:` block, NOT in the env file — so on a compose install an empty env file is',
           'the expected state and says nothing about what the Hub resolves.',
           'Start the Hub and re-run: with the container up this is measured from inside it, which is',

@@ -125,8 +125,14 @@
       ]
     },
     "test": {
-      "cache": false,
+      "cache": true,
       "dependsOn": ["^test"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": []
+    },
+    "test:coverage": {
+      "cache": false,
+      "dependsOn": ["^test:coverage"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
       "outputs": ["coverage/"]
     },
