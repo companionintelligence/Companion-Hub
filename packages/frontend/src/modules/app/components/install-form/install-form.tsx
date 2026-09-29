@@ -271,6 +271,29 @@ export const InstallForm: React.FC<IProps> = ({
   const customDomains = useMemo(() => customDomainsData?.domains ?? EMPTY_CUSTOM_DOMAINS, [customDomainsData?.domains]);
 
   /*
+   * The auto-restart switch shows only once the picker holds one of the organization's
+   * domains, matched the way the picker marks one "no longer available". With no domain
+   * in view it asked about nothing, and a domain connected later from the portal still
+   * gets the default: a person confirms the restart. An app saved with the switch on
+   * keeps it on screen, so a setting in force can always be turned off.
+   */
+  const savedAutoRestart = initialValues?.autoRestartOnDomainChange === true;
+  const watchCustomDomain = watch('customDomain');
+  const watchAutoRestart = watch('autoRestartOnDomainChange');
+  const offerAutoRestart =
+    watchExposureMode === 'cloudflare' &&
+    customDomainsData?.supported === true &&
+    (customDomains.some((entry) => entry.domain === watchCustomDomain) || savedAutoRestart);
+
+  // A hidden switch never turns the restart on: turning it on and then clearing the
+  // domain must not save a choice nobody can see any more.
+  useEffect(() => {
+    if (!offerAutoRestart && !savedAutoRestart && watchAutoRestart === true) {
+      setValue('autoRestartOnDomainChange', false);
+    }
+  }, [offerAutoRestart, savedAutoRestart, watchAutoRestart, setValue]);
+
+  /*
    * The portal's address, for the picker's link to where a domain another Hub
    * holds can be moved. Read alongside the listing rather than once such a
    * domain shows up, so the link does not arrive a request after its note.
@@ -904,9 +927,9 @@ export const InstallForm: React.FC<IProps> = ({
          * Beside the picker because it answers the question the picker raises: when a
          * domain is connected, who chooses the moment the app restarts to pick it up.
          * OFF by default — the restart makes the app briefly unavailable, so a person
-         * confirms it. Only where a custom domain can be connected at all.
+         * confirms it. `offerAutoRestart` says when it is asked at all.
          */}
-        {watchExposureMode === 'cloudflare' && customDomainsData?.supported === true ? (
+        {offerAutoRestart ? (
           <Controller
             control={control}
             name="autoRestartOnDomainChange"
