@@ -23,8 +23,11 @@ const DOMAINS = {
   domains: [] as Array<{ id: string; domain: string; isDefault: boolean; offered?: boolean }>,
 };
 
+/** Whether the domain list is still on its first load. */
+const DOMAIN_LIST = { isLoading: false };
+
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({ data: DOMAINS, isFetching: false, isError: false, refetch: vi.fn() }),
+  useQuery: () => ({ data: DOMAINS, isLoading: DOMAIN_LIST.isLoading, isFetching: false, isError: false, refetch: vi.fn() }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
@@ -49,6 +52,7 @@ vi.mock('@/modules/app/components/install-form/use-dns-availability', () => ({
 const HUB_DOMAIN = 'companionintelligence.com';
 
 const checkedDomain = () => vi.mocked(useDnsAvailability).mock.lastCall?.[0].selectedDomain;
+const checkEnabled = () => vi.mocked(useDnsAvailability).mock.lastCall?.[0].enabled;
 
 function renderPage() {
   vi.mocked(useAppContext).mockReturnValue({
@@ -67,6 +71,7 @@ function renderPage() {
 describe('PortExposeCreatePage', () => {
   afterEach(() => {
     DOMAINS.domains = [];
+    DOMAIN_LIST.isLoading = false;
     vi.clearAllMocks();
   });
 
@@ -79,6 +84,30 @@ describe('PortExposeCreatePage', () => {
     renderPage();
 
     await waitFor(() => expect(checkedDomain()).toBe('ci1.pw'));
+  });
+
+  /*
+   * Until the list loads, the form holds the Hub zone. A Hub on a Portal zone (`ci.computer`) is
+   * refused new names there, so checking it reported a domain the form was about to leave.
+   */
+  it('does not check availability until the domain list has loaded', async () => {
+    DOMAIN_LIST.isLoading = true;
+
+    const { rerender } = renderPage();
+
+    await waitFor(() => expect(useDnsAvailability).toHaveBeenCalled());
+    expect(vi.mocked(useDnsAvailability).mock.calls.every(([params]) => params.enabled === false)).toBe(true);
+
+    DOMAIN_LIST.isLoading = false;
+    DOMAINS.domains = [{ id: '2', domain: 'ci1.pw', isDefault: true, offered: true }];
+    rerender(
+      <MemoryRouter>
+        <PortExposeCreatePage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(checkEnabled()).toBe(true));
+    expect(checkedDomain()).toBe('ci1.pw');
   });
 
   it('keeps the Hub zone when the Portal preselects nothing', async () => {
