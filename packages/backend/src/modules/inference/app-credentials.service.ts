@@ -106,9 +106,9 @@ export type { RecordedHandout } from './app-handout-record';
  */
 /**
  * Backends whose models are served by a process the operator runs, not pulled into a Hub-managed
- * registry: vLLM (including vLLM-Metal), mlx-dspark, MTPLX, and Lucebox. For these, "is this model
- * installed?" can only be answered from what the server reports it is serving, so catalog matching
- * goes through `isServedModelForCatalog` rather than the Ollama-style pulled-tag comparison.
+ * registry: vLLM and oMLX. For these, "is this model installed?" can only be answered from what
+ * the server reports it is serving, so catalog matching goes through `isServedModelForCatalog`
+ * rather than the Ollama-style pulled-tag comparison.
  */
 function isHostServedBackend(backendType: InferenceBackendType): boolean {
   return backendType === 'vllm' || backendType === 'omlx';
@@ -349,7 +349,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
       );
       chatModel = localChat.model;
       chatModelId = localChat.model?.backendModelId ?? null;
-      // vLLM, MTPLX, and mlx-dspark are all host-managed servers with no Hub pull registry — an
+      // vLLM and oMLX are both host-managed servers with no Hub pull registry — an
       // operator can serve a model outside the catalog, so fall back to whatever it reports rather
       // than leaving chatModelId empty. A served model the catalog knows fails the app is skipped.
       if (!chatModelId && isHostServedBackend(backendType)) {
@@ -624,7 +624,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
-    // vLLM, MTPLX, and mlx-dspark have no Hub pull registry — "available" means the operator's
+    // vLLM and oMLX have no Hub pull registry — "available" means the operator's
     // server is actually reporting this exact id, not that the Hub tracked a pull for it.
     if (isHostServedBackend(backendType)) {
       return isServedModelForCatalog(model, modelsLoaded);
