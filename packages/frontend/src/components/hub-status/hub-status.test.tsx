@@ -1005,7 +1005,9 @@ describe('HubStatus startup screens', () => {
 
     expect(await screen.findByRole('heading', { name: "CI Hub couldn't start" })).toBeInTheDocument();
     expect(await screen.findByText("CI Hub won't retry on its own until you try again.")).toBeInTheDocument();
-    const panelError = screen.getByText(rateLimited);
+    // The failed line renders from hub status alone. The rate-limit text is inside the progress
+    // panel, which arrives on a second poll, so a synchronous query races that poll on a busy runner.
+    const panelError = await screen.findByText(rateLimited);
     expect(panelError.closest('li')).toBeNull();
     // Neither this page's start nor a recorded failure time: plain "Failed".
     expect(metaTime()).toBe('Failed');
