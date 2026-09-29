@@ -13,6 +13,14 @@ export const CIHUB_COMPAT_SERVICE_TYPE = '_ci-hub._tcp.local';
 /** TTL for cached mDNS peer discoveries (60 seconds). */
 export const MDNS_PEER_TTL_MS = 60_000;
 
+/**
+ * Most peers the discovery cache will hold at once. Any container on the Hub's docker networks can
+ * reach the socket with unicast datagrams, and every distinct `ip:port` it claims would otherwise
+ * become a new entry, so without a ceiling one sender could grow the map without limit. 64 is far
+ * more Hubs than share any real LAN.
+ */
+export const MDNS_MAX_DISCOVERED_PEERS = 64;
+
 export interface DiscoveredMdnsPeer {
   nodeFqdn: string | null;
   hostname: string;
@@ -57,22 +65,32 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
     if (this.socket) return;
 
     try {
-      this.socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+      this.socket = socket;
 
-      this.socket.on('error', (err) => {
+      socket.on('error', (err) => {
         this.logger.debug(`[HubPool:mDNS] Socket error: ${err.message}`);
       });
 
-      this.socket.on('message', (msg, rinfo) => {
+      // handleIncomingPacket never throws: every datagram, from any sender, is parsed inside its
+      // try/catch and a malformed one is simply dropped.
+      socket.on('message', (msg, rinfo) => {
         this.handleIncomingPacket(msg, rinfo.address);
       });
 
-      await new Promise<void>((resolve) => {
-        this.socket?.bind(MDNS_PORT, () => {
+      // dgram reports a failed bind only as an 'error' event and never calls the bind callback, so a
+      // promise that settled from the callback alone would stay pending forever — and because
+      // onModuleInit awaits it, so would Nest bootstrap. That is the normal outcome on a host-network
+      // run where the OS's own mDNS responder already holds 5353, so listen for the error as well.
+      await new Promise<void>((resolve, reject) => {
+        const onBindError = (err: Error) => reject(err);
+        socket.once('error', onBindError);
+        socket.bind(MDNS_PORT, () => {
+          socket.off('error', onBindError);
           try {
-            this.socket?.addMembership(MDNS_MULTICAST_IPV4);
-            this.socket?.setMulticastTTL(255);
-            this.socket?.setMulticastLoopback(true);
+            socket.addMembership(MDNS_MULTICAST_IPV4);
+            socket.setMulticastTTL(255);
+            socket.setMulticastLoopback(true);
             this.isListening = true;
             this.logger.debug(`[HubPool:mDNS] Listening on ${MDNS_MULTICAST_IPV4}:${MDNS_PORT}`);
           } catch (e) {
@@ -89,8 +107,12 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
         this.pruneStalePeers();
       }, 30_000);
     } catch (error) {
-      this.logger.debug(`[HubPool:mDNS] Service failed to bind port ${MDNS_PORT}: ${error instanceof Error ? error.message : String(error)}`);
-      this.socket = null;
+      // LAN discovery is a convenience; the Hub is fully usable without it (peers can still be
+      // paired over the tailnet or by address), so say so once and carry on rather than fail boot.
+      this.logger.warn(
+        `[HubPool:mDNS] Could not start on UDP port ${MDNS_PORT}; LAN peer discovery is disabled: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      await this.stop();
     }
   }
 
@@ -229,7 +251,9 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
       const port = parsed.port || 5002;
       const ip = parsed.ip || senderAddress;
       const key = `${ip}:${port}`;
+      const now = Date.now();
 
+      this.makeRoomFor(key, now);
       this.discovered.set(key, {
         nodeFqdn: parsed.txt.nodeFqdn || null,
         hostname,
@@ -237,10 +261,36 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
         port,
         poolProtocol: parsed.txt.poolProtocol ? Number(parsed.txt.poolProtocol) : 2,
         isCiHub: parsed.txt.isCiHub === 'true' || isCihubService,
-        lastSeenAt: Date.now(),
+        lastSeenAt: now,
       });
     } catch {
       // Ignore packet parse failures
+    }
+  }
+
+  /**
+   * Keeps the cache within {@link MDNS_MAX_DISCOVERED_PEERS} before a new key goes in. Expired peers
+   * go first, since they would be pruned anyway; only if the cache is still full of fresh ones is
+   * the least recently seen evicted. A genuine Hub re-announces every 30s, so evicting by staleness
+   * rather than refusing newcomers means a flood can crowd a real peer out only briefly, never lock
+   * it out for a whole TTL. A key already present is a refresh and needs no room.
+   */
+  private makeRoomFor(key: string, now: number): void {
+    if (this.discovered.has(key) || this.discovered.size < MDNS_MAX_DISCOVERED_PEERS) return;
+
+    this.pruneStalePeers(now);
+
+    while (this.discovered.size >= MDNS_MAX_DISCOVERED_PEERS) {
+      let stalestKey: string | null = null;
+      let stalestSeenAt = Number.POSITIVE_INFINITY;
+      for (const [candidate, peer] of this.discovered) {
+        if (peer.lastSeenAt < stalestSeenAt) {
+          stalestKey = candidate;
+          stalestSeenAt = peer.lastSeenAt;
+        }
+      }
+      if (stalestKey === null) return;
+      this.discovered.delete(stalestKey);
     }
   }
 
@@ -289,36 +339,112 @@ export function encodeDnsName(name: string): Buffer {
   return Buffer.concat(buffers);
 }
 
-export function decodeDnsName(buffer: Buffer, offset: number): { name: string; nextOffset: number } {
-  const parts: string[] = [];
-  let curr = offset;
-  let jumped = false;
-  let nextOffset = -1;
+/** RFC 1035 §2.3.4: a whole name on the wire, length octets and the root label included, is at most 255 octets. */
+export const MAX_DNS_NAME_WIRE_LENGTH = 255;
 
-  while (curr < buffer.length) {
-    const len = buffer[curr];
-    if (len === undefined || len === 0) {
-      if (!jumped) nextOffset = curr + 1;
-      break;
-    }
-    // Compression pointer (top 2 bits set: 0b11xxxxxx)
-    if ((len & 0xc0) === 0xc0) {
-      if (curr + 1 >= buffer.length) break;
-      const nextByte = buffer[curr + 1];
-      if (nextByte === undefined) break;
-      const pointer = ((len & 0x3f) << 8) | nextByte;
-      if (!jumped) nextOffset = curr + 2;
-      curr = pointer;
-      jumped = true;
-      continue;
-    }
-    curr += 1;
-    if (curr + len > buffer.length) break;
-    parts.push(buffer.subarray(curr, curr + len).toString('utf8'));
-    curr += len;
+/**
+ * Most compression pointers followed across all the names in one packet. The backward-only rule in
+ * {@link decodeDnsName} already guarantees each walk ends; this bounds what a whole datagram can
+ * cost. A per-name cap would not: two bytes of pointer can expand into a 255-octet name of 127
+ * labels, so a 64 KB datagram of records all pointing at one such name took ~144 ms of event-loop
+ * time to parse on a developer laptop — a few hundred KB/s of datagrams would keep the Hub pinned.
+ * Sharing the budget holds that to 128 expansions per packet, which brings every packet shape down
+ * to a few ms per 64 KB. Hub announcements are uncompressed and real encoders spend one or two
+ * pointers per name, so nothing a Hub needs to read comes close.
+ */
+export const MAX_DNS_POINTER_HOPS = 128;
+
+/** Compression-pointer hops still allowed; one budget is shared by every name read from a packet. */
+export interface DnsPointerBudget {
+  remaining: number;
+}
+
+/** Thrown for any packet the decoder refuses; {@link parseMdnsPacket} turns it into `null`. */
+export class MalformedDnsPacketError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MalformedDnsPacketError';
+  }
+}
+
+/**
+ * Decodes the (possibly compressed) name at `offset`, throwing {@link MalformedDnsPacketError} for
+ * anything that is not a well-formed name.
+ *
+ * Every byte this reads comes from whoever sent the datagram, and the parse runs synchronously on
+ * the event loop, so a name that never ends would freeze the whole Hub — the API and the pool proxy
+ * with it, and without the process exiting, so no restart policy would notice. The classic way to
+ * build one is a compression pointer aimed at itself (a 14-byte packet does it). RFC 1035 §4.1.4
+ * says a pointer refers to a *prior* occurrence of a name, so each pointer here must land strictly
+ * before the previous one's target (the first before the name's own start). Pointer targets
+ * therefore only ever decrease, which rules out every loop; the 255-octet length cap and the
+ * pointer `budget` (shared across a packet, see {@link MAX_DNS_POINTER_HOPS}) then bound the work.
+ */
+export function decodeDnsName(
+  buffer: Buffer,
+  offset: number,
+  budget: DnsPointerBudget = { remaining: MAX_DNS_POINTER_HOPS },
+): { name: string; nextOffset: number } {
+  if (!Number.isInteger(offset) || offset < 0 || offset >= buffer.length) {
+    throw new MalformedDnsPacketError(`name at offset ${offset} starts outside the packet`);
   }
 
-  if (nextOffset === -1) nextOffset = curr + 1;
+  const parts: string[] = [];
+  let curr = offset;
+  let barrier = offset;
+  let wireLength = 0;
+  let nextOffset = -1;
+
+  for (;;) {
+    const len = buffer[curr];
+    if (len === undefined) {
+      throw new MalformedDnsPacketError('name runs past the end of the packet');
+    }
+    if (len === 0) {
+      if (nextOffset === -1) nextOffset = curr + 1;
+      break;
+    }
+
+    const labelType = len & 0xc0;
+    // Compression pointer (top 2 bits set: 0b11xxxxxx)
+    if (labelType === 0xc0) {
+      const low = buffer[curr + 1];
+      if (low === undefined) {
+        throw new MalformedDnsPacketError('name runs past the end of the packet');
+      }
+      const target = ((len & 0x3f) << 8) | low;
+      if (target >= barrier) {
+        throw new MalformedDnsPacketError(`compression pointer to ${target} does not point backward (must be below ${barrier})`);
+      }
+      if (budget.remaining <= 0) {
+        throw new MalformedDnsPacketError(`packet follows more than ${MAX_DNS_POINTER_HOPS} compression pointer hops`);
+      }
+      budget.remaining -= 1;
+      // The name continues in the packet after the first pointer, however far the chain goes.
+      if (nextOffset === -1) nextOffset = curr + 2;
+      barrier = target;
+      curr = target;
+      continue;
+    }
+    // 0b01 and 0b10 are the extended label types RFC 6891 retired; nothing legitimate sends them.
+    if (labelType !== 0) {
+      throw new MalformedDnsPacketError(`unsupported label type 0x${labelType.toString(16)}`);
+    }
+
+    // Count the root octet that must still follow, so the limit covers the finished name.
+    wireLength += 1 + len;
+    if (wireLength + 1 > MAX_DNS_NAME_WIRE_LENGTH) {
+      throw new MalformedDnsPacketError(`name is longer than ${MAX_DNS_NAME_WIRE_LENGTH} octets`);
+    }
+    const labelStart = curr + 1;
+    const labelEnd = labelStart + len;
+    if (labelEnd > buffer.length) {
+      throw new MalformedDnsPacketError('name runs past the end of the packet');
+    }
+    parts.push(buffer.subarray(labelStart, labelEnd).toString('utf8'));
+    curr = labelEnd;
+  }
+
   return { name: parts.join('.'), nextOffset };
 }
 
@@ -406,18 +532,32 @@ export function buildMdnsAnnouncement(serviceType: string, hostname: string, por
   return Buffer.concat([header, ptrRecord, srvRecord, txtFullRecord, aRecord]);
 }
 
+/**
+ * Parses an mDNS datagram, returning `null` for anything malformed — truncated, over-long, or built
+ * to trip up the decoder. The socket handler sees every datagram sent to 5353 by anything on the
+ * Hub's networks, so dropping a bad packet is the only safe outcome; a partial parse of one is not.
+ */
 export function parseMdnsPacket(buffer: Buffer): ParsedMdnsPacket | null {
-  if (buffer.length < 12) return null;
+  try {
+    return readMdnsPacket(buffer);
+  } catch {
+    return null;
+  }
+}
+
+function readMdnsPacket(buffer: Buffer): ParsedMdnsPacket {
+  if (buffer.length < 12) throw new MalformedDnsPacketError('packet is shorter than a DNS header');
   const qdCount = buffer.readUInt16BE(4);
   const anCount = buffer.readUInt16BE(6);
 
+  const pointerBudget: DnsPointerBudget = { remaining: MAX_DNS_POINTER_HOPS };
   let offset = 12;
 
   // Skip questions
   for (let i = 0; i < qdCount; i++) {
-    const decoded = decodeDnsName(buffer, offset);
+    const decoded = decodeDnsName(buffer, offset, pointerBudget);
     offset = decoded.nextOffset + 4; // skip type (2) and class (2)
-    if (offset > buffer.length) return null;
+    if (offset > buffer.length) throw new MalformedDnsPacketError('question runs past the end of the packet');
   }
 
   const result: ParsedMdnsPacket = {
@@ -430,35 +570,38 @@ export function parseMdnsPacket(buffer: Buffer): ParsedMdnsPacket | null {
   };
 
   for (let i = 0; i < anCount; i++) {
-    if (offset >= buffer.length) break;
-    const nameDecoded = decodeDnsName(buffer, offset);
+    if (offset >= buffer.length) throw new MalformedDnsPacketError(`header promises ${anCount} answers, packet holds ${i}`);
+    const nameDecoded = decodeDnsName(buffer, offset, pointerBudget);
     offset = nameDecoded.nextOffset;
-    if (offset + 10 > buffer.length) break;
+    if (offset + 10 > buffer.length) throw new MalformedDnsPacketError('record header runs past the end of the packet');
 
     const rType = buffer.readUInt16BE(offset);
     const rdLength = buffer.readUInt16BE(offset + 8);
     offset += 10;
-    if (offset + rdLength > buffer.length) break;
+    const rdataEnd = offset + rdLength;
+    if (rdataEnd > buffer.length) throw new MalformedDnsPacketError('record data runs past the end of the packet');
 
     if (rType === 12) {
       // PTR
-      const ptr = decodeDnsName(buffer, offset);
+      const ptr = decodeDnsName(buffer, offset, pointerBudget);
+      if (ptr.nextOffset > rdataEnd) throw new MalformedDnsPacketError('PTR name runs past its RDLENGTH');
       result.services.push(nameDecoded.name);
       if (ptr.name) result.srvTarget = ptr.name;
     } else if (rType === 33 && rdLength >= 6) {
       // SRV: priority(2) + weight(2) + port(2) + target
       result.port = buffer.readUInt16BE(offset + 4);
-      const target = decodeDnsName(buffer, offset + 6);
+      const target = decodeDnsName(buffer, offset + 6, pointerBudget);
+      if (target.nextOffset > rdataEnd) throw new MalformedDnsPacketError('SRV target runs past its RDLENGTH');
       result.srvTarget = target.name;
     } else if (rType === 16) {
       // TXT
       let txtOffset = offset;
-      const end = offset + rdLength;
+      const end = rdataEnd;
       while (txtOffset < end) {
         const itemLen = buffer[txtOffset];
-        if (itemLen === undefined) break;
+        if (itemLen === undefined) throw new MalformedDnsPacketError('TXT data runs past the end of the packet');
         txtOffset += 1;
-        if (txtOffset + itemLen > end) break;
+        if (txtOffset + itemLen > end) throw new MalformedDnsPacketError('TXT string runs past its RDLENGTH');
         const itemStr = buffer.subarray(txtOffset, txtOffset + itemLen).toString('utf8');
         const eqIdx = itemStr.indexOf('=');
         if (eqIdx !== -1) {
