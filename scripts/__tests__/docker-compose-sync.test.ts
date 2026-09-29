@@ -16,7 +16,7 @@ function readCompose(p: string) {
 }
 
 function extractEnvDefault(content: string, key: string) {
-  const re = new RegExp(`${key}:\\s*\\$\\{${key}:-([^}]+)\\}`);
+  const re = new RegExp(`${key}:\\s*\\$\\{${key}:-([^}]*)\\}`);
   const match = content.match(re);
   return match?.[1] ?? null;
 }
@@ -68,8 +68,16 @@ describe('docker-compose.prod.yml sync', () => {
   it('inference URLs default to host.docker.internal', () => {
     const content = readCompose(rootCompose);
     expect(extractEnvDefault(content, 'VLLM_URL')).toBe('http://host.docker.internal:8000');
-    expect(extractEnvDefault(content, 'OMLX_URL')).toBe('http://host.docker.internal:8000');
     expect(extractEnvDefault(content, 'LEMONADE_URL')).toBe('http://host.docker.internal:13305');
+  });
+
+  // oMLX's default port is vLLM's. A compose default made the backend treat every node as having
+  // an operator-set oMLX URL, so its Apple-Silicon gate never ran and Linux vLLM nodes had :8000
+  // probed as oMLX on every status read and pooled request. Empty leaves the default to the backend.
+  it('leaves OMLX_URL empty by default in every compose file, so the Apple-Silicon gate runs', () => {
+    for (const file of [rootCompose, desktopCompose, path.join(repoRoot, 'docker-compose.local.yml')]) {
+      expect(extractEnvDefault(readCompose(file), 'OMLX_URL'), file).toBe('');
+    }
   });
 
   it('tunnel mount uses sibling ../tunnel beside ROOT_FOLDER_HOST (not .internal/tunnel)', () => {

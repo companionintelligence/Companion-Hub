@@ -94,4 +94,62 @@ describe('AppContainerOriginGuard', () => {
     addresses.mockResolvedValue(new Set());
     await expect(guard.canActivate(createContext({ ip: '172.19.0.9', params: { slug: 'openclaw' } }))).rejects.toBeInstanceOf(ForbiddenException);
   });
+
+  /*
+   * core-2, 2026-09-29: ci-hermes's gateway and agent containers started ~100 ms
+   * apart. The gateway's handout cached a set holding only its own address, and
+   * the agent's handout 260 ms later was refused from that cache for the full
+   * 15 s TTL. Its curl does not retry a 403, so the agent ran without a handout.
+   */
+  describe('a cached set that predates a sibling container', () => {
+    const gateway = '172.20.0.5';
+    const agent = '172.20.0.6';
+
+    it('re-reads Docker for an address the cached set lacks, and admits the sibling that has since started', async () => {
+      addresses.mockResolvedValueOnce(new Set([gateway])).mockResolvedValueOnce(new Set([gateway, agent]));
+
+      await expect(guard.canActivate(createContext({ ip: gateway, params: { slug: 'hermes-agent' } }))).resolves.toBe(true);
+      await expect(guard.canActivate(createContext({ ip: agent, params: { slug: 'hermes-agent' } }))).resolves.toBe(true);
+      expect(addresses).toHaveBeenCalledTimes(2);
+
+      // The refreshed set is what is cached: both containers are now admitted without asking Docker.
+      await expect(guard.canActivate(createContext({ ip: agent, params: { slug: 'hermes-agent' } }))).resolves.toBe(true);
+      await expect(guard.canActivate(createContext({ ip: gateway, params: { slug: 'hermes-agent' } }))).resolves.toBe(true);
+      expect(addresses).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not cache an empty lookup: a container asking before it is listed is admitted on its next request', async () => {
+      addresses.mockResolvedValueOnce(new Set()).mockResolvedValueOnce(new Set([agent]));
+
+      await expect(guard.canActivate(createContext({ ip: agent, params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(guard.canActivate(createContext({ ip: agent, params: { slug: 'hermes-agent' } }))).resolves.toBe(true);
+      expect(addresses).toHaveBeenCalledTimes(2);
+    });
+
+    it('SECURITY: still refuses a foreign address after the re-read, at one Docker listing per refused request', async () => {
+      addresses.mockResolvedValue(new Set([gateway, agent]));
+      await expect(guard.canActivate(createContext({ ip: gateway, params: { slug: 'hermes-agent' } }))).resolves.toBe(true);
+      expect(addresses).toHaveBeenCalledTimes(1);
+
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await expect(guard.canActivate(createContext({ ip: '172.20.0.99', params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(
+          ForbiddenException,
+        );
+        // Exactly one extra listing per refusal — never a retry loop.
+        expect(addresses).toHaveBeenCalledTimes(1 + attempt);
+      }
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('172.20.0.99 is not a running container of hermes-agent'));
+    });
+
+    it('SECURITY: a re-read that finds nothing running drops the older cached set instead of admitting from it', async () => {
+      addresses.mockResolvedValueOnce(new Set([gateway])).mockResolvedValue(new Set());
+      await expect(guard.canActivate(createContext({ ip: gateway, params: { slug: 'hermes-agent' } }))).resolves.toBe(true);
+
+      // The app stopped; a stranger's miss triggers a re-read that finds nothing.
+      await expect(guard.canActivate(createContext({ ip: agent, params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(ForbiddenException);
+      // The gateway's old address is no longer admitted from the stale cache.
+      await expect(guard.canActivate(createContext({ ip: gateway, params: { slug: 'hermes-agent' } }))).rejects.toBeInstanceOf(ForbiddenException);
+      expect(addresses).toHaveBeenCalledTimes(3);
+    });
+  });
 });
