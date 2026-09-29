@@ -927,7 +927,7 @@ const COMPOSE = `services:
       - attempts:5
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
-      OMLX_URL: \${OMLX_URL:-http://host.docker.internal:8000}
+      OMLX_URL: \${OMLX_URL:-}
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:-postgres}
 volumes:
   ci_hub_pgdata:
