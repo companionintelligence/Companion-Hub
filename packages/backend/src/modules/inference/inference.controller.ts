@@ -4,6 +4,7 @@ import {
   ConflictException,
   Get,
   Headers,
+  HttpCode,
   Inject,
   Param,
   Patch,
@@ -59,6 +60,14 @@ import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
+import { sendRouteError } from './inference-error-reply';
+
+/** The transcription `response_format`s that are a plain-text transcript, and the type each goes out under. */
+const TRANSCRIPT_TEXT_CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
+  ['text', 'text/plain; charset=utf-8'],
+  ['srt', 'text/plain; charset=utf-8'],
+  ['vtt', 'text/vtt; charset=utf-8'],
+]);
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management,
@@ -157,9 +166,18 @@ export class InferenceController {
   // the local InferenceRouterService handles them directly. Refusals are
   // OpenAI-shaped (`{ error: { message, type, code } }`) like every error these
   // handlers emit themselves, so a client shows the reason, not a Nest envelope.
+  // On the local path an engine's own refusal keeps its status and message, and
+  // only a failure to get any answer is a 502 — see `inference-error-reply.ts`.
+  //
+  // `@HttpCode(200)` on every POST here: Nest sets a POST's default 201 on the
+  // response before the handler runs, `@Res()` or not, so a local success went
+  // out as `201 Created` (beta-red, 2026-09-29). OpenAI answers 200, and strict
+  // clients check for it. The pool path sets the upstream's own status and is
+  // unaffected.
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/chat/completions')
+  @HttpCode(200)
   async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response, @Headers(POOL_SESSION_HEADER) session?: string | string[]) {
     const model = (body.model as string) || 'auto';
     if (await this.poolPeers.hasConnectedPeers()) {
@@ -183,13 +201,13 @@ export class InferenceController {
         res.json(result.data);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+      await sendRouteError(res, err);
     }
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/completions')
+  @HttpCode(200)
   async v1Completions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     const model = (body.model as string) || 'auto';
     if (await this.poolPeers.hasConnectedPeers()) {
@@ -211,13 +229,13 @@ export class InferenceController {
         res.json(result.data);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+      await sendRouteError(res, err);
     }
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/embeddings')
+  @HttpCode(200)
   async v1Embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     const model = (body.model as string) || '';
     if (await this.poolPeers.hasConnectedPeers()) {
@@ -227,8 +245,7 @@ export class InferenceController {
       const result = await this.router.routeEmbeddings(body);
       res.json(result.data);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+      await sendRouteError(res, err);
     }
   }
 
@@ -239,26 +256,26 @@ export class InferenceController {
       const models = await this.router.listModels();
       res.json({ object: 'list', data: models });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+      await sendRouteError(res, err);
     }
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/audio/speech')
+  @HttpCode(200)
   async v1AudioSpeech(@Body() body: Record<string, unknown>, @Res() res: Response) {
     try {
       const result = await this.router.routeTts(body);
       res.setHeader('Content-Type', speechContentType(body));
       res.send(result.data);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+      await sendRouteError(res, err);
     }
   }
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/audio/transcriptions')
+  @HttpCode(200)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_TRANSCRIPTION_BYTES } }))
   async v1AudioTranscriptions(@UploadedFile() file: UploadedAudio | undefined, @Body() body: Record<string, unknown>, @Res() res: Response) {
     // OpenAI clients send multipart/form-data with the audio in `file`.
@@ -274,10 +291,19 @@ export class InferenceController {
     }
     try {
       const result = await this.router.routeStt(buildTranscriptionForm(file, body));
-      res.json(result.data);
+      // `response_format` text, srt and vtt are plain-text transcripts, not JSON. Sent through
+      // `res.json` they came back as a quoted string labelled application/json, which an SDK asking
+      // for text returns with the quotes and escapes still in it (#1643). A JSON-looking transcript
+      // ("42") has already been parsed by axios on the way in, hence the `String`.
+      const textType = typeof body.response_format === 'string' ? TRANSCRIPT_TEXT_CONTENT_TYPES.get(body.response_format) : undefined;
+      if (textType && (typeof result.data !== 'object' || result.data === null)) {
+        res.setHeader('Content-Type', textType);
+        res.send(String(result.data ?? ''));
+      } else {
+        res.json(result.data);
+      }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+      await sendRouteError(res, err);
     }
   }
 

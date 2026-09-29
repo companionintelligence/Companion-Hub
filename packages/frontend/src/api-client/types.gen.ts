@@ -4030,7 +4030,7 @@ export type V1ChatCompletionsData = {
 };
 
 export type V1ChatCompletionsResponses = {
-    201: unknown;
+    200: unknown;
 };
 
 export type V1CompletionsData = {
@@ -4041,7 +4041,7 @@ export type V1CompletionsData = {
 };
 
 export type V1CompletionsResponses = {
-    201: unknown;
+    200: unknown;
 };
 
 export type V1EmbeddingsData = {
@@ -4052,7 +4052,7 @@ export type V1EmbeddingsData = {
 };
 
 export type V1EmbeddingsResponses = {
-    201: unknown;
+    200: unknown;
 };
 
 export type V1ModelsData = {
@@ -4074,7 +4074,7 @@ export type V1AudioSpeechData = {
 };
 
 export type V1AudioSpeechResponses = {
-    201: unknown;
+    200: unknown;
 };
 
 export type V1AudioTranscriptionsData = {
@@ -4085,7 +4085,7 @@ export type V1AudioTranscriptionsData = {
 };
 
 export type V1AudioTranscriptionsResponses = {
-    201: unknown;
+    200: unknown;
 };
 
 export type HealthData = {
