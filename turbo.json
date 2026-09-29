@@ -81,8 +81,8 @@
         "APPS_REPO_URL",
         "OLLAMA_URL",
         "VLLM_URL",
-        "MTPLX_URL",
-        "DSPARK_URL",
+        "OMLX_URL",
+        "OMLX_API_KEY",
         "LEMONADE_URL"
       ]
     },
@@ -119,8 +119,8 @@
         "APPS_REPO_URL",
         "OLLAMA_URL",
         "VLLM_URL",
-        "MTPLX_URL",
-        "DSPARK_URL",
+        "OMLX_URL",
+        "OMLX_API_KEY",
         "LEMONADE_URL"
       ]
     },

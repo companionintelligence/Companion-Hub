@@ -216,15 +216,10 @@ services:
       TAILSCALE_SERVE_UPSTREAM: ${TAILSCALE_SERVE_UPSTREAM:-10.128.0.2:80}
       OLLAMA_URL: http://host.docker.internal:11434
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
-      MTPLX_URL: ${MTPLX_URL:-http://host.docker.internal:8000}
-      DSPARK_URL: ${DSPARK_URL:-http://host.docker.internal:8080}
+      OMLX_URL: ${OMLX_URL:-http://host.docker.internal:8000}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
+      OMLX_API_KEY: ${OMLX_API_KEY:-}
       LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
-      SPECULATIVE_INFERENCE_URL: ${SPECULATIVE_INFERENCE_URL:-http://host.docker.internal:8000}
-      # No default on purpose: llama-server and mlx-dspark both default to 8080, so probing it
-      # unasked would report one engine as two. Set it to opt in.
-      LLAMACPP_URL: ${LLAMACPP_URL:-}
-      LMSTUDIO_URL: ${LMSTUDIO_URL:-http://host.docker.internal:1234}
       API_PORT: 5002
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}
