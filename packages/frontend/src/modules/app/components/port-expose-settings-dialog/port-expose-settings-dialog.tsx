@@ -105,7 +105,8 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
   );
 
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
-    enabled: isOpen && watchExposureMode === 'cloudflare' && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
+    // Not while the domain list is loading — see the install form.
+    enabled: isOpen && watchExposureMode === 'cloudflare' && !getDomains.isLoading && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: watchPublicDomain || domain,
     checkDnsAvailability,

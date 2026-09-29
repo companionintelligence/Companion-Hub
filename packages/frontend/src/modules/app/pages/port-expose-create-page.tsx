@@ -120,7 +120,8 @@ export default function PortExposeCreatePage() {
   );
 
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
-    enabled: watchExposureMode === 'cloudflare' && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
+    // Not while the domain list is loading — see the install form.
+    enabled: watchExposureMode === 'cloudflare' && !getDomains.isLoading && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: watchPublicDomain || domain,
     checkDnsAvailability,

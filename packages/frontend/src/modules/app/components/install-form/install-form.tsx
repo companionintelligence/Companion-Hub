@@ -695,7 +695,11 @@ export const InstallForm: React.FC<IProps> = ({
   });
 
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability({
-    enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare',
+    // Not while the domain list is still loading: the field holds the Hub's own
+    // domain until the list's preselection lands, and a Hub on a Portal zone
+    // (`ci.computer`) would be told that zone takes no new apps — about a
+    // domain the form is about to leave.
+    enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare' && !availableDomainsQuery.isLoading,
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
     selectedDomain: watchPublicDomain || domain,
     checkDnsAvailability,

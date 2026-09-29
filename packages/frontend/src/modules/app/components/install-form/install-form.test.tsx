@@ -148,6 +148,7 @@ describe('InstallForm', () => {
     MOCK_AVAILABLE_DOMAINS.supported = true;
     MOCK_AVAILABLE_DOMAINS.domains = [];
     MOCK_USE_QUERY_RESULT.isFetching = false;
+    MOCK_USE_QUERY_RESULT.isLoading = false;
     MOCK_CUSTOM_DOMAINS.supported = false;
     MOCK_CUSTOM_DOMAINS.domains = [];
     MOCK_PORTAL_CONFIG.portalUrl = null;
@@ -1840,6 +1841,43 @@ describe('InstallForm', () => {
       await settle();
 
       expect(preselections()).toContain('ci1.pw');
+    });
+
+    /*
+     * Until the list loads, the field holds the Hub's own domain. A Hub on a Portal zone
+     * (`ci.computer`) is refused new names there, so checking it told the operator the domain
+     * could take no more apps — about a domain the form was about to leave.
+     */
+    it("checks only the preselected domain, never the Hub's own domain while the list loads", async () => {
+      vi.useFakeTimers();
+      vi.mocked(useAppContext).mockReturnValue(exposableContext({ tailscaleAvailable: false }));
+      fetchDnsAvailability.mockImplementation(
+        async () => new Response(JSON.stringify({ available: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+      MOCK_USE_QUERY_RESULT.isLoading = true;
+
+      const form = () => (
+        <MemoryRouter>
+          <InstallForm info={exposableInfo()} onSubmit={vi.fn()} formId="test-form" formFields={[]} />
+        </MemoryRouter>
+      );
+      const { rerender } = render(form());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(fetchDnsAvailability).not.toHaveBeenCalled();
+
+      MOCK_USE_QUERY_RESULT.isLoading = false;
+      domainsWithPoolDefault();
+      rerender(form());
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(fetchDnsAvailability).toHaveBeenCalledTimes(1);
+      expect(fetchDnsAvailability).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ domain: 'ci1.pw' }));
     });
   });
 

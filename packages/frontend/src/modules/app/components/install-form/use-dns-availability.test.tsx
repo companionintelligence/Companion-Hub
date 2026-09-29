@@ -106,6 +106,82 @@ describe('useDnsAvailability', () => {
   });
 
   /*
+   * A form opens on the Hub's own domain and moves to Portal's preselection a
+   * moment later. For a Hub on `ci.computer`, the first check is refused (a
+   * Portal zone takes no new names) — and that refusal used to land on the
+   * domain the form had moved to, whenever it came back last.
+   */
+  describe('when the domain changes while a check is in flight', () => {
+    const answer = (data: CheckDnsAvailabilityResponse) => ({ ok: true, status: 200, json: async () => data });
+
+    function renderOnHubDomain() {
+      let refuseHubDomain!: () => void;
+      const check = vi.fn((_subdomain: string, selectedDomain?: string) =>
+        selectedDomain === 'ci.computer'
+          ? new Promise<ReturnType<typeof answer>>((resolve) => {
+              refuseHubDomain = () => resolve(answer({ available: false, reason: 'zone_unreachable', message: ZONE_FULL }));
+            })
+          : Promise.resolve(answer({ available: true })),
+      );
+      const setError = vi.fn();
+      const clearErrors = vi.fn();
+      const hook = renderHook(
+        ({ selectedDomain }: { selectedDomain: string }) =>
+          useDnsAvailability({ enabled: true, subdomain: 'n8n', selectedDomain, checkDnsAvailability: check, setError, clearErrors, t }),
+        { initialProps: { selectedDomain: 'ci.computer' } },
+      );
+
+      return { ...hook, check, setError, refuseHubDomain: () => refuseHubDomain() };
+    }
+
+    it("drops the Hub domain's refusal when it arrives after the preselected domain's answer", async () => {
+      const { result, rerender, check, setError, refuseHubDomain } = renderOnHubDomain();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(check).toHaveBeenCalledWith('n8n', 'ci.computer');
+
+      rerender({ selectedDomain: 'ci0.pw' });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(check).toHaveBeenLastCalledWith('n8n', 'ci0.pw');
+
+      await act(async () => {
+        refuseHubDomain();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(setError).not.toHaveBeenCalled();
+      expect(toast.error).not.toHaveBeenCalled();
+      expect(result.current.domainAvailabilityError).toBeNull();
+      expect(result.current.isCheckingDns).toBe(false);
+    });
+
+    it('keeps showing the check as running until the current one answers', async () => {
+      const { result, rerender, refuseHubDomain } = renderOnHubDomain();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      rerender({ selectedDomain: 'ci0.pw' });
+
+      // The stale answer lands inside the new check's debounce.
+      await act(async () => {
+        refuseHubDomain();
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.isCheckingDns).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      expect(result.current.isCheckingDns).toBe(false);
+    });
+  });
+
+  /*
    * The forms key on `reason`, so it has to be in the generated client's type.
    * It was `{ [key: string]: unknown }`, which let #1627 read a field the Hub
    * never sent without a compile error. `pnpm tsc` enforces this, not vitest.
