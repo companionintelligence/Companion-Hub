@@ -471,6 +471,53 @@ describe('InferenceRouterService', () => {
     });
   });
 
+  // ─── Lemonade audio ───────────────────────────────────
+  // Lemonade's health and model list send LEMONADE_API_KEY (#1664); the audio calls did not, so a
+  // Lemonade that enforces a key read healthy and then answered every TTS/STT call with a 401.
+  describe('Lemonade audio routes', () => {
+    const LEMONADE_KEY = 'lemonade-test-key';
+
+    beforeEach(() => {
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['kokoro-v1', 'whisper-v3-turbo'] });
+      lemonadeBackend.getApiKey.mockReturnValue(undefined);
+    });
+
+    const speak = async () => {
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: new ArrayBuffer(4), headers: {} });
+      await expect(service.routeTts({ model: 'kokoro-v1', input: 'hello', voice: 'af_sky' })).resolves.toMatchObject({ backend: 'lemonade' });
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/audio/speech', expect.anything(), expect.anything());
+      return vi.mocked(axios.post).mock.calls[0]?.[2];
+    };
+
+    const transcribe = async () => {
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { text: 'hello' }, headers: {} });
+      await expect(service.routeStt(new FormData())).resolves.toMatchObject({ backend: 'lemonade' });
+      expect(axios.post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/audio/transcriptions', expect.any(FormData), expect.anything());
+      return vi.mocked(axios.post).mock.calls[0]?.[2];
+    };
+
+    it('sends the Lemonade API key on /v1/audio/speech when one is configured', async () => {
+      lemonadeBackend.getApiKey.mockReturnValue(LEMONADE_KEY);
+      const config = await speak();
+      expect(config?.headers).toEqual({ Authorization: `Bearer ${LEMONADE_KEY}` });
+      expect(config).toMatchObject({ responseType: 'arraybuffer' });
+    });
+
+    it('sends the Lemonade API key on /v1/audio/transcriptions when one is configured', async () => {
+      lemonadeBackend.getApiKey.mockReturnValue(LEMONADE_KEY);
+      const config = await transcribe();
+      expect(config?.headers).toEqual({ Authorization: `Bearer ${LEMONADE_KEY}` });
+    });
+
+    it('sends no Authorization header on either audio route when no key is configured', async () => {
+      const ttsConfig = await speak();
+      expect(ttsConfig?.headers?.Authorization).toBeUndefined();
+      vi.mocked(axios.post).mockClear();
+      const sttConfig = await transcribe();
+      expect(sttConfig?.headers?.Authorization).toBeUndefined();
+    });
+  });
+
   // ─── Tool-calling error preservation ─────────────────
   describe('tool calling error preservation', () => {
     it('preserves 400 errors from backend instead of silently stripping tools and retrying', async () => {
