@@ -312,6 +312,50 @@ describe('hub-pool-cli formatters', () => {
     expect(confirmed.indexOf('refused the request itself')).toBeLessThan(confirmed.indexOf('failed over from'));
   });
 
+  /**
+   * A verdict the walk ended on because nobody was left to ask — a single Lemonade node answering
+   * `500 Missing 'content'` — and a 4xx relayed on its status. The first must not claim the pool
+   * spared "the other 0 candidates"; the second names no engine message, because none was read.
+   */
+  it('says when the refusal came from the last candidate, and names a 4xx by its status', () => {
+    const row = {
+      at: '2026-09-29T10:00:00.000Z',
+      direction: 'outbound' as const,
+      path: '/v1/chat/completions',
+      model: 'qwen3.8:27b',
+      node: 'core-2.capybara-ulmer.ts.net',
+      peerId: 'p2',
+      backend: 'lemonade',
+      candidates: 1,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: 'failed' as const,
+      status: 500,
+      durationMs: 42,
+    };
+    const summary = { recorded: 1, capacity: 200, served: 0, failed: 1, failovers: 0, requestErrors: 1, lastAt: row.at };
+
+    const last = formatPoolRoutingLogLines({
+      entries: [{ ...row, requestError: { signature: 'invalid-message', basis: 'last-candidate', confirms: null } }],
+      summary,
+    }).join('\n');
+    expect(last).toContain(
+      '↳ core-2.capybara-ulmer.ts.net refused the request itself (a malformed message); returned to the app unconfirmed, as no candidate was left to ask',
+    );
+    expect(last).not.toContain('other 0 candidates');
+
+    const status = formatPoolRoutingLogLines({
+      entries: [
+        { ...row, backend: 'ollama', candidates: 9, status: 400, requestError: { signature: 'client-error', basis: 'status', confirms: null } },
+      ],
+      summary,
+    }).join('\n');
+    expect(status).toContain('✗ failed 400');
+    expect(status).toContain(
+      '↳ core-2.capybara-ulmer.ts.net refused the request itself (an HTTP 4xx, relayed on its status); returned to the app, not sent to the other 8 candidates',
+    );
+  });
+
   it('breaks out the requests an engine refused as bad, beside the hang-ups, from the failures', () => {
     const entries: PoolRoutingLogResponse['entries'] = [];
     const base = { recorded: 26, capacity: 200, served: 23, failed: 3, failovers: 0, lastAt: null };

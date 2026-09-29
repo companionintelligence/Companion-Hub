@@ -22,6 +22,27 @@ import type { PoolRoutingRequestError } from './hub-pool-routing-log.service';
 /** A label for the engine message a response matched. The routing log records this, never the message: engines quote the prompt in some of theirs. */
 export type PoolRequestErrorSignature = 'no-user-query' | 'missing-messages' | 'invalid-message' | 'context-length' | 'chat-template';
 
+/**
+ * The routing log's label for a 4xx the proxy passed to the caller on its status alone — every 4xx
+ * but 408/429, and a peer's hop-level 401/403/404, which fail over. No body is read for it, so it
+ * names no message: the row's `status` is the whole of what is known.
+ */
+export const CLIENT_ERROR_SIGNATURE = 'client-error';
+
+/**
+ * The routing log's account of a 4xx passed through, or `null` for any other status.
+ *
+ * Until this, such a row settled `served`: core-2, 2026-09-29, had six `outcome=served status=400`
+ * rows, each an engine refusing the request (`gemma3:1b does not support tools`) in about 5 ms. The
+ * dashboard read each one as a served request with a 5 ms first byte, so one refusal moved a node's
+ * p50 from 90 s to 18 ms, and "Failed 30m" never counted any of them. It is the same fact as an
+ * engine's 500 verdict on the request, told by status instead of by body, so it is recorded the same
+ * way: `failed`, on the node that answered, with a `requestError`.
+ */
+export function passedThroughRequestError(status: number): PoolRoutingRequestError | null {
+  return status >= 400 && status < 500 ? { signature: CLIENT_ERROR_SIGNATURE, basis: 'status', confirms: null } : null;
+}
+
 export interface PoolRequestErrorVerdict {
   signature: PoolRequestErrorSignature;
   /**
@@ -240,6 +261,22 @@ export function judgeRequestError<C>(
     return null;
   }
   return { signature: verdict.signature, basis: 'confirmed', confirms: unconfirmed.node };
+}
+
+/**
+ * The routing log's account of a verdict the walk ended on because nobody was left to ask: the only
+ * candidate, or the last one reached, refused the request for a reason one node could not vouch for.
+ *
+ * {@link judgeRequestError} holds such a verdict until a second candidate agrees, and until this the
+ * walk simply ran out with it held: the caller got a generic `502 All N candidates failed` and the
+ * row `requestError: null`. A pool whose one node for a model is a Lemonade or llama-server answering
+ * `500 Missing 'content'` lost the engine's sentence entirely, and the OpenAI SDKs retried the 502 on
+ * their own, into the same refusal. With no candidate left, nothing the walk could still learn would
+ * change the answer, and the engine's own words are the most the caller can be told — so they are
+ * relayed as a confirmed verdict would be, and the row says it was not confirmed.
+ */
+export function lastCandidateRequestError(verdict: PoolRequestErrorVerdict): PoolRoutingRequestError {
+  return { signature: verdict.signature, basis: 'last-candidate', confirms: null };
 }
 
 function noneAheadMayDiffer<C>(signature: PoolRequestErrorSignature, refused: readonly [C, C], walk: RequestErrorWalk<C>): boolean {
