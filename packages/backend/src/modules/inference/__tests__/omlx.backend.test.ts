@@ -101,6 +101,20 @@ describe('OmlxBackend', () => {
       expect(get).not.toHaveBeenCalled();
     });
 
+    // Compose passes `OMLX_URL: ${OMLX_URL:-}`, so an unset variable arrives as an empty string.
+    // It must read as "not configured": a compose default once made it always set, and every
+    // Linux vLLM node had :8000 probed as oMLX (with OMLX_API_KEY) on each status read.
+    it.each([
+      ['empty', ''],
+      ['blank', '   '],
+    ])('treats an %s OMLX_URL as unset: no probe, and the not-Apple-Silicon reason', async (_label, value) => {
+      process.env.OMLX_URL = value;
+
+      await expect(backend.healthCheck()).resolves.toEqual({ running: false, healthy: false, modelsLoaded: [], error: OMLX_NOT_APPLE_SILICON_ERROR });
+      await expect(backend.listModels()).resolves.toEqual([]);
+      expect(get).not.toHaveBeenCalled();
+    });
+
     it('probes an oMLX URL the operator set with OMLX_URL: a Linux Hub can use a Mac on the network', async () => {
       process.env.OMLX_URL = 'http://studio.local:8000';
       serve({ '/v1/models': { data: OMLX_MODELS }, '/health': { data: OMLX_HEALTH } });
@@ -157,6 +171,15 @@ describe('OmlxBackend', () => {
 
       await expect(backend.healthCheck()).resolves.toEqual({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
       await expect(backend.listModels()).resolves.toEqual([{ id: 'Qwen3-8B-4bit', name: 'Qwen3-8B-4bit', size: 0, loaded: true }]);
+    });
+
+    it("on Apple Silicon, an empty OMLX_URL (compose's default) still probes oMLX's default URL", async () => {
+      process.env.OMLX_URL = '';
+      serve({ '/v1/models': { data: OMLX_MODELS }, '/health': { data: OMLX_HEALTH } });
+
+      expect(backend.getBaseUrl()).toMatch(/^http:\/\/(localhost|host\.docker\.internal):8000$/);
+      await expect(backend.healthCheck()).resolves.toEqual({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-4bit'] });
+      expect(get).toHaveBeenCalledWith(`${backend.getBaseUrl()}/v1/models`, expect.any(Object));
     });
 
     it('recognises oMLX by owned_by alone when /health does not answer', async () => {
