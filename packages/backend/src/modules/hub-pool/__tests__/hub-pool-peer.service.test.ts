@@ -190,6 +190,18 @@ describe('HubPoolPeerService', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
+    it('refuses a .local name before creating a row or dialling anything, whatever the caller skipped', async () => {
+      // The DTO refuses one too; this is the method that sends the token and the PIN, so it re-checks.
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+
+      const attempt = service.initiatePairing('Core-9.local', 'LAN box', '123456');
+      await expect(attempt).rejects.toThrow(BadRequestException);
+      await expect(attempt).rejects.toThrow(/tailnet name/);
+
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     it('rolls back the local row when the peer rejects the request', async () => {
       repo.findByNodeFqdn.mockResolvedValue(undefined);
       const created = mockPeer({ id: 'rollback-me' });

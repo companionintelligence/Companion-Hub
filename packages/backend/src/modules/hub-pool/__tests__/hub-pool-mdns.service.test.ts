@@ -782,6 +782,43 @@ describe('HubPoolMdnsService — discovered peer cache bounds', () => {
     expect(service.listDiscoveredPeers().map((peer) => peer.ip)).toEqual(['172.18.0.66']);
   });
 
+  it('keys the cache on the sender alone, so varying the SRV port cannot fill it and evict a real Hub', async () => {
+    // The SRV port is as much the sender's choice as the A record. With it in the key, 100 packets
+    // from one box made 64 rows and pushed every genuine Hub out of the cache.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const service = await newService();
+    vi.setSystemTime(T0);
+    hear(service, '192.168.1.20', 'real-hub');
+
+    for (let i = 0; i < 100; i++) {
+      vi.setSystemTime(T0 + 1 + i);
+      feed(service, buildMdnsAnnouncement(CIHUB_SERVICE_TYPE, 'flood', 10_000 + i, '10.0.0.1', { isCiHub: 'true' }), '172.18.0.66');
+    }
+
+    expect((service as unknown as PeerStore).discovered.size).toBe(2);
+    const peers = service.listDiscoveredPeers(T0 + 101);
+    expect(peers.map((peer) => peer.ip).sort()).toEqual(['172.18.0.66', '192.168.1.20']);
+    // The sender's latest announcement replaced its row rather than adding one beside it.
+    expect(peers.find((peer) => peer.ip === '172.18.0.66')?.port).toBe(10_099);
+    expect(peers.find((peer) => peer.ip === '192.168.1.20')?.hostname).toBe('real-hub');
+  });
+
+  it('keeps one row per sender: two senders are two rows, and a re-announcement replaces its own', async () => {
+    const service = await newService();
+    feed(service, buildMdnsAnnouncement(CIHUB_SERVICE_TYPE, 'hub-a', 5002, '192.168.1.31', { isCiHub: 'true' }), '192.168.1.31');
+    feed(service, buildMdnsAnnouncement(CIHUB_SERVICE_TYPE, 'hub-b', 5002, '192.168.1.32', { isCiHub: 'true' }), '192.168.1.32');
+    feed(service, buildMdnsAnnouncement(CIHUB_SERVICE_TYPE, 'hub-a-renamed', 3000, '192.168.1.31', { isCiHub: 'true' }), '192.168.1.31');
+
+    const rows = service
+      .getDiscoverableCandidates(new Set())
+      .map((row) => ({ hostname: row.hostname, address: row.address }))
+      .sort((a, b) => (a.address ?? '').localeCompare(b.address ?? ''));
+    expect(rows).toEqual([
+      { hostname: 'hub-a-renamed', address: '192.168.1.31:3000' },
+      { hostname: 'hub-b', address: '192.168.1.32:5002' },
+    ]);
+  });
+
   it('drops a hostile datagram in the packet handler without recording or throwing', async () => {
     const service = await newService();
     const selfPointer = Buffer.concat([dnsHeader({ an: 1 }), pointer(12)]);

@@ -16,6 +16,7 @@ import {
   fetchInferencePreferences,
   fetchPoolStatus,
   formatContextCapResultLines,
+  formatMdnsPairRefusalLines,
   formatOllamaSlotsResultLines,
   formatPoolPeersLines,
   formatPoolProbeLines,
@@ -24,6 +25,7 @@ import {
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
   formatPromptCeilingResultLines,
+  isMdnsPeerName,
   mintPairingPin,
   pairPoolPeer,
   probePoolAddress,
@@ -1002,6 +1004,13 @@ async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
   }
 
   if (parsed.subcommand === 'pair') {
+    // Before the name/address split: `isPlausiblePeerFqdn` accepts `box.local`, so it would go out as
+    // a pairing by name, and the Hub now refuses that. Refused here with or without `--pin` — the PIN
+    // is what such a request would hand to whatever answered the name.
+    if (isMdnsPeerName(parsed.target)) {
+      printMessageBox('Pool pairing needs a tailnet name', formatMdnsPairRefusalLines(parsed.target), 'red');
+      process.exit(2);
+    }
     // Two shapes, told apart by whether the target looks like a MagicDNS name. An address needs a
     // PIN, because the far Hub only discloses its tailnet name — the name the row is keyed on — to a
     // request carrying one; `/identify` reports no name to anybody.

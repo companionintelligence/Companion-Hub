@@ -64,6 +64,7 @@ const poolApi = {
   setPoolEnabledSetting: vi.fn(),
   setPoolPeerEnabled: vi.fn(),
   unpairPoolPeer: vi.fn(),
+  pairPoolPeer: vi.fn(),
   setPoolMaxPromptTokens: vi.fn(),
   fetchInferencePreferences: vi.fn(),
   setInferenceContextCap: vi.fn(),
@@ -78,6 +79,7 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
   setPoolEnabledSetting: (...args: unknown[]) => poolApi.setPoolEnabledSetting(...args),
   setPoolPeerEnabled: (...args: unknown[]) => poolApi.setPoolPeerEnabled(...args),
   unpairPoolPeer: (...args: unknown[]) => poolApi.unpairPoolPeer(...args),
+  pairPoolPeer: (...args: unknown[]) => poolApi.pairPoolPeer(...args),
   setPoolMaxPromptTokens: (...args: unknown[]) => poolApi.setPoolMaxPromptTokens(...args),
   fetchInferencePreferences: (...args: unknown[]) => poolApi.fetchInferencePreferences(...args),
   setInferenceContextCap: (...args: unknown[]) => poolApi.setInferenceContextCap(...args),
@@ -1467,6 +1469,7 @@ describe('runPoolCommand', () => {
     poolApi.setPoolEnabledSetting.mockReset();
     poolApi.setPoolPeerEnabled.mockReset();
     poolApi.unpairPoolPeer.mockReset();
+    poolApi.pairPoolPeer.mockReset();
     // Non-TTY is the CI/agent case: the confirmation gate must refuse rather than hang on a prompt.
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
@@ -1835,6 +1838,46 @@ describe('runPoolCommand', () => {
     expect(poolApi.unpairPoolPeer).not.toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(2);
     expect(stripAnsi(String(errorSpy.mock.calls[0]?.[0]))).toContain('requires an interactive terminal, --yes, or CI_HUB_ASSUME_YES=1');
+  });
+
+  /**
+   * A `.local` name passes `isPlausiblePeerFqdn`, so it used to go out as a pairing by name — and the
+   * only place one comes from is an unverified mDNS row, whose sender would then receive this Hub's
+   * name, a new peer token and the PIN. Refused before the prompt and before any request, PIN or not.
+   */
+  describe('pair refuses a .local name', () => {
+    it.each([
+      ['by name', ['pair', 'core-9.local', '--yes']],
+      ['with a PIN', ['pair', 'Core-9.Local.', '--pin', '123456', '--yes']],
+    ])('%s: exits 2, says a tailnet name is needed, and sends nothing', async (_label, args) => {
+      await expect(runPoolCommand(args)).rejects.toThrow('exit');
+
+      expect(exitSpy).toHaveBeenCalledWith(2);
+      expect(poolApi.pairPoolPeer).not.toHaveBeenCalled();
+      const text = boxText();
+      expect(text).toContain('Pool pairing needs a tailnet name');
+      expect(text).toContain("Pool pairing needs the peer's tailnet name.");
+      expect(text).toContain('cihub pool pair <address> --pin <digits>');
+    });
+
+    it('still pairs by a tailnet name', async () => {
+      poolApi.pairPoolPeer.mockResolvedValue({ id: 'peer-1', nodeFqdn: POOL_PEER_FQDN, status: 'pending' });
+
+      await runPoolCommand(['pair', POOL_PEER_FQDN, '--yes']);
+
+      expect(poolApi.pairPoolPeer).toHaveBeenCalledWith('.env.local', { nodeFqdn: POOL_PEER_FQDN }, undefined, undefined);
+      expect(boxText()).toContain('Pairing requested');
+    });
+
+    it('still pairs by an address or a short LAN name with a PIN', async () => {
+      poolApi.pairPoolPeer.mockResolvedValue({ id: 'peer-1', nodeFqdn: POOL_PEER_FQDN, status: 'pending' });
+
+      await runPoolCommand(['pair', '192.168.1.42:5002', '--pin', '123456', '--yes']);
+      await runPoolCommand(['pair', 'mini-pc', '--pin', '123456', '--yes']);
+
+      expect(poolApi.pairPoolPeer).toHaveBeenNthCalledWith(1, '.env.local', { address: '192.168.1.42:5002' }, undefined, '123456');
+      expect(poolApi.pairPoolPeer).toHaveBeenNthCalledWith(2, '.env.local', { address: 'mini-pc' }, undefined, '123456');
+    });
   });
 
   it('unpairs the peer resolved from an id prefix once --yes is given', async () => {
