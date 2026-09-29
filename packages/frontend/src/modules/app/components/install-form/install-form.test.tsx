@@ -682,11 +682,16 @@ describe('InstallForm', () => {
     });
 
     it('is not offered for a domain the organization no longer has', () => {
-      // The picker hides with no domains listed, and the switch belongs beside it.
+      // No domains listed at all: the picker hides too.
       MOCK_CUSTOM_DOMAINS.supported = true;
+      const { unmount } = renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
+      expect(setting()).not.toBeInTheDocument();
+      unmount();
 
+      // Other domains listed: the picker marks this one "no longer available".
+      MOCK_CUSTOM_DOMAINS.domains = [{ ...connected, id: 'cd_2', domain: 'wiki.acme.com' }];
       renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
-
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('comfy.acme.com');
       expect(setting()).not.toBeInTheDocument();
     });
 

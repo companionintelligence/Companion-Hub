@@ -271,10 +271,11 @@ export const InstallForm: React.FC<IProps> = ({
   const customDomains = useMemo(() => customDomainsData?.domains ?? EMPTY_CUSTOM_DOMAINS, [customDomainsData?.domains]);
 
   /*
-   * The auto-restart switch shows only once the picker holds a custom domain. With
-   * no domain in view it asked about nothing, and a domain connected later from the
-   * portal still gets the default: a person confirms the restart. An app saved with
-   * the switch on keeps it on screen, so a setting in force can always be turned off.
+   * The auto-restart switch shows only once the picker holds one of the organization's
+   * domains, matched the way the picker marks one "no longer available". With no domain
+   * in view it asked about nothing, and a domain connected later from the portal still
+   * gets the default: a person confirms the restart. An app saved with the switch on
+   * keeps it on screen, so a setting in force can always be turned off.
    */
   const savedAutoRestart = initialValues?.autoRestartOnDomainChange === true;
   const watchCustomDomain = watch('customDomain');
@@ -282,7 +283,7 @@ export const InstallForm: React.FC<IProps> = ({
   const offerAutoRestart =
     watchExposureMode === 'cloudflare' &&
     customDomainsData?.supported === true &&
-    ((customDomains.length > 0 && Boolean(watchCustomDomain)) || savedAutoRestart);
+    (customDomains.some((entry) => entry.domain === watchCustomDomain) || savedAutoRestart);
 
   // A hidden switch never turns the restart on: turning it on and then clearing the
   // domain must not save a choice nobody can see any more.
