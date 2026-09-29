@@ -60,7 +60,14 @@ import {
   type ThroughputTarget,
 } from './hub-pool-throughput.service';
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
-import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
+import {
+  POOL_AFFINITY_HEADER,
+  PrefixAffinityStore,
+  type IPrefixAffinityStore,
+  applyPrefixAffinity,
+  derivePrefixKey,
+  type PrefixKey,
+} from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
 import { judgeRequestError, readRequestErrorVerdict, type PoolRequestErrorVerdict, type UnconfirmedRequestError } from './hub-pool-request-error';
 import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
@@ -1186,11 +1193,19 @@ export class PoolProxyService {
   private readonly throughput: HubPoolThroughputService;
   private readonly localHealth: HubPoolLocalHealthService;
   /**
-   * Where each recent prompt prefix was last placed — see `hub-pool-prefix-affinity.ts`. Owned here
-   * rather than injected: the proxy is its only reader and writer, and a process-local hint has no
-   * other consumer to share it with.
+   * Where each recent prompt prefix was last placed — see `hub-pool-prefix-affinity.ts`.
+   * Defaults to in-memory PrefixAffinityStore; can be swapped for DistributedPrefixAffinityStore.
    */
-  private readonly prefixAffinity = new PrefixAffinityStore();
+  private prefixAffinity: IPrefixAffinityStore = new PrefixAffinityStore();
+
+  /** Pluggable prefix affinity store for multi-gateway deployments. */
+  setPrefixAffinityStore(store: IPrefixAffinityStore): void {
+    this.prefixAffinity = store;
+  }
+
+  getPrefixAffinityStore(): IPrefixAffinityStore {
+    return this.prefixAffinity;
+  }
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -1266,6 +1281,11 @@ export class PoolProxyService {
   /** Read per request, like {@link localAffinity}. `0` (the default) keeps affinity out of ranking entirely, and no prefix is hashed or remembered — see {@link rankCandidates}. */
   private prefixAffinityMaxInFlight(): number {
     return this.configuration.getHubPoolPreferences().poolPrefixAffinityMaxInFlight;
+  }
+
+  /** Read per request: relative affinity margin to prevent prefix thrashing under high concurrency. */
+  private prefixAffinityMargin(): number {
+    return this.configuration.getHubPoolPreferences().poolPrefixAffinityMargin;
   }
 
   /** Read per request, like {@link localAffinity}. `0` (the default) keeps slot counts out of ranking entirely — see {@link applyAdvertisedSlots}. */
@@ -1412,7 +1432,7 @@ export class PoolProxyService {
     // `weight ? … : 0` rather than always comparing: at weight 0 the middle key must not exist, or a
     // measured node would start winning ties that a static hardware tier decides today.
     ranked.sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank);
-    const affinity = this.applyRememberedPlacement(ranked, prompt?.prefixKey);
+    const affinity = await this.applyRememberedPlacement(ranked, prompt?.prefixKey);
     const ordered = affinity.ordered.map((entry) => entry.candidate);
     // Shared, so the three prompt-size decisions cost one serialisation between them at most.
     const measurePromptBytes = prompt ? memoize(prompt.bytes) : undefined;
@@ -1497,12 +1517,13 @@ export class PoolProxyService {
    * request affinity changed or stood aside on, never at info, for the same reason the ceiling logs
    * that way: the routing log is where decisions are read, and an agent turns all day.
    */
-  private applyRememberedPlacement(
+  private async applyRememberedPlacement(
     ranked: RankedCandidate[],
     prefixKey: (() => PrefixKey | null) | undefined,
-  ): { ordered: RankedCandidate[]; key: PrefixKey | null; describe: (first: PoolCandidate | undefined) => PoolRoutingAffinity | null } {
+  ): Promise<{ ordered: RankedCandidate[]; key: PrefixKey | null; describe: (first: PoolCandidate | undefined) => PoolRoutingAffinity | null }> {
     const nothing = { ordered: ranked, key: null, describe: () => null };
     const maxInFlight = this.prefixAffinityMaxInFlight();
+    const affinityMargin = this.prefixAffinityMargin();
     // `!(> 0)` rather than `<= 0`: a settings object from before this knob existed reads `undefined`
     // here, and that must read as off, never as "no limit".
     if (!(maxInFlight > 0) || !prefixKey) {
@@ -1512,8 +1533,8 @@ export class PoolProxyService {
     if (!key) {
       return nothing;
     }
-    const remembered = this.prefixAffinity.get(key.key);
-    const { ordered, sticky } = applyPrefixAffinity(ranked, remembered, maxInFlight);
+    const remembered = await this.prefixAffinity.get(key.key);
+    const { ordered, sticky } = applyPrefixAffinity(ranked, remembered, maxInFlight, affinityMargin);
     return {
       ordered,
       key,
@@ -1522,11 +1543,11 @@ export class PoolProxyService {
         if (sticky && outcome === 'skipped') {
           this.logger.debug(
             sticky.inFlight >= maxInFlight
-              ? `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix but has ${sticky.inFlight} in flight (limit ${maxInFlight}); ranking as usual`
+              ? `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix but has ${sticky.inFlight} in flight (limit ${maxInFlight}, margin ${affinityMargin}); ranking as usual`
               : `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
           );
         }
-        return { key: key.source, outcome, remembered: remembered?.node ?? null, inFlight: sticky?.inFlight ?? null, maxInFlight };
+        return { key: key.source, outcome, remembered: remembered?.node ?? null, inFlight: sticky?.inFlight ?? null, maxInFlight, affinityMargin };
       },
     };
   }
@@ -2082,7 +2103,7 @@ export class PoolProxyService {
       // tool calls arrive while the first is still prefilling — finds the engine already reading
       // the shared prefix. A failover overwrites it with the candidate that actually took the work.
       if (affinity.key) {
-        this.prefixAffinity.remember(affinity.key.key, candidate);
+        await this.prefixAffinity.remember(affinity.key.key, candidate);
       }
       try {
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
@@ -2210,7 +2231,7 @@ export class PoolProxyService {
     );
     // Nothing holds this prefix now — the last engine to try it gave up — so the next call ranks fresh.
     if (affinity.key) {
-      this.prefixAffinity.forget(affinity.key.key);
+      await this.prefixAffinity.forget(affinity.key.key);
     }
     if (!res.headersSent) {
       res.setHeader(POOL_REQUEST_ID_HEADER, row.id);

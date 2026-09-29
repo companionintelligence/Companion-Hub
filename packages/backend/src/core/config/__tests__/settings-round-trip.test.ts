@@ -104,6 +104,7 @@ const ONE_OF_EVERY_KEY: Required<PersistedSettings> = {
   // Non-default, like the rest: the default is 0.
   hubPoolProbeSnapshotTtlMs: 2500,
   hubPoolPrefixAffinityMaxInFlight: 3,
+  hubPoolPrefixAffinityMargin: 2,
   // Non-default: the default is 0 (off).
   hubPoolSlotAwareness: 1,
   inferenceSupervisionMode: 'observe',

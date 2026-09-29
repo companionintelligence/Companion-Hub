@@ -7008,6 +7008,11 @@
                 "minimum": 0,
                 "maximum": 20
               },
+              "hubPoolPrefixAffinityMargin": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10
+              },
               "hubPoolSlotAwareness": {
                 "type": "integer",
                 "minimum": 0,
@@ -7541,6 +7546,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 20
+          },
+          "hubPoolPrefixAffinityMargin": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
           },
           "hubPoolSlotAwareness": {
             "type": "integer",
@@ -13104,6 +13114,11 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 20
+          },
+          "poolPrefixAffinityMargin": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10
           },
           "poolSlotAwareness": {
             "type": "integer",

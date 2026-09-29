@@ -7,6 +7,7 @@ import {
   MAX_POOL_HEALTH_POLL_SECONDS,
   MAX_POOL_LOCAL_AFFINITY,
   MAX_POOL_MAX_PROMPT_TOKENS,
+  MAX_POOL_PREFIX_AFFINITY_MARGIN,
   MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   MAX_POOL_PRESSURE_WEIGHT,
   MAX_POOL_PROBE_SNAPSHOT_TTL_MS,
@@ -14,6 +15,7 @@ import {
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_MAX_PROMPT_TOKENS,
+  MIN_POOL_PREFIX_AFFINITY_MARGIN,
   MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   MIN_POOL_PRESSURE_WEIGHT,
   MIN_POOL_PROBE_SNAPSHOT_TTL_MS,
@@ -65,6 +67,10 @@ const poolProbeSnapshotTtlMsSchema = z
 const poolPrefixAffinityMaxInFlightSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT).max(MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT));
+
+const poolPrefixAffinityMarginSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_POOL_PREFIX_AFFINITY_MARGIN).max(MAX_POOL_PREFIX_AFFINITY_MARGIN));
 
 const poolSlotAwarenessSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -212,6 +218,7 @@ export const settingsSchema = z.object({
   hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional().catch(undefined),
   hubPoolProbeSnapshotTtlMs: poolProbeSnapshotTtlMsSchema.optional().catch(undefined),
   hubPoolPrefixAffinityMaxInFlight: poolPrefixAffinityMaxInFlightSchema.optional().catch(undefined),
+  hubPoolPrefixAffinityMargin: poolPrefixAffinityMarginSchema.optional().catch(undefined),
   hubPoolSlotAwareness: poolSlotAwarenessSchema.optional().catch(undefined),
   // Opt-OUT: absent means every app is handed this Hub's proxy as its inference endpoint, peers or
   // not. See `HubPoolPreferences.poolRouteAppsAlways`.
@@ -410,6 +417,7 @@ export class UserSettingsBody extends createZodDto(
     hubPoolMaxPromptTokens: poolMaxPromptTokensSchema.optional(),
     hubPoolProbeSnapshotTtlMs: poolProbeSnapshotTtlMsSchema.optional(),
     hubPoolPrefixAffinityMaxInFlight: poolPrefixAffinityMaxInFlightSchema.optional(),
+    hubPoolPrefixAffinityMargin: poolPrefixAffinityMarginSchema.optional(),
     hubPoolSlotAwareness: poolSlotAwarenessSchema.optional(),
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
     inferenceMaxNumCtx: inferenceMaxNumCtxSchema.optional(),

@@ -96,6 +96,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolMaxPromptTokens: number | null;
         poolProbeSnapshotTtlMs: number;
         poolPrefixAffinityMaxInFlight: number;
+        poolPrefixAffinityMargin: number;
         poolSlotAwareness: number;
         poolPins: unknown[];
       };
@@ -139,6 +140,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // until an operator PATCHes a limit onto a canary node. Off by default for the same reason as
       // the snapshot TTL above: the canary is measured against a node that took the same image.
       poolPrefixAffinityMaxInFlight: 0,
+      poolPrefixAffinityMargin: 0,
       // 0 is the pre-slots build: no slot count is read and the ranker alone decides, until an
       // operator PATCHes it on at a canary node — off by default for the same reason as the two above.
       poolSlotAwareness: 0,
@@ -269,6 +271,19 @@ describe('ConfigurationService Hub Pool preferences', () => {
     // `?? DEFAULT` must not swallow a 0: it is the operator's way back to the pre-affinity build.
     expect(svc.mergeSettingsToDisk.mock.calls[1][0]).toEqual({ hubPoolPrefixAffinityMaxInFlight: 0 });
     expect(svc.getHubPoolPreferences().poolPrefixAffinityMaxInFlight).toBe(0);
+  });
+
+  it('persists the prefix-affinity margin and reads it back, including 0 for off', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolPrefixAffinityMargin: 3 });
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolPrefixAffinityMargin: 3 });
+    expect(svc.getHubPoolPreferences().poolPrefixAffinityMargin).toBe(3);
+
+    await svc.setHubPoolPreferences({ poolPrefixAffinityMargin: 0 });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[1][0]).toEqual({ hubPoolPrefixAffinityMargin: 0 });
+    expect(svc.getHubPoolPreferences().poolPrefixAffinityMargin).toBe(0);
   });
 
   it('clears a prompt ceiling by removing the key, and reads the cleared value as no ceiling', async () => {

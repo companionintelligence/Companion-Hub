@@ -82,8 +82,9 @@ export type AppContextDto = {
         inferenceVisionModel?: string;
         inferenceVllmApiKey?: string;
         inferenceVllmUrl?: string;
-        inferenceMtplxUrl?: string;
-        inferenceDsparkUrl?: string;
+        inferenceOmlxUrl?: string;
+        inferenceDecodeEndpoint?: string;
+        inferenceEncodeEndpoint?: string;
         inferenceMaxNumCtx?: number;
         inferenceOllamaSlots?: number;
         hubPoolEnabled?: boolean;
@@ -97,6 +98,7 @@ export type AppContextDto = {
         hubPoolMaxPromptTokens?: number;
         hubPoolProbeSnapshotTtlMs?: number;
         hubPoolPrefixAffinityMaxInFlight?: number;
+        hubPoolPrefixAffinityMargin?: number;
         hubPoolSlotAwareness?: number;
         hubPoolRouteAppsAlways?: boolean;
         inferenceSupervisionMode?: 'off' | 'observe';
@@ -191,8 +193,9 @@ export type UserSettingsBody = {
     inferenceVisionModel?: string;
     inferenceVllmApiKey?: string;
     inferenceVllmUrl?: string;
-    inferenceMtplxUrl?: string;
-    inferenceDsparkUrl?: string;
+    inferenceOmlxUrl?: string;
+    inferenceDecodeEndpoint?: string;
+    inferenceEncodeEndpoint?: string;
     inferenceMaxNumCtx?: number;
     inferenceOllamaSlots?: number;
     hubPoolEnabled?: boolean;
@@ -206,6 +209,7 @@ export type UserSettingsBody = {
     hubPoolMaxPromptTokens?: number;
     hubPoolProbeSnapshotTtlMs?: number;
     hubPoolPrefixAffinityMaxInFlight?: number;
+    hubPoolPrefixAffinityMargin?: number;
     hubPoolSlotAwareness?: number;
     hubPoolRouteAppsAlways?: boolean;
     inferenceSupervisionMode?: 'off' | 'observe';
@@ -228,6 +232,16 @@ export type UserSettingsBody = {
 
 export type AcknowledgeWelcomeBody = {
     allowErrorMonitoring: boolean;
+};
+
+export type CreateApiKeyBody = {
+    name: string;
+    capability: 'read' | 'write' | 'full';
+    scope: 'mcp' | 'inference';
+};
+
+export type UpdateApiKeyBody = {
+    capability: 'read' | 'write' | 'full';
 };
 
 export type LoadDto = {
@@ -1400,8 +1414,9 @@ export type UpdateInferencePreferencesBody = {
     visionModel?: string;
     vllmApiKey?: string;
     vllmUrl?: string;
-    mtplxUrl?: string;
-    dsparkUrl?: string;
+    omlxUrl?: string;
+    decodeEndpoint?: string;
+    encodeEndpoint?: string;
     maxNumCtx?: number;
     ollamaSlots?: number;
 };
@@ -1409,16 +1424,6 @@ export type UpdateInferencePreferencesBody = {
 export type UpdateRocmInstallStateBody = {
     phase: 'idle' | 'downloading' | 'installing' | 'reboot_required' | 'failed' | 'completed';
     message?: string;
-};
-
-export type CreateApiKeyBody = {
-    name: string;
-    capability: 'read' | 'write' | 'full';
-    scope: 'mcp' | 'inference';
-};
-
-export type UpdateApiKeyBody = {
-    capability: 'read' | 'write' | 'full';
 };
 
 export type UpdateHubPoolPreferencesBody = {
@@ -1433,6 +1438,7 @@ export type UpdateHubPoolPreferencesBody = {
     poolMaxPromptTokens?: number;
     poolProbeSnapshotTtlMs?: number;
     poolPrefixAffinityMaxInFlight?: number;
+    poolPrefixAffinityMargin?: number;
     poolSlotAwareness?: number;
     poolRouteAppsAlways?: boolean;
 };
@@ -2146,8 +2152,9 @@ export type StreamHubLogsQueryDto = {
 export type OnboardingProfileQueryDto = {
     backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
     vllmUrl?: string;
-    mtplxUrl?: string;
-    dsparkUrl?: string;
+    omlxUrl?: string;
+    decodeEndpoint?: string;
+    encodeEndpoint?: string;
 };
 
 export type RuntimeModelsQueryDto = {
@@ -2714,6 +2721,65 @@ export type RegisterDeviceResponses = {
     200: unknown;
 };
 
+export type ListKeysData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys';
+};
+
+export type ListKeysResponses = {
+    200: unknown;
+};
+
+export type CreateKeyData = {
+    body: CreateApiKeyBody;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys';
+};
+
+export type CreateKeyResponses = {
+    201: unknown;
+};
+
+export type GrantableCapabilitiesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/api-keys/grantable';
+};
+
+export type GrantableCapabilitiesResponses = {
+    200: unknown;
+};
+
+export type RevokeKeyData = {
+    body?: never;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/api-keys/{id}';
+};
+
+export type RevokeKeyResponses = {
+    200: unknown;
+};
+
+export type UpdateKeyData = {
+    body: UpdateApiKeyBody;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/api-keys/{id}';
+};
+
+export type UpdateKeyResponses = {
+    200: unknown;
+};
+
 export type GetPortalConfigData = {
     body?: never;
     path?: never;
@@ -3094,6 +3160,10 @@ export type FactoryResetData = {
 };
 
 export type FactoryResetErrors = {
+    /**
+     * Confirmation does not match this device name
+     */
+    400: unknown;
     /**
      * Operator authentication required
      */
@@ -4274,8 +4344,9 @@ export type GetOnboardingProfileData = {
     query?: {
         backend?: 'ollama' | 'vllm' | 'lemonade' | 'omlx';
         vllmUrl?: string;
-        mtplxUrl?: string;
-        dsparkUrl?: string;
+        omlxUrl?: string;
+        decodeEndpoint?: string;
+        encodeEndpoint?: string;
     };
     url: '/api/inference/onboarding-profile';
 };
@@ -4325,62 +4396,29 @@ export type GetVllmStatusResponses = {
     200: unknown;
 };
 
-export type GetDsparkStatusData = {
+export type GetOmlxStatusData = {
     body?: never;
     path?: never;
     query?: {
         url?: string;
     };
-    url: '/api/inference/dspark/status';
+    url: '/api/inference/omlx/status';
 };
 
-export type GetDsparkStatusResponses = {
+export type GetOmlxStatusResponses = {
     200: unknown;
 };
 
-export type GetMtplxStatusData = {
+export type GetManualEndpointStatusData = {
     body?: never;
     path?: never;
-    query?: {
-        url?: string;
+    query: {
+        url: string;
     };
-    url: '/api/inference/mtplx/status';
+    url: '/api/inference/manual-endpoint/status';
 };
 
-export type GetMtplxStatusResponses = {
-    200: unknown;
-};
-
-export type GetLlamacppStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/inference/llamacpp/status';
-};
-
-export type GetLlamacppStatusResponses = {
-    200: unknown;
-};
-
-export type GetLmStudioStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/inference/lmstudio/status';
-};
-
-export type GetLmStudioStatusResponses = {
-    200: unknown;
-};
-
-export type GetLuceboxStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/inference/lucebox/status';
-};
-
-export type GetLuceboxStatusResponses = {
+export type GetManualEndpointStatusResponses = {
     200: unknown;
 };
 
@@ -4431,65 +4469,6 @@ export type GetAppCredentialsEnv1Data = {
 };
 
 export type GetAppCredentialsEnv1Responses = {
-    200: unknown;
-};
-
-export type ListKeysData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/api-keys';
-};
-
-export type ListKeysResponses = {
-    200: unknown;
-};
-
-export type CreateKeyData = {
-    body: CreateApiKeyBody;
-    path?: never;
-    query?: never;
-    url: '/api/api-keys';
-};
-
-export type CreateKeyResponses = {
-    201: unknown;
-};
-
-export type GrantableCapabilitiesData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/api-keys/grantable';
-};
-
-export type GrantableCapabilitiesResponses = {
-    200: unknown;
-};
-
-export type RevokeKeyData = {
-    body?: never;
-    path: {
-        id: number;
-    };
-    query?: never;
-    url: '/api/api-keys/{id}';
-};
-
-export type RevokeKeyResponses = {
-    200: unknown;
-};
-
-export type UpdateKeyData = {
-    body: UpdateApiKeyBody;
-    path: {
-        id: number;
-    };
-    query?: never;
-    url: '/api/api-keys/{id}';
-};
-
-export type UpdateKeyResponses = {
     200: unknown;
 };
 
