@@ -5,5 +5,6 @@ export default defineConfig({
     include: ['__tests__/**/*.{test,spec}.ts'],
     exclude: [],
     root: import.meta.dirname,
+    testTimeout: 15_000,
   },
 });

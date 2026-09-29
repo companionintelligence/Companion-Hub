@@ -641,8 +641,8 @@ describe('AuthMiddleware and qa:read API keys', () => {
 });
 
 describe("AuthMiddleware and Companion Portal's push key", () => {
-  const PUSH_KEY = 'abcdef01' + 'c'.repeat(56);
-  const OTHER_KEY = 'abcdef01' + 'd'.repeat(56); // same fingerprint, not the key
+  const PUSH_KEY = `abcdef01${'c'.repeat(56)}`;
+  const OTHER_KEY = `abcdef01${'d'.repeat(56)}`; // same fingerprint, not the key
   const LOCAL_KEY = 'e'.repeat(64);
   const DEVICE_KEY = 'portal-issued-device-key';
   const sessionManager = { resolveSessionUserId: vi.fn(), getSessionExpiresAt: vi.fn(), touchSession: vi.fn(), destroyAllSessionsByUserId: vi.fn() };

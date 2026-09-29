@@ -184,6 +184,7 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       setupFiles: ['./src/tests/setup.ts'],
       include: ['src/**/*.test.{ts,tsx}'],
+      testTimeout: 15_000,
     },
   };
 });

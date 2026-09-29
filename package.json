@@ -16,6 +16,7 @@
     "build": "turbo run build",
     "tsc": "turbo run tsc",
     "test": "turbo test && pnpm run test:cli && pnpm run test:entrypoint",
+    "test:coverage": "turbo run test:coverage",
     "test:entrypoint": "sh test/entrypoint/run.sh",
     "test:integration": "turbo run test:integration",
     "test:e2e": "bash e2e/pre-test-cleanup.sh && pnpm exec tsx scripts/run-e2e.ts",
