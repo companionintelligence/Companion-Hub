@@ -16,7 +16,7 @@ import { useAppContext } from '@/context/app-context';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
-import { preselectedPublicDomain } from '@/modules/app/components/install-form/preselected-public-domain';
+import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import { useCallback, useEffect, useMemo } from 'react';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
@@ -47,10 +47,10 @@ export default function PortExposeCreatePage() {
     ...getDomainsOptions(),
     enabled: cloudflareAvailable,
   });
-  const availableDomains = useMemo(
-    () => selectOfferedDomains(getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS, domain),
-    [getDomains.data?.domains, domain],
-  );
+  // A new app, so only what Companion Portal offers for a new name: never the Hub's own zone where it
+  // takes none (`ci.computer`).
+  const availableDomains = useMemo(() => selectOfferedDomains(getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS), [getDomains.data?.domains]);
+  const domainListNote = domainListNoteFor(getDomains);
 
   const {
     register,
@@ -72,6 +72,15 @@ export default function PortExposeCreatePage() {
   const watchLocalSubdomain = watch('localSubdomain');
   const watchPublicDomain = watch('publicDomain');
   const watchName = watch('name');
+  // What the page shows, checks and saves: `undefined` until Companion Portal's list gives the app a
+  // domain. See `publicDomainToUse`.
+  const publicDomain = publicDomainToUse({
+    chosen: watchPublicDomain,
+    hubDomain: domain,
+    keepsPublished: false,
+    availableDomains,
+    listNote: domainListNote,
+  });
 
   // A new app, so the domain Companion Portal preselects, as in the install form.
   // Without it the form sends the Hub's own zone, which may take no new names.
@@ -101,7 +110,8 @@ export default function PortExposeCreatePage() {
           appSubdomain: sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain),
           hubSubdomain: ciHubDeviceSlug ? `hub-${ciHubDeviceSlug}-${orgSlug}` : undefined,
           orgSlug,
-          publicDomainRoot: watchPublicDomain || domain,
+          // Only the name's middle is read from this preview.
+          publicDomainRoot: publicDomain || domain,
         })
       : null;
 
@@ -120,9 +130,10 @@ export default function PortExposeCreatePage() {
   );
 
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
-    enabled: watchExposureMode === 'cloudflare' && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
+    // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
+    enabled: watchExposureMode === 'cloudflare' && Boolean(publicDomain) && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
-    selectedDomain: watchPublicDomain || domain,
+    selectedDomain: publicDomain,
     checkDnsAvailability,
     setError,
     clearErrors,
@@ -202,9 +213,10 @@ export default function PortExposeCreatePage() {
         return;
       }
 
+      // With no domain yet the app names none, and Companion Portal places it; there is nothing to ask.
       try {
-        const response = await checkDnsAvailability(subdomain, values.publicDomain || domain);
-        if (response.ok) {
+        const response = publicDomain ? await checkDnsAvailability(subdomain, publicDomain) : undefined;
+        if (response?.ok) {
           const data = await response.json();
           if (!data.available) {
             if (data.reason === 'zone_unreachable') {
@@ -231,7 +243,7 @@ export default function PortExposeCreatePage() {
       port,
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || slug) : undefined,
-      publicDomain: exposureMode === 'cloudflare' ? values.publicDomain || domain : undefined,
+      publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
     });
   };
 
@@ -340,8 +352,7 @@ export default function PortExposeCreatePage() {
                 <CloudflareSubdomainField
                   control={control}
                   availableDomains={availableDomains}
-                  watchPublicDomain={watchPublicDomain}
-                  domain={domain}
+                  shownDomain={publicDomain}
                   cloudflareSuffix={cloudflareSuffix}
                   register={register}
                   loading={createPortExpose.isPending}
@@ -349,7 +360,7 @@ export default function PortExposeCreatePage() {
                   publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
                   placeholder={defaultAppSubdomain}
                   isCheckingDns={isCheckingDns}
-                  domainListNote={domainListNoteFor(getDomains)}
+                  domainListNote={domainListNote}
                   onRetryDomainList={() => void getDomains.refetch()}
                   t={t}
                 />
