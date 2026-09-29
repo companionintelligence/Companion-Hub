@@ -8,6 +8,7 @@ import {
   cancelPairingPin,
   fetchInferencePreferences,
   formatContextCapResultLines,
+  formatMdnsPairRefusalLines,
   formatLocalContextCapLines,
   formatLocalOllamaSlotsLines,
   formatOllamaSlotsResultLines,
@@ -28,6 +29,7 @@ import {
   formatPoolTimestamp,
   formatPromptCeilingResultLines,
   deletePoolPin,
+  isMdnsPeerName,
   setPoolPin,
   probePoolAddress,
   mintPairingPin,
@@ -492,6 +494,28 @@ describe('hub-pool-cli discovery', () => {
     const devices: DiscoverablePoolPeer[] = [{ tailscaleDeviceId: '', nodeFqdn: PEER_A, hostname: '[31mred[0m' }];
 
     expect(formatPoolDiscoverLines(devices, false).join('\n')).not.toContain('[31m');
+  });
+});
+
+describe('hub-pool-cli pairing by a .local name', () => {
+  it('recognises a .local name the way the Hub does, and nothing else', () => {
+    // Mirrors the backend's isMdnsPeerName: the CLI refuses these before sending, the Hub with a 400.
+    for (const name of ['core-9.local', 'CORE-9.Local', 'core-9.local.', ' core-9.local ']) {
+      expect(isMdnsPeerName(name)).toBe(true);
+    }
+    for (const name of [PEER_A, 'local.tailxyz.ts.net', 'core-9.localhost', '192.168.1.42', 'mini-pc']) {
+      expect(isMdnsPeerName(name)).toBe(false);
+    }
+  });
+
+  it('explains the refusal with both ways that work, and sanitizes the typed name', () => {
+    const text = formatMdnsPairRefusalLines('core-9.local\u001b[31m').join('\n');
+
+    expect(text).toContain("Pool pairing needs the peer's tailnet name.");
+    expect(text).toContain('Nothing was sent.');
+    expect(text).toContain('cihub pool pair hub-b.your-tailnet.ts.net');
+    expect(text).toContain('cihub pool pair <address> --pin <digits>');
+    expect(text).not.toContain('\u001b');
   });
 });
 

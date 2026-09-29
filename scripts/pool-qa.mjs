@@ -510,6 +510,15 @@ function pollSeconds(status) {
 /** Find the row for a given FQDN in a `/status` or `/peers` payload. */
 const findPeerRow = (rows, fqdn) => (Array.isArray(rows) && fqdn ? (rows.find((row) => row.nodeFqdn === fqdn) ?? null) : null);
 
+/**
+ * A `/peers/discoverable` row that discovery actually attested, as opposed to one heard over LAN
+ * mDNS. Either mark makes a row unverified, as in the CLI's `isUnverifiedCandidate`: a Hub on the
+ * #1665 build sent `source: 'mdns'` with no `verified` flag, and copied a tailnet FQDN out of the
+ * announcement into `nodeFqdn`, so matching on the name alone could "find" beta through a LAN
+ * packet anything could have sent.
+ */
+const isAttestedDiscoveryRow = (row) => row?.source !== 'mdns' && row?.verified !== false;
+
 /** Does any healthy backend on this node hold the model? The exact predicate the ranker applies. */
 const backendsHold = (backends, model) =>
   Array.isArray(backends) &&
@@ -1176,8 +1185,10 @@ const SECTION_2 = [
       if (stop) return stop;
       const res = await call(ctx.core, `${POOL}/peers/discoverable`, { timeoutMs: DISCOVERY_TIMEOUT_MS });
       if (!res.ok) return fail(httpSummary(res));
-      const listed = (res.json ?? []).some((device) => device.nodeFqdn === ctx.beta.fqdn);
-      if (listed) return pass(`beta listed (${(res.json ?? []).length} discoverable device(s))`);
+      // Only an attested row counts: an mDNS row naming beta is a claim, not discovery (see isAttestedDiscoveryRow).
+      const attested = (Array.isArray(res.json) ? res.json : []).filter(isAttestedDiscoveryRow);
+      const listed = attested.some((device) => device.nodeFqdn === ctx.beta.fqdn);
+      if (listed) return pass(`beta listed (${attested.length} attested discoverable device(s))`);
       if (ctx.state.status.core?.tailscaleAdminApiConfigured !== true) {
         return blocked(
           'discovery unavailable: the Tailscale Admin API is not configured on core, so listDiscoverableDevices returns [] without probing',
@@ -1189,7 +1200,7 @@ const SECTION_2 = [
           'discovery cannot see beta: it probes https://<name> and no Tailscale cert is provisioned there — use pairing by address (2.8)',
         );
       }
-      return fail(`beta (${ctx.beta.fqdn}) absent from ${(res.json ?? []).length} discoverable device(s)`);
+      return fail(`beta (${ctx.beta.fqdn}) absent from ${attested.length} attested discoverable device(s)`);
     },
   },
   {

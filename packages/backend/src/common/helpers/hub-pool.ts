@@ -681,6 +681,29 @@ export function normalizePeerFqdn(raw: string): string | null {
 }
 
 /**
+ * Whether a peer name is in `.local`, the link-local domain multicast DNS answers for (RFC 6762).
+ *
+ * No tailnet hands out such a name — a MagicDNS name ends in the tailnet's own suffix — so a
+ * `.local` name an operator types to pair with can only have come from a LAN announcement, and
+ * anything on the Hub's networks can send one of those (see `HubPoolMdnsService`). Pairing by it
+ * would send this Hub's name, a fresh peer token and the PIN to whatever answers that name on the
+ * LAN, which is why operator-initiated pairing by name refuses it. Deliberately NOT folded into
+ * {@link normalizePeerFqdn}: that function also reads names off the wire and out of stored rows,
+ * and this is a rule about where an operator may point a pairing request, not about name shape.
+ */
+export function isMdnsPeerName(name: string): boolean {
+  const candidate = name.trim().toLowerCase().replace(/\.$/, '');
+  return candidate === 'local' || candidate.endsWith('.local');
+}
+
+/** The 400 for pairing by a `.local` name, shared by the DTO and `HubPoolPeerService` so both say the same thing. */
+export const MDNS_PEER_NAME_PAIRING_REFUSAL =
+  "Pool pairing needs the peer's tailnet name (for example hub-b.your-tailnet.ts.net), not a .local name. " +
+  'A .local name comes from an unverified LAN (mDNS) announcement, so whatever answers it would receive this ' +
+  "Hub's name, a new peer token and the PIN. To pair with a Hub you can reach only on the LAN, pair by its " +
+  'address with the pairing PIN from that Hub.';
+
+/**
  * Headers a reverse proxy in front of the Hub adds and a caller cannot remove.
  *
  * `cf-ray` is already the Hub's established "arrived through the Cloudflare tunnel" signal (see

@@ -23,6 +23,8 @@ import {
   describeHubPoolDisabled,
   effectivePeerPressureBand,
   isCapabilitiesSnapshotFresh,
+  isMdnsPeerName,
+  MDNS_PEER_NAME_PAIRING_REFUSAL,
   normalizePeerFqdn,
   POOL_CONTAINER_SAMPLER,
   resolveHubPoolDirections,
@@ -638,6 +640,11 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    */
   async initiatePairing(rawNodeFqdn: string, displayName?: string, pin?: string): Promise<HubPoolPeer> {
     const nodeFqdn = this.requireBareHostname(rawNodeFqdn);
+    // Re-checked here, not only in the DTO, for the same reason the hostname shape is: this is the
+    // method that dials the name with a fresh token (and the PIN), whoever called it.
+    if (isMdnsPeerName(nodeFqdn)) {
+      throw new BadRequestException(MDNS_PEER_NAME_PAIRING_REFUSAL);
+    }
     const existing = await this.repo.findByNodeFqdn(nodeFqdn);
     if (existing) {
       throw new ConflictException(`Already paired or pairing with ${nodeFqdn}`);
