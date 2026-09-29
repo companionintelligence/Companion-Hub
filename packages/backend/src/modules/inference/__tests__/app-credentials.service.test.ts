@@ -542,6 +542,68 @@ describe('AppCredentialsService', () => {
       await new Promise((resolve) => setImmediate(resolve));
       expect(modelPuller.startPull).not.toHaveBeenCalledWith('qwen-vllm', expect.anything());
     });
+
+    // The vLLM key is the credential for one server. Once pool routing points the app at this
+    // Hub, which admits apps by origin and never reads the bearer, handing it out only copied it
+    // into every app container and data dir.
+    describe('which bearer the app is handed', () => {
+      const routeThroughPool = (peers: boolean) => {
+        hubPoolPeerService.hasConnectedPeers.mockResolvedValue(peers);
+        hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([]);
+        configurationService.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: !peers } as never);
+        service.invalidateCache();
+      };
+
+      it('keeps the saved vLLM key for an app pointed straight at vLLM', async () => {
+        const config = await service.getCredentials('hermes-agent');
+
+        expect(config.env.HERMES_OPENAI_BASE_URL).toBe(VLLM_OPENAI_URL);
+        expect(config.env.HERMES_OPENAI_API_KEY).toBe('vllm-local');
+      });
+
+      it.each([
+        ['openclaw', 'OPENAI_API_BASE', 'OPENAI_API_KEY'],
+        ['hermes-agent', 'HERMES_OPENAI_BASE_URL', 'HERMES_OPENAI_API_KEY'],
+        ['ci-mentra', 'LLM_API_BASE', 'LLM_API_KEY'],
+      ] as const)('hands %s the placeholder, not the vLLM key, once peers route it through the pool', async (slug, baseKey, apiKey) => {
+        routeThroughPool(true);
+
+        const config = await service.getCredentials(slug);
+
+        expect(config.env[baseKey]).toMatch(/\/api\/inference\/pool\/v1$/);
+        expect(config.env[apiKey]).toBe('vllm');
+        expect(Object.values(config.env)).not.toContain('vllm-local');
+        // Still declared, so the bootstrap scripts overwrite a key an older Hub wrote.
+        expect(config.managedKeys).toContain(apiKey);
+      });
+
+      it('hands the placeholder when poolRouteAppsAlways puts a peerless Hub in front of its own vLLM', async () => {
+        routeThroughPool(false);
+
+        const config = await service.getCredentials('openclaw');
+
+        expect(config.endpointUrl).toMatch(/\/api\/inference\/pool\/v1$/);
+        expect(config.env.OPENAI_API_KEY).toBe('vllm');
+      });
+
+      it('never sends VLLM_API_KEY from the environment through the proxy either', async () => {
+        configurationService.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'vllm',
+          preferredModel: 'qwen-vllm',
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+          preferredVllmApiKey: null,
+          preferredVllmUrl: VLLM_BASE_URL,
+        } as never);
+        vllmBackend.getApiKey.mockReturnValue('env-vllm-key');
+        routeThroughPool(true);
+
+        const config = await service.getCredentials('openclaw');
+
+        expect(config.env.OPENAI_API_KEY).toBe('vllm');
+      });
+    });
   });
 
   describe('getCredentials — host-served oMLX', () => {
@@ -564,6 +626,50 @@ describe('AppCredentialsService', () => {
 
       expect(config.env.OPENAI_API_KEY).toBe('managed-omlx-key');
       expect(config.endpointUrl).toBe('http://host.docker.internal:8000/v1');
+    });
+
+    it('keeps OMLX_API_KEY out of an app the pool proxy fronts', async () => {
+      const model = makeLlm('qwen-omlx', 'mlx-community/Qwen3-8B-4bit', 8000, 16000, 'omlx');
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'omlx',
+        preferredModel: 'qwen-omlx',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      } as never);
+      configurationService.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
+      omlxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      omlxBackend.getApiKey.mockReturnValue('managed-omlx-key');
+      omlxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('hermes-agent');
+
+      expect(config.routedThroughPool).toBe(true);
+      expect(config.env.HERMES_OPENAI_API_KEY).toBe('omlx');
+    });
+  });
+
+  describe('getCredentials — Lemonade behind the pool', () => {
+    it('hands the placeholder, not LEMONADE_API_KEY, through the proxy, and the key to a direct app', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'lemonade',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      } as never);
+      lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
+      lemonadeBackend.getApiKey.mockReturnValue('lemonade-secret');
+      lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+
+      const direct = await service.getCredentials('openclaw');
+      expect(direct.env.OPENAI_API_KEY).toBe('lemonade-secret');
+
+      configurationService.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
+      service.invalidateCache();
+      const pooled = await service.getCredentials('openclaw');
+      expect(pooled.env.OPENAI_API_KEY).toBe('lemonade');
     });
   });
 

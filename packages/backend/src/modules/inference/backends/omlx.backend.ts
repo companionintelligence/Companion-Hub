@@ -8,6 +8,7 @@ import type { InferenceBackend } from './backend.interface';
 import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
 import { foreignEngineHealth, openAiModelIds, openAiModelOwner } from './engine-identity';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
+import { isSameServer } from '../engine-credential-scope';
 
 /**
  * oMLX (github.com/jundot/omlx) is the Apple Silicon MLX server.
@@ -75,6 +76,21 @@ export class OmlxBackend implements InferenceBackend {
     return apiKeyOverride?.trim() || process.env.OMLX_API_KEY?.trim() || undefined;
   }
 
+  /**
+   * The key a probe of `probeUrl` carries: one typed for this probe goes wherever the operator is
+   * probing, and OMLX_API_KEY only to the oMLX server it is configured for (`getBaseUrl`, compared
+   * by `isSameServer`). `omlx/status` and `onboarding-profile` hand their `?url=` straight to
+   * {@link healthCheck}, so attaching the saved key to any URL let any caller of those routes
+   * collect it by naming a listener.
+   */
+  private probeApiKey(probeUrl: string, apiKeyOverride?: string): { apiKey: string | undefined; savedKeyWithheld: boolean } {
+    const typed = apiKeyOverride?.trim();
+    if (typed) return { apiKey: typed, savedKeyWithheld: false };
+    const saved = this.getApiKey();
+    if (isSameServer(probeUrl, this.getBaseUrl())) return { apiKey: saved, savedKeyWithheld: false };
+    return { apiKey: undefined, savedKeyWithheld: Boolean(saved) };
+  }
+
   /** The operator's own oMLX address: Settings first, then OMLX_URL. Undefined means the default. */
   private configuredUrl(): string | undefined {
     return this.configuration.getInferencePreferences().preferredOmlxUrl?.trim() || process.env.OMLX_URL?.trim() || undefined;
@@ -98,11 +114,12 @@ export class OmlxBackend implements InferenceBackend {
       return { running: false, healthy: false, modelsLoaded: [], error: OMLX_NOT_APPLE_SILICON_ERROR };
     }
     const baseUrl = baseUrlOverride?.trim() ? resolveOmlxProbeUrl(normalizeHostBackendUrl(baseUrlOverride)) : this.getBaseUrl();
+    const { apiKey, savedKeyWithheld } = this.probeApiKey(baseUrl, apiKeyOverride);
 
     const [health, models] = await Promise.allSettled([
       // Any status: oMLX answers 503 while it preloads, and that body identifies it as well as a 200.
       axios.get(`${baseUrl}/health`, { timeout: 5000, validateStatus: () => true }),
-      this.api.fetchModels(baseUrl, { timeout: 5000, apiKey: this.getApiKey(apiKeyOverride) }),
+      this.api.fetchModels(baseUrl, { timeout: 5000, apiKey }),
     ]);
     const healthSaysOmlx = health.status === 'fulfilled' && isOmlxHealthBody(health.value.data);
 
@@ -112,7 +129,9 @@ export class OmlxBackend implements InferenceBackend {
       const status = axios.isAxiosError(models.reason) ? models.reason.response?.status : undefined;
       const hint =
         status === 401 || status === 403
-          ? ' oMLX asks for an API key on /v1/models once it listens beyond loopback. Set OMLX_API_KEY to one of its keys.'
+          ? savedKeyWithheld
+            ? " oMLX asks for an API key on /v1/models once it listens beyond loopback. OMLX_API_KEY is sent only to the configured oMLX URL; enter this server's key to check it."
+            : ' oMLX asks for an API key on /v1/models once it listens beyond loopback. Set OMLX_API_KEY to one of its keys.'
           : '';
       return { running: true, healthy: false, modelsLoaded: [], error: `${message}.${hint}` };
     }

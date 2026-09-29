@@ -9,7 +9,7 @@ import { OllamaBackend } from './backends/ollama.backend';
 import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
-import { BACKEND_API_KEY } from './inference-env-resolver';
+import { appBearerFor } from './engine-credential-scope';
 import { cloudProviderManagedKeys } from './cloud-provider-env';
 import { appInferenceRequirements, checkModelRequirements, type AppInferenceRequirements } from './app-inference-requirements';
 import {
@@ -311,13 +311,10 @@ export class AppCredentialsService implements OnApplicationShutdown {
     // ─── Local (default) connection: app → active backend /v1 directly ───
     let provider: InferenceBackendType | 'cloud' = backendType;
     let endpointUrl = backendOpenAiUrl;
-    let apiKey = backend.getApiKey?.()?.trim() || BACKEND_API_KEY[backendType];
-    if (backendType === 'vllm') {
-      const customKey = preferences.preferredVllmApiKey?.trim();
-      if (customKey) {
-        apiKey = customKey;
-      }
-    }
+    // The engine's own credential. It is handed out only if the app ends up talking to the engine
+    // directly, which is decided after the cloud and pool overrides below.
+    const engineKey = (backendType === 'vllm' && preferences.preferredVllmApiKey?.trim()) || backend.getApiKey?.()?.trim();
+    let cloudKey: string | undefined;
 
     let chatModel: CuratedModel | null;
     let chatModelId: string | null;
@@ -371,7 +368,7 @@ export class AppCredentialsService implements OnApplicationShutdown {
     if (cloudProvider) {
       provider = 'cloud';
       endpointUrl = cloudProvider.baseUrl || endpointUrl;
-      apiKey = cloudProvider.apiKey || apiKey;
+      cloudKey = cloudProvider.apiKey;
       if (cloudProvider.defaultModel) {
         chatModelId = cloudProvider.defaultModel;
         chatModelError = null;
@@ -391,6 +388,11 @@ export class AppCredentialsService implements OnApplicationShutdown {
       endpointUrl = routed.openAiBaseUrl;
       ollamaHost = routed.ollamaHost;
     }
+
+    // Against the URL the app is actually handed. Through the pool proxy the engine key would sit in
+    // every app's container and data dir for nothing: the proxy admits apps by origin and never reads
+    // the bearer. And a cloud provider without a key of its own must not be sent the engine's.
+    const apiKey = cloudKey || appBearerFor({ endpointUrl, backendType, engineUrl: backendBaseUrl, engineKey });
 
     const env: Record<string, string> = {
       [keys.baseUrl]: endpointUrl,
