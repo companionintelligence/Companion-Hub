@@ -300,6 +300,44 @@ describe('DockerService', () => {
       );
     });
 
+    it('detaches the Hub before compose down, and attaches it only after a successful up', async () => {
+      const appUrn = 'test-app' as any;
+      mockComposeArgResolution();
+      const detach = vi.spyOn(service, 'detachHubFromAppNetworks').mockResolvedValue(undefined);
+      const attach = vi.spyOn(service, 'attachHubToAppNetworks').mockResolvedValue(undefined);
+
+      const spawnCompose = () => {
+        const probeProcess = createComposeProbeProcess(0);
+        const mockSpawnProcess = createMockSpawnProcess();
+        mockSpawnProcess.on = vi.fn().mockImplementation((event, handler) => {
+          if (event === 'close') {
+            queueMicrotask(() => handler(0));
+          }
+          return mockSpawnProcess;
+        });
+        (child_process.spawn as any).mockImplementationOnce(() => probeProcess).mockImplementationOnce(() => mockSpawnProcess);
+      };
+
+      try {
+        spawnCompose();
+        await service.composeApp(appUrn, 'down --remove-orphans');
+        expect(detach).toHaveBeenCalledWith(appUrn);
+        expect(attach).not.toHaveBeenCalled();
+        expect(detach.mock.invocationCallOrder[0]).toBeLessThan((child_process.spawn as any).mock.invocationCallOrder[0]);
+
+        detach.mockClear();
+        (child_process.spawn as any).mockReset();
+        spawnCompose();
+        await service.composeApp(appUrn, 'up -d');
+        expect(detach).not.toHaveBeenCalled();
+        expect(attach).toHaveBeenCalledWith(appUrn);
+        expect(attach.mock.invocationCallOrder[0]).toBeGreaterThan((child_process.spawn as any).mock.invocationCallOrder.at(-1));
+      } finally {
+        detach.mockRestore();
+        attach.mockRestore();
+      }
+    });
+
     const mockComposeArgResolution = () => {
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/apps/test-app/.env', content: 'FOO=BAR' });
       appFilesManager.getUserEnv.mockResolvedValue({ path: '/apps/test-app/user.env', content: null });
