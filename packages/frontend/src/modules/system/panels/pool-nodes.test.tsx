@@ -23,7 +23,7 @@ const READY = { pending: false, failed: false };
 function card(overrides: Partial<PoolNodeCard> & { key: string; label: string }): PoolNodeCard {
   return {
     local: false,
-    fqdn: `${overrides.key}.capybara-ulmer.ts.net`,
+    fqdn: `${overrides.key}.tailxyz.ts.net`,
     direction: 'inbound',
     status: 'connected',
     hardwareTier: 'high',
@@ -58,7 +58,7 @@ describe('PoolNodes', () => {
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Models held')).toBeTruthy();
-    expect(screen.getByText('core-2.capybara-ulmer.ts.net')).toBeTruthy();
+    expect(screen.getByText('core-2.tailxyz.ts.net')).toBeTruthy();
 
     await user.click(toggle);
     expect(screen.queryByText('Models held')).toBeNull();
