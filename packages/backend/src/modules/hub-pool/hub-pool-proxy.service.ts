@@ -60,14 +60,7 @@ import {
   type ThroughputTarget,
 } from './hub-pool-throughput.service';
 import { injectUsageOptIn, tapResponseUsageWhileStreaming, type EngineTimings, type ResponseTapObserver } from './response-usage-tap';
-import {
-  POOL_AFFINITY_HEADER,
-  PrefixAffinityStore,
-  type IPrefixAffinityStore,
-  applyPrefixAffinity,
-  derivePrefixKey,
-  type PrefixKey,
-} from './hub-pool-prefix-affinity';
+import { POOL_AFFINITY_HEADER, PrefixAffinityStore, applyPrefixAffinity, derivePrefixKey, type PrefixKey } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
 import {
   judgeRequestError,
@@ -464,9 +457,32 @@ const TRANSPORT_4XX = new Set([408, 429]);
 /**
  * Additionally retryable when the candidate is a *peer*: everything on this list is the peer's own
  * hop answering about the pairing (PoolPeerGuard 401, not-connected 403, a route the peer's build
- * doesn't have 404), not the application's request being wrong.
+ * doesn't have 404), not the application's request being wrong — or, for a 401/403 the peer marked
+ * as relayed (see {@link isRelayedEngineResponse}), one of its engines refusing its own key.
  */
 const PEER_TRANSPORT_4XX = new Set([401, 403, 404, 408, 429]);
+
+/**
+ * Whether a peer's response is its ENGINE's answer, relayed, rather than the peer Hub's own.
+ *
+ * A peer stamps {@link POOL_BACKEND_HEADER} — the engine that answered — on everything it relays from
+ * `/inference/pool/local/*` (see `forwardToLocalBackendAndRespond`), and nothing else it sends carries
+ * it: its guard and its `forwardLocal` refusals are written before any engine is asked. The sender
+ * needs the difference for one reason. A 401 or 403 from the peer Hub means it no longer honours this
+ * Hub's pairing, and its cached inventory is stale; the same status from a vLLM, Lemonade or oMLX
+ * behind it means THAT engine's key does not match the peer's own setting, which says nothing about
+ * the pairing and nothing about the peer's other engines. Reading the second as the first dropped the
+ * peer's whole inventory, Ollama models included, over one misconfigured engine.
+ *
+ * A peer on a build before the stamp sends no mark, so its relayed 401/403 still reads as a pairing
+ * refusal — the behaviour every build had until this one.
+ */
+export function isRelayedEngineResponse(headers: Headers): boolean {
+  return headers.has(POOL_BACKEND_HEADER);
+}
+
+/** The statuses a peer answers about the pairing itself; see {@link isRelayedEngineResponse} for the one case they are not. */
+const PEER_PAIRING_STATUSES: ReadonlySet<number> = new Set([401, 403]);
 
 /**
  * Load assumed for a peer whose snapshot is stale, or predates `inFlightRequests` entirely.
@@ -1120,20 +1136,8 @@ export class PoolProxyService {
 
   private readonly throughput: HubPoolThroughputService;
   private readonly localHealth: HubPoolLocalHealthService;
-  /**
-   * Where each recent prompt prefix was last placed — see `hub-pool-prefix-affinity.ts`.
-   * Defaults to in-memory PrefixAffinityStore; can be swapped for DistributedPrefixAffinityStore.
-   */
-  private prefixAffinity: IPrefixAffinityStore = new PrefixAffinityStore();
-
-  /** Pluggable prefix affinity store for multi-gateway deployments. */
-  setPrefixAffinityStore(store: IPrefixAffinityStore): void {
-    this.prefixAffinity = store;
-  }
-
-  getPrefixAffinityStore(): IPrefixAffinityStore {
-    return this.prefixAffinity;
-  }
+  /** Where each recent prompt prefix was last placed — see `hub-pool-prefix-affinity.ts`. */
+  private readonly prefixAffinity = new PrefixAffinityStore();
 
   /**
    * `auto` → the engine id of the chat model the POOL should run it on; any other model unchanged.
@@ -1260,7 +1264,8 @@ export class PoolProxyService {
    * Then prefix affinity, when the request carries a session key and `poolPrefixAffinityMaxInFlight`
    * is above zero: the node and engine that last served this prefix move to the front while their
    * queue is under the limit — see {@link applyPrefixAffinity}. Applied before every step below, so
-   * each of them still wins over it.
+   * each of them still wins over it, except local-engine contention, which leaves the engine it
+   * qualified in place.
    *
    * Then the context caps, when `promptBytes` is given: a node whose cap is below the window the
    * request asks for — `numCtx` when the body carried `options.num_ctx`, else the prompt estimate —
@@ -1289,7 +1294,8 @@ export class PoolProxyService {
    * one at another window — gives up the local head start and moves behind the candidates after it
    * that are no busier — see {@link applyLocalContention}. Inside throughput, unlike slots: a node
    * measured too slow misses its whole budget, while a contended engine may only be waiting out a
-   * turn that is nearly done.
+   * turn that is nearly done. The one engine exempt is the one prefix affinity qualified: the
+   * session's prefix is warm there, and a cold prefill elsewhere costs more than sharing the engine.
    *
    * An operator pin is applied LAST, within each of the resulting groups — see {@link applyPin}. It
    * reorders; it cannot admit a node the steps above excluded.
@@ -1360,7 +1366,7 @@ export class PoolProxyService {
     // `weight ? … : 0` rather than always comparing: at weight 0 the middle key must not exist, or a
     // measured node would start winning ties that a static hardware tier decides today.
     ranked.sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank);
-    const affinity = await this.applyRememberedPlacement(ranked, prompt?.prefixKey);
+    const affinity = this.applyRememberedPlacement(ranked, prompt?.prefixKey);
     const ordered = affinity.ordered.map((entry) => entry.candidate);
     // Shared, so the three prompt-size decisions cost one serialisation between them at most.
     const measurePromptBytes = prompt ? memoize(prompt.bytes) : undefined;
@@ -1379,18 +1385,24 @@ export class PoolProxyService {
     // behind another turn, or an engine shared with one, can keep waiting for minutes.
     const contended = prompt ? this.judgeLocalContention(model, ordered, prompt.numCtx) : null;
     const scores = new Map(affinity.ordered.map((entry) => [entry.candidate, entry.score]));
+    const scoreOf = (candidate: PoolCandidate) => scores.get(candidate) ?? 0;
     const headStart = this.localAffinity();
     const gaveWayTo = new Map<PoolCandidate, PoolCandidate[]>();
+    // The engine affinity qualified is exempt: its warm prefix is worth more than a turn beside
+    // another model costs it — see the header of `hub-pool-prefix-affinity.ts`. `heldByAffinity`
+    // records that the exemption changed something, so the log does not credit affinity with an
+    // engine that every candidate after it was busier than anyway.
+    const held = affinity.held;
+    let heldByAffinity = false;
     const giveWay = (part: PoolCandidate[]): PoolCandidate[][] => {
       if (!contended || !part.some((candidate) => contended.engines.has(candidate))) {
         return [part];
       }
-      const result = applyLocalContention(
-        part,
-        (candidate) => contended.engines.has(candidate),
-        (candidate) => scores.get(candidate) ?? 0,
-        headStart,
-      );
+      if (held && contended.engines.has(held) && part.includes(held)) {
+        const unheld = applyLocalContention(part, (candidate) => contended.engines.has(candidate), scoreOf, headStart);
+        heldByAffinity = (unheld.behind.get(held)?.length ?? 0) > 0;
+      }
+      const result = applyLocalContention(part, (candidate) => candidate !== held && contended.engines.has(candidate), scoreOf, headStart);
       for (const [candidate, ahead] of result.behind) {
         gaveWayTo.set(candidate, ahead);
       }
@@ -1423,7 +1435,7 @@ export class PoolProxyService {
       contextCap: cap.decision,
       slots: slots.decision,
       throughput: throughput.decision,
-      contention: contended ? this.describeContention(model, contended, gaveWayTo) : null,
+      contention: contended ? this.describeContention(model, contended, gaveWayTo, heldByAffinity ? held : null) : null,
       // Judged on the FINAL list: `hit` is a promise that the request goes to the remembered engine
       // first, and a ceiling, a demotion or a pin applied after affinity can each have put another
       // node there. The routing log's other sections say which one did.
@@ -1444,12 +1456,20 @@ export class PoolProxyService {
    * build before affinity, and the whole reason the knob doubles as the switch. One debug line for a
    * request affinity changed or stood aside on, never at info, for the same reason the ceiling logs
    * that way: the routing log is where decisions are read, and an agent turns all day.
+   *
+   * `held` is the candidate affinity qualified, which local-engine contention then leaves in place;
+   * `null` whenever affinity did not put the remembered engine first itself.
    */
-  private async applyRememberedPlacement(
+  private applyRememberedPlacement(
     ranked: RankedCandidate[],
     prefixKey: (() => PrefixKey | null) | undefined,
-  ): Promise<{ ordered: RankedCandidate[]; key: PrefixKey | null; describe: (first: PoolCandidate | undefined) => PoolRoutingAffinity | null }> {
-    const nothing = { ordered: ranked, key: null, describe: () => null };
+  ): {
+    ordered: RankedCandidate[];
+    key: PrefixKey | null;
+    held: PoolCandidate | null;
+    describe: (first: PoolCandidate | undefined) => PoolRoutingAffinity | null;
+  } {
+    const nothing = { ordered: ranked, key: null, held: null, describe: () => null };
     const maxInFlight = this.prefixAffinityMaxInFlight();
     const affinityMargin = this.prefixAffinityMargin();
     // `!(> 0)` rather than `<= 0`: a settings object from before this knob existed reads `undefined`
@@ -1461,21 +1481,34 @@ export class PoolProxyService {
     if (!key) {
       return nothing;
     }
-    const remembered = await this.prefixAffinity.get(key.key);
-    const { ordered, sticky } = applyPrefixAffinity(ranked, remembered, maxInFlight, affinityMargin);
+    const remembered = this.prefixAffinity.get(key.key);
+    const { ordered, sticky, qualified, leastLoadedInFlight } = applyPrefixAffinity(ranked, remembered, maxInFlight, affinityMargin);
     return {
       ordered,
       key,
+      held: sticky && qualified ? sticky.candidate : null,
       describe: (first) => {
+        // `hit` says where the session landed; `qualified` says whether affinity is why. A remembered
+        // engine the ranker put first on its own is a `hit` affinity had no part in, and the row
+        // must be able to say so — see `PoolRoutingAffinity.qualified`.
         const outcome = sticky ? (first === sticky.candidate ? 'hit' : 'skipped') : 'miss';
         if (sticky && outcome === 'skipped') {
           this.logger.debug(
-            sticky.inFlight >= maxInFlight
-              ? `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix but has ${sticky.inFlight} in flight (limit ${maxInFlight}, margin ${affinityMargin}); ranking as usual`
-              : `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first`,
+            qualified
+              ? `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix and qualified, but a ceiling, a demotion or a pin placed another node first`
+              : `[PoolProxy] ${sticky.candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY} holds this prompt's prefix but has ${sticky.inFlight} in flight (limit ${maxInFlight}, margin ${affinityMargin}, least loaded ${leastLoadedInFlight ?? '-'}); ranking as usual`,
           );
         }
-        return { key: key.source, outcome, remembered: remembered?.node ?? null, inFlight: sticky?.inFlight ?? null, maxInFlight, affinityMargin };
+        return {
+          key: key.source,
+          outcome,
+          qualified,
+          remembered: remembered?.node ?? null,
+          inFlight: sticky?.inFlight ?? null,
+          leastLoadedInFlight,
+          maxInFlight,
+          affinityMargin,
+        };
       },
     };
   }
@@ -1732,12 +1765,14 @@ export class PoolProxyService {
   /**
    * The routing log's account of {@link judgeLocalContention} and {@link applyLocalContention}, and
    * one debug line when an engine gave way — never at info, for the ceiling's reason. `null` when
-   * no engine here was contended.
+   * no engine here was contended. `heldByAffinity` is the engine that would have given way but for
+   * prefix affinity, which the row names as `overriddenBy: 'affinity'`.
    */
   private describeContention(
     model: string,
     contended: { numCtx: number | null; engines: Map<PoolCandidate, LocalEngineContention> },
     gaveWayTo: Map<PoolCandidate, PoolCandidate[]>,
+    heldByAffinity: PoolCandidate | null,
   ): PoolRoutingContention | null {
     if (contended.engines.size === 0) {
       return null;
@@ -1749,7 +1784,14 @@ export class PoolProxyService {
       busyWith: found.busyWith,
       runsAt: found.runsAt,
       behind: (gaveWayTo.get(candidate) ?? []).map(nodeOf),
+      overriddenBy: candidate === heldByAffinity ? 'affinity' : null,
     }));
+    const held = demoted.find((entry) => entry.overriddenBy === 'affinity');
+    if (held) {
+      this.logger.debug(
+        `[PoolProxy] "${model}" kept ${held.node} ${held.backend} first though it is busy with ${held.busyWith.map((generation) => generation.model).join(', ')}: it holds this session's prompt prefix`,
+      );
+    }
     const moved = demoted.filter((entry) => entry.behind.length > 0);
     if (moved.length > 0) {
       const engines = moved
@@ -2014,7 +2056,9 @@ export class PoolProxyService {
         this.logger.debug(
           placedEngine.behind.length > 0
             ? `[PoolProxy] placing "${model}" on ${nodeLabel}, whose engine is busy with work this request cannot join, because nothing it gave way to answered`
-            : `[PoolProxy] placing "${model}" on ${nodeLabel}, whose engine is busy with work this request cannot join, because it gave way to nothing`,
+            : placedEngine.overriddenBy === 'affinity'
+              ? `[PoolProxy] placing "${model}" on ${nodeLabel}, whose engine is busy with work this request cannot join, because it holds this session's prompt prefix`
+              : `[PoolProxy] placing "${model}" on ${nodeLabel}, whose engine is busy with work this request cannot join, because it gave way to nothing`,
         );
       }
       const target: ThroughputTarget = { nodeKey: key, backend: candidate.backend, model };
@@ -2031,7 +2075,7 @@ export class PoolProxyService {
       // tool calls arrive while the first is still prefilling — finds the engine already reading
       // the shared prefix. A failover overwrites it with the candidate that actually took the work.
       if (affinity.key) {
-        await this.prefixAffinity.remember(affinity.key.key, candidate);
+        this.prefixAffinity.remember(affinity.key.key, candidate);
       }
       try {
         const upstream = await this.forward(candidate, path, method, body, model, payload(), row.id, clientClosed);
@@ -2043,6 +2087,12 @@ export class PoolProxyService {
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status, verdict);
         const untried = candidates.slice(index + 1);
+        // A peer's engine refusing the key the peer holds for it: another node may well serve the
+        // request, so it is tried, but the pairing is fine and the peer keeps its inventory. On the
+        // last candidate the engine's own answer goes back, as a local engine's 401 always has,
+        // rather than a 502 that names no cause.
+        const peerEngineRefusal =
+          candidate.peerId !== null && PEER_PAIRING_STATUSES.has(upstream.status) && isRelayedEngineResponse(upstream.headers);
         // A verdict no second candidate has confirmed ends the walk anyway on the last candidate:
         // there is nobody left to overrule it, and the engine's sentence is worth more to the caller
         // than a 502 that names no cause and that its SDK will retry into the same refusal.
@@ -2053,7 +2103,7 @@ export class PoolProxyService {
               windowOf: (other) => contextWindows()(other),
             }) ?? (untried.length === 0 ? lastCandidateRequestError(verdict) : null))
           : null;
-        if (!requestError && this.shouldFailover(candidate, upstream.status)) {
+        if (!requestError && this.shouldFailover(candidate, upstream.status) && !(peerEngineRefusal && untried.length === 0)) {
           if (verdict) {
             unconfirmed = { verdict, candidate, node: nodeLabel };
             this.logger.debug(
@@ -2062,7 +2112,7 @@ export class PoolProxyService {
           }
           lastError = new Error(`${candidate.nodeFqdn ?? 'local'} returned ${upstream.status}`);
           failedOverFrom.push(nodeLabel);
-          await this.noteRejectedCandidate(candidate, upstream.status);
+          await this.noteRejectedCandidate(candidate, upstream.status, upstream.headers);
           continue;
         }
         const relayedStatus = verdict && requestError ? relayedRequestErrorStatus(verdict, upstream.status) : upstream.status;
@@ -2170,7 +2220,7 @@ export class PoolProxyService {
     );
     // Nothing holds this prefix now — the last engine to try it gave up — so the next call ranks fresh.
     if (affinity.key) {
-      await this.prefixAffinity.forget(affinity.key.key);
+      this.prefixAffinity.forget(affinity.key.key);
     }
     if (!res.headersSent) {
       res.setHeader(POOL_REQUEST_ID_HEADER, row.id);
@@ -2276,7 +2326,9 @@ export class PoolProxyService {
    * candidate *kind*: a peer answers 401/403/404 about the pairing itself (its PoolPeerGuard, its
    * `forwardLocal` connected-check), which says nothing about the application's request — whereas
    * the same status from the local engine is the engine's verdict on the request and is passed
-   * through untouched.
+   * through untouched. A 401/403 a peer relays from its engine fails over too — that engine's key is
+   * the peer's to fix, and another node may serve — but `proxyRequest` relays it from the last
+   * candidate instead, and {@link noteRejectedCandidate} leaves the pairing alone.
    *
    * Status alone. The one 5xx that is not a reason to move on — a 500 whose body blames the request —
    * is decided before this is asked, in `proxyRequest`, because it needs the body.
@@ -2346,9 +2398,23 @@ export class PoolProxyService {
     }
   }
 
-  /** A peer that 401/403s no longer treats us as paired, so its cached model list is stale — stop offering it until the next successful health probe. */
-  private async noteRejectedCandidate(candidate: PoolCandidate, status: number): Promise<void> {
-    if (candidate.peerId === null || (status !== 401 && status !== 403)) {
+  /**
+   * A peer that 401/403s no longer treats us as paired, so its cached model list is stale — stop
+   * offering it until the next successful health probe.
+   *
+   * Unless the peer marked the answer as its engine's (see {@link isRelayedEngineResponse}): then an
+   * engine behind it refused the key the peer holds for it, the pairing is intact, and every other
+   * engine there still serves. Warned about, because only that peer's operator can fix it, and left
+   * at that.
+   */
+  private async noteRejectedCandidate(candidate: PoolCandidate, status: number, headers: Headers): Promise<void> {
+    if (candidate.peerId === null || !PEER_PAIRING_STATUSES.has(status)) {
+      return;
+    }
+    if (isRelayedEngineResponse(headers)) {
+      this.logger.warn(
+        `[PoolProxy] peer ${candidate.nodeFqdn}'s ${candidate.backend} engine answered ${status} to the request it relayed: check the API key that peer holds for it. Its pairing is fine; keeping its cached capabilities`,
+      );
       return;
     }
     this.logger.warn(`[PoolProxy] peer ${candidate.nodeFqdn} rejected our forward with ${status}; dropping its cached capabilities`);
@@ -2426,12 +2492,16 @@ export class PoolProxyService {
       // The error body is read from a clone, so the sender still gets it whole and judges it itself.
       const verdict = await readRequestErrorVerdict(upstream);
       this.noteLocalServingOutcome(backend, MODEL_METADATA_PATHS.has(path) ? undefined : model, upstream.status, verdict);
+      // Marks the answer as the engine's, so the sender can tell an engine refusing its key here
+      // from this Hub refusing the pairing: see `isRelayedEngineResponse`. The sender drops every
+      // `x-hub-pool-*` header from a peer's answer, so the caller never sees it.
+      const relayed = { [POOL_BACKEND_HEADER]: backend };
       if (!target || !upstream.ok) {
-        await this.pipeResponse(upstream, res);
+        await this.pipeResponse(upstream, res, relayed);
         return;
       }
       const meter = startResponseTiming();
-      this.commitResponse(upstream, res);
+      this.commitResponse(upstream, res, relayed);
       try {
         await this.streamResponse(
           upstream,
@@ -3065,7 +3135,8 @@ export class PoolProxyService {
    * Status line + headers only. Deliberately separate from {@link streamResponse}: it is the point
    * of no return for failover, and callers need to know which side of it a failure landed on.
    *
-   * `attribution` is the routed path's serving-node statement (see {@link servedByHeaders}). It is
+   * `attribution` is the routed path's serving-node statement (see {@link servedByHeaders}), or on a
+   * peer's inbound relay the engine that answered (see {@link isRelayedEngineResponse}). It is
    * set here, and nowhere later, because Node flushes headers on the first body write: anything
    * set after `streamResponse` starts would be ERR_HTTP_HEADERS_SENT on a streamed completion.
    * Upstream `x-hub-pool-*` headers are dropped whether or not there is an attribution to replace
@@ -3107,8 +3178,8 @@ export class PoolProxyService {
     await pipeline(Readable.fromWeb(body), res);
   }
 
-  private async pipeResponse(upstream: globalThis.Response, res: Response): Promise<void> {
-    this.commitResponse(upstream, res);
+  private async pipeResponse(upstream: globalThis.Response, res: Response, attribution?: Record<string, string>): Promise<void> {
+    this.commitResponse(upstream, res, attribution);
     await this.streamResponse(upstream, res);
   }
 }

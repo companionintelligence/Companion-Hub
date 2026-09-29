@@ -350,16 +350,32 @@ export interface PoolRoutingAffinity {
   /** Where the key came from: the app's `X-Hub-Pool-Session` header, or a digest of the prompt's head. */
   key: 'header' | 'hashed';
   /**
-   * `hit`: the remembered node was under the limit and is the first candidate. `skipped`: it is a
-   * candidate but was not placed first — at or over `maxInFlight` when `inFlight >= maxInFlight`,
-   * otherwise displaced by a later step (a ceiling, a throughput demotion, or a pin). `miss`: nothing
-   * is remembered for this prefix, or the remembered node and engine can no longer serve the model.
+   * `hit`: the remembered node and engine are the first candidate. `skipped`: it is a candidate but
+   * was not placed first — see `qualified` for which kind. `miss`: nothing is remembered for this
+   * prefix, or the remembered node and engine can no longer serve the model.
+   *
+   * A `hit` says where the session landed, not who put it there: read `qualified` for that.
    */
   outcome: 'hit' | 'miss' | 'skipped';
+  /**
+   * Whether affinity itself placed the remembered engine first: its queue was under `maxInFlight`, or
+   * within `affinityMargin` of `leastLoadedInFlight`. On a `hit`, `false` means the ranker put it first
+   * on its own and affinity stood aside — the fleet test of 2026-09-29, at `maxInFlight` 1, margin 0
+   * and one in flight there, logged a `hit` that affinity had no part in. On a `skipped`, `true` means
+   * a later step — a ceiling, a throughput demotion, or a pin — put another node first, and `false`
+   * that the remembered engine was too busy to qualify. Always `false` on a `miss`.
+   */
+  qualified: boolean;
   /** The node remembered for this prefix, `'local'` for this one; `null` when nothing was. */
   remembered: string | null;
   /** The remembered node's queue depth at the decision, `null` when it was not a candidate. */
   inFlight: number | null;
+  /**
+   * The lowest queue depth among the other candidates at the decision — the figure the margin is
+   * measured from, so a margin decision can be checked from the row alone. `null` when the remembered
+   * node was not a candidate, or was the only one.
+   */
+  leastLoadedInFlight: number | null;
   /** The `poolPrefixAffinityMaxInFlight` in force, counting the request being placed. */
   maxInFlight: number;
   /** The `poolPrefixAffinityMargin` in force. */
@@ -400,7 +416,7 @@ export interface PoolRoutingContention {
   /**
    * Local engines that were generating for work this request could not join, in ranked order. Each
    * gave up the local head start and moved behind the candidates after it that were no busier, never
-   * removed, so failover can still reach it.
+   * removed, so failover can still reach it — unless prefix affinity held it (`overriddenBy`).
    */
   demoted: PoolRoutingContentionDemotion[];
   /** `true` when the request was placed on one of those anyway: nothing it gave way to answered, or it gave way to nothing. */
@@ -421,6 +437,14 @@ export interface PoolRoutingContentionDemotion {
   runsAt: number | null;
   /** The nodes it was moved behind, in order; empty when it kept its place: every candidate after it was busier, or another step had put them behind it. */
   behind: string[];
+  /**
+   * `'affinity'` when this engine would have given way but did not, because it holds the request's
+   * session prefix and prefix affinity qualified it (see `PoolRoutingAffinity.qualified`): a warm
+   * prefix beside another model's turn beats a cold prefill on a node that is merely no busier.
+   * `behind` is then empty. `null` whenever contention decided alone — affinity off, standing aside,
+   * or remembering another engine — and when the engine would have kept its place anyway.
+   */
+  overriddenBy: 'affinity' | null;
 }
 
 export interface PoolRoutingSummary {

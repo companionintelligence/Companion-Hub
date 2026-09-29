@@ -18,6 +18,7 @@ import { Switch } from '@/components/ui/Switch';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { cn } from '@/lib/utils';
+import { isRefused, settledOutcome } from '@/modules/system/pool-node-series';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, ChevronRight, Network } from 'lucide-react';
 import { useState } from 'react';
@@ -115,6 +116,10 @@ interface PoolSettings {
   poolLocalAffinity: number;
   poolHealthPollSeconds: number;
   poolRequireSignedPeers: boolean;
+  /** Absent on a Hub predating prefix affinity, where it was off. */
+  poolPrefixAffinityMaxInFlight?: number;
+  /** Absent on a Hub predating the margin. */
+  poolPrefixAffinityMargin?: number;
 }
 
 /** This node's own pool identity. Never the private key — only the UUID and a short fingerprint. */
@@ -173,11 +178,16 @@ interface PoolRoutingRecord {
   candidates: number;
   attempt: number;
   failedOverFrom: string[];
-  outcome: 'served' | 'failed';
+  /** `pending` from placement until the first response headers. Read through `settledOutcome`, never raw. */
+  outcome: 'served' | 'failed' | 'pending';
   status: number | null;
-  durationMs: number;
+  durationMs: number | null;
   /** Which pin shaped this decision, if any. */
   pin?: { scope: 'default' | 'model'; mode: 'prefer'; targetKind: 'local' | 'peer' } | null;
+  /** Why the walk stopped at a node that refused the request itself. Absent on a Hub predating it — see `isRefused`. */
+  requestError?: { signature?: string; basis?: string; confirms?: string | null } | null;
+  /** The app hung up before any node answered. Absent on a Hub predating it. */
+  clientClosed?: boolean;
 }
 
 interface PoolRoutingLog {
@@ -272,6 +282,55 @@ const PeerStatusBadge = ({
     );
   }
   return <StatusBadge connected={false} label={t('HUB_POOL_STATUS_PENDING')} />;
+};
+
+/**
+ * Prefix affinity's state, read-only. Two settings with one trap: the margin only widens the
+ * in-flight limit, so at limit 0 — affinity off — a margin is accepted and does nothing. Says which
+ * of the two is in force, and renders nothing while both are at their default of 0.
+ */
+const PrefixAffinityNote = ({ settings, t }: { settings: PoolSettings; t: Translate }) => {
+  const maxInFlight = settings.poolPrefixAffinityMaxInFlight ?? 0;
+  const margin = settings.poolPrefixAffinityMargin ?? 0;
+  if (maxInFlight <= 0 && margin <= 0) {
+    return null;
+  }
+  if (maxInFlight <= 0) {
+    return (
+      <p data-testid="hub-pool-prefix-affinity" data-margin-active="false" className="text-xs text-muted-foreground">
+        {t('HUB_POOL_PREFIX_AFFINITY_MARGIN_INACTIVE', { margin })}
+      </p>
+    );
+  }
+  return (
+    <p data-testid="hub-pool-prefix-affinity" data-margin-active={String(margin > 0)} className="text-xs text-muted-foreground">
+      {margin > 0 ? t('HUB_POOL_PREFIX_AFFINITY_ON_MARGIN', { maxInFlight, margin }) : t('HUB_POOL_PREFIX_AFFINITY_ON', { maxInFlight })}
+    </p>
+  );
+};
+
+/**
+ * The routing table's result cell, settled as the dashboard settles a row (`settledOutcome`,
+ * `isRefused` in `pool-node-series.ts`): a refusal names its status rather than reading as served or
+ * as no node answering, and a row still waiting for headers says so.
+ */
+const RoutingResult = ({ entry, t }: { entry: PoolRoutingRecord; t: Translate }) => {
+  const outcome = settledOutcome(entry);
+  if (outcome === 'served') {
+    return <>{t('HUB_POOL_ROUTING_DURATION', { ms: entry.durationMs })}</>;
+  }
+  if (outcome === 'pending') {
+    return <>{t('HUB_POOL_ROUTING_PENDING_LABEL')}</>;
+  }
+  if (isRefused(entry)) {
+    const status = entry.status ?? '—';
+    return (
+      <span data-testid="hub-pool-routing-refused" title={t('HUB_POOL_ROUTING_REFUSED_HINT', { status })}>
+        {t('HUB_POOL_ROUTING_REFUSED_LABEL', { status })}
+      </span>
+    );
+  }
+  return <>{t('HUB_POOL_ROUTING_FAILED_LABEL')}</>;
 };
 
 /**
@@ -811,6 +870,12 @@ export const HubPoolSection = () => {
               </div>
             </div>
 
+            {/* Prefix affinity has no control on this page — it is set through the settings API — but
+                its margin is silently inert while the limit is 0 (beta-max, 2026-09-29, accepted a
+                margin of 3 at limit 0 and routed exactly as before), so the state is stated here.
+                Nothing renders at the defaults, where both are 0. */}
+            <PrefixAffinityNote settings={status.settings} t={t} />
+
             <Button
               type="button"
               size="sm"
@@ -1162,13 +1227,18 @@ export const HubPoolSection = () => {
                   </>
                 }
               >
+                {/* Settled through the dashboard's helpers, never the raw outcome: a Hub built before
+                    refusals settled `failed` still writes `served` for a 4xx, and this table read
+                    those as served in a few ms while the dashboard, reading the same log, called
+                    them refused. */}
                 {routingLog.entries.map((entry) => (
                   <Tr
                     key={`${entry.at}-${entry.path}-${entry.node ?? 'none'}`}
                     testId="hub-pool-routing-entry"
                     data={{
                       direction: entry.direction,
-                      outcome: entry.outcome,
+                      outcome: settledOutcome(entry),
+                      ...(isRefused(entry) ? { refused: String(entry.status ?? '') } : {}),
                       ...(entry.pin ? { pinned: 'true' } : {}),
                       ...(entry.failedOverFrom.length ? { failedover: entry.failedOverFrom.join(',') } : {}),
                     }}
@@ -1213,9 +1283,9 @@ export const HubPoolSection = () => {
                     </Td>
                     <Td
                       align="right"
-                      className={cn('whitespace-nowrap', entry.outcome === 'served' ? 'text-muted-foreground' : 'font-medium text-warning')}
+                      className={cn('whitespace-nowrap', settledOutcome(entry) === 'failed' ? 'font-medium text-warning' : 'text-muted-foreground')}
                     >
-                      {entry.outcome === 'served' ? t('HUB_POOL_ROUTING_DURATION', { ms: entry.durationMs }) : t('HUB_POOL_ROUTING_FAILED_LABEL')}
+                      <RoutingResult entry={entry} t={t} />
                     </Td>
                   </Tr>
                 ))}

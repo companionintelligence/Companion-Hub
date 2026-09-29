@@ -289,7 +289,15 @@ export interface PoolRoutingContention {
    * window — in ranked order, each with the windows as its engine runs them (`null`: the engine
    * default, which that node does not state) and the nodes it gave way to. Never removed.
    */
-  demoted: { node: string; backend: string; busyWith: { model: string; numCtx: number | null }[]; runsAt: number | null; behind: string[] }[];
+  demoted: {
+    node: string;
+    backend: string;
+    busyWith: { model: string; numCtx: number | null }[];
+    runsAt: number | null;
+    behind: string[];
+    /** `'affinity'`: it would have given way, but holds the session's prompt prefix. Absent on a Hub predating it. */
+    overriddenBy?: 'affinity' | null;
+  }[];
   /** Placed on one of those anyway: nothing it gave way to answered, or it gave way to nothing. */
   overridden: boolean;
 }
@@ -316,9 +324,18 @@ export interface PoolRoutingSlots {
 export interface PoolRoutingAffinity {
   key: 'header' | 'hashed';
   outcome: 'hit' | 'miss' | 'skipped';
+  /**
+   * Whether affinity itself put the remembered engine first. `false` on a `hit` is the ranker doing
+   * it alone. Absent on a Hub predating the field, where it is inferred from `inFlight < maxInFlight`.
+   */
+  qualified?: boolean;
   remembered: string | null;
   inFlight: number | null;
+  /** The least-loaded other candidate's queue depth, which the margin is measured from. Absent on a Hub predating it. */
+  leastLoadedInFlight?: number | null;
   maxInFlight: number;
+  /** Absent on a Hub predating the margin. */
+  affinityMargin?: number;
 }
 
 /** Mirrors `PoolRoutingThroughput` in `hub-pool-routing-log.service.ts`. */
@@ -1595,6 +1612,19 @@ function describeAffinityKey(affinity: Pick<PoolRoutingAffinity, 'key'>): string
   return affinity.key === 'header' ? 'session from X-Hub-Pool-Session' : 'session from prompt digest';
 }
 
+/**
+ * The limit an affinity row was judged against: the in-flight limit, and with a margin set, the margin
+ * and the queue it was measured from, since a margin decision cannot be checked from the limit alone.
+ */
+function describeAffinityLimit(affinity: PoolRoutingAffinity): string {
+  const margin = affinity.affinityMargin ?? 0;
+  if (margin <= 0) {
+    return `limit ${affinity.maxInFlight}`;
+  }
+  const leastLoaded = affinity.leastLoadedInFlight;
+  return `limit ${affinity.maxInFlight}, margin ${margin}${leastLoaded === null || leastLoaded === undefined ? '' : `, ${leastLoaded} on the least-loaded other node`}`;
+}
+
 /** A window from a contention record: `null` is a request that named none, on a node that states no default. */
 function describeContextWindow(numCtx: number | null): string {
   return numCtx === null ? 'the engine default' : `num_ctx ${numCtx}`;
@@ -1732,7 +1762,9 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         lines.push(
           placed.behind.length > 0
             ? `  ↳ placed anyway on ${describe(placed)}: nothing it gave way to answered`
-            : `  ↳ kept ${describe(placed)} first: every node after it was busier, or moved behind it by a line above`,
+            : placed.overriddenBy === 'affinity'
+              ? `  ↳ kept ${describe(placed)} first: it holds this session's prompt prefix, which prefix affinity follows over contention`
+              : `  ↳ kept ${describe(placed)} first: every node after it was busier, or moved behind it by a line above`,
         );
       } else {
         const moved = contention.demoted.filter((demoted) => demoted.behind.length > 0);
@@ -1749,18 +1781,30 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
     // `X-Hub-Pool-Session` and one the proxy digested from the prompt are told apart on this line,
     // because a `hit` that sent sessions to the wrong node (core-2, 2026-09-21) was a digest that
     // named too many of them, and the first question is which kind of key it was.
+    //
+    // A `hit` affinity did not qualify is the ranker landing the session on its warm node by itself,
+    // and is not printed as affinity following it: a fleet test on 2026-09-29 read such a row, at one
+    // in flight against a limit of 1, as affinity working. A Hub predating `qualified` is read by
+    // the limit alone, which is all it judged by.
     const affinity = entry.affinity;
-    if (affinity?.outcome === 'hit') {
-      lines.push(
-        `  ↳ followed its prompt prefix to ${sanitizeForBox(affinity.remembered ?? '?')} (${affinity.inFlight ?? 0} in flight, limit ${affinity.maxInFlight}; ${describeAffinityKey(affinity)})`,
-      );
-    } else if (affinity?.outcome === 'skipped') {
+    if (affinity) {
+      const underLimit = affinity.inFlight !== null && affinity.inFlight < affinity.maxInFlight;
+      const qualified = affinity.qualified ?? underLimit;
       const node = sanitizeForBox(affinity.remembered ?? '?');
-      lines.push(
-        affinity.inFlight !== null && affinity.inFlight >= affinity.maxInFlight
-          ? `  ↳ ${node} holds this prompt's prefix but had ${affinity.inFlight} in flight (limit ${affinity.maxInFlight}); ranked as usual (${describeAffinityKey(affinity)})`
-          : `  ↳ ${node} holds this prompt's prefix and was under the limit, but a ceiling, a demotion or a pin placed another node first (${describeAffinityKey(affinity)})`,
-      );
+      const inFlight = affinity.inFlight ?? 0;
+      if (affinity.outcome === 'hit') {
+        lines.push(
+          qualified
+            ? `  ↳ followed its prompt prefix to ${node} (${inFlight} in flight, ${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`
+            : `  ↳ landed on ${node}, which holds this prompt's prefix, by ranking alone: affinity stood aside at ${inFlight} in flight (${describeAffinityLimit(affinity)}; ${describeAffinityKey(affinity)})`,
+        );
+      } else if (affinity.outcome === 'skipped') {
+        lines.push(
+          qualified
+            ? `  ↳ ${node} holds this prompt's prefix and was ${underLimit ? 'under the limit' : 'within its margin'}, but a ceiling, a demotion or a pin placed another node first (${describeAffinityKey(affinity)})`
+            : `  ↳ ${node} holds this prompt's prefix but had ${inFlight} in flight (${describeAffinityLimit(affinity)}); ranked as usual (${describeAffinityKey(affinity)})`,
+        );
+      }
     }
     // The chain, not a count: which nodes refused is the whole point of reading this log.
     if (entry.failedOverFrom.length > 0) {

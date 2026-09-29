@@ -471,6 +471,107 @@ describe('HubPoolSection', () => {
     expect(screen.getByText('HUB_POOL_ROUTING_INBOUND')).toBeTruthy();
   });
 
+  /**
+   * The dashboard settles a row through `settledOutcome`/`isRefused`; this table read `outcome` raw.
+   * A Hub built before refusals settled `failed` still writes `served` for a relayed 4xx (core-2,
+   * 2026-09-29: six `served` rows with status 400, each a ~5 ms refusal), and here those read as
+   * served in a few milliseconds while the dashboard, reading the same log, called them refused.
+   */
+  it('settles each routing row the way the dashboard does: a refusal is not served, whatever an older Hub wrote', async () => {
+    const row = (overrides: Json): Json => ({
+      at: '2026-09-29T10:05:00.000Z',
+      direction: 'outbound',
+      path: '/v1/chat/completions',
+      model: 'gemma3:1b',
+      node: 'local',
+      peerId: null,
+      backend: 'ollama',
+      candidates: 1,
+      attempt: 1,
+      failedOverFrom: [],
+      durationMs: 5,
+      ...overrides,
+    });
+    fixtures.routingLog = {
+      entries: [
+        // An older Hub's refusal: `served`, with the engine's 400.
+        row({ outcome: 'served', status: 400 }),
+        // This build's: `failed`, with the verdict named.
+        row({ outcome: 'failed', status: 500, requestError: { signature: 'no-user-query', basis: 'definitive', confirms: null } }),
+        row({ outcome: 'served', status: 200, durationMs: 412 }),
+        row({ outcome: 'pending', status: null, durationMs: null }),
+        row({ outcome: 'failed', status: null, node: null }),
+      ],
+      summary: { recorded: 5, capacity: 200, served: 2, failed: 2, failovers: 0, lastAt: '2026-09-29T10:05:00.000Z' },
+    };
+
+    renderSection();
+
+    const entries = await screen.findAllByTestId('hub-pool-routing-entry');
+    expect(entries.map((entry) => entry.getAttribute('data-outcome'))).toEqual(['failed', 'failed', 'served', 'pending', 'failed']);
+    expect(entries.map((entry) => entry.getAttribute('data-refused'))).toEqual(['400', '500', null, null, null]);
+    expect(screen.getAllByTestId('hub-pool-routing-refused')).toHaveLength(2);
+    expect(screen.getAllByText('HUB_POOL_ROUTING_DURATION')).toHaveLength(1);
+    expect(screen.getAllByText('HUB_POOL_ROUTING_PENDING_LABEL')).toHaveLength(1);
+    expect(screen.getAllByText('HUB_POOL_ROUTING_FAILED_LABEL')).toHaveLength(1);
+  });
+
+  describe('prefix affinity', () => {
+    const withAffinity = (poolPrefixAffinityMaxInFlight: number, poolPrefixAffinityMargin: number): Json =>
+      baseStatus({
+        settings: {
+          poolEnabled: true,
+          poolOutboundEnabled: true,
+          poolInboundEnabled: true,
+          poolLocalAffinity: 1,
+          poolHealthPollSeconds: 30,
+          poolPrefixAffinityMaxInFlight,
+          poolPrefixAffinityMargin,
+        },
+      });
+
+    /** beta-max, 2026-09-29: margin 3 accepted at limit 0, and nothing anywhere said it did nothing. */
+    it('says a margin set while the limit is 0 has no effect', async () => {
+      fixtures.status = withAffinity(0, 3);
+
+      renderSection();
+
+      const note = await screen.findByTestId('hub-pool-prefix-affinity');
+      expect(note.getAttribute('data-margin-active')).toBe('false');
+      expect(note.textContent).toBe('HUB_POOL_PREFIX_AFFINITY_MARGIN_INACTIVE');
+    });
+
+    it('states the limit, and the margin when one is set, while affinity is on', async () => {
+      fixtures.status = withAffinity(2, 1);
+      const { unmount } = renderSection();
+
+      const withMargin = await screen.findByTestId('hub-pool-prefix-affinity');
+      expect(withMargin.getAttribute('data-margin-active')).toBe('true');
+      expect(withMargin.textContent).toBe('HUB_POOL_PREFIX_AFFINITY_ON_MARGIN');
+      unmount();
+
+      fixtures.status = withAffinity(2, 0);
+      renderSection();
+
+      const limitOnly = await screen.findByTestId('hub-pool-prefix-affinity');
+      expect(limitOnly.getAttribute('data-margin-active')).toBe('false');
+      expect(limitOnly.textContent).toBe('HUB_POOL_PREFIX_AFFINITY_ON');
+    });
+
+    it('says nothing at the defaults, or from a Hub predating either setting', async () => {
+      fixtures.status = withAffinity(0, 0);
+      const { unmount } = renderSection();
+      await screen.findByTestId('hub-pool-settings-save');
+      expect(screen.queryByTestId('hub-pool-prefix-affinity')).toBeNull();
+      unmount();
+
+      fixtures.status = baseStatus();
+      renderSection();
+      await screen.findByTestId('hub-pool-settings-save');
+      expect(screen.queryByTestId('hub-pool-prefix-affinity')).toBeNull();
+    });
+  });
+
   it('names the missing tailnet-enumeration credential instead of showing a bare empty device list', async () => {
     fixtures.status = baseStatus({ tailscaleAdminApiConfigured: false, reason: 'no_peers', routingActive: false });
 

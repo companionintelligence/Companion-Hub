@@ -44,6 +44,7 @@ import {
   applySlotPlacement,
   applyThroughputPlacement,
   describeUnresolvableAuto,
+  isRelayedEngineResponse,
   requestedNumCtx,
   normalizePoolRequestId,
   servedByHeaders,
@@ -51,11 +52,9 @@ import {
 } from '../hub-pool-proxy.service';
 import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
 import {
-  DistributedPrefixAffinityStore,
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
   PrefixAffinityStore,
-  type PrefixAffinityDriver,
   applyPrefixAffinity,
   derivePrefixKey,
   normalizePoolSessionKey,
@@ -986,6 +985,115 @@ describe('PoolProxyService', () => {
       expect(fetchMock.mock.calls[1]?.[0]).toContain('b.tailxyz.ts.net');
       expect(peerService.clearCachedCapabilities).toHaveBeenCalledWith('peer-a');
       expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    /**
+     * A peer relays its engines' answers and marks them with the engine (`X-Hub-Pool-Backend`); its
+     * own guard's refusals carry no mark. A marked 401/403 is an engine behind the peer refusing the
+     * key that peer holds for it — a vLLM, Lemonade or oMLX key mismatch there — and dropping the
+     * peer's whole inventory for it took its Ollama models out of the pool too.
+     */
+    describe("a peer's engine refusing its own key", () => {
+      const MODEL = 'llama3.2:3b';
+      const capabilities = capabilitiesWithModel(MODEL) as unknown as Record<string, unknown>;
+      const peerA = mockPeer({ id: 'peer-a', nodeFqdn: 'a.tailxyz.ts.net', lastCapabilities: capabilities });
+      const peerB = mockPeer({ id: 'peer-b', nodeFqdn: 'b.tailxyz.ts.net', lastCapabilities: capabilities });
+      const engineRefusal = (status: number) =>
+        new Response(JSON.stringify({ error: { message: 'Invalid API key' } }), {
+          status,
+          headers: { 'content-type': 'application/json', [POOL_BACKEND_HEADER]: 'vllm' },
+        });
+
+      function peers(...rows: HubPoolPeer[]): void {
+        peerService.listConnectedPeers.mockResolvedValue(rows);
+        peerService.getPeerById.mockImplementation(async (id) => rows.find((row) => row.id === id));
+        peerService.getPresentToken.mockResolvedValue('raw-token');
+      }
+
+      async function route(): Promise<Response & { chunks: Buffer[] }> {
+        const res = createMockResponse();
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+        return res;
+      }
+
+      it("fails over to the next candidate and keeps the peer's cached capabilities", async () => {
+        peers(peerA, peerB);
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(engineRefusal(401))
+          .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+        const res = await route();
+
+        expect(vi.mocked(global.fetch).mock.calls[1]?.[0]).toContain('b.tailxyz.ts.net');
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(peerService.clearCachedCapabilities).not.toHaveBeenCalled();
+        expect(routingLog.list()[0]).toMatchObject({ node: 'b.tailxyz.ts.net', outcome: 'served', failedOverFrom: ['a.tailxyz.ts.net'] });
+      });
+
+      it("relays the engine's 401 from the last candidate rather than a 502, and keeps the pairing", async () => {
+        peers(peerA);
+        vi.mocked(global.fetch).mockResolvedValueOnce(engineRefusal(401));
+
+        const res = await route();
+
+        expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+        expect(res.status).toHaveBeenCalledWith(401);
+        expect(Buffer.concat(res.chunks).toString()).toContain('Invalid API key');
+        // The peer's mark is its own statement; this Hub states its own attribution instead.
+        expect(headersSetOn(res)[POOL_SERVED_BY_HEADER.toLowerCase()]).toBe('a.tailxyz.ts.net');
+        expect(peerService.clearCachedCapabilities).not.toHaveBeenCalled();
+        expect(routingLog.list()[0]).toMatchObject({
+          node: 'a.tailxyz.ts.net',
+          outcome: 'failed',
+          status: 401,
+          failedOverFrom: [],
+          requestError: { signature: 'client-error', basis: 'status', confirms: null },
+        });
+      });
+
+      it('treats a marked 403 the same way', async () => {
+        peers(peerA, peerB);
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(engineRefusal(403))
+          .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+        const res = await route();
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(peerService.clearCachedCapabilities).not.toHaveBeenCalled();
+      });
+
+      it('still reads an unmarked 403 from the last candidate as the pairing: capabilities dropped, 502', async () => {
+        peers(peerA);
+        // The peer's `forwardLocal` "not connected" answer, or any peer on a build before the mark.
+        vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Peer is not connected' }), { status: 403 }));
+
+        const res = await route();
+
+        expect(res.status).toHaveBeenCalledWith(502);
+        expect(peerService.clearCachedCapabilities).toHaveBeenCalledWith('peer-a');
+      });
+
+      it('marks what it relays for a peer with the engine that answered, error or not', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'unauthorized' }), { status: 401 }));
+        const refused = createMockResponse();
+        await service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', { model: MODEL }, refused, 'core-6.tailxyz.ts.net', MODEL);
+
+        vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify({ done: true }), { status: 200 }));
+        const served = createMockResponse();
+        await service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', { model: MODEL }, served, 'core-6.tailxyz.ts.net', MODEL);
+
+        expect(refused.status).toHaveBeenCalledWith(401);
+        expect(headersSetOn(refused)[POOL_BACKEND_HEADER.toLowerCase()]).toBe('ollama');
+        expect(headersSetOn(served)[POOL_BACKEND_HEADER.toLowerCase()]).toBe('ollama');
+      });
+
+      it('recognises the mark, and only the mark', () => {
+        expect(isRelayedEngineResponse(new Headers({ [POOL_BACKEND_HEADER]: 'vllm' }))).toBe(true);
+        expect(isRelayedEngineResponse(new Headers({ 'x-hub-pool-backend': 'lemonade' }))).toBe(true);
+        expect(isRelayedEngineResponse(new Headers({ 'content-type': 'application/json' }))).toBe(false);
+      });
     });
 
     it('fails over when the first candidate fails BEFORE the response is committed', async () => {
@@ -2655,7 +2763,15 @@ describe('PoolProxyService', () => {
 
         expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
         expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('miss');
-        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+        expect(routingLog.list()[0]?.affinity).toEqual({
+          key: 'hashed',
+          outcome: 'miss',
+          qualified: false,
+          remembered: null,
+          inFlight: null,
+          leastLoadedInFlight: null,
+          maxInFlight: 2,
+        });
       });
     });
 
@@ -2673,8 +2789,25 @@ describe('PoolProxyService', () => {
         expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
         expect(headersSetOn(res)['x-hub-pool-served-by']).toBe(PEER_FQDN);
         const [second, first] = routingLog.list();
-        expect(first?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
-        expect(second?.affinity).toEqual({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
+        expect(first?.affinity).toEqual({
+          key: 'hashed',
+          outcome: 'miss',
+          qualified: false,
+          remembered: null,
+          inFlight: null,
+          leastLoadedInFlight: null,
+          maxInFlight: 2,
+        });
+        // Local idle again is the least-loaded alternative, which the row states beside the peer's own count.
+        expect(second?.affinity).toEqual({
+          key: 'hashed',
+          outcome: 'hit',
+          qualified: true,
+          remembered: PEER_FQDN,
+          inFlight: 0,
+          leastLoadedInFlight: 0,
+          maxInFlight: 2,
+        });
       });
 
       /**
@@ -2707,7 +2840,15 @@ describe('PoolProxyService', () => {
         expect(headersSetOn(aSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
         expect(headersSetOn(bSecond)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('hit');
         const [bSecondRow, aSecondRow, bFirstRow] = routingLog.list();
-        expect(bFirstRow?.affinity).toEqual({ key: 'hashed', outcome: 'miss', remembered: null, inFlight: null, maxInFlight: 2 });
+        expect(bFirstRow?.affinity).toEqual({
+          key: 'hashed',
+          outcome: 'miss',
+          qualified: false,
+          remembered: null,
+          inFlight: null,
+          leastLoadedInFlight: null,
+          maxInFlight: 2,
+        });
         expect(aSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: PEER_FQDN });
         expect(bSecondRow?.affinity).toMatchObject({ key: 'hashed', outcome: 'hit', remembered: LOCAL_CANDIDATE_KEY });
       });
@@ -2721,7 +2862,44 @@ describe('PoolProxyService', () => {
 
         expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
         expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('skipped');
-        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'skipped', remembered: PEER_FQDN, inFlight: 2, maxInFlight: 2 });
+        expect(routingLog.list()[0]?.affinity).toEqual({
+          key: 'hashed',
+          outcome: 'skipped',
+          qualified: false,
+          remembered: PEER_FQDN,
+          inFlight: 2,
+          leastLoadedInFlight: 0,
+          maxInFlight: 2,
+        });
+      });
+
+      /**
+       * The 2026-09-29 fleet test's labelling caveat: margin 0, limit 1, one in flight on the
+       * remembered node, logged `hit` — but the ranker had put it first on its own, and affinity had
+       * stood aside. The row still says where the session landed, and now says who put it there.
+       */
+      it('says affinity did not qualify a remembered node the ranker put first on its own', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 1 });
+        // First call: both idle, local takes the tie, and the table remembers local.
+        peerReporting(0);
+        await route(turn1);
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY]);
+        // One in flight here, three on the peer: over the limit, but still the ranker's first choice.
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        peerReporting(3);
+
+        await route(turn2);
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, LOCAL_CANDIDATE_KEY]);
+        expect(routingLog.list()[0]?.affinity).toEqual({
+          key: 'hashed',
+          outcome: 'hit',
+          qualified: false,
+          remembered: LOCAL_CANDIDATE_KEY,
+          inFlight: 1,
+          leastLoadedInFlight: 3,
+          maxInFlight: 1,
+        });
       });
 
       it('still follows the prefix with one other request in flight there: the limit counts the request being placed', async () => {
@@ -2851,8 +3029,16 @@ describe('PoolProxyService', () => {
 
         expect(forwardedTo()).toEqual([PEER_FQDN, LOCAL_CANDIDATE_KEY]);
         expect(headersSetOn(res)[POOL_AFFINITY_HEADER.toLowerCase()]).toBe('skipped');
-        // `inFlight < maxInFlight` on a `skipped` row is how an operator tells "a pin overrode it" from "its queue was full".
-        expect(routingLog.list()[0]?.affinity).toEqual({ key: 'hashed', outcome: 'skipped', remembered: PEER_FQDN, inFlight: 0, maxInFlight: 2 });
+        // `qualified` on a `skipped` row is how an operator tells "a pin overrode it" from "its queue was full".
+        expect(routingLog.list()[0]?.affinity).toEqual({
+          key: 'hashed',
+          outcome: 'skipped',
+          qualified: true,
+          remembered: PEER_FQDN,
+          inFlight: 0,
+          leastLoadedInFlight: 0,
+          maxInFlight: 2,
+        });
       });
 
       it('leaves the failover walk intact: the remembered node first, then every other candidate in ranked order', async () => {
@@ -3034,77 +3220,89 @@ describe('PoolProxyService', () => {
       const local = { candidate: { peerId: null, nodeFqdn: null, backend: 'ollama' } as PoolCandidate, inFlight: 0 };
       const peer = { candidate: { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate, inFlight: 1 };
       const ranked = [local, peer];
+      const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
 
       it('is the identity with nothing remembered', () => {
-        expect(applyPrefixAffinity(ranked, null, 2)).toEqual({ ordered: ranked, sticky: null });
+        expect(applyPrefixAffinity(ranked, null, 2)).toEqual({ ordered: ranked, sticky: null, qualified: false, leastLoadedInFlight: null });
       });
 
       it('moves the remembered candidate to the front while it is under the limit, and reports it', () => {
-        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
-        expect(applyPrefixAffinity(ranked, remembered, 2)).toEqual({ ordered: [peer, local], sticky: peer });
+        expect(applyPrefixAffinity(ranked, remembered, 2)).toEqual({ ordered: [peer, local], sticky: peer, qualified: true, leastLoadedInFlight: 0 });
       });
 
       it('leaves the order alone at or over the limit, still reporting what it saw', () => {
-        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
-        expect(applyPrefixAffinity(ranked, remembered, 1)).toEqual({ ordered: ranked, sticky: peer });
+        expect(applyPrefixAffinity(ranked, remembered, 1)).toEqual({ ordered: ranked, sticky: peer, qualified: false, leastLoadedInFlight: 0 });
         // 0 is the switch: nothing is ever under it.
-        expect(applyPrefixAffinity(ranked, { nodeKey: LOCAL_CANDIDATE_KEY, backend: 'ollama' }, 0)).toEqual({ ordered: ranked, sticky: local });
+        expect(applyPrefixAffinity(ranked, { nodeKey: LOCAL_CANDIDATE_KEY, backend: 'ollama' }, 0)).toEqual({
+          ordered: ranked,
+          sticky: local,
+          qualified: false,
+          leastLoadedInFlight: 1,
+        });
       });
 
-      it('retains sticky candidate under concurrency when within affinityMargin (Xinity AI affinity margin)', () => {
+      /**
+       * The labelling caveat from the 2026-09-29 fleet test: margin 0, limit 1, one in flight on the
+       * remembered node, and the ranker still put it first. The order is the ranker's and the result
+       * says affinity did not qualify, so the row cannot call it an affinity hit.
+       */
+      it('does not claim a remembered candidate the ranker already put first, when it is over the limit', () => {
+        const busyLocal = { ...local, inFlight: 1 };
+        const busierPeer = { ...peer, inFlight: 3 };
+        const busyRanked = [busyLocal, busierPeer];
+
+        expect(applyPrefixAffinity(busyRanked, { nodeKey: LOCAL_CANDIDATE_KEY, backend: 'ollama' }, 1, 0)).toEqual({
+          ordered: busyRanked,
+          sticky: busyLocal,
+          qualified: false,
+          leastLoadedInFlight: 3,
+        });
+      });
+
+      it('holds the remembered candidate past the limit while its queue is within the margin of the least-loaded alternative', () => {
         const busyPeer = { candidate: { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate, inFlight: 2 };
         const busyLocal = { candidate: { peerId: null, nodeFqdn: null, backend: 'ollama' } as PoolCandidate, inFlight: 2 };
         const busyRanked = [busyLocal, busyPeer];
-        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
 
-        // At margin 0, with maxInFlight = 2 and inFlight = 2: not under limit
-        expect(applyPrefixAffinity(busyRanked, remembered, 2, 0)).toEqual({ ordered: busyRanked, sticky: busyPeer });
+        // At margin 0, with maxInFlight = 2 and inFlight = 2: not under the limit.
+        expect(applyPrefixAffinity(busyRanked, remembered, 2, 0)).toEqual({
+          ordered: busyRanked,
+          sticky: busyPeer,
+          qualified: false,
+          leastLoadedInFlight: 2,
+        });
 
-        // At margin 1 (or 2), sticky is within margin of min(inFlight)=2, so affinity holds
-        expect(applyPrefixAffinity(busyRanked, remembered, 2, 1)).toEqual({ ordered: [busyPeer, busyLocal], sticky: busyPeer });
+        // At margin 1 the remembered queue is within one of the least-loaded alternative's, so affinity holds.
+        expect(applyPrefixAffinity(busyRanked, remembered, 2, 1)).toEqual({
+          ordered: [busyPeer, busyLocal],
+          sticky: busyPeer,
+          qualified: true,
+          leastLoadedInFlight: 2,
+        });
       });
 
-      it('sheds load when sticky candidate exceeds affinityMargin of alternative nodes', () => {
+      it('sheds load when the remembered candidate is further than the margin behind the least-loaded alternative', () => {
         const veryBusyPeer = { candidate: { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate, inFlight: 4 };
         const idleLocal = { candidate: { peerId: null, nodeFqdn: null, backend: 'ollama' } as PoolCandidate, inFlight: 1 };
         const busyRanked = [idleLocal, veryBusyPeer];
-        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
 
-        // inFlight=4 > min(1) + margin(1), so affinity does not hold
-        expect(applyPrefixAffinity(busyRanked, remembered, 2, 1)).toEqual({ ordered: busyRanked, sticky: veryBusyPeer });
+        // inFlight=4 > min(1) + margin(1), so affinity does not hold.
+        expect(applyPrefixAffinity(busyRanked, remembered, 2, 1)).toEqual({
+          ordered: busyRanked,
+          sticky: veryBusyPeer,
+          qualified: false,
+          leastLoadedInFlight: 1,
+        });
+      });
+
+      it('does nothing with a margin while the limit is 0: the margin widens a limit, it does not switch affinity on', () => {
+        expect(applyPrefixAffinity(ranked, remembered, 0, 3)).toEqual({ ordered: ranked, sticky: peer, qualified: false, leastLoadedInFlight: 0 });
       });
 
       it('matches node and engine together, and never re-admits a node that is not a candidate', () => {
-        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-1', backend: 'vllm' }, 2)).toEqual({ ordered: ranked, sticky: null });
-        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-gone', backend: 'ollama' }, 2)).toEqual({ ordered: ranked, sticky: null });
-      });
-    });
-
-    describe('DistributedPrefixAffinityStore', () => {
-      it('stores and retrieves prefix entries across distributed driver with fallback', async () => {
-        const driverMap = new Map<string, string>();
-        const mockDriver: PrefixAffinityDriver = {
-          get: vi.fn(async (key: string) => driverMap.get(key) ?? null),
-          set: vi.fn(async (key: string, val: string) => {
-            driverMap.set(key, val);
-          }),
-          del: vi.fn(async (key: string) => {
-            driverMap.delete(key);
-          }),
-        };
-
-        const store = new DistributedPrefixAffinityStore(mockDriver, 60_000);
-        const candidate = { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate;
-
-        await store.remember('session-1', candidate, 10_000);
-        expect(mockDriver.set).toHaveBeenCalled();
-
-        const retrieved = await store.get('session-1', 10_005);
-        expect(retrieved).toMatchObject({ nodeKey: 'peer-1', backend: 'ollama' });
-
-        await store.forget('session-1');
-        expect(mockDriver.del).toHaveBeenCalled();
-        expect(await store.get('session-1', 10_010)).toBeNull();
+        const none = { ordered: ranked, sticky: null, qualified: false, leastLoadedInFlight: null };
+        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-1', backend: 'vllm' }, 2)).toEqual(none);
+        expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-gone', backend: 'ollama' }, 2)).toEqual(none);
       });
     });
   });
@@ -5149,6 +5347,7 @@ describe('PoolProxyService', () => {
                 ],
                 runsAt: HERMES_NUM_CTX,
                 behind: ['core-2.tailxyz.ts.net'],
+                overriddenBy: null,
               },
             ],
             overridden: false,
@@ -5216,6 +5415,152 @@ describe('PoolProxyService', () => {
 
           expect(routingLog.list()[0]).toMatchObject({ node: LOCAL_CANDIDATE_KEY, contention: null });
         });
+      });
+    });
+
+    /**
+     * Contention runs after prefix affinity, and until this it overruled every affinity hit: on
+     * core-2, a ~30k-token Hermes turn for 35b arriving while OpenClaw's 27b was generating was moved
+     * to an idle leaf and prefilled there cold (~100 s at ~300 tok/s), and the table then remembered
+     * the leaf, so the session stayed migrated. An engine affinity qualified now keeps its place; one
+     * affinity stood aside from, or with affinity off, is judged exactly as before.
+     */
+    describe('with prefix affinity', () => {
+      const hermesBody = { model: MODEL, stream: true, options: { num_ctx: HERMES_NUM_CTX }, messages: [{ role: 'user', content: 'hello' }] };
+      const CORE_2_FQDN = 'core-2.tailxyz.ts.net';
+
+      function forwardedTo(): string[] {
+        return vi
+          .mocked(global.fetch)
+          .mock.calls.map(([url]) => (String(url).includes('local-ollama') ? LOCAL_CANDIDATE_KEY : new URL(String(url)).hostname));
+      }
+
+      async function hermes(): Promise<void> {
+        await service.proxyRequest({ path: '/api/chat', method: 'POST', body: hermesBody, model: MODEL, res: createMockResponse() });
+      }
+
+      /** The session's first turn, served here with nothing else running, so the table remembers this node's Ollama. */
+      async function sessionWarmHere(): Promise<void> {
+        await hermes();
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY]);
+      }
+
+      beforeEach(() => {
+        holdsBoth();
+        const core2Peer = core2(0);
+        peerService.listConnectedPeers.mockResolvedValue([core2Peer]);
+        peerService.getPeerById.mockResolvedValue(core2Peer);
+        peerService.getPresentToken.mockResolvedValue('raw-token');
+        vi.mocked(global.fetch).mockImplementation(async () => new Response('data: [DONE]\n\n', { status: 200 }));
+      });
+
+      it('keeps the engine the session is warm on when affinity qualifies it under the limit, and says affinity held it', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        // OpenClaw's 27b turn: another model on this Ollama, which alone would put core-2 first.
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, LOCAL_CANDIDATE_KEY]);
+        const entry = routingLog.list()[0];
+        expect(entry).toMatchObject({ node: LOCAL_CANDIDATE_KEY, failedOverFrom: [], outcome: 'served' });
+        expect(entry?.affinity).toMatchObject({ outcome: 'hit', qualified: true, remembered: LOCAL_CANDIDATE_KEY, inFlight: 1 });
+        expect(entry?.contention).toEqual({
+          numCtx: HERMES_NUM_CTX,
+          demoted: [
+            {
+              node: LOCAL_CANDIDATE_KEY,
+              backend: 'ollama',
+              busyWith: [{ model: OTHER, numCtx: HERMES_NUM_CTX }],
+              runsAt: HERMES_NUM_CTX,
+              behind: [],
+              overriddenBy: 'affinity',
+            },
+          ],
+          // Placed on the contended engine, which is what `overridden` has always recorded.
+          overridden: true,
+        });
+      });
+
+      it('keeps it when affinity qualifies it by the margin, past the limit', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 1, poolPrefixAffinityMargin: 1 });
+        await sessionWarmHere();
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, LOCAL_CANDIDATE_KEY]);
+        const entry = routingLog.list()[0];
+        expect(entry?.affinity).toMatchObject({ outcome: 'hit', qualified: true, inFlight: 1, leastLoadedInFlight: 0, affinityMargin: 1 });
+        expect(entry?.contention?.demoted[0]).toMatchObject({ behind: [], overriddenBy: 'affinity' });
+      });
+
+      it('moves it as before with affinity off (the default)', async () => {
+        await sessionWarmHere();
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, CORE_2_FQDN]);
+        const entry = routingLog.list()[0];
+        expect(entry?.affinity).toBeNull();
+        expect(entry?.contention?.demoted[0]).toMatchObject({ node: LOCAL_CANDIDATE_KEY, behind: [CORE_2_FQDN], overriddenBy: null });
+      });
+
+      it('moves it as before when affinity stood aside because the engine was over the limit', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 1 });
+        await sessionWarmHere();
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, CORE_2_FQDN]);
+        const entry = routingLog.list()[0];
+        expect(entry?.affinity).toMatchObject({ outcome: 'skipped', qualified: false, remembered: LOCAL_CANDIDATE_KEY, inFlight: 1 });
+        expect(entry?.contention?.demoted[0]).toMatchObject({ behind: [CORE_2_FQDN], overriddenBy: null });
+      });
+
+      it('credits affinity with nothing when the engine would have kept its place anyway', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        generating(OTHER, HERMES_NUM_CTX);
+        // Eight in flight on core-2: contention alone would not have moved this node behind it.
+        peerService.listConnectedPeers.mockResolvedValue([core2(8)]);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, LOCAL_CANDIDATE_KEY]);
+        expect(routingLog.list()[0]?.contention?.demoted[0]).toMatchObject({ behind: [], overriddenBy: null });
+      });
+
+      it('leaves the same model at the same window alone, as before: that is a queue, not contention', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        await sessionWarmHere();
+        generating(MODEL, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([LOCAL_CANDIDATE_KEY, LOCAL_CANDIDATE_KEY]);
+        expect(routingLog.list()[0]).toMatchObject({ contention: null, affinity: { outcome: 'hit', qualified: true } });
+      });
+
+      it('still judges another contended engine here that affinity did not remember', async () => {
+        setPoolPreferences({ poolPrefixAffinityMaxInFlight: 2 });
+        // The session is warm on core-2, not here, so this node's busy Ollama is judged as ever.
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        loadService.acquire(LOCAL_CANDIDATE_KEY);
+        await hermes();
+        loadService.release(LOCAL_CANDIDATE_KEY);
+        loadService.release(LOCAL_CANDIDATE_KEY);
+        expect(forwardedTo()).toEqual([CORE_2_FQDN]);
+        generating(OTHER, HERMES_NUM_CTX);
+
+        await hermes();
+
+        expect(forwardedTo()).toEqual([CORE_2_FQDN, CORE_2_FQDN]);
+        expect(routingLog.list()[0]?.affinity).toMatchObject({ outcome: 'hit', qualified: true, remembered: CORE_2_FQDN });
+        expect(routingLog.list()[0]?.contention?.demoted[0]).toMatchObject({ node: LOCAL_CANDIDATE_KEY, overriddenBy: null });
       });
     });
 
