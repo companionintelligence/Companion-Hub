@@ -52,9 +52,11 @@ import {
   splitDemoted,
 } from '../hub-pool-proxy.service';
 import {
+  DistributedPrefixAffinityStore,
   POOL_AFFINITY_HEADER,
   PREFIX_AFFINITY_TTL_MS,
   PrefixAffinityStore,
+  type PrefixAffinityDriver,
   applyPrefixAffinity,
   derivePrefixKey,
   normalizePoolSessionKey,
@@ -2825,9 +2827,60 @@ describe('PoolProxyService', () => {
         expect(applyPrefixAffinity(ranked, { nodeKey: LOCAL_CANDIDATE_KEY, backend: 'ollama' }, 0)).toEqual({ ordered: ranked, sticky: local });
       });
 
+      it('retains sticky candidate under concurrency when within affinityMargin (Xinity AI affinity margin)', () => {
+        const busyPeer = { candidate: { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate, inFlight: 2 };
+        const busyLocal = { candidate: { peerId: null, nodeFqdn: null, backend: 'ollama' } as PoolCandidate, inFlight: 2 };
+        const busyRanked = [busyLocal, busyPeer];
+        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
+
+        // At margin 0, with maxInFlight = 2 and inFlight = 2: not under limit
+        expect(applyPrefixAffinity(busyRanked, remembered, 2, 0)).toEqual({ ordered: busyRanked, sticky: busyPeer });
+
+        // At margin 1 (or 2), sticky is within margin of min(inFlight)=2, so affinity holds
+        expect(applyPrefixAffinity(busyRanked, remembered, 2, 1)).toEqual({ ordered: [busyPeer, busyLocal], sticky: busyPeer });
+      });
+
+      it('sheds load when sticky candidate exceeds affinityMargin of alternative nodes', () => {
+        const veryBusyPeer = { candidate: { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate, inFlight: 4 };
+        const idleLocal = { candidate: { peerId: null, nodeFqdn: null, backend: 'ollama' } as PoolCandidate, inFlight: 1 };
+        const busyRanked = [idleLocal, veryBusyPeer];
+        const remembered = { nodeKey: 'peer-1', backend: 'ollama' } as const;
+
+        // inFlight=4 > min(1) + margin(1), so affinity does not hold
+        expect(applyPrefixAffinity(busyRanked, remembered, 2, 1)).toEqual({ ordered: busyRanked, sticky: veryBusyPeer });
+      });
+
       it('matches node and engine together, and never re-admits a node that is not a candidate', () => {
         expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-1', backend: 'vllm' }, 2)).toEqual({ ordered: ranked, sticky: null });
         expect(applyPrefixAffinity(ranked, { nodeKey: 'peer-gone', backend: 'ollama' }, 2)).toEqual({ ordered: ranked, sticky: null });
+      });
+    });
+
+    describe('DistributedPrefixAffinityStore', () => {
+      it('stores and retrieves prefix entries across distributed driver with fallback', async () => {
+        const driverMap = new Map<string, string>();
+        const mockDriver: PrefixAffinityDriver = {
+          get: vi.fn(async (key: string) => driverMap.get(key) ?? null),
+          set: vi.fn(async (key: string, val: string) => {
+            driverMap.set(key, val);
+          }),
+          del: vi.fn(async (key: string) => {
+            driverMap.delete(key);
+          }),
+        };
+
+        const store = new DistributedPrefixAffinityStore(mockDriver, 60_000);
+        const candidate = { peerId: 'peer-1', nodeFqdn: 'peer-1.tailxyz.ts.net', backend: 'ollama' } as PoolCandidate;
+
+        await store.remember('session-1', candidate, 10_000);
+        expect(mockDriver.set).toHaveBeenCalled();
+
+        const retrieved = await store.get('session-1', 10_005);
+        expect(retrieved).toMatchObject({ nodeKey: 'peer-1', backend: 'ollama' });
+
+        await store.forget('session-1');
+        expect(mockDriver.del).toHaveBeenCalled();
+        expect(await store.get('session-1', 10_010)).toBeNull();
       });
     });
   });

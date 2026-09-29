@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_POOL_MAX_PROMPT_TOKENS,
+  MAX_POOL_PREFIX_AFFINITY_MARGIN,
   MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   MAX_POOL_SLOT_AWARENESS,
   MAX_POOL_PROBE_SNAPSHOT_TTL_MS,
@@ -115,5 +116,30 @@ describe('UpdateHubPoolPreferencesBody — poolSlotAwareness', () => {
     ['null', null],
   ])('rejects %s with a 400', (_label, value) => {
     expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolSlotAwareness: value }).success).toBe(false);
+  });
+});
+
+describe('UpdateHubPoolPreferencesBody — poolPrefixAffinityMargin', () => {
+  it('accepts 0, which keeps affinity margin checking disabled', () => {
+    const result = UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMargin: 0 });
+
+    expect(result.success).toBe(true);
+    expect(result.success && result.data).toEqual({ poolPrefixAffinityMargin: 0 });
+  });
+
+  it('accepts 1, and the upper bound', () => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMargin: 1 }).success).toBe(true);
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMargin: MAX_POOL_PREFIX_AFFINITY_MARGIN }).success).toBe(true);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['above the bound', MAX_POOL_PREFIX_AFFINITY_MARGIN + 1],
+    ['fractional', 0.5],
+    ['a string', '1'],
+    ['a boolean', true],
+    ['null', null],
+  ])('rejects %s with a 400', (_label, value) => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMargin: value }).success).toBe(false);
   });
 });

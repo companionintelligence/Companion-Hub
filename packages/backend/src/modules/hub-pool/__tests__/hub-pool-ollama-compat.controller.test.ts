@@ -79,7 +79,7 @@ describe('HubPoolOllamaCompatController — top-level /api/version and /api/tags
     const address = app.getHttpServer().address();
     const port = typeof address === 'object' && address ? address.port : 0;
     baseUrl = `http://127.0.0.1:${port}`;
-  });
+  }, 30_000);
 
   // One app for the file, so call history is cleared per test rather than accumulated: the
   // "never looked up" assertion below must hold on its own, not because the keyed test runs later.

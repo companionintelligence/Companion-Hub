@@ -11,6 +11,7 @@ import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { MIN_PAIR_BY_ADDRESS_PROTOCOL } from './hub-pool-peer-auth';
 import type { DiscoverablePoolPeer, PoolProbeResult } from './hub-pool.types';
+import { HubPoolMdnsService } from './hub-pool-mdns.service';
 
 /** Matches `DISCOVERY_PROBE_TIMEOUT_MS` in `hub-pool-peer.service.ts` — the same probe, over a different route. */
 const PROBE_TIMEOUT_MS = 5_000;
@@ -52,6 +53,8 @@ export class HubPoolDiscoveryService {
     @Optional()
     @Inject(forwardRef(() => PortalClientService))
     private readonly portalClient?: PortalClientService,
+    @Optional()
+    private readonly mdnsService?: HubPoolMdnsService,
   ) {}
 
   /**
@@ -132,8 +135,28 @@ export class HubPoolDiscoveryService {
    * nothing on a polling path may start to.
    */
   async listDiscoverableNodes(): Promise<DiscoverablePoolPeer[]> {
-    const [tailscale, portal] = await Promise.all([this.peerService.listDiscoverableDevices(), this.listPortalCandidates()]);
-    return mergePoolCandidates(tailscale, portal);
+    const [tailscale, portal, mdns] = await Promise.all([
+      this.peerService.listDiscoverableDevices(),
+      this.listPortalCandidates(),
+      this.listMdnsCandidates(),
+    ]);
+    return mergePoolCandidates(tailscale, [...portal, ...mdns]);
+  }
+
+  /**
+   * Discovery candidates from local mDNS zero-conf broadcast (_cihub._tcp).
+   * Finds neighbouring Hub appliances on the same physical subnet for single-PIN pairing.
+   */
+  private async listMdnsCandidates(): Promise<DiscoverablePoolPeer[]> {
+    if (!this.mdnsService) return [];
+    try {
+      await this.mdnsService.scan();
+      const known = new Set((await this.peerService.listPeers()).map((peer) => candidateKey(peer.nodeFqdn)));
+      return await this.mdnsService.getDiscoverableCandidates(known);
+    } catch (error) {
+      this.logger.debug(`[HubPool] mDNS candidate scan failed: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
   }
 
   /**
@@ -307,9 +330,13 @@ export function mergePoolCandidates(tailscale: DiscoverablePoolPeer[], others: D
       continue;
     }
     // Tailscale entries are inserted first, so an existing entry always wins on identity. Only the
-    // Tailscale device id is worth back-filling, and only when the winner lacks one.
+    // Tailscale device id and network address are worth back-filling, and only when the winner lacks one.
     if (!existing.tailscaleDeviceId && candidate.tailscaleDeviceId) {
       merged.set(key, { ...existing, tailscaleDeviceId: candidate.tailscaleDeviceId });
+    }
+    if (!existing.address && candidate.address) {
+      const current = merged.get(key) ?? existing;
+      merged.set(key, { ...current, address: candidate.address });
     }
   }
 
