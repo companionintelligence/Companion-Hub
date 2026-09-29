@@ -13,10 +13,13 @@ import { OmlxBackend } from '../backends/omlx.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { PassThrough } from 'node:stream';
 import axios from 'axios';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
-import type { HardwareProfile, TrackedModel, CuratedModel } from '@ci-hub/common/types';
+import type { HardwareProfile, TrackedModel, CuratedModel, CloudProviderConfig } from '@ci-hub/common/types';
+import { firstByteBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+import { InferenceRouteError } from '../inference-error-reply';
 
 vi.mock('axios');
 
@@ -454,7 +457,7 @@ describe('InferenceRouterService', () => {
       );
     });
 
-    it('supports streaming completions with dynamic timeout', async () => {
+    it('streams completions under a first-byte deadline, not an axios timeout', async () => {
       const tracked = { catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', backend: 'ollama', state: 'loaded' } as TrackedModel;
       modelRegistry.getTrackedModel.mockReturnValue(tracked);
       modelRegistry.getTrackedModels.mockReturnValue([tracked]);
@@ -466,8 +469,147 @@ describe('InferenceRouterService', () => {
       expect(axios.post).toHaveBeenCalledWith(
         'http://ci-hub-ollama:11434/v1/completions',
         expect.anything(),
-        expect.objectContaining({ responseType: 'stream', timeout: expect.any(Number) }),
+        expect.objectContaining({ responseType: 'stream', timeout: 0, signal: expect.any(AbortSignal) }),
       );
+    });
+
+    it('answers a model nothing serves with a 404 model_not_found, not a bare Error the controller turned into a 502', async () => {
+      const err = await service.routeCompletion({ model: 'nope:1b', prompt: 'def f(' }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(InferenceRouteError);
+      expect(err).toMatchObject({ status: 404, type: 'invalid_request_error', code: 'model_not_found' });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    const cloud = (provider: CloudProviderConfig['provider'], baseUrl: string): CloudProviderConfig => ({
+      provider,
+      enabled: true,
+      apiKey: 'sk-test',
+      baseUrl,
+      defaultModel: 'whatever',
+    });
+
+    it('refuses the cloud fallback to Anthropic, which has no /completions, with a 400 that says so — and sends nothing', async () => {
+      cloudFallback.resolveProvider.mockReturnValue(cloud('anthropic', 'https://api.anthropic.com/v1'));
+
+      const err = await service.routeCompletion({ model: 'claude-sonnet-4-5', prompt: 'def f(' }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(InferenceRouteError);
+      expect(err).toMatchObject({ status: 400, type: 'invalid_request_error', code: 'unsupported_endpoint' });
+      expect((err as Error).message).toMatch(/anthropic.*\/v1\/chat\/completions/);
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['google', 'https://generativelanguage.googleapis.com/v1beta/openai'],
+      ['github-copilot', 'https://api.githubcopilot.com'],
+    ] as const)('refuses the fallback to %s too, whose OpenAI-compatible surface is chat-only', async (provider, baseUrl) => {
+      cloudFallback.resolveProvider.mockReturnValue(cloud(provider, baseUrl));
+      await expect(service.routeCompletion({ model: 'some-model', prompt: 'x' })).rejects.toMatchObject({ status: 400 });
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('still falls back to OpenAI, which has the route', async () => {
+      cloudFallback.resolveProvider.mockReturnValue(cloud('openai', 'https://api.openai.com/v1'));
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { object: 'text_completion' }, headers: {} });
+
+      const res = await service.routeCompletion({ model: 'gpt-3.5-turbo-instruct', prompt: 'x' });
+      expect(res.backend).toBe('cloud:openai');
+      expect(axios.post).toHaveBeenCalledWith('https://api.openai.com/v1/completions', expect.anything(), expect.anything());
+    });
+  });
+
+  // ─── How long a local request may wait ───────────────
+  // The local path uses the pool's budgets. Before this, a streamed request got max(120 s, prompt)
+  // and the pool max(300 s, prompt): the same prompt on the same CPU-bound node was cut locally at
+  // two minutes and waited for through the pool.
+  describe('local request budget', () => {
+    const tracked = { catalogId: 'qwen3-8-27b-mtp', backendModelId: 'qwen3.8:27b-mtp-q4_K_M', backend: 'ollama', state: 'loaded' } as TrackedModel;
+    const streamedTurn = (promptChars: number) => ({
+      model: 'qwen3.8:27b-mtp-q4_K_M',
+      messages: [{ role: 'user', content: 'x'.repeat(promptChars) }],
+      stream: true,
+    });
+
+    beforeEach(() => {
+      modelRegistry.getTrackedModel.mockReturnValue(tracked);
+      modelRegistry.getTrackedModels.mockReturnValue([tracked]);
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** An engine that never answers: the request settles only when its signal aborts it. */
+    function engineThatNeverAnswers(): { signal: () => AbortSignal | undefined } {
+      let signal: AbortSignal | undefined;
+      vi.mocked(axios.post).mockImplementationOnce((_url, _body, config) => {
+        signal = config?.signal as AbortSignal;
+        return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new Error('canceled'))));
+      });
+      return { signal: () => signal };
+    }
+
+    it('gives a streamed 19 KB prompt the pool floor of 300 s to first byte, where it used to get 120 s', async () => {
+      const engine = engineThatNeverAnswers();
+      const outcome = service.routeChatCompletion(streamedTurn(19_000)).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.anything(), expect.objectContaining({ responseType: 'stream', timeout: 0 }));
+
+      await vi.advanceTimersByTimeAsync(121_000);
+      expect(engine.signal()?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(300_000 - 121_000 - 1);
+      expect(engine.signal()?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(engine.signal()?.aborted).toBe(true);
+
+      const err = await outcome;
+      expect((err as Error).message).toMatch(/no response headers within 300000ms/);
+    });
+
+    it("scales a big prompt's budget exactly as the pool does", async () => {
+      const body = streamedTurn(160_000);
+      const budget = firstByteBudgetMs(Buffer.byteLength(JSON.stringify(body)));
+      expect(budget).toBeGreaterThanOrEqual(800_000);
+      const engine = engineThatNeverAnswers();
+      const outcome = service.routeChatCompletion(body).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(budget - 1);
+      expect(engine.signal()?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(engine.signal()?.aborted).toBe(true);
+      await outcome;
+    });
+
+    it('never aborts a stream once the engine has answered, however long the generation or its pauses', async () => {
+      const upstream = new PassThrough();
+      let config: { signal?: AbortSignal; timeout?: number } | undefined;
+      vi.mocked(axios.post).mockImplementationOnce(async (_url, _body, cfg) => {
+        config = cfg as typeof config;
+        // A cold load: headers after 250 s, inside the 300 s budget.
+        await new Promise((resolve) => setTimeout(resolve, 250_000));
+        return { data: upstream, headers: {} };
+      });
+
+      const pending = service.routeChatCompletion(streamedTurn(19_000));
+      await vi.advanceTimersByTimeAsync(250_000);
+      const result = await pending;
+      expect(result.stream).toBe(upstream);
+
+      // An hour of generation, with a five-minute silence between tokens — as long as the budget.
+      for (let minute = 0; minute < 60; minute += 5) {
+        upstream.write('data: {"choices":[{"delta":{"content":"."}}]}\n\n');
+        await vi.advanceTimersByTimeAsync(300_000);
+      }
+      expect(config?.signal?.aborted).toBe(false);
+      expect(config?.timeout).toBe(0);
+      expect(upstream.destroyed).toBe(false);
+      // Nothing left armed that could fire later.
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('gives a non-streamed request the pool completion budget, at least 300 s for the whole generation', async () => {
+      vi.mocked(axios.post).mockResolvedValueOnce({ data: { object: 'chat.completion' }, headers: {} });
+      await service.routeChatCompletion({ ...streamedTurn(19_000), stream: false });
+      expect(axios.post).toHaveBeenCalledWith(expect.any(String), expect.anything(), expect.objectContaining({ timeout: 300_000 }));
     });
   });
 
