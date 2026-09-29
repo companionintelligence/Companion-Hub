@@ -298,7 +298,8 @@ export interface PoolRoutingContention {
 export interface PoolRoutingRequestError {
   /** A label for the engine's message; the message itself never leaves the Hub that read it. A string, so a newer Hub's label still prints. */
   signature: string;
-  basis: 'definitive' | 'confirmed';
+  /** A string beyond these from a newer Hub prints as the generic line, as `signature` does. */
+  basis: 'definitive' | 'confirmed' | 'last-candidate' | 'status';
   /** For `confirmed`, the node whose answer this one agreed with. */
   confirms: string | null;
 }
@@ -1584,6 +1585,7 @@ function describeRequestErrorSignature(signature: string): string {
     'invalid-message': 'a malformed message',
     'context-length': 'prompt longer than the context window',
     'chat-template': 'chat template would not render',
+    'client-error': 'an HTTP 4xx, relayed on its status',
   };
   return words[signature] ?? signature;
 }
@@ -1649,9 +1651,13 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
       const node = sanitizeForBox(entry.node ?? '?');
       const agreed = requestError.basis === 'confirmed' && requestError.confirms ? `, as ${sanitizeForBox(requestError.confirms)} had` : '';
       const untried = Math.max(0, entry.candidates - entry.attempt);
-      lines.push(
-        `  ↳ ${node} refused the request itself${agreed} (${describeRequestErrorSignature(requestError.signature)}); returned to the app, not sent to the other ${untried} candidate${untried === 1 ? '' : 's'}`,
-      );
+      // On the last candidate there were no others to spare it: "not sent to the other 0 candidates"
+      // would read as the pool stopping early, when it had asked everyone it could.
+      const tail =
+        requestError.basis === 'last-candidate'
+          ? 'returned to the app unconfirmed, as no candidate was left to ask'
+          : `returned to the app, not sent to the other ${untried} candidate${untried === 1 ? '' : 's'}`;
+      lines.push(`  ↳ ${node} refused the request itself${agreed} (${describeRequestErrorSignature(requestError.signature)}); ${tail}`);
     }
     // Named on the row it shaped: an operator seeing everything land on one node cannot otherwise
     // tell a pin from the ranker having decided the same thing.

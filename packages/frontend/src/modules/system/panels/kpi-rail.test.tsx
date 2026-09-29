@@ -117,6 +117,13 @@ describe('KpiRail routing windows', () => {
 
     expect(stat(container, 'Failed 30m')).toContain('2 past budget · 1 caller left');
   });
+
+  it('names requests a node refused as bad, which are the app to fix and were counted as served until 2026-09-29', () => {
+    const { container } = renderRail({ buckets: [bucket({ served: 1, failed: 6, refused: 6 })] });
+
+    expect(stat(container, 'Failed 30m')).toMatch(/^6/);
+    expect(stat(container, 'Failed 30m')).toContain('6 refused');
+  });
 });
 
 describe('KpiRail live figures', () => {
