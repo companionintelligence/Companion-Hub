@@ -4,20 +4,18 @@ import type { SupervisionContainerInspection } from '@/modules/docker/docker-rea
 /**
  * What control plane the Hub actually has over a backend.
  *
- * The six backends are not uniform and pretending they are is how a supervisor ends up acting on
+ * The inference backends are not uniform and pretending they are is how a supervisor ends up acting on
  * the wrong process. Resolved per tick, never assumed:
  *
  * - `container` — a Docker container the local daemon can see, whose published port matches the URL
  *   the health check probes. This is the only kind whose *lifecycle* is legible to the Hub, and
  *   even here the Hub only reports (see `common/helpers/inference-supervision.ts`).
  * - `host-process` — a daemon outside this container's PID namespace: host ollama under systemd,
- *   mlx-dspark and MTPLX under launchd. `mtplx` and `dspark` are permanently this kind — both of
- *   their compose methods throw unconditionally, so they have no Docker path at all — and launchd's
- *   `KeepAlive` + `ThrottleInterval` is already a correct supervisor for them.
+ *   vLLM or oMLX under host process managers.
  * - `remote` — an endpoint on another machine. `preferredVllmUrl` legitimately points across a
  *   tailnet. A remote endpoint cannot be supervised locally; saying so is the honest answer, and
  *   the alternative is the Hub "helpfully" acting on a local container named `ci-hub-vllm` because
- *   a Mac somewhere else went down.
+ *   a server somewhere else went down.
  * - `absent` — nothing answers and nothing matches. There is no process to describe.
  */
 export type SupervisionTargetKind = 'container' | 'host-process' | 'remote' | 'absent';
@@ -46,12 +44,7 @@ export interface SupervisionTarget {
 export type SupervisionContainerState = SupervisionContainerInspection;
 
 /** Codes the diagnosis catalogue can produce. Each is tied to a documented fleet failure. */
-export type BackendDiagnosisCode =
-  | 'lucebox_rocm_legacy_image'
-  | 'startup_dependency_failure'
-  | 'zombie_child_processes'
-  | 'no_weights'
-  | 'external_restart_loop';
+export type BackendDiagnosisCode = 'startup_dependency_failure' | 'zombie_child_processes' | 'no_weights' | 'external_restart_loop';
 
 export interface BackendDiagnosis {
   code: BackendDiagnosisCode;

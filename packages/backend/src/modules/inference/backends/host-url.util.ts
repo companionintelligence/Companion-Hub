@@ -1,14 +1,11 @@
 import fs from 'node:fs';
 
 /**
- * Shared URL plumbing for the **host-run** inference backends — vLLM (via vLLM-Metal on Apple
- * Silicon) and mlx-dspark. Both are servers the operator installs and starts themselves, so the
+ * Shared URL plumbing for the **host-run** inference backends — vLLM and oMLX.
+ * Both are servers the operator installs and starts themselves, so the
  * Hub only ever holds a URL pointing at them, and both need the same two fixups: tolerate the
  * `/v1` suffix an operator naturally pastes out of an OpenAI client config, and translate the
  * operator's `localhost` into something that resolves from inside the Hub's own container.
- *
- * Kept in one place deliberately: an earlier draft of the mlx-dspark backend copied
- * `detectHubContainer` verbatim into a second file, which is exactly how the two copies drift.
  */
 
 /** Accept `http://host:8080`, `http://host:8080/` or `http://host:8080/v1` and return the bare origin. */

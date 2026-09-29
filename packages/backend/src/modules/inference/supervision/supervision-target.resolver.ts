@@ -50,12 +50,9 @@ export interface ResolveSupervisionTargetInput {
  *    if a container of the matching name exists locally — that container is, by construction, not
  *    what the health check just probed.
  * 2. **A name match is not enough.** The container's published host port must match the port in the
- *    base URL. The desktop publishes Lucebox on a *dynamic* host port (`available_host_port`), so
- *    `ci-hub-inference-lucebox` routinely has nothing to do with whatever answers
- *    `SPECULATIVE_INFERENCE_URL`; and a stale `ci-hub-vllm` from an old experiment must not be
- *    reported as the engine while vLLM actually runs on the host. When the URL addresses the
- *    container by name on a Docker network there is no host binding to compare, so the container's
- *    own internal port is matched instead.
+ *    base URL: a stale `ci-hub-vllm` from an old experiment must not be reported as the engine while
+ *    vLLM actually runs on the host. When the URL addresses the container by name on a Docker network
+ *    there is no host binding to compare, so the container's own internal port is matched instead.
  * 3. **No port match downgrades to `host-process`, never to `container`.** Misidentifying the
  *    target costs an unobserved engine; the opposite would cost a report about a stranger.
  */
