@@ -149,7 +149,10 @@ services:
       LOG_LEVEL: debug
       OLLAMA_URL: http://host.docker.internal:11434
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
-      OMLX_URL: ${OMLX_URL:-http://host.docker.internal:8000}
+      # Empty unless the operator sets it: the Hub then probes oMLX's default
+      # (host.docker.internal:8000) only on Apple Silicon. A default here would
+      # skip that gate and probe vLLM's :8000 as oMLX on every Linux node.
+      OMLX_URL: ${OMLX_URL:-}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       OMLX_API_KEY: ${OMLX_API_KEY:-}
       LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
