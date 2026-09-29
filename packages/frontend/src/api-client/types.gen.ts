@@ -101,6 +101,7 @@ export type AppContextDto = {
         hubPoolPrefixAffinityMargin?: number;
         hubPoolSlotAwareness?: number;
         hubPoolRouteAppsAlways?: boolean;
+        hubPoolMdnsEnabled?: boolean;
         inferenceSupervisionMode?: 'off' | 'observe';
         inferenceSupervisionPollSeconds?: number;
         hubPoolPins?: Array<{
@@ -212,6 +213,7 @@ export type UserSettingsBody = {
     hubPoolPrefixAffinityMargin?: number;
     hubPoolSlotAwareness?: number;
     hubPoolRouteAppsAlways?: boolean;
+    hubPoolMdnsEnabled?: boolean;
     inferenceSupervisionMode?: 'off' | 'observe';
     inferenceSupervisionPollSeconds?: number;
     hubPoolPins?: Array<{
@@ -1441,6 +1443,7 @@ export type UpdateHubPoolPreferencesBody = {
     poolPrefixAffinityMargin?: number;
     poolSlotAwareness?: number;
     poolRouteAppsAlways?: boolean;
+    poolMdnsEnabled?: boolean;
 };
 
 export type UpsertPoolPinBody = {

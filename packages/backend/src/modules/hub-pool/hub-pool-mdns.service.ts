@@ -1,17 +1,31 @@
 import dgram, { type Socket } from 'node:dgram';
 import os from 'node:os';
 import { Injectable, type OnModuleDestroy, type OnModuleInit, Optional } from '@nestjs/common';
+import { isHubPoolEnabled } from '@/common/helpers/hub-pool';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { TailscaleService } from '@/modules/tailscale/tailscale.service';
+import { POOL_PROTOCOL_VERSION } from './hub-pool-peer-auth';
 import type { DiscoverablePoolPeer } from './hub-pool.types';
 
 export const MDNS_MULTICAST_IPV4 = '224.0.0.251';
 export const MDNS_PORT = 5353;
 export const CIHUB_SERVICE_TYPE = '_cihub._tcp.local';
 export const CIHUB_COMPAT_SERVICE_TYPE = '_ci-hub._tcp.local';
+/** Every service type this Hub announces and answers for: its own, and the one the desktop app's `find_hubs` browses. */
+export const CIHUB_SERVICE_TYPES: readonly string[] = [CIHUB_SERVICE_TYPE, CIHUB_COMPAT_SERVICE_TYPE];
 
 /** TTL for cached mDNS peer discoveries (60 seconds). */
 export const MDNS_PEER_TTL_MS = 60_000;
+
+/** How often this Hub re-announces itself while mDNS is on. */
+export const MDNS_ANNOUNCE_INTERVAL_MS = 30_000;
+
+/**
+ * RFC 6762 §6: a responder must not multicast a record again within one second of the last time it
+ * did. It is also what bounds a query flood — any container on the Hub's networks can unicast
+ * queries straight at the socket, and without it each one would cost a multicast per LAN address.
+ */
+export const MDNS_MIN_MULTICAST_INTERVAL_MS = 1_000;
 
 /**
  * Most peers the discovery cache will hold at once. Any container on the Hub's docker networks can
@@ -21,21 +35,45 @@ export const MDNS_PEER_TTL_MS = 60_000;
  */
 export const MDNS_MAX_DISCOVERED_PEERS = 64;
 
+/** The settings.json keys the socket's state depends on; a write that touches neither cannot move it. */
+const MDNS_GATING_SETTINGS = new Set(['hubPoolMdnsEnabled', 'hubPoolEnabled']);
+
+/** One DNS label, as a host name uses it. A name a packet claims has to be one of these to be shown at all. */
+const MDNS_HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
 export interface DiscoveredMdnsPeer {
-  nodeFqdn: string | null;
+  /** The host label the announcement claims, from its SRV target. Unauthenticated: a display value only. */
   hostname: string;
+  /**
+   * The datagram's real sender (`rinfo.address`). Never the packet's A record: that is a field the
+   * sender typed, and it is what let one packet put an arbitrary address on a Hub's name.
+   */
   ip: string;
+  /** From the SRV record, so claimed by the sender as well. */
   port: number;
   poolProtocol: number | null;
-  isCiHub: boolean;
   lastSeenAt: number;
 }
 
 /**
- * mDNS Zero-Conf Broadcaster and Listener for CI-Hub LAN Peer Discovery.
- * Inspired by NVIDIA PAIR, announces this Hub on the local subnet via `_cihub._tcp.local`
- * and discovers other Hubs on the same physical network so operators can pair them
- * with just a 6-digit PIN without having to manually look up and type IP addresses.
+ * LAN discovery over multicast DNS: announces this Hub as `_cihub._tcp.local` (and `_ci-hub._tcp.local`
+ * for the desktop app), answers queries for both, and lists the Hubs it hears.
+ *
+ * **Opt-in, and off by default.** The socket is open only while `poolMdnsEnabled` AND the effective
+ * pool master switch are both on, and it opens and closes as either changes — see
+ * {@link HubPoolMdnsService.reconcile}. With it off nothing binds UDP 5353 at all and discovery
+ * returns no mDNS rows. The default is off because the shipped Hub runs on Docker bridge networks,
+ * where the multicast group it joins holds only its own sibling containers: on core-2 and beta-red
+ * (2026-09-29) the listener reached nothing on the LAN and was reachable by every app container.
+ *
+ * **Nothing here is authenticated.** Every field of every datagram was chosen by whoever sent it,
+ * and anything on the Hub's networks can send one. So what this service hears is never a pairing
+ * candidate: each row is `source: 'mdns'`, `verified: false`, named only by the host label it claims
+ * and addressed by the datagram's real sender, and {@link mergePoolCandidates} keeps it from touching
+ * any tailnet- or Portal-attested row. A Hub that is really on this node's tailnet is already a
+ * verified candidate from the tailnet directory, which is where pairing by name happens. That is also
+ * why the announcement no longer carries this node's MagicDNS name: `GET /identify` stopped
+ * disclosing it to unauthenticated callers, and a 30 s multicast beacon is no place to put it back.
  */
 @Injectable()
 export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
@@ -43,10 +81,18 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
   private broadcastTimer: NodeJS.Timeout | null = null;
   private readonly discovered = new Map<string, DiscoveredMdnsPeer>();
   private isListening = false;
+  /** Per service type, when its records were last multicast — for {@link MDNS_MIN_MULTICAST_INTERVAL_MS}. */
+  private readonly lastMulticastAt = new Map<string, number>();
+  /** Every open and close runs on this chain, so two quick setting flips cannot interleave a bind with a close. */
+  private transition: Promise<void> = Promise.resolve();
+  private unsubscribeSettings: (() => void) | null = null;
+  private destroyed = false;
 
   constructor(
     private readonly logger: LoggerService,
-    @Optional() private readonly tailscale?: TailscaleService,
+    // Optional so a harness that builds this service with a logger alone gets the safe answer: with
+    // no settings to read, mDNS is off.
+    @Optional() private readonly configuration?: ConfigurationService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -54,14 +100,61 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
     if (process.env.NODE_ENV === 'test' && !process.env.HUB_POOL_ENABLE_MDNS_TEST) {
       return;
     }
-    await this.start();
+    this.unsubscribeSettings =
+      this.configuration?.onUserSettingsChanged((changedKeys) => {
+        if (changedKeys.some((key) => MDNS_GATING_SETTINGS.has(key))) {
+          void this.reconcile();
+        }
+      }) ?? null;
+    await this.reconcile();
   }
 
   async onModuleDestroy(): Promise<void> {
-    await this.stop();
+    this.destroyed = true;
+    this.unsubscribeSettings?.();
+    this.unsubscribeSettings = null;
+    await this.enqueue(() => this.stop());
   }
 
-  async start(): Promise<void> {
+  /**
+   * Whether the settings want the socket open: the operator's opt-in AND the effective pool master
+   * switch, which `HUB_POOL_USER_DISABLED` in the environment can hold off regardless of the setting.
+   * A Hub that has left the pool has no reason to advertise itself to one.
+   */
+  isEnabledBySettings(): boolean {
+    const preferences = this.configuration?.getHubPoolPreferences();
+    if (!preferences) return false;
+    return preferences.poolMdnsEnabled === true && isHubPoolEnabled(preferences.poolEnabled);
+  }
+
+  /** Whether the socket is open right now. False means no port bound and no mDNS rows. */
+  isActive(): boolean {
+    return this.socket !== null;
+  }
+
+  /**
+   * Open or close the socket to match {@link isEnabledBySettings}. Idempotent, and the only way the
+   * socket is ever opened: it runs at boot and after every settings write that touches either switch.
+   */
+  reconcile(): Promise<void> {
+    return this.enqueue(async () => {
+      const wanted = !this.destroyed && this.isEnabledBySettings();
+      if (wanted && !this.socket) {
+        await this.start();
+      } else if (!wanted && this.socket) {
+        await this.stop();
+        this.logger.info('[HubPool:mDNS] LAN discovery is off; UDP port 5353 released');
+      }
+    });
+  }
+
+  private enqueue(step: () => Promise<void>): Promise<void> {
+    const run = this.transition.then(step);
+    this.transition = run.catch(() => undefined);
+    return run;
+  }
+
+  private async start(): Promise<void> {
     if (this.socket) return;
 
     try {
@@ -92,23 +185,23 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
             socket.setMulticastTTL(255);
             socket.setMulticastLoopback(true);
             this.isListening = true;
-            this.logger.debug(`[HubPool:mDNS] Listening on ${MDNS_MULTICAST_IPV4}:${MDNS_PORT}`);
           } catch (e) {
             this.logger.debug(`[HubPool:mDNS] Membership configuration notice: ${e instanceof Error ? e.message : String(e)}`);
           }
           resolve();
         });
       });
+      this.logger.info(`[HubPool:mDNS] LAN discovery is on; listening on ${MDNS_MULTICAST_IPV4}:${MDNS_PORT}`);
 
-      // Send initial announcement and arm periodic broadcast (every 30s)
-      await this.announce();
+      this.announce();
       this.broadcastTimer = setInterval(() => {
-        void this.announce();
+        this.announce();
         this.pruneStalePeers();
-      }, 30_000);
+      }, MDNS_ANNOUNCE_INTERVAL_MS);
     } catch (error) {
       // LAN discovery is a convenience; the Hub is fully usable without it (peers can still be
       // paired over the tailnet or by address), so say so once and carry on rather than fail boot.
+      // The setting stays on, so the next write to it retries.
       this.logger.warn(
         `[HubPool:mDNS] Could not start on UDP port ${MDNS_PORT}; LAN peer discovery is disabled: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -116,7 +209,7 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async stop(): Promise<void> {
+  private async stop(): Promise<void> {
     if (this.broadcastTimer) {
       clearInterval(this.broadcastTimer);
       this.broadcastTimer = null;
@@ -137,37 +230,41 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
       this.socket = null;
       this.isListening = false;
     }
+    // What was heard while on is not carried across an off: a row must not outlive the setting that
+    // allowed it to be collected.
+    this.discovered.clear();
+    this.lastMulticastAt.clear();
   }
 
   /**
-   * Broadcast mDNS announcement for this node.
+   * Multicast this node's records for the given service types (both, by default).
+   *
+   * The TXT record is deliberately thin — `txtvers`, `isCiHub`, `poolProtocol` — the same two facts
+   * the unauthenticated `GET /identify` answers. The host name is in the SRV target already, and the
+   * MagicDNS name is not published here at all (see the class comment).
    */
-  async announce(): Promise<void> {
-    if (!this.socket) return;
+  announce(serviceTypes: readonly string[] = CIHUB_SERVICE_TYPES): void {
+    const socket = this.socket;
+    if (!socket) return;
     try {
       const port = Number(process.env.API_PORT ?? process.env.BACKEND_PORT ?? process.env.PORT ?? 5002);
       const host = os.hostname().replace(/\.local$/, '');
       const lanIps = this.getLocalLanIpv4Addresses();
       if (lanIps.length === 0) return;
 
-      const tailnetStatus = await this.tailscale?.getStatusCached();
-      const nodeFqdn = tailnetStatus?.nodeFqdn ?? '';
-
       const txtRecord = {
         txtvers: '1',
         isCiHub: 'true',
-        poolProtocol: '2',
-        hostname: host,
-        nodeFqdn,
+        poolProtocol: String(POOL_PROTOCOL_VERSION),
       };
 
-      for (const ip of lanIps) {
-        const packet = buildMdnsAnnouncement(CIHUB_SERVICE_TYPE, host, port, ip, txtRecord);
-        this.socket.send(packet, 0, packet.length, MDNS_PORT, MDNS_MULTICAST_IPV4);
-
-        // Also broadcast compatibility packet for desktop discovery
-        const compatPacket = buildMdnsAnnouncement(CIHUB_COMPAT_SERVICE_TYPE, host, port, ip, txtRecord);
-        this.socket.send(compatPacket, 0, compatPacket.length, MDNS_PORT, MDNS_MULTICAST_IPV4);
+      const now = Date.now();
+      for (const serviceType of serviceTypes) {
+        this.lastMulticastAt.set(serviceType, now);
+        for (const ip of lanIps) {
+          const packet = buildMdnsAnnouncement(serviceType, host, port, ip, txtRecord);
+          socket.send(packet, 0, packet.length, MDNS_PORT, MDNS_MULTICAST_IPV4);
+        }
       }
     } catch (err) {
       this.logger.debug(`[HubPool:mDNS] Broadcast failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -177,13 +274,14 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
   /**
    * Query the LAN for all active `_cihub._tcp` peers.
    */
-  async scan(): Promise<void> {
-    if (!this.socket) return;
+  scan(): void {
+    const socket = this.socket;
+    if (!socket) return;
     try {
-      const query = buildMdnsQuery(CIHUB_SERVICE_TYPE);
-      this.socket.send(query, 0, query.length, MDNS_PORT, MDNS_MULTICAST_IPV4);
-      const compatQuery = buildMdnsQuery(CIHUB_COMPAT_SERVICE_TYPE);
-      this.socket.send(compatQuery, 0, compatQuery.length, MDNS_PORT, MDNS_MULTICAST_IPV4);
+      for (const serviceType of CIHUB_SERVICE_TYPES) {
+        const query = buildMdnsQuery(serviceType);
+        socket.send(query, 0, query.length, MDNS_PORT, MDNS_MULTICAST_IPV4);
+      }
     } catch (err) {
       this.logger.debug(`[HubPool:mDNS] Scan query failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -205,33 +303,38 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Transforms discovered mDNS peers into DiscoverablePoolPeer candidates.
+   * The Hubs heard on the LAN, as unverified candidate rows. Empty whenever the socket is closed.
+   *
+   * Each row is named `<label>.local` — the mDNS host name it claimed, which no tailnet hands out, so
+   * it can never fold into an attested row — and addressed by the datagram's real sender. Both are
+   * for the operator to read; neither is something to dial with a pairing token.
+   *
+   * `knownPeersFqdn` holds the normalized names of paired peers. An mDNS row can only be compared to
+   * them by host label, and a match hides the mDNS row — never anything else, so a sender that claims
+   * a paired peer's label can only hide itself.
    */
-  async getDiscoverableCandidates(knownPeersFqdn: Set<string>): Promise<DiscoverablePoolPeer[]> {
-    const peers = this.listDiscoveredPeers();
+  getDiscoverableCandidates(knownPeersFqdn: Set<string>): DiscoverablePoolPeer[] {
+    if (!this.socket) return [];
+
     const selfIps = new Set(this.getLocalLanIpv4Addresses());
     const selfHost = os
       .hostname()
       .toLowerCase()
       .replace(/\.local$/, '');
-    const selfTailnet = await this.tailscale?.getStatusCached();
-    const selfFqdn = selfTailnet?.nodeFqdn?.toLowerCase();
+    const knownHosts = new Set([...knownPeersFqdn].map(hostLabelOf));
 
     const candidates: DiscoverablePoolPeer[] = [];
-    for (const peer of peers) {
-      // Exclude self by IP, hostname, or FQDN
-      if (selfIps.has(peer.ip) || peer.hostname.toLowerCase() === selfHost) continue;
-      if (peer.nodeFqdn && selfFqdn && peer.nodeFqdn.toLowerCase() === selfFqdn) continue;
+    for (const peer of this.listDiscoveredPeers()) {
+      // Our own announcements come back through multicast loopback, from one of our own addresses.
+      if (selfIps.has(peer.ip) || peer.hostname === selfHost) continue;
+      if (knownHosts.has(peer.hostname)) continue;
 
-      // Exclude if already paired by FQDN
-      if (peer.nodeFqdn && knownPeersFqdn.has(peer.nodeFqdn.toLowerCase())) continue;
-
-      const fqdn = peer.nodeFqdn || `${peer.hostname}.local`;
       candidates.push({
         tailscaleDeviceId: '',
-        nodeFqdn: fqdn,
+        nodeFqdn: `${peer.hostname}.local`,
         hostname: peer.hostname,
         source: 'mdns',
+        verified: false,
         address: `${peer.ip}:${peer.port}`,
       });
     }
@@ -240,32 +343,72 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private handleIncomingPacket(buffer: Buffer, senderAddress: string): void {
+    // A datagram already queued when the socket closed must not repopulate what stop() cleared.
+    if (!this.socket) return;
     try {
       const parsed = parseMdnsPacket(buffer);
       if (!parsed) return;
 
-      const isCihubService = parsed.services.some((s) => s.includes('_cihub._tcp') || s.includes('_ci-hub._tcp'));
-      if (!isCihubService && !parsed.txt.isCiHub) return;
-
-      const hostname = parsed.hostname || parsed.srvTarget?.split('.')[0] || 'hub-peer';
-      const port = parsed.port || 5002;
-      const ip = parsed.ip || senderAddress;
-      const key = `${ip}:${port}`;
-      const now = Date.now();
-
-      this.makeRoomFor(key, now);
-      this.discovered.set(key, {
-        nodeFqdn: parsed.txt.nodeFqdn || null,
-        hostname,
-        ip,
-        port,
-        poolProtocol: parsed.txt.poolProtocol ? Number(parsed.txt.poolProtocol) : 2,
-        isCiHub: parsed.txt.isCiHub === 'true' || isCihubService,
-        lastSeenAt: now,
-      });
+      if (parsed.isResponse) {
+        this.recordAnnouncement(parsed, senderAddress);
+      } else {
+        this.answerQuestions(parsed.questions);
+      }
     } catch {
       // Ignore packet parse failures
     }
+  }
+
+  /**
+   * Answer a PTR (or ANY) query for either of this Hub's service types with the same record set as
+   * the periodic announcement. Without this a browser only ever learns of the Hub from the 30 s
+   * beacon, so the desktop app's 3 s `find_hubs` browse missed it roughly nine times in ten.
+   *
+   * Always answered by multicast, the ordinary response to a standard query (RFC 6762 §6); a QU
+   * question's preference for a unicast reply is not honoured, which costs the querier nothing but a
+   * wider audience for records this Hub multicasts every 30 s anyway. At most once a second per
+   * service type ({@link MDNS_MIN_MULTICAST_INTERVAL_MS}). Only reachable while the socket is open, so
+   * the setting gates this exactly as it gates the announcement.
+   */
+  private answerQuestions(questions: readonly MdnsQuestion[]): void {
+    if (!this.socket || questions.length === 0) return;
+
+    const now = Date.now();
+    const due = CIHUB_SERVICE_TYPES.filter(
+      (serviceType) =>
+        questions.some((question) => (question.type === DNS_TYPE_PTR || question.type === DNS_TYPE_ANY) && sameDnsName(question.name, serviceType)) &&
+        now - (this.lastMulticastAt.get(serviceType) ?? Number.NEGATIVE_INFINITY) >= MDNS_MIN_MULTICAST_INTERVAL_MS,
+    );
+    if (due.length > 0) {
+      this.announce(due);
+    }
+  }
+
+  /**
+   * Remember a Hub announcement. Responses only (QR=1): the answers a querier attaches to a query
+   * are records it already holds (RFC 6762 §7.1 known-answer lists), not an announcement from it.
+   */
+  private recordAnnouncement(parsed: ParsedMdnsPacket, senderAddress: string): void {
+    const isCihubService = parsed.services.some((s) => s.includes('_cihub._tcp') || s.includes('_ci-hub._tcp'));
+    if (!isCihubService && !parsed.txt.isCiHub) return;
+
+    const hostname = claimedHostLabel(parsed);
+    if (!hostname) return;
+
+    const port = parsed.port || 5002;
+    // Keyed on the real sender, so one box cannot fill the cache by claiming many A records.
+    const key = `${senderAddress}:${port}`;
+    const now = Date.now();
+    const claimedProtocol = parsed.txt.poolProtocol;
+
+    this.makeRoomFor(key, now);
+    this.discovered.set(key, {
+      hostname,
+      ip: senderAddress,
+      port,
+      poolProtocol: claimedProtocol && /^\d{1,3}$/.test(claimedProtocol) ? Number(claimedProtocol) : null,
+      lastSeenAt: now,
+    });
   }
 
   /**
@@ -317,13 +460,57 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
+/** The first label of a host or FQDN, lowercased — the only thing an mDNS row and a tailnet name share. */
+export function hostLabelOf(name: string): string {
+  return (name.split('.')[0] ?? '').toLowerCase();
+}
+
+/**
+ * The host label an announcement claims: its SRV target's (or, for a record set without SRV, its
+ * instance name's) first label, falling back to a `hostname` TXT key from a build that still sent
+ * one. `null` for anything that is not a single legal DNS label, which drops the announcement.
+ */
+function claimedHostLabel(parsed: ParsedMdnsPacket): string | null {
+  const raw = parsed.srvTarget?.split('.')[0] || parsed.hostname;
+  const label = raw?.toLowerCase();
+  return label && MDNS_HOST_LABEL.test(label) ? label : null;
+}
+
+function sameDnsName(a: string, b: string): boolean {
+  return a.replace(/\.$/, '').toLowerCase() === b.replace(/\.$/, '').toLowerCase();
+}
+
 // ── DNS Packet Encoding and Decoding Helpers ──
 
+const DNS_TYPE_PTR = 12;
+const DNS_TYPE_ANY = 255;
+const DNS_CLASS_IN = 0x0001;
+/**
+ * RFC 6762 §10.2 cache-flush bit, the top bit of a record's class: "discard what you cached for this
+ * name and type". Only for unique records (SRV, TXT, A here). A PTR for a service type is shared —
+ * every Hub on the LAN answers for `_cihub._tcp.local` — so setting it there tells every listener to
+ * forget every other Hub each time one announces.
+ */
+const DNS_CACHE_FLUSH = 0x8000;
+const DNS_FLAG_QR_RESPONSE = 0x8000;
+
+export interface MdnsQuestion {
+  name: string;
+  type: number;
+}
+
 export interface ParsedMdnsPacket {
+  /** QR bit: a response (announcement or answer) rather than a query. */
+  isResponse: boolean;
+  questions: MdnsQuestion[];
   services: string[];
   hostname: string | null;
   srvTarget: string | null;
   port: number | null;
+  /**
+   * The A record's address, as the sender wrote it. Parsed for completeness and never trusted: the
+   * service records the datagram's real sender instead (see `DiscoveredMdnsPeer.ip`).
+   */
   ip: string | null;
   txt: Record<string, string>;
 }
@@ -459,8 +646,8 @@ export function buildMdnsQuery(serviceName: string): Buffer {
 
   const qName = encodeDnsName(serviceName);
   const qTypeAndClass = Buffer.alloc(4);
-  qTypeAndClass.writeUInt16BE(12, 0); // Type 12 (PTR)
-  qTypeAndClass.writeUInt16BE(1, 2); // Class 1 (IN)
+  qTypeAndClass.writeUInt16BE(DNS_TYPE_PTR, 0);
+  qTypeAndClass.writeUInt16BE(DNS_CLASS_IN, 2);
 
   return Buffer.concat([header, qName, qTypeAndClass]);
 }
@@ -481,8 +668,9 @@ export function buildMdnsAnnouncement(serviceType: string, hostname: string, por
   const ptrName = encodeDnsName(serviceType);
   const ptrData = encodeDnsName(instanceName);
   const ptrMeta = Buffer.alloc(10);
-  ptrMeta.writeUInt16BE(12, 0); // Type PTR
-  ptrMeta.writeUInt16BE(0x8001, 2); // Class IN + flush cache
+  ptrMeta.writeUInt16BE(DNS_TYPE_PTR, 0);
+  // Shared record: class IN with the cache-flush bit CLEAR (see DNS_CACHE_FLUSH).
+  ptrMeta.writeUInt16BE(DNS_CLASS_IN, 2);
   ptrMeta.writeUInt32BE(120, 4); // TTL = 120s
   ptrMeta.writeUInt16BE(ptrData.length, 8); // RDLENGTH
   const ptrRecord = Buffer.concat([ptrName, ptrMeta, ptrData]);
@@ -497,7 +685,7 @@ export function buildMdnsAnnouncement(serviceType: string, hostname: string, por
   const srvRdata = Buffer.concat([srvBody, srvTarget]);
   const srvMeta = Buffer.alloc(10);
   srvMeta.writeUInt16BE(33, 0); // Type SRV
-  srvMeta.writeUInt16BE(0x8001, 2); // Class IN
+  srvMeta.writeUInt16BE(DNS_CACHE_FLUSH | DNS_CLASS_IN, 2); // unique to this Hub
   srvMeta.writeUInt32BE(120, 4); // TTL
   srvMeta.writeUInt16BE(srvRdata.length, 8);
   const srvRecord = Buffer.concat([srvName, srvMeta, srvRdata]);
@@ -513,7 +701,7 @@ export function buildMdnsAnnouncement(serviceType: string, hostname: string, por
   const txtData = Buffer.concat(txtBuffers);
   const txtMeta = Buffer.alloc(10);
   txtMeta.writeUInt16BE(16, 0); // Type TXT
-  txtMeta.writeUInt16BE(0x8001, 2); // Class IN
+  txtMeta.writeUInt16BE(DNS_CACHE_FLUSH | DNS_CLASS_IN, 2); // unique to this Hub
   txtMeta.writeUInt32BE(120, 4); // TTL
   txtMeta.writeUInt16BE(txtData.length, 8);
   const txtFullRecord = Buffer.concat([txtName, txtMeta, txtData]);
@@ -524,7 +712,7 @@ export function buildMdnsAnnouncement(serviceType: string, hostname: string, por
   const aData = Buffer.from(ipParts);
   const aMeta = Buffer.alloc(10);
   aMeta.writeUInt16BE(1, 0); // Type A
-  aMeta.writeUInt16BE(0x8001, 2); // Class IN
+  aMeta.writeUInt16BE(DNS_CACHE_FLUSH | DNS_CLASS_IN, 2); // unique to this Hub
   aMeta.writeUInt32BE(120, 4); // TTL
   aMeta.writeUInt16BE(aData.length, 8);
   const aRecord = Buffer.concat([aName, aMeta, aData]);
@@ -547,20 +735,25 @@ export function parseMdnsPacket(buffer: Buffer): ParsedMdnsPacket | null {
 
 function readMdnsPacket(buffer: Buffer): ParsedMdnsPacket {
   if (buffer.length < 12) throw new MalformedDnsPacketError('packet is shorter than a DNS header');
+  const flags = buffer.readUInt16BE(2);
   const qdCount = buffer.readUInt16BE(4);
   const anCount = buffer.readUInt16BE(6);
 
   const pointerBudget: DnsPointerBudget = { remaining: MAX_DNS_POINTER_HOPS };
   let offset = 12;
 
-  // Skip questions
+  // Questions: the name and type are kept (a query is answered by them); the class is skipped.
+  const questions: MdnsQuestion[] = [];
   for (let i = 0; i < qdCount; i++) {
     const decoded = decodeDnsName(buffer, offset, pointerBudget);
-    offset = decoded.nextOffset + 4; // skip type (2) and class (2)
+    offset = decoded.nextOffset + 4; // type (2) and class (2)
     if (offset > buffer.length) throw new MalformedDnsPacketError('question runs past the end of the packet');
+    questions.push({ name: decoded.name, type: buffer.readUInt16BE(decoded.nextOffset) });
   }
 
   const result: ParsedMdnsPacket = {
+    isResponse: (flags & DNS_FLAG_QR_RESPONSE) !== 0,
+    questions,
     services: [],
     hostname: null,
     srvTarget: null,
@@ -581,8 +774,7 @@ function readMdnsPacket(buffer: Buffer): ParsedMdnsPacket {
     const rdataEnd = offset + rdLength;
     if (rdataEnd > buffer.length) throw new MalformedDnsPacketError('record data runs past the end of the packet');
 
-    if (rType === 12) {
-      // PTR
+    if (rType === DNS_TYPE_PTR) {
       const ptr = decodeDnsName(buffer, offset, pointerBudget);
       if (ptr.nextOffset > rdataEnd) throw new MalformedDnsPacketError('PTR name runs past its RDLENGTH');
       result.services.push(nameDecoded.name);

@@ -228,6 +228,13 @@ const hubPoolPreferencesSchema = z.object({
    * engine's direct URL unless a peer is connected. Applies when an app's env is next generated.
    */
   poolRouteAppsAlways: z.boolean().optional(),
+  /**
+   * LAN discovery over multicast DNS. Off by default; on, the Hub binds UDP 5353, announces itself
+   * and answers queries for `_cihub._tcp`, but only while `poolEnabled` is also on. It reaches the
+   * LAN only when the Hub runs on host networking — on the default Docker bridge network it reaches
+   * nothing but containers on the same Docker networks. Takes effect without a restart.
+   */
+  poolMdnsEnabled: z.boolean().optional(),
 });
 export class UpdateHubPoolPreferencesBody extends createZodDto(hubPoolPreferencesSchema) {}
 
