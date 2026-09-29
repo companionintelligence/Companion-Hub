@@ -562,7 +562,7 @@ describe('OllamaBackend', () => {
     });
 
     it('still emits a deployable AMD config when no GIDs can be derived', () => {
-      // Ollama is the default backend, serves fine on CPU, and runs as root — so unlike Lucebox it
+      // Ollama is the default backend, serves fine on CPU, and runs as root — so unlike GPU-only engines it
       // degrades rather than throwing. It must still never fall back to names.
       const config = backend.getComposeConfig('amd', { deviceProbe: noGpuProbe });
 
@@ -590,6 +590,12 @@ describe('OllamaBackend', () => {
         expect(config).not.toHaveProperty('group_add');
         expect(config).not.toHaveProperty('devices');
       }
+    });
+  });
+
+  describe('Configuration & Auth', () => {
+    it('returns undefined for getApiKey since Ollama does not require auth', () => {
+      expect(backend.getApiKey()).toBeUndefined();
     });
   });
 });

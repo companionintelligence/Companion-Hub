@@ -66,6 +66,10 @@ export class VllmBackend implements InferenceBackend {
     return resolveVllmProbeUrl(configured || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
   }
 
+  getApiKey(apiKeyOverride?: string): string | undefined {
+    return this.vllmAuthKey(apiKeyOverride);
+  }
+
   private vllmAuthKey(apiKeyOverride?: string): string | undefined {
     return apiKeyOverride?.trim() || this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
   }
@@ -78,7 +82,7 @@ export class VllmBackend implements InferenceBackend {
         timeout: 5000,
         apiKey: this.vllmAuthKey(apiKeyOverride),
       });
-      // mtplx and lucebox default to this same host port; whoever is actually listening there
+      // vLLM and oMLX both default to this same host port (:8000); whoever is actually listening there
       // says so in `owned_by`, and only that backend gets to offer its models.
       const foreign = foreignEngineHealth('vllm', body, baseUrl);
       if (foreign) return foreign;
