@@ -20,6 +20,8 @@ import {
   POOL_PIN_MODES,
   POOL_PIN_SCOPES,
   POOL_PIN_TARGET_KINDS,
+  isMdnsPeerName,
+  MDNS_PEER_NAME_PAIRING_REFUSAL,
   normalizePeerFqdn,
 } from '@/common/helpers/hub-pool';
 import { MAX_ROUTING_LOG_CAPACITY } from './hub-pool-routing-log.service';
@@ -73,10 +75,17 @@ const peerNodeUuidSchema = z.uuid();
  *
  * `address` is deliberately NOT `peerFqdnSchema`, which exists to reject exactly these shapes. It is
  * parsed by `parseProbeTarget` and never stored — see `HubPoolDiscoveryService`.
+ *
+ * `nodeFqdn` additionally refuses a `.local` name ({@link isMdnsPeerName}). The discovery list never
+ * offers one as pairable, so the only way one reaches this route is typed or scripted from an mDNS
+ * row, and pairing by name trusts the name. Here rather than on `peerFqdnSchema`, which the
+ * peer-to-peer wire bodies share: this is a rule about where the operator may send a pairing
+ * request. Those bodies carry the far Hub's own name, which `assertTailnetMember` holds to this
+ * node's tailnet suffix, so on a Hub that has joined a tailnet a `.local` sender is refused there.
  */
 const pairPeerSchema = z
   .object({
-    nodeFqdn: peerFqdnSchema.optional(),
+    nodeFqdn: peerFqdnSchema.refine((value) => !isMdnsPeerName(value), { message: MDNS_PEER_NAME_PAIRING_REFUSAL }).optional(),
     address: probeAddressSchema.optional(),
     displayName: z.string().trim().min(1).optional(),
     /**

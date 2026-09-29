@@ -238,6 +238,36 @@ export function isUnverifiedCandidate(device: DiscoverablePoolPeer): boolean {
 }
 
 /**
+ * Whether a name typed at `pool pair` is a `.local` (multicast DNS) name. Mirrors the backend's
+ * `isMdnsPeerName`, which refuses the same thing with a 400; this copy lets the CLI explain before
+ * anything is sent.
+ *
+ * No tailnet hands out a `.local` name, so one typed here was copied off an unverified LAN row — and
+ * `isPlausiblePeerFqdn` accepts it, so without this check it went out as a pairing-by-name request
+ * that sends this Hub's name, a new peer token and the PIN to whatever answers that name.
+ */
+export function isMdnsPeerName(name: string): boolean {
+  const candidate = name.trim().toLowerCase().replace(/\.$/, '');
+  return candidate === 'local' || candidate.endsWith('.local');
+}
+
+/** Why `pool pair <name>.local` is refused, and the two ways that do work. */
+export function formatMdnsPairRefusalLines(target: string): string[] {
+  return [
+    `"${sanitizeForBox(target)}" is a LAN (mDNS) name. Pool pairing needs the peer's tailnet name.`,
+    '',
+    'A .local name comes from an unverified LAN announcement: anything on the network can claim',
+    "one, and pairing by it would send this Hub's name, a new peer token and the PIN to whatever",
+    'answers. Nothing was sent.',
+    '',
+    'Pair by its tailnet name:  cihub pool pair hub-b.your-tailnet.ts.net',
+    'Or, for a Hub you can reach only on the LAN, by its address with the PIN from that Hub:',
+    '  on that Hub:  cihub pool pairing-pin',
+    '  then here:    cihub pool pair <address> --pin <digits>',
+  ];
+}
+
+/**
  * What `POST /inference/pool/peers/probe` found at an operator-typed address.
  *
  * Reachability and protocol only. It deliberately does not name the node: `/identify` is

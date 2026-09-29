@@ -28,10 +28,10 @@ export const MDNS_ANNOUNCE_INTERVAL_MS = 30_000;
 export const MDNS_MIN_MULTICAST_INTERVAL_MS = 1_000;
 
 /**
- * Most peers the discovery cache will hold at once. Any container on the Hub's docker networks can
- * reach the socket with unicast datagrams, and every distinct `ip:port` it claims would otherwise
- * become a new entry, so without a ceiling one sender could grow the map without limit. 64 is far
- * more Hubs than share any real LAN.
+ * Most peers the discovery cache will hold at once. The cache is keyed on the datagram's sender, so
+ * one box holds one row however it varies its packets; the ceiling is what bounds a sender that
+ * can use many source addresses (anything on the Hub's docker networks can unicast to the socket).
+ * 64 is far more Hubs than share any real LAN.
  */
 export const MDNS_MAX_DISCOVERED_PEERS = 64;
 
@@ -396,8 +396,13 @@ export class HubPoolMdnsService implements OnModuleInit, OnModuleDestroy {
     if (!hostname) return;
 
     const port = parsed.port || 5002;
-    // Keyed on the real sender, so one box cannot fill the cache by claiming many A records.
-    const key = `${senderAddress}:${port}`;
+    // Keyed on the real sender ALONE: one row per box, and its latest announcement replaces the row.
+    // Every other field is the sender's to choose — the A record, the host name and the SRV port
+    // alike — so a key that folded any of them in would let one box claim a new row per packet and
+    // evict every real Hub from the cache. Keying on `ip:port` did exactly that with the SRV port.
+    // The cost is one row for two Hubs behind a single source address, which the Hub cannot tell
+    // apart from one Hub changing its port anyway.
+    const key = senderAddress;
     const now = Date.now();
     const claimedProtocol = parsed.txt.poolProtocol;
 
