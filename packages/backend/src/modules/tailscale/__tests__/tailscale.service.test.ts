@@ -649,7 +649,7 @@ describe('TailscaleService', () => {
           mountPoint: '/',
           dest: 'http://localhost:5002',
           listenPort: 443,
-          host: 'core-6.capybara-ulmer.ts.net',
+          host: 'core-6.tailxyz.ts.net',
         },
       ],
     });
@@ -661,8 +661,8 @@ describe('TailscaleService', () => {
     const { entries } = await service.getServeStatus();
 
     expect(entries.map((entry) => [entry.host, entry.listenPort, entry.mountPoint, entry.dest])).toEqual([
-      ['bench-1.capybara-ulmer.ts.net', 443, '/', 'http://localhost:5002'],
-      ['core-17.capybara-ulmer.ts.net', 443, '/', 'http://localhost:5002'],
+      ['bench-1.tailxyz.ts.net', 443, '/', 'http://localhost:5002'],
+      ['core-17.tailxyz.ts.net', 443, '/', 'http://localhost:5002'],
     ]);
   });
 

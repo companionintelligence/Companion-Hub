@@ -81,7 +81,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 const peer = (name: string, models: string[]) => ({
   id: `peer-${name}`,
-  nodeFqdn: `${name}.capybara-ulmer.ts.net`,
+  nodeFqdn: `${name}.tailxyz.ts.net`,
   displayName: name,
   direction: 'inbound',
   status: 'connected',
@@ -113,8 +113,8 @@ describe.skipIf(!OUT)('Hub Pool visual snapshot', () => {
       pins: [],
       tailscaleAdminApiConfigured: false,
       localNode: {
-        nodeFqdn: 'beta-max.capybara-ulmer.ts.net',
-        tailnet: 'capybara-ulmer.ts.net',
+        nodeFqdn: 'beta-max.tailxyz.ts.net',
+        tailnet: 'tailxyz.ts.net',
         hardwareTier: 'high',
         inFlightRequests: 0,
         tailscaleConnected: true,
