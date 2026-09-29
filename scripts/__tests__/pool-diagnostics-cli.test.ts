@@ -927,7 +927,7 @@ const COMPOSE = `services:
       - attempts:5
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
-      MTPLX_URL: \${MTPLX_URL:-http://host.docker.internal:8000}
+      OMLX_URL: \${OMLX_URL:-http://host.docker.internal:8000}
       POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:-postgres}
 volumes:
   ci_hub_pgdata:
@@ -949,7 +949,7 @@ describe('B3 compose drift', () => {
     const spec = parseComposeService(COMPOSE, ['ci-os-hub']);
     expect(spec?.service).toBe('ci-os-hub');
     expect(spec?.mountTargets).toEqual(['/data/state', '/var/run/docker.sock', '/data/.env', '/var/run/tailscale', '/usr/bin/tailscale']);
-    expect(spec?.envNames).toEqual(['OLLAMA_URL', 'MTPLX_URL', 'POSTGRES_PASSWORD']);
+    expect(spec?.envNames).toEqual(['OLLAMA_URL', 'OMLX_URL', 'POSTGRES_PASSWORD']);
     // Values are never read out of `environment:` — that block is where compose keeps the passwords.
     expect(JSON.stringify(spec)).not.toContain('postgres}');
     // `dns_opt:` sits between the two blocks and its `- attempts:5` must not be read as a mount.
@@ -968,7 +968,7 @@ describe('B3 compose drift', () => {
   it('fails a container missing the host Tailscale mounts its own compose declares', () => {
     // The measured beta-max failure: a dev-tip image under an appliance compose written months
     // earlier, so /identify answered nodeFqdn:null and pairing could never complete.
-    const image = { ...IMAGE, mountTargets: ['/data/state', '/var/run/docker.sock', '/data/.env'], envNames: ['OLLAMA_URL', 'MTPLX_URL'] };
+    const image = { ...IMAGE, mountTargets: ['/data/state', '/var/run/docker.sock', '/data/.env'], envNames: ['OLLAMA_URL', 'OMLX_URL'] };
     const check = checkComposeDrift({ image, created: declared, createdReason: null, repo: null } as never, 'prod');
     expect(check.verdict).toBe('fail');
     expect(check.detail).toContain('missing 2 mount(s)');
@@ -982,13 +982,13 @@ describe('B3 compose drift', () => {
     const image = { ...IMAGE, mountTargets: declared.spec?.mountTargets ?? [], envNames: ['OLLAMA_URL'] };
     const check = checkComposeDrift({ image, created: declared, createdReason: null, repo: null } as never, 'prod');
     expect(check.verdict).toBe('fail');
-    expect(text(check.notes ?? [])).toContain('Variables declared but not set: MTPLX_URL');
+    expect(text(check.notes ?? [])).toContain('Variables declared but not set: OMLX_URL');
     // POSTGRES_PASSWORD is declared too and is deliberately not compared — no secret name is fished for.
     expect(text(check.notes ?? [])).not.toContain('POSTGRES_PASSWORD');
   });
 
   it('warns when the compose the container was created from lags this checkout', () => {
-    const image = { ...IMAGE, mountTargets: ['/data/state'], envNames: ['OLLAMA_URL', 'MTPLX_URL'] };
+    const image = { ...IMAGE, mountTargets: ['/data/state'], envNames: ['OLLAMA_URL', 'OMLX_URL'] };
     const applianceSpec = { service: 'ci-os-hub', mountTargets: ['/data/state'], envNames: ['OLLAMA_URL'] };
     const check = checkComposeDrift(
       {
@@ -1015,7 +1015,7 @@ describe('B3 compose drift', () => {
   });
 
   it('passes a container that matches its compose', () => {
-    const image = { ...IMAGE, mountTargets: declared.spec?.mountTargets ?? [], envNames: ['OLLAMA_URL', 'MTPLX_URL'] };
+    const image = { ...IMAGE, mountTargets: declared.spec?.mountTargets ?? [], envNames: ['OLLAMA_URL', 'OMLX_URL'] };
     const check = checkComposeDrift({ image, created: declared, createdReason: null, repo: declared } as never, 'prod');
     expect(check.verdict).toBe('ok');
     expect(check.detail).toContain('5 mount(s) and 2 backend URL var(s)');
@@ -1422,36 +1422,34 @@ describe('D1 cold capabilities measurement', () => {
 // ─── D2 ──────────────────────────────────────────────────────────────────────
 
 describe('D2 backend DNS', () => {
-  it('reads the backend URL vars, with SPECULATIVE_INFERENCE_URL winning over LUCEBOX_URL', () => {
+  it('reads the backend URL vars for active runners', () => {
     const specs = resolveBackendUrlSpecs({
       OLLAMA_URL: 'http://127.0.0.1:11434',
-      MTPLX_URL: 'http://mtplx:8000',
-      LUCEBOX_URL: 'http://lucebox:8080',
-      SPECULATIVE_INFERENCE_URL: 'http://spec:8080',
+      OMLX_URL: 'http://omlx:8000',
+      LEMONADE_URL: 'http://lemonade:13305',
       VLLM_URL: 'not a url',
     });
     expect(specs.map((spec) => [spec.variable, spec.hostname, spec.isIpLiteral, spec.malformed])).toEqual([
       ['OLLAMA_URL', '127.0.0.1', true, false],
+      ['OMLX_URL', 'omlx', false, false],
       ['VLLM_URL', null, false, true],
-      ['MTPLX_URL', 'mtplx', false, false],
-      ['SPECULATIVE_INFERENCE_URL', 'spec', false, false],
+      ['LEMONADE_URL', 'lemonade', false, false],
     ]);
   });
 
   it('fails a lookup that BLOCKS, and prints both halves of the dns_opt fix', () => {
-    const specs = resolveBackendUrlSpecs({ MTPLX_URL: 'http://mtplx:8000' });
-    const check = checkBackendDns(specs, [{ host: 'mtplx', ms: 5_010, code: 'EAI_AGAIN' }], 'container', 'container');
+    const specs = resolveBackendUrlSpecs({ OMLX_URL: 'http://omlx:8000' });
+    const check = checkBackendDns(specs, [{ host: 'omlx', ms: 5_010, code: 'EAI_AGAIN' }], 'container', 'container');
     expect(check.verdict).toBe('fail');
     const notes = text(check.notes ?? []);
     expect(notes).toContain('blocks then fails EAI_AGAIN');
-    expect(notes).toContain('MTPLX_URL=http://127.0.0.1:1');
     expect(notes).toContain('attempts:5');
     expect(notes).toContain('timeout:2');
   });
 
   it('treats a fast failure as a real finding from the container and undecidable from the host', () => {
-    const specs = resolveBackendUrlSpecs({ MTPLX_URL: 'http://mtplx:8000' });
-    const results = [{ host: 'mtplx', ms: 3, code: 'EAI_AGAIN' }];
+    const specs = resolveBackendUrlSpecs({ OMLX_URL: 'http://omlx:8000' });
+    const results = [{ host: 'omlx', ms: 3, code: 'EAI_AGAIN' }];
     expect(checkBackendDns(specs, results, 'container', 'container').verdict).toBe('fail');
 
     const fromHost = checkBackendDns(specs, results, 'host', 'file');
@@ -1461,13 +1459,13 @@ describe('D2 backend DNS', () => {
   });
 
   it('fails a slow lookup even from the host, because a block costs the budget from any vantage', () => {
-    const specs = resolveBackendUrlSpecs({ MTPLX_URL: 'http://mtplx:8000' });
-    expect(checkBackendDns(specs, [{ host: 'mtplx', ms: 5_010, code: 'EAI_AGAIN' }], 'host', 'file').verdict).toBe('fail');
+    const specs = resolveBackendUrlSpecs({ OMLX_URL: 'http://omlx:8000' });
+    expect(checkBackendDns(specs, [{ host: 'omlx', ms: 5_010, code: 'EAI_AGAIN' }], 'host', 'file').verdict).toBe('fail');
   });
 
   it('needs no lookup for an IP literal, and passes a name that resolves fast', () => {
-    const specs = resolveBackendUrlSpecs({ OLLAMA_URL: 'http://127.0.0.1:11434', MTPLX_URL: 'http://mtplx:8000' });
-    const check = checkBackendDns(specs, [{ host: 'mtplx', ms: 4, code: null }], 'container', 'container');
+    const specs = resolveBackendUrlSpecs({ OLLAMA_URL: 'http://127.0.0.1:11434', OMLX_URL: 'http://omlx:8000' });
+    const check = checkBackendDns(specs, [{ host: 'omlx', ms: 4, code: null }], 'container', 'container');
     expect(check.verdict).toBe('ok');
     expect(text(check.notes ?? [])).toContain('IP literal, no lookup');
   });
@@ -1533,8 +1531,8 @@ describe('D2 backend DNS', () => {
   });
 
   it('will not call a clean sweep of a possibly-partial list a pass', () => {
-    const specs = resolveBackendUrlSpecs({ MTPLX_URL: 'http://mtplx:8000' });
-    const fast = [{ host: 'mtplx', ms: 4, code: null }];
+    const specs = resolveBackendUrlSpecs({ OMLX_URL: 'http://omlx:8000' });
+    const fast = [{ host: 'omlx', ms: 4, code: null }];
     expect(checkBackendDns(specs, fast, 'container', 'container').verdict).toBe('ok');
 
     const partial = checkBackendDns(specs, fast, 'container', 'unreadable');
@@ -1544,8 +1542,8 @@ describe('D2 backend DNS', () => {
   });
 
   it('still fails a blocked lookup even when the list may be partial', () => {
-    const specs = resolveBackendUrlSpecs({ MTPLX_URL: 'http://mtplx:8000' });
-    expect(checkBackendDns(specs, [{ host: 'mtplx', ms: 5_010, code: 'EAI_AGAIN' }], 'host', 'unreadable').verdict).toBe('fail');
+    const specs = resolveBackendUrlSpecs({ OMLX_URL: 'http://omlx:8000' });
+    expect(checkBackendDns(specs, [{ host: 'omlx', ms: 5_010, code: 'EAI_AGAIN' }], 'host', 'unreadable').verdict).toBe('fail');
   });
 
   /**
@@ -1590,7 +1588,7 @@ describe('D2 backend DNS', () => {
         'PATH=/usr/bin',
         'OLLAMA_URL=http://host.docker.internal:11434',
         'POSTGRES_PASSWORD=hunter2-not-a-real-password',
-        'MTPLX_URL=http://mtplx:8000',
+        'OMLX_URL=http://omlx:8000',
         'CI_HUB_DEVICE_KEY=cihub_not_a_real_key',
         '',
       ].join('\n'),
@@ -1598,7 +1596,7 @@ describe('D2 backend DNS', () => {
 
     const vars = readBackendVarsFromContainer();
 
-    expect(vars).toEqual({ OLLAMA_URL: 'http://host.docker.internal:11434', MTPLX_URL: 'http://mtplx:8000' });
+    expect(vars).toEqual({ OLLAMA_URL: 'http://host.docker.internal:11434', OMLX_URL: 'http://omlx:8000' });
     // Everything beside them in that block is a secret, so nothing else is even carried into memory.
     expect(JSON.stringify(vars)).not.toContain('hunter2-not-a-real-password');
     expect(JSON.stringify(vars)).not.toContain('cihub_not_a_real_key');
@@ -1996,10 +1994,10 @@ describe('runPoolDoctorSection', () => {
       if (args[0] === 'inspect' && String(args[3]).includes('{{range .Config.Env}}')) {
         return {
           status: 0,
-          stdout: ['OLLAMA_URL=http://127.0.0.1:11434', 'MTPLX_URL=http://mtplx:8000', 'POSTGRES_PASSWORD=hunter2-not-a-real-password'].join('\n'),
+          stdout: ['OLLAMA_URL=http://127.0.0.1:11434', 'OMLX_URL=http://omlx:8000', 'POSTGRES_PASSWORD=hunter2-not-a-real-password'].join('\n'),
         };
       }
-      if (args[0] === 'exec') return { status: 0, stdout: JSON.stringify([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]) };
+      if (args[0] === 'exec') return { status: 0, stdout: JSON.stringify([{ host: 'omlx', ms: 5010, code: 'EAI_AGAIN' }]) };
       return { status: 1, stdout: '', stderr: '' };
     });
     /** The hostnames actually handed to the in-container probe script. */
@@ -2016,9 +2014,9 @@ describe('runPoolDoctorSection', () => {
 
     // The finding it exists to make, from a file that declares nothing.
     expect(d2).toContain('1 of 2 backend URL(s) do not resolve cleanly');
-    expect(rendered).toContain('MTPLX_URL');
+    expect(rendered).toContain('OMLX_URL');
     // The container's value, not the file's: the file's would be an IP literal and never probed.
-    expect(dnsProbeHosts()).toEqual(['mtplx']);
+    expect(dnsProbeHosts()).toEqual(['omlx']);
     expect(rendered).toContain('blocks then fails EAI_AGAIN');
     expect(rendered).toContain('URLs read from the container environment');
     // ...and the rest of that env block, which is where the Hub keeps its secrets, stays out.
@@ -2028,7 +2026,7 @@ describe('runPoolDoctorSection', () => {
 
   it('falls back to the host resolver when there is no container, and says the vantage is the host', async () => {
     // The Docker-less box: the env file is all there is, and dns.lookup on the host is the only probe.
-    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub', MTPLX_URL: 'http://mtplx:8000' });
+    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub', OMLX_URL: 'http://omlx:8000' });
     existsSync.mockReturnValue(true);
     statSync.mockReturnValue({ uid: 1000, gid: 1000, mode: 0o40755 });
     dnsLookup.mockImplementation((_host: string, done: (error: NodeJS.ErrnoException) => void) =>
@@ -2040,7 +2038,7 @@ describe('runPoolDoctorSection', () => {
     const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
     const rendered = text(section.lines);
 
-    expect(dnsLookup.mock.calls.map(([host]) => host)).toEqual(['mtplx']);
+    expect(dnsLookup.mock.calls.map(([host]) => host)).toEqual(['omlx']);
     expect(rendered).toContain('Measured on the HOST with dns.lookup');
     // Fast failure from the host is undecidable, not a finding — it may resolve inside the container.
     expect(rendered).toContain('undecidable');
