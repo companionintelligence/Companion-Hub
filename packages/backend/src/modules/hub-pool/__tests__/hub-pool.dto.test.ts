@@ -143,3 +143,24 @@ describe('UpdateHubPoolPreferencesBody — poolPrefixAffinityMargin', () => {
     expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolPrefixAffinityMargin: value }).success).toBe(false);
   });
 });
+
+describe('UpdateHubPoolPreferencesBody — poolMdnsEnabled', () => {
+  it('accepts both states, so LAN discovery can be switched off again', () => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolMdnsEnabled: true })).toMatchObject({
+      success: true,
+      data: { poolMdnsEnabled: true },
+    });
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolMdnsEnabled: false })).toMatchObject({
+      success: true,
+      data: { poolMdnsEnabled: false },
+    });
+  });
+
+  it.each([
+    ['a string', 'true'],
+    ['a number', 1],
+    ['null', null],
+  ])('rejects %s with a 400', (_label, value) => {
+    expect(UpdateHubPoolPreferencesBody.schema.safeParse({ poolMdnsEnabled: value }).success).toBe(false);
+  });
+});

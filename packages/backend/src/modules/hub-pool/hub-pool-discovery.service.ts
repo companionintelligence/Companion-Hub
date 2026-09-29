@@ -11,7 +11,7 @@ import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { MIN_PAIR_BY_ADDRESS_PROTOCOL } from './hub-pool-peer-auth';
 import type { DiscoverablePoolPeer, PoolProbeResult } from './hub-pool.types';
-import { HubPoolMdnsService } from './hub-pool-mdns.service';
+import { HubPoolMdnsService, hostLabelOf } from './hub-pool-mdns.service';
 
 /** Matches `DISCOVERY_PROBE_TIMEOUT_MS` in `hub-pool-peer.service.ts` — the same probe, over a different route. */
 const PROBE_TIMEOUT_MS = 5_000;
@@ -36,7 +36,11 @@ const PROBE_TIMEOUT_MS = 5_000;
  * that moment on the address is discarded: pairing callbacks, health polling and every proxied
  * request go to `https://<fqdn>`, with the same TLS check and the same credentials on the same
  * WireGuard transport. That is why `normalizePeerFqdn` can go on refusing IP literals for anything
- * that gets stored, and why an address never appears in {@link DiscoverablePoolPeer}.
+ * that gets stored, and why an address appears in {@link DiscoverablePoolPeer} only on an unverified
+ * mDNS row, for the operator to read.
+ *
+ * A third, unauthenticated source — LAN mDNS — contributes rows only when the operator has turned it
+ * on, and only as `verified: false` rows nobody can pair from; see {@link mergePoolCandidates}.
  */
 @Injectable()
 export class HubPoolDiscoveryService {
@@ -125,6 +129,11 @@ export class HubPoolDiscoveryService {
    * `node_fqdn`, keyed on something an unauthenticated responder chose, which is precisely what the
    * peer table refuses to do anywhere else.
    *
+   * The one exception is marked as such: with LAN discovery switched on, Hubs heard over mDNS are
+   * listed after every attested row as `verified: false`, and are never to be handed to
+   * `peers/pair` — the frontend and CLI show them without a Pair action. Every row without that
+   * mark came from the tailnet or Portal.
+   *
    * **This is not free, and it is not cheap enough to poll.** Both sources probe. The tailnet half
    * enumerates candidates from the local Tailscale daemon's peer map *and* from the Admin API when a
    * credential exists, then spends one `/identify` per unpaired candidate; the Portal half spends a
@@ -144,15 +153,20 @@ export class HubPoolDiscoveryService {
   }
 
   /**
-   * Discovery candidates from local mDNS zero-conf broadcast (_cihub._tcp).
-   * Finds neighbouring Hub appliances on the same physical subnet for single-PIN pairing.
+   * Hubs heard announcing `_cihub._tcp` on the LAN, as UNVERIFIED rows (`source: 'mdns'`,
+   * `verified: false`). Nothing when LAN discovery is off, which is the default — the socket is
+   * closed then, so there is nothing to scan with and nothing heard.
+   *
+   * These rows are information, not candidates: every field came from an unauthenticated datagram,
+   * so they carry no Pair action and {@link mergePoolCandidates} lets them touch nothing attested.
+   * A Hub that is really on this node's tailnet is already listed, verified, by the tailnet half.
    */
   private async listMdnsCandidates(): Promise<DiscoverablePoolPeer[]> {
-    if (!this.mdnsService) return [];
+    if (!this.mdnsService?.isActive()) return [];
     try {
-      await this.mdnsService.scan();
+      this.mdnsService.scan();
       const known = new Set((await this.peerService.listPeers()).map((peer) => candidateKey(peer.nodeFqdn)));
-      return await this.mdnsService.getDiscoverableCandidates(known);
+      return this.mdnsService.getDiscoverableCandidates(known);
     } catch (error) {
       this.logger.debug(`[HubPool] mDNS candidate scan failed: ${error instanceof Error ? error.message : String(error)}`);
       return [];
@@ -317,28 +331,57 @@ function candidateKey(nodeFqdn: string): string {
  * `/capabilities` response — is a different value with a different trust story, and the two must
  * never meet. That is why {@link DiscoverablePoolPeer.claimedNodeUuid} is typed apart from it.
  *
+ * **Unverified rows never touch attested ones.** An mDNS row (`source: 'mdns'` or `verified: false`)
+ * is folded in only after every tailnet and Portal row, and only where it collides with none of
+ * them — by key, or by host label, since an mDNS row has no real name to compare. On a collision the
+ * mDNS row is simply dropped: it neither replaces nor back-fills a single field. Before this rule a
+ * datagram claiming a tailnet node's FQDN had its own address copied onto that node's attested row,
+ * and an mDNS-only row carried a Pair button that dialled whatever name the packet held — so one
+ * announcement from any container on the Hub's bridge could collect this Hub's name, a fresh peer
+ * token and a typed PIN. A collision now only ever hides the sender's own row.
+ *
  * Pure and exported so the dedupe rules are testable with no I/O.
  */
 export function mergePoolCandidates(tailscale: DiscoverablePoolPeer[], others: DiscoverablePoolPeer[]): DiscoverablePoolPeer[] {
   const merged = new Map<string, DiscoverablePoolPeer>();
+  const attestedHostLabels = new Set<string>();
+  const unverified: DiscoverablePoolPeer[] = [];
 
   for (const candidate of [...tailscale, ...others]) {
+    if (!isAttestedCandidate(candidate)) {
+      unverified.push(candidate);
+      continue;
+    }
+    attestedHostLabels.add(hostLabelOf(candidate.nodeFqdn));
+    attestedHostLabels.add(hostLabelOf(candidate.hostname));
+
     const key = candidateKey(candidate.nodeFqdn);
     const existing = merged.get(key);
     if (!existing) {
       merged.set(key, candidate);
       continue;
     }
-    // Tailscale entries are inserted first, so an existing entry always wins on identity. Only the
-    // Tailscale device id and network address are worth back-filling, and only when the winner lacks one.
+    // Tailscale entries are inserted first, so an existing entry always wins on identity. Between two
+    // attested directories, only the device id is worth back-filling, and only when the winner lacks one.
     if (!existing.tailscaleDeviceId && candidate.tailscaleDeviceId) {
       merged.set(key, { ...existing, tailscaleDeviceId: candidate.tailscaleDeviceId });
     }
-    if (!existing.address && candidate.address) {
-      const current = merged.get(key) ?? existing;
-      merged.set(key, { ...current, address: candidate.address });
+  }
+
+  for (const candidate of unverified) {
+    const key = candidateKey(candidate.nodeFqdn);
+    if (merged.has(key) || attestedHostLabels.has(hostLabelOf(candidate.hostname)) || attestedHostLabels.has(hostLabelOf(candidate.nodeFqdn))) {
+      continue;
     }
+    // Stamped here rather than trusted from the producer, so no source can emit an mDNS row that
+    // reads as verified.
+    merged.set(key, { ...candidate, verified: false });
   }
 
   return [...merged.values()];
+}
+
+/** A row a directory named: the tailnet or Portal. See {@link DiscoverablePoolPeer.verified}. */
+export function isAttestedCandidate(candidate: DiscoverablePoolPeer): boolean {
+  return candidate.source !== 'mdns' && candidate.verified !== false;
 }

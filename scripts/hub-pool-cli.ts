@@ -173,6 +173,8 @@ export interface PoolStatusResponse {
     poolPrefixAffinityMaxInFlight?: number;
     /** Absent on a Hub predating slot-aware placement; `0` there would have meant off anyway. */
     poolSlotAwareness?: number;
+    /** LAN discovery over mDNS. Absent on a Hub predating the switch, where it was on with no way to turn it off. */
+    poolMdnsEnabled?: boolean;
   };
   tailscaleAdminApiConfigured: boolean;
   localNode: {
@@ -208,14 +210,31 @@ export interface PoolStatusResponse {
 /**
  * An unpaired node the Hub can offer to pair with **by name**.
  *
- * Every entry has a tailnet name, because pairing from this list hands `nodeFqdn` to `pool pair`. A
- * Hub found by address is not in here — `/identify` discloses no name — and is paired with directly:
- * `cihub pool pair <address> --pin <digits>`.
+ * Every attested entry has a tailnet name, because pairing from this list hands `nodeFqdn` to
+ * `pool pair`. A Hub found by address is not in here — `/identify` discloses no name — and is paired
+ * with directly: `cihub pool pair <address> --pin <digits>`.
+ *
+ * The exception is an UNVERIFIED row (see {@link isUnverifiedCandidate}): a Hub heard over LAN mDNS,
+ * whose name and address came from an unauthenticated datagram. It is listed apart and is never
+ * offered as something to `pool pair`.
  */
 export interface DiscoverablePoolPeer {
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
+  source?: 'portal' | 'mdns';
+  verified?: boolean;
+  /** `host:port` of an unverified mDNS row — the datagram's sender. Display only. */
+  address?: string;
+}
+
+/**
+ * Either mark makes a row unverified. `source` alone covers a Hub on the build that introduced mDNS
+ * discovery, which sent neither the flag nor any restraint on what its rows carried — this CLI ships
+ * apart from the Hub image, so it meets that build.
+ */
+export function isUnverifiedCandidate(device: DiscoverablePoolPeer): boolean {
+  return device.verified === false || device.source === 'mdns';
 }
 
 /**
@@ -1449,7 +1468,9 @@ const DISCOVER_WIDTHS = [34, 24] as const;
  * it is. Nor may the empty state claim a directory was consulted: a Hub off the tailnet never reads
  * a peer map.
  */
-export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailscaleAdminApiConfigured: boolean): string[] {
+export function formatPoolDiscoverLines(allDevices: DiscoverablePoolPeer[], tailscaleAdminApiConfigured: boolean): string[] {
+  const devices = allDevices.filter((device) => !isUnverifiedCandidate(device));
+  const unverifiedLines = formatUnverifiedLanLines(allDevices.filter(isUnverifiedCandidate));
   if (devices.length === 0) {
     // Manual entry goes first on purpose: it works today, on this Hub, with nothing to go and create
     // in someone else's console.
@@ -1474,6 +1495,7 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
       'A candidate only appears once its Hub is running and answers /api/inference/pool/identify.',
       'Registering with CI Portal does not add candidates here: that directory names nodes by',
       '  MagicDNS name, and Portal stores none.',
+      ...unverifiedLines,
     ];
   }
 
@@ -1489,8 +1511,24 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
       `${cell(device.nodeFqdn, DISCOVER_WIDTHS[0])} ${cell(device.hostname, DISCOVER_WIDTHS[1])} ${sanitizeForBox(device.tailscaleDeviceId || '-')}`,
     );
   }
-  lines.push('', 'Pair one with: cihub pool pair <node>');
+  lines.push('', 'Pair one with: cihub pool pair <node>', ...unverifiedLines);
   return lines;
+}
+
+/**
+ * Hubs heard over LAN mDNS, listed apart from the table above and with no pair hint. Every field was
+ * chosen by whoever sent the datagram, and `pool pair <node>` with one of these names would hand this
+ * Hub's name and a fresh peer token to wherever the packet pointed.
+ */
+function formatUnverifiedLanLines(devices: DiscoverablePoolPeer[]): string[] {
+  if (devices.length === 0) return [];
+  return [
+    '',
+    `${PENDING} Heard on the LAN, UNVERIFIED — not pairable from this list:`,
+    ...devices.map((device) => `  ${cell(device.hostname, DISCOVER_WIDTHS[1])} ${sanitizeForBox(device.address ?? '-')}`),
+    '  Anything on the network can announce itself, so these names and addresses are only claims.',
+    '  A Hub you own appears in the table above once it is on this tailnet.',
+  ];
 }
 
 /**
@@ -1794,6 +1832,7 @@ export async function runPoolDiscover(envFileName: string): Promise<{ lines: str
   return {
     lines: formatPoolDiscoverLines(devices, status.tailscaleAdminApiConfigured),
     configured: status.tailscaleAdminApiConfigured,
-    found: devices.length > 0,
+    // Only a row that can be paired counts: a box of unverified LAN announcements is not a success.
+    found: devices.some((device) => !isUnverifiedCandidate(device)),
   };
 }

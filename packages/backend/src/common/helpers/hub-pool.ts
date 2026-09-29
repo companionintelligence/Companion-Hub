@@ -616,6 +616,20 @@ export interface HubPoolPreferences {
    * is connected. Takes effect the next time an app's environment is generated.
    */
   poolRouteAppsAlways: boolean;
+  /**
+   * Announce this Hub over multicast DNS (`_cihub._tcp` on UDP 5353), answer mDNS queries for it,
+   * and list the Hubs it hears as unverified LAN candidates. Only ever in force while the pool
+   * itself is enabled — see `HubPoolMdnsService.isEnabledBySettings`.
+   *
+   * DEFAULT FALSE, and opt-IN, because on the shipped deployment it has a cost and no function.
+   * The Hub runs on Docker bridge networks, so the socket joins 224.0.0.251 only on those bridges:
+   * measured on core-2 and beta-red (2026-09-29), the group's other members were the Hub's own
+   * database and queue containers and the announcements never left `br-*`/`veth`. What it did do
+   * was hold an unauthenticated UDP listener open to every app container on the Hub's networks. It
+   * is only useful with the Hub on host networking, which is what the settings help text says.
+   * Takes effect immediately: the socket opens and closes as this or `poolEnabled` changes.
+   */
+  poolMdnsEnabled: boolean;
 }
 
 /**
