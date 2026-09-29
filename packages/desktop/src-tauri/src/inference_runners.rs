@@ -19,7 +19,6 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::hub_manager;
@@ -30,7 +29,6 @@ const RUNNER_LOG_DIR: &str = "logs/inference";
 const RUNNER_STATE_FILE: &str = "state/inference-runners.json";
 const STARTUP_WAIT: Duration = Duration::from_secs(45);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
-const API_KEY_BYTES: usize = 32;
 const MACOS_LAUNCH_AGENT_PREFIX: &str = "computer.ci.companion-hub.inference";
 #[cfg(any(test, target_os = "linux"))]
 const LINUX_SYSTEMD_SERVICE_PREFIX: &str = "computer.ci.companion-hub.inference";
@@ -536,11 +534,6 @@ fn host_endpoint(port: u16) -> String {
     format!("http://host.docker.internal:{port}")
 }
 
-fn endpoint_port(endpoint: &str) -> Option<u16> {
-    let authority = endpoint.split_once("://")?.1.split('/').next()?;
-    authority.rsplit_once(':')?.1.parse().ok()
-}
-
 fn nvidia_smi_works() -> bool {
     let Some(nvidia_smi) = command_on_path("nvidia-smi") else {
         return false;
@@ -551,60 +544,6 @@ fn nvidia_smi_works() -> bool {
         .output()
         .map(|output| output.status.success() && !output.stdout.is_empty())
         .unwrap_or(false)
-}
-
-fn runner_api_key_path(data_dir: &Path, runner: &str) -> PathBuf {
-    runner_state_dir(data_dir).join(format!("{runner}.api-key"))
-}
-
-fn read_runner_api_key(data_dir: &Path, runner: &str) -> Option<String> {
-    let value = fs::read_to_string(runner_api_key_path(data_dir, runner)).ok()?;
-    let value = value.trim();
-    (!value.is_empty()).then(|| value.to_string())
-}
-
-fn ensure_runner_api_key(data_dir: &Path, runner: &str) -> Result<String, String> {
-    if let Some(key) = read_runner_api_key(data_dir, runner) {
-        return Ok(key);
-    }
-
-    fs::create_dir_all(runner_state_dir(data_dir)).map_err(|error| {
-        format!("Could not create the {runner} runner state directory: {error}")
-    })?;
-
-    let mut bytes = [0u8; API_KEY_BYTES];
-    OsRng.fill_bytes(&mut bytes);
-    let key = bytes
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let path = runner_api_key_path(data_dir, runner);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-
-    match options.open(&path) {
-        Ok(mut file) => {
-            if let Err(error) = file
-                .write_all(key.as_bytes())
-                .and_then(|_| file.write_all(b"\n"))
-            {
-                drop(file);
-                let _ = fs::remove_file(&path);
-                return Err(format!("Could not write the {runner} API key: {error}"));
-            }
-            #[cfg(unix)]
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                .map_err(|error| format!("Could not protect the {runner} API key: {error}"))?;
-            Ok(key)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            read_runner_api_key(data_dir, runner)
-                .ok_or_else(|| format!("The existing {runner} API key is empty or unreadable."))
-        }
-        Err(error) => Err(format!("Could not create the {runner} API key: {error}")),
-    }
 }
 
 fn reconcile_macos_launch_agents(data_dir: &Path, requested: &[String]) {
@@ -1280,17 +1219,6 @@ fn persist_results(data_dir: &Path, results: &[InferenceRunnerResult]) {
     }
 }
 
-fn persisted_runner_endpoint(data_dir: &Path, runner: &str) -> Option<String> {
-    let path = data_dir.join(RUNNER_STATE_FILE);
-    let contents = fs::read_to_string(path).ok()?;
-    let results = serde_json::from_str::<Vec<InferenceRunnerResult>>(&contents).ok()?;
-    results
-        .into_iter()
-        .rev()
-        .find(|result| result.runner == runner)
-        .and_then(|result| result.endpoint_url)
-}
-
 fn format_command_output(stdout: &str, stderr: &str) -> String {
     let stdout = stdout.trim();
     let stderr = stderr.trim();
@@ -1383,26 +1311,6 @@ mod tests {
     }
 
     #[test]
-    fn creates_and_reuses_private_runner_api_keys() {
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let first = ensure_runner_api_key(tempdir.path(), "runner_test").expect("create key");
-        let second = ensure_runner_api_key(tempdir.path(), "runner_test").expect("reuse key");
-
-        assert_eq!(first, second);
-        assert_eq!(first.len(), API_KEY_BYTES * 2);
-        assert!(first.chars().all(|character| character.is_ascii_hexdigit()));
-        #[cfg(unix)]
-        assert_eq!(
-            fs::metadata(runner_api_key_path(tempdir.path(), "runner_test"))
-                .expect("key metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
     fn launch_agent_restarts_and_escapes_program_arguments() {
         let plist = render_launch_agent_plist(
             "computer.ci.test",
@@ -1482,32 +1390,6 @@ mod tests {
             .port();
         let selected = available_host_port(preferred).expect("a nearby test port should be free");
         assert_ne!(selected, preferred);
-    }
-
-    #[test]
-    fn recovers_the_port_from_a_persisted_runner_endpoint() {
-        assert_eq!(
-            endpoint_port("http://host.docker.internal:8001"),
-            Some(8001)
-        );
-        assert_eq!(
-            endpoint_port("http://host.docker.internal:8001/v1"),
-            Some(8001)
-        );
-        assert_eq!(endpoint_port("not-a-url"), None);
-
-        let tempdir = tempfile::tempdir().expect("tempdir");
-        let results = vec![success(
-            "mtplx",
-            InferenceRunnerState::Installed,
-            Some("http://host.docker.internal:8001".to_string()),
-            None,
-        )];
-        persist_results(tempdir.path(), &results);
-        assert_eq!(
-            persisted_runner_endpoint(tempdir.path(), "mtplx"),
-            Some("http://host.docker.internal:8001".to_string())
-        );
     }
 
     #[test]
