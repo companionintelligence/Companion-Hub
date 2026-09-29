@@ -614,60 +614,148 @@ describe('InstallForm', () => {
     // The Switch carries aria-label={name}, so its accessible name is the field name.
     const setting = () => screen.queryByRole('switch', { name: 'autoRestartOnDomainChange' });
 
+    const connected = {
+      id: 'cd_1',
+      domain: 'comfy.acme.com',
+      state: 'parked' as const,
+      bindable: true,
+      targetHostname: null,
+      boundAppSlug: null,
+      boundElsewhere: false,
+    };
+
+    // By role, not by text: Radix mirrors an item's label into the trigger.
+    const pick = (option: RegExp | string) => {
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      fireEvent.click(screen.getByRole('option', { name: option }));
+    };
+
+    const submit = async (container: HTMLElement, onSubmit: ReturnType<typeof vi.fn>) => {
+      await act(async () => {
+        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+      });
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledOnce();
+      });
+
+      return onSubmit.mock.calls[0]?.[0];
+    };
+
     afterEach(() => {
       MOCK_CUSTOM_DOMAINS.supported = false;
       MOCK_CUSTOM_DOMAINS.domains = [];
     });
 
-    it('is offered, and off, wherever a custom domain can be connected', () => {
+    it('is not offered until a custom domain is chosen', () => {
+      // The organization has no custom domain, so there is no picker either.
       MOCK_CUSTOM_DOMAINS.supported = true;
+      const { unmount } = renderForm({ exposureMode: 'cloudflare' });
+      expect(setting()).not.toBeInTheDocument();
+      unmount();
+
+      // The picker is there, still on the platform address.
+      MOCK_CUSTOM_DOMAINS.domains = [connected];
+      renderForm({ exposureMode: 'cloudflare' });
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toBeInTheDocument();
+      expect(setting()).not.toBeInTheDocument();
+    });
+
+    it('is offered, and off, once a custom domain is chosen', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected];
 
       renderForm({ exposureMode: 'cloudflare' });
+      pick(/comfy\.acme\.com/);
 
       expect(setting()).toBeInTheDocument();
       expect(setting()).not.toBeChecked();
       expect(screen.getByText('APP_INSTALL_FORM_AUTO_RESTART_ON_DOMAIN_CHANGE')).toBeInTheDocument();
     });
 
+    it('is offered for the domain a saved app uses', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected];
+
+      renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
+
+      expect(setting()).toBeInTheDocument();
+    });
+
+    it('is not offered for a domain the organization no longer has', () => {
+      // No domains listed at all: the picker hides too.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      const { unmount } = renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
+      expect(setting()).not.toBeInTheDocument();
+      unmount();
+
+      // Other domains listed: the picker marks this one "no longer available".
+      MOCK_CUSTOM_DOMAINS.domains = [{ ...connected, id: 'cd_2', domain: 'wiki.acme.com' }];
+      renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('comfy.acme.com');
+      expect(setting()).not.toBeInTheDocument();
+    });
+
     it('is not offered where no custom domain can be connected', () => {
       // An older Portal, or one that did not answer: nothing to restart for.
       MOCK_CUSTOM_DOMAINS.supported = false;
-      const { unmount } = renderForm({ exposureMode: 'cloudflare' });
+      MOCK_CUSTOM_DOMAINS.domains = [connected];
+      const { unmount } = renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
       expect(setting()).not.toBeInTheDocument();
       unmount();
 
       // A local-only app has no public route for a custom domain to alias.
       MOCK_CUSTOM_DOMAINS.supported = true;
-      renderForm({ exposureMode: 'local' });
+      renderForm({ exposureMode: 'local', customDomain: 'comfy.acme.com' });
       expect(setting()).not.toBeInTheDocument();
     });
 
-    it('shows the setting an app was saved with', () => {
+    it('stays on screen for an app saved with it on, domain or not', () => {
+      // A setting in force must stay reachable, or nobody could turn it off.
       MOCK_CUSTOM_DOMAINS.supported = true;
 
       renderForm({ exposureMode: 'cloudflare', autoRestartOnDomainChange: true });
 
       expect(setting()).toBeChecked();
+      fireEvent.click(setting() as HTMLElement);
+      expect(setting()).toBeInTheDocument();
+      expect(setting()).not.toBeChecked();
+    });
+
+    it('keeps a saved setting while it is not shown', async () => {
+      // The Portal did not answer, so the switch is hidden; the save must not turn it off.
+      const onSubmit = vi.fn();
+      const { container } = renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui', autoRestartOnDomainChange: true }, onSubmit);
+      expect(setting()).not.toBeInTheDocument();
+
+      expect(await submit(container, onSubmit)).toMatchObject({ autoRestartOnDomainChange: true });
     });
 
     it('submits the choice', async () => {
       MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected];
       const onSubmit = vi.fn();
       const { container } = renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' }, onSubmit);
 
-      const toggle = setting();
-      expect(toggle).not.toBeNull();
-      fireEvent.click(toggle as HTMLElement);
+      pick(/comfy\.acme\.com/);
+      fireEvent.click(setting() as HTMLElement);
       expect(setting()).toBeChecked();
 
-      await act(async () => {
-        fireEvent.submit(container.querySelector('form') as HTMLFormElement);
-      });
+      expect(await submit(container, onSubmit)).toMatchObject({ customDomain: 'comfy.acme.com', autoRestartOnDomainChange: true });
+    });
 
-      await waitFor(() => {
-        expect(onSubmit).toHaveBeenCalledOnce();
-      });
-      expect(onSubmit.mock.calls[0]?.[0]).toMatchObject({ autoRestartOnDomainChange: true });
+    it('does not submit the choice once the domain is cleared again', async () => {
+      // The switch is gone with the domain, so an answer given while it showed must go too.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected];
+      const onSubmit = vi.fn();
+      const { container } = renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' }, onSubmit);
+
+      pick(/comfy\.acme\.com/);
+      fireEvent.click(setting() as HTMLElement);
+      pick('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+      expect(setting()).not.toBeInTheDocument();
+
+      expect(await submit(container, onSubmit)).toMatchObject({ customDomain: '', autoRestartOnDomainChange: false });
     });
   });
 
