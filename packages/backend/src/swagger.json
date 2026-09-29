@@ -3470,6 +3470,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-ci-omlx-api-key",
+            "required": false,
+            "in": "header",
+            "description": "Unsaved oMLX API key for Re-check before Save.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -3554,6 +3563,15 @@
             "schema": {
               "type": "string",
               "format": "uri"
+            }
+          },
+          {
+            "name": "x-ci-omlx-api-key",
+            "required": false,
+            "in": "header",
+            "description": "Unsaved oMLX API key for Re-check before Save.",
+            "schema": {
+              "type": "string"
             }
           }
         ],

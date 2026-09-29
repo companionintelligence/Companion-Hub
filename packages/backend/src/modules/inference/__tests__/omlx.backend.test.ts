@@ -216,4 +216,39 @@ describe('OmlxBackend', () => {
       expect(isOmlxHealthBody([{ status: 'healthy', engine_pool: null }])).toBe(false);
     });
   });
+
+  describe('Configuration & Auth', () => {
+    const savedApiKey = process.env.OMLX_API_KEY;
+
+    afterEach(() => {
+      if (savedApiKey === undefined) delete process.env.OMLX_API_KEY;
+      else process.env.OMLX_API_KEY = savedApiKey;
+    });
+
+    it('returns trimmed getApiKey from OMLX_API_KEY or undefined', () => {
+      delete process.env.OMLX_API_KEY;
+      expect(backend.getApiKey()).toBeUndefined();
+
+      process.env.OMLX_API_KEY = '  omlx-secret-456  ';
+      expect(backend.getApiKey()).toBe('omlx-secret-456');
+    });
+
+    it('prefers apiKeyOverride over environment variable in getApiKey', () => {
+      process.env.OMLX_API_KEY = 'env-key';
+      expect(backend.getApiKey('  override-key  ')).toBe('override-key');
+    });
+
+    it('sends apiKeyOverride when probing /v1/models in healthCheck', async () => {
+      serve({ '/v1/models': { data: OMLX_MODELS }, '/health': { data: OMLX_HEALTH } });
+
+      await backend.healthCheck(undefined, 'probe-api-key');
+
+      expect(get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/models'),
+        expect.objectContaining({
+          headers: { Authorization: 'Bearer probe-api-key' },
+        }),
+      );
+    });
+  });
 });

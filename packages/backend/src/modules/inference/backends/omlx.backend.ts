@@ -29,6 +29,9 @@ export function buildOmlxRemediation(): { command: string; hint: string } {
   };
 }
 
+/** Candidate API key for a Re-check probe — header, not query, so it stays out of access logs. */
+export const OMLX_PROBE_API_KEY_HEADER = 'x-ci-omlx-api-key';
+
 export const resolveOmlxProbeUrl = resolveHostBackendProbeUrl;
 
 /**
@@ -68,8 +71,8 @@ export class OmlxBackend implements InferenceBackend {
     return resolveOmlxProbeUrl(this.configuredUrl() || `http://${host}:${OMLX_DEFAULT_PORT}`);
   }
 
-  getApiKey(): string | undefined {
-    return process.env.OMLX_API_KEY?.trim() || undefined;
+  getApiKey(apiKeyOverride?: string): string | undefined {
+    return apiKeyOverride?.trim() || process.env.OMLX_API_KEY?.trim() || undefined;
   }
 
   /** The operator's own oMLX address: Settings first, then OMLX_URL. Undefined means the default. */
@@ -89,7 +92,7 @@ export class OmlxBackend implements InferenceBackend {
    * only on Apple Silicon; a URL the operator gave is always probed, since a Linux Hub may use a
    * Mac's oMLX. Either way the server must name itself `omlx` or answer `/health` as oMLX does.
    */
-  async healthCheck(baseUrlOverride?: string): Promise<BackendHealthStatus> {
+  async healthCheck(baseUrlOverride?: string, apiKeyOverride?: string): Promise<BackendHealthStatus> {
     const explicitUrl = baseUrlOverride?.trim() || this.configuredUrl();
     if (!explicitUrl && !(await this.mayHostOmlx())) {
       return { running: false, healthy: false, modelsLoaded: [], error: OMLX_NOT_APPLE_SILICON_ERROR };
@@ -99,7 +102,7 @@ export class OmlxBackend implements InferenceBackend {
     const [health, models] = await Promise.allSettled([
       // Any status: oMLX answers 503 while it preloads, and that body identifies it as well as a 200.
       axios.get(`${baseUrl}/health`, { timeout: 5000, validateStatus: () => true }),
-      this.api.fetchModels(baseUrl, { timeout: 5000, apiKey: this.getApiKey() }),
+      this.api.fetchModels(baseUrl, { timeout: 5000, apiKey: this.getApiKey(apiKeyOverride) }),
     ]);
     const healthSaysOmlx = health.status === 'fulfilled' && isOmlxHealthBody(health.value.data);
 

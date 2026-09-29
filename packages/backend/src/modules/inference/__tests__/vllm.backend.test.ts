@@ -155,6 +155,36 @@ describe('VllmBackend', () => {
 
       expect(health.error).toContain('API key');
     });
+
+    it('returns the API key via getApiKey with precedence: override > preferences > env', () => {
+      const originalEnv = process.env.VLLM_API_KEY;
+      try {
+        process.env.VLLM_API_KEY = 'env-key';
+        configurationService.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'vllm',
+          preferredModel: null,
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+          preferredVllmApiKey: null,
+        });
+
+        expect(backend.getApiKey()).toBe('env-key');
+
+        configurationService.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'vllm',
+          preferredModel: null,
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+          preferredVllmApiKey: 'saved-key',
+        });
+
+        expect(backend.getApiKey()).toBe('saved-key');
+        expect(backend.getApiKey('override-key')).toBe('override-key');
+      } finally {
+        if (originalEnv === undefined) delete process.env.VLLM_API_KEY;
+        else process.env.VLLM_API_KEY = originalEnv;
+      }
+    });
   });
 
   describe('resolveVllmProbeUrl', () => {

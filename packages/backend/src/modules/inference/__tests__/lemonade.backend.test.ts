@@ -163,4 +163,46 @@ describe('LemonadeBackend', () => {
       }
     });
   });
+
+  describe('Configuration & Auth', () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+    });
+
+    it('resolves getBaseUrl from LEMONADE_URL or default', () => {
+      delete process.env.LEMONADE_URL;
+      expect(backend.getBaseUrl()).toBe('http://ci-hub-lemonade:13305');
+
+      process.env.LEMONADE_URL = 'http://127.0.0.1:13305';
+      expect(backend.getBaseUrl()).toBe('http://127.0.0.1:13305');
+    });
+
+    it('returns trimmed getApiKey from LEMONADE_API_KEY or undefined', () => {
+      delete process.env.LEMONADE_API_KEY;
+      expect(backend.getApiKey()).toBeUndefined();
+
+      process.env.LEMONADE_API_KEY = '  lemon-secret-123  ';
+      expect(backend.getApiKey()).toBe('lemon-secret-123');
+    });
+
+    it('includes Authorization header in requests when LEMONADE_API_KEY is set', async () => {
+      process.env.LEMONADE_API_KEY = 'lemon-secret-123';
+      (axios.get as any) = vi.fn().mockImplementation((url: string) => {
+        if (url.includes('/v1/health')) return Promise.resolve({ status: 200 });
+        if (url.includes('/v1/models')) return Promise.resolve({ data: { data: [{ id: 'm1' }] } });
+        return Promise.resolve({ data: {} });
+      });
+
+      await backend.healthCheck();
+
+      expect(axios.get).toHaveBeenCalledWith(
+        'http://ci-hub-lemonade:13305/v1/health',
+        expect.objectContaining({
+          headers: { Authorization: 'Bearer lemon-secret-123' },
+        }),
+      );
+    });
+  });
 });

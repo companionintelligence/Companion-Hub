@@ -3,7 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
-// Shared with the Lucebox and Ollama backends: all three mount the same AMD device nodes and so
+// Shared with the Ollama backend: both mount the same AMD device nodes and so
 // need the same host GIDs. See that module for the full rationale.
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
@@ -32,14 +32,29 @@ export class LemonadeBackend implements InferenceBackend {
   }
 
   getBaseUrl(): string {
-    return this.baseUrl;
+    return process.env.LEMONADE_URL || this.baseUrl;
+  }
+
+  getApiKey(): string | undefined {
+    return process.env.LEMONADE_API_KEY?.trim() || undefined;
+  }
+
+  private authHeaders(): Record<string, string> | undefined {
+    const key = this.getApiKey();
+    return key ? { Authorization: `Bearer ${key}` } : undefined;
   }
 
   async healthCheck(): Promise<BackendHealthStatus> {
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/health`, { timeout: 5000 });
+      const baseUrl = this.getBaseUrl();
+      const apiKey = this.getApiKey();
+      const auth = this.authHeaders();
+      const response = await axios.get(`${baseUrl}/v1/health`, {
+        timeout: 5000,
+        ...(auth ? { headers: auth } : {}),
+      });
       if (response.status === 200) {
-        const models = await new OpenAiCompatibleClient().listModelIds(this.baseUrl, { timeout: 5000 }).catch(() => []);
+        const models = await new OpenAiCompatibleClient().listModelIds(baseUrl, { timeout: 5000, apiKey }).catch(() => []);
         return {
           running: true,
           healthy: true,
@@ -59,7 +74,7 @@ export class LemonadeBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      return await new OpenAiCompatibleClient().listModels(this.baseUrl);
+      return await new OpenAiCompatibleClient().listModels(this.getBaseUrl(), { apiKey: this.getApiKey() });
     } catch {
       return [];
     }
@@ -68,7 +83,8 @@ export class LemonadeBackend implements InferenceBackend {
   async pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
     this.logger.info(`[Lemonade] Pulling model: ${modelId}`);
     try {
-      await axios.post(`${this.baseUrl}/v1/pull`, { model_name: modelId }, { timeout: 0 });
+      const auth = this.authHeaders();
+      await axios.post(`${this.getBaseUrl()}/v1/pull`, { model_name: modelId }, { timeout: 0, ...(auth ? { headers: auth } : {}) });
       onProgress?.({ status: 'complete', percent: 100 });
       this.logger.info(`[Lemonade] Model pulled: ${modelId}`);
     } catch (err) {
@@ -79,12 +95,14 @@ export class LemonadeBackend implements InferenceBackend {
 
   async loadModel(modelId: string): Promise<void> {
     this.logger.info(`[Lemonade] Loading model: ${modelId}`);
-    await axios.post(`${this.baseUrl}/v1/load`, { model_name: modelId }, { timeout: 120000 });
+    const auth = this.authHeaders();
+    await axios.post(`${this.getBaseUrl()}/v1/load`, { model_name: modelId }, { timeout: 120000, ...(auth ? { headers: auth } : {}) });
   }
 
   async unloadModel(modelId: string): Promise<void> {
     this.logger.info(`[Lemonade] Unloading model: ${modelId}`);
-    await axios.post(`${this.baseUrl}/v1/unload`, { model_name: modelId }, { timeout: 30000 });
+    const auth = this.authHeaders();
+    await axios.post(`${this.getBaseUrl()}/v1/unload`, { model_name: modelId }, { timeout: 30000, ...(auth ? { headers: auth } : {}) });
   }
 
   /**
@@ -108,7 +126,11 @@ export class LemonadeBackend implements InferenceBackend {
    */
   async listResident(): Promise<BackendResidency> {
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/health`, { timeout: 5000 });
+      const auth = this.authHeaders();
+      const response = await axios.get(`${this.getBaseUrl()}/v1/health`, {
+        timeout: 5000,
+        ...(auth ? { headers: auth } : {}),
+      });
       const records = response.data?.all_models_loaded;
 
       if (!Array.isArray(records)) {
@@ -147,7 +169,11 @@ export class LemonadeBackend implements InferenceBackend {
   /** Detect NPU via Lemonade's system-info endpoint */
   async detectNpu(): Promise<{ available: boolean; model: string }> {
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/system-info`, { timeout: 5000 });
+      const auth = this.authHeaders();
+      const response = await axios.get(`${this.getBaseUrl()}/v1/system-info`, {
+        timeout: 5000,
+        ...(auth ? { headers: auth } : {}),
+      });
       const npu = response.data?.npu;
       if (npu?.available) {
         return { available: true, model: npu.model || 'XDNA2' };
@@ -194,7 +220,7 @@ export class LemonadeBackend implements InferenceBackend {
       if (groupIds.length > 0) {
         base.group_add = groupIds.map(String);
       } else {
-        // Unlike Lucebox — GPU-only, so a permission-less config is worthless and it throws —
+        // Unlike GPU-only backends where a permission-less config is worthless and throws —
         // Lemonade also serves on CPU and on the Ryzen AI NPU (see detectNpu), and its container
         // runs as root (note the /root/.lemonade data volume), where Docker's default
         // CAP_DAC_OVERRIDE makes group membership not the only path to the device nodes. Emitting

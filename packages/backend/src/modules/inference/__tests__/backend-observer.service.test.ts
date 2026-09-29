@@ -315,9 +315,8 @@ describe('BackendObserverService — per-backend observation', () => {
     expect(report.lastSweepAt).not.toBeNull();
   });
 
-  it('does not read the GPU profile for a node with no legacy-image Lucebox container', async () => {
+  it('does not read the GPU profile when not required by any active diagnosis', async () => {
     // `getProfile()` can re-run the whole nvidia-smi / rocm-smi / system_profiler detection chain.
-    // Only the Lucebox ROCm diagnosis needs the vendor, so only that case may pay for it.
     const { service, getProfile } = harness({
       mode: 'observe',
       containers: [containerFixture({ name: 'ci-hub-db', restartCount: 0 })],
