@@ -8,6 +8,7 @@ import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJson
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PREFIX_AFFINITY_MARGIN,
   DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   DEFAULT_POOL_PRESSURE_WEIGHT,
   DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
@@ -146,6 +147,7 @@ type PersistedSettingsValues = {
   hubPoolMaxPromptTokens: number | undefined;
   hubPoolProbeSnapshotTtlMs: number | undefined;
   hubPoolPrefixAffinityMaxInFlight: number | undefined;
+  hubPoolPrefixAffinityMargin: number | undefined;
   hubPoolSlotAwareness: number | undefined;
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
@@ -188,6 +190,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolMaxPromptTokens: undefined,
   hubPoolProbeSnapshotTtlMs: undefined,
   hubPoolPrefixAffinityMaxInFlight: undefined,
+  hubPoolPrefixAffinityMargin: undefined,
   hubPoolSlotAwareness: undefined,
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
@@ -288,6 +291,7 @@ export class ConfigurationService {
       hubPoolMaxPromptTokens: settings.hubPoolMaxPromptTokens,
       hubPoolProbeSnapshotTtlMs: settings.hubPoolProbeSnapshotTtlMs,
       hubPoolPrefixAffinityMaxInFlight: settings.hubPoolPrefixAffinityMaxInFlight,
+      hubPoolPrefixAffinityMargin: settings.hubPoolPrefixAffinityMargin,
       hubPoolSlotAwareness: settings.hubPoolSlotAwareness,
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
@@ -395,6 +399,7 @@ export class ConfigurationService {
         hubPoolMaxPromptTokens: settingsValues.hubPoolMaxPromptTokens,
         hubPoolProbeSnapshotTtlMs: settingsValues.hubPoolProbeSnapshotTtlMs,
         hubPoolPrefixAffinityMaxInFlight: settingsValues.hubPoolPrefixAffinityMaxInFlight,
+        hubPoolPrefixAffinityMargin: settingsValues.hubPoolPrefixAffinityMargin,
         hubPoolSlotAwareness: settingsValues.hubPoolSlotAwareness,
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
@@ -649,6 +654,7 @@ export class ConfigurationService {
       poolMaxPromptTokens: this.config.userSettings.hubPoolMaxPromptTokens ?? null,
       poolProbeSnapshotTtlMs: this.config.userSettings.hubPoolProbeSnapshotTtlMs ?? DEFAULT_POOL_PROBE_SNAPSHOT_TTL_MS,
       poolPrefixAffinityMaxInFlight: this.config.userSettings.hubPoolPrefixAffinityMaxInFlight ?? DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
+      poolPrefixAffinityMargin: this.config.userSettings.hubPoolPrefixAffinityMargin ?? DEFAULT_POOL_PREFIX_AFFINITY_MARGIN,
       poolSlotAwareness: this.config.userSettings.hubPoolSlotAwareness ?? DEFAULT_POOL_SLOT_AWARENESS,
       // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
       // in-memory settings the next request will rank against.
@@ -677,6 +683,7 @@ export class ConfigurationService {
       hubPoolMaxPromptTokens?: number;
       hubPoolProbeSnapshotTtlMs?: number;
       hubPoolPrefixAffinityMaxInFlight?: number;
+      hubPoolPrefixAffinityMargin?: number;
       hubPoolSlotAwareness?: number;
       hubPoolPins?: HubPoolPin[];
       hubPoolRouteAppsAlways?: boolean;
@@ -716,6 +723,9 @@ export class ConfigurationService {
     }
     if (preferences.poolPrefixAffinityMaxInFlight !== undefined) {
       settings.hubPoolPrefixAffinityMaxInFlight = preferences.poolPrefixAffinityMaxInFlight;
+    }
+    if (preferences.poolPrefixAffinityMargin !== undefined) {
+      settings.hubPoolPrefixAffinityMargin = preferences.poolPrefixAffinityMargin;
     }
     if (preferences.poolSlotAwareness !== undefined) {
       settings.hubPoolSlotAwareness = preferences.poolSlotAwareness;
