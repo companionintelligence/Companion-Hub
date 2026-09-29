@@ -50,7 +50,7 @@ import { domainListNoteFor } from './domain-list-note';
 import { CustomDomainField } from './custom-domain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
-import { preselectedPublicDomain } from './preselected-public-domain';
+import { keepsPublishedDomain, preselectedPublicDomain, publicDomainToUse } from './preselected-public-domain';
 import { useDnsAvailability } from './use-dns-availability';
 
 /**
@@ -197,6 +197,7 @@ export const InstallForm: React.FC<IProps> = ({
     setError,
     clearErrors,
     control,
+    resetField,
   } = useForm<FormValues>({});
   const _watchExposed = watch('exposed', false);
   const _watchOpenPort = watch('openPort', !info.force_expose);
@@ -205,7 +206,30 @@ export const InstallForm: React.FC<IProps> = ({
   const watchExposureMode = watch('exposureMode');
   const watchPort = watch('port', info.port ? info.port.toString() : '');
   const watchPublicDomainRaw = watch('publicDomain');
-  const watchPublicDomain = watchPublicDomainRaw || domain;
+
+  const initialExposureMode = typeof initialValues?.exposureMode === 'string' ? initialValues.exposureMode : undefined;
+  const keepsPublished = keepsPublishedDomain(isEdit, initialExposureMode);
+
+  const availableDomainsQuery = useQuery(getDomainsOptions());
+  const availableDomainsData = availableDomainsQuery.data;
+  // An app on the Web keeps its own domain listed even where Companion Portal no longer offers it
+  // for a new name (`ci.computer`, a full zone): that is the name it serves from. A new name is
+  // offered only what Companion Portal offers.
+  const currentPublicSuffix = keepsPublished ? (typeof initialValues?.publicDomain === 'string' ? initialValues.publicDomain : domain) : undefined;
+  const availableDomains = useMemo(
+    () => selectOfferedDomains(availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, currentPublicSuffix),
+    [availableDomainsData?.domains, currentPublicSuffix],
+  );
+  const domainListNote = domainListNoteFor(availableDomainsQuery);
+  // What the form shows, checks and saves. `undefined` until Companion Portal's list gives a new
+  // name a domain: never the Hub's own as a stand-in. See `publicDomainToUse`.
+  const publicDomain = publicDomainToUse({
+    chosen: watchPublicDomainRaw,
+    hubDomain: domain,
+    keepsPublished,
+    availableDomains,
+    listNote: domainListNote,
+  });
 
   const publicWebPreview = useMemo(() => {
     if (watchExposureMode !== 'cloudflare' || !orgSlug) return null;
@@ -214,9 +238,11 @@ export const InstallForm: React.FC<IProps> = ({
       appSubdomain: watchLocalSubdomain || defaultAppSubdomain,
       hubSubdomain,
       orgSlug,
-      publicDomainRoot: watchPublicDomain || domain || 'example.com',
+      // The root only fills out the name while no domain is known; the address built on it is shown
+      // and prefilled only once one is (`publicDomain`).
+      publicDomainRoot: publicDomain || domain || 'example.com',
     });
-  }, [watchExposureMode, orgSlug, watchLocalSubdomain, defaultAppSubdomain, ciHubDeviceSlug, watchPublicDomain, domain]);
+  }, [watchExposureMode, orgSlug, watchLocalSubdomain, defaultAppSubdomain, ciHubDeviceSlug, publicDomain, domain]);
 
   const tailscalePreviewHost = useMemo(() => {
     if (watchExposureMode !== 'tailscale') return '';
@@ -232,8 +258,8 @@ export const InstallForm: React.FC<IProps> = ({
   }, [watchExposureMode, watchPort, info.port]);
 
   const suggestedAppBaseUrl = useMemo(() => {
-    if (watchExposureMode === 'cloudflare' && publicWebPreview?.publicUrl) {
-      return publicWebPreview.publicUrl.replace(/\/+$/, '');
+    if (watchExposureMode === 'cloudflare') {
+      return publicDomain && publicWebPreview?.publicUrl ? publicWebPreview.publicUrl.replace(/\/+$/, '') : '';
     }
     if (watchExposureMode === 'tailscale' && tailscalePreviewHost) {
       const scheme = tailscaleHttpsEnabled ? 'https' : 'http';
@@ -244,22 +270,14 @@ export const InstallForm: React.FC<IProps> = ({
       return host.replace(/\/+$/, '');
     }
     return publicWebPreview?.publicUrl?.replace(/\/+$/, '') ?? '';
-  }, [watchExposureMode, publicWebPreview, tailscalePreviewHost, tailscaleHttpsEnabled, localPreviewHost]);
+  }, [watchExposureMode, publicDomain, publicWebPreview, tailscalePreviewHost, tailscaleHttpsEnabled, localPreviewHost]);
 
   const previewHostname =
     watchExposureMode === 'cloudflare'
-      ? publicWebPreview?.hostname || ''
+      ? (publicDomain && publicWebPreview?.hostname) || ''
       : watchExposureMode === 'tailscale'
         ? tailscalePreviewHost || `${tailscaleNodeFqdn || 'tailnet'}${watchPort ? `:${watchPort}` : ''}`
         : localPreviewHost;
-
-  const availableDomainsQuery = useQuery(getDomainsOptions());
-  const availableDomainsData = availableDomainsQuery.data;
-  const currentPublicSuffix = typeof initialValues?.publicDomain === 'string' ? initialValues.publicDomain : domain;
-  const availableDomains = useMemo(
-    () => selectOfferedDomains(availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, currentPublicSuffix),
-    [availableDomainsData?.domains, currentPublicSuffix],
-  );
 
   /*
    * The organization's connected custom domains. Read unconditionally rather
@@ -577,12 +595,19 @@ export const InstallForm: React.FC<IProps> = ({
       if (shouldSeed && info.port && initialValues?.port === undefined) {
         setValue('port', info.port.toString());
       }
-      // Reset publicDomain when switching apps (appChanged) so stale values
-      // from a previous app don't carry over; otherwise only write the default
-      // when the field hasn't been customised yet.
+      // An app already on the Web serves from the Hub's own domain when it saved none, so the field
+      // holds it; otherwise only write it when the field hasn't been customised yet. A new name
+      // waits for Companion Portal's list instead (`publicDomainToUse`): the Hub's domain is never
+      // its stand-in. Either way, switching apps (appChanged) clears what the previous app left.
       const currentPD = getValues('publicDomain');
-      if (!initialValues?.publicDomain && domain && (appChanged || !currentPD || currentPD === domain)) {
-        setValue('publicDomain', domain);
+      if (!initialValues?.publicDomain) {
+        if (keepsPublished) {
+          if (domain && (appChanged || !currentPD || currentPD === domain)) {
+            setValue('publicDomain', domain);
+          }
+        } else if (appChanged && currentPD) {
+          resetField('publicDomain');
+        }
       }
     }
   }, [
@@ -597,6 +622,8 @@ export const InstallForm: React.FC<IProps> = ({
     info.dynamic_config,
     info.port,
     initialValues?.publicDomain,
+    keepsPublished,
+    resetField,
     cloudflareAvailable,
     domain,
     tailscaleAvailable,
@@ -636,8 +663,7 @@ export const InstallForm: React.FC<IProps> = ({
     }
   }, [suggestedAppBaseUrl, formFields, dirtyFields, getValues, setValue, initialValues]);
 
-  const initialExposureMode = typeof initialValues?.exposureMode === 'string' ? initialValues.exposureMode : undefined;
-
+  // biome-ignore lint/correctness/useExhaustiveDependencies: info.urn is a deliberate re-run trigger — the dialog reuses one form across apps, and a switch clears the field above.
   useEffect(() => {
     if (watchExposureMode !== 'cloudflare' || availableDomains.length === 0) {
       return;
@@ -658,7 +684,7 @@ export const InstallForm: React.FC<IProps> = ({
     if (next) {
       setValue('publicDomain', next);
     }
-  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, initialExposureMode, isEdit, setValue, watchExposureMode]);
+  }, [availableDomains, dirtyFields.publicDomain, domain, getValues, initialExposureMode, isEdit, setValue, watchExposureMode, info.urn]);
 
   useEffect(() => {
     if (appStatus !== 'running' || watchExposureMode !== 'cloudflare') {
@@ -695,13 +721,10 @@ export const InstallForm: React.FC<IProps> = ({
   });
 
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability({
-    // Not while the domain list is still loading: the field holds the Hub's own
-    // domain until the list's preselection lands, and a Hub on a Portal zone
-    // (`ci.computer`) would be told that zone takes no new apps — about a
-    // domain the form is about to leave.
-    enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare' && !availableDomainsQuery.isLoading,
+    // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
+    enabled: info.exposable && isProduction && watchExposureMode === 'cloudflare' && Boolean(publicDomain),
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
-    selectedDomain: watchPublicDomain || domain,
+    selectedDomain: publicDomain,
     checkDnsAvailability,
     setError,
     clearErrors,
@@ -852,8 +875,7 @@ export const InstallForm: React.FC<IProps> = ({
           <CloudflareSubdomainField
             control={control}
             availableDomains={availableDomains}
-            watchPublicDomain={watchPublicDomain}
-            domain={domain}
+            shownDomain={publicDomain}
             cloudflareSuffix={cloudflareSuffix}
             register={register}
             loading={loading}
@@ -861,7 +883,7 @@ export const InstallForm: React.FC<IProps> = ({
             publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
             placeholder={defaultAppSubdomain}
             isCheckingDns={isCheckingDns}
-            domainListNote={domainListNoteFor(availableDomainsQuery)}
+            domainListNote={domainListNote}
             onRetryDomainList={() => void availableDomainsQuery.refetch()}
             t={t}
           />
@@ -990,6 +1012,12 @@ export const InstallForm: React.FC<IProps> = ({
       formValues.localSubdomain = info.urn.split(':')[0];
     }
 
+    // The domain the form shows. None while Companion Portal's list has not given one: the app then
+    // names none, and Companion Portal places it, as it does any app that names none.
+    if (formValues.exposureMode === 'cloudflare') {
+      formValues.publicDomain = publicDomain;
+    }
+
     const validationErrors = validateAppConfig(formValues, formFields, { requirePortWhenExposedLocal: isProduction });
 
     // In production, require port when publishing to internet (legacy path when exposedLocal set without port)
@@ -998,7 +1026,14 @@ export const InstallForm: React.FC<IProps> = ({
     }
 
     // Check DNS availability synchronously if in production and exposable
-    if (isProduction && info.exposable && formValues.exposureMode === 'cloudflare' && formValues.exposedLocal && formValues.localSubdomain) {
+    if (
+      isProduction &&
+      info.exposable &&
+      formValues.exposureMode === 'cloudflare' &&
+      formValues.exposedLocal &&
+      formValues.localSubdomain &&
+      formValues.publicDomain
+    ) {
       if (isCheckingDns) {
         // Wait a bit for DNS check to complete
         await new Promise((resolve) => setTimeout(resolve, 600));
@@ -1018,8 +1053,7 @@ export const InstallForm: React.FC<IProps> = ({
       }
       // Perform a final DNS check before submission
       try {
-        const selectedDomain = formValues.exposureMode === 'cloudflare' ? formValues.publicDomain || domain : undefined;
-        const response = await checkDnsAvailability(formValues.localSubdomain, selectedDomain);
+        const response = await checkDnsAvailability(formValues.localSubdomain, formValues.publicDomain);
 
         if (response.ok) {
           const data = await response.json();

@@ -23,11 +23,17 @@ const DOMAINS = {
   domains: [] as Array<{ id: string; domain: string; isDefault: boolean; offered?: boolean }>,
 };
 
-/** Whether the domain list is still on its first load. */
+/** Whether the domain list is still on its first load — which is a fetch too, as in TanStack Query. */
 const DOMAIN_LIST = { isLoading: false };
 
 vi.mock('@tanstack/react-query', () => ({
-  useQuery: () => ({ data: DOMAINS, isLoading: DOMAIN_LIST.isLoading, isFetching: false, isError: false, refetch: vi.fn() }),
+  useQuery: () => ({
+    data: DOMAIN_LIST.isLoading ? undefined : DOMAINS,
+    isLoading: DOMAIN_LIST.isLoading,
+    isFetching: DOMAIN_LIST.isLoading,
+    isError: false,
+    refetch: vi.fn(),
+  }),
   useMutation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
