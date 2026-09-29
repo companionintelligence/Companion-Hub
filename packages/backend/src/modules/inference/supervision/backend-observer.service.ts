@@ -270,9 +270,8 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
     const diagnoses = diagnoseBackendFailure({
       backend,
       container,
-      // Read lazily and only when it can change the answer: the Lucebox diagnosis is the sole
-      // consumer, and `getProfile()` can re-run the whole nvidia-smi/rocm-smi/system_profiler
-      // detection chain. A node with no legacy-image Lucebox container never pays for it.
+      // Read lazily and only when it can change the answer: `getProfile()` can re-run the
+      // whole nvidia-smi/rocm-smi/system_profiler detection chain.
       gpuVendor: this.needsGpuVendor(backend, container) ? await this.readGpuVendor() : null,
       segfaultObservations: state.segfaultObservations,
       logTail: state.logTail,
@@ -318,7 +317,7 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
       const profile = await this.hardwareInspector.getProfile();
       this.gpuVendor = { value: profile.gpu.vendor, readAt: now };
     } catch (error) {
-      this.logger.debug(`Could not read the GPU vendor for a Lucebox diagnosis: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.debug(`Could not read the GPU vendor for supervision diagnosis: ${error instanceof Error ? error.message : String(error)}`);
       this.gpuVendor = { value: null, readAt: now };
     }
     return this.gpuVendor.value;

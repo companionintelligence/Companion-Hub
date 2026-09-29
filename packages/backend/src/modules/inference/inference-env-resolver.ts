@@ -57,7 +57,7 @@ export interface StandardizedAiEnv {
    * places a request only on nodes whose cap can take its window.
    */
   CI_LLM_NUM_CTX?: string;
-  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `lucebox` | `cloud`). */
+  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `omlx` | `cloud`). */
   CI_INFERENCE_BACKEND?: string;
   /** Why no chat model was emitted, when the app declares requirements no available model meets. */
   CI_INFERENCE_ERROR?: string;

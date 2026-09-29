@@ -54,7 +54,7 @@ import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
-import { buildOmlxRemediation, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
+import { buildOmlxRemediation, OMLX_PROBE_API_KEY_HEADER, OmlxBackend, resolveOmlxProbeUrl } from './backends/omlx.backend';
 import { OpenAiCompatibleClient } from './backends/openai-compatible.client';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import { BackendObserverService } from './supervision/backend-observer.service';
@@ -369,9 +369,8 @@ export class InferenceController {
          * `available`, NOT `loaded`.
          *
          * `InferenceModel.loaded` is hardcoded `true` by every backend's `listModels()`
-         * (ollama.backend.ts, mtplx.backend.ts, dspark.backend.ts,
-         * openai-compatible.client.ts) — it has never meant "resident in VRAM", only "the
-         * engine has this in its inventory". Reporting it as `loaded` borrowed a word from
+         * (ollama.backend.ts, lemonade.backend.ts, openai-compatible.client.ts) — it has never
+         * meant "resident in VRAM", only "the engine has this in its inventory". Reporting it as `loaded` borrowed a word from
          * the `ModelState` lifecycle, where `loaded` is specifically the resident state and
          * `pulled` is the on-disk one, so the route asserted residency it never measured.
          *
@@ -573,7 +572,12 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Get('onboarding-profile')
   @ApiHeader({ name: VLLM_PROBE_API_KEY_HEADER, required: false, description: 'Unsaved vLLM API key for Re-check before Save.' })
-  async getOnboardingProfile(@Query() query: OnboardingProfileQueryDto, @Headers(VLLM_PROBE_API_KEY_HEADER) vllmApiKey?: string) {
+  @ApiHeader({ name: OMLX_PROBE_API_KEY_HEADER, required: false, description: 'Unsaved oMLX API key for Re-check before Save.' })
+  async getOnboardingProfile(
+    @Query() query: OnboardingProfileQueryDto,
+    @Headers(VLLM_PROBE_API_KEY_HEADER) vllmApiKey?: string,
+    @Headers(OMLX_PROBE_API_KEY_HEADER) omlxApiKey?: string,
+  ) {
     const profile = await this.hardwareInspector.getProfile();
     const recommendedBackend = this.getRecommendedBackend(profile);
     const installBackend = query?.backend ?? recommendedBackend;
@@ -611,12 +615,11 @@ export class InferenceController {
     const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
 
     let installedCatalogIds: string[];
-    // Lemonade exposes the same model registry surface as its load/pull API, while vLLM, MTPLX,
-    // mlx-dspark, and Lucebox are host-run servers with no Hub-side pull registry. Read each
-    // backend's live model ids so the model picker reflects what the selected endpoint can actually
-    // serve. Ollama's embedding rows are merged for host-served chat backends because embeddings
-    // stay on Ollama there. vLLM's probe takes an optional API key override; the other probes only
-    // take a URL.
+    // Lemonade exposes the same model registry surface as its load/pull API, while vLLM and oMLX
+    // are host-run servers with no Hub-side pull registry. Read each backend's live model ids so
+    // the model picker reflects what the selected endpoint can actually serve. Ollama's embedding
+    // rows are merged for host-served chat backends because embeddings stay on Ollama there.
+    // vLLM and oMLX probes take an optional API key override; the other probes only take a URL.
     if (installBackend === 'lemonade') {
       const lemonadeHealth = await this.lemonadeBackend.healthCheck().catch(() => ({
         running: false,
@@ -627,7 +630,7 @@ export class InferenceController {
     } else if (installBackend === 'vllm' || installBackend === 'omlx') {
       const servedHealth =
         installBackend === 'omlx'
-          ? await this.omlxBackend.healthCheck(query?.omlxUrl).catch(() => ({
+          ? await this.omlxBackend.healthCheck(query?.omlxUrl, omlxApiKey).catch(() => ({
               running: false,
               healthy: false,
               modelsLoaded: [] as string[],
@@ -731,10 +734,11 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('omlx/status')
-  async getOmlxStatus(@Query() query?: OmlxStatusQueryDto) {
+  @ApiHeader({ name: OMLX_PROBE_API_KEY_HEADER, required: false, description: 'Unsaved oMLX API key for Re-check before Save.' })
+  async getOmlxStatus(@Query() query?: OmlxStatusQueryDto, @Headers(OMLX_PROBE_API_KEY_HEADER) apiKey?: string) {
     const requestedUrl = query?.url?.trim() || this.omlxBackend.getBaseUrl();
     const probeUrl = resolveOmlxProbeUrl(requestedUrl);
-    const health = await this.omlxBackend.healthCheck(requestedUrl).catch((err) => ({
+    const health = await this.omlxBackend.healthCheck(requestedUrl, apiKey).catch((err) => ({
       running: false,
       healthy: false,
       modelsLoaded: [] as string[],

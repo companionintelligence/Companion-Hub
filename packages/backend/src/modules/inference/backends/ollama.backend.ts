@@ -3,7 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
-// Shared with the Lucebox and Lemonade backends: all three mount the same AMD device nodes and
+// Shared with the Lemonade backend: both mount the same AMD device nodes and
 // so need the same host GIDs. See that module for the full rationale.
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { QUARANTINE_STRIKES, ServingQuarantine } from './serving-quarantine';
@@ -109,6 +109,11 @@ export class OllamaBackend implements InferenceBackend {
   getBaseUrl(): string {
     // Return the resolved URL if we've found one, otherwise the configured one.
     return this.resolvedUrl;
+  }
+
+  /** Ollama runs without an API key by default. */
+  getApiKey(): string | undefined {
+    return undefined;
   }
 
   /**
@@ -546,8 +551,7 @@ export class OllamaBackend implements InferenceBackend {
       if (groupIds.length > 0) {
         base.group_add = groupIds.map(String);
       } else {
-        // Degrade like Lemonade rather than throw like Lucebox. Lucebox is GPU-only, so a
-        // permission-less config is worthless and refusing to emit one costs nothing. Ollama is
+        // Degrade like Lemonade rather than throw. Ollama is
         // the default backend and the most widely deployed, it serves perfectly well on CPU, and
         // its container runs as root (note the /root/.ollama volume) where Docker's default
         // CAP_DAC_OVERRIDE means group membership is not the only path to the device nodes. This
