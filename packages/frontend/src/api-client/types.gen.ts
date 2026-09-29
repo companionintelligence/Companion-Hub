@@ -4339,6 +4339,10 @@ export type GetOnboardingProfileData = {
          * Unsaved vLLM API key for Re-check before Save.
          */
         'x-ci-vllm-api-key'?: string;
+        /**
+         * Unsaved oMLX API key for Re-check before Save.
+         */
+        'x-ci-omlx-api-key'?: string;
     };
     path?: never;
     query?: {
@@ -4398,6 +4402,12 @@ export type GetVllmStatusResponses = {
 
 export type GetOmlxStatusData = {
     body?: never;
+    headers?: {
+        /**
+         * Unsaved oMLX API key for Re-check before Save.
+         */
+        'x-ci-omlx-api-key'?: string;
+    };
     path?: never;
     query?: {
         url?: string;

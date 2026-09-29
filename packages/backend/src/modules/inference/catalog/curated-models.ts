@@ -432,12 +432,7 @@ function buildLlmModel(
   const tier = (row.tier ?? 'cpu-only') as HardwareTier;
   const diskMb = Math.round(gb * 1024);
   // Optional `ramGb` column: resident RAM stated directly, for rows where it is NOT a fixed
-  // multiple of on-disk size. Only `DSPARK_LLM_TOON` sets it — an mlx-dspark row downloads a
-  // target *and* a speculative drafter, and the drafter's disk↔RAM ratio inverts the usual
-  // assumption (drafters ship BF16 but load.py quantizes them to 4-bit at load, so drafter RAM is
-  // roughly a third of drafter disk). Folding both into `gb` alone would over-state resident RAM
-  // by ~10 GB on the 27B rows — safe for fit-checking, but it hands the memory manager's eviction
-  // planner a footprint it can never actually free. Every row without the column keeps the
+  // multiple of on-disk size. Every row without the column keeps the
   // historical `diskMb * 1.1` exactly (asserted in curated-models.test.ts).
   const ramGb = numOrUndef(row.ramGb);
   // Runtime RAM ≈ weights on disk plus KV-cache / runtime overhead. The tier budget fractions
