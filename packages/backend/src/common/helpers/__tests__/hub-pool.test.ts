@@ -18,6 +18,7 @@ import {
   isCapabilitiesSnapshotFresh,
   inventoryListsModel,
   isHubPoolEnabled,
+  isMdnsPeerName,
   normalizePeerFqdn,
   sameModelId,
   resolveHubPoolDirections,
@@ -58,6 +59,24 @@ describe('normalizePeerFqdn', () => {
   it('rejects a name longer than the DNS maximum', () => {
     const label = 'a'.repeat(63);
     expect(normalizePeerFqdn(`${label}.${label}.${label}.${label}.net`)).toBeNull();
+  });
+});
+
+describe('isMdnsPeerName', () => {
+  it.each(['core-9.local', 'CORE-9.Local', 'core-9.local.', '  core-9.local  ', 'a.b.local', 'local'])('treats %j as an mDNS name', (name) => {
+    expect(isMdnsPeerName(name)).toBe(true);
+  });
+
+  // A tailnet name that merely contains the word, and the loopback domain, are not mDNS names.
+  it.each([
+    'core-9.tailxyz.ts.net',
+    'local.tailxyz.ts.net',
+    'core-9.localhost',
+    'core-9.locals',
+    'my-local',
+    '192.168.1.42',
+  ])('leaves %j alone', (name) => {
+    expect(isMdnsPeerName(name)).toBe(false);
   });
 });
 
