@@ -61,6 +61,7 @@ import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels 
 import { BackendObserverService } from './supervision/backend-observer.service';
 import { buildTranscriptionForm, MAX_TRANSCRIPTION_BYTES, speechContentType, type UploadedAudio } from './audio-proxy.util';
 import { sendRouteError } from './inference-error-reply';
+import { abortWhenClientCloses, relayStream } from './upstream-stream';
 
 /** The transcription `response_format`s that are a plain-text transcript, and the type each goes out under. */
 const TRANSCRIPT_TEXT_CONTENT_TYPES: ReadonlyMap<string, string> = new Map([
@@ -174,6 +175,12 @@ export class InferenceController {
   // out as `201 Created` (beta-red, 2026-09-29). OpenAI answers 200, and strict
   // clients check for it. The pool path sets the upstream's own status and is
   // unaffected.
+  //
+  // A client that leaves takes its upstream request with it: `clientClosed` rides
+  // to the engine or cloud call, and a stream is relayed with `relayStream`
+  // rather than `pipe`, which never destroyed its source. Before this an app or
+  // editor that disconnected mid-stream left the Hub holding the provider's
+  // connection, still generating, for as long as the provider kept it open.
 
   @UseGuards(InferenceAccessGuard)
   @Post('v1/chat/completions')
@@ -185,8 +192,9 @@ export class InferenceController {
       // `hub-pool-prefix-affinity.ts`. The peerless path below serves locally and needs no hint.
       return this.poolProxy.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model, res, sessionHeader: session });
     }
+    const clientClosed = abortWhenClientCloses(res);
     try {
-      const result = await this.router.routeChatCompletion(body);
+      const result = await this.router.routeChatCompletion(body, clientClosed);
       if (result.stream) {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
@@ -196,7 +204,7 @@ export class InferenceController {
             res.setHeader(key, value);
           }
         }
-        result.stream.pipe(res);
+        relayStream(result.stream, res);
       } else {
         res.json(result.data);
       }
@@ -213,8 +221,9 @@ export class InferenceController {
     if (await this.poolPeers.hasConnectedPeers()) {
       return this.poolProxy.proxyRequest({ path: '/v1/completions', method: 'POST', body, model, res });
     }
+    const clientClosed = abortWhenClientCloses(res);
     try {
-      const result = await this.router.routeCompletion(body);
+      const result = await this.router.routeCompletion(body, clientClosed);
       if (result.stream) {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
@@ -224,7 +233,7 @@ export class InferenceController {
             res.setHeader(key, value);
           }
         }
-        result.stream.pipe(res);
+        relayStream(result.stream, res);
       } else {
         res.json(result.data);
       }
