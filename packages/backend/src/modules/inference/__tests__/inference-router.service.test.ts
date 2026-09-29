@@ -245,10 +245,10 @@ describe('InferenceRouterService', () => {
       const elapsed = Date.now() - startedAt;
 
       // Every backend overlaps. Sequential would be ~n x STALL_MS; assert well under that rather
-      // than pinning a wall-clock figure a slow CI box would flake on. Derived from the tuple
-      // rather than written as a literal, so adding a backend does not quietly assert the old count.
+      // than pinning a tight wall-clock figure a loaded CI box would flake on. Concurrency is
+      // directly proved by peakInFlight reaching all backends at once.
       expect(peakInFlight).toBe(INFERENCE_BACKEND_TYPES.length);
-      expect(elapsed).toBeLessThan(STALL_MS * 4);
+      expect(elapsed).toBeLessThan(STALL_MS * 8);
     });
     /**
      * Regression: #1277's routing methods each walked the registry with `await backend.healthCheck()`

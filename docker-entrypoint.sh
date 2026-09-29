@@ -75,9 +75,9 @@ assert_config_readable() { # uid gid [path]
   _uid=$1; _gid=$2; _path="${3:-/data/.env}"
   # Absent is fine: a fresh install has no .env until the Hub writes one.
   [ -f "$_path" ] || return 0
-  _euid="$(stat -c %u "$_path" 2>/dev/null || echo '')"
-  _egid="$(stat -c %g "$_path" 2>/dev/null || echo '')"
-  _mode="$(stat -c %a "$_path" 2>/dev/null || echo '')"
+  _euid="$(stat -c %u "$_path" 2>/dev/null || stat -f %u "$_path" 2>/dev/null || echo '')"
+  _egid="$(stat -c %g "$_path" 2>/dev/null || stat -f %g "$_path" 2>/dev/null || echo '')"
+  _mode="$(stat -c %a "$_path" 2>/dev/null || stat -f %Lp "$_path" 2>/dev/null || echo '')"
   [ -n "$_mode" ] || return 0
   # Pad to 3 digits so "600" and "0600" compare the same.
   while [ "${#_mode}" -lt 3 ]; do _mode="0${_mode}"; done

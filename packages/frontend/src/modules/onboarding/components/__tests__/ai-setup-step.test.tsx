@@ -4,27 +4,19 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const {
-  fetchInferenceOnboardingProfile,
-  fetchOllamaInstallStatus,
-  fetchVllmInstallStatus,
-  fetchDsparkInstallStatus,
-  fetchLemonadeInstallStatus,
-  rescanInferenceHardware,
-} = vi.hoisted(() => ({
-  fetchInferenceOnboardingProfile: vi.fn(),
-  fetchOllamaInstallStatus: vi.fn(),
-  fetchVllmInstallStatus: vi.fn(),
-  fetchDsparkInstallStatus: vi.fn(),
-  fetchLemonadeInstallStatus: vi.fn(),
-  rescanInferenceHardware: vi.fn(),
-}));
+const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchLemonadeInstallStatus, rescanInferenceHardware } =
+  vi.hoisted(() => ({
+    fetchInferenceOnboardingProfile: vi.fn(),
+    fetchOllamaInstallStatus: vi.fn(),
+    fetchVllmInstallStatus: vi.fn(),
+    fetchLemonadeInstallStatus: vi.fn(),
+    rescanInferenceHardware: vi.fn(),
+  }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
-  fetchDsparkInstallStatus,
   fetchLemonadeInstallStatus,
   rescanInferenceHardware,
 }));
@@ -258,7 +250,6 @@ describe('AiSetupStep', () => {
     });
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
-    fetchDsparkInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:8080' }));
     fetchLemonadeInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:13305' }));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
