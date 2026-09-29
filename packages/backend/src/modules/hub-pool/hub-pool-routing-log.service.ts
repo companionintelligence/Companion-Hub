@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { PoolPinMode, PoolPinScope, PoolPinTargetKind } from '@/common/helpers/hub-pool';
-import type { PoolRequestErrorSignature } from './hub-pool-request-error';
+import type { CLIENT_ERROR_SIGNATURE, PoolRequestErrorSignature } from './hub-pool-request-error';
 
 /**
  * The default ring size, and the default page `GET routing-log` returns when no `limit` is given.
@@ -42,6 +42,11 @@ export function resolveRoutingLogCapacity(raw: string | undefined): number {
  * What happened to a request the proxy tried to route. `pending` is a request that has been placed
  * on a candidate and is waiting for its first byte — for an agent turn on a self-hosted engine that
  * wait is minutes, and until it was recorded the operator saw nothing at all.
+ *
+ * `served` is a node answering with what was asked for: a status below 400. A node that answered
+ * with an error the proxy relays rather than fails over — a 4xx, or an engine's 500 that proved the
+ * request bad — is `failed`, with the node and status it answered with. It used to be `served`, and
+ * every reader that counts `served` as success, or times it as a first byte, was wrong about it.
  */
 export type PoolRoutingOutcome = 'served' | 'failed' | 'pending';
 
@@ -168,14 +173,17 @@ export interface PoolRoutingRecord {
    */
   clientClosed: boolean;
   /**
-   * Why the walk stopped at a candidate that answered with an error: its body proved the REQUEST
-   * was bad, so the caller got that answer instead of the next candidate getting the request. `null`
-   * on every other row, including a 4xx passed through on its status alone, as it always was.
+   * Why the walk stopped at a candidate that answered with an error about the REQUEST, so the caller
+   * got that answer instead of the next candidate getting the request: an engine's body proved it
+   * bad, or it was a 4xx, which the proxy has always passed through on its status alone. `null` on
+   * every other row.
    *
    * The row is `failed` with the engine's status and the node that said it, which on its own reads
    * like that node failing. core-2, 2026-09-26: one turn with no user message was walked across nine
    * nodes for 307 s, because each one's `500 no user query found in messages` was taken for the node
-   * breaking. This says which it was. Always `null` on `inbound` rows: the walk is the entry node's.
+   * breaking. This says which it was. Always `null` on `inbound` rows: the walk is the entry node's,
+   * and so is the account of it — an inbound row's `node` is the peer that SENT the work, and a label
+   * on it would read, to any reader of this field, as that peer refusing.
    */
   requestError: PoolRoutingRequestError | null;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
@@ -238,14 +246,17 @@ export type PoolRoutingRecordInput = Omit<
 
 /** The request-error half of a routing decision. A label for the engine's message, never the message: some quote the prompt. */
 export interface PoolRoutingRequestError {
-  signature: PoolRequestErrorSignature;
+  /** The engine message matched, or `client-error` for a 4xx, whose body is never read. */
+  signature: PoolRequestErrorSignature | typeof CLIENT_ERROR_SIGNATURE;
   /**
    * `definitive`: returned from the first candidate that said it, because no node could have
    * answered the request otherwise. `confirmed`: a verdict one candidate could not vouch for,
-   * returned once a second candidate answered the same.
+   * returned once a second candidate answered the same. `last-candidate`: such a verdict, returned
+   * unconfirmed because no candidate was left to ask. `status`: a 4xx, passed through on its status
+   * as the proxy always has — no claim about the body is made.
    */
-  basis: 'definitive' | 'confirmed';
-  /** For `confirmed`, the node whose answer this one agreed with (`'local'` for this node); `null` for `definitive`. */
+  basis: 'definitive' | 'confirmed' | 'last-candidate' | 'status';
+  /** For `confirmed`, the node whose answer this one agreed with (`'local'` for this node); `null` for every other basis. */
   confirms: string | null;
 }
 
@@ -428,7 +439,8 @@ export interface PoolRoutingSummary {
   /**
    * The subset of `failed` an engine refused as a bad request — see `PoolRoutingRecord.requestError`.
    * Inside `failed` and beside it, for `clientClosed`'s reason: "3 failed" reads as a pool that cannot
-   * place work, when these are an app sending something no node will run.
+   * place work, when these are an app sending something no node will run. Outbound rows only, as the
+   * field is; a peer's request this node's engine refused is in `failed` with its 4xx `status`.
    */
   requestErrors: number;
   /** Placed on a candidate and still waiting for its first byte. */

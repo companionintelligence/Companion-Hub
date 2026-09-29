@@ -4,6 +4,8 @@ import {
   classifyRequestError,
   engineErrorMessage,
   judgeRequestError,
+  lastCandidateRequestError,
+  passedThroughRequestError,
   readRequestErrorVerdict,
   type PoolRequestErrorVerdict,
   type RequestErrorWalk,
@@ -218,5 +220,25 @@ describe('judgeRequestError', () => {
     expect(judgeRequestError(malformed, node('b', 'vllm'), refusedBy(malformed, node('a', 'lemonade')), walk())).toMatchObject({
       basis: 'confirmed',
     });
+  });
+});
+
+describe('lastCandidateRequestError', () => {
+  it('labels the verdict the walk ended on unconfirmed, naming no node it agreed with', () => {
+    const malformed: PoolRequestErrorVerdict = { signature: 'invalid-message', definitive: false, strikesModel: false };
+
+    expect(lastCandidateRequestError(malformed)).toEqual({ signature: 'invalid-message', basis: 'last-candidate', confirms: null });
+  });
+});
+
+describe('passedThroughRequestError', () => {
+  it('labels every 4xx by its status alone, and nothing else', () => {
+    for (const status of [400, 401, 404, 413, 422, 499]) {
+      expect(passedThroughRequestError(status)).toEqual({ signature: 'client-error', basis: 'status', confirms: null });
+    }
+    // A served answer is not a refusal, and a 5xx that reached here is an engine's verdict, labelled by its body.
+    for (const status of [200, 204, 304, 399, 500, 502]) {
+      expect(passedThroughRequestError(status)).toBeNull();
+    }
   });
 });

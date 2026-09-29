@@ -7,6 +7,7 @@ import {
   EMPTY_SAMPLE_WINDOW,
   firstByteByNode,
   inferenceFromHere,
+  isRefused,
   latestDecode,
   localContainerRollup,
   nodeInFlightSeries,
@@ -18,6 +19,7 @@ import {
   routingBuckets,
   routingWindowPartial,
   sampleInFlight,
+  settledOutcome,
   unloggedCalls,
   waitingNow,
 } from './pool-node-series';
@@ -574,6 +576,70 @@ describe('routingBuckets', () => {
 
     expect(bucket).toMatchObject({ served: 2, failed: 1, failovers: 1, clientClosed: 1, promptTokens: 15_932, completionTokens: 41 });
   });
+
+  /*
+   * core-2, 2026-09-29: six `outcome=served status=400` rows, each an engine refusing the request in
+   * ~5 ms. The Hub settles these `failed` now; the page must not count one as served whichever it
+   * says, and must split them out of Failed the way it splits out callers who left.
+   */
+  it('counts a refusal as failed and as refused, whether the Hub wrote it failed or, before the fix, served', () => {
+    const rows = [
+      { at: '2026-01-01T00:10:05Z', direction: 'outbound', node: 'core-2', outcome: 'served', status: 400, durationMs: 5 },
+      {
+        at: '2026-01-01T00:10:06Z',
+        direction: 'outbound',
+        node: 'core-2',
+        outcome: 'failed',
+        status: 400,
+        durationMs: 18,
+        requestError: { signature: 'client-error', basis: 'status', confirms: null },
+      },
+      // An engine's 500 verdict on the body, relayed from the last candidate.
+      {
+        at: '2026-01-01T00:10:07Z',
+        direction: 'outbound',
+        node: 'core-2',
+        outcome: 'failed',
+        status: 500,
+        requestError: { signature: 'invalid-message', basis: 'last-candidate', confirms: null },
+      },
+      // A peer's request this node's engine refused: inbound rows carry no requestError, only the status.
+      { at: '2026-01-01T00:10:08Z', direction: 'inbound', node: 'beta-max', outcome: 'failed', status: 400, durationMs: 4 },
+      { at: '2026-01-01T00:10:09Z', direction: 'outbound', node: 'core-2', outcome: 'served', status: 200, durationMs: 90_000 },
+    ];
+    const [bucket] = routingBuckets(rows as never[], { now, bucketMs: 60_000, buckets: 1 });
+
+    expect(bucket).toMatchObject({ served: 1, failed: 4, refused: 4, pending: 0, clientClosed: 0, overBudget: 0 });
+  });
+});
+
+describe('isRefused and settledOutcome', () => {
+  const row = (over: Partial<RoutingLogEntry>): RoutingLogEntry => ({ at: '2026-01-01T00:00:00Z', direction: 'outbound', node: 'core-2', ...over });
+
+  it('reads a 4xx as a refusal whatever outcome string carried it, and never a 2xx, a 5xx without a reason, or no answer', () => {
+    expect(isRefused(row({ outcome: 'served', status: 400 }))).toBe(true);
+    expect(isRefused(row({ outcome: 'failed', status: 404 }))).toBe(true);
+    expect(isRefused(row({ outcome: 'failed', status: 500, requestError: { signature: 'no-user-query', basis: 'definitive' } }))).toBe(true);
+
+    expect(isRefused(row({ outcome: 'served', status: 200 }))).toBe(false);
+    expect(isRefused(row({ outcome: 'failed', status: 503 }))).toBe(false);
+    expect(isRefused(row({ outcome: 'failed', status: null, node: null, candidates: 9 }))).toBe(false);
+  });
+
+  it('leaves a caller that hung up and a row still waiting to their own counts', () => {
+    expect(isRefused(row({ outcome: 'failed', status: null, clientClosed: true }))).toBe(false);
+    expect(isRefused(row({ outcome: 'pending', status: null }))).toBe(false);
+  });
+
+  it('calls a row served only when it was answered with what was asked for', () => {
+    expect(settledOutcome(row({ outcome: 'served', status: 200 }))).toBe('served');
+    // A Hub built before the fix, and one that sends no status at all: neither is proof of a refusal.
+    expect(settledOutcome(row({ outcome: 'served' }))).toBe('served');
+    expect(settledOutcome(row({ outcome: 'served', status: 400 }))).toBe('failed');
+    expect(settledOutcome(row({ outcome: 'pending', status: null }))).toBe('pending');
+    // An outcome this page does not know is never read as fine.
+    expect(settledOutcome(row({ outcome: 'mystery', status: 200 }))).toBe('failed');
+  });
 });
 
 describe('routingWindowPartial', () => {
@@ -723,6 +789,25 @@ describe('firstByteByNode', () => {
     expect(stats.size).toBe(0);
   });
 
+  /*
+   * core-2, 2026-09-29: an 18 ms "gemma3:1b does not support tools" 400 beside a 90 s first byte made
+   * the node's p50 18 ms. A refusal's duration is how long the engine took to say no.
+   */
+  it('leaves out a refusal — a 4xx or an engine verdict — whatever outcome the Hub wrote for it', () => {
+    const stats = firstByteByNode(
+      [
+        served({ durationMs: 90_000 }),
+        served({ status: 400, durationMs: 18 }),
+        served({ outcome: 'failed', status: 400, durationMs: 5, requestError: { signature: 'client-error', basis: 'status' } }),
+        served({ direction: 'inbound', node: 'beta-max.tailnet-example.ts.net', status: 400, durationMs: 4 }),
+      ],
+      { now, windowMs },
+    );
+
+    expect(stats.get('core-6')).toEqual({ count: 1, p50Ms: 90_000, maxMs: 90_000, maxEstTokens: null });
+    expect(stats.has('local')).toBe(false);
+  });
+
   it("files this Hub's engines under 'local' from both directions — our own placements and peers' forwards", () => {
     const stats = firstByteByNode(
       [served({ node: 'local', durationMs: 361 }), served({ direction: 'inbound', node: 'beta-max.tailnet-example.ts.net', durationMs: 32_227 })],
@@ -769,6 +854,16 @@ describe('routingActivity', () => {
    * core-2, 2026-09-26T23:51:12Z: `candidates: 9, attempt: 9`, nine nodes in `failedOverFrom`, and
    * `node: null` because none answered. It read as "1 request no node took" on the verdict.
    */
+  it('counts a refusal as failed and refused, not served, even from a Hub that still wrote it served', () => {
+    const activity = routingActivity([
+      row({ outcome: 'served', status: 400 }),
+      row({ outcome: 'failed', status: 400, requestError: { signature: 'client-error', basis: 'status' } }),
+      row({ outcome: 'served', status: 200 }),
+    ]);
+
+    expect(activity).toMatchObject({ total: 3, served: 1, failed: 2, refused: 2 });
+  });
+
   it('does not count a request every candidate failed as unplaced — nine nodes took it', () => {
     const activity = routingActivity([
       row({ node: null, candidates: 9, attempt: 9, outcome: 'failed', failedOverFrom: Array.from({ length: 9 }, (_, i) => `n${i}`) }),
@@ -823,6 +918,7 @@ describe('routingActivity', () => {
       inbound: 0,
       outbound: 0,
       unplaced: 0,
+      refused: 0,
       tokensServed: 0,
     });
   });
@@ -982,7 +1078,21 @@ describe('inferenceFromHere', () => {
       window,
     );
 
-    expect(own).toMatchObject({ failed: 4, clientClosed: 2, overBudget: 1 });
+    expect(own).toMatchObject({ failed: 4, clientClosed: 2, overBudget: 1, refused: 0 });
+  });
+
+  it('counts a refusal as failed and refused, and keeps it out of the first byte and the usage denominator', () => {
+    const own = inferenceFromHere(
+      [
+        row(1, { durationMs: 90_000 }),
+        row(2, { status: 400, durationMs: 18 }),
+        row(3, { outcome: 'failed', status: 400, durationMs: 5, requestError: { signature: 'client-error', basis: 'status' } }),
+      ],
+      window,
+    );
+
+    expect(own).toMatchObject({ requests: 3, served: 1, failed: 2, refused: 2, clientClosed: 0 });
+    expect(own.firstByte).toEqual({ count: 1, p50Ms: 90_000, p90Ms: null });
   });
 
   it('has no first byte at all when nothing streamed was served', () => {

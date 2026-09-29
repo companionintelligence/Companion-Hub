@@ -2000,7 +2000,12 @@ describe('PoolProxyService', () => {
         expect(routingLog.list()[0]?.requestError).toEqual({ signature: 'context-length', basis: 'confirmed', confirms: fqdn('node-1') });
       });
 
-      it('walks the pool as before when no node states its window', async () => {
+      /**
+       * No window is known, so no two answers confirm each other and the walk reaches every node, as
+       * it always did. What changed is the end: the ninth node's answer is the engine's sentence,
+       * and the caller gets it rather than a 502 that says only that nine candidates failed.
+       */
+      it('walks the pool as before when no node states its window, then relays the last node’s answer', async () => {
         ninePeers();
         const fetchMock = vi.mocked(global.fetch);
         fetchMock.mockImplementation(async () => tooLong());
@@ -2009,8 +2014,143 @@ describe('PoolProxyService', () => {
         const res = await proxy(createMockResponse(), '/v1/chat/completions', { model: MODEL, messages: [{ role: 'user', content: 'hi' }] });
 
         expect(fetchMock).toHaveBeenCalledTimes(9);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(JSON.parse(Buffer.concat(res.chunks).toString()).error.message).toContain('exceeds the available context size');
+        expect(routingLog.list()[0]).toMatchObject({
+          node: fqdn('node-9'),
+          attempt: 9,
+          failedOverFrom: NODES.slice(0, 8).map(fqdn),
+          outcome: 'failed',
+          status: 500,
+          requestError: { signature: 'context-length', basis: 'last-candidate', confirms: null },
+        });
+      });
+    });
+
+    /**
+     * A verdict one node cannot vouch for waits for a second candidate to agree. On the only
+     * candidate, or the last one reached, there is no second: until this the walk simply ran out with
+     * the verdict held, and the caller got `502 All N … failed` with `requestError: null`. A pool whose
+     * one node for a model is a Lemonade or llama-server answering `500 Missing 'content'` lost the
+     * engine's message entirely, and the OpenAI SDKs retried the 502 into the same refusal.
+     */
+    describe('when no candidate is left to confirm a verdict', () => {
+      const malformed = () =>
+        engineError(500, {
+          error: { code: 500, message: 'Missing \'content\' in message: {"role":"user"}', type: 'server_error' },
+        });
+      const onLemonade = (): Partial<PoolPeerCapabilities> => ({ backends: [{ type: 'lemonade', healthy: true, modelsLoaded: [MODEL] }] });
+      const CHAT = { model: MODEL, messages: [{ role: 'user' }] };
+
+      /** `count` peers holding the model, in this order, each running what `overrides` says. */
+      function peersInOrder(count: number, overrides: (id: string) => Partial<PoolPeerCapabilities> = onLemonade): void {
+        const peers = NODES.slice(0, count).map((id) =>
+          mockPeer({
+            id,
+            nodeFqdn: fqdn(id),
+            lastCapabilities: capabilitiesWithModel(MODEL, { inFlightRequests: 0, ...overrides(id) }) as unknown as Record<string, unknown>,
+          }),
+        );
+        peerService.listConnectedPeers.mockResolvedValue(peers);
+        peerService.getPeerById.mockImplementation(async (id) => peers.find((peer) => peer.id === id));
+      }
+
+      it('relays the only candidate’s refusal as the engine’s own body, and says it was not confirmed', async () => {
+        peersInOrder(1);
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async () => malformed());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', CHAT);
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        // The status a confirmed malformed message goes out under, for the same reason: a 400 is not retried.
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(res.status).toHaveBeenCalledTimes(1);
+        expect(res.json).not.toHaveBeenCalled();
+        expect(JSON.parse(Buffer.concat(res.chunks).toString()).error.message).toContain("Missing 'content' in message");
+        const row = routingLog.list()[0];
+        expect(headersSetOn(res)).toMatchObject({
+          'x-hub-pool-served-by': fqdn('node-1'),
+          'x-hub-pool-request-id': row?.id,
+          'x-hub-pool-upstream-status': '500',
+        });
+        expect(row).toMatchObject({
+          node: fqdn('node-1'),
+          backend: 'lemonade',
+          candidates: 1,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'failed',
+          status: 500,
+          requestError: { signature: 'invalid-message', basis: 'last-candidate', confirms: null },
+        });
+        expect(routingLog.summary()).toMatchObject({ failed: 1, requestErrors: 1 });
+      });
+
+      it('relays the last candidate’s refusal after the others failed for reasons of their own', async () => {
+        peersInOrder(3);
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock
+          .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+          .mockResolvedValueOnce(engineError(503, { error: { code: 503, message: 'Loading model', type: 'unavailable_error' } }))
+          .mockResolvedValueOnce(malformed());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', CHAT);
+
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(routingLog.list()[0]).toMatchObject({
+          node: fqdn('node-3'),
+          attempt: 3,
+          // The node that answered is the row's node, not one more link in the chain behind it.
+          failedOverFrom: [fqdn('node-1'), fqdn('node-2')],
+          outcome: 'failed',
+          status: 500,
+          requestError: { signature: 'invalid-message', basis: 'last-candidate', confirms: null },
+        });
+      });
+
+      it('keeps the engine’s 500 for a template on the last candidate, as for a confirmed one, and still charges the model', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockImplementation(async () => templateError());
+
+        const res = await proxy();
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(res.status).toHaveBeenCalledWith(500);
+        expect(headersSetOn(res)).not.toHaveProperty('x-hub-pool-upstream-status');
+        expect(JSON.parse(Buffer.concat(res.chunks).toString()).error).toContain('executing');
+        expect(routingLog.list()[0]).toMatchObject({
+          node: LOCAL_CANDIDATE_KEY,
+          requestError: { signature: 'chat-template', basis: 'last-candidate', confirms: null },
+        });
+        expect(ollama.noteServingFailure).toHaveBeenCalledWith(MODEL, 'HTTP 500');
+      });
+
+      it('still answers 502 when the last candidate failed without a verdict, whatever an earlier one said', async () => {
+        peersInOrder(2, (id) => (id === 'node-1' ? onLemonade() : {}));
+        const fetchMock = vi.mocked(global.fetch);
+        // An Ollama node that never answered could have parsed the message itself: nothing it said
+        // ends the question, so the earlier refusal is not the whole story.
+        fetchMock.mockResolvedValueOnce(malformed()).mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', CHAT);
+
+        expect(fetchMock).toHaveBeenCalledTimes(2);
         expect(res.status).toHaveBeenCalledWith(502);
-        expect(routingLog.list()[0]?.requestError).toBeNull();
+        expect(routingLog.list()[0]).toMatchObject({ node: null, outcome: 'failed', status: null, requestError: null });
+      });
+
+      it('serves from the last candidate when it can, so an earlier refusal is never relayed over an answer', async () => {
+        peersInOrder(2);
+        const fetchMock = vi.mocked(global.fetch);
+        fetchMock.mockResolvedValueOnce(malformed()).mockResolvedValueOnce(ok());
+
+        const res = await proxy(createMockResponse(), '/v1/chat/completions', CHAT);
+
+        expect(res.status).toHaveBeenCalledWith(200);
+        expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', node: fqdn('node-2'), requestError: null });
       });
     });
 
@@ -2141,6 +2281,91 @@ describe('PoolProxyService', () => {
         status: 200,
         // The peer's body is passed through untouched, so the model it asked for is never parsed.
         model: null,
+      });
+    });
+
+    /**
+     * core-2, 2026-09-29: six rows read `outcome=served status=400`, each an engine refusing the
+     * request (`gemma3:1b does not support tools`) in about 5 ms. The dashboard timed each one as a
+     * 5 ms first byte and counted none of them in "Failed 30m". A 4xx is still passed straight
+     * through — it is the request's fault, and another node would say the same — but it is not a
+     * request served, and the row now says so the way an engine's 500 verdict already did.
+     */
+    describe('a 4xx passed through on its status', () => {
+      const tools400 = () =>
+        new Response(JSON.stringify({ error: `registry.ollama.ai/library/${MODEL} does not support tools` }), {
+          status: 400,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        });
+
+      it('settles as failed on the node that answered, with a client-error reason, and is counted as a refusal', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        const peer = servingPeer();
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        vi.mocked(global.fetch).mockResolvedValueOnce(tools400());
+        const res = createMockResponse();
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL, stream: true }, model: MODEL, res });
+
+        // The caller's answer is unchanged: the engine's own 400, from the one node asked.
+        expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(routingLog.list()[0]).toMatchObject({
+          node: LOCAL_CANDIDATE_KEY,
+          attempt: 1,
+          candidates: 2,
+          failedOverFrom: [],
+          outcome: 'failed',
+          status: 400,
+          requestError: { signature: 'client-error', basis: 'status', confirms: null },
+        });
+        expect(routingLog.summary()).toMatchObject({ recorded: 1, served: 0, failed: 1, requestErrors: 1, clientClosed: 0 });
+      });
+
+      it('records a peer’s 400 the same way, naming the peer', async () => {
+        const peer = servingPeer();
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        peerService.getPeerById.mockResolvedValue(peer);
+        peerService.getPresentToken.mockResolvedValue('raw-token');
+        vi.mocked(global.fetch).mockResolvedValueOnce(tools400());
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+        expect(routingLog.list()[0]).toMatchObject({
+          node: 'peer-hub.tailxyz.ts.net',
+          outcome: 'failed',
+          status: 400,
+          requestError: { signature: 'client-error', basis: 'status' },
+        });
+      });
+
+      it('leaves a 2xx served with no reason, and a 4xx that failed over out of it', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        const peer = servingPeer();
+        peerService.listConnectedPeers.mockResolvedValue([peer]);
+        peerService.getPeerById.mockResolvedValue(peer);
+        peerService.getPresentToken.mockResolvedValue('raw-token');
+        // A local 429 is the engine's queue, not the request: it fails over, and the peer serves.
+        vi.mocked(global.fetch)
+          .mockResolvedValueOnce(new Response('busy', { status: 429 }))
+          .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+        await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+        expect(routingLog.list()[0]).toMatchObject({ outcome: 'served', status: 200, requestError: null, failedOverFrom: [LOCAL_CANDIDATE_KEY] });
+        expect(routingLog.summary()).toMatchObject({ served: 1, failed: 0, requestErrors: 0 });
+      });
+
+      it('records a peer’s request this node’s engine refused as failed, with its status and no reason', async () => {
+        vi.mocked(global.fetch).mockResolvedValue(tools400());
+        const res = createMockResponse();
+
+        await service.forwardToLocalBackendAndRespond('ollama', '/v1/chat/completions', 'POST', { model: MODEL }, res, 'peer-hub.tailxyz.ts.net');
+
+        // Relayed to the sender whole: the entry node is the one that records why its walk stopped.
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(routingLog.list()[0]).toMatchObject({ direction: 'inbound', outcome: 'failed', status: 400, requestError: null });
+        expect(routingLog.summary()).toMatchObject({ served: 0, failed: 1, requestErrors: 0 });
       });
     });
 
