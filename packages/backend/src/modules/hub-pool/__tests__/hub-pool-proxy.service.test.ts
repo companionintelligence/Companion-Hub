@@ -45,12 +45,11 @@ import {
   applyThroughputPlacement,
   describeUnresolvableAuto,
   requestedNumCtx,
-  firstByteBudgetMs,
-  forwardBudgetMs,
   normalizePoolRequestId,
   servedByHeaders,
   splitDemoted,
 } from '../hub-pool-proxy.service';
+import { firstByteBudgetMs, forwardBudgetMs } from '../hub-pool-budget';
 import {
   DistributedPrefixAffinityStore,
   POOL_AFFINITY_HEADER,
