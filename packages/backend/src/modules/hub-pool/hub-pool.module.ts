@@ -22,6 +22,7 @@ import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
 import { HubPoolPinService } from './hub-pool-pin.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import { HubPoolThroughputService } from './hub-pool-throughput.service';
+import { HubPoolMdnsService } from './hub-pool-mdns.service';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 
 // forwardRef with InferenceModule: HubPoolPeerService needs InferenceRouterService (to report this
@@ -55,11 +56,12 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
     HubPoolThroughputService,
     HubPoolPeerService,
     HubPoolDiscoveryService,
+    HubPoolMdnsService,
     HubPoolPinService,
     PoolProxyService,
     InferenceAccessGuard,
     PoolPeerGuard,
   ],
-  exports: [HubPoolPeerService, PoolProxyService, HubPoolIdentityService],
+  exports: [HubPoolPeerService, PoolProxyService, HubPoolIdentityService, HubPoolMdnsService],
 })
 export class HubPoolModule {}

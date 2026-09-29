@@ -494,6 +494,15 @@ export const MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 0;
 export const MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT = 20;
 
 /**
+ * Relative affinity margin (inspired by Xinity AI). When above 0, allows a warm prefix node
+ * to retain traffic under high concurrency if its queue is within this margin of the least-loaded
+ * candidate, preventing prefix thrashing across nodes when the fleet is busy.
+ */
+export const DEFAULT_POOL_PREFIX_AFFINITY_MARGIN = 0;
+export const MIN_POOL_PREFIX_AFFINITY_MARGIN = 0;
+export const MAX_POOL_PREFIX_AFFINITY_MARGIN = 10;
+
+/**
  * Whether placement reads each Ollama candidate's advertised slot count (`inferenceOllamaSlots`, the
  * operator's statement of its `OLLAMA_NUM_PARALLEL`) and puts a candidate whose queue already fills
  * its slots behind every candidate that still has one free.
@@ -583,6 +592,9 @@ export interface HubPoolPreferences {
   poolProbeSnapshotTtlMs: number;
   /** The queue depth up to which the node that last served a prompt prefix is preferred for it, counting the request being placed; `0` (the default) turns affinity off. See {@link DEFAULT_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT}. */
   poolPrefixAffinityMaxInFlight: number;
+  /** Relative margin for prefix affinity under concurrency. See {@link DEFAULT_POOL_PREFIX_AFFINITY_MARGIN}. */
+  poolPrefixAffinityMargin: number;
+
   /** Whether an Ollama candidate whose queue fills its advertised slots is placed behind every candidate with a free one; `0` (the default) keeps slots out of ranking entirely. See {@link DEFAULT_POOL_SLOT_AWARENESS}. */
   poolSlotAwareness: number;
   /**

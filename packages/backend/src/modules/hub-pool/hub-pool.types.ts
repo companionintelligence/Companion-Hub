@@ -269,25 +269,14 @@ export interface DiscoverablePoolPeer {
   nodeFqdn: string;
   hostname: string;
   /**
-   * `'portal'` on a candidate the CI Portal device registry named. Absent means the tailnet — the
-   * local Tailscale daemon's peer map, the Tailscale Admin API, or both — and absence is the *only*
-   * encoding of that: `listDiscoverableDevices` tags nothing, and the frontend and CLI copies of
-   * this shape carry no `source` field at all.
-   *
-   * Narrowed from `'tailscale' | 'lan-probe' | 'portal'` to the one member a producer can emit.
-   * `'tailscale'` was a second spelling of what absence already says, and a union that can state one
-   * fact two ways is eventually stated both ways by two different callers. `'lan-probe'` could never
-   * be produced at all: `/identify` discloses no name, so an address has nothing to put in this
-   * shape — the same reason {@link claimedNodeUuid} has no producer. Keeping the broader union would
-   * have meant tagging every tailnet entry to make it honest, which adds a field to a wire response
-   * that no reader has asked for.
-   *
-   * Nothing reads it yet. It is here for an operator surface that wants to say which directory named
-   * a node, and it is a badge of its own rather than something inferred from `tailscaleDeviceId`
-   * because that id is a display value both directories supply — an absent id would mean "this
-   * directory had no id for the node", never "the tailnet named this".
+   * Directory that discovered this candidate: 'portal' for CI Portal, 'mdns' for local zero-conf LAN beacon.
+   * Absent indicates standard tailnet discovery.
    */
-  source?: 'portal';
+  source?: 'portal' | 'mdns';
+  /**
+   * Network address (host:port) for directly pairable LAN candidates (discovered via mDNS or LAN probe).
+   */
+  address?: string;
   /**
    * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
    * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the

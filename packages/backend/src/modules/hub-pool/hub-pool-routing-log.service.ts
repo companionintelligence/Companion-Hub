@@ -351,6 +351,8 @@ export interface PoolRoutingAffinity {
   inFlight: number | null;
   /** The `poolPrefixAffinityMaxInFlight` in force, counting the request being placed. */
   maxInFlight: number;
+  /** The `poolPrefixAffinityMargin` in force. */
+  affinityMargin?: number;
 }
 
 /**

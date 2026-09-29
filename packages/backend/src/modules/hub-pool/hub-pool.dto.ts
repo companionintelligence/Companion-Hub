@@ -3,6 +3,7 @@ import {
   MAX_POOL_HEALTH_POLL_SECONDS,
   MAX_POOL_LOCAL_AFFINITY,
   MAX_POOL_MAX_PROMPT_TOKENS,
+  MAX_POOL_PREFIX_AFFINITY_MARGIN,
   MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   MAX_POOL_PRESSURE_WEIGHT,
   MAX_POOL_PROBE_SNAPSHOT_TTL_MS,
@@ -10,6 +11,7 @@ import {
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_MAX_PROMPT_TOKENS,
+  MIN_POOL_PREFIX_AFFINITY_MARGIN,
   MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT,
   MIN_POOL_PRESSURE_WEIGHT,
   MIN_POOL_PROBE_SNAPSHOT_TTL_MS,
@@ -209,6 +211,11 @@ const hubPoolPreferencesSchema = z.object({
    * which is the pre-affinity build. The default is applied in the service, like every knob above.
    */
   poolPrefixAffinityMaxInFlight: z.number().int().min(MIN_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT).max(MAX_POOL_PREFIX_AFFINITY_MAX_IN_FLIGHT).optional(),
+  /**
+   * Relative affinity margin: allows a warm prefix node to retain traffic under concurrency if
+   * its queue is within this margin of the least-loaded candidate. `0` disables margin checking.
+   */
+  poolPrefixAffinityMargin: z.number().int().min(MIN_POOL_PREFIX_AFFINITY_MARGIN).max(MAX_POOL_PREFIX_AFFINITY_MARGIN).optional(),
   /**
    * Slot-aware placement: `1` puts an Ollama candidate whose queue fills its advertised slots
    * (`inferenceOllamaSlots`) behind every candidate with a free one; `0` keeps slots out of ranking,
