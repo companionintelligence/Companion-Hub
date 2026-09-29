@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -15,6 +15,7 @@ import { useAppContext } from '@/context/app-context';
 import { fetchDnsAvailability } from '@/lib/cloudflare-api';
 import { CloudflareSubdomainField } from '@/modules/app/components/install-form/cloudflare-subdomain-field';
 import { domainListNoteFor } from '@/modules/app/components/install-form/domain-list-note';
+import { preselectedPublicDomain, publicDomainToUse } from '@/modules/app/components/install-form/preselected-public-domain';
 import { useDnsAvailability } from '@/modules/app/components/install-form/use-dns-availability';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
 import { buildPublicWebIdentity, sanitizeAppSubdomain, selectOfferedDomains } from '@ci-hub/common/types';
@@ -51,17 +52,28 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
     ...getDomainsOptions(),
     enabled: cloudflareAvailable && isOpen,
   });
-  const availableDomains = selectOfferedDomains(getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS, app.publicDomain || domain);
+  // An app already on the Web keeps the domain it serves from, and it stays listed even where
+  // Companion Portal no longer offers it for a new name. Moving an app to the Web publishes a new
+  // name, which is offered only what Companion Portal offers — as in the install form.
+  const keepsPublished = app.exposureMode === 'cloudflare';
+  const currentPublicSuffix = keepsPublished ? app.publicDomain || domain : undefined;
+  const availableDomains = useMemo(
+    () => selectOfferedDomains(getDomains.data?.domains ?? EMPTY_AVAILABLE_DOMAINS, currentPublicSuffix),
+    [getDomains.data?.domains, currentPublicSuffix],
+  );
+  const domainListNote = domainListNoteFor(getDomains);
 
   const {
     register,
     control,
     handleSubmit,
     watch,
+    getValues,
+    setValue,
     setError,
     clearErrors,
     reset,
-    formState: { errors },
+    formState: { errors, dirtyFields },
   } = useForm<FormValues>({
     values: {
       port: String(app.port ?? info.port ?? ''),
@@ -70,13 +82,43 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
         tailscaleAvailable,
       }),
       localSubdomain: app.localSubdomain ?? info.id,
-      publicDomain: app.publicDomain ?? domain,
+      // A new name has none until Companion Portal's list gives it one (`publicDomainToUse`).
+      publicDomain: keepsPublished ? (app.publicDomain ?? domain) : (app.publicDomain ?? undefined),
     },
   });
 
   const watchExposureMode = watch('exposureMode');
   const watchLocalSubdomain = watch('localSubdomain');
   const watchPublicDomain = watch('publicDomain');
+  // What the dialog shows, checks and saves: `undefined` until Companion Portal's list gives a new
+  // name a domain. See `publicDomainToUse`.
+  const publicDomain = publicDomainToUse({
+    chosen: watchPublicDomain,
+    hubDomain: domain,
+    keepsPublished,
+    availableDomains,
+    listNote: domainListNote,
+  });
+
+  // Moving to the Web, the app takes the domain Companion Portal preselects, as a new install does.
+  useEffect(() => {
+    if (!isOpen || watchExposureMode !== 'cloudflare') {
+      return;
+    }
+
+    const next = preselectedPublicDomain({
+      availableDomains,
+      currentPublicDomain: getValues('publicDomain'),
+      hubDomain: domain,
+      dirty: Boolean(dirtyFields.publicDomain),
+      isEdit: true,
+      initialExposureMode: app.exposureMode ?? 'local',
+    });
+
+    if (next && next !== getValues('publicDomain')) {
+      setValue('publicDomain', next);
+    }
+  }, [app.exposureMode, availableDomains, dirtyFields.publicDomain, domain, getValues, isOpen, setValue, watchExposureMode]);
 
   const defaultAppSubdomain = sanitizeAppSubdomain(app.localSubdomain || info.id);
   const publicWebPreview =
@@ -85,7 +127,8 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
           appSubdomain: sanitizeAppSubdomain(watchLocalSubdomain || defaultAppSubdomain),
           hubSubdomain: ciHubDeviceSlug ? `hub-${ciHubDeviceSlug}-${orgSlug}` : undefined,
           orgSlug,
-          publicDomainRoot: watchPublicDomain || domain,
+          // Only the name's middle is read from this preview.
+          publicDomainRoot: publicDomain || domain,
         })
       : null;
 
@@ -105,9 +148,10 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
   );
 
   const { isCheckingDns, dnsAvailabilityError, domainAvailabilityError } = useDnsAvailability<FormValues>({
-    enabled: isOpen && watchExposureMode === 'cloudflare' && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
+    // Only once there is a domain to ask about: none while Companion Portal's list is on its way.
+    enabled: isOpen && watchExposureMode === 'cloudflare' && Boolean(publicDomain) && Boolean((watchLocalSubdomain || defaultAppSubdomain).trim()),
     subdomain: watchLocalSubdomain || defaultAppSubdomain,
-    selectedDomain: watchPublicDomain || domain,
+    selectedDomain: publicDomain,
     checkDnsAvailability,
     setError,
     clearErrors,
@@ -164,11 +208,12 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       }
 
       const subdomainChanged = sanitizeAppSubdomain(subdomain) !== sanitizeAppSubdomain(app.localSubdomain || defaultAppSubdomain);
-      const domainChanged = (values.publicDomain || domain) !== (app.publicDomain || domain);
+      const domainChanged = publicDomain !== (app.publicDomain || domain);
 
-      if (subdomainChanged || domainChanged) {
+      // With no domain yet the app names none, and Companion Portal places it; there is nothing to ask.
+      if (publicDomain && (subdomainChanged || domainChanged)) {
         try {
-          const response = await checkDnsAvailability(subdomain, values.publicDomain || domain);
+          const response = await checkDnsAvailability(subdomain, publicDomain);
           if (response.ok) {
             const data = await response.json();
             if (!data.available) {
@@ -196,7 +241,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
       port,
       exposureMode,
       localSubdomain: exposureMode === 'cloudflare' ? sanitizeAppSubdomain(values.localSubdomain || defaultAppSubdomain) : undefined,
-      publicDomain: exposureMode === 'cloudflare' ? values.publicDomain || domain : undefined,
+      publicDomain: exposureMode === 'cloudflare' ? publicDomain : undefined,
     });
   };
 
@@ -299,8 +344,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
               <CloudflareSubdomainField
                 control={control}
                 availableDomains={availableDomains}
-                watchPublicDomain={watchPublicDomain}
-                domain={domain}
+                shownDomain={publicDomain}
                 cloudflareSuffix={cloudflareSuffix}
                 register={register}
                 loading={updatePortExpose.isPending}
@@ -308,7 +352,7 @@ export const PortExposeSettingsDialog = ({ app, info, isOpen, onClose }: Props) 
                 publicDomainError={errors.publicDomain?.message || domainAvailabilityError || undefined}
                 placeholder={defaultAppSubdomain}
                 isCheckingDns={isCheckingDns}
-                domainListNote={domainListNoteFor(getDomains)}
+                domainListNote={domainListNote}
                 onRetryDomainList={() => void getDomains.refetch()}
                 t={t}
               />
