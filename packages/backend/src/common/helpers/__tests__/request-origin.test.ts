@@ -19,6 +19,12 @@ describe('internalOriginRefusal', () => {
     expect(internalOriginRefusal({ ip: '100.101.102.103', headers: {} })).toBeNull();
   });
 
+  // App subnets start at 10.128.0.0/24. Once the Hub joins an app network, inference arrives from
+  // one of those addresses, and the credential-free leg has to admit it.
+  it('admits a Hub-allocated app subnet address', () => {
+    expect(internalOriginRefusal({ ip: '10.128.12.5', headers: { host: 'ci-hub:5002' } })).toBeNull();
+  });
+
   it('falls back to the socket address when Express has not resolved `ip`', () => {
     expect(internalOriginRefusal({ socket: { remoteAddress: '::ffff:10.0.0.42' }, headers: {} })).toBeNull();
   });
