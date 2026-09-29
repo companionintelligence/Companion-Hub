@@ -77,7 +77,7 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_start_inference_backend',
       access: 'write',
       description:
-        'Report the live status of an inference backend ("ollama", "vllm", "lemonade", "mtplx", "dspark", or "lucebox"). NOTE: this does NOT ' +
+        'Report the live status of an inference backend ("ollama", "omlx", "vllm", or "lemonade"). NOTE: this does NOT ' +
         'start a container — inference backends are managed by the Hub runtime/compose stack. Use it to verify ' +
         'whether a backend is up before routing inference.',
       inputSchema: {

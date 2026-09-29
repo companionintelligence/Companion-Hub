@@ -139,9 +139,9 @@ describe('buildCheckInPayload', () => {
     const pending = buildCheckInPayload({
       deviceId: 'dev',
       phase: 'locally_ready',
-      pushKey: { hub_push_key_prefix: 'abcdef01', hub_push_key: 'abcdef01' + 'c'.repeat(56) },
+      pushKey: { hub_push_key_prefix: 'abcdef01', hub_push_key: `abcdef01${'c'.repeat(56)}` },
     });
-    expect(pending.hub_push_key).toBe('abcdef01' + 'c'.repeat(56));
+    expect(pending.hub_push_key).toBe(`abcdef01${'c'.repeat(56)}`);
   });
 
   it('sends nothing about the push key when it could not be prepared', () => {
