@@ -362,6 +362,13 @@ describe('InferenceEnvResolver', () => {
     const env = await service.resolve();
 
     expect(env.CI_LLM_API_KEY).toBe('managed-omlx-key');
+
+    // Through this Hub's proxy the same app gets the placeholder: the proxy authenticates apps by
+    // origin, so OMLX_API_KEY would only be copied into the container.
+    config.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
+    const pooled = await service.resolve();
+    expect(pooled.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+    expect(pooled.CI_LLM_API_KEY).toBe('omlx');
   });
 
   it('falls back to Ollama when the stored preference names a backend that does not exist', async () => {
@@ -439,6 +446,90 @@ describe('InferenceEnvResolver', () => {
       const env = await service.resolve();
 
       expect(env.CI_LLM_API_KEY).toBe('vllm-local');
+    });
+
+    // The vLLM key belongs to the vLLM server. It used to be written into CI_LLM_API_KEY whatever
+    // CI_LLM_BASE_URL ended up as: through the pool proxy, which never reads it, and to a decode
+    // override's server, which it does not belong to.
+    describe('which bearer CI_LLM_API_KEY carries', () => {
+      const keyed = (overrides: Record<string, unknown> = {}) =>
+        config.getInferencePreferences.mockReturnValue({
+          preferredBackend: 'vllm',
+          preferredModel: null,
+          preferredEmbeddingModel: null,
+          preferredVisionModel: null,
+          preferredVllmApiKey: 'vllm-secret',
+          preferredDecodeEndpoint: null,
+          ...overrides,
+        } as never);
+
+      beforeEach(() => {
+        keyed();
+        hubPoolPeerService.directions.mockReturnValue(POOL_DIRECTIONS_ON);
+        hubPoolPeerService.listConnectedPeers.mockResolvedValue([]);
+      });
+
+      it('carries the key for an app pointed straight at vLLM', async () => {
+        const env = await service.resolve();
+
+        expect(env.CI_LLM_BASE_URL).toBe(`${VLLM_BASE_URL}/v1`);
+        expect(env.CI_LLM_API_KEY).toBe('vllm-secret');
+      });
+
+      it('carries the placeholder once connected peers route the app through the pool', async () => {
+        hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+
+        const env = await service.resolve();
+
+        expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+        expect(env.CI_LLM_API_KEY).toBe('vllm');
+      });
+
+      it('carries the placeholder when poolRouteAppsAlways fronts this node own vLLM with no peer', async () => {
+        config.getHubPoolPreferences.mockReturnValue({ poolRouteAppsAlways: true } as never);
+
+        const env = await service.resolve();
+
+        expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+        expect(env.CI_LLM_API_KEY).toBe('vllm');
+      });
+
+      it('keeps VLLM_API_KEY from the environment out of a pooled app too', async () => {
+        keyed({ preferredVllmApiKey: null });
+        vllmBackend.getApiKey.mockReturnValue('env-vllm-key');
+        hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+
+        const env = await service.resolve();
+
+        expect(env.CI_LLM_API_KEY).toBe('vllm');
+      });
+
+      it('does not send the vLLM key to a decode override on another server', async () => {
+        keyed({ preferredDecodeEndpoint: 'http://decode-box:9000/v1' });
+
+        const env = await service.resolve();
+
+        expect(env.CI_LLM_BASE_URL).toBe('http://decode-box:9000/v1');
+        expect(env.CI_LLM_API_KEY).toBe('vllm');
+      });
+
+      it('keeps the key for a decode override that names the vLLM server itself, however it is spelled', async () => {
+        keyed({ preferredDecodeEndpoint: 'HTTP://CI-HUB-VLLM:8000/v1/' });
+
+        const env = await service.resolve();
+
+        expect(env.CI_LLM_API_KEY).toBe('vllm-secret');
+      });
+
+      it('lets pool routing win over a decode override, and hands the placeholder', async () => {
+        keyed({ preferredDecodeEndpoint: `${VLLM_BASE_URL}/v1` });
+        hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+
+        const env = await service.resolve();
+
+        expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+        expect(env.CI_LLM_API_KEY).toBe('vllm');
+      });
     });
 
     it('omits the embed host and embedding model when no Ollama is reachable', async () => {

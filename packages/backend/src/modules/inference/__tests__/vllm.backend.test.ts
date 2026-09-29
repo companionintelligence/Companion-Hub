@@ -187,6 +187,86 @@ describe('VllmBackend', () => {
     });
   });
 
+  // `vllm/status` and `onboarding-profile` pass their `?url=` straight to healthCheck. The saved
+  // key used to go to whatever URL that was, so any AuthGuard principal could collect it by naming
+  // a listener, and an operator re-checking a new server sent it the old server's key.
+  describe('which key a Re-check probe carries', () => {
+    const SAVED_URL = 'http://192.168.1.50:8000';
+
+    const saved = (preferredVllmApiKey: string | null) =>
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey,
+        preferredVllmUrl: SAVED_URL,
+      } as never);
+
+    const sentAuthorization = () => (vi.mocked(axios.get).mock.calls[0]?.[1] as { headers?: Record<string, string> } | undefined)?.headers;
+
+    beforeEach(() => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+    });
+
+    it('sends no key to a URL other than the saved one when no probe key is given', async () => {
+      saved('saved-key');
+
+      await backend.healthCheck('http://attacker.example:9999');
+
+      expect(axios.get).toHaveBeenCalledWith('http://attacker.example:9999/v1/models', expect.any(Object));
+      expect(sentAuthorization()).toBeUndefined();
+    });
+
+    it('withholds VLLM_API_KEY from the environment the same way', async () => {
+      const originalEnv = process.env.VLLM_API_KEY;
+      try {
+        process.env.VLLM_API_KEY = 'env-key';
+        saved(null);
+
+        await backend.healthCheck('http://10.0.0.9:8000');
+
+        expect(sentAuthorization()).toBeUndefined();
+      } finally {
+        if (originalEnv === undefined) delete process.env.VLLM_API_KEY;
+        else process.env.VLLM_API_KEY = originalEnv;
+      }
+    });
+
+    it.each([
+      SAVED_URL,
+      `${SAVED_URL}/`,
+      `${SAVED_URL}/v1`,
+      'HTTP://192.168.1.50:8000/v1/',
+    ])('sends the saved key when re-checking the saved server, spelled %s', async (url) => {
+      saved('saved-key');
+
+      await backend.healthCheck(url);
+
+      expect(sentAuthorization()).toEqual({ Authorization: 'Bearer saved-key' });
+    });
+
+    it('sends the key typed for the probe to any URL, as before', async () => {
+      saved('saved-key');
+
+      await backend.healthCheck('http://10.0.0.9:8000', 'typed-key');
+
+      expect(sentAuthorization()).toEqual({ Authorization: 'Bearer typed-key' });
+    });
+
+    it('says why no key went out when a new server answers 401', async () => {
+      saved('saved-key');
+      (axios.get as any) = vi
+        .fn()
+        .mockRejectedValue({ response: { status: 401 }, message: 'Request failed with status code 401', isAxiosError: true });
+      vi.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+
+      const health = await backend.healthCheck('http://10.0.0.9:8000');
+
+      expect(health.error).toContain('sent only to the saved vLLM URL');
+    });
+  });
+
   describe('resolveVllmProbeUrl', () => {
     it('rewrites localhost to host.docker.internal only when Hub is in a container', () => {
       expect(resolveVllmProbeUrl('http://localhost:8000/v1', true)).toBe('http://host.docker.internal:8000');

@@ -4,6 +4,17 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CloudProviderType } from '@ci-hub/common/types';
 import { buildCloudProviderEnv } from './cloud-provider-env';
+import { BUDGET_SETTINGS_HINT, postStreamUnderHeaderDeadline } from './upstream-stream';
+import { COMPLETION_TIMEOUT_MS, firstByteBudgetMs, forwardBudgetMs } from '@/modules/hub-pool/hub-pool-budget';
+
+/**
+ * Wall-clock budget for a cloud request answered all at once: the pool's completion budget, sized
+ * from the body the same way. A provider sends no headers until the whole answer is ready, so this
+ * is a cap on total generation time, and a cloud answer should get as long as a local one does.
+ */
+function completionBudgetMs(body: unknown): number {
+  return forwardBudgetMs(false, Buffer.byteLength(JSON.stringify(body) ?? ''));
+}
 
 const CLOUD_BASE_URLS: Record<CloudProviderType, string> = {
   openai: 'https://api.openai.com/v1',
@@ -134,33 +145,57 @@ export class CloudFallbackService implements OnModuleInit {
     return this.getEnabledProviders()[0];
   }
 
-  /** Proxy a chat completion request to a cloud provider */
+  /**
+   * Proxy a chat completion request to a cloud provider.
+   *
+   * `clientClosed` (`abortWhenClientCloses` in `upstream-stream.ts`) abandons the provider request
+   * when the client that asked for it leaves, whether it is still waiting for the answer or in the
+   * middle of a stream, so a generation nobody will read stops being billed.
+   */
   async proxyChatCompletion(
     provider: CloudProviderConfig,
     body: Record<string, unknown>,
+    clientClosed?: AbortSignal,
   ): Promise<{ data: unknown; stream?: NodeJS.ReadableStream; headers: Record<string, string> }> {
     const baseUrl = provider.baseUrl || CLOUD_BASE_URLS[provider.provider];
 
     if (provider.provider === 'anthropic') {
       // Anthropic uses a different API format — convert both request and response
-      return this.proxyAnthropicChat(provider, body);
+      return this.proxyAnthropicChat(provider, body, clientClosed);
     }
 
-    const isStream = !!body.stream;
-    const response = await axios.post(`${baseUrl}/chat/completions`, body, {
-      headers: {
-        Authorization: `Bearer ${provider.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      responseType: isStream ? 'stream' : 'json',
-      timeout: 120000,
-    });
-
-    if (isStream) {
+    const url = `${baseUrl}/chat/completions`;
+    const headers = { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' };
+    if (body.stream) {
+      const response = await this.openStream(provider, url, body, headers, clientClosed);
       return { data: null, stream: response.data, headers: response.headers as Record<string, string> };
     }
 
+    const response = await axios.post(url, body, { headers, timeout: completionBudgetMs(body), signal: clientClosed });
     return { data: response.data, headers: response.headers as Record<string, string> };
+  }
+
+  /**
+   * A streamed cloud request under the pool's first-byte budget, with nothing timed after the
+   * headers. It had `timeout: 120000`, which with axios's default transport is also a socket idle
+   * timeout for the life of the stream: a reasoning model that went quiet for two minutes between
+   * frames was cut with ECONNRESET after the client already had its 200. See
+   * `postStreamUnderHeaderDeadline`, which the local engine path uses too. That idle timeout was
+   * also the only thing that ever closed a stream whose client had left, which `clientClosed` now
+   * does directly.
+   */
+  private openStream(provider: CloudProviderConfig, url: string, body: unknown, headers: Record<string, string>, clientClosed?: AbortSignal) {
+    return postStreamUnderHeaderDeadline(
+      url,
+      body,
+      headers,
+      {
+        budgetMs: firstByteBudgetMs(Buffer.byteLength(JSON.stringify(body))),
+        upstream: `cloud provider ${provider.provider}`,
+        hint: ` ${BUDGET_SETTINGS_HINT}`,
+      },
+      clientClosed,
+    );
   }
 
   /** Proxy an image generation request to a cloud provider */
@@ -174,7 +209,7 @@ export class CloudFallbackService implements OnModuleInit {
         Authorization: `Bearer ${provider.apiKey}`,
         'Content-Type': 'application/json',
       },
-      timeout: 120000,
+      timeout: completionBudgetMs(body),
     });
     return { data: response.data, headers: response.headers as Record<string, string> };
   }
@@ -200,7 +235,8 @@ export class CloudFallbackService implements OnModuleInit {
       headers: {
         Authorization: `Bearer ${provider.apiKey}`,
       },
-      timeout: 120000,
+      // No JSON body to size, so the completion budget's floor.
+      timeout: COMPLETION_TIMEOUT_MS,
     });
     return response.data;
   }
@@ -208,6 +244,7 @@ export class CloudFallbackService implements OnModuleInit {
   private async proxyAnthropicChat(
     provider: CloudProviderConfig,
     body: Record<string, unknown>,
+    clientClosed?: AbortSignal,
   ): Promise<{ data: unknown; stream?: NodeJS.ReadableStream; headers: Record<string, string> }> {
     const baseUrl = provider.baseUrl || CLOUD_BASE_URLS.anthropic;
 
@@ -229,19 +266,17 @@ export class CloudFallbackService implements OnModuleInit {
       anthropicBody.stream = true;
     }
 
-    const response = await axios.post(`${baseUrl}/messages`, anthropicBody, {
-      headers: {
-        'x-api-key': provider.apiKey || '',
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json',
-      },
-      responseType: body.stream ? 'stream' : 'json',
-      timeout: 120000,
-    });
+    const url = `${baseUrl}/messages`;
+    const headers = {
+      'x-api-key': provider.apiKey || '',
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    };
 
     if (body.stream) {
+      const response = await this.openStream(provider, url, anthropicBody, headers, clientClosed);
       // Convert Anthropic SSE stream to OpenAI SSE format
-      const { Transform } = await import('node:stream');
+      const { Transform, pipeline } = await import('node:stream');
       const transformStream = new Transform({
         transform(chunk: Buffer, _encoding, callback) {
           const text = chunk.toString();
@@ -284,9 +319,16 @@ export class CloudFallbackService implements OnModuleInit {
           callback();
         },
       });
-      (response.data as NodeJS.ReadableStream).pipe(transformStream);
+      // `pipeline`, not `pipe`: the controller holds only the transform, so destroying it when the
+      // client leaves has to reach the provider's socket, and a provider that drops mid-stream has
+      // to fail the transform rather than leave it waiting for an end that never comes.
+      pipeline(response.data, transformStream, () => {
+        // Any error has already destroyed the transform with it, which is where the relay sees it.
+      });
       return { data: null, stream: transformStream, headers: response.headers as Record<string, string> };
     }
+
+    const response = await axios.post(url, anthropicBody, { headers, timeout: completionBudgetMs(anthropicBody), signal: clientClosed });
 
     // Convert Anthropic response to OpenAI format
     const anthropicData = response.data as {
