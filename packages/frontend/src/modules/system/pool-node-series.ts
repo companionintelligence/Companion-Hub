@@ -477,6 +477,8 @@ export interface RoutingBucket {
   failovers: number;
   /** The subset of `failed` that ended because the caller hung up, not because routing failed. */
   clientClosed: number;
+  /** The subset of `failed` a node answered with a refusal of the request itself — see {@link isRefused}. */
+  refused: number;
   /** The subset of `failed` that took at least a first-byte budget to fail — see {@link isOverBudgetFailure}. */
   overBudget: number;
   /** Engine-reported prompt tokens on rows placed in this minute. Rows with no usage frame add nothing. */
@@ -492,6 +494,7 @@ const EMPTY_BUCKET: Omit<RoutingBucket, 'at'> = {
   unplaced: 0,
   failovers: 0,
   clientClosed: 0,
+  refused: 0,
   overBudget: 0,
   promptTokens: 0,
   completionTokens: 0,
@@ -505,6 +508,40 @@ export function emptyRoutingBucket(at: number): RoutingBucket {
 /** Every decision placed in a bucket, whatever became of it. */
 export function bucketTotal(bucket: RoutingBucket): number {
   return bucket.served + bucket.failed + bucket.pending;
+}
+
+/**
+ * `true` for a row a node ANSWERED with a refusal of the request: an engine's verdict on its body
+ * (`requestError`), or a 4xx, which the proxy relays to the caller rather than fails over.
+ *
+ * Such a row is not a request served, and its `durationMs` is how long the refusal took, not a first
+ * byte. core-2, 2026-09-29: six rows read `outcome=served status=400`, each an engine answering
+ * "gemma3:1b does not support tools" in about 5 ms. Counted as served and timed as a first byte, one
+ * 18 ms refusal moved a node's p50 from 90 s to 18 ms, and "Failed 30m" counted none of them. The
+ * Hub now settles these `failed`, with a `requestError` on outbound rows; the status is read as well
+ * because an inbound row never carries a `requestError`, and a Hub built before the change still
+ * says `served`.
+ *
+ * Not a caller that hung up (that has its own count), and not a row still waiting for its answer.
+ */
+export function isRefused(entry: RoutingLogEntry): boolean {
+  if (entry.outcome === 'pending' || entry.clientClosed === true) return false;
+  if (entry.requestError) return true;
+
+  return typeof entry.status === 'number' && entry.status >= 400 && entry.status < 500;
+}
+
+/**
+ * What became of a routing row, as every count on this page reads it: `served` only for an answer the
+ * caller could use, `pending` while it waits, and `failed` for everything else — a refusal included,
+ * whatever outcome the Hub wrote, and an outcome string this page does not know, which must never be
+ * silently read as fine. The one place the three-way split is made, so the rail, the bars, the feed
+ * and the first-byte figures cannot disagree about which rows were served.
+ */
+export function settledOutcome(entry: RoutingLogEntry): 'served' | 'failed' | 'pending' {
+  if (entry.outcome === 'pending') return 'pending';
+
+  return entry.outcome === 'served' && !isRefused(entry) ? 'served' : 'failed';
 }
 
 /**
@@ -531,7 +568,7 @@ const OVER_BUDGET_SHARE = 0.95;
  * allowed to take, and got nothing.
  */
 export function isOverBudgetFailure(entry: RoutingLogEntry): boolean {
-  if (entry.outcome === 'served' || entry.outcome === 'pending' || entry.clientClosed === true) return false;
+  if (settledOutcome(entry) !== 'failed' || entry.clientClosed === true) return false;
   if (entry.status !== null && entry.status !== undefined) return false;
   if (typeof entry.budgetMs !== 'number' || entry.budgetMs <= 0 || typeof entry.durationMs !== 'number') return false;
 
@@ -574,15 +611,16 @@ export function routingBuckets(entries: RoutingLogEntry[], options: { now: numbe
     if (bucket < oldest || bucket > newest) continue;
 
     const slot = counts.get(bucket) ?? emptyRoutingBucket(bucket);
-    // Three-way, matching `routingActivity`: anything neither served nor still waiting is a failure,
-    // so an outcome string this page does not know is never silently read as fine.
-    if (entry.outcome === 'served') slot.served += 1;
-    else if (entry.outcome === 'pending') slot.pending += 1;
+    // Three-way, matching `routingActivity` — see `settledOutcome`.
+    const outcome = settledOutcome(entry);
+    if (outcome === 'served') slot.served += 1;
+    else if (outcome === 'pending') slot.pending += 1;
     else slot.failed += 1;
 
     if (isUnplaced(entry)) slot.unplaced += 1;
     if ((entry.failedOverFrom?.length ?? 0) > 0) slot.failovers += 1;
-    if (entry.clientClosed === true && entry.outcome !== 'served' && entry.outcome !== 'pending') slot.clientClosed += 1;
+    if (entry.clientClosed === true && outcome === 'failed') slot.clientClosed += 1;
+    if (isRefused(entry)) slot.refused += 1;
     if (isOverBudgetFailure(entry)) slot.overBudget += 1;
     slot.promptTokens += usageCount(entry.usage?.promptTokens);
     slot.completionTokens += usageCount(entry.usage?.completionTokens);
@@ -637,6 +675,8 @@ export interface RoutingActivity {
   outbound: number;
   /** Outbound requests with no candidate at all. Distinct from `failed`: nothing was even tried at a node. */
   unplaced: number;
+  /** The part of `failed` a node answered with a refusal of the request itself — see {@link isRefused}. */
+  refused: number;
   /**
    * Sum of `usage.totalTokens` over held entries that actually carry one — a real, partial count,
    * not an estimate standing in for the entries that don't (see `RoutingLogEntry.usage`). Reads
@@ -664,13 +704,16 @@ export function routingActivity(entries: RoutingLogEntry[]): RoutingActivity {
     inbound: 0,
     outbound: 0,
     unplaced: 0,
+    refused: 0,
     tokensServed: 0,
   };
 
   for (const entry of entries) {
-    if (entry.outcome === 'served') activity.served += 1;
-    else if (entry.outcome === 'pending') activity.pending += 1;
+    const outcome = settledOutcome(entry);
+    if (outcome === 'served') activity.served += 1;
+    else if (outcome === 'pending') activity.pending += 1;
     else activity.failed += 1;
+    if (isRefused(entry)) activity.refused += 1;
 
     if ((entry.failedOverFrom?.length ?? 0) > 0) activity.failovers += 1;
 
@@ -799,7 +842,7 @@ export interface FirstByteStats {
  * which rows count — the reasons for each exclusion are on `firstByteByNode`.
  */
 export function isFirstByteSample(entry: RoutingLogEntry): boolean {
-  if (entry.outcome !== 'served' || entry.stream !== true || (entry.failedOverFrom?.length ?? 0) > 0) return false;
+  if (settledOutcome(entry) !== 'served' || entry.stream !== true || (entry.failedOverFrom?.length ?? 0) > 0) return false;
 
   return typeof entry.durationMs === 'number' && Number.isFinite(entry.durationMs) && entry.durationMs >= 0;
 }
@@ -810,7 +853,9 @@ export function isFirstByteSample(entry: RoutingLogEntry): boolean {
  * Only rows where `durationMs` IS a first-byte time are counted, and that excludes more than it
  * looks like it should:
  *
- *   - served only. A failure's duration is how long it took to fail.
+ *   - served only. A failure's duration is how long it took to fail — and a refusal's is how long
+ *     the engine took to say no: a 5 ms "does not support tools" 400 read as a 5 ms first byte took
+ *     core-2's p50 from 90 s to 18 ms. See {@link isRefused}.
  *   - `stream === true` only. A non-streamed request gets response headers after the WHOLE
  *     generation, so its duration is completion time; mixing the two would make a node that happened
  *     to get non-streamed work look minutes slower than its neighbours.
@@ -880,6 +925,8 @@ export interface OwnInference {
    * this tile's callers are this Hub's own apps, the ones most likely to give up on a long prefill.
    */
   clientClosed: number;
+  /** The part of `failed` a node answered with a refusal of the request itself. See {@link isRefused}. */
+  refused: number;
   /** The part of `failed` that took a whole first-byte budget to fail. See {@link isOverBudgetFailure}. */
   overBudget: number;
   pending: number;
@@ -935,6 +982,7 @@ export function inferenceFromHere(entries: RoutingLogEntry[], window: { from: nu
     served: 0,
     failed: 0,
     clientClosed: 0,
+    refused: 0,
     overBudget: 0,
     pending: 0,
     failovers: 0,
@@ -954,17 +1002,19 @@ export function inferenceFromHere(entries: RoutingLogEntry[], window: { from: nu
     if (!Number.isFinite(at) || at < window.from || at >= window.to) continue;
 
     own.requests += 1;
-    if (entry.outcome === 'served') own.served += 1;
-    else if (entry.outcome === 'pending') own.pending += 1;
+    const outcome = settledOutcome(entry);
+    if (outcome === 'served') own.served += 1;
+    else if (outcome === 'pending') own.pending += 1;
     else {
       own.failed += 1;
-      // The same two splits `routingBuckets` makes, so this tile and the rail describe a failure alike.
+      // The same splits `routingBuckets` makes, so this tile and the rail describe a failure alike.
       if (entry.clientClosed === true) own.clientClosed += 1;
+      if (isRefused(entry)) own.refused += 1;
       if (isOverBudgetFailure(entry)) own.overBudget += 1;
     }
     if ((entry.failedOverFrom?.length ?? 0) > 0) own.failovers += 1;
 
-    if (entry.outcome === 'served' && hasUsage(entry)) own.usageReported += 1;
+    if (outcome === 'served' && hasUsage(entry)) own.usageReported += 1;
     own.promptTokens += usageCount(entry.usage?.promptTokens);
     own.completionTokens += usageCount(entry.usage?.completionTokens);
     if (isFirstByteSample(entry)) firstBytes.push(entry.durationMs as number);

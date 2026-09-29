@@ -17,7 +17,7 @@ import {
   Tr,
 } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
-import { bucketTotal, type RoutingBucket, routingActivity } from '@/modules/system/pool-node-series';
+import { bucketTotal, isRefused, type RoutingBucket, routingActivity, settledOutcome } from '@/modules/system/pool-node-series';
 import {
   estimatedPromptTokens,
   isExhausted,
@@ -194,6 +194,13 @@ export function PoolActivity({
               <StatChip value={activity.pending} label={t('DASHBOARD_ACTIVITY_IN_FLIGHT')} tone={activity.pending > 0 ? 'warn' : 'muted'} />
               <StatChip value={activity.failed} label={t('DASHBOARD_FAILED')} tone={activity.failed > 0 ? 'bad' : 'muted'} />
               <StatChip
+                value={activity.refused}
+                label={t('DASHBOARD_REFUSED')}
+                tone={activity.refused > 0 ? 'warn' : 'muted'}
+                hint={t('DASHBOARD_REFUSED_HINT')}
+                hintId="dashboard-activity-refused"
+              />
+              <StatChip
                 value={activity.failovers}
                 label={t('DASHBOARD_FAILOVERS')}
                 tone={activity.failovers > 0 ? 'warn' : 'muted'}
@@ -288,6 +295,10 @@ export function PoolActivity({
                   // Placed on a node and still waiting for headers. The row is the placement itself,
                   // so the node column names where it is waiting and the first-byte column counts up.
                   const pending = entry.outcome === 'pending';
+                  // Answered, but with a refusal of the request: red like any failure, with the status
+                  // beside it, since "failed" alone reads as the node breaking. See `isRefused`.
+                  const served = settledOutcome(entry) === 'served';
+                  const refused = isRefused(entry);
                   // A nodeless outbound row is one of two outcomes, and they are named apart: every
                   // candidate tried and failed, or none existed. Either way it must not read as the
                   // local node having served it. The first used to render "Unplaced · +9 tried",
@@ -352,8 +363,13 @@ export function PoolActivity({
                           humanDuration(entry.durationMs)
                         )}
                       </Td>
-                      <Td align="right" title={entry.outcome}>
+                      <Td align="right" title={typeof entry.status === 'number' ? `${entry.outcome} ${entry.status}` : entry.outcome}>
                         <span className="inline-flex items-center justify-end gap-1.5">
+                          {refused ? (
+                            <span className="text-[11px] text-destructive" title={t('DASHBOARD_REFUSED_ROW_HINT', { status: entry.status ?? DASH })}>
+                              {t('DASHBOARD_REFUSED_SHORT', { status: entry.status ?? DASH })}
+                            </span>
+                          ) : null}
                           {/* Not on an exhausted row: its node cell already says how many were tried. */}
                           {failedOver.length > 0 && !exhausted ? (
                             <span
@@ -364,10 +380,7 @@ export function PoolActivity({
                             </span>
                           ) : null}
                           {entry.pin ? <span className="text-[11px] text-muted-foreground">{t('DASHBOARD_PIN_SHORT')}</span> : null}
-                          <StatusDot
-                            tone={entry.outcome === 'served' ? 'ok' : pending ? 'warn' : 'bad'}
-                            className={pending ? 'motion-safe:animate-pulse' : undefined}
-                          />
+                          <StatusDot tone={served ? 'ok' : pending ? 'warn' : 'bad'} className={pending ? 'motion-safe:animate-pulse' : undefined} />
                         </span>
                       </Td>
                     </Tr>

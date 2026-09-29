@@ -69,7 +69,14 @@ import {
   type PrefixKey,
 } from './hub-pool-prefix-affinity';
 import { chooseAutoModel, collectPoolModelOffers, type AutoModelPreference, type NodeModelInventory } from './pool-auto-model';
-import { judgeRequestError, readRequestErrorVerdict, type PoolRequestErrorVerdict, type UnconfirmedRequestError } from './hub-pool-request-error';
+import {
+  judgeRequestError,
+  lastCandidateRequestError,
+  passedThroughRequestError,
+  readRequestErrorVerdict,
+  type PoolRequestErrorVerdict,
+  type UnconfirmedRequestError,
+} from './hub-pool-request-error';
 import { CONNECT_TIMEOUT_MS, MIN_PREFILL_TOKENS_PER_SEC, estimatePromptTokens, forwardBudgetMs } from './hub-pool-budget';
 import { MERGED_LISTING_PATHS, listedModelIds, mergeModelListing, peerOnlyModels } from './pool-model-listing';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
@@ -2035,12 +2042,16 @@ export class PoolProxyService {
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status, verdict);
+        const untried = candidates.slice(index + 1);
+        // A verdict no second candidate has confirmed ends the walk anyway on the last candidate:
+        // there is nobody left to overrule it, and the engine's sentence is worth more to the caller
+        // than a 502 that names no cause and that its SDK will retry into the same refusal.
         const requestError: PoolRoutingRequestError | null = verdict
-          ? judgeRequestError(verdict, candidate, unconfirmed, {
-              untried: candidates.slice(index + 1),
+          ? (judgeRequestError(verdict, candidate, unconfirmed, {
+              untried,
               engineOf: (other) => other.backend,
               windowOf: (other) => contextWindows()(other),
-            })
+            }) ?? (untried.length === 0 ? lastCandidateRequestError(verdict) : null))
           : null;
         if (!requestError && this.shouldFailover(candidate, upstream.status)) {
           if (verdict) {
@@ -2062,9 +2073,15 @@ export class PoolProxyService {
           this.logger.warn(
             `[PoolProxy] ${nodeLabel} rejected the request for "${model}" itself (HTTP ${upstream.status}, ${requestError.signature}` +
               `${requestError.confirms ? `, as ${requestError.confirms} did` : ''}); returning it to the caller` +
-              `${relayedStatus === upstream.status ? '' : ` as HTTP ${relayedStatus}`} instead of trying ${candidates.length - index - 1} more candidate(s)`,
+              `${relayedStatus === upstream.status ? '' : ` as HTTP ${relayedStatus}`}` +
+              (requestError.basis === 'last-candidate'
+                ? `: no candidate is left to confirm or overrule it (${candidates.length} tried)`
+                : ` instead of trying ${untried.length} more candidate(s)`),
           );
         }
+        // Everything the walk did not fail over and is not an engine's verdict is relayed on its
+        // status, as it always was; a 4xx among those is the request refused, and is recorded so.
+        const refusal = requestError ?? passedThroughRequestError(upstream.status);
         // Settled here rather than after the stream: headers are the routing decision, and the
         // generation that follows can run for minutes (or never end, if the client hung up).
         this.routingLog.settle(row, {
@@ -2072,11 +2089,12 @@ export class PoolProxyService {
           peerId: candidate.peerId,
           backend: candidate.backend,
           attempt: index + 1,
-          // `failed` for an engine's refusal of the request: the node answered, but nothing was served.
-          outcome: requestError ? 'failed' : 'served',
+          // `failed` for any refusal of the request: the node answered, but nothing was served. A
+          // 4xx settled `served` was read as a success with a first byte of a few milliseconds.
+          outcome: refusal ? 'failed' : 'served',
           status: upstream.status,
           durationMs: Date.now() - startedAt,
-          requestError,
+          requestError: refusal,
         });
         // Attribution rides on the commit, so it is on the wire before the first body byte on the
         // streamed path too — the headers are the point of no return, the body follows.
@@ -2462,8 +2480,8 @@ export class PoolProxyService {
     /** The sender's routing-log id, when it sent one — so a refusal joins to the sender's failover row too. */
     requestId?: string;
   }): void {
-    // 'failed' explicitly: nothing was served, and the status is a 4xx that the served-path rule
-    // below would otherwise read as success.
+    // 'failed' explicitly: nothing was served. The rule below now reads a 4xx as failed too, but that
+    // rule describes an engine's answer, and a refusal at the door should not depend on it.
     this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed', { id: params.requestId });
   }
 
@@ -2500,7 +2518,9 @@ export class PoolProxyService {
       throughput: null,
       contention: null,
       affinity: null,
-      outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
+      // Below 400 only: a 4xx is the engine refusing the peer's request, which served nothing. The
+      // row carries no `requestError` — see the field — and its status says what happened.
+      outcome: outcome ?? (status !== null && status < 400 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,
       // Inbound (peer-forwarded) usage capture is out of scope for now — see the PR description.
