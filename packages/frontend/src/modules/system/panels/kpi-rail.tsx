@@ -218,6 +218,7 @@ export function DashboardRail({
   const failovers = buckets.reduce((sum, bucket) => sum + bucket.failovers, 0);
   const callersLeft = buckets.reduce((sum, bucket) => sum + bucket.clientClosed, 0);
   const overBudget = buckets.reduce((sum, bucket) => sum + bucket.overBudget, 0);
+  const refused = buckets.reduce((sum, bucket) => sum + bucket.refused, 0);
 
   /*
    * The 30-minute counts are a FLOOR, not a total, when the log held may be missing part of the
@@ -379,7 +380,9 @@ export function DashboardRail({
        * wait. The sub splits them by the fix each points at: callers who hung up (counted, since they
        * got no answer — but three impatient callers are not three dead nodes), and failures that took
        * a whole first-byte budget to happen, which on this fleet is a prompt placed on a node too slow
-       * to read it (fzzy and core-7 serve the 27B on CPU at 27-37 tok/s). Refusals are the rest.
+       * to read it (fzzy and core-7 serve the 27B on CPU at 27-37 tok/s), and requests a node answered
+       * by refusing the request itself — a 4xx, or an engine's verdict on the body — which are the
+       * app's to fix. Those were counted as served until 2026-09-29; see `isRefused`.
        */
       id: 'failed-30m',
       value: failed,
@@ -388,6 +391,7 @@ export function DashboardRail({
         partial,
         overBudget > 0 ? t('DASHBOARD_RAIL_PAST_BUDGET', { count: overBudget }) : undefined,
         callersLeft > 0 ? t('DASHBOARD_RAIL_CALLERS_LEFT', { count: callersLeft }) : undefined,
+        refused > 0 ? t('DASHBOARD_RAIL_REFUSED', { count: refused }) : undefined,
       ),
       tone: failed > 0 ? 'bad' : 'muted',
       state: routingState,
