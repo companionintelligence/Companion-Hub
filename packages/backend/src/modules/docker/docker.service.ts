@@ -8,7 +8,12 @@ import {
   DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES,
   DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES,
+  DEFAULT_HUB_CONTAINER_NAME,
+  HUB_CONTAINER_NAMES,
+  HUB_MANAGED_LABEL,
   HUB_NETWORK_NAMES,
+  LEGACY_HUB_CONTAINER_NAME,
+  LEGACY_HUB_MANAGED_LABEL,
   hubContainerName,
 } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -144,6 +149,13 @@ export interface DockerPullProgressEvent {
   completedImages: number;
   totalImages: number;
   stage: 'downloading' | 'extracting' | 'complete';
+}
+
+/** The slice of a Docker network listing this Hub needs to join or leave an app network. */
+interface AppProjectNetwork {
+  Id?: string;
+  Name?: string;
+  Labels?: Record<string, string> | null;
 }
 
 @Injectable()
@@ -327,6 +339,10 @@ export class DockerService {
    * @param appUrn App URN being uninstalled.
    */
   public async removeAppNetworks(appUrn: AppUrn): Promise<void> {
+    // The Hub joins each app network so every container can resolve `ci-hub`. That endpoint keeps
+    // the network alive through `compose down`, so drop it before deleting the network ourselves.
+    await this.detachHubFromAppNetworks(appUrn);
+
     const projectName = this.getComposeProjectName(appUrn);
 
     const networks = await this.docker.listNetworks({ filters: { label: [`com.docker.compose.project=${projectName}`] } }).catch((error) => {
@@ -546,6 +562,13 @@ export class DockerService {
    * @param signal Optional signal that cancels the Compose process.
    */
   public async composeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
+    const verb = command.trim().split(/\s+/)[0];
+    // Detach first. `compose down` with the Hub still attached exits 0, logs "Resource is still in
+    // use", and leaves the network behind.
+    if (verb === 'down') {
+      await this.detachHubFromAppNetworks(appUrn);
+    }
+
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
@@ -557,28 +580,37 @@ export class DockerService {
     this.logger.info(`Running docker compose with args ${args.join(' ')} from directory ${composeDir}`);
 
     // Prefer the Docker Compose v2 plugin and fall back to the v1 binary for
-    // compatibility with hosts that do not provide the plugin.
+    // compatibility with hosts that do not provide the plugin. The probe is the only thing this
+    // catch owns: a compose failure after a working plugin must surface as itself, not as a second
+    // attempt with the v1 binary.
+    let composeCommand: string[];
     try {
       await this.assertComposePluginAvailable();
-
       this.logger.debug('docker compose plugin is available, using it');
-      // The bundled container includes the Docker CLI required by the v2 plugin.
-      return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig, signal);
+      composeCommand = ['docker', 'compose', ...args];
     } catch (_error) {
       // Propagate cancellation instead of starting the fallback binary.
       if (isAbortError(_error)) {
         throw _error;
       }
-      // Use the v1 binary when the v2 plugin is unavailable.
       this.logger.warn('docker compose plugin not available, falling back to docker-compose binary');
-      return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig, signal).catch((fallbackError: unknown) => {
-        if (isAbortError(fallbackError)) {
-          throw fallbackError;
-        }
-        const err = fallbackError as Error & { code?: string };
-        throw new Error(`Both docker compose and docker-compose failed: ${err.message || String(fallbackError)}`);
-      });
+      composeCommand = ['docker-compose', ...args];
     }
+
+    const result = await this.runDockerCompose(composeCommand, composeDir, isCustomConfig, signal).catch((fallbackError: unknown) => {
+      if (composeCommand[0] === 'docker') {
+        throw fallbackError;
+      }
+      if (isAbortError(fallbackError)) {
+        throw fallbackError;
+      }
+      const err = fallbackError as Error & { code?: string };
+      throw new Error(`Both docker compose and docker-compose failed: ${err.message || String(fallbackError)}`);
+    });
+    if (verb === 'up') {
+      await this.attachHubToAppNetworks(appUrn);
+    }
+    return result;
   }
 
   /** Read-only cache lookup — never pulls. Also used by install plan preview (no mutation). */
@@ -1317,6 +1349,211 @@ export class DockerService {
       await this.removeContainer(containerName);
       await this.composeUpService(containerName, { ...opts, forceRecreate: true });
     }
+  }
+
+  /**
+   * Joins this Hub to an app's own networks after a successful `up`.
+   *
+   * Apps are handed inference at `http://ci-hub:<port>/...`. That name exists only on a network the
+   * Hub container is attached to. Compose puts a service on the shared Hub network only when it is
+   * `isMain` or `addToMainNetwork`, so a sibling that calls inference (Companion Memory's `api` and
+   * `summary-service`) cannot resolve `ci-hub`. Joining the Hub to the app network fixes that
+   * without publishing the app's service names on the network every other app shares.
+   *
+   * `GwPriority: -1` keeps the Hub's default route on the network it booted with. A network connected
+   * to a running container otherwise takes the route over when it sorts first (Docker 29.8), and the
+   * Hub's own calls would then leave from the app subnet. No static address: DNS is the whole of
+   * what callers need, and the app subnet is allocated per install.
+   *
+   * An `internal` app network is left alone. That flag is complete isolation; joining the Hub would
+   * give those containers a path to the Hub API. `disableMainNetwork` without `internal` is joined:
+   * those services are off the shared network and this is how they reach inference.
+   *
+   * Never throws. A failed attach leaves the app as it was before this fix, which is the failure
+   * the operator already has, and must not fail the `up` that just succeeded.
+   */
+  public async attachHubToAppNetworks(appUrn: AppUrn): Promise<void> {
+    if (!(await this.runningHubContainerName())) {
+      return;
+    }
+    await this.joinHubToAppNetworks(await this.listComposeProjectNetworks(appUrn));
+  }
+
+  /**
+   * Re-joins app networks after the Hub container is recreated.
+   *
+   * An update that replaces this container drops every network connected in place. Running apps are
+   * not composed again, so without this their off-network services go back to `ENOTFOUND ci-hub`
+   * until the next `up`.
+   */
+  public async ensureHubOnAppNetworks(): Promise<void> {
+    if (!(await this.runningHubContainerName())) {
+      return;
+    }
+    const [current, legacy] = await Promise.all([
+      this.listNetworksSafe({ filters: { label: [`${HUB_MANAGED_LABEL}=true`] } }),
+      this.listNetworksSafe({ filters: { label: [`${LEGACY_HUB_MANAGED_LABEL}=true`] } }),
+    ]);
+    const byId = new Map<string, AppProjectNetwork>();
+    for (const network of [...current, ...legacy]) {
+      if (network.Id) {
+        byId.set(network.Id, network);
+      }
+    }
+    await this.joinHubToAppNetworks([...byId.values()]);
+  }
+
+  /**
+   * Leaves an app's networks before `down` or before the Hub deletes them.
+   *
+   * Compose treats an extra container on the network as "still in use" and keeps the network.
+   * Infrastructure networks (the shared Hub network, the edge network) are never disconnected:
+   * the Hub belongs there. A network this method did not join is also left, including external
+   * networks a user compose file brought in.
+   *
+   * Never throws.
+   */
+  public async detachHubFromAppNetworks(appUrn: AppUrn): Promise<void> {
+    const hubName = await this.runningHubContainerName();
+    if (!hubName) {
+      return;
+    }
+
+    const attached = await this.hubNetworkNames(hubName);
+    if (!attached) {
+      return;
+    }
+
+    for (const network of await this.listComposeProjectNetworks(appUrn)) {
+      const id = network.Id;
+      const name = network.Name;
+      if (!id || !name || this.isInfrastructureNetwork(name) || !attached.has(name)) {
+        continue;
+      }
+      if (network.Labels?.['com.docker.compose.network.external'] === 'true') {
+        continue;
+      }
+
+      try {
+        await this.docker.getNetwork(id).disconnect({ Container: hubName, Force: true });
+        this.logger.info(`Detached ${hubName} from ${name}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/not connected/i.test(message)) {
+          continue;
+        }
+        this.logger.warn(
+          `Could not detach ${hubName} from ${name}: ${message}. The app network may survive compose down while this container is still on it.`,
+        );
+      }
+    }
+  }
+
+  private async joinHubToAppNetworks(networks: AppProjectNetwork[]): Promise<void> {
+    const hubName = await this.runningHubContainerName();
+    if (!hubName) {
+      this.logger.debug('Hub container is not running; not joining app networks');
+      return;
+    }
+
+    const attached = await this.hubNetworkNames(hubName);
+    if (!attached) {
+      return;
+    }
+
+    for (const network of networks) {
+      const id = network.Id;
+      const name = network.Name;
+      if (!id || !name || this.isInfrastructureNetwork(name) || attached.has(name)) {
+        continue;
+      }
+      if (network.Labels?.['com.docker.compose.network.external'] === 'true') {
+        continue;
+      }
+
+      let internal = false;
+      try {
+        const inspected = await this.docker.getNetwork(id).inspect();
+        internal = inspected?.Internal === true;
+      } catch (error) {
+        this.logger.warn(`Could not inspect ${name} before joining it: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      if (internal) {
+        this.logger.info(`Not joining ${name}: it is an internal network, so containers on it stay cut off from the Hub`);
+        continue;
+      }
+
+      try {
+        // `GwPriority` is newer than the dockerode typings (Engine API 1.48). Both names are
+        // registered because a legacy compose file still runs this process as `ci-os-hub` while
+        // apps look up `ci-hub`, and the other way around after the rename.
+        const endpoint = { Aliases: [DEFAULT_HUB_CONTAINER_NAME, LEGACY_HUB_CONTAINER_NAME], GwPriority: -1 };
+        await this.docker.getNetwork(id).connect({ Container: hubName, EndpointConfig: endpoint } as never);
+        attached.add(name);
+        this.logger.info(`Attached ${hubName} to ${name} so app containers can resolve ${DEFAULT_HUB_CONTAINER_NAME}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/already exists/i.test(message)) {
+          continue;
+        }
+        this.logger.warn(
+          `Could not attach ${hubName} to ${name}: ${message}. ` +
+            `Services that are not on the shared Hub network cannot resolve ${DEFAULT_HUB_CONTAINER_NAME} until this succeeds.`,
+        );
+      }
+    }
+  }
+
+  private isInfrastructureNetwork(name: string): boolean {
+    return (HUB_NETWORK_NAMES as readonly string[]).includes(name) || name === HUB_EDGE_NETWORK_NAME;
+  }
+
+  private async listComposeProjectNetworks(appUrn: AppUrn): Promise<AppProjectNetwork[]> {
+    const projectName = this.getComposeProjectName(appUrn);
+    return this.listNetworksSafe({ filters: { label: [`com.docker.compose.project=${projectName}`] } });
+  }
+
+  private async listNetworksSafe(options: Parameters<Dockerode['listNetworks']>[0]): Promise<AppProjectNetwork[]> {
+    try {
+      const listed = await this.docker.listNetworks(options);
+      return Array.isArray(listed) ? listed : [];
+    } catch (error) {
+      this.logger.warn(`Failed to list Docker networks: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
+  }
+
+  /** The names of the networks this container is on, or null when it cannot be inspected. */
+  private async hubNetworkNames(hubName: string): Promise<Set<string> | null> {
+    try {
+      const info = await this.docker.getContainer(hubName).inspect();
+      return new Set(Object.keys(info?.NetworkSettings?.Networks ?? {}));
+    } catch (error) {
+      this.logger.warn(`Could not inspect ${hubName} to see which app networks it is on: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  /**
+   * The running Hub container, under whichever name this process was started with.
+   *
+   * An image-only update can still be `ci-os-hub`. Apps are given the same name `hubContainerName`
+   * returns, and the connect call also registers the other name as an alias.
+   */
+  private async runningHubContainerName(): Promise<string | null> {
+    const names = [...new Set([hubContainerName(), ...HUB_CONTAINER_NAMES])];
+    for (const name of names) {
+      try {
+        const info = await this.docker.getContainer(name).inspect();
+        if (info?.State?.Running) {
+          return (info.Name ?? `/${name}`).replace(/^\//, '');
+        }
+      } catch {
+        // The other historical name may be the one that is running.
+      }
+    }
+    return null;
   }
 
   /**

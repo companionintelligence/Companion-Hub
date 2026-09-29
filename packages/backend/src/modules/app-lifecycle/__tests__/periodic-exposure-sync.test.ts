@@ -130,16 +130,19 @@ describe('AppLifecycleService periodic exposure sync', () => {
     // would notice the call being dropped from `onApplicationBootstrap` — which
     // is the whole of the CI-Hub#1209 fix.
     const started = vi.spyOn(AppLifecycleService.prototype as any, 'startPeriodicExposureSync').mockImplementation(() => {});
+    const ensureHubOnAppNetworks = vi.fn().mockResolvedValue(undefined);
     Object.assign(service, {
       recoverStuckInstallsOnStartup: vi.fn().mockResolvedValue(undefined),
       startTailscaleReadinessWatcher: vi.fn(),
       syncInferenceAppsAfterHubUpgrade: vi.fn().mockResolvedValue(undefined),
+      dockerService: { ensureHubOnAppNetworks },
       moduleRef: { get: vi.fn().mockReturnValue(undefined) },
     });
 
     await service.onApplicationBootstrap();
 
     expect(started).toHaveBeenCalled();
+    expect(ensureHubOnAppNetworks).toHaveBeenCalledTimes(1);
     started.mockRestore();
   });
 });

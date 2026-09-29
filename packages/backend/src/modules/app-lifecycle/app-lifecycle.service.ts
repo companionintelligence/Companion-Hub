@@ -361,6 +361,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   async onApplicationBootstrap() {
     void this.recoverStuckInstallsOnStartup();
 
+    // Recreating this container drops the app-network attachments `compose up` added. Put them
+    // back before apps call inference, or an off-network service cannot resolve `ci-hub`.
+    void this.dockerService.ensureHubOnAppNetworks().catch((error: unknown) => {
+      this.logger.error(`Failed to reattach the Hub to app networks: ${error instanceof Error ? error.message : String(error)}`);
+    });
+
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {
       this.syncExposure().catch((e) => this.logger.error(`Startup sync failed: ${e.message}`));
