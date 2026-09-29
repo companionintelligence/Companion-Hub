@@ -45,7 +45,7 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_list_inference_backends',
       access: 'read',
-      description: 'List available inference backends (Ollama, vLLM, Lemonade, MTPLX, mlx-dspark, and Lucebox) and their current status.',
+      description: 'List available inference backends (Ollama, vLLM, Lemonade, and oMLX) and their current status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
         const results = await Promise.all(
@@ -66,7 +66,7 @@ export class InferenceTools implements OnModuleInit {
     });
 
     // ─── hub_start_inference_backend ────────────────────────────────
-    // ISSUE-MCP-3: inference backends (Ollama/vLLM/Lemonade/MTPLX/mlx-dspark/Lucebox) are managed
+    // ISSUE-MCP-3: inference backends (Ollama, vLLM, Lemonade, and oMLX) are managed
     // by the Hub runtime and host services, not started on demand by the Hub. The previous handler
     // returned a "start requested" message but did nothing — misleading an agent into believing a
     // backend was started. This now honestly reports live status and states that lifecycle is not

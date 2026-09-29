@@ -405,13 +405,6 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'deepseek-v4-flash-0731-mlx': 13, // DeepSeek V4 Flash 0731 (MLX) — same MoE as deepseek-v4-flash-0731-284b above
   'north-mini-code-1-0-mlx': 3, // North Mini Code 1.0 (MLX) — same MoE as north-mini-code-1-0 above
   'minimax-m2-mlx': 10, // MiniMax M2 (MLX) — same MoE as minimax-m2-community-230b above
-  // MTPLX (native multi-token-prediction) — active params reused from the matching Ollama-backend
-  // 35B-A3B MoE row (qwen3-6-35b above); the MTP head adds a small serial draft/verify cost but
-  // does not change which experts route per token, so the per-token bandwidth profile is unchanged.
-  'qwen3-6-35b-mtplx-speed': 3, // Qwen 3.6 35B A3B MTPLX Optimized Speed
-  'qwen3-6-35b-mtplx-balance': 3, // Qwen 3.6 35B A3B MTPLX Optimized Balance
-  'qwen3-6-35b-dspark': 3, // Qwen3.6-35B-A3B (mlx-dspark) — same MoE as qwen3-6-35b-mlx above
-  'nemotron-3-5-lightning-30b-dspark': 3, // Nemotron 3.5 Lightning (mlx-dspark) — same MoE as nemotron-3-5-lightning-30b-mlx above
 };
 
 /**
